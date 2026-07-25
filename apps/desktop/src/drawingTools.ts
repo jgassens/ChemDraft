@@ -34,7 +34,6 @@ export interface ToolActivationResult {
   status: string;
 }
 
-const EDITOR_ADAPTER_UNAVAILABLE = "Requires an active structure editor";
 const artShapeUsageHint = usageHint("click canvas", "select object to edit", "Esc exits");
 const artPathUsageHint = usageHint("click canvas", "drag handles after selecting", "Esc exits");
 
@@ -121,7 +120,7 @@ export const coreDrawingToolDefinitions = [
     category: "structure",
     icon: "chain",
     defaultShortcut: "C",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("press and drag on canvas or atom", "drag length sets the carbon count", "Esc exits")
   },
   {
     commandId: "tool.atom",
@@ -369,10 +368,7 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
  *  also disabled-with-reason in the manifest yet have live behavior. The customize gallery excludes
  *  these ids so a stub can never be dragged onto a real toolbar; each wiring slice shrinks this set
  *  and it must reach empty at closeout. */
-export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
-  "style.formulaText",
-  "tool.chain"
-]);
+export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([]);
 
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   return withStandaloneDrawingToolCommands(commands)

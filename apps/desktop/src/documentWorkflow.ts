@@ -955,6 +955,161 @@ export function insertNativeSingleBondMolecule(
   );
 }
 
+export interface NativeChainAnchor {
+  objectId: string;
+  atomId: string;
+}
+
+/** Zig-zag chain vertex plan. The press point is the first vertex; the drag vector sets the chain
+ *  axis, and segment count comes from the drag length divided by the per-segment reach
+ *  (bondLength × cos of the half zig-zag angle). No drag (or a sub-threshold drag) yields one
+ *  segment. Segment directions alternate ±(180 − chainAngleDegrees)/2 about the axis so consecutive
+ *  bonds meet at the style's chain angle. */
+export function planNativeChainVertices(input: {
+  start: PagePoint;
+  dragPoint?: PagePoint;
+  bondLengthPx: number;
+  chainAngleDegrees: number;
+}): PagePoint[] {
+  const segmentLength = Math.max(8, input.bondLengthPx);
+  const halfRadians = degreesToRadians((180 - clamp(input.chainAngleDegrees, 1, 179)) / 2);
+  const reachPerSegment = segmentLength * Math.cos(halfRadians);
+  const dx = (input.dragPoint?.x ?? input.start.x + reachPerSegment) - input.start.x;
+  const dy = (input.dragPoint?.y ?? input.start.y) - input.start.y;
+  const dragLength = Math.hypot(dx, dy);
+  const axisAngle = dragLength < 1e-6 ? 0 : Math.atan2(dy, dx);
+  const segmentCount = !input.dragPoint || dragLength < reachPerSegment * 0.75
+    ? 1
+    : Math.max(1, Math.round(dragLength / reachPerSegment));
+
+  const vertices: PagePoint[] = [{ x: input.start.x, y: input.start.y }];
+  for (let index = 1; index <= segmentCount; index += 1) {
+    const previous = vertices[index - 1];
+    const stepAngle = axisAngle + (index % 2 === 1 ? -halfRadians : halfRadians);
+    vertices.push({
+      x: previous.x + Math.cos(stepAngle) * segmentLength,
+      y: previous.y + Math.sin(stepAngle) * segmentLength
+    });
+  }
+  return vertices;
+}
+
+/** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
+ *  appends carbons to that molecule using the molecule's own bond length and chain angle;
+ *  otherwise it seeds a new native molecule from the synthetic preset. Pure — the caller previews
+ *  with replacePresentDocument and commits once. */
+export function applyNativeChainTool(
+  document: ChemDraftDocument,
+  startPoint: PagePoint,
+  dragPoint?: PagePoint,
+  anchor?: NativeChainAnchor
+): ChemDraftDocument {
+  const page = firstPage(document);
+
+  if (anchor) {
+    const molecule = page.objects.find((object): object is MoleculeObject =>
+      object.id === anchor.objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
+    );
+    const sourceAtom = molecule?.atoms.find((atom) => atom.id === anchor.atomId);
+    if (!molecule || !sourceAtom) {
+      return document;
+    }
+
+    const style = nativeDrawingStyleFromObjectStyle(molecule.style);
+    const vertices = planNativeChainVertices({
+      start: { x: sourceAtom.x, y: sourceAtom.y },
+      dragPoint,
+      bondLengthPx: style.bondLengthPx,
+      chainAngleDegrees: style.chainAngleDegrees
+    });
+
+    let current = molecule;
+    let sourceAtomId = sourceAtom.id;
+    for (const vertex of vertices.slice(1)) {
+      const extended = extendNativeCarbonGraph(current, sourceAtomId, vertex);
+      if (!extended) {
+        break;
+      }
+      current = extended;
+      sourceAtomId = current.atoms[current.atoms.length - 1].id;
+    }
+    if (current === molecule) {
+      return document;
+    }
+
+    return applyPatches(
+      document,
+      [
+        { op: "updateObject", objectId: molecule.id, changes: current },
+        { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+      ],
+      { now: phase4Timestamp }
+    );
+  }
+
+  const presetStyle = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(ChemDraftSyntheticStylePreset));
+  const start = {
+    x: clamp(startPoint.x, 0, page.width),
+    y: clamp(startPoint.y, 0, page.height)
+  };
+  const vertices = planNativeChainVertices({
+    start,
+    dragPoint,
+    bondLengthPx: presetStyle.bondLengthPx,
+    chainAngleDegrees: presetStyle.chainAngleDegrees
+  });
+  const atoms = vertices.map((vertex, index) => ({
+    id: `atom_${String(index + 1).padStart(3, "0")}`,
+    element: "C",
+    x: vertex.x,
+    y: vertex.y,
+    formalCharge: 0
+  } satisfies MoleculeAtom));
+  const bonds = atoms.slice(1).map((atom, index) => ({
+    id: `bond_${String(index + 1).padStart(3, "0")}`,
+    fromAtomId: atoms[index].id,
+    toAtomId: atom.id,
+    order: "single" as const
+  } satisfies MoleculeBond));
+  const geometry = moleculeGeometryFromAtoms(atoms);
+  const object = normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, "mol_chain"),
+    type: "molecule",
+    x: geometry.x,
+    y: geometry.y,
+    width: geometry.width,
+    height: geometry.height,
+    rotation: 0,
+    transform: defaultNativeMoleculeTransform,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "chemdraft-native-drawing",
+      drawingPrimitive: "chain"
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    structureFormat: "smiles",
+    structure: nativeSingleBondGraphSmiles(atoms, bonds),
+    chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
+    atoms,
+    bonds,
+    superatoms: [],
+    rGroups: []
+  });
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 export function nativeBondStyleForToolCommand(commandId: string): NativeBondToolStyle | undefined {
   switch (commandId) {
     case "tool.bond":
@@ -3539,6 +3694,76 @@ export function stretchNativeReactionArrowTo(
     }],
     { now: phase4Timestamp }
   );
+}
+
+/** Chemical-formula span formatting: digit runs that follow an element letter or closing
+ *  parenthesis become subscripts, and a trailing charge (optional digits plus +, -, or −) becomes a
+ *  superscript. Everything else stays a normal span. */
+export function formulaSpansFromText(text: string): TextSpan[] {
+  if (text.length === 0) {
+    return [{ text: "", script: "normal", style: {} }];
+  }
+
+  // A trailing charge keeps at most one digit ("Ca2+", "SO42-" -> charge "2-"); formula
+  // subscripts own longer digit runs.
+  const chargeMatch = text.match(/^(.+?)(\d?[+\-±−])$/);
+  const base = chargeMatch ? chargeMatch[1] : text;
+  const charge = chargeMatch ? chargeMatch[2] : undefined;
+
+  const spans: TextSpan[] = [];
+  const pushRun = (runText: string, script: TextSpan["script"]) => {
+    if (runText.length === 0) {
+      return;
+    }
+    const previous = spans[spans.length - 1];
+    if (previous && previous.script === script) {
+      previous.text += runText;
+      return;
+    }
+    spans.push({ text: runText, script, style: {} });
+  };
+
+  let index = 0;
+  while (index < base.length) {
+    const character = base[index];
+    if (/\d/.test(character) && index > 0 && /[A-Za-z)\]]/.test(base[index - 1])) {
+      let end = index;
+      while (end < base.length && /\d/.test(base[end])) {
+        end += 1;
+      }
+      pushRun(base.slice(index, end), "subscript");
+      index = end;
+      continue;
+    }
+    pushRun(character, "normal");
+    index += 1;
+  }
+  if (charge) {
+    pushRun(charge, "superscript");
+  }
+  return spans;
+}
+
+/** One-shot formula formatting over the selected text objects; returns the same document when the
+ *  selection holds no text objects or nothing would change. */
+export function applyFormulaTextFormatting(document: ChemDraftDocument): ChemDraftDocument {
+  const page = firstPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  const patches: DocumentPatch[] = [];
+  for (const object of page.objects) {
+    if (object.type !== "text" || !selectedIds.has(object.id)) {
+      continue;
+    }
+    const spans = formulaSpansFromText(object.text);
+    if (JSON.stringify(spans) === JSON.stringify(object.spans)) {
+      continue;
+    }
+    patches.push({ op: "updateObject", objectId: object.id, changes: { spans } });
+  }
+  if (patches.length === 0) {
+    return document;
+  }
+  return applyPatches(document, patches, { now: phase4Timestamp });
 }
 
 const symbolGlyphByToolCommandId: ReadonlyMap<string, string> = new Map([

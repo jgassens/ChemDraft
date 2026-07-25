@@ -115,9 +115,13 @@ import {
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
+  applyFormulaTextFormatting,
+  applyNativeChainTool,
   applyReactionArrowToolAtPoint,
   bracketKindForToolCommand,
+  formulaSpansFromText,
   insertNativeBracket,
+  planNativeChainVertices,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
   nativeArtToolForCommand,
@@ -1150,6 +1154,124 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("plans zig-zag chain vertices from the drag vector and chain angle", () => {
+    const single = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(single).toHaveLength(2);
+
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const dragged = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      dragPoint: { x: 100 + reach * 4, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(dragged).toHaveLength(5);
+    // Every segment has the bond length, and consecutive segments meet at the chain angle.
+    for (let index = 1; index < dragged.length; index += 1) {
+      const dx = dragged[index].x - dragged[index - 1].x;
+      const dy = dragged[index].y - dragged[index - 1].y;
+      expect(Math.hypot(dx, dy)).toBeCloseTo(22, 6);
+    }
+    // Zig-zag alternates above and below the horizontal drag axis.
+    expect(dragged[1].y).toBeLessThan(100);
+    expect(dragged[2].y).toBeCloseTo(100, 6);
+    expect(dragged[3].y).toBeLessThan(100);
+
+    const short = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      dragPoint: { x: 103, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(short).toHaveLength(2);
+  });
+
+  it("draws a free chain molecule and appends an anchored chain to an existing molecule", () => {
+    const blank = createPhase4Document("Chain Fixture");
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const free = applyNativeChainTool(blank, { x: 200, y: 220 }, { x: 200 + reach * 3, y: 220 });
+    const chain = free.pages[0].objects[0];
+
+    expect(chain.type).toBe("molecule");
+    if (chain.type === "molecule") {
+      expect(chain.atoms).toHaveLength(4);
+      expect(chain.bonds).toHaveLength(3);
+      expect(chain.bonds.every((bond) => bond.order === "single")).toBe(true);
+    }
+    expect(free.selection.objectIds).toEqual([chain.id]);
+
+    const seeded = insertNativeSingleBondMolecule(blank, { x: 300, y: 300 });
+    const molecule = seeded.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected a molecule fixture");
+    }
+    const anchorAtom = molecule.atoms[molecule.atoms.length - 1];
+    const grown = applyNativeChainTool(
+      seeded,
+      { x: anchorAtom.x, y: anchorAtom.y },
+      { x: anchorAtom.x + reach * 2, y: anchorAtom.y },
+      { objectId: molecule.id, atomId: anchorAtom.id }
+    );
+    const grownMolecule = grown.pages[0].objects[0];
+    if (grownMolecule.type !== "molecule") {
+      throw new Error("Expected the grown molecule");
+    }
+    expect(grownMolecule.atoms).toHaveLength(molecule.atoms.length + 2);
+    expect(grownMolecule.bonds).toHaveLength(molecule.bonds.length + 2);
+    expect(grown.selection.objectIds).toEqual([molecule.id]);
+
+    expect(applyNativeChainTool(seeded, { x: 0, y: 0 }, undefined, { objectId: "missing", atomId: "atom_001" })).toBe(seeded);
+  });
+
+  it("formats formula text spans with subscripts and a superscript charge", () => {
+    expect(formulaSpansFromText("H2O")).toEqual([
+      { text: "H", script: "normal", style: {} },
+      { text: "2", script: "subscript", style: {} },
+      { text: "O", script: "normal", style: {} }
+    ]);
+    expect(formulaSpansFromText("C6H12O6")).toEqual([
+      { text: "C", script: "normal", style: {} },
+      { text: "6", script: "subscript", style: {} },
+      { text: "H", script: "normal", style: {} },
+      { text: "12", script: "subscript", style: {} },
+      { text: "O", script: "normal", style: {} },
+      { text: "6", script: "subscript", style: {} }
+    ]);
+    expect(formulaSpansFromText("SO42-")).toEqual([
+      { text: "SO", script: "normal", style: {} },
+      { text: "4", script: "subscript", style: {} },
+      { text: "2-", script: "superscript", style: {} }
+    ]);
+    expect(formulaSpansFromText("Ca2+")).toEqual([
+      { text: "Ca", script: "normal", style: {} },
+      { text: "2+", script: "superscript", style: {} }
+    ]);
+    expect(formulaSpansFromText("plain")).toEqual([
+      { text: "plain", script: "normal", style: {} }
+    ]);
+  });
+
+  it("applies formula formatting to selected text objects only", () => {
+    const blank = createPhase4Document("Formula Fixture");
+    const withText = insertNativeTextObject(blank, { x: 200, y: 200 }, "H2O");
+    const formatted = applyFormulaTextFormatting(withText);
+    const object = formatted.pages[0].objects[0];
+
+    if (object.type !== "text") {
+      throw new Error("Expected a text object");
+    }
+    expect(object.spans.map((span) => span.script)).toEqual(["normal", "subscript", "normal"]);
+
+    // No selected text objects -> unchanged document.
+    expect(applyFormulaTextFormatting(blank)).toBe(blank);
+    // Re-applying the same formatting is a no-op.
+    expect(applyFormulaTextFormatting(formatted)).toBe(formatted);
   });
 
   it("maps bracket tool commands and inserts a selected default bracket", () => {

@@ -363,6 +363,9 @@ import {
   stretchNativeReactionArrowTo,
   bracketKindForToolCommand,
   insertNativeBracket,
+  applyNativeChainTool,
+  applyFormulaTextFormatting,
+  type NativeChainAnchor,
   insertNativeArtGraphicObject,
   nativeBezierPathDocument,
   nativeArtToolIsFreehand,
@@ -685,7 +688,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow";
+  kind: "single-bond" | "template" | "arrow" | "chain";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -694,6 +697,7 @@ type NativePlacementDragState = {
   bondStyle?: NativeBondDisplayStyle;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
+  chainAnchor?: NativeChainAnchor;
   dragging: boolean;
 };
 type NativeBondEditDragState = {
@@ -6878,6 +6882,18 @@ export function MainWindow({
           return;
         }
 
+        // One-shot formatting: rewrite the selected text objects' spans as chemical formulas.
+        if (tool.id === "style.formulaText") {
+          const nextDocument = applyFormulaTextFormatting(documentRef.current);
+          if (nextDocument !== documentRef.current) {
+            commitDocumentChange(nextDocument);
+            setStatus("Formatted selected text as formula");
+          } else {
+            setStatus("Select a text object to format as formula");
+          }
+          return;
+        }
+
         if (!isDrawingToolCommand(tool.id)) {
           setStatus(`${tool.title} command routed`);
           return;
@@ -8628,15 +8644,20 @@ export function MainWindow({
       | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
+      | { kind: "chain"; anchor?: NativeChainAnchor }
   ): boolean => {
     const startDocument = documentRef.current;
     const placementDocument = placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
       : placement.kind === "arrow"
         ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
-        : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+        : placement.kind === "chain"
+          ? applyNativeChainTool(startDocument, point, undefined, placement.anchor)
+          : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
     const objectId = placementDocument.selection.objectIds[0];
-    if (placementDocument === startDocument || !objectId || findDocumentObject(startDocument, objectId)) {
+    // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
+    const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
+    if (placementDocument === startDocument || !objectId || (!growsExistingObject && findDocumentObject(startDocument, objectId))) {
       return false;
     }
 
@@ -8651,6 +8672,7 @@ export function MainWindow({
       bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
+      chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
@@ -8942,15 +8964,23 @@ export function MainWindow({
   const nativePlacementDocumentFromDrag = useCallback((
     drag: NativePlacementDragState,
     point: ClientPoint
-  ): ChemDraftDocument => drag.kind === "arrow"
-    // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
-    ? stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point)
-    : rotateNativeMoleculeObjectAroundPoint(
+  ): ChemDraftDocument => {
+    if (drag.kind === "arrow") {
+      // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
+      return stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point);
+    }
+    if (drag.kind === "chain") {
+      // Chains regenerate from the start document each move: the drag vector sets axis and
+      // segment count, so the whole zig-zag is recomputed rather than transformed.
+      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor);
+    }
+    return rotateNativeMoleculeObjectAroundPoint(
       drag.placementDocument,
       drag.objectId,
       drag.startPoint,
       nativePlacementRotationDegrees(drag.startPoint, point)
-    ), []);
+    );
+  }, []);
 
   const previewNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -10416,6 +10446,19 @@ export function MainWindow({
       }
     }
 
+    if (activeToolState.activeCommandId === "tool.chain") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!startNativePlacementDrag(event, point, { kind: "chain" })) {
+        const nextDocument = applyNativeChainTool(documentRef.current, point);
+        if (nextDocument !== documentRef.current) {
+          commitDocumentChange(nextDocument);
+          setStatus("Inserted carbon chain");
+        }
+      }
+      return;
+    }
+
     {
       const bracketKind = bracketKindForToolCommand(activeToolState.activeCommandId);
       if (bracketKind) {
@@ -11120,7 +11163,11 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
       const changed = commitNativePlacementDrag(nativePlacementDrag, point);
       const label = nativePlacementStatusLabel(nativePlacementDrag);
-      const draggedVerb = nativePlacementDrag.kind === "arrow" ? "Inserted angled" : "Inserted rotated";
+      const draggedVerb = nativePlacementDrag.kind === "arrow"
+        ? "Inserted angled"
+        : nativePlacementDrag.kind === "chain"
+          ? "Inserted"
+          : "Inserted rotated";
       setStatus(changed
         ? nativePlacementDrag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
         : `${capitalizeLabel(label)} not placed`);
@@ -11580,6 +11627,21 @@ export function MainWindow({
       }
 
       applyChargeDocumentAtPoint(activeChargeToolValue, point);
+      return;
+    }
+
+    if (
+      activeToolState.activeCommandId === "tool.chain" &&
+      object?.type === "molecule" &&
+      point &&
+      nativeMoleculeHit?.kind === "atom"
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      startNativePlacementDrag(event, point, {
+        kind: "chain",
+        anchor: { objectId, atomId: nativeMoleculeHit.atomId }
+      });
       return;
     }
 
@@ -16601,6 +16663,9 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
+  }
+  if (drag.kind === "chain") {
+    return "carbon chain";
   }
   return drag.kind === "template" && drag.templateId
     ? `${nativeTemplateStatusLabel(drag.templateId)} template`

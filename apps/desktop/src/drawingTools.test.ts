@@ -177,16 +177,23 @@ describe("Phase 7 drawing tool activation", () => {
   });
 
   it("keeps unavailable tools from changing the active tool", () => {
-    const command = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.chain");
-    if (!command) {
-      throw new Error("Expected tool.chain to be registered by the toolset manifest.");
-    }
+    // No shipped tool is permanently disabled anymore; a synthetic transiently-disabled spec keeps
+    // the unavailable activation path covered.
+    const command = {
+      id: "tool.chain",
+      title: "Chain Tool",
+      icon: "chain",
+      source: "core",
+      category: "structure",
+      enabled: false,
+      disabledReason: "Requires a molecule selection"
+    } as const;
 
     const current = createActiveToolState();
     const result = activateDrawingToolCommand(current, command);
 
     expect(result.outcome).toBe("unavailable");
-    expect(result.status).toContain("Requires an active structure editor");
+    expect(result.status).toContain("Requires a molecule selection");
     expect(result.state.activeCommandId).toBe("tool.select");
     expect(result.state.activeKind).toBe("selection");
     expect(result.state.lastCommandId).toBe("tool.chain");

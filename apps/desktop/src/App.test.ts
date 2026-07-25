@@ -1918,6 +1918,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.sOrbital",
       "tool.bracket",
       "tool.squareBracket",
+      "tool.chain",
+      "style.formulaText",
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
@@ -2943,10 +2945,7 @@ describe("ChemDraft desktop shell", () => {
     // Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
     // disabled outside this list is either a live selection-dependent command or a regression:
     // wire it or retire it.
-    const expectedTransitionalStubs = [
-      "style.formulaText",
-      "tool.chain"
-    ];
+    const expectedTransitionalStubs: string[] = [];
     expect([...TRANSITIONAL_STUB_COMMAND_IDS].sort()).toEqual(expectedTransitionalStubs);
 
     // Every declared stub really is a disabled-with-reason spec in the shipped catalog.
