@@ -6,6 +6,16 @@
         <description>Signed ChemDraft updates for macOS.</description>
         <language>en</language>
         <item>
+            <title>0.2.0</title>
+            <pubDate>Fri, 24 Jul 2026 17:35:03 -0500</pubDate>
+            <link>https://github.com/jgassens/ChemDraft</link>
+            <sparkle:version>0.2.0</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/jgassens/ChemDraft/releases/download/v0.2.0/ChemDraft_0.2.0_aarch64.dmg" length="16893266" type="application/octet-stream" sparkle:edSignature="i1Q+JAHscRj9Q10KFCYxPkJyjdiWgnOJ7lLYX1Rb9/YE1E4zJGBRQvhF6Z6c7fIAWXkm1MobwbSuBKQQOn6XDg=="/>
+        </item>
+        <item>
             <title>0.1.0</title>
             <pubDate>Fri, 24 Jul 2026 13:06:39 -0500</pubDate>
             <link>https://github.com/jgassens/ChemDraft</link>
