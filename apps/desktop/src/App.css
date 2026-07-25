@@ -4026,6 +4026,19 @@ textarea:focus-visible,
   stroke: none;
 }
 
+.reaction-arrow-head {
+  fill: #111111;
+  stroke: none;
+}
+
+.reaction-arrow-head-open {
+  fill: none;
+  stroke: #111111;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
 .bracket-glyph-path {
   stroke-width: 1.5;
 }
@@ -5738,6 +5751,16 @@ textarea:focus-visible,
   line-height: 1.4;
 }
 
+.plugin-manager-notice {
+  margin: var(--cd-space-5) var(--cd-space-6) 0;
+  padding: var(--cd-space-4);
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-panel);
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
 .plugin-manager-list {
   display: flex;
   flex-direction: column;
@@ -5818,6 +5841,12 @@ textarea:focus-visible,
   line-height: 1.4;
 }
 
+.plugin-manager-package-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cd-space-3);
+}
+
 /* Installed plugins (M36): badge, per-row actions, and the pre-install disclosure. */
 .plugin-manager-badge {
   margin-left: var(--cd-space-3);
@@ -5828,6 +5857,19 @@ textarea:focus-visible,
   font-size: 10px;
   font-weight: 500;
   vertical-align: middle;
+}
+
+.plugin-manager-badge.is-update {
+  border-color: var(--cd-accent);
+  color: var(--cd-accent-strong);
+}
+
+.plugin-manager-update-status {
+  font-size: 11px;
+}
+
+.plugin-manager-update-status.is-error {
+  color: var(--cd-danger-strong);
 }
 
 .plugin-manager-actions {
@@ -5862,6 +5904,17 @@ textarea:focus-visible,
   background: var(--cd-bg-panel);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
+}
+
+.plugin-manager-update-version,
+.plugin-manager-integrity-note {
+  color: var(--cd-text-secondary);
+  line-height: 1.4;
+}
+
+.plugin-manager-integrity-note {
+  margin-bottom: 0;
+  font-size: 11px;
 }
 
 .plugin-manager-permission.is-dangerous {

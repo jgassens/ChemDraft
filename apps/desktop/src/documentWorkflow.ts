@@ -48,6 +48,8 @@ import {
   stylePresetToObjectStyle,
   textStyleToObjectStyle,
   type Anchor,
+  type ArrowObject,
+  type BracketObject,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -266,7 +268,11 @@ export type NativeArtToolId =
   | "arc120"
   | "arc120Dashed"
   | "arc90"
-  | "arc90Dashed";
+  | "arc90Dashed"
+  | "lobe"
+  | "shadedLobe"
+  | "pOrbital"
+  | "sOrbital";
 
 export interface NativeArtToolDefinition {
   id: NativeArtToolId;
@@ -386,7 +392,40 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artArcTool("arc120", "One-third Arc", 120, false),
   artArcTool("arc120Dashed", "Dashed One-third Arc", 120, true),
   artArcTool("arc90", "Quarter Arc", 90, false),
-  artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true)
+  artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true),
+  // Orbital tools keep their chemistry command ids (tool.lobe, …) but ride the art pipeline:
+  // parametric closed paths get pointer placement, transform chrome, and SVG export for free.
+  artShapeTool("lobe", "Orbital Lobe", "path", 40, 60, {
+    artPathKind: "bezier",
+    pathClosed: true,
+    // Closed bezier fills need >= 3 nodes (art-engine pathKindSupportsClosedFill): tip plus two
+    // upper bulb nodes.
+    pathNodes: [
+      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
+    ]
+  }, artOutlineStyle, "tool.lobe"),
+  artShapeTool("shadedLobe", "Shaded Orbital Lobe", "path", 40, 60, {
+    artPathKind: "bezier",
+    pathClosed: true,
+    pathNodes: [
+      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
+    ]
+  }, artGlossStyle, "tool.shadedLobe"),
+  artShapeTool("pOrbital", "p Orbital", "path", 40, 88, {
+    artPathKind: "bezier",
+    pathClosed: true,
+    pathNodes: [
+      { point: { x: 20, y: 44 }, inControl: { x: 6, y: 54 }, outControl: { x: 6, y: 34 } },
+      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 16 }, outControl: { x: 38, y: 16 } },
+      { point: { x: 20, y: 44 }, inControl: { x: 34, y: 34 }, outControl: { x: 34, y: 54 } },
+      { point: { x: 20, y: 84 }, inControl: { x: 38, y: 72 }, outControl: { x: 2, y: 72 } }
+    ]
+  }, artOutlineStyle, "tool.pOrbital"),
+  artShapeTool("sOrbital", "s Orbital", "ellipse", 48, 48, {}, artGlossStyle, "tool.sOrbital")
 ];
 
 const nativeArtToolByCommandId = new Map(nativeArtToolDefinitions.map((tool) => [tool.commandId, tool]));
@@ -398,11 +437,12 @@ function artShapeTool(
   width: number,
   height: number,
   data: GraphicObjectData,
-  style: GraphicObjectStyle
+  style: GraphicObjectStyle,
+  commandId: string = `tool.art.${id}`
 ): NativeArtToolDefinition {
   return {
     id,
-    commandId: `tool.art.${id}`,
+    commandId,
     title,
     graphicKind,
     width,
@@ -908,6 +948,196 @@ export function insertNativeSingleBondMolecule(
 ): ChemDraftDocument {
   const page = firstPage(document);
   const object = createNativeSingleBondMolecule(document, point, options);
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+export interface NativeChainAnchor {
+  objectId: string;
+  atomId: string;
+}
+
+export interface NativeChainToolOptions {
+  /**
+   * Skip the chemistry derivation for a frame the user is still dragging.
+   *
+   * SMILES and the chemistry metadata are derived from the *whole* molecule, so re-deriving them on
+   * every pointermove makes a drag quadratic in the size of the molecule being extended — a chain
+   * pulled off a 300-atom structure re-walks all 300 atoms per frame. Nothing on screen reads those
+   * fields; the renderer draws atoms and bonds. The commit at the end of the gesture runs without
+   * this flag and derives once, so what lands in the document is always fully derived.
+   */
+  preview?: boolean;
+}
+
+/** Backstop for a drag with no page bounds; a full-page chain is far shorter than this. */
+const maxNativeChainSegments = 200;
+
+/** Zig-zag chain vertex plan. The press point is the first vertex; the drag vector sets the chain
+ *  axis, and segment count comes from the drag length divided by the per-segment reach
+ *  (bondLength × cos of the half zig-zag angle). No drag (or a sub-threshold drag) yields one
+ *  segment. Segment directions alternate ±(180 − chainAngleDegrees)/2 about the axis so consecutive
+ *  bonds meet at the style's chain angle. */
+export function planNativeChainVertices(input: {
+  start: PagePoint;
+  dragPoint?: PagePoint;
+  bondLengthPx: number;
+  chainAngleDegrees: number;
+  /** When given, the walk stops rather than stepping off the page. */
+  pageBounds?: { width: number; height: number };
+}): PagePoint[] {
+  const segmentLength = Math.max(8, input.bondLengthPx);
+  const halfRadians = degreesToRadians((180 - clamp(input.chainAngleDegrees, 1, 179)) / 2);
+  const reachPerSegment = segmentLength * Math.cos(halfRadians);
+  const dx = (input.dragPoint?.x ?? input.start.x + reachPerSegment) - input.start.x;
+  const dy = (input.dragPoint?.y ?? input.start.y) - input.start.y;
+  const dragLength = Math.hypot(dx, dy);
+  const axisAngle = dragLength < 1e-6 ? 0 : Math.atan2(dy, dx);
+  const segmentCount = !input.dragPoint || dragLength < reachPerSegment * 0.75
+    ? 1
+    : Math.min(maxNativeChainSegments, Math.max(1, Math.round(dragLength / reachPerSegment)));
+
+  const bounds = input.pageBounds;
+  const inBounds = (point: PagePoint): boolean =>
+    !bounds || (point.x >= 0 && point.y >= 0 && point.x <= bounds.width && point.y <= bounds.height);
+  const step = (from: PagePoint, angle: number): PagePoint => ({
+    x: from.x + Math.cos(angle) * segmentLength,
+    y: from.y + Math.sin(angle) * segmentLength
+  });
+
+  // The zig-zag's first step is conventionally the "up" one. Near a page edge that single choice can
+  // be the only thing out of bounds — a chain started just below the top margin would stop dead at
+  // one vertex, which is a lone bond-less carbon rather than a chain. Start on whichever side fits.
+  let phase = -1;
+  if (!inBounds(step(input.start, axisAngle - halfRadians)) && inBounds(step(input.start, axisAngle + halfRadians))) {
+    phase = 1;
+  }
+
+  const vertices: PagePoint[] = [{ x: input.start.x, y: input.start.y }];
+  for (let index = 1; index <= segmentCount; index += 1) {
+    const previous = vertices[index - 1];
+    const next = step(previous, axisAngle + (index % 2 === 1 ? phase : -phase) * halfRadians);
+    // Pointer capture keeps delivering moves well past the page edge; atoms placed out there are
+    // unreachable and unprintable, so the chain simply stops at the boundary.
+    if (!inBounds(next)) {
+      break;
+    }
+    vertices.push(next);
+  }
+  return vertices;
+}
+
+/** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
+ *  appends carbons to that molecule using the molecule's own bond length and chain angle;
+ *  otherwise it seeds a new native molecule from the synthetic preset. Pure — the caller previews
+ *  with replacePresentDocument and commits once. */
+export function applyNativeChainTool(
+  document: ChemDraftDocument,
+  startPoint: PagePoint,
+  dragPoint?: PagePoint,
+  anchor?: NativeChainAnchor,
+  options: NativeChainToolOptions = {}
+): ChemDraftDocument {
+  const page = firstPage(document);
+
+  if (anchor) {
+    const molecule = page.objects.find((object): object is MoleculeObject =>
+      object.id === anchor.objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
+    );
+    const sourceAtom = molecule?.atoms.find((atom) => atom.id === anchor.atomId);
+    if (!molecule || !sourceAtom) {
+      return document;
+    }
+
+    const style = nativeDrawingStyleFromObjectStyle(molecule.style);
+    const vertices = planNativeChainVertices({
+      start: { x: sourceAtom.x, y: sourceAtom.y },
+      dragPoint,
+      bondLengthPx: style.bondLengthPx,
+      chainAngleDegrees: style.chainAngleDegrees,
+      pageBounds: { width: page.width, height: page.height }
+    });
+
+    const current = appendNativeCarbonVertices(molecule, sourceAtom.id, vertices.slice(1), options.preview);
+    if (!current) {
+      return document;
+    }
+
+    return applyPatches(
+      document,
+      [
+        { op: "updateObject", objectId: molecule.id, changes: current },
+        { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+      ],
+      { now: phase4Timestamp }
+    );
+  }
+
+  const presetStyle = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(ChemDraftSyntheticStylePreset));
+  const start = {
+    x: clamp(startPoint.x, 0, page.width),
+    y: clamp(startPoint.y, 0, page.height)
+  };
+  const vertices = planNativeChainVertices({
+    start,
+    dragPoint,
+    bondLengthPx: presetStyle.bondLengthPx,
+    chainAngleDegrees: presetStyle.chainAngleDegrees,
+    pageBounds: { width: page.width, height: page.height }
+  });
+  if (vertices.length < 2) {
+    // Every direction out of the press point left the page. A single vertex is not a chain — it is a
+    // bond-less carbon the user never asked for, and one they would have to hunt down to delete.
+    return document;
+  }
+  const atoms = vertices.map((vertex, index) => ({
+    id: `atom_${String(index + 1).padStart(3, "0")}`,
+    element: "C",
+    x: vertex.x,
+    y: vertex.y,
+    formalCharge: 0
+  } satisfies MoleculeAtom));
+  const bonds = atoms.slice(1).map((atom, index) => ({
+    id: `bond_${String(index + 1).padStart(3, "0")}`,
+    fromAtomId: atoms[index].id,
+    toAtomId: atom.id,
+    order: "single" as const
+  } satisfies MoleculeBond));
+  const geometry = moleculeGeometryFromAtoms(atoms);
+  const object = normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, "mol_chain"),
+    type: "molecule",
+    x: geometry.x,
+    y: geometry.y,
+    width: geometry.width,
+    height: geometry.height,
+    rotation: 0,
+    transform: defaultNativeMoleculeTransform,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "chemdraft-native-drawing",
+      drawingPrimitive: "chain"
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    structureFormat: "smiles",
+    structure: nativeSingleBondGraphSmiles(atoms, bonds),
+    chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
+    atoms,
+    bonds,
+    superatoms: [],
+    rGroups: []
+  });
 
   return applyPatches(
     document,
@@ -3333,6 +3563,343 @@ export function insertNativeTextObject(
       { op: "setSelection", pageId: page.id, objectIds: [object.id] }
     ],
     { now: phase4Timestamp }
+  );
+}
+
+const bracketKindByToolCommandId: ReadonlyMap<string, BracketObject["bracketKind"]> = new Map([
+  ["tool.bracket", "curly"],
+  ["tool.squareBracket", "square"]
+]);
+
+export function bracketKindForToolCommand(commandId: string): BracketObject["bracketKind"] | undefined {
+  return bracketKindByToolCommandId.get(commandId);
+}
+
+export const nativeBracketDefaultSize = { width: 16, height: 64 } as const;
+
+/** Click placement: a default-size bracket centered on the click point, clamped to the page. */
+export function insertNativeBracket(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  bracketKind: BracketObject["bracketKind"]
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const { width, height } = nativeBracketDefaultSize;
+  const object: BracketObject = {
+    id: nextObjectId(document, "bracket"),
+    type: "bracket",
+    x: clamp(point.x - width / 2, 0, Math.max(0, page.width - width)),
+    y: clamp(point.y - height / 2, 0, Math.max(0, page.height - height)),
+    width,
+    height,
+    rotation: 0,
+    style: {},
+    bracketKind,
+    containedObjectIds: [],
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    }
+  };
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+const reactionArrowKindByToolCommandId: ReadonlyMap<string, ArrowObject["arrowKind"]> = new Map([
+  ["tool.reactionArrow", "forward"],
+  ["tool.resonanceArrow", "resonance"],
+  ["tool.equilibriumArrow", "equilibrium"],
+  ["tool.retroArrow", "retrosynthesis"]
+]);
+
+export function reactionArrowKindForToolCommand(commandId: string): ArrowObject["arrowKind"] | undefined {
+  return reactionArrowKindByToolCommandId.get(commandId);
+}
+
+export const nativeReactionArrowDefaultLengthPx = 120;
+/** Cross-axis minimum for an arrow's frame. The widest glyph (equilibrium) reaches 7.5 px either
+ *  side of the shaft, so a 24 px box keeps heads, transform handles, and align/marquee bounds
+ *  around the drawing even when the arrow is axis-aligned. */
+const nativeReactionArrowMinExtentPx = 24;
+const nativeReactionArrowMinLengthPx = 8;
+
+export function createNativeReactionArrow(
+  document: ChemDraftDocument,
+  startPoint: PagePoint,
+  endPoint: PagePoint,
+  arrowKind: ArrowObject["arrowKind"]
+): ArrowObject {
+  const minX = Math.min(startPoint.x, endPoint.x);
+  const maxX = Math.max(startPoint.x, endPoint.x);
+  const minY = Math.min(startPoint.y, endPoint.y);
+  const maxY = Math.max(startPoint.y, endPoint.y);
+  const width = Math.max(maxX - minX, nativeReactionArrowMinExtentPx);
+  const height = Math.max(maxY - minY, nativeReactionArrowMinExtentPx);
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+
+  return {
+    id: nextObjectId(document, "arrow"),
+    type: "reaction-arrow",
+    x: midX - width / 2,
+    y: midY - height / 2,
+    width,
+    height,
+    rotation: 0,
+    style: {},
+    arrowKind,
+    start: { kind: "point", point: { x: startPoint.x, y: startPoint.y } },
+    end: { kind: "point", point: { x: endPoint.x, y: endPoint.y } },
+    labels: [],
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    }
+  };
+}
+
+export function insertNativeReactionArrow(
+  document: ChemDraftDocument,
+  startPoint: PagePoint,
+  endPoint: PagePoint,
+  arrowKind: ArrowObject["arrowKind"]
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeReactionArrow(document, startPoint, endPoint, arrowKind);
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/** Click placement: a default-length horizontal arrow starting at the click point, clamped to the
+ *  page so the whole arrow stays visible. */
+export function applyReactionArrowToolAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  arrowKind: ArrowObject["arrowKind"]
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const startX = clamp(point.x, 0, Math.max(0, page.width - nativeReactionArrowDefaultLengthPx));
+  const y = clamp(point.y, nativeReactionArrowMinExtentPx / 2, Math.max(nativeReactionArrowMinExtentPx / 2, page.height - nativeReactionArrowMinExtentPx / 2));
+
+  return insertNativeReactionArrow(
+    document,
+    { x: startX, y },
+    { x: startX + nativeReactionArrowDefaultLengthPx, y },
+    arrowKind
+  );
+}
+
+/** Drag placement: keep the press point as the tail and stretch the head to the pointer. Below the
+ *  minimum drag length the default click arrow is kept unchanged. */
+export function stretchNativeReactionArrowTo(
+  document: ChemDraftDocument,
+  objectId: string,
+  startPoint: PagePoint,
+  endPoint: PagePoint
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (object?.type !== "reaction-arrow") {
+    return document;
+  }
+  if (Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y) < nativeReactionArrowMinLengthPx) {
+    return document;
+  }
+
+  const replacement = createNativeReactionArrow(document, startPoint, endPoint, object.arrowKind);
+  return applyPatches(
+    document,
+    [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        x: replacement.x,
+        y: replacement.y,
+        width: replacement.width,
+        height: replacement.height,
+        start: replacement.start,
+        end: replacement.end
+      }
+    }],
+    { now: phase4Timestamp }
+  );
+}
+
+/** Chemical-formula span formatting: digit runs that follow an element letter or closing
+ *  parenthesis become subscripts, and a trailing charge (optional digits plus +, -, or −) becomes a
+ *  superscript. Everything else stays a normal span. */
+/**
+ * A run of element symbols, groupings, and counts — what a trailing sign must follow to be a charge
+ * at all. "trans-", "Boc-", and "tert-" fail this and keep their hyphen.
+ *
+ * Written so that at most one alternative can match at any position: a digit is consumed only by a
+ * `\d*` suffix, never by an alternative of its own. The earlier spelling offered both
+ * `[A-Z][a-z]?\d*` and a standalone `\d+`, so a long digit run had 2^(n-1) parses and a
+ * non-matching tail sent the engine through all of them — a pasted label of ~30 digits froze the
+ * app. Same language, linear time.
+ */
+const formulaBodyPattern = /^\d*(?:(?:[A-Z][a-z]?|[()[\]·])\d*)*$/;
+const singleElementPattern = /^[A-Z][a-z]?$/;
+
+/**
+ * Index where a trailing charge begins, or `text.length` when there is none.
+ *
+ * The hard case is that a digit before the sign can be either a charge magnitude or an atom count,
+ * and the two are spelled identically: in "Ca2+" the 2 is the charge, in "NH4+" the 4 is a count.
+ * Two or more digits always split (the last is the magnitude, as in "SO42-"); a single digit is
+ * read as the magnitude only when the body is one element symbol, which is what separates the
+ * metal cations from the polyatomic ions.
+ */
+function formulaChargeStart(text: string): number {
+  const match = /(\d*)([+\-±−])$/.exec(text);
+  if (!match) {
+    return text.length;
+  }
+
+  const signIndex = text.length - 1;
+  const digits = match[1];
+  const body = text.slice(0, text.length - match[0].length);
+  // The pattern below accepts the empty string; a bare sign is not a charged formula.
+  if (body.length === 0 || !formulaBodyPattern.test(body)) {
+    return text.length;
+  }
+  if (digits.length === 0) {
+    return signIndex;
+  }
+  if (digits.length >= 2) {
+    return signIndex - 1;
+  }
+  return singleElementPattern.test(body) ? signIndex - 1 : signIndex;
+}
+
+/** Per-character source styles, so reformatting keeps colour, font, and weight. */
+function formulaCharacterStyles(
+  text: string,
+  sourceSpans: readonly TextSpan[]
+): Array<TextSpan["style"] | undefined> {
+  const styles: Array<TextSpan["style"] | undefined> = [];
+  for (const span of sourceSpans) {
+    for (let index = 0; index < span.text.length; index += 1) {
+      styles.push(span.style);
+    }
+  }
+  while (styles.length < text.length) {
+    styles.push(styles[styles.length - 1]);
+  }
+  return styles;
+}
+
+export function formulaSpansFromText(text: string, sourceSpans: readonly TextSpan[] = []): TextSpan[] {
+  if (text.length === 0) {
+    return [{ text: "", script: "normal", style: {} }];
+  }
+
+  const styles = formulaCharacterStyles(text, sourceSpans);
+  const runs: Array<{ text: string; script: TextSpan["script"]; style: TextSpan["style"] | undefined }> = [];
+  const pushRun = (runText: string, script: TextSpan["script"], at: number) => {
+    if (runText.length === 0) {
+      return;
+    }
+    const style = styles[at];
+    const previous = runs[runs.length - 1];
+    // Styles come from the source spans, so identical styling is the same object reference.
+    if (previous && previous.script === script && previous.style === style) {
+      previous.text += runText;
+      return;
+    }
+    runs.push({ text: runText, script, style });
+  };
+
+  const chargeStart = formulaChargeStart(text);
+  let index = 0;
+  while (index < chargeStart) {
+    const character = text[index];
+    if (/\d/.test(character) && index > 0 && /[A-Za-z)\]]/.test(text[index - 1])) {
+      let end = index;
+      while (end < chargeStart && /\d/.test(text[end])) {
+        end += 1;
+      }
+      pushRun(text.slice(index, end), "subscript", index);
+      index = end;
+      continue;
+    }
+    pushRun(character, "normal", index);
+    index += 1;
+  }
+  if (chargeStart < text.length) {
+    pushRun(text.slice(chargeStart), "superscript", chargeStart);
+  }
+
+  return runs.map((run) => ({ text: run.text, script: run.script, style: { ...(run.style ?? {}) } }));
+}
+
+/** One-shot formula formatting over the selected text objects; returns the same document when the
+ *  selection holds no text objects or nothing would change. */
+export function applyFormulaTextFormatting(document: ChemDraftDocument): ChemDraftDocument {
+  const page = firstPage(document);
+  const selectedIds = new Set(document.selection.objectIds);
+  const patches: DocumentPatch[] = [];
+  for (const object of page.objects) {
+    if (object.type !== "text" || !selectedIds.has(object.id)) {
+      continue;
+    }
+    const spans = formulaSpansFromText(object.text, object.spans);
+    if (JSON.stringify(spans) === JSON.stringify(object.spans)) {
+      continue;
+    }
+    patches.push({ op: "updateObject", objectId: object.id, changes: { spans } });
+  }
+  if (patches.length === 0) {
+    return document;
+  }
+  return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+const symbolGlyphByToolCommandId: ReadonlyMap<string, string> = new Map([
+  ["tool.dagger", "‡"],
+  ["tool.symbol", "°"],
+  ["tool.symbol.degree", "°"],
+  ["tool.symbol.plusMinus", "±"],
+  ["tool.symbol.angstrom", "Å"],
+  ["tool.symbol.delta", "Δ"],
+  ["tool.symbol.centerDot", "·"],
+  ["tool.symbol.prime", "′"]
+]);
+
+export function symbolGlyphForToolCommand(commandId: string): string | undefined {
+  return symbolGlyphByToolCommandId.get(commandId);
+}
+
+/** Stamp a single symbol glyph as a normal text object. One call per click, one history entry. */
+export function insertNativeSymbolGlyph(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  glyph: string,
+  style: Partial<NativeTextStyle> = {}
+): ChemDraftDocument {
+  // A stamp lands centred on the click, the way brackets and art shapes do. Plain text keeps the
+  // click as its top-left instead, because that is where its caret starts.
+  const size = nativeTextObjectSizeForText(glyph, textStyleToObjectStyle(style));
+  return insertNativeTextObject(
+    document,
+    { x: point.x - size.width / 2, y: point.y - size.height / 2 },
+    glyph,
+    style
   );
 }
 
@@ -10186,6 +10753,12 @@ function offsetAnchorPoint(anchor: Anchor, dx: number, dy: number): Anchor {
     : anchor;
 }
 
+function mapAnchorPoint(anchor: Anchor, map: (point: PagePoint) => PagePoint): Anchor {
+  return anchor.kind === "point" && anchor.point
+    ? { ...anchor, point: map(anchor.point) }
+    : anchor;
+}
+
 // Fully validate (and normalize) a clipboard object against the document schema. Shallow base-field
 // checks let objects with missing type-specific fields through, which then throw later at applyPatch
 // instead of being rejected so paste can fall back safely.
@@ -10289,6 +10862,29 @@ function transformOtherObjectAroundPoint(
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
+  }
+  // Arrow endpoints are absolute page points, so scaling only the frame would leave the drawn arrow
+  // at its original size inside a resized box.
+  //
+  // Rotation is deliberately *not* baked into these points. Both renderers draw the arrow at its
+  // absolute anchors inside a group carrying `rotationTransform(object)`, so `changes.rotation`
+  // below already turns it; rotating the anchors too would apply the angle twice and swing the arrow
+  // off its frame. Scaling from the old centre and re-attaching at the new one is exactly what
+  // `resizeGraphicObjectDataForFrame` does for graphics, and composes to the same result the caller
+  // asked for: rotating the frame about `center` carries the offsets along with it.
+  if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
+    const mapPoint = (point: PagePoint): PagePoint => ({
+      x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+      y: newCenter.y + (point.y - oldCenter.y) * scaleY
+    });
+    if (object.type === "reaction-arrow") {
+      changes.start = mapAnchorPoint(object.start, mapPoint);
+      changes.end = mapAnchorPoint(object.end, mapPoint);
+    } else {
+      changes.source = mapAnchorPoint(object.source, mapPoint);
+      changes.target = mapAnchorPoint(object.target, mapPoint);
+      changes.controlPoints = object.controlPoints.map(mapPoint);
+    }
   }
 
   return applyPatch(
@@ -10439,14 +11035,21 @@ function flipOtherObjectAroundPoint(
   const newCenter = flipPointAroundAxis(oldCenter, center, axis);
   const scaleX = axis === "horizontal" ? -1 : 1;
   const scaleY = axis === "vertical" ? -1 : 1;
+  const mirrorsOwnGeometry =
+    object.type === "graphic" || object.type === "reaction-arrow" || object.type === "mechanism-arrow";
   const changes: Record<string, unknown> = {
     x: newCenter.x - object.width / 2,
     y: newCenter.y - object.height / 2,
     width: object.width,
     height: object.height,
+    // An object with no mirrorable interior can only fake a horizontal flip as "rotate 180 after a
+    // vertical one". Objects that mirror their own geometry below need no such trick: negating the
+    // angle is the exact rotation of the mirrored shape, for either axis.
     rotation: object.type === "graphic"
       ? object.rotation
-      : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
+      : mirrorsOwnGeometry
+        ? normalizeDegrees(-object.rotation)
+        : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
   };
 
   if (object.type === "electron-mark" && object.markKind === "charge") {
@@ -10455,6 +11058,24 @@ function flipOtherObjectAroundPoint(
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
     changes.style = flipGraphicObjectGradientStyle(object.style, axis);
+  }
+  // Arrow endpoints are absolute page points. Moving only the frame mirrors the box and leaves the
+  // arrow inside it pointing the way it always did — so a flipped reaction scheme kept its original
+  // direction. Mirror the anchors about the object's own centre and re-attach them at the new one;
+  // the renderer's rotation transform (negated above) carries the rest.
+  if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
+    const mapPoint = (point: PagePoint): PagePoint => ({
+      x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+      y: newCenter.y + (point.y - oldCenter.y) * scaleY
+    });
+    if (object.type === "reaction-arrow") {
+      changes.start = mapAnchorPoint(object.start, mapPoint);
+      changes.end = mapAnchorPoint(object.end, mapPoint);
+    } else {
+      changes.source = mapAnchorPoint(object.source, mapPoint);
+      changes.target = mapAnchorPoint(object.target, mapPoint);
+      changes.controlPoints = object.controlPoints.map(mapPoint);
+    }
   }
 
   return applyPatch(
@@ -12827,6 +13448,60 @@ function extendNativeCarbonGraph(
   return refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
+/**
+ * Append a run of carbons in one pass.
+ *
+ * Calling {@link extendNativeCarbonGraph} per vertex would re-derive the molecule's SMILES and
+ * chemistry metadata for every atom, making a drag quadratic in chain length. The graph is grown in
+ * plain arrays and refreshed once at the end instead.
+ */
+function appendNativeCarbonVertices(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  vertices: readonly PagePoint[],
+  preview = false
+): MoleculeObject | undefined {
+  // Allocated up front. `nextIndexedId` rescans every existing id, so calling it per vertex is
+  // quadratic in the molecule being extended — the same cost the batched refresh below avoids.
+  const atomIds = nextIndexedIds("atom", molecule.atoms.map((atom) => atom.id), vertices.length);
+  const bondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), vertices.length);
+  const atoms = [...molecule.atoms];
+  const bonds = [...molecule.bonds];
+  let attachAtomId = sourceAtomId;
+  let added = 0;
+
+  for (const vertex of vertices) {
+    // Valence is checked against the graph as grown so far, not the original molecule.
+    if (!canGrowNativeAtom({ ...molecule, atoms, bonds }, attachAtomId)) {
+      break;
+    }
+    const newAtom: MoleculeAtom = {
+      id: atomIds[added],
+      element: "C",
+      x: vertex.x,
+      y: vertex.y,
+      formalCharge: 0
+    };
+    atoms.push(newAtom);
+    bonds.push({
+      id: bondIds[added],
+      fromAtomId: attachAtomId,
+      toAtomId: newAtom.id,
+      order: "single" as const,
+      ...nativeBondDisplayObject(undefined)
+    });
+    attachAtomId = newAtom.id;
+    added += 1;
+  }
+
+  if (added === 0) {
+    return undefined;
+  }
+  return preview
+    ? normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds })
+    : refreshNativeSingleBondGraph(molecule, atoms, bonds);
+}
+
 function addNativeCarbonylToAtom(
   molecule: MoleculeObject,
   sourceAtomId: string,
@@ -13270,6 +13945,10 @@ function refreshNativeSingleBondGraph(
 ): MoleculeObject {
   return normalizeNativeMoleculeGeometry({
     ...molecule,
+    // `structure` is re-derived as SMILES here, so the format must say so. Leaving an imported
+    // molfile format in place would hand SMILES text to a molfile parser — the plugin selection
+    // snapshot and the Ketcher adapter both choose their parser from this field.
+    structureFormat: "smiles",
     structure: nativeSingleBondGraphSmiles(atoms, bonds),
     chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
     atoms: [...atoms],

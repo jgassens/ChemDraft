@@ -49,10 +49,16 @@ The schema-backed toolbar button rules that must keep holding:
 - items with no enabled primary command and no enabled submenu commands must be disabled;
 - inline schema submenus need owner/menu/menuitem ARIA coverage;
 - native palette flyout transport must remain unchanged;
-- generated toolbar command specs must not invent generic tooltip descriptions.
+- generated toolbar command specs must not invent generic tooltip descriptions;
+- shipped toolsets must not contain permanently disabled placeholder buttons: a visible button is
+  either backed by live behavior or removed from the manifest until its feature slice lands;
+- `disabledReason` is reserved for transient, state-dependent unavailability (selection-dependent
+  commands and similar), and such commands must always carry a reason;
+- the customize gallery must exclude permanently stubbed commands.
 
 Do not change command IDs, chemistry behavior, inspector behavior, package dependencies, or app
-build identity unless a test or build process forces a narrow, explained fix.
+build identity unless a test or build process forces a narrow, explained fix, or the active
+PLANS.md slice explicitly documents the command's retirement or introduction.
 
 ## Reuse Existing Systems
 
@@ -639,7 +645,7 @@ Built-in tools and plugin tools should use the same command system whenever prac
 
 Visible menu, quick-action toolbar, floating/dockable palette, keyboard shortcut, command-palette, and plugin menu/toolbar/panel actions must be backed by command definitions where practical.
 
-Do not wire major behavior only through button-local handlers. Placeholder tools may exist as disabled command definitions, but they must not pretend to perform chemistry.
+Do not wire major behavior only through button-local handlers. Disabled command definitions exist only for transient, state-dependent unavailability and must carry a reason; tools whose features are unimplemented are removed from shipped toolsets and the command catalog until their slice lands (see the Toolbar Button Contract).
 
 Examples of commands:
 
@@ -653,7 +659,6 @@ export.pdf
 export.rxn
 clipboard.copy
 clipboard.paste
-style.importStyleSheet
 style.applyPreset
 style.setDefaultPreset
 style.managePresets
@@ -910,14 +915,26 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 If hit-testing, pointer behavior, or the agent bridge changes, also run the relevant DOM/agent bridge/drawing-tool suites.
 
-Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring selection after tab switching/closing.
+Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
+scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
+hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
+selection after tab switching/closing.
+
+Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
+kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both
+bracket kinds placed and resized, dagger and submenu symbol stamps, atom labels through `tool.atom`,
+chains dragged off an existing atom and off empty canvas including against a page edge, formula text
+applied to a typed formula, one undo entry per gesture, and SVG export parity with the canvas for
+arrows, brackets, and orbitals.
+
+This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
+replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
 ## Closeout Requirements
 
 At implementation closeout:
 
-- Update the build stamp in this file.
-- Update the `Build` string in `apps/desktop/src/MainWindow.tsx`.
+- Update the build stamp (`CURRENT_BUILD_STAMP`) in `apps/desktop/src/MainWindow.tsx`.
 - Launch the new build through `./run-app` or `./run-app --dev` from this worktree before claiming live verification.
 - Close or stop other running ChemDraft instances from this checkout or the same build history before launch verification.
 - Report tests run and any skipped verification.

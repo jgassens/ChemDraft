@@ -28,9 +28,40 @@ export const INSTALLED_PLUGINS_DIR = "installed-plugins";
  */
 export const INSTALLED_PLUGINS_RECORD_FILE = "installed-plugins.json";
 
+/** Host-owned namespace for immutable, checksum-addressed replacement packages. */
+const INSTALLED_PLUGIN_UPDATE_DIR = "packages";
+
+/** Parent of every checksum-addressed package directory, and the only sweepable subtree. */
+export function installedPluginPackagesRoot(): string {
+  return `${INSTALLED_PLUGINS_DIR}/${INSTALLED_PLUGIN_UPDATE_DIR}`;
+}
+
 /** App-data-relative directory holding one plugin's staged package. */
 export function installedPluginStagingDir(pluginId: string): string {
+  if (
+    pluginId.length === 0 ||
+    pluginId === "." ||
+    pluginId === ".." ||
+    pluginId.toLowerCase() === INSTALLED_PLUGIN_UPDATE_DIR ||
+    /[/\\\0]/.test(pluginId)
+  ) {
+    throw new Error(`Refusing unsafe installed-plugin id "${pluginId}" for a staging directory.`);
+  }
   return `${INSTALLED_PLUGINS_DIR}/${pluginId}`;
+}
+
+/**
+ * Immutable, content-addressed directory for a replacement package.
+ *
+ * The id is deliberately absent from this path: manifest ids are plugin-controlled strings, while
+ * the checksum has already been validated as lowercase SHA-256. Keeping an update at its final URL
+ * from the first worker handshake also means nested workers and data assets never observe a move.
+ */
+export function installedPluginUpdateStagingDir(sourceChecksum: string): string {
+  if (!/^[0-9a-f]{64}$/.test(sourceChecksum)) {
+    throw new Error("An installed plugin update path requires a lowercase SHA-256 checksum.");
+  }
+  return `${INSTALLED_PLUGINS_DIR}/${INSTALLED_PLUGIN_UPDATE_DIR}/${sourceChecksum}`;
 }
 
 /**
@@ -42,4 +73,36 @@ export function installedPluginStagingDir(pluginId: string): string {
  */
 export function installedPluginBaseUrl(pluginId: string, origin: string): string {
   return new URL(`${INSTALLED_PLUGINS_URL_PREFIX}${encodeURIComponent(pluginId)}/`, origin).toString();
+}
+
+/** Directory URL for an install record's exact immutable package path. */
+export function installedPluginStagedBaseUrl(stagedPath: string, origin: string): string {
+  const safePath = assertInstalledPluginStagedPath(stagedPath);
+  const segments = safePath.split("/");
+  const relative = segments.slice(1).map(encodeURIComponent).join("/");
+  return new URL(`${INSTALLED_PLUGINS_URL_PREFIX}${relative}/`, origin).toString();
+}
+
+/** Refuse a catalog path that is not a plain descendant of the installed-plugin root. */
+export function assertInstalledPluginStagedPath(stagedPath: string): string {
+  const segments = stagedPath.split("/");
+  const hasUnsafeSegment = segments
+    .slice(1)
+    .some((segment) => segment === "" || segment === "." || segment === ".." || /[\\\0]/.test(segment));
+  const isLegacyPluginPath =
+    segments.length === 2 &&
+    segments[1]!.toLowerCase() !== INSTALLED_PLUGIN_UPDATE_DIR;
+  const isChecksumAddressedUpdatePath =
+    segments.length === 3 &&
+    segments[1] === INSTALLED_PLUGIN_UPDATE_DIR &&
+    /^[0-9a-f]{64}$/.test(segments[2]!);
+
+  if (
+    segments[0] !== INSTALLED_PLUGINS_DIR ||
+    hasUnsafeSegment ||
+    (!isLegacyPluginPath && !isChecksumAddressedUpdatePath)
+  ) {
+    throw new Error(`Refusing unsafe installed-plugin staging path "${stagedPath}".`);
+  }
+  return stagedPath;
 }

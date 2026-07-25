@@ -90,6 +90,26 @@ describe("buildGallerySections", () => {
     cmd("mystery.command", "Mystery")
   ];
 
+  it("keeps the per-glyph symbol variants with the symbols they belong to", () => {
+    // The section rule used to anchor on `tool.symbol$`, dropping tool.symbol.degree and its
+    // siblings into the catch-all bucket.
+    const sections = buildGallerySections([
+      cmd("tool.symbol", "Symbol Tool Group"),
+      cmd("tool.symbol.degree", "Degree Symbol Tool"),
+      cmd("tool.symbol.plusMinus", "Plus-Minus Symbol Tool"),
+      cmd("tool.dagger", "Dagger Symbol Tool")
+    ], [], new Set(), "");
+    const symbols = sections.find((section) => section.id === "symbols");
+
+    expect(symbols?.entries.map((entry) => entry.commandId)).toEqual([
+      "tool.symbol",
+      "tool.symbol.degree",
+      "tool.symbol.plusMinus",
+      "tool.dagger"
+    ]);
+    expect(sections.some((section) => section.id === "other")).toBe(false);
+  });
+
   it("groups entries into themed sections in the declared order", () => {
     const sections = buildGallerySections(themed, widgets, new Set(), "");
     expect(sections.map((section) => section.id)).toEqual([

@@ -3,6 +3,7 @@ import {
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   type BondRef,
+  type BracketObject,
   type CrossingOverride,
   type DocumentObject,
   type DocumentPage,
@@ -1259,6 +1260,8 @@ function planDocumentObjectSvg(
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
       return reactionArrowFragment(object, layerIndex);
+    case "bracket":
+      return bracketObjectFragment(object, layerIndex);
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
     case "group":
@@ -3808,30 +3811,36 @@ export function planNativeArtVisual(
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
-  const arrowHead = object.arrowKind === "forward" ? arrowHeadPolygonPoints(start, end) : undefined;
+  const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     transform: rotationTransform(object)
   }), [
-    elementFragment("line", `reaction-arrow-line-${object.id}`, {
-      class: "reaction-arrow-line",
-      "data-arrow-kind": object.arrowKind,
-      x1: start.x,
-      y1: start.y,
-      x2: end.x,
-      y2: end.y,
-      stroke: "#172026",
-      "stroke-width": 1.5,
-      "stroke-linecap": "round"
-    }),
-    ...(arrowHead ? [
-      elementFragment("polygon", `reaction-arrow-head-${object.id}`, {
+    ...geometry.lines.map((line, index) =>
+      elementFragment("line", `reaction-arrow-line-${object.id}-${index}`, {
+        class: "reaction-arrow-line",
+        "data-arrow-kind": object.arrowKind,
+        x1: line.start.x,
+        y1: line.start.y,
+        x2: line.end.x,
+        y2: line.end.y,
+        stroke: "#172026",
+        "stroke-width": 1.5,
+        "stroke-linecap": "round"
+      })
+    ),
+    ...geometry.heads.map((head, index) =>
+      elementFragment("polygon", `reaction-arrow-head-${object.id}-${index}`, {
         class: "reaction-arrow-head",
         "data-arrow-kind": object.arrowKind,
-        points: arrowHead,
-        fill: "#172026",
-        stroke: "none"
+        points: head.points
+          .map((point) => `${formatNumber(point.x)},${formatNumber(point.y)}`)
+          .join(" "),
+        fill: head.filled ? "#172026" : "none",
+        stroke: head.filled ? "none" : "#172026",
+        "stroke-width": head.filled ? undefined : 1.5,
+        "stroke-linejoin": head.filled ? undefined : "round"
       })
-    ] : [])
+    )
   ]);
 }
 
@@ -3846,27 +3855,136 @@ function arrowAnchorPointForObject(
   return fallback;
 }
 
-function arrowHeadPolygonPoints(start: LayoutPoint, end: LayoutPoint): string | undefined {
+/** Shared bracket glyph outline for the canvas renderer and SVG export, in object-local
+ *  coordinates. "round" is a single open curve, "curly" a brace with a center spur; "polymer" and
+ *  "unknown" fall back to the square outline. */
+export function bracketGlyphPathD(
+  kind: BracketObject["bracketKind"],
+  width: number,
+  height: number
+): string {
+  const right = Math.max(width - 1, 0);
+  const bottom = Math.max(height - 1, 0);
+  if (kind === "round") {
+    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
+  }
+  if (kind === "curly") {
+    return [
+      `M ${right} 0`,
+      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
+      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
+    ].join(" ");
+  }
+  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
+}
+
+function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
+  const width = Math.max(object.width, 1);
+  const height = Math.max(object.height, 1);
+  return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+    transform: rotationTransform(object)
+  }), [
+    elementFragment("path", `bracket-path-${object.id}`, {
+      class: "bracket-glyph-path",
+      "data-bracket-kind": object.bracketKind,
+      transform: `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      d: bracketGlyphPathD(object.bracketKind, width, height),
+      fill: "none",
+      stroke: "#172026",
+      "stroke-width": 1.5,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round"
+    })
+  ]);
+}
+
+export interface ReactionArrowGeometry {
+  lines: Array<{ start: LayoutPoint; end: LayoutPoint }>;
+  heads: Array<{ points: readonly LayoutPoint[]; filled: boolean }>;
+}
+
+const reactionArrowHeadLengthPx = 9;
+const reactionArrowHeadHalfWidthPx = 4.5;
+const equilibriumShaftOffsetPx = 3;
+const retroShaftOffsetPx = 2.5;
+
+/** Shared reaction-arrow geometry for the canvas renderer and SVG export: shaft lines plus head
+ *  polygons per arrow kind (forward filled head, resonance double head, equilibrium harpoon pair,
+ *  retrosynthesis parallel shafts with an open chevron). "unknown" stays a bare line so imported
+ *  arrows with unrecognized kinds do not invent a direction. */
+export function planReactionArrowGeometry(
+  arrowKind: ArrowObject["arrowKind"],
+  start: LayoutPoint,
+  end: LayoutPoint
+): ReactionArrowGeometry {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
   if (length === 0) {
-    return undefined;
+    return { lines: [{ start, end }], heads: [] };
   }
 
   const unit = { x: dx / length, y: dy / length };
   const normal = { x: -unit.y, y: unit.x };
-  const arrowLength = 9;
-  const arrowHalfWidth = 4.5;
-  const base = {
-    x: end.x - unit.x * arrowLength,
-    y: end.y - unit.y * arrowLength
+  const offsetPoint = (point: LayoutPoint, along: number, aside: number): LayoutPoint => ({
+    x: point.x + unit.x * along + normal.x * aside,
+    y: point.y + unit.y * along + normal.y * aside
+  });
+  const filledHead = (tip: LayoutPoint, direction: 1 | -1): ReactionArrowGeometry["heads"][number] => {
+    const base = offsetPoint(tip, -direction * reactionArrowHeadLengthPx, 0);
+    return {
+      points: [
+        tip,
+        offsetPoint(base, 0, reactionArrowHeadHalfWidthPx),
+        offsetPoint(base, 0, -reactionArrowHeadHalfWidthPx)
+      ],
+      filled: true
+    };
   };
-  return [
-    `${formatNumber(end.x)},${formatNumber(end.y)}`,
-    `${formatNumber(base.x + normal.x * arrowHalfWidth)},${formatNumber(base.y + normal.y * arrowHalfWidth)}`,
-    `${formatNumber(base.x - normal.x * arrowHalfWidth)},${formatNumber(base.y - normal.y * arrowHalfWidth)}`
-  ].join(" ");
+
+  if (arrowKind === "unknown") {
+    return { lines: [{ start, end }], heads: [] };
+  }
+
+  if (arrowKind === "resonance") {
+    return { lines: [{ start, end }], heads: [filledHead(end, 1), filledHead(start, -1)] };
+  }
+
+  if (arrowKind === "equilibrium") {
+    const topStart = offsetPoint(start, 0, -equilibriumShaftOffsetPx);
+    const topEnd = offsetPoint(end, 0, -equilibriumShaftOffsetPx);
+    const bottomStart = offsetPoint(start, 0, equilibriumShaftOffsetPx);
+    const bottomEnd = offsetPoint(end, 0, equilibriumShaftOffsetPx);
+    const topHarpoonBase = offsetPoint(topEnd, -reactionArrowHeadLengthPx, 0);
+    const bottomHarpoonBase = offsetPoint(bottomStart, reactionArrowHeadLengthPx, 0);
+    return {
+      lines: [
+        { start: topStart, end: topEnd },
+        { start: bottomStart, end: bottomEnd }
+      ],
+      heads: [
+        // Top shaft points toward `end` with its single wing away from the centerline; the bottom
+        // shaft mirrors it toward `start`.
+        { points: [topEnd, offsetPoint(topHarpoonBase, 0, -reactionArrowHeadHalfWidthPx), topHarpoonBase], filled: true },
+        { points: [bottomStart, offsetPoint(bottomHarpoonBase, 0, reactionArrowHeadHalfWidthPx), bottomHarpoonBase], filled: true }
+      ]
+    };
+  }
+
+  if (arrowKind === "retrosynthesis") {
+    const shaftEnd = -3;
+    return {
+      lines: [
+        { start: offsetPoint(start, 0, -retroShaftOffsetPx), end: offsetPoint(end, shaftEnd, -retroShaftOffsetPx) },
+        { start: offsetPoint(start, 0, retroShaftOffsetPx), end: offsetPoint(end, shaftEnd, retroShaftOffsetPx) },
+        { start: end, end: offsetPoint(end, -10, 7) },
+        { start: end, end: offsetPoint(end, -10, -7) }
+      ],
+      heads: []
+    };
+  }
+
+  return { lines: [{ start, end }], heads: [filledHead(end, 1)] };
 }
 
 function fallbackObjectFragmentWithWarning(

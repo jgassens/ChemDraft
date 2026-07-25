@@ -1,6 +1,6 @@
 import type { CommandSpec } from "./commands";
 
-export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "art";
+export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "bracket" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
 
 export interface DrawingToolDefinition {
@@ -34,7 +34,6 @@ export interface ToolActivationResult {
   status: string;
 }
 
-const EDITOR_ADAPTER_UNAVAILABLE = "Requires an active structure editor";
 const artShapeUsageHint = usageHint("click canvas", "select object to edit", "Esc exits");
 const artPathUsageHint = usageHint("click canvas", "drag handles after selecting", "Esc exits");
 
@@ -121,7 +120,7 @@ export const coreDrawingToolDefinitions = [
     category: "structure",
     icon: "chain",
     defaultShortcut: "C",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("press and drag on canvas or atom", "drag length sets the carbon count", "Esc exits")
   },
   {
     commandId: "tool.atom",
@@ -129,7 +128,7 @@ export const coreDrawingToolDefinitions = [
     kind: "atom",
     category: "structure",
     icon: "atom",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click atom to edit its label", "type an element symbol", "Esc exits")
   },
   {
     commandId: "tool.cyclopentane",
@@ -200,12 +199,92 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
   },
   {
+    commandId: "tool.bracket",
+    title: "Curly Bracket Tool",
+    kind: "bracket",
+    category: "annotation",
+    icon: "bracket",
+    usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
+  },
+  {
+    commandId: "tool.squareBracket",
+    title: "Square Bracket Tool",
+    kind: "bracket",
+    category: "annotation",
+    icon: "bracket",
+    usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
+  },
+  {
+    commandId: "tool.dagger",
+    title: "Dagger Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click canvas to stamp ‡", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol",
+    title: "Symbol Tool Group",
+    kind: "text",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click canvas to stamp °", "long-press button for other symbols", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.degree",
+    title: "Degree Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp °", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.plusMinus",
+    title: "Plus-Minus Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp ±", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.angstrom",
+    title: "Angstrom Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp Å", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.delta",
+    title: "Delta Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp Δ", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.centerDot",
+    title: "Center Dot Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp ·", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.prime",
+    title: "Prime Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp ′", "keep clicking to repeat", "Esc exits")
+  },
+  {
     commandId: "tool.reactionArrow",
     title: "Reaction Arrow",
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   {
     commandId: "tool.resonanceArrow",
@@ -213,7 +292,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   {
     commandId: "tool.equilibriumArrow",
@@ -221,7 +300,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   {
     commandId: "tool.retroArrow",
@@ -229,23 +308,7 @@ export const coreDrawingToolDefinitions = [
     kind: "arrow",
     category: "arrows",
     icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
-  },
-  {
-    commandId: "tool.mechanismArrow",
-    title: "Curved Mechanism Arrow",
-    kind: "arrow",
-    category: "arrows",
-    icon: "mechanism",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
-  },
-  {
-    commandId: "tool.arrows",
-    title: "Arrow Tool Group",
-    kind: "arrow",
-    category: "arrows",
-    icon: "export",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click or drag on canvas", "drag sets length and angle", "Esc exits")
   },
   ...artDrawingToolDefinitions()
 ] as const satisfies readonly DrawingToolDefinition[];
@@ -297,6 +360,46 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
     .map(drawingToolDefinitionToCommandSpec);
 
   return dedupeCommandSpecs([...commands, ...standaloneCommands]);
+}
+
+/** The declared set of tool ids that ship visibly in toolsets but still await their wiring slice
+ *  (PLANS.md, Toolbar Wiring and Honesty). Declaration is deliberate: stub-ness cannot be derived
+ *  from disabled state alone, because selection-dependent commands (layout.align*, boolean ops) are
+ *  also disabled-with-reason in the manifest yet have live behavior. The customize gallery excludes
+ *  these ids so a stub can never be dragged onto a real toolbar; each wiring slice shrinks this set
+ *  and it must reach empty at closeout. */
+export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([]);
+
+/**
+ * Style-preset suffixes: the same shape as its base tool, drawn with a canned style.
+ *
+ * These are what "compat-only variant" means. An *angle* variant like `tool.art.arc120` draws
+ * something the base tool cannot, and is a real tool that simply is not on a default toolbar.
+ */
+const artStylePresetSuffixes = ["Dashed", "Filled", "Gloss", "Shadow", "Bold"] as const;
+
+/**
+ * Whether an art command is a preset variant kept only for compatibility.
+ *
+ * The dashed/gloss/filled/shadow variants stay registered so older documents and plugins keep
+ * resolving them, but they are deliberately absent from every shipped toolbar — the same reasoning
+ * that retired `tool.shapeShadow`. Offering them in Customize would let a user put a supposedly
+ * retired tool back.
+ *
+ * `shippedCommandIds` must be the *shipped* manifest's ids, never a customized registry's: keyed off
+ * the user's own layout, "not currently on a toolbar" would hide every tool the moment it was
+ * removed, so Customize could not put it back. Absence from the manifest is not sufficient either —
+ * `tool.art.directEdit` and `tool.art.arc120` are live tools that ship on no default toolbar, and
+ * the earlier prefix-only rule swallowed both. A command must be a style preset *and* unshipped.
+ */
+export function isCompatOnlyArtVariantCommandId(
+  commandId: string,
+  shippedCommandIds: ReadonlySet<string>
+): boolean {
+  if (!commandId.startsWith("tool.art.") || shippedCommandIds.has(commandId)) {
+    return false;
+  }
+  return artStylePresetSuffixes.some((suffix) => commandId.endsWith(suffix));
 }
 
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
@@ -453,7 +556,11 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.arc120", "One-third Arc", "export", artPathUsageHint],
     ["tool.art.arc120Dashed", "Dashed One-third Arc", "export", artPathUsageHint],
     ["tool.art.arc90", "Quarter Arc", "export", artPathUsageHint],
-    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", artPathUsageHint]
+    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", artPathUsageHint],
+    ["tool.lobe", "Orbital Lobe", "atom", artShapeUsageHint],
+    ["tool.shadedLobe", "Shaded Orbital Lobe", "atom", artShapeUsageHint],
+    ["tool.pOrbital", "p Orbital", "atom", artShapeUsageHint],
+    ["tool.sOrbital", "s Orbital", "atom", artShapeUsageHint]
   ] as const;
 
   return tools.map(([commandId, title, icon, usageHint]) => ({

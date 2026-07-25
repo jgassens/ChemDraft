@@ -145,6 +145,7 @@ import {
   selectionInSelectionLasso,
   selectionInSelectionRect,
   selectionInSelectionPolygon,
+  editorPageSvgSurfaceIncludesObject,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
   shouldLetSystemClipboardHandleCommand,
@@ -193,6 +194,11 @@ import {
   getToolsetToggleActions,
   type ToolbarPaletteItemModel
 } from "./toolsets";
+import {
+  isCompatOnlyArtVariantCommandId,
+  TRANSITIONAL_STUB_COMMAND_IDS,
+  withStandaloneDrawingToolCommands
+} from "./drawingTools";
 
 // Phase 5: widgets are declared as manifest `control` items and read state from context. This
 // isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
@@ -227,6 +233,7 @@ function buttonMarkupForCommand(markup: string, commandId: string): string {
 const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
 const desktopToolsetsSource = readFileSync(new URL("./toolsets/desktop-toolsets.json", import.meta.url), "utf8");
@@ -1757,18 +1764,17 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("<CustomPageSizeDialog");
   });
 
-  it("enables the customize-toolbars command; reset/create/clone remain dialog-driven placeholders", () => {
-    // view.customizeToolbars now opens the editor; the reset/create/clone actions are performed
-    // inside that dialog, so their standalone command entries stay disabled placeholders for now.
-    expect(toolbarCustomizationActions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "view.customizeToolbars", enabled: true }),
-        expect.objectContaining({ id: "view.toolset.resetLayout", enabled: false }),
-        expect.objectContaining({ id: "view.toolset.resetAllLayouts", enabled: false }),
-        expect.objectContaining({ id: "view.toolset.createUserToolset", enabled: false }),
-        expect.objectContaining({ id: "view.toolset.cloneToolset", enabled: false })
-      ])
-    );
+  it("ships only live customize-toolbar commands", () => {
+    // The Customize Toolbars dialog and the in-place Main-toolbar editor own reset/create/clone
+    // through layoutStateEdits; the standalone view.toolset.* redirect commands are retired
+    // (PLANS.md, Toolbar Wiring and Honesty).
+    expect(toolbarCustomizationActions.map((command) => command.id).sort()).toEqual([
+      "view.customizeMainToolbar",
+      "view.customizeToolbars"
+    ]);
+    toolbarCustomizationActions.forEach((command) => {
+      expect(command.enabled).toBe(true);
+    });
   });
 
   it("defines command-backed text toolbar actions", () => {
@@ -1896,6 +1902,29 @@ describe("ChemDraft desktop shell", () => {
       structureCleanup3dCommandId,
       "tool.plus",
       "tool.minus",
+      "tool.dagger",
+      "tool.symbol",
+      "tool.symbol.degree",
+      "tool.symbol.plusMinus",
+      "tool.symbol.angstrom",
+      "tool.symbol.delta",
+      "tool.symbol.centerDot",
+      "tool.symbol.prime",
+      "tool.settings",
+      "style.color",
+      "tool.art.rect",
+      "tool.reactionArrow",
+      "tool.resonanceArrow",
+      "tool.equilibriumArrow",
+      "tool.retroArrow",
+      "tool.lobe",
+      "tool.shadedLobe",
+      "tool.pOrbital",
+      "tool.sOrbital",
+      "tool.bracket",
+      "tool.squareBracket",
+      "tool.chain",
+      "style.formulaText",
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
@@ -1920,7 +1949,13 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
-    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
+    // Whatever the allowlist misses must be exactly the declared transitional stubs, plus the live
+    // selection-dependent layout commands (disabled here because nothing is selected) — nothing
+    // else in shipped palettes may render disabled.
+    const disabledStubIds = new Set(
+      disabledTools.map((command) => command.id).filter((id) => !/^layout\./.test(id))
+    );
+    expect(disabledStubIds).toEqual(new Set(TRANSITIONAL_STUB_COMMAND_IDS));
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
 
@@ -2910,8 +2945,36 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("canvas-region");
   });
 
-  it("keeps disabled placeholder tools from pretending to perform chemistry", () => {
-    const disabledTools = getToolsetCommandSpecs().filter((command) => command.enabled === false);
+  it("ships only the declared transitional stub tools, each disabled with a reason", () => {
+    // The exact set of ids still awaiting their wiring slice (PLANS.md, Toolbar Wiring and
+    // Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
+    // disabled outside this list is either a live selection-dependent command or a regression:
+    // wire it or retire it.
+    const expectedTransitionalStubs: string[] = [];
+    expect([...TRANSITIONAL_STUB_COMMAND_IDS].sort()).toEqual(expectedTransitionalStubs);
+
+    // Every declared stub really is a disabled-with-reason spec in the shipped catalog.
+    const catalog = withStandaloneDrawingToolCommands(getToolsetCommandSpecs());
+    const catalogById = new Map(catalog.map((command) => [command.id, command]));
+    expectedTransitionalStubs.forEach((id) => {
+      const spec = catalogById.get(id);
+      expect(spec, `${id} missing from the shell catalog`).toBeDefined();
+      expect(spec?.enabled, `${id} should be disabled until its slice lands`).toBe(false);
+      expect(spec?.disabledReason, `${id} must carry a disabled reason`).toBeTruthy();
+    });
+
+    // And every manifest-disabled spec is either a declared stub or a live selection-dependent
+    // layout command — nothing disabled hides outside the declaration.
+    getToolsetCommandSpecs()
+      .filter((command) => command.enabled === false)
+      .forEach((command) => {
+        expect(command.disabledReason, `${command.id} must carry a disabled reason`).toBeTruthy();
+        expect(
+          TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) || /^layout\./.test(command.id),
+          `${command.id} is disabled but neither a declared stub nor a live layout command`
+        ).toBe(true);
+      });
+
     const enabledNativeStructureTools = [
       "tool.bond",
       "tool.wedgeBond",
@@ -2924,14 +2987,127 @@ describe("ChemDraft desktop shell", () => {
       "tool.chairCyclohexaneA",
       "tool.chairCyclohexaneB"
     ];
-
-    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
-    expect(disabledTools.every((command) => command.disabledReason)).toBe(true);
     enabledNativeStructureTools.forEach((commandId) => {
-      expect(disabledTools.some((command) => command.id === commandId)).toBe(false);
+      expect(TRANSITIONAL_STUB_COMMAND_IDS.has(commandId)).toBe(false);
     });
-    expect(disabledTools.some((command) => command.id === "tool.chain")).toBe(true);
-    expect(disabledTools.some((command) => command.id === "tool.reactionArrow")).toBe(true);
+
+    // Retired command ids must be gone from the whole shell catalog, not just disabled.
+    const retiredCommandIds = [
+      "tool.mechanismArrow",
+      "tool.arrows",
+      "tool.templateGrid",
+      "tool.toolOptions",
+      "view.toolset.resetLayout",
+      "view.toolset.resetAllLayouts",
+      "view.toolset.createUserToolset",
+      "view.toolset.cloneToolset",
+      "style.importStyleSheet",
+      "style.bondStroke",
+      "style.textSize",
+      "style.preset.synthetic"
+    ];
+    retiredCommandIds.forEach((id) => {
+      expect(catalogById.has(id), `${id} is retired and must not be in the catalog`).toBe(false);
+    });
+  });
+
+  it("lets the overlay own brackets and arrows so the editor does not paint them twice", () => {
+    // The overlay draws both types in full (BracketGlyph, the arrow geometry renderer). Including
+    // them in the editor surface too doubled every stroke in a second colour.
+    expect(editorPageSvgSurfaceIncludesObject({
+      id: "bracket_001",
+      type: "bracket",
+      x: 10, y: 10, width: 16, height: 64, rotation: 0, style: {},
+      bracketKind: "curly",
+      containedObjectIds: []
+    } as DocumentObject)).toBe(false);
+    expect(editorPageSvgSurfaceIncludesObject({
+      id: "arrow_001",
+      type: "reaction-arrow",
+      x: 10, y: 10, width: 120, height: 24, rotation: 0, style: {},
+      arrowKind: "forward",
+      start: { kind: "point", point: { x: 10, y: 22 } },
+      end: { kind: "point", point: { x: 130, y: 22 } },
+      labels: []
+    } as DocumentObject)).toBe(false);
+    // Text still comes from the surface.
+    expect(editorPageSvgSurfaceIncludesObject({
+      id: "text_001",
+      type: "text",
+      x: 10, y: 10, width: 40, height: 24, rotation: 0, style: {},
+      text: "A",
+      spans: []
+    } as DocumentObject)).toBe(true);
+  });
+
+  it("lets arrows and art shapes start on top of an existing object", () => {
+    // handleObjectPointerDown stops propagation, so a tool with no branch there is a dead click
+    // over any molecule, text, or graphic — which is exactly how orbitals are meant to be drawn.
+    const objectHandler = mainWindowSource.slice(
+      mainWindowSource.indexOf("const handleObjectPointerDown"),
+      mainWindowSource.indexOf("function isTransformHandleSecondPress")
+    );
+
+    expect(objectHandler).toContain("reactionArrowKindForToolCommand(activeToolState.activeCommandId)");
+    expect(objectHandler).toContain('startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })');
+    // A generic art branch after the polyline/pen/freehand special cases covers the orbitals.
+    expect(objectHandler).toContain("applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId)");
+  });
+
+  it("cancels an in-flight placement drag on Escape instead of leaving it armed", () => {
+    // Escape used to only switch to Select, leaving nativePlacementDragRef live — the eventual
+    // pointerup then committed the arrow/chain/bond the user had just canceled.
+    expect(mainWindowSource).toContain('event.key === "Escape" && nativePlacementDragRef.current');
+    expect(mainWindowSource).toContain("cancelNativePlacementDrag();");
+    // The cancel must precede the generic drawing-tool escape that switches to Select.
+    const cancelAt = mainWindowSource.indexOf('event.key === "Escape" && nativePlacementDragRef.current');
+    const genericAt = mainWindowSource.indexOf('activeToolCommandIdRef.current !== "tool.select" &&');
+    expect(cancelAt).toBeGreaterThan(-1);
+    expect(genericAt).toBeGreaterThan(cancelAt);
+    // And it must restore the pre-drag document rather than keep the preview.
+    expect(mainWindowSource).toContain("replacePresentDocument(drag.startDocument);");
+  });
+
+  it("filters transitional stubs and compat-only art variants out of both gallery sources", () => {
+    for (const source of [mainWindowSource, paletteWindowSource]) {
+      expect(source).toContain("!TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)");
+      expect(source).toContain("!isCompatOnlyArtVariantCommandId(command.id, shipped)");
+      // From the SHIPPED manifest, never the user's customized registry. Keyed off the latter the
+      // gallery ate its own tail: remove a tool from a toolbar and it disappeared from the list you
+      // would put it back with, with no way to recover it short of resetting every layout.
+      // (Scoped to this block on purpose — elsewhere, following the customized registry is right.)
+      const filterAt = source.indexOf("!isCompatOnlyArtVariantCommandId(command.id, shipped)");
+      const galleryBlock = source.slice(Math.max(0, filterAt - 600), filterAt);
+      expect(galleryBlock).toContain("getToolsetCommandSpecs(desktopToolsetRegistry)");
+      expect(galleryBlock).not.toContain("getToolsetCommandSpecs(toolsetRegistry)");
+    }
+    expect(paletteWindowSource).toContain("commands={galleryCommands}");
+  });
+
+  it("treats art style presets as compat-only but keeps other unshipped art tools offered", () => {
+    const shipped = new Set(getToolsetCommandSpecs().map((command) => command.id));
+
+    // Registered for compatibility, deliberately on no toolbar — the same reasoning that retired
+    // tool.shapeShadow, so Customize must not hand them back.
+    expect(shipped.has("tool.art.rectShadow")).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.rectShadow", shipped)).toBe(true);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.circleGloss", shipped)).toBe(true);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.lineDashed", shipped)).toBe(true);
+
+    // Tools that really do ship stay offered.
+    expect(isCompatOnlyArtVariantCommandId("tool.art.rect", shipped)).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.pen", shipped)).toBe(false);
+
+    // And so do live tools that simply are not on a default toolbar. A style preset draws its base
+    // tool's shape with a canned style; these draw something the base tool cannot, so hiding them
+    // makes a real tool unreachable rather than retiring a duplicate.
+    expect(shipped.has("tool.art.directEdit")).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.directEdit", shipped)).toBe(false);
+    expect(shipped.has("tool.art.arc120")).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.arc120", shipped)).toBe(false);
+
+    // The rule is scoped to art commands only.
+    expect(isCompatOnlyArtVariantCommandId("tool.bond", shipped)).toBe(false);
   });
 
   it("exposes active tool state without rendering fake chemistry", () => {
@@ -2997,8 +3173,8 @@ describe("ChemDraft desktop shell", () => {
     expect(wedgeMarkup).toContain(">Solid Wedge Bond</span>");
     expect(wedgeMarkup).not.toContain("toolset action");
     expect(pOrbitalMarkup).toContain('data-shortcut-label="No shortcut"');
-    expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool: Requires an active structure editor"');
-    expect(pOrbitalMarkup).toContain(">Requires an active structure editor</span>");
+    expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool"');
+    expect(pOrbitalMarkup).not.toContain("Requires an active structure editor");
     expect(pOrbitalMarkup).not.toContain("EditorAdapter");
     expect(pOrbitalMarkup).not.toContain("p Orbital Tool (No shortcut)");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');
@@ -3099,8 +3275,7 @@ describe("ChemDraft desktop shell", () => {
       structureCleanupCommandId,
       structureSpin3dCommandId,
       structureInteractive3dCommandId,
-      structureCleanup3dCommandId,
-      "tool.templateGrid"
+      structureCleanup3dCommandId
     ];
 
     expect(mainCommandIds.slice(-chromeCluster.length)).toEqual(chromeCluster);
@@ -4768,7 +4943,9 @@ describe("ChemDraft desktop shell", () => {
     ).toEqual([4, 1, 1]);
     expect(markup).toContain("DIPEA, DMSO");
     expect(markup).toContain("reaction-arrow-object");
-    expect(markup).toContain('data-arrow-kind="unknown"');
+    // This third-party fixture writes ArrowType="FullHead". It used to degrade to "unknown"
+    // because the reader only accepted ChemDraft's own lowercase spellings.
+    expect(markup).toContain('data-arrow-kind="forward"');
     expect(markup).toContain("reaction-arrow-line");
     expect(markup).toContain("graphic-object");
     expect(markup).toContain('data-graphic-kind="unknown"');

@@ -1,5 +1,79 @@
 # ChemDraft Plans
 
+## Host-managed plugin updates (2026-07-25) — on `feat/toolbar-wiring-and-plugin-updates`
+
+The `codex/plugin-updates` implementation was ported file-by-file rather than merged: that branch
+forked before the toolbar slice, so taking its tree would have reverted eight commits of tool
+wiring. It now rides the same branch as the toolbar slice, open against `main` as PR #21. The
+`codex/plugin-updates` and `parked/plugin-fixes` branches (and the shared worktree) have since been
+deleted; only two things were carried forward from the parked snapshot, both reworked.
+
+Ported forward from the parked snapshot:
+
+- `pruneOrphanedPluginPackages`, which reclaims checksum-addressed directories left by a failed
+  update or an incomplete cleanup. Its first version keyed off "no records", which
+  `loadInstalledPluginRecords` also returns for an unreadable, truncated, or partially-invalid
+  catalog — so a momentary IO problem would have deleted a healthy install's payload. The catalog
+  now reports `absent` / `loaded` / `unreadable`, and the sweep acts only on the first two.
+- The published `.sha256` is fetched and must agree with the digest GitHub recorded for the asset,
+  which makes the existing sidecar-must-exist rule mean something. It reuses the same bounded,
+  redirect-validating download path as the package, so it is size-capped while streaming rather
+  than after buffering, and accepts the uppercase digests Windows publishers produce.
+
+Fixed in the incoming implementation:
+
+- `uninstallPlugin` validated the recorded staging path *after* unregistering the plugin, so a path
+  the validator rejects left the plugin gone from the session but still in the catalog — an
+  unremovable ghost. Validation now happens before any runtime state changes.
+- Rollback re-activated the superseded descriptor even when it had never been deactivated, which
+  could throw and abort the rollback, leaving the host registered against a candidate whose
+  directory was about to be deleted.
+- A disabled-plugin update tore down only the candidate, leaving the old worker running against
+  files that were then removed.
+- The trusted redirect host was spelled out in both TypeScript and the capability file with nothing
+  keeping them in step; a test now pins them together, since GitHub has moved that host before.
+
+### Objective
+
+Add a separate, user-initiated plugin update path to the existing Plugin Manager. ChemDraft owns
+the update source, download, package verification, worker handshake, replacement transaction, and
+rollback. Plugins remain sandboxed and receive no new network, filesystem, or native-execution
+capabilities. Sparkle continues to update only the ChemDraft application bundle.
+
+The first trusted catalog entry is the standalone NMR Predictor plugin
+(`org.chemdraft.nmr.predictor`). A check must distinguish update available, up to date, unsupported,
+and failed states without silently installing anything. Applying an offered update requires an
+explicit user action and must show the target version and package-integrity details.
+
+### Safety and compatibility contract
+
+- Update metadata is host-owned and allowlisted by plugin id; an installed plugin cannot choose its
+  own download URL.
+- Remote version and checksum metadata are treated as untrusted input and validated before use.
+- The downloaded archive must pass the existing SHA-256, CRC/path, strict manifest, API-version,
+  permission-review, and worker-handshake gates.
+- The archive manifest id must match the installed plugin id, and its version must be strictly newer.
+- Replacement is transactional: keep the current package and registration usable until the new
+  package has passed staging and handshake, then commit the new package and record. Any failure
+  restores the old package, record, registration, and enabled/disabled preference.
+- Update checks and installs are user-initiated in this slice. No background polling, silent
+  download, silent install, or restart-time mutation.
+- A checksum proves integrity only, not publisher identity. The UI and documentation must not call
+  an unsigned package cryptographically signed or fully automatic; publisher-signature support is
+  a separate follow-up.
+
+### Verification
+
+- Focused tests cover catalog allowlisting, metadata parsing, semantic version comparison, download
+  checksum enforcement, manifest-id/version enforcement, successful replacement, rollback, and
+  disabled-plugin preservation.
+- Plugin Manager DOM tests cover checking, up-to-date, available-update, progress, confirmation,
+  success, and error states.
+- Run `pnpm lint`, `pnpm test`, `pnpm build`, `git diff --check`, and the relevant Rust checks when
+  native code changes.
+- Launch this worktree through `./run-app` or `./run-app --dev` and verify the visible worktree
+  label in the window title and build stamp matches the branch you meant to test.
+
 ## Sparkle macOS updates (2026-07-24)
 
 The desktop app uses Sparkle 2 to check the signed macOS appcast automatically and offer newer
@@ -21,427 +95,180 @@ That program's full plan and milestone records live in the planning workspace
 they are not duplicated here. Remaining plugin-separation work (publish the SDK, strip bundled NMR,
 from-zero install test) is queued there as PLAN-plugin-separation Phases 2+.
 
-The sections below are the trunk's active plan, unchanged by the merge.
+The sections below are the trunk's active plan.
 
-# Rings Toolbar and Molecule Inspector Tabs
+## Rings Toolbar and Molecule Inspector Tabs (completed 2026-07)
 
-## Refactor/Toolbars Schema Update
+The Rings/Structure/Atom Labels slice shipped: ring appearance lives in its own compact
+`core.ringInspector` toolbar, and the Molecule Inspector carries Structure and Atom Labels tabs with
+multi-molecule targeting, mixed values, sparse per-atom overrides, `.cds` style-sheet import through
+the style compatibility boundary, `.template` export, and a shared font catalog backed by the raster
+export font database. Durable schema and architecture notes live in
+`docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
 
-The `refactor/toolbars` branch now has a schema-backed toolbar item contract in
-`packages/toolset-registry` and `apps/desktop/src/toolsets/desktop-toolsets.json`.
-Toolbar items explicitly carry `id`, `kind`, `label`, `primary`, `submenu`, `tooltip`,
-and `layout` metadata, while preserving the legacy command-backed item shape through
-normalization. The desktop palette now consumes normalized item models so manifest-defined
-submenus, submenu column counts, and grid spans are available to both native palette
-windows and the web fallback. Command-backed items still use real command IDs; commandless
-control and separator items are legal for future toolbar customization work.
+# Toolbar Wiring and Honesty (branch `feat/toolbar-wiring-and-plugin-updates`, PR #21)
 
-The durable schema notes live in:
+Status: all eight phases implemented and hardened across two review rounds. Shares its branch with
+the plugin-updates slice above. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain
+zero permanently disabled buttons.
 
-- `docs/architecture/toolbars-and-toolsets.md`
-- `packages/toolset-registry/README.md`
+An external review plus three adversarial passes found roughly nineteen defects in the first cut of
+this slice. All five P1s and the P2s are now fixed with regression tests: imported structures keep
+an honest `structureFormat` when edited; CDXML arrows use the real `ArrowType` spellings both ways;
+arrow resize transforms the endpoints, not just the frame; axis-aligned arrows get a frame that
+contains their glyph; formula text distinguishes a charge magnitude from an atom count and keeps
+span styling; Escape cancels an in-flight placement instead of arming it; brackets and arrows are
+painted once; brackets and curved art warn when they degrade in foreign CDXML; chains stop at the
+page edge and rebuild in one pass; stamps centre on the click and clear stale interaction state;
+arrows and orbitals can start on top of an existing object; and the Customize gallery offers
+neither transitional stubs nor the compat-only art variants.
 
-## Toolbar Stabilization Gate
+A second max-effort review over the combined branch found fifteen more, all now fixed with
+regression tests. The four that mattered most: the plugin-update capability scope listed the package
+`.zip` but not the `.zip.sha256` fetched right after it, so trusted updates could never complete —
+the guard test had only checked that the `.zip` pattern *existed* rather than matching real URLs
+against the compiled patterns; rotating a reaction arrow applied the angle twice, because the
+anchors were rotated and `rotation` incremented while both renderers apply that transform
+themselves; flipping never touched arrow anchors at all, so a mirrored scheme kept every arrow's
+original direction; and the formula body pattern backtracked exponentially — measured at 8.8 s for
+26 digits, doubling per digit — so a pasted numeric label froze the UI thread. The rest covered
+plugin-update failure paths that lost catalog records or deleted live payloads, a chain that could
+seed a bond-less carbon at a page edge, CDXML inventing `FullHead` for an unrecognized arrow, and a
+Customize gallery that keyed off the user's own layout and so deleted any art tool they removed.
 
-Before starting the Rings Toolbar / Molecule Inspector delivery sequence, complete
-one cleanup commit that stabilizes schema-backed toolbar button invocation, inline
-submenu ARIA, generated tooltip descriptions, and branch docs. This gate must not
-change Molecule Inspector behavior.
+Known remaining gap: the Art inspector still styles only graphics and molecules, so Color Controls
+and Object Settings route a bracket or arrow selection to a status message rather than a working
+panel. Widening `ArtInspectorStyleObject` is its own slice.
 
 ## Objective
 
-Split ring appearance out of the Molecule Inspector. The existing hidden-by-default ring appearance work becomes its own compact `core.ringInspector` toolbar, while `core.moleculeInspector` remains hidden by default and contains three tabs:
-
-1. `Structure`
-2. `Atom Labels`
-3. `Templates`
-
-The slice is complete when users can select one or more molecule targets, inspect mixed values, edit base molecule drawing and atom-label appearance, edit only selected atom labels through sparse per-atom overrides, import ChemDraw `.cds` style-sheet inputs through the style compatibility boundary, export Molecule Inspector settings as `.template` files, undo and redo those edits as single operations, save and reopen them, and obtain matching canvas, Spin 3D, editor-overlay, and SVG output without changing chemical identity.
-
-The existing Rings functionality remains operational throughout the work as its own toolbar. Ring interior selection is available only while the Rings toolbar is open.
-
-## Completed Rings Slice
-
-- Ring identity is topology-derived from sorted bond IDs and owned by `packages/layout-engine`.
-- Per-ring fill/effect appearance is stored in `style.ringStyles`.
-- Ring fills render below bonds and atom labels, flow through SVG export, and preserve whole-molecule fill fallback.
-- Ring selection is gated by the Rings toolbar being open; atom hits beat bond hits, and bond hits beat ring-interior hits.
-- Whole-molecule Art edits must not silently clear `style.ringStyles`.
-
-## Preparation Before Implementation
-
-Before implementation code, update:
-
-- `PLANS.md`: this active implementation plan replaces the Rings-first plan.
-- `AGENTS.md`: branch state is active implementation; scope is Rings, Structure, and Atom Labels; Structure and Atom Labels are no longer deferred.
-- `apps/desktop/src/MainWindow.tsx`: update the `Build` string when implementation starts and again at closeout.
-
-Preserve chemical-identity, sparse-override, shared-layout, command-ID, and verification constraints. Per-bond width, per-bond opacity, per-bond effects, label underline, label outline, and label shadow remain outside this slice.
-
-## Existing Systems to Reuse
-
-Do not introduce `NativeMoleculeDrawingSettings`, `NativeAtomLabelSettings`, or another parallel molecule-style object.
-
-Continue using `MoleculeObject.style` and `nativeDrawingStyleFromObjectStyle()`.
-
-Reuse existing style fields:
-
-```ts
-bondLengthPx
-bondStrokeWidthPx
-bondColor
-bondLineCap
-multipleBondGapPx
-doubleBondInsetPx
-bondOverlapClearancePx
-
-atomLabelFontFamily
-atomLabelFontSizePx
-atomLabelFontWeight
-atomLabelColor
-atomLabelBackgroundColor
-atomLabelPaddingPx
-atomLabelBondClearancePx
-```
-
-Add only:
-
-```ts
-atomLabelFontStyle
-atomLabelAlignment
-atomLabelPlacement
-atomLabelShowTerminalCarbons
-atomLabelHideImplicitHydrogens
-```
-
-Continue using:
-
-- `style.ringStyles` for per-ring appearance.
-- `style.bondColors` for per-bond color overrides.
-- `style.atomLabelColors` for per-atom label color overrides.
-- Sparse per-atom atom-label style maps for selected atom-label edits.
-- `bond.display.bondStyle` for per-bond style identity.
-- Existing Art-control preview, commit, and cancel patterns.
-- `planPageSvgRender` as the shared SVG planning route.
-- The cached native system-font database already used by raster export.
-
-No document schema-version increment is required merely for these style metadata keys. Old documents resolve new fields through defaults.
-
-## Explicit Non-Goals
-
-This slice does not include:
-
-- Per-bond stroke width.
-- Per-bond opacity.
-- Per-bond effects.
-- Label underline, outline, or shadow.
-- Font embedding in native documents or SVG.
-- A font-management preference screen.
-- Modification of atom elements, formal charges, bond orders, stereochemistry, atom IDs, bond IDs, or molecule identity.
-- Replacing the existing ring-detection or ring-key algorithm.
-- Clearing sparse overrides as a side effect of base-style editing.
-
-The Structure tab's existing indicator controls are in scope as render overlays. They must be driven by existing native or compatibility metadata only:
-
-- Atom numbers come from stable atom order.
-- Atom and bond stereochemistry indicators come from wedge/hash/dashed display or imported stereo metadata.
-- Query indicators appear only for native unknown/query atoms or bonds, R-group query anchors, or explicit compatibility metadata.
-- Reaction indicators appear only for reaction/RXN compatibility metadata.
-- Ordinary SMILES must not receive fake query or reaction annotations.
-
-## Delivery Sequence
-
-Implement as three independently testable commits. Documentation changes may be committed separately or included in the first implementation commit, but must happen before code changes begin.
-
-### Commit 1: Inspector Targets, Tabs, and Structure
-
-Files:
-
-- `apps/desktop/src/moleculeInspectorModel.ts`
-- `apps/desktop/src/moleculeInspectorModel.test.ts`
-- `apps/desktop/src/artInspectorModel.ts`
-- `apps/desktop/src/MainWindow.tsx`
-- `apps/desktop/src/ToolPalette.tsx`
-- `apps/desktop/src/App.css`
-- `apps/desktop/src/PaletteWindow.tsx`
-- `apps/desktop/src/window-manager/index.ts`
-- `apps/desktop/src/toolsets/desktop-toolsets.json`
-- relevant command, workflow, UI, and palette transport tests
-
-Replace the flat ring-only model with nested tab models:
-
-```ts
-export type MoleculeInspectorTabId = "structure" | "atom-labels";
-export type MoleculeInspectorContext = "none" | "molecule" | "ring" | "bond" | "atom";
-
-export interface MoleculeInspectorTargets {
-  moleculeObjectIds: readonly string[];
-  ringTargets: readonly MoleculeInspectorRingSelection[];
-  context: MoleculeInspectorContext;
-}
-
-export interface MoleculeInspectorModel {
-  targets: MoleculeInspectorTargets;
-  suggestedTab: MoleculeInspectorTabId;
-  rings: MoleculeInspectorRingsModel;
-  structure: MoleculeInspectorStructureModel;
-  atomLabels: MoleculeInspectorAtomLabelsModel;
-}
-```
-
-The target resolver must include selected molecule objects, include the parent molecule for selected atoms/bonds/rings, dedupe by molecule ID, ignore selected non-molecules, return molecule IDs in stable document order, keep ring targets separate, and validate ring keys against `nativeMoleculeRings(object)`.
-
-Suggested tab:
-
-- `ring` -> `rings`
-- `atom` -> `atom-labels`
-- `bond`, `molecule`, `none` -> `structure`
-
-Mixed-value resolution must use `nativeDrawingStyleFromObjectStyle(object.style)`. A field is mixed only when at least two targeted molecules have non-equal resolved values. Mixed fields return `{ value: null, mixed: true }`.
-
-For `bondLengthPx`, the model shows the representative bond length used by the scaling workflow, not merely stale metadata. A molecule with no usable bonds falls back to resolved `style.bondLengthPx`.
-
-Structure controls:
-
-| Control | Style key | UI | Limits |
-| --- | --- | --- | --- |
-| Target bond length | `bondLengthPx` | numeric field plus slider | 8-120 px, step 0.5 |
-| Stroke width | `bondStrokeWidthPx` | numeric field plus slider | 0.25-12 px, step 0.25 |
-| Bond color | `bondColor` | swatch and color picker | normalized CSS hex |
-| Line cap | `bondLineCap` | select | butt, round, square |
-| Multiple-bond gap | `multipleBondGapPx` | numeric field plus slider | 0.5-24 px, step 0.25 |
-| Double-bond inset | `doubleBondInsetPx` | numeric field plus slider | 0-24 px, step 0.25 |
-| Overlap clearance | `bondOverlapClearancePx` | numeric field plus slider | 0-32 px, step 0.5 |
-
-Keep range definitions in one exported module or in `commands.ts`; UI, parser, and tests consume the same bounds.
-
-Add explicit Structure command factory/parser pairs:
-
-```text
-molecule.structure.bondLength:<number>
-molecule.structure.bondStrokeWidth:<number>
-molecule.structure.bondColor:<normalized-color>
-molecule.structure.bondLineCap:<butt|round|square>
-molecule.structure.multipleBondGap:<number>
-molecule.structure.doubleBondInset:<number>
-molecule.structure.overlapClearance:<number>
-```
-
-Numbers must be finite, in range, canonicalized to at most three decimals, and reject malformed suffixes. Colors reuse existing normalization and reject `"none"`. Enums require exact allowed values.
-
-Add:
-
-```ts
-applyMoleculeBaseStylePatch(document, moleculeObjectIds, patch): ChemDraftDocument
-applyMoleculeTargetBondLength(document, moleculeObjectIds, targetBondLengthPx): ChemDraftDocument
-```
-
-`applyMoleculeBaseStylePatch` dedupes IDs, ignores invalid and non-molecule targets, preserves page order and selection, shallow-copies only affected molecule styles, preserves unknown metadata and sparse maps, returns the original document for no-ops, and does not materialize defaults.
-
-`applyMoleculeTargetBondLength` is not a style-only patch. It calculates each molecule's representative median valid 2D bond length, prefers heavy-atom bonds, scales atom `x` and `y` plus explicit `atom.labelOffset` around that molecule's center, updates `style.bondLengthPx`, preserves atom/bond IDs and display objects, keeps `z`, does not prune ring styles, and returns the original document for no-ops. If safe scaling cannot be preserved, remove Target bond length from this slice.
-
-The Molecule Inspector UI must use a left-side vertical tablist with proper ARIA, keyboard navigation, local active-tab state, session initialization from `model.suggestedTab`, and preview cancellation when tabs/targets/close state change. Tabs remain selectable with no targets; panel controls disable instead.
-
-Native `PaletteWindow` preview/commit/cancel must use a dedicated Molecule Inspector interaction event, not ordinary committed command routing. Preview and commit remain distinguishable even when command IDs match, cancel carries no command ID, and DOM fallback and Tauri transport behave the same.
-
-### Commit 2: Atom Label Style and Display Policy
-
-Files:
-
-- `packages/chem-core/src/styles.ts`
-- `packages/chem-core/src/index.ts`
-- `packages/chem-core/src/styles.test.ts`
-- `packages/layout-engine/src/index.ts`
-- `packages/layout-engine/src/index.test.ts`
-- `packages/export-engine/src/svg.test.ts`
-- `apps/desktop/src/documentWorkflow.ts`
-- `apps/desktop/src/ToolPalette.tsx`
-- `apps/desktop/src/MainWindow.tsx`
-- relevant render and workflow tests
-
-Add:
-
-```ts
-export type NativeAtomLabelAlignment = "automatic" | "left" | "center" | "right";
-export type NativeAtomLabelPlacement = "automatic" | "above" | "below";
-```
-
-Extend `NativeDrawingStyle` with:
-
-```ts
-atomLabelFontStyle: NativeTextFontStyle;
-atomLabelAlignment: NativeAtomLabelAlignment;
-atomLabelPlacement: NativeAtomLabelPlacement;
-atomLabelShowTerminalCarbons: boolean;
-atomLabelHideImplicitHydrogens: boolean;
-```
-
-Defaults:
-
-```ts
-atomLabelFontStyle: "normal";
-atomLabelAlignment: "automatic";
-atomLabelPlacement: "automatic";
-atomLabelShowTerminalCarbons: false;
-atomLabelHideImplicitHydrogens: false;
-```
-
-Atom Label controls:
-
-| Control | Style key | UI | Limits |
-| --- | --- | --- | --- |
-| Font family | `atomLabelFontFamily` | searchable select/editable combo | validated nonempty string |
-| Font face | weight + style | select | catalog/default faces |
-| Size | `atomLabelFontSizePx` | numeric field plus slider | 6-96 px, step 0.5 |
-| Label color | `atomLabelColor` | swatch/color picker | normalized hex |
-| Background | `atomLabelBackgroundColor` | Transparent/Solid plus swatch | transparent or normalized hex |
-| Padding | `atomLabelPaddingPx` | numeric field plus slider | 0-16 px, step 0.25 |
-| Bond clearance | `atomLabelBondClearancePx` | numeric field plus slider | 0-32 px, step 0.5 |
-| Alignment | `atomLabelAlignment` | select/segmented control | automatic, left, center, right |
-| Placement | `atomLabelPlacement` | select | automatic, above, below |
-| Terminal carbon labels | boolean | checkbox | explicit true/false |
-| Hide implicit hydrogens | boolean | checkbox | explicit true/false |
-
-Transparent background stores `atomLabelBackgroundColor: "transparent"`, omits the fill rectangle, and still uses padded bounds and bond clearance.
-
-Add explicit Atom Label command factory/parser pairs:
-
-```text
-molecule.atomLabel.fontFamily:<uri-encoded-family>
-molecule.atomLabel.fontFace:<weight>:<normal|italic>
-molecule.atomLabel.fontSize:<number>
-molecule.atomLabel.color:<normalized-color>
-molecule.atomLabel.backgroundColor:<normalized-color|transparent>
-molecule.atomLabel.padding:<number>
-molecule.atomLabel.bondClearance:<number>
-molecule.atomLabel.alignment:<automatic|left|center|right>
-molecule.atomLabel.placement:<automatic|above|below>
-molecule.atomLabel.showTerminalCarbons:<true|false>
-molecule.atomLabel.hideImplicitHydrogens:<true|false>
-```
-
-Boolean commands require literal lowercase `true` or `false`; no toggle commands.
-
-Create shared atom-label semantic and geometry planning in `packages/layout-engine`. Visibility precedence:
-
-1. Required by chemistry remains visible.
-2. `atom.labelVisible === true` makes optional carbon visible.
-3. `atom.labelVisible === false` hides optional carbon but cannot erase required chemistry.
-4. Terminal-carbon setting applies.
-5. Otherwise skeletal carbon is hidden.
-
-Terminal carbon means carbon with exactly one neighboring non-hydrogen atom, not an isolated carbon. Hidden implicit hydrogens removes generated hydrogen runs only; explicit hydrogen atoms remain visible. `atom.labelOffset` wins over automatic placement.
-
-Effective color precedence:
-
-```ts
-style.bondColors?.[bondId] ?? style.bondColor ?? defaultStyle.bondColor
-style.atomLabelColors?.[atomId] ?? style.atomLabelColor ?? defaultStyle.atomLabelColor
-```
-
-Canvas, Spin 3D, atom-label editor overlay, and SVG export consume shared plans for visibility, runs, typography, bounds, background, placement, and bond exclusion. Font weight/style affect conservative label bounds.
-
-### Commit 3: Shared Font Catalog
-
-Files:
-
-- `apps/desktop/src-tauri/src/fonts.rs`
-- `apps/desktop/src-tauri/src/export.rs`
-- `apps/desktop/src-tauri/src/lib.rs`
-- `apps/desktop/src/systemFonts.ts`
-- `apps/desktop/src/systemFonts.test.ts`
-- `apps/desktop/src/ToolPalette.tsx`
-- Rust tests
-
-Move cached font database ownership out of `export.rs`:
-
-```rust
-pub(crate) fn shared_fontdb() -> Arc<usvg::fontdb::Database>;
-```
-
-Use one process-wide `OnceLock<Arc<usvg::fontdb::Database>>`. Both raster export and `list_system_fonts` use it; no second `load_system_fonts()` scan.
-
-Expose:
-
-```rust
-#[tauri::command]
-pub(crate) async fn list_system_fonts() -> Result<Vec<SystemFontFamily>, String>
-```
-
-Return only:
-
-```ts
-interface SystemFontFamily {
-  family: string;
-  faces: Array<{ weight: number; style: "normal" | "italic" }>;
-}
-```
-
-Never return paths, file names, face indices, or PostScript identifiers. Deduplicate by `(family, weight, style)`, sort faces and families deterministically, map oblique to italic, and run initial scan in Tauri's blocking task facility.
-
-Frontend font loading:
-
-- Load only when Atom Labels becomes active.
-- Cache the promise.
-- Validate native data.
-- Fall back in web/tests or on malformed native data.
-- Include fallback families plus the currently stored family.
-- Preserve unavailable stored families through UI, save/reopen, SVG, and raster export.
-
-Family selection writes only `atomLabelFontFamily`. Face selection writes one `fontFace` command that updates weight and style atomically.
-
-## Testing Matrix
-
-Model tests cover no selection, molecule/multi-molecule selections, parent atom/bond/ring targets, invalid/deleted targets, non-molecule ignored, document-order targets, suggested tabs, uniform/mixed Structure and Atom Label values, atomic font-face comparison, and defaults.
-
-Command tests cover valid round trips, min/max values, below/above range rejection, malformed numbers, canonical decimals, enum validity, URI font family parsing, font face parsing, and boolean parsing.
-
-Workflow tests cover every base-style field, multi-molecule updates, invalid targets, no-ops, selection preservation, unchanged atom/bond arrays, sparse map preservation, chemical identity stability, atomic font-face patches, target bond-length scaling, and visible sparse override precedence.
-
-UI tests cover Molecule Inspector tab order and ARIA, keyboard navigation, suggested initial tabs, user tab persistence, close/reopen reset, disabled no-target panels, dedicated Rings toolbar regressions, mixed placeholders, indeterminate checkboxes, preview cancellation, one undo for drags, numeric Enter/Escape behavior, font catalog lazy loading, unavailable current fonts, native palette interaction round trips, and color-picker open sizing.
-
-Layout/render/export/save tests cover default automatic layout, forced alignment and placement, explicit label offsets, transparent backgrounds, padding/clearance, bold/italic bounds, terminal carbon rules, hidden implicit hydrogens, explicit hydrogens, heteroatoms, charged carbons, per-atom/per-bond color precedence, SVG attributes, unknown font families, serialization round trips, and old-document defaults.
-
-Regression tests cover closed/open Rings toolbar ring-interior hit-testing, Structure and Atom Labels staying separate from ring appearance controls, hit priority, ring commands editing only `style.ringStyles`, existing Art toolbar molecule behavior, whole-molecule fill fallback, and ring undo/redo.
-
-## Manual Stress Pass
-
-Run these in the real browser/app surface:
-
-1. Open the Rings toolbar, select a ring, and confirm the ring controls target that ring.
-2. Open Molecule Inspector and confirm it offers only Structure and Atom Labels.
-3. Close/reopen Molecule Inspector with a selected atom and confirm Atom Labels initializes.
-4. Select two molecules with different stroke widths and verify mixed state.
-5. Set stroke width and undo once.
-6. Change Target bond length for two differently scaled molecules and confirm independent centers.
-7. Apply base bond color with one bond override and confirm override remains visible.
-8. Apply base atom-label color with one atom override and confirm override remains visible.
-9. Show terminal carbon labels, hide implicit hydrogens, and confirm explicit hydrogens remain.
-10. Change family and face, including unavailable/current family preservation.
-11. Save/reopen; undo/redo font, color, toggle, and geometry changes.
-12. Compare Spin 3D label behavior and atom-label editor placement.
-13. Export SVG and inspect labels, colors, and font attributes.
-14. Reconfirm ring interior selection after tab switching and after inspector close.
-
-## Verification and Closeout
-
-Run focused suites for every touched area:
+An audit found 32 non-functional toolbar buttons/commands: 8 drawing-tool stubs hardcoded to
+"Requires an active structure editor" (`apps/desktop/src/drawingTools.ts`), 15 manifest-only stubs
+with no live handler (`apps/desktop/src/toolsets/desktop-toolsets.json`), 4 orphaned
+`view.toolset.*` customization commands and 4 unwired `style.*` commands
+(`apps/desktop/src/commands.ts`), and the Customize gallery offering all of them for drag-out. Two
+documented policies conflicted: the older contract tolerated disabled-with-reason placeholders,
+while `docs/architecture/native-art-toolbar-chrome-plan.md` mandates hide-don't-disable.
+
+This slice adopts the strict policy repo-wide and wires real functionality wherever existing
+infrastructure supports it. After it, shipped toolsets contain zero permanently disabled buttons:
+every visible button performs its action, and `disabledReason` is reserved for transient,
+state-dependent unavailability (selection-dependent commands and similar).
+
+Key mechanic: `apps/desktop/src/toolsets.ts` merges live `CommandSpec`s over manifest items, so a
+live command's enabled state and `disabledReason` win. Un-stubbing means registering live behavior;
+the JSON `disabledReason` strings are only fallbacks for commands with no live spec.
+
+## Command retirements (the narrow, explained fix)
+
+These command IDs are retired in this slice. Retirement is deliberate and documented here per the
+AGENTS.md command-ID stability rule; each can return via git when its feature slice lands.
+
+- `view.toolset.resetLayout`, `view.toolset.resetAllLayouts`, `view.toolset.createUserToolset`,
+  `view.toolset.cloneToolset` — the Customize Toolbars dialog performs these actions directly
+  through `layoutStateEdits.ts`; the standalone command entries were dead redirects.
+- `style.bondStroke`, `style.textSize`, `style.preset.synthetic` — reasonless disabled stubs with
+  zero references; superseded by the live style widgets and Molecule Inspector.
+- `style.importStyleSheet` — redundant: the Molecule Inspector already imports `.cds` style sheets
+  through the style compatibility boundary.
+- `tool.mechanismArrow` — mechanism arrows need a real subsystem (atom/bond anchoring, curved
+  geometry, half-head markers, renderers, CDXML mapping; `packages/mechanism-tools` is a type stub).
+  Deferred to its own future slice; no decorative button meanwhile.
+- `tool.templateGrid` — the template library (`packages/template-library`) is an empty stub; a
+  template corpus plus grid-picker UI is its own future slice.
+- `tool.arrows` — pure duplication of `tool.reactionArrow`'s command-grid submenu.
+- `tool.toolOptions` — no defined behavior; lived only in the hidden `core.style` toolset.
+- `tool.shape` — manifest items re-point to the live `tool.art.rect` command (shared `Art_Shapes`
+  asset per the one-asset-per-command rule); the vague duplicate ID retires.
+- `tool.shapeShadow` — retired outright: shadow art variants (`tool.art.rectShadow`,
+  `tool.art.circleGloss`, …) are deliberately compat-only and stay out of shipped toolbars; shadow
+  styling is applied through the Art inspector's effects.
+
+`surface.canvas.addPageAfter` stays as disabled metadata: the surface registry does not drive
+rendered UI (PLAN.md 6.15 sanctions it explicitly — "may exist only as disabled metadata until
+`document.addPageAfter` is implemented and wired").
+
+## Disposition of all audited items
+
+| Disposition | Items | Phase |
+| --- | --- | --- |
+| Wire | tool.atom, tool.settings, style.color, tool.dagger, tool.symbol | 2 |
+| Wire | tool.reactionArrow, tool.resonanceArrow, tool.equilibriumArrow, tool.retroArrow | 3 |
+| Wire | tool.lobe, tool.shadedLobe, tool.pOrbital, tool.sOrbital | 4 |
+| Wire | tool.bracket, tool.squareBracket | 5 |
+| Wire | tool.chain, style.formulaText | 6 |
+| Re-point | tool.shape → tool.art.rect | 2 |
+| Retire | tool.shapeShadow (shadow variants are compat-only; Art inspector effects own shadows) | 2 |
+| Retire | mechanismArrow, templateGrid, arrows, toolOptions, importStyleSheet, bondStroke, textSize, preset.synthetic, 4 × view.toolset.* | 1 |
+| Keep | surface.canvas.addPageAfter (non-rendered metadata) | — |
+
+## Design decisions
+
+- **Arrows are semantic objects.** The four wired arrow tools create `reaction-arrow` document
+  objects (`packages/chem-core`), not art graphics: the semantic type already has canvas rendering,
+  selection/move/transform support, SVG export, and CDXML export+import. Art-route arrows would make
+  tool-drawn and CDXML-imported arrows different object types. `arrowKind` gains `"resonance"`
+  (additive; round-trips verbatim). Head geometry gets one shared plan in `packages/layout-engine`
+  (`planReactionArrowGeometry`: forward filled head, equilibrium harpoon pair, retrosynthesis open
+  double-shaft, resonance double-head) consumed by both the canvas renderer and SVG export.
+- **Unwirable remainder is deleted, not hidden.** No new schema `hidden` field, no seeded layout
+  state. Deletion is git-reversible and keeps exactly one honesty mechanism.
+- **The Customize gallery excludes permanent stubs** using a static manifest-derived set (specs from
+  `getToolsetCommandSpecs()` are availability-independent) — never live `enabled === false`, which
+  would wrongly hide transiently disabled commands like Undo and the align/boolean family.
+- **Chain uses press-drag rubber-band**: one gesture, one undo entry, no modal click-state machine.
+  Segment count from drag length / `bondLengthPx`; zig-zag `±(180 − chainAngleDegrees)/2` about the
+  drag axis, with `chainAngleDegrees` resolved from the target molecule's style.
+
+## Delivery sequence
+
+Each phase is one independently green commit (code + pinned-test updates together). The
+"expected stub set" test introduced in Phase 1 asserts the exact remaining stub command IDs and
+shrinks every phase, reaching empty in Phase 6 and locked by a policy test in Phase 7.
+
+- **Phase 0 — Docs.** This PLANS.md section; AGENTS.md Toolbar Button Contract and §9 updates;
+  PLAN.md §6.11/§6.13 updates; build stamp.
+- **Phase 1 — Cleanup.** Delete the retired commands (`commands.ts`, `drawingTools.ts`,
+  `desktop-toolsets.json` including the two retired IDs inside `tool.reactionArrow`'s submenu);
+  gallery stub filter at the `MainWindow.tsx` call site; rewrite the placeholder-count test into the
+  exact-stub-set test; update customize-command, chrome-cluster, and manifest-position tests; add a
+  gallery-exclusion test.
+- **Phase 2 — Quick wires.** `tool.atom` activates the existing atom-label editor on atom click;
+  `tool.settings` toggles the Molecule Inspector toolset; `style.color` opens the existing
+  object-color controls for the selection; shape/shapeShadow manifest re-points; `tool.dagger` and
+  `tool.symbol` become glyph-stamp tools (one text object per click, command-grid submenu of common
+  chemistry symbols).
+- **Phase 3 — Arrows.** Enum + CDXML import case; shared geometry plan; canvas + SVG renderers on
+  the plan; `insertNativeReactionArrow` with click-place and drag-place; enable the four tools.
+- **Phase 4 — Orbitals.** Four parametric art-shape rows (teardrop lobe, gradient shaded lobe,
+  mirrored two-lobe p orbital, radial-gradient s orbital) with their chemistry command IDs; the art
+  pipeline provides pointer handling, transform chrome, and SVG export for free.
+- **Phase 5 — Brackets.** Shared `bracketGlyphPathD` generator moves into `layout-engine`; real SVG
+  export fragment replaces the labeled-box fallback; `insertNativeBracket` click placement; canvas
+  glyph consumes the shared generator.
+- **Phase 6 — Chain + formula text.** `planNativeChain`/`applyNativeChainPlan` press-drag tool with
+  live preview, Esc cancel, single history entry; `style.formulaText` becomes a one-shot formatting
+  command (element-trailing digits → subscript, trailing charge → superscript) over selected text
+  objects.
+- **Phase 7 — Closeout.** Policy lock test (zero permanently disabled specs in shipped toolsets;
+  gallery exclusion holds); usage-hint invariant covers every definition; final stamps.
+
+## Verification
+
+Per phase:
 
 ```bash
 pnpm vitest run \
-  packages/chem-core/src/styles.test.ts \
-  packages/layout-engine/src/index.test.ts \
-  packages/export-engine/src/svg.test.ts \
-  apps/desktop/src/moleculeInspectorModel.test.ts \
+  apps/desktop/src/App.test.ts \
+  apps/desktop/src/drawingTools.test.ts \
+  apps/desktop/src/toolsets.test.ts \
   apps/desktop/src/commands.test.ts \
   apps/desktop/src/documentWorkflow.test.ts \
-  apps/desktop/src/window-manager/index.test.ts \
-  apps/desktop/src/App.test.ts
+  apps/desktop/src/toolbars/CustomizeMainToolbar/galleryModel.test.ts \
+  packages/layout-engine/src/index.test.ts
 ```
 
-Adjust paths only where the repository already has an equivalent focused test file.
-
-Then run:
+plus `packages/chem-core` and `packages/cdx-compat` suites when touched. At closeout:
 
 ```bash
 pnpm lint
@@ -451,19 +278,17 @@ cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-Run additional agent-bridge, hit-test, and drawing-tool suites because ring hit-testing and palette interaction remain part of this slice.
+Manual stress pass in the running app after Phases 3, 5, and 6: draw each arrow kind and resize its
+heads, place and resize both bracket kinds, drag a chain off an existing atom and off empty canvas,
+apply formula text to a typed formula, and confirm SVG export matches the canvas for each.
 
 Definition of done:
 
-- `AGENTS.md` and `PLANS.md` describe the active slice accurately.
-- Rings, Structure, and Atom Labels all work in one palette.
-- Multi-molecule targeting and mixed values work.
-- Target bond length has visible, tested semantics or is explicitly removed.
-- Sparse overrides remain present and visually effective.
-- All label surfaces consume shared semantic and layout planning.
-- Font catalog shares the raster-export database.
-- Native and in-document palette interactions preserve preview semantics.
-- Save/reopen and SVG export preserve new styles.
-- Chemical identity tests remain unchanged.
-- Required tests, lint, build, Rust tests, formatting checks, and `git diff --check` pass.
-- Build stamps are updated in `AGENTS.md` and `apps/desktop/src/MainWindow.tsx`.
+- Shipped toolsets contain zero permanently disabled buttons; every visible button performs its
+  action.
+- The Customize gallery cannot produce a decorative disabled button.
+- Reaction, resonance, equilibrium, and retrosynthesis arrows are semantic objects that round-trip
+  CDXML.
+- Orbitals, brackets, symbols, chain, and formula text create real document objects with undo/redo,
+  save/reopen, and SVG export parity.
+- AGENTS.md, PLAN.md, and this file describe the shipped state; build stamps updated.

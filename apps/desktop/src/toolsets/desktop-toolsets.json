@@ -293,7 +293,6 @@
               "icon": "chain",
               "assetName": "Custom_Draw_Line",
               "shortcutDisplay": "C",
-              "disabledReason": "Requires an active structure editor",
               "category": "structure",
               "id": "tool.chain",
               "kind": "button",
@@ -486,7 +485,6 @@
               "title": "Reaction Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.reactionArrow",
               "kind": "button",
@@ -523,18 +521,6 @@
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
-                  },
-                  {
-                    "commandId": "tool.mechanismArrow",
-                    "label": "Curved Mechanism Arrow",
-                    "icon": "mechanism",
-                    "assetName": "Custom_Curved_Arrow"
-                  },
-                  {
-                    "commandId": "tool.arrows",
-                    "label": "Arrow Tool Group",
-                    "icon": "export",
-                    "assetName": "Custom_Arrows"
                   }
                 ],
                 "id": "arrow-tools"
@@ -554,7 +540,6 @@
               "title": "Resonance Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Resonance",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.resonanceArrow",
               "kind": "button",
@@ -578,7 +563,6 @@
               "title": "Equilibrium Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Equilibrium",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.equilibriumArrow",
               "kind": "button",
@@ -602,7 +586,6 @@
               "title": "Retrosynthesis Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Retro",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.retroArrow",
               "kind": "button",
@@ -614,54 +597,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "Retrosynthesis Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.mechanismArrow",
-              "title": "Curved Mechanism Arrow",
-              "icon": "mechanism",
-              "assetName": "Custom_Curved_Arrow",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.mechanismArrow",
-              "kind": "button",
-              "label": "Curved Mechanism Arrow",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.mechanismArrow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Curved Mechanism Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.arrows",
-              "title": "Arrow Tool Group",
-              "icon": "export",
-              "assetName": "Custom_Arrows",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.arrows",
-              "kind": "button",
-              "label": "Arrow Tool Group",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.arrows"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Arrow Tool Group",
                 "shortcut": null
               },
               "layout": {
@@ -685,7 +620,6 @@
               "title": "Curly Bracket Tool",
               "icon": "bracket",
               "assetName": "Custom_Bracket",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.bracket",
               "kind": "button",
@@ -709,7 +643,6 @@
               "title": "Square Bracket Tool",
               "icon": "bracket",
               "assetName": "Custom_Square_Bracket",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.squareBracket",
               "kind": "button",
@@ -733,7 +666,6 @@
               "title": "Dagger Symbol Tool",
               "icon": "charge",
               "assetName": "Custom_Dagger",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.dagger",
               "kind": "button",
@@ -805,7 +737,6 @@
               "title": "Symbol Tool Group",
               "icon": "charge",
               "assetName": "Custom_Symbol",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.symbol",
               "kind": "button",
@@ -814,10 +745,54 @@
                 "type": "command",
                 "commandId": "tool.symbol"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Symbol tools",
+                "columns": 3,
+                "items": [
+                  {
+                    "commandId": "tool.symbol.degree",
+                    "label": "Degree Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.plusMinus",
+                    "label": "Plus-Minus Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.angstrom",
+                    "label": "Angstrom Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.delta",
+                    "label": "Delta Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.centerDot",
+                    "label": "Center Dot Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.prime",
+                    "label": "Prime Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  }
+                ],
+                "id": "symbol-tools"
+              },
               "tooltip": {
                 "title": "Symbol Tool Group",
-                "shortcut": null
+                "shortcut": null,
+                "description": "Stamp a ° symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -825,46 +800,21 @@
               }
             },
             {
-              "commandId": "tool.shape",
+              "commandId": "tool.art.rect",
               "title": "Shape Tool",
               "icon": "bracket",
-              "assetName": "Custom_Shape",
-              "disabledReason": "Requires an active structure editor",
+              "assetName": "Art_Shapes",
               "category": "annotation",
-              "id": "tool.shape",
+              "id": "tool.art.rect",
               "kind": "button",
               "label": "Shape Tool",
               "primary": {
                 "type": "command",
-                "commandId": "tool.shape"
+                "commandId": "tool.art.rect"
               },
               "submenu": null,
               "tooltip": {
                 "title": "Shape Tool",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.shapeShadow",
-              "title": "Shadow Shape Tool",
-              "icon": "bracket",
-              "assetName": "Custom_Shape2",
-              "disabledReason": "Requires an active structure editor",
-              "category": "annotation",
-              "id": "tool.shapeShadow",
-              "kind": "button",
-              "label": "Shadow Shape Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.shapeShadow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Shadow Shape Tool",
                 "shortcut": null
               },
               "layout": {
@@ -888,7 +838,6 @@
               "title": "Orbital Lobe Tool",
               "icon": "atom",
               "assetName": "Custom_Lobe",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.lobe",
               "kind": "button",
@@ -912,7 +861,6 @@
               "title": "Shaded Orbital Lobe Tool",
               "icon": "atom",
               "assetName": "Custom_Lobe_Shaded",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.shadedLobe",
               "kind": "button",
@@ -936,7 +884,6 @@
               "title": "p Orbital Tool",
               "icon": "atom",
               "assetName": "Custom_p_Orbital",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.pOrbital",
               "kind": "button",
@@ -960,7 +907,6 @@
               "title": "s Orbital Tool",
               "icon": "atom",
               "assetName": "Custom_s_Orbital",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.sOrbital",
               "kind": "button",
@@ -984,7 +930,6 @@
               "title": "Formula Text Style",
               "icon": "style",
               "assetName": "Custom_FormulaStyle",
-              "disabledReason": "unavailable until style presets are connected",
               "category": "style",
               "id": "style.formulaText",
               "kind": "button",
@@ -1020,7 +965,7 @@
               "icon": "align",
               "assetName": "Custom_Left",
               "shortcutDisplay": "Option+Shift+Cmd+L",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignLeft",
               "kind": "button",
@@ -1113,7 +1058,7 @@
               "icon": "align",
               "assetName": "Custom_Center",
               "shortcutDisplay": "Option+Shift+Cmd+C",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignCenter",
               "kind": "button",
@@ -1138,7 +1083,7 @@
               "icon": "align",
               "assetName": "Custom_Right",
               "shortcutDisplay": "Option+Shift+Cmd+R",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignRight",
               "kind": "button",
@@ -1163,7 +1108,7 @@
               "icon": "align",
               "assetName": "Custom_Top",
               "shortcutDisplay": "Option+Shift+Cmd+T",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignTop",
               "kind": "button",
@@ -1188,7 +1133,7 @@
               "icon": "align",
               "assetName": "Custom_Middle",
               "shortcutDisplay": "Option+Shift+Cmd+M",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignMiddle",
               "kind": "button",
@@ -1213,7 +1158,7 @@
               "icon": "align",
               "assetName": "Custom_Bottom",
               "shortcutDisplay": "Option+Shift+Cmd+B",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignBottom",
               "kind": "button",
@@ -1238,7 +1183,7 @@
               "icon": "align",
               "assetName": "Custom_Horizontal",
               "shortcutDisplay": "Option+Shift+Cmd+H",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.distributeHorizontal",
               "kind": "button",
@@ -1264,7 +1209,7 @@
               "icon": "align",
               "assetName": "Custom_Vertical",
               "shortcutDisplay": "Option+Shift+Cmd+V",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.distributeVertical",
               "kind": "button",
@@ -1643,7 +1588,6 @@
               "title": "Color Controls",
               "icon": "style",
               "assetName": "Custom_Colors",
-              "disabledReason": "unavailable until style presets are connected",
               "category": "style",
               "id": "style.color",
               "kind": "button",
@@ -1667,7 +1611,6 @@
               "title": "Object Settings",
               "icon": "inspector",
               "assetName": "Custom_Settings",
-              "disabledReason": "unavailable until selectable document objects exist",
               "category": "selection",
               "id": "tool.settings",
               "kind": "button",
@@ -1771,30 +1714,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "3D Cleanup",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.templateGrid",
-              "title": "Template Grid",
-              "icon": "grid",
-              "assetName": "Custom_Tools",
-              "disabledReason": "Requires an active structure editor",
-              "category": "template",
-              "id": "tool.templateGrid",
-              "kind": "button",
-              "label": "Template Grid",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.templateGrid"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Template Grid",
                 "shortcut": null
               },
               "layout": {
@@ -2104,7 +2023,6 @@
               "icon": "chain",
               "assetName": "Custom_Draw_Line",
               "shortcutDisplay": "C",
-              "disabledReason": "Requires an active structure editor",
               "category": "structure",
               "id": "tool.chain",
               "kind": "button",
@@ -2307,7 +2225,6 @@
               "title": "Reaction Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.reactionArrow",
               "kind": "button",
@@ -2344,18 +2261,6 @@
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
-                  },
-                  {
-                    "commandId": "tool.mechanismArrow",
-                    "label": "Curved Mechanism Arrow",
-                    "icon": "mechanism",
-                    "assetName": "Custom_Curved_Arrow"
-                  },
-                  {
-                    "commandId": "tool.arrows",
-                    "label": "Arrow Tool Group",
-                    "icon": "export",
-                    "assetName": "Custom_Arrows"
                   }
                 ],
                 "id": "arrow-tools"
@@ -2375,7 +2280,6 @@
               "title": "Resonance Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Resonance",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.resonanceArrow",
               "kind": "button",
@@ -2399,7 +2303,6 @@
               "title": "Equilibrium Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Equilibrium",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.equilibriumArrow",
               "kind": "button",
@@ -2423,7 +2326,6 @@
               "title": "Retrosynthesis Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Retro",
-              "disabledReason": "Requires an active structure editor",
               "category": "arrows",
               "id": "tool.retroArrow",
               "kind": "button",
@@ -2435,54 +2337,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "Retrosynthesis Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.mechanismArrow",
-              "title": "Curved Mechanism Arrow",
-              "icon": "mechanism",
-              "assetName": "Custom_Curved_Arrow",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.mechanismArrow",
-              "kind": "button",
-              "label": "Curved Mechanism Arrow",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.mechanismArrow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Curved Mechanism Arrow",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.arrows",
-              "title": "Arrow Tool Group",
-              "icon": "export",
-              "assetName": "Custom_Arrows",
-              "disabledReason": "Requires an active structure editor",
-              "category": "arrows",
-              "id": "tool.arrows",
-              "kind": "button",
-              "label": "Arrow Tool Group",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.arrows"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Arrow Tool Group",
                 "shortcut": null
               },
               "layout": {
@@ -2540,7 +2394,6 @@
               "title": "Curly Bracket Tool",
               "icon": "bracket",
               "assetName": "Custom_Bracket",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.bracket",
               "kind": "button",
@@ -2564,7 +2417,6 @@
               "title": "Square Bracket Tool",
               "icon": "bracket",
               "assetName": "Custom_Square_Bracket",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.squareBracket",
               "kind": "button",
@@ -2588,7 +2440,6 @@
               "title": "Dagger Symbol Tool",
               "icon": "charge",
               "assetName": "Custom_Dagger",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.dagger",
               "kind": "button",
@@ -2660,7 +2511,6 @@
               "title": "Symbol Tool Group",
               "icon": "charge",
               "assetName": "Custom_Symbol",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.symbol",
               "kind": "button",
@@ -2669,10 +2519,54 @@
                 "type": "command",
                 "commandId": "tool.symbol"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Symbol tools",
+                "columns": 3,
+                "items": [
+                  {
+                    "commandId": "tool.symbol.degree",
+                    "label": "Degree Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.plusMinus",
+                    "label": "Plus-Minus Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.angstrom",
+                    "label": "Angstrom Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.delta",
+                    "label": "Delta Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.centerDot",
+                    "label": "Center Dot Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.prime",
+                    "label": "Prime Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  }
+                ],
+                "id": "symbol-tools"
+              },
               "tooltip": {
                 "title": "Symbol Tool Group",
-                "shortcut": null
+                "shortcut": null,
+                "description": "Stamp a ° symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -2680,46 +2574,21 @@
               }
             },
             {
-              "commandId": "tool.shape",
+              "commandId": "tool.art.rect",
               "title": "Shape Tool",
               "icon": "bracket",
-              "assetName": "Custom_Shape",
-              "disabledReason": "Requires an active structure editor",
+              "assetName": "Art_Shapes",
               "category": "annotation",
-              "id": "tool.shape",
+              "id": "tool.art.rect",
               "kind": "button",
               "label": "Shape Tool",
               "primary": {
                 "type": "command",
-                "commandId": "tool.shape"
+                "commandId": "tool.art.rect"
               },
               "submenu": null,
               "tooltip": {
                 "title": "Shape Tool",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.shapeShadow",
-              "title": "Shadow Shape Tool",
-              "icon": "bracket",
-              "assetName": "Custom_Shape2",
-              "disabledReason": "Requires an active structure editor",
-              "category": "annotation",
-              "id": "tool.shapeShadow",
-              "kind": "button",
-              "label": "Shadow Shape Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.shapeShadow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Shadow Shape Tool",
                 "shortcut": null
               },
               "layout": {
@@ -4028,7 +3897,6 @@
               "title": "Orbital Lobe Tool",
               "icon": "atom",
               "assetName": "Custom_Lobe",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.lobe",
               "kind": "button",
@@ -4052,7 +3920,6 @@
               "title": "Shaded Orbital Lobe Tool",
               "icon": "atom",
               "assetName": "Custom_Lobe_Shaded",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.shadedLobe",
               "kind": "button",
@@ -4076,7 +3943,6 @@
               "title": "p Orbital Tool",
               "icon": "atom",
               "assetName": "Custom_p_Orbital",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.pOrbital",
               "kind": "button",
@@ -4100,7 +3966,6 @@
               "title": "s Orbital Tool",
               "icon": "atom",
               "assetName": "Custom_s_Orbital",
-              "disabledReason": "Requires an active structure editor",
               "category": "orbitals",
               "id": "tool.sOrbital",
               "kind": "button",
@@ -4146,7 +4011,7 @@
               "icon": "align",
               "assetName": "Custom_Left",
               "shortcutDisplay": "Option+Shift+Cmd+L",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignLeft",
               "kind": "button",
@@ -4239,7 +4104,7 @@
               "icon": "align",
               "assetName": "Custom_Center",
               "shortcutDisplay": "Option+Shift+Cmd+C",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignCenter",
               "kind": "button",
@@ -4264,7 +4129,7 @@
               "icon": "align",
               "assetName": "Custom_Right",
               "shortcutDisplay": "Option+Shift+Cmd+R",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignRight",
               "kind": "button",
@@ -4289,7 +4154,7 @@
               "icon": "align",
               "assetName": "Custom_Top",
               "shortcutDisplay": "Option+Shift+Cmd+T",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignTop",
               "kind": "button",
@@ -4314,7 +4179,7 @@
               "icon": "align",
               "assetName": "Custom_Middle",
               "shortcutDisplay": "Option+Shift+Cmd+M",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignMiddle",
               "kind": "button",
@@ -4339,7 +4204,7 @@
               "icon": "align",
               "assetName": "Custom_Bottom",
               "shortcutDisplay": "Option+Shift+Cmd+B",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.alignBottom",
               "kind": "button",
@@ -4364,7 +4229,7 @@
               "icon": "align",
               "assetName": "Custom_Horizontal",
               "shortcutDisplay": "Option+Shift+Cmd+H",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.distributeHorizontal",
               "kind": "button",
@@ -4390,7 +4255,7 @@
               "icon": "align",
               "assetName": "Custom_Vertical",
               "shortcutDisplay": "Option+Shift+Cmd+V",
-              "disabledReason": "unavailable until selectable document objects exist",
+              "disabledReason": "Requires two or more selected objects",
               "category": "layout",
               "id": "layout.distributeVertical",
               "kind": "button",
@@ -4779,7 +4644,6 @@
               "title": "Formula Text Style",
               "icon": "style",
               "assetName": "Custom_FormulaStyle",
-              "disabledReason": "unavailable until style presets are connected",
               "category": "style",
               "id": "style.formulaText",
               "kind": "button",
@@ -4803,7 +4667,6 @@
               "title": "Color Controls",
               "icon": "style",
               "assetName": "Custom_Colors",
-              "disabledReason": "unavailable until style presets are connected",
               "category": "style",
               "id": "style.color",
               "kind": "button",
@@ -4827,7 +4690,6 @@
               "title": "Object Settings",
               "icon": "inspector",
               "assetName": "Custom_Settings",
-              "disabledReason": "unavailable until selectable document objects exist",
               "category": "selection",
               "id": "tool.settings",
               "kind": "button",
@@ -4839,54 +4701,6 @@
               "submenu": null,
               "tooltip": {
                 "title": "Object Settings",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.toolOptions",
-              "title": "Tool Options",
-              "icon": "palette",
-              "assetName": "Custom_Tools",
-              "disabledReason": "Requires an active structure editor",
-              "category": "selection",
-              "id": "tool.toolOptions",
-              "kind": "button",
-              "label": "Tool Options",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.toolOptions"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Tool Options",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.templateGrid",
-              "title": "Template Grid",
-              "icon": "grid",
-              "assetName": "Custom_Tools",
-              "disabledReason": "Requires an active structure editor",
-              "category": "template",
-              "id": "tool.templateGrid",
-              "kind": "button",
-              "label": "Template Grid",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.templateGrid"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Template Grid",
                 "shortcut": null
               },
               "layout": {

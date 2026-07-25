@@ -27,6 +27,8 @@ import {
   planPageSvgRender,
   planMoleculeAtomLabels,
   planFreeformBondExtension,
+  planReactionArrowGeometry,
+  bracketGlyphPathD,
   ringInteriorDoubleBondSides,
   type BondExtensionPlanningInput,
   type PageSvgElementFragment,
@@ -951,6 +953,84 @@ describe("layout-engine page SVG planner", () => {
     const arrowFragments = plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001");
     expect(arrowFragments.map((fragment) => fragment.tag)).toEqual(["line", "polygon"]);
     expect(arrowFragments.flatMap((fragment) => fragment.children)).toEqual([]);
+  });
+
+  it("renders bracket objects as real glyph paths instead of the labeled fallback", () => {
+    const page = pageWithObjects([
+      {
+        id: "bracket_001",
+        type: "bracket",
+        x: 40,
+        y: 60,
+        width: 16,
+        height: 64,
+        rotation: 0,
+        style: {},
+        bracketKind: "curly",
+        containedObjectIds: []
+      }
+    ]);
+
+    const plan = planPageSvgRender(page);
+    const bracketFragments = plan.fragments.filter(
+      (fragment) => fragment.attrs["data-object-id"] === "bracket_001"
+    );
+
+    expect(bracketFragments.map((fragment) => fragment.tag)).toEqual(["path"]);
+    expect(bracketFragments[0].attrs["data-bracket-kind"]).toBe("curly");
+    expect(bracketFragments[0].attrs.transform).toContain("translate(40 60)");
+    expect(String(bracketFragments[0].attrs.d)).toContain("C");
+    expect(plan.warnings.map((warning) => warning.code)).not.toContain("export.svg.object_fallback");
+  });
+
+  it("shares one bracket glyph outline across bracket kinds", () => {
+    expect(bracketGlyphPathD("square", 16, 64)).toBe("M 15 0 L 0 0 L 0 63 L 15 63");
+    expect(bracketGlyphPathD("curly", 16, 64)).toContain("C");
+    expect(bracketGlyphPathD("round", 16, 64).startsWith("M 15 0 C")).toBe(true);
+    // Polymer and unknown fall back to the square outline.
+    expect(bracketGlyphPathD("polymer", 16, 64)).toBe(bracketGlyphPathD("square", 16, 64));
+    expect(bracketGlyphPathD("unknown", 16, 64)).toBe(bracketGlyphPathD("square", 16, 64));
+  });
+
+  it("plans reaction-arrow geometry per arrow kind", () => {
+    const start = { x: 0, y: 0 };
+    const end = { x: 100, y: 0 };
+
+    const forward = planReactionArrowGeometry("forward", start, end);
+    expect(forward.lines).toHaveLength(1);
+    expect(forward.heads).toHaveLength(1);
+    expect(forward.heads[0].filled).toBe(true);
+    expect(forward.heads[0].points[0]).toEqual(end);
+
+    const resonance = planReactionArrowGeometry("resonance", start, end);
+    expect(resonance.lines).toHaveLength(1);
+    expect(resonance.heads).toHaveLength(2);
+    expect(resonance.heads[0].points[0]).toEqual(end);
+    expect(resonance.heads[1].points[0]).toEqual(start);
+
+    const equilibrium = planReactionArrowGeometry("equilibrium", start, end);
+    expect(equilibrium.lines).toHaveLength(2);
+    expect(equilibrium.heads).toHaveLength(2);
+    // Two parallel shafts offset symmetrically about the centerline.
+    expect(equilibrium.lines[0].start.y).toBeCloseTo(-equilibrium.lines[1].start.y);
+    // The top harpoon tips at the end side, the bottom harpoon at the start side.
+    expect(equilibrium.heads[0].points[0].x).toBeCloseTo(100);
+    expect(equilibrium.heads[1].points[0].x).toBeCloseTo(0);
+
+    const retro = planReactionArrowGeometry("retrosynthesis", start, end);
+    expect(retro.lines).toHaveLength(4);
+    expect(retro.heads).toHaveLength(0);
+    // Chevron legs meet at the end point.
+    expect(retro.lines[2].start).toEqual(end);
+    expect(retro.lines[3].start).toEqual(end);
+
+    const unknown = planReactionArrowGeometry("unknown", start, end);
+    expect(unknown.lines).toHaveLength(1);
+    expect(unknown.heads).toHaveLength(0);
+
+    const degenerate = planReactionArrowGeometry("forward", start, start);
+    expect(degenerate.lines).toHaveLength(1);
+    expect(degenerate.heads).toHaveLength(0);
   });
 
   it("skips group metadata while exporting grouped children", () => {

@@ -426,12 +426,17 @@ function exportVisibleObject(
     return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator);
   }
   if (object.type === "reaction-arrow") {
-    return exportReactionArrowObject(object, context.ids, allocator, objectsById);
+    return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings);
   }
   if (object.type === "graphic") {
     return exportGraphicObject(object, context.ids, allocator, warnings);
   }
   if (object.type === "bracket") {
+    warnings.push({
+      code: "cdxml.bracket_payload_only",
+      message: `Native ${object.bracketKind} brackets have no CDXML equivalent; the exported file keeps only a placeholder graphic, and the bracket is preserved exactly only in the embedded ChemDraft payload.`,
+      sourceObjectId: object.id
+    });
     return exportGraphicObject({
       id: object.id,
       type: "graphic",
@@ -634,12 +639,27 @@ function exportReactionArrowObject(
   arrow: ArrowObject,
   ids: Map<string, string>,
   allocator: IdAllocator,
-  objectsById: ReadonlyMap<string, DocumentObject>
+  objectsById: ReadonlyMap<string, DocumentObject>,
+  warnings: CompatibilityConversionWarning[]
 ): string {
   const graphicId = idFor(ids, arrow.id, allocator);
   const start = resolveAnchorPoint(arrow.start, objectsById) ?? { x: arrow.x, y: arrow.y + arrow.height / 2 };
   const end = resolveAnchorPoint(arrow.end, objectsById) ?? { x: arrow.x + arrow.width, y: arrow.y + arrow.height / 2 };
-  return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(arrow.arrowKind)}" BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
+  const arrowType = cdxmlArrowTypeForKind(arrow.arrowKind);
+  if (arrowType === undefined) {
+    // "unknown" means the source document's arrow type was not one this build understands. Writing
+    // a concrete spelling would launder that into a claim — a plain reaction arrow — that survives
+    // every later round trip. Omitting the attribute keeps the line and leaves the type unstated.
+    warnings.push({
+      code: "cdxml.arrow_type_unknown",
+      message:
+        "A reaction arrow of an unrecognized type was exported as a plain line with no ArrowType, " +
+        "because inventing a type would misstate the original.",
+      sourceObjectId: arrow.id
+    });
+  }
+  const arrowTypeAttribute = arrowType === undefined ? "" : ` ArrowType="${escapeXmlAttribute(arrowType)}"`;
+  return `<graphic id="${graphicId}" GraphicType="Line"${arrowTypeAttribute} BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
 }
 
 function exportGraphicObject(
@@ -699,6 +719,22 @@ function warnForGraphicCdxmlLimitations(
     warnings.push({
       code: "cdxml.graphic_custom_path_payload_only",
       message: "Native custom graphic paths are preserved exactly only in the embedded ChemDraft payload.",
+      sourceObjectId: graphic.id
+    });
+  }
+
+  // Bezier, polyline, and freehand geometry has no CDXML graphic type, so it exports as
+  // GraphicType="Unknown" with only a bounding box. The earlier pathD check misses these because
+  // they carry an artPathKind — which is how the orbital tools' curves left silently.
+  const hasPathGeometry = Boolean(
+    (graphic.data.pathNodes && graphic.data.pathNodes.length > 0) ||
+      graphic.data.pathD ||
+      graphic.data.freehandOptions
+  );
+  if (hasPathGeometry && cdxmlGraphicTypeForNativeGraphic(graphic) === "Unknown") {
+    warnings.push({
+      code: "cdxml.graphic_shape_payload_only",
+      message: `Native ${graphic.data.artPathKind ?? graphic.graphicKind} geometry has no CDXML graphic type; the exported file keeps only its bounding box, and the shape is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }
@@ -2724,11 +2760,38 @@ function resolveAnchorPoint(anchor: Anchor, objectsById: ReadonlyMap<string, Doc
   return undefined;
 }
 
+/**
+ * CDXML `ArrowType` spellings, which are what other programs actually write and read.
+ *
+ * Earlier ChemDraft builds emitted the internal lowercase kind names instead, so those are still
+ * accepted on import — otherwise documents this app itself wrote would come back as `unknown`.
+ */
+const cdxmlArrowTypeByKind: Readonly<Record<Exclude<ArrowObject["arrowKind"], "unknown">, string>> = {
+  forward: "FullHead",
+  resonance: "Resonance",
+  equilibrium: "Equilibrium",
+  retrosynthesis: "RetroSynthetic"
+};
+
+const arrowKindByCdxmlArrowType: ReadonlyMap<string, ArrowObject["arrowKind"]> = new Map([
+  // Real CDXML spellings.
+  ["fullhead", "forward"],
+  ["halfhead", "forward"],
+  ["resonance", "resonance"],
+  ["equilibrium", "equilibrium"],
+  ["retrosynthetic", "retrosynthesis"],
+  // Legacy ChemDraft output.
+  ["forward", "forward"],
+  ["retrosynthesis", "retrosynthesis"]
+] as const);
+
+/** The CDXML spelling for a kind, or `undefined` for `"unknown"` — which has no honest spelling. */
+export function cdxmlArrowTypeForKind(arrowKind: ArrowObject["arrowKind"]): string | undefined {
+  return arrowKind === "unknown" ? undefined : cdxmlArrowTypeByKind[arrowKind];
+}
+
 function arrowKindFromCdxml(value: string): ArrowObject["arrowKind"] {
-  if (value === "forward" || value === "equilibrium" || value === "retrosynthesis") {
-    return value;
-  }
-  return "unknown";
+  return arrowKindByCdxmlArrowType.get(value.trim().toLowerCase()) ?? "unknown";
 }
 
 function graphicKindFromCdxml(value: string | undefined): GraphicObject["graphicKind"] {

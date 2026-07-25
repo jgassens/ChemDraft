@@ -137,6 +137,8 @@ import {
   type PageSvgElementFragment,
   type PageSvgFragment,
   type PageSvgRenderPlan,
+  bracketGlyphPathD,
+  planReactionArrowGeometry,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -189,6 +191,8 @@ import {
   objectStyleTargetCommands,
   ringInspectorToolsetId,
   moleculeInspectorToolsetId,
+  artToolsetId,
+  textToolsetId,
   toggleRingInspectorCommandId,
   moleculeInspectorTemplateExportCommandId,
   moleculeInspectorTemplateImportCommandId,
@@ -267,7 +271,9 @@ import {
   activateDrawingToolCommand,
   createActiveToolState,
   drawingToolStatusLabel,
+  isCompatOnlyArtVariantCommandId,
   isDrawingToolCommand,
+  TRANSITIONAL_STUB_COMMAND_IDS,
   withStandaloneDrawingToolCommands,
   type ActiveToolState
 } from "./drawingTools";
@@ -352,6 +358,16 @@ import {
   getSelectedMolecule,
   getSelectedTextObject,
   insertNativeTextObject,
+  insertNativeSymbolGlyph,
+  symbolGlyphForToolCommand,
+  reactionArrowKindForToolCommand,
+  applyReactionArrowToolAtPoint,
+  stretchNativeReactionArrowTo,
+  bracketKindForToolCommand,
+  insertNativeBracket,
+  applyNativeChainTool,
+  applyFormulaTextFormatting,
+  type NativeChainAnchor,
   insertNativeArtGraphicObject,
   nativeBezierPathDocument,
   nativeArtToolIsFreehand,
@@ -674,7 +690,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template";
+  kind: "single-bond" | "template" | "arrow" | "chain";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -682,6 +698,8 @@ type NativePlacementDragState = {
   latestPoint: ClientPoint;
   bondStyle?: NativeBondDisplayStyle;
   templateId?: NativeMoleculeTemplateId;
+  arrowKind?: ArrowObject["arrowKind"];
+  chainAnchor?: NativeChainAnchor;
   dragging: boolean;
 };
 type NativeBondEditDragState = {
@@ -1250,7 +1268,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.24.13.22-fable";
+const CURRENT_BUILD_STAMP = "7.25.18.20-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -4697,6 +4715,39 @@ export function MainWindow({
     setStatus("Inserted text - type to replace placeholder");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, focusTextObjectEditor, restoreToolAfterTextPlacement, textStyleDefaults]);
 
+  /** Drop the interaction chrome a stamp invalidates. Every sibling placement path does this; a
+   *  bond part-selection left lit here would keep receiving style commands aimed at the stamp.
+   *  Uses only stable state setters, so callers need no extra dependencies. */
+  const clearStampInteractionState = useCallback(() => {
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveGraphicTransformObjectId(undefined);
+    setSelectedGraphicPathNode(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+  }, []);
+
+  // Symbol tools stamp one glyph per click and stay active for repeated stamping — no inline text
+  // editor, unlike tool.text.
+  const applySymbolGlyphAtPoint = useCallback((point: ClientPoint, glyph: string) => {
+    const currentDocument = documentRef.current;
+    commitDocumentChange(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
+    clearStampInteractionState();
+    assignHoveredNativeDeleteTarget(undefined);
+    setStatus(`Stamped ${glyph}`);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange, textStyleDefaults]);
+
+  const applyBracketAtPoint = useCallback((point: ClientPoint, bracketKind: BracketObject["bracketKind"]) => {
+    const currentDocument = documentRef.current;
+    commitDocumentChange(insertNativeBracket(currentDocument, point, bracketKind));
+    clearStampInteractionState();
+    assignHoveredNativeDeleteTarget(undefined);
+    setStatus(`Inserted ${bracketKind} bracket`);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange]);
+
   const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
     const currentDocument = documentRef.current;
     const nextDocument = insertNativeArtGraphicObject(currentDocument, point, commandId);
@@ -6846,6 +6897,43 @@ export function MainWindow({
           return;
         }
 
+        // Object Settings and Color Controls open the surface that owns the current selection's
+        // edits. Routing by type matters: the Art inspector styles only graphics and molecules, so
+        // sending a text or bracket selection there produced a panel with everything disabled.
+        if (tool.id === "tool.settings" || tool.id === "style.color") {
+          const types = selectedDocumentObjectTypes(documentRef.current);
+          if (types.size === 0) {
+            void toggleToolset(tool.id === "tool.settings" ? moleculeInspectorToolsetId : artToolsetId);
+            return;
+          }
+          if (tool.id === "tool.settings" && types.has("molecule")) {
+            void toggleToolset(moleculeInspectorToolsetId);
+            return;
+          }
+          if (types.has("graphic") || types.has("molecule")) {
+            void toggleToolset(artToolsetId);
+            return;
+          }
+          if (types.has("text")) {
+            void toggleToolset(textToolsetId);
+            return;
+          }
+          setStatus(`${tool.title} does not cover the selected object yet`);
+          return;
+        }
+
+        // One-shot formatting: rewrite the selected text objects' spans as chemical formulas.
+        if (tool.id === "style.formulaText") {
+          const nextDocument = applyFormulaTextFormatting(documentRef.current);
+          if (nextDocument !== documentRef.current) {
+            commitDocumentChange(nextDocument);
+            setStatus("Formatted selected text as formula");
+          } else {
+            setStatus("Select a text object to format as formula");
+          }
+          return;
+        }
+
         if (!isDrawingToolCommand(tool.id)) {
           setStatus(`${tool.title} command routed`);
           return;
@@ -7429,8 +7517,21 @@ export function MainWindow({
     return [...byId].map(([id, title]) => ({ id, title }));
   }, [shellCommandSpecs]);
 
-  // Full live specs (including current enabled state) for the in-place customize gallery.
-  const galleryCommands = shellCommandSpecs;
+  // Full live specs (including current enabled state) for the in-place customize gallery — minus
+  // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
+  // used rather than live enabled state, so transiently disabled commands (Undo, align, boolean
+  // ops) stay offered.
+  const galleryCommands = useMemo(() => {
+    // Deliberately the *shipped* manifest, not `toolsetRegistry`. The latter is the user's own
+    // customized layout, so keying off it made the gallery eat its own tail: remove a tool from a
+    // toolbar and it vanishes from the list you would put it back with, permanently. What the build
+    // ships is a fixed fact; what the user has arranged is not.
+    const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
+    return shellCommandSpecs.filter((command) =>
+      !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
+      !isCompatOnlyArtVariantCommandId(command.id, shipped)
+    );
+  }, [shellCommandSpecs]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
@@ -7913,6 +8014,19 @@ export function MainWindow({
     }
   }, []);
 
+  /** Abandon an in-flight placement and restore the document it started from. Defined ahead of the
+   *  keydown effect that calls it, so the effect's dependency list can name it. */
+  const cancelNativePlacementDrag = useCallback((): void => {
+    const drag = nativePlacementDragRef.current;
+    if (!drag) {
+      return;
+    }
+    nativePlacementDragRef.current = null;
+    // The capture lives on the page element, which a key event cannot address. Dropping the ref is
+    // what matters: pointerup then finds no drag and releases the capture without committing.
+    replacePresentDocument(drag.startDocument);
+  }, [replacePresentDocument]);
+
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -8024,6 +8138,17 @@ export function MainWindow({
         return;
       }
 
+      // A live placement (bond, template, arrow, chain) has to be abandoned before the generic
+      // tool-escape below: switching to Select leaves the drag armed, and the eventual pointerup
+      // still commits the object the user just tried to cancel.
+      if (event.key === "Escape" && nativePlacementDragRef.current) {
+        event.preventDefault();
+        const label = nativePlacementStatusLabel(nativePlacementDragRef.current);
+        cancelNativePlacementDrag();
+        setStatus(`${capitalizeLabel(label)} canceled`);
+        return;
+      }
+
       if (
         event.key === "Escape" &&
         activeToolCommandIdRef.current !== "tool.select" &&
@@ -8069,6 +8194,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
     clearNativePathArtDraw,
     clearProjectedPlaneTiltDrag,
@@ -8586,14 +8712,24 @@ export function MainWindow({
   const startNativePlacementDrag = useCallback((
     event: ObjectPointerEvent,
     point: ClientPoint,
-    placement: { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle } | { kind: "template"; templateId: NativeMoleculeTemplateId }
+    placement:
+      | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle }
+      | { kind: "template"; templateId: NativeMoleculeTemplateId }
+      | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
+      | { kind: "chain"; anchor?: NativeChainAnchor }
   ): boolean => {
     const startDocument = documentRef.current;
     const placementDocument = placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
-      : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+      : placement.kind === "arrow"
+        ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
+        : placement.kind === "chain"
+          ? applyNativeChainTool(startDocument, point, undefined, placement.anchor)
+          : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
     const objectId = placementDocument.selection.objectIds[0];
-    if (placementDocument === startDocument || !objectId || findDocumentObject(startDocument, objectId)) {
+    // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
+    const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
+    if (placementDocument === startDocument || !objectId || (!growsExistingObject && findDocumentObject(startDocument, objectId))) {
       return false;
     }
 
@@ -8607,6 +8743,8 @@ export function MainWindow({
       latestPoint: point,
       bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
+      arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
+      chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
@@ -8898,12 +9036,25 @@ export function MainWindow({
   const nativePlacementDocumentFromDrag = useCallback((
     drag: NativePlacementDragState,
     point: ClientPoint
-  ): ChemDraftDocument => rotateNativeMoleculeObjectAroundPoint(
-    drag.placementDocument,
-    drag.objectId,
-    drag.startPoint,
-    nativePlacementRotationDegrees(drag.startPoint, point)
-  ), []);
+  ): ChemDraftDocument => {
+    if (drag.kind === "arrow") {
+      // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
+      return stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point);
+    }
+    if (drag.kind === "chain") {
+      // Chains regenerate from the start document each move: the drag vector sets axis and
+      // segment count, so the whole zig-zag is recomputed rather than transformed.
+      // `preview`: the frames the user drags through are drawn from atoms and bonds, so the
+      // whole-molecule SMILES derivation is pure cost until the gesture commits.
+      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, { preview: true });
+    }
+    return rotateNativeMoleculeObjectAroundPoint(
+      drag.placementDocument,
+      drag.objectId,
+      drag.startPoint,
+      nativePlacementRotationDegrees(drag.startPoint, point)
+    );
+  }, []);
 
   const previewNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -10353,6 +10504,62 @@ export function MainWindow({
       return;
     }
 
+    {
+      const arrowKind = reactionArrowKindForToolCommand(activeToolState.activeCommandId);
+      if (arrowKind) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
+          const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
+          if (nextDocument !== documentRef.current) {
+            commitDocumentChange(nextDocument);
+            setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
+          }
+        }
+        return;
+      }
+    }
+
+    if (activeToolState.activeCommandId === "tool.chain") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!startNativePlacementDrag(event, point, { kind: "chain" })) {
+        const nextDocument = applyNativeChainTool(documentRef.current, point);
+        if (nextDocument !== documentRef.current) {
+          commitDocumentChange(nextDocument);
+          setStatus("Inserted carbon chain");
+        }
+      }
+      return;
+    }
+
+    {
+      const bracketKind = bracketKindForToolCommand(activeToolState.activeCommandId);
+      if (bracketKind) {
+        event.preventDefault();
+        event.stopPropagation();
+        applyBracketAtPoint(point, bracketKind);
+        return;
+      }
+    }
+
+    {
+      const symbolGlyph = symbolGlyphForToolCommand(activeToolState.activeCommandId);
+      if (symbolGlyph) {
+        event.preventDefault();
+        event.stopPropagation();
+        applySymbolGlyphAtPoint(point, symbolGlyph);
+        return;
+      }
+    }
+
+    if (activeToolState.activeCommandId === "tool.atom") {
+      event.preventDefault();
+      event.stopPropagation();
+      setStatus("Atom Label Tool: click an atom to edit its label");
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.text") {
       event.preventDefault();
       event.stopPropagation();
@@ -10379,7 +10586,9 @@ export function MainWindow({
     applyNativeArtDocumentAtPoint,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
+    applySymbolGlyphAtPoint,
     applyTextDocumentAtPoint,
+    commitDocumentChange,
     document,
     pagePointFromPointerEvent,
     startTapeMeasureDrag,
@@ -11027,8 +11236,13 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
       const changed = commitNativePlacementDrag(nativePlacementDrag, point);
       const label = nativePlacementStatusLabel(nativePlacementDrag);
+      const draggedVerb = nativePlacementDrag.kind === "arrow"
+        ? "Inserted angled"
+        : nativePlacementDrag.kind === "chain"
+          ? "Inserted"
+          : "Inserted rotated";
       setStatus(changed
-        ? nativePlacementDrag.dragging ? `Inserted rotated ${label}` : `Inserted ${label}`
+        ? nativePlacementDrag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
         : `${capitalizeLabel(label)} not placed`);
       clearNativePlacementDrag(event);
       return;
@@ -11464,6 +11678,16 @@ export function MainWindow({
       return;
     }
 
+    // Plain art shapes — including the orbital tools — must place over existing objects too.
+    // Drawing a lobe onto a structure is the whole point of the orbital toolbar, and without this
+    // the object handler stops the event and the press does nothing.
+    if (activeNativeArtTool && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.eraser") {
       event.preventDefault();
       event.stopPropagation();
@@ -11486,6 +11710,77 @@ export function MainWindow({
       }
 
       applyChargeDocumentAtPoint(activeChargeToolValue, point);
+      return;
+    }
+
+    // Reaction arrows commonly start on top of a reagent, so they need the same branch the page
+    // handler has; the object handler stops propagation before the page ever sees the press.
+    {
+      const arrowKind = reactionArrowKindForToolCommand(activeToolState.activeCommandId);
+      if (arrowKind && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
+          const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
+          if (nextDocument !== documentRef.current) {
+            commitDocumentChange(nextDocument);
+            setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
+          }
+        }
+        return;
+      }
+    }
+
+    if (
+      activeToolState.activeCommandId === "tool.chain" &&
+      object?.type === "molecule" &&
+      point &&
+      nativeMoleculeHit?.kind === "atom"
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const started = startNativePlacementDrag(event, point, {
+        kind: "chain",
+        anchor: { objectId, atomId: nativeMoleculeHit.atomId }
+      });
+      if (!started) {
+        // The press was consumed — stopPropagation above means no other handler will answer for it.
+        // Without this the tool looks broken: the user presses an atom, nothing happens, and nothing
+        // says why. Usually full valence; also a molecule whose graph this build cannot edit, which
+        // is why the wording does not commit to a single cause.
+        setStatus("Can't grow a chain from that atom");
+      }
+      return;
+    }
+
+    {
+      const bracketKind = bracketKindForToolCommand(activeToolState.activeCommandId);
+      if (bracketKind && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        applyBracketAtPoint(point, bracketKind);
+        return;
+      }
+    }
+
+    {
+      const symbolGlyph = symbolGlyphForToolCommand(activeToolState.activeCommandId);
+      if (symbolGlyph && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        applySymbolGlyphAtPoint(point, symbolGlyph);
+        return;
+      }
+    }
+
+    if (activeToolState.activeCommandId === "tool.atom" && object?.type === "molecule" && point) {
+      if (nativeMoleculeHit?.kind === "atom") {
+        event.stopPropagation();
+        startAtomLabelEdit({ objectId, ...nativeMoleculeHit }, { clearDraft: true });
+        return;
+      }
+      event.stopPropagation();
+      setStatus("Atom Label Tool: click an atom to edit its label");
       return;
     }
 
@@ -12058,9 +12353,12 @@ export function MainWindow({
     addChargeToHoveredNativeAtom,
     assignHoveredNativeDeleteTarget,
     applyChargeDocumentAtPoint,
+    applyBracketAtPoint,
+    applyNativeArtDocumentAtPoint,
     applyNativeBondDisplayStyleDocumentTarget,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
+    applySymbolGlyphAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
     currentEyedropperStatus,
@@ -13852,6 +14150,10 @@ export function MainWindow({
           onPickPackage={pluginRuntime.pickPackage}
           onInstallPackage={pluginRuntime.installPackage}
           onUninstallPlugin={pluginRuntime.uninstallInstalledPlugin}
+          installedPluginCatalogReady={pluginRuntime.installedPluginCatalogReady}
+          onCheckPluginUpdates={pluginRuntime.checkInstalledPluginUpdates}
+          onPreparePluginUpdate={pluginRuntime.prepareInstalledPluginUpdate}
+          onUpdatePlugin={pluginRuntime.updateInstalledPlugin}
           onClose={() => setPluginManagerOpen(false)}
           onPluginsChanged={() => setStatus("Plugin settings updated")}
         />
@@ -16472,9 +16774,45 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "arrow" && drag.arrowKind) {
+    return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
+  }
+  if (drag.kind === "chain") {
+    return "carbon chain";
+  }
   return drag.kind === "template" && drag.templateId
     ? `${nativeTemplateStatusLabel(drag.templateId)} template`
     : `${nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
+}
+
+function nativeReactionArrowAriaLabel(arrowKind: ArrowObject["arrowKind"]): string {
+  switch (arrowKind) {
+    case "forward":
+      return "Forward reaction arrow";
+    case "resonance":
+      return "Resonance arrow";
+    case "equilibrium":
+      return "Equilibrium arrow";
+    case "retrosynthesis":
+      return "Retrosynthesis arrow";
+    default:
+      return "Reaction arrow";
+  }
+}
+
+function nativeReactionArrowStatusLabel(arrowKind: ArrowObject["arrowKind"]): string {
+  switch (arrowKind) {
+    case "forward":
+      return "reaction";
+    case "resonance":
+      return "resonance";
+    case "equilibrium":
+      return "equilibrium";
+    case "retrosynthesis":
+      return "retrosynthesis";
+    default:
+      return "reaction";
+  }
 }
 
 function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string {
@@ -19464,8 +19802,28 @@ function PageSvgSurface({
   );
 }
 
-function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
-  if (object.type === "graphic") {
+/** Object types in the current selection, for routing a command to a surface that can edit them. */
+export function selectedDocumentObjectTypes(document: ChemDraftDocument): ReadonlySet<DocumentObject["type"]> {
+  const selectedIds = new Set(document.selection.objectIds);
+  const types = new Set<DocumentObject["type"]>();
+  if (selectedIds.size === 0) {
+    return types;
+  }
+  for (const page of document.pages) {
+    for (const object of page.objects) {
+      if (selectedIds.has(object.id)) {
+        types.add(object.type);
+      }
+    }
+  }
+  return types;
+}
+
+export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
+  // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
+  // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
+  // #111111. Export is unaffected: it plans the page directly and never applies this filter.
+  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") {
     return false;
   }
 
@@ -20539,7 +20897,10 @@ function DocumentObjectView({
     const height = Math.max(object.height, 1);
     const start = arrowAnchorPointRelativeToObject(object, object.start, { x: 0, y: height / 2 });
     const end = arrowAnchorPointRelativeToObject(object, object.end, { x: width, y: height / 2 });
-    const markerId = `reaction-arrowhead-${object.id}`;
+    // Same geometry plan as SVG export (layout-engine), projected per point for Spin 3D parity.
+    const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
+    const project = (point: { x: number; y: number }) =>
+      projectArtPoint(point, width, height, artObjectProjection?.matrix);
     return (
       <div
         className={["document-object", "document-object-overlay", "reaction-arrow-object"].join(" ")}
@@ -20547,7 +20908,7 @@ function DocumentObjectView({
         data-object-id={object.id}
         data-layer-index={layerIndex}
         data-arrow-kind={object.arrowKind}
-        aria-label={`${object.arrowKind === "forward" ? "Forward" : "Reaction"} arrow`}
+        aria-label={`${nativeReactionArrowAriaLabel(object.arrowKind)}`}
         onPointerDown={handleObjectPointerDown}
         onPointerMove={handleObjectPointerMove}
         onPointerUp={handleObjectPointerUp}
@@ -20561,27 +20922,32 @@ function DocumentObjectView({
           preserveAspectRatio="none"
           aria-hidden="true"
         >
-          <defs>
-            <marker
-              id={markerId}
-              markerHeight="7"
-              markerUnits="strokeWidth"
-              markerWidth="7"
-              orient="auto"
-              refX="6"
-              refY="3.5"
-            >
-              <path d="M 0 0 L 7 3.5 L 0 7 z" />
-            </marker>
-          </defs>
-          <line
-            className="reaction-arrow-line"
-            x1={formatSvgNumber(projectArtPoint(start, width, height, artObjectProjection?.matrix).x)}
-            y1={formatSvgNumber(projectArtPoint(start, width, height, artObjectProjection?.matrix).y)}
-            x2={formatSvgNumber(projectArtPoint(end, width, height, artObjectProjection?.matrix).x)}
-            y2={formatSvgNumber(projectArtPoint(end, width, height, artObjectProjection?.matrix).y)}
-            markerEnd={object.arrowKind === "forward" ? `url(#${markerId})` : undefined}
-          />
+          {geometry.lines.map((line, index) => {
+            const lineStart = project(line.start);
+            const lineEnd = project(line.end);
+            return (
+              <line
+                key={`line-${index}`}
+                className="reaction-arrow-line"
+                x1={formatSvgNumber(lineStart.x)}
+                y1={formatSvgNumber(lineStart.y)}
+                x2={formatSvgNumber(lineEnd.x)}
+                y2={formatSvgNumber(lineEnd.y)}
+              />
+            );
+          })}
+          {geometry.heads.map((head, index) => (
+            <polygon
+              key={`head-${index}`}
+              className={head.filled ? "reaction-arrow-head" : "reaction-arrow-head reaction-arrow-head-open"}
+              points={head.points
+                .map((point) => {
+                  const projected = project(point);
+                  return `${formatSvgNumber(projected.x)},${formatSvgNumber(projected.y)}`;
+                })
+                .join(" ")}
+            />
+          ))}
         </svg>
         {artObjectTransformFrame}
       </div>
@@ -20994,7 +21360,8 @@ function arrowAnchorPointRelativeToObject(
 function BracketGlyph({ object, projection }: { object: BracketObject; projection?: DocumentObjectProjection }) {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
-  const pathD = bracketPath(object.bracketKind, width, height);
+  // Shared generator with SVG export (layout-engine) so canvas and export cannot drift.
+  const pathD = bracketGlyphPathD(object.bracketKind, width, height);
   return (
     <svg
       className="bracket-glyph"
@@ -21009,22 +21376,6 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
       />
     </svg>
   );
-}
-
-function bracketPath(kind: BracketObject["bracketKind"], width: number, height: number): string {
-  const right = Math.max(width - 1, 0);
-  const bottom = Math.max(height - 1, 0);
-  if (kind === "round") {
-    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
-  }
-  if (kind === "curly") {
-    return [
-      `M ${right} 0`,
-      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
-      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
-    ].join(" ");
-  }
-  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
 }
 
 function reactSvgPaintAttrs(

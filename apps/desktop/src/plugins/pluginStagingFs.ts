@@ -12,7 +12,17 @@
  * name anything outside it removes an entire category of mistake at the type level.
  */
 
-import { BaseDirectory, mkdir, readTextFile, remove, writeFile, writeTextFile, exists } from "@tauri-apps/plugin-fs";
+import {
+  BaseDirectory,
+  exists,
+  mkdir,
+  readDir,
+  readTextFile,
+  remove,
+  rename,
+  writeFile,
+  writeTextFile
+} from "@tauri-apps/plugin-fs";
 
 export interface PluginStagingFs {
   /** Write a file, creating parent directories as needed. */
@@ -20,8 +30,12 @@ export interface PluginStagingFs {
   /** Read a UTF-8 file, or `undefined` when it does not exist. */
   readTextFile(path: string): Promise<string | undefined>;
   writeTextFile(path: string, text: string): Promise<void>;
+  /** Atomically replace `newPath` with `oldPath` where the platform supports ordinary rename. */
+  rename(oldPath: string, newPath: string): Promise<void>;
   /** Recursively remove a directory. Succeeds when it is already absent. */
   removeDir(path: string): Promise<void>;
+  /** Immediate child directory names. Empty when the directory does not exist. */
+  readDirNames(path: string): Promise<readonly string[]>;
   mkdir(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
 }
@@ -58,11 +72,21 @@ export function createTauriPluginStagingFs(): PluginStagingFs {
       }
       await writeTextFile(path, text, { baseDir });
     },
+    async rename(oldPath: string, newPath: string): Promise<void> {
+      await rename(oldPath, newPath, { oldPathBaseDir: baseDir, newPathBaseDir: baseDir });
+    },
     async removeDir(path: string): Promise<void> {
       if (!(await exists(path, { baseDir }))) {
         return;
       }
       await remove(path, { baseDir, recursive: true });
+    },
+    async readDirNames(path: string): Promise<readonly string[]> {
+      if (!(await exists(path, { baseDir }))) {
+        return [];
+      }
+      const entries = await readDir(path, { baseDir });
+      return entries.filter((entry) => entry.isDirectory).map((entry) => entry.name);
     },
     async mkdir(path: string): Promise<void> {
       await mkdir(path, { baseDir, recursive: true });

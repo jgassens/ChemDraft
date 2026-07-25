@@ -80,6 +80,7 @@ describe("MainWindow bundled plugin integration", () => {
     expect(dialog).not.toBeNull();
     expect(dialog?.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
     expect(dialog?.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')?.disabled).toBe(true);
+    expect(dialog?.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')?.disabled).toBe(true);
 
     await click(dialog!.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!);
     expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();

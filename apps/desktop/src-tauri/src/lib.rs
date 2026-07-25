@@ -307,7 +307,10 @@ pub fn run() {
         // state (localStorage, IndexedDB) is disturbed. See `installed_plugins` for the full rationale.
         .register_uri_scheme_protocol("tauri", installed_plugins::handle_tauri_request)
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        // Host-owned network transport for the allowlisted plugin-update catalog. Installed plugin
+        // workers remain under connect-src 'self' and never receive this capability.
+        .plugin(tauri_plugin_http::init());
 
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_sparkle_updater::init());
@@ -3234,25 +3237,51 @@ mod tests {
             .expect("default capability should declare permissions");
 
         expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "dialog:allow-save")
+            capability_permission_identifier(permission) == Some("dialog:allow-save")
         }));
         expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "fs:allow-write-text-file")
+            capability_permission_identifier(permission) == Some("fs:allow-write-text-file")
         }));
         expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "fs:allow-write-file")
+            capability_permission_identifier(permission) == Some("fs:allow-write-file")
         }));
         expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "allow-rasterize-svg")
+            capability_permission_identifier(permission) == Some("allow-rasterize-svg")
         }));
+    }
+
+    #[test]
+    fn default_capability_allows_atomic_plugin_catalog_writes() {
+        let capability = include_str!("../capabilities/default.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(capability).expect("default capability should parse");
+        let permissions = parsed
+            .pointer("/permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("default capability should declare permissions");
+
+        for permission_id in ["fs:allow-write-text-file", "fs:allow-rename"] {
+            let permission = permissions
+                .iter()
+                .find(|permission| {
+                    capability_permission_identifier(permission) == Some(permission_id)
+                })
+                .unwrap_or_else(|| panic!("missing scoped permission {permission_id}"));
+            let paths = permission
+                .pointer("/allow")
+                .and_then(serde_json::Value::as_array)
+                .unwrap_or_else(|| panic!("{permission_id} should declare an allow scope"));
+
+            for expected_path in [
+                "$APPDATA/installed-plugins.json",
+                "$APPDATA/installed-plugins.json.tmp",
+            ] {
+                expect_true(paths.iter().any(|entry| {
+                    entry.pointer("/path").and_then(serde_json::Value::as_str)
+                        == Some(expected_path)
+                }));
+            }
+        }
     }
 
     #[test]
@@ -3718,6 +3747,14 @@ mod tests {
 
     fn expect_true(value: bool) {
         assert!(value);
+    }
+
+    fn capability_permission_identifier(permission: &serde_json::Value) -> Option<&str> {
+        permission.as_str().or_else(|| {
+            permission
+                .pointer("/identifier")
+                .and_then(serde_json::Value::as_str)
+        })
     }
 
     fn expect_false(value: bool) {

@@ -19,7 +19,7 @@ import {
   type PluginManifest,
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
@@ -35,7 +35,9 @@ import {
   inspectPluginPackage,
   installPluginPackage,
   loadInstalledPlugins,
-  uninstallPlugin
+  pruneOrphanedPluginPackages,
+  uninstallPlugin,
+  updateInstalledPluginPackage
 } from "./installPluginPackage";
 import { PluginPackageError, PluginPackageErrorCodes } from "./pluginPackageArchive";
 import type { PluginStagingFs } from "./pluginStagingFs";
@@ -46,6 +48,8 @@ const COMMAND_ID = "plugin.installable.run";
 /** In-memory {@link PluginStagingFs}. Records writes so staging can be asserted, including its absence. */
 class MemoryStagingFs implements PluginStagingFs {
   readonly files = new Map<string, Uint8Array>();
+  failNextRename = false;
+  readonly refusedRemovals = new Set<string>();
 
   async writeFile(path: string, bytes: Uint8Array): Promise<void> {
     this.files.set(path, bytes.slice());
@@ -57,7 +61,34 @@ class MemoryStagingFs implements PluginStagingFs {
   async writeTextFile(path: string, text: string): Promise<void> {
     this.files.set(path, new TextEncoder().encode(text));
   }
+  async rename(oldPath: string, newPath: string): Promise<void> {
+    if (this.failNextRename) {
+      this.failNextRename = false;
+      throw new Error("Simulated atomic catalog commit failure");
+    }
+    const bytes = this.files.get(oldPath);
+    if (!bytes) {
+      throw new Error(`Missing source path ${oldPath}`);
+    }
+    this.files.set(newPath, bytes);
+    this.files.delete(oldPath);
+  }
+  async readDirNames(path: string): Promise<readonly string[]> {
+    const prefix = `${path}/`;
+    const names = new Set<string>();
+    for (const key of this.files.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const rest = key.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      // Only directories: a file directly inside `path` has no further separator.
+      if (slash > 0) names.add(rest.slice(0, slash));
+    }
+    return [...names];
+  }
   async removeDir(path: string): Promise<void> {
+    if (this.refusedRemovals.has(path)) {
+      throw new Error(`Simulated cleanup failure for ${path}`);
+    }
     for (const key of [...this.files.keys()]) {
       if (key === path || key.startsWith(`${path}/`)) {
         this.files.delete(key);
@@ -223,6 +254,24 @@ async function installFixture(
     replaces: options.replaces as never
   });
   return { fs, runtime, result, worker };
+}
+
+async function updateInspection(
+  version = "2.1.0",
+  overrides: Partial<PluginManifest> = {}
+): Promise<Awaited<ReturnType<typeof inspectPluginPackage>>> {
+  const zip = await createPackage({
+    manifest: manifestDocument({ version, ...overrides })
+  });
+  return inspectPluginPackage({ zipBytes: zip, sidecar: await sidecarFor(zip) });
+}
+
+function installedCatalogEntry(result: Awaited<ReturnType<typeof installPluginPackage>>) {
+  return {
+    record: result.record,
+    manifest: result.descriptor.manifest,
+    descriptor: result.descriptor
+  };
 }
 
 /** A stand-in for the compiled-in copy a package is normally built from — same id, different handler.
@@ -526,6 +575,440 @@ describe("installPluginPackage", () => {
 
     expect(fs.pathsUnder(`installed-plugins/${PLUGIN_ID}/`)).not.toContain(`installed-plugins/${PLUGIN_ID}/stale.js`);
   });
+
+  it("reserves the checksum-addressed packages namespace before removing any staged bytes", async () => {
+    const fs = new MemoryStagingFs();
+    const sentinelPath = "installed-plugins/packages/existing-update/entry.js";
+    await fs.writeFile(sentinelPath, new TextEncoder().encode("keep"));
+    const zip = await createPackage({ manifest: manifestDocument({ id: "packages" }) });
+    const inspection = await inspectPluginPackage({ zipBytes: zip, sidecar: await sidecarFor(zip) });
+
+    await expect(
+      installPluginPackage({
+        runtime: createRuntime(),
+        fs,
+        inspection,
+        origin: ORIGIN,
+        createWorker: () => createFakeWorker().handle
+      })
+    ).rejects.toThrow(/unsafe installed-plugin id/i);
+
+    expect(fs.files.has(sentinelPath)).toBe(true);
+  });
+});
+
+describe("updateInstalledPluginPackage", () => {
+  it("handshakes at an immutable path, swaps the enabled runtime, records it, then removes the old package", async () => {
+    const { fs, runtime, result: installed, worker: oldWorker } = await installFixture();
+    const inspection = await updateInspection();
+    const candidateWorker = createFakeWorker();
+
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => candidateWorker.handle
+    });
+
+    expect(updated.record).toMatchObject({
+      id: PLUGIN_ID,
+      version: "2.1.0",
+      sourceChecksum: inspection.sourceChecksum
+    });
+    expect(updated.record.stagedPath).toBe(`installed-plugins/packages/${inspection.sourceChecksum}`);
+    expect(updated.descriptor.entryUrl.toString()).toBe(
+      `tauri://localhost/installed-plugins/packages/${inspection.sourceChecksum}/entry.js`
+    );
+    expect(fs.pathsUnder(`${installed.record.stagedPath}/`)).toEqual([]);
+    expect(fs.pathsUnder(`${updated.record.stagedPath}/`)).toContain(`${updated.record.stagedPath}/manifest.json`);
+    expect(oldWorker.terminated()).toBe(true);
+    expect(candidateWorker.terminated()).toBe(false);
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.1.0");
+    expect(await loadInstalledPluginRecords(fs)).toEqual([updated.record]);
+  });
+
+  it("keeps the old runtime, record, and files when the candidate handshake fails", async () => {
+    const { fs, runtime, result: installed, worker: oldWorker } = await installFixture();
+    const inspection = await updateInspection();
+    const candidateWorker = createFakeWorker({ protocolVersion: 99 });
+
+    await expect(
+      updateInstalledPluginPackage({
+        runtime,
+        fs,
+        current: installedCatalogEntry(installed),
+        inspection,
+        disabled: false,
+        origin: ORIGIN,
+        createWorker: () => candidateWorker.handle
+      })
+    ).rejects.toThrow(/kept the installed version/i);
+
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.0.1");
+    expect(oldWorker.terminated()).toBe(false);
+    expect(candidateWorker.terminated()).toBe(true);
+    expect(await loadInstalledPluginRecords(fs)).toEqual([installed.record]);
+    expect(fs.pathsUnder(`${installed.record.stagedPath}/`)).toContain(`${installed.record.stagedPath}/manifest.json`);
+    expect(fs.pathsUnder("installed-plugins/packages/")).toEqual([]);
+  });
+
+  it("refuses a different plugin id and a same or older version before staging", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const wrongId = await updateInspection("2.1.0", { id: "org.chemdraft.other" });
+    const sameVersion = await updateInspection("2.0.1");
+
+    await expect(
+      updateInstalledPluginPackage({
+        runtime,
+        fs,
+        current: installedCatalogEntry(installed),
+        inspection: wrongId,
+        disabled: false,
+        origin: ORIGIN,
+        createWorker: () => createFakeWorker().handle
+      })
+    ).rejects.toMatchObject({ code: PluginInstallErrorCodes.UpdateIdMismatch });
+    await expect(
+      updateInstalledPluginPackage({
+        runtime,
+        fs,
+        current: installedCatalogEntry(installed),
+        inspection: sameVersion,
+        disabled: false,
+        origin: ORIGIN,
+        createWorker: () => createFakeWorker().handle
+      })
+    ).rejects.toMatchObject({ code: PluginInstallErrorCodes.UpdateVersionNotNewer });
+
+    expect(fs.pathsUnder("installed-plugins/packages/")).toEqual([]);
+    expect(await loadInstalledPluginRecords(fs)).toEqual([installed.record]);
+  });
+
+  it.each(["packages", "PACKAGES"])(
+    "refuses to stage beneath a legacy reserved-path record named %s",
+    async (reservedId) => {
+      const { fs, runtime, result: installed } = await installFixture();
+      const inspection = await updateInspection();
+      await saveInstalledPluginRecords(fs, [
+        installed.record,
+        {
+          ...installed.record,
+          id: reservedId,
+          name: "Legacy reserved-path collision",
+          stagedPath: `installed-plugins/${reservedId}`
+        }
+      ]);
+
+      await expect(
+        updateInstalledPluginPackage({
+          runtime,
+          fs,
+          current: installedCatalogEntry(installed),
+          inspection,
+          disabled: false,
+          origin: ORIGIN,
+          createWorker: () => createFakeWorker().handle
+        })
+      ).rejects.toMatchObject({ code: PluginInstallErrorCodes.UpdateStateChanged });
+
+      expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.0.1");
+      expect(fs.pathsUnder("installed-plugins/packages/")).toEqual([]);
+    }
+  );
+
+  it("restores the still-live old runtime when the atomic record commit fails", async () => {
+    const { fs, runtime, result: installed, worker: oldWorker } = await installFixture();
+    const inspection = await updateInspection();
+    const candidateWorker = createFakeWorker();
+    fs.failNextRename = true;
+
+    await expect(
+      updateInstalledPluginPackage({
+        runtime,
+        fs,
+        current: installedCatalogEntry(installed),
+        inspection,
+        disabled: false,
+        origin: ORIGIN,
+        createWorker: () => candidateWorker.handle
+      })
+    ).rejects.toThrow(/kept the installed version/i);
+
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.0.1");
+    expect(oldWorker.terminated()).toBe(false);
+    expect(candidateWorker.terminated()).toBe(true);
+    expect(await loadInstalledPluginRecords(fs)).toEqual([installed.record]);
+    expect(fs.pathsUnder("installed-plugins/packages/")).toEqual([]);
+  });
+
+  it("preserves disabled state, but leaves the updated descriptor re-enableable", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    runtime.unregisterPlugin(PLUGIN_ID);
+    installed.descriptor.deactivate?.();
+    const inspection = await updateInspection();
+    const workers: ReturnType<typeof createFakeWorker>[] = [];
+
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: true,
+      origin: ORIGIN,
+      createWorker: () => {
+        const worker = createFakeWorker();
+        workers.push(worker);
+        return worker.handle;
+      }
+    });
+
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+    expect(workers).toHaveLength(1);
+    expect(workers[0]?.terminated()).toBe(true);
+    expect((await loadInstalledPluginRecords(fs))[0]?.version).toBe("2.1.0");
+
+    updated.descriptor.activate?.();
+    runtime.registerPlugin(updated.descriptor.manifest, updated.descriptor.options);
+    await expect(runtime.host.invokeCommand(COMMAND_ID)).resolves.toMatchObject({ from: "installed" });
+    expect(workers).toHaveLength(2);
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.1.0");
+  });
+
+  it("commits successfully and reports a diagnostic when old-directory cleanup fails", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    fs.refusedRemovals.add(installed.record.stagedPath);
+
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+
+    expect(updated.record.version).toBe("2.1.0");
+    expect(await loadInstalledPluginRecords(fs)).toEqual([updated.record]);
+    expect(runtime.panels.getDiagnostics().at(-1)).toMatchObject({
+      code: "installed-plugin-update-cleanup-failed"
+    });
+  });
+
+  it("keeps the committed package when post-commit reporting itself fails", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    // Force the cleanup handler to run, then make the diagnostic channel throw from inside it. The
+    // record already names the new directory at that point, so escaping to the failure path would
+    // delete the live payload and leave the catalog pointing at nothing.
+    fs.refusedRemovals.add(installed.record.stagedPath);
+    vi.spyOn(runtime.panels, "reportDiagnostic").mockImplementation(() => {
+      throw new Error("Diagnostic channel unavailable");
+    });
+
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+
+    expect(updated.record.version).toBe("2.1.0");
+    expect(await loadInstalledPluginRecords(fs)).toEqual([updated.record]);
+    expect(fs.pathsUnder(`${updated.record.stagedPath}/`).length).toBeGreaterThan(0);
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.1.0");
+    vi.restoreAllMocks();
+  });
+
+  it("refuses to update when the catalog cannot be read, before staging anything", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    // A catalog this build cannot parse cannot be rewritten without dropping the records it could
+    // not read. Failing here beats failing after the runtime has already been swapped.
+    await fs.writeTextFile(INSTALLED_PLUGINS_RECORD_FILE, "{ truncated");
+
+    await expect(
+      updateInstalledPluginPackage({
+        runtime,
+        fs,
+        current: installedCatalogEntry(installed),
+        inspection,
+        disabled: false,
+        origin: ORIGIN,
+        createWorker: () => createFakeWorker().handle
+      })
+    ).rejects.toThrow(/catalog could not be read/i);
+
+    expect(runtime.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe(installed.record.version);
+    expect(fs.pathsUnder(`installed-plugins/packages/${inspection.sourceChecksum}/`)).toEqual([]);
+  });
+});
+
+describe("uninstallPlugin path validation", () => {
+  it("forgets a record whose recorded path is unsafe, without deleting anything", async () => {
+    const { fs, runtime, result: installed, worker } = await installFixture();
+    const removeDir = vi.spyOn(fs, "removeDir");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // An id like "packages" collides with the update namespace; older builds could install it, and
+    // the path validator rejects it. Refusing the whole uninstall on that basis is what makes the
+    // entry unremovable: the catalog keeps resurrecting a plugin the user asked to remove, with no
+    // path out from the UI. So the record goes, and only the file deletion is skipped.
+    await uninstallPlugin({
+      runtime,
+      fs,
+      pluginId: PLUGIN_ID,
+      record: { stagedPath: "installed-plugins/packages" },
+      descriptor: installed.descriptor
+    });
+
+    expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+    expect(worker.terminated()).toBe(true);
+    // Critically, the rejected path is never handed to removeDir — that namespace holds every other
+    // plugin's package directory.
+    expect(removeDir).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+
+    removeDir.mockRestore();
+    warn.mockRestore();
+  });
+
+  it("forgets the record even when the package directory cannot be deleted", async () => {
+    const { fs, runtime, result: installed, worker } = await installFixture();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.refusedRemovals.add(installed.record.stagedPath);
+
+    // A locked file or a denied scope must not strand the record either; the next launch's orphan
+    // sweep retries the directory once nothing points at it.
+    await uninstallPlugin({
+      runtime,
+      fs,
+      pluginId: PLUGIN_ID,
+      record: installed.record,
+      descriptor: installed.descriptor
+    });
+
+    expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+    expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+    expect(worker.terminated()).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe("pruneOrphanedPluginPackages", () => {
+  const liveRecord = (stagedPath: string) => ({
+    id: "org.example.live",
+    version: "1.0.0",
+    name: "Live",
+    stagedPath,
+    sourceChecksum: "a".repeat(64),
+    installedAt: "2026-07-25T12:00:00.000Z"
+  });
+
+  async function treeWithBoth(): Promise<{ fs: MemoryStagingFs; live: string; orphan: string }> {
+    const fs = new MemoryStagingFs();
+    const live = `installed-plugins/packages/${"a".repeat(64)}`;
+    const orphan = `installed-plugins/packages/${"b".repeat(64)}`;
+    await fs.writeTextFile(`${live}/manifest.json`, "{}");
+    await fs.writeTextFile(`${orphan}/manifest.json`, "{}");
+    // A legacy per-id install and the catalog file live outside the swept subtree.
+    await fs.writeTextFile("installed-plugins/org.example.legacy/manifest.json", "{}");
+    return { fs, live, orphan };
+  }
+
+  it("removes only checksum-addressed directories no record points at", async () => {
+    const { fs, live, orphan } = await treeWithBoth();
+
+    const removed = await pruneOrphanedPluginPackages(fs, {
+      status: "loaded",
+      records: [liveRecord(live)]
+    });
+
+    expect(removed).toEqual([orphan]);
+    expect(fs.pathsUnder(`${live}/`)).toContain(`${live}/manifest.json`);
+    expect(fs.pathsUnder(`${orphan}/`)).toEqual([]);
+    expect(fs.pathsUnder("installed-plugins/org.example.legacy/")).toHaveLength(1);
+  });
+
+  it("refuses to delete anything when the catalog could not be trusted", async () => {
+    const { fs, live, orphan } = await treeWithBoth();
+
+    // loadInstalledPluginRecords reports an unreadable, truncated, or partially-invalid catalog as
+    // "no records". Sweeping on that would destroy a healthy install's payload.
+    const removed = await pruneOrphanedPluginPackages(fs, { status: "unreadable", records: [] });
+
+    expect(removed).toEqual([]);
+    expect(fs.pathsUnder(`${live}/`)).toHaveLength(1);
+    expect(fs.pathsUnder(`${orphan}/`)).toHaveLength(1);
+  });
+
+  it("sweeps a genuinely absent catalog and tolerates stored-path drift", async () => {
+    const { fs, live, orphan } = await treeWithBoth();
+    expect(await pruneOrphanedPluginPackages(fs, { status: "absent", records: [] }))
+      .toEqual(expect.arrayContaining([live, orphan]));
+
+    const drifted = await treeWithBoth();
+    // A trailing separator must not make a live directory look orphaned.
+    expect(await pruneOrphanedPluginPackages(drifted.fs, {
+      status: "loaded",
+      records: [liveRecord(`${drifted.live}/`)]
+    })).toEqual([drifted.orphan]);
+    expect(drifted.fs.pathsUnder(`${drifted.live}/`)).toHaveLength(1);
+  });
+
+  it("sweeps nothing when a record points at the packages root or above it", async () => {
+    // An older build could install an id that resolves to the packages root itself. Such a record
+    // names no single child, so every child looks orphaned — and the sweep would delete the whole
+    // subtree, including that record's own payload.
+    for (const path of ["installed-plugins/packages", "installed-plugins/packages/", "installed-plugins"]) {
+      const { fs, live, orphan } = await treeWithBoth();
+      expect(await pruneOrphanedPluginPackages(fs, { status: "loaded", records: [liveRecord(path)] })).toEqual([]);
+      expect(fs.pathsUnder(`${live}/`)).toHaveLength(1);
+      expect(fs.pathsUnder(`${orphan}/`)).toHaveLength(1);
+    }
+  });
+
+  it("keeps a directory alive for a record nested below it, and matches case-insensitively", async () => {
+    const nested = await treeWithBoth();
+    // A record pointing inside a package directory still makes that directory live.
+    expect(
+      await pruneOrphanedPluginPackages(nested.fs, {
+        status: "loaded",
+        records: [liveRecord(`${nested.live}/inner`)]
+      })
+    ).toEqual([nested.orphan]);
+    expect(nested.fs.pathsUnder(`${nested.live}/`)).toHaveLength(1);
+
+    const cased = await treeWithBoth();
+    // The record and the directory listing can disagree in case on the case-insensitive filesystems
+    // this ships on; a missed match here deletes a live payload.
+    expect(
+      await pruneOrphanedPluginPackages(cased.fs, {
+        status: "loaded",
+        records: [liveRecord(cased.live.toUpperCase())]
+      })
+    ).toEqual([cased.orphan]);
+    expect(cased.fs.pathsUnder(`${cased.live}/`)).toHaveLength(1);
+  });
+
+  it("never throws when a directory resists removal", async () => {
+    const fs = new MemoryStagingFs();
+    const stubborn = `installed-plugins/packages/${"c".repeat(64)}`;
+    await fs.writeTextFile(`${stubborn}/manifest.json`, "{}");
+    fs.refusedRemovals.add(stubborn);
+
+    await expect(pruneOrphanedPluginPackages(fs, { status: "absent", records: [] })).resolves.toEqual([]);
+    expect(fs.pathsUnder(`${stubborn}/`)).toHaveLength(1);
+  });
 });
 
 describe("uninstallPlugin", () => {
@@ -562,6 +1045,31 @@ describe("uninstallPlugin", () => {
     ).resolves.toBeUndefined();
     expect(await loadInstalledPluginRecords(fs)).toEqual([]);
   });
+
+  it("removes the exact checksum-addressed directory recorded by an updated install", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+
+    await uninstallPlugin({
+      runtime,
+      fs,
+      pluginId: PLUGIN_ID,
+      record: updated.record,
+      descriptor: updated.descriptor
+    });
+
+    expect(fs.pathsUnder(`${updated.record.stagedPath}/`)).toEqual([]);
+    expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+  });
 });
 
 describe("loadInstalledPlugins (persistence across restart)", () => {
@@ -584,6 +1092,35 @@ describe("loadInstalledPlugins (persistence across restart)", () => {
     expect(installed[0].manifest.name).toBe("Installable Test Plugin");
     expect(restarted.host.getPlugin(PLUGIN_ID)).toBeDefined();
     expect(restarted.host.commands.has(COMMAND_ID)).toBe(true);
+  });
+
+  it("reloads a checksum-addressed updated package from the record's exact path", async () => {
+    const { fs, runtime, result: installed } = await installFixture();
+    const inspection = await updateInspection();
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+    const restarted = createRuntime();
+
+    const { installed: reloaded, failures } = await loadInstalledPlugins({
+      runtime: restarted,
+      fs,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+
+    expect(failures).toEqual([]);
+    expect(reloaded[0]?.record).toEqual(updated.record);
+    expect(reloaded[0]?.descriptor?.entryUrl.toString()).toBe(
+      `tauri://localhost/installed-plugins/packages/${inspection.sourceChecksum}/entry.js`
+    );
+    expect(restarted.host.getPlugin(PLUGIN_ID)?.manifest.version).toBe("2.1.0");
   });
 
   it("keeps an installed-but-disabled plugin listed and re-enableable, without spawning its worker", async () => {

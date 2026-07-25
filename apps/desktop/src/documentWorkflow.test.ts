@@ -22,6 +22,7 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
+  type TextSpan,
   type PlusObject,
   type TextObject,
   type VisualEffect
@@ -115,7 +116,23 @@ import {
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
+  applyFormulaTextFormatting,
+  applyNativeChainTool,
+  applyReactionArrowToolAtPoint,
+  bracketKindForToolCommand,
+  formulaSpansFromText,
+  insertNativeBracket,
+  insertNativeReactionArrow,
+  planNativeChainVertices,
+  type PagePoint,
+  insertNativeSymbolGlyph,
   insertNativeTextObject,
+  nativeArtToolForCommand,
+  nativeBracketDefaultSize,
+  nativeReactionArrowDefaultLengthPx,
+  reactionArrowKindForToolCommand,
+  stretchNativeReactionArrowTo,
+  symbolGlyphForToolCommand,
   insertNativeMolfileMolecule,
   insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule,
@@ -1140,6 +1157,523 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("retells the structure format when native editing rewrites an imported molfile as SMILES", () => {
+    // Editing re-derives `structure` as SMILES. If the format kept saying molfile, the plugin
+    // selection snapshot and the Ketcher adapter would hand SMILES text to a molfile parser.
+    const pasted = applyClipboardPastePayload(createPhase4Document("Molfile Chain"), {
+      kind: "molfile",
+      format: "molfile-v2000",
+      text: clipboardEtheneMolfile,
+      warnings: []
+    }, { x: 260, y: 260 });
+    const imported = selectedMolecule(pasted.document);
+    if (!imported) {
+      throw new Error("Expected an imported molfile molecule");
+    }
+    expect(imported.structureFormat).toBe("molfile-v2000");
+
+    const anchorAtom = imported.atoms[0];
+    const grown = applyNativeChainTool(
+      pasted.document,
+      { x: anchorAtom.x, y: anchorAtom.y },
+      { x: anchorAtom.x + 60, y: anchorAtom.y },
+      { objectId: imported.id, atomId: anchorAtom.id }
+    );
+    const edited = grown.pages[0].objects.find((object) => object.id === imported.id);
+
+    if (edited?.type !== "molecule") {
+      throw new Error("Expected the edited molecule");
+    }
+    expect(edited.atoms.length).toBeGreaterThan(imported.atoms.length);
+    expect(edited.structureFormat).toBe("smiles");
+    expect(edited.structure).not.toContain("V2000");
+  });
+
+  it("plans zig-zag chain vertices from the drag vector and chain angle", () => {
+    const single = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(single).toHaveLength(2);
+
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const dragged = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      dragPoint: { x: 100 + reach * 4, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(dragged).toHaveLength(5);
+    // Every segment has the bond length, and consecutive segments meet at the chain angle.
+    for (let index = 1; index < dragged.length; index += 1) {
+      const dx = dragged[index].x - dragged[index - 1].x;
+      const dy = dragged[index].y - dragged[index - 1].y;
+      expect(Math.hypot(dx, dy)).toBeCloseTo(22, 6);
+    }
+    // Zig-zag alternates above and below the horizontal drag axis.
+    expect(dragged[1].y).toBeLessThan(100);
+    expect(dragged[2].y).toBeCloseTo(100, 6);
+    expect(dragged[3].y).toBeLessThan(100);
+
+    const short = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      dragPoint: { x: 103, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(short).toHaveLength(2);
+  });
+
+  it("stops a chain at the page edge instead of walking off it", () => {
+    const blank = createPhase4Document("Chain Clamp Fixture");
+    const page = blank.pages[0];
+    // Start inside the bottom-right corner — with room for a few segments, but not the dozens the
+    // drag asks for — and drag far past the corner, the way pointer capture allows. (Pressed right
+    // up against the corner there is no room at all, which is the next test's case.)
+    const drawn = applyNativeChainTool(
+      blank,
+      { x: page.width - 120, y: page.height - 120 },
+      { x: page.width + 400, y: page.height + 400 }
+    );
+    const chain = drawn.pages[0].objects[0];
+
+    if (chain.type !== "molecule") {
+      throw new Error("Expected a chain molecule");
+    }
+    for (const atom of chain.atoms) {
+      expect(atom.x).toBeGreaterThanOrEqual(0);
+      expect(atom.y).toBeGreaterThanOrEqual(0);
+      expect(atom.x).toBeLessThanOrEqual(page.width);
+      expect(atom.y).toBeLessThanOrEqual(page.height);
+    }
+
+    // Without bounds the planner still refuses to run away unboundedly.
+    expect(planNativeChainVertices({
+      start: { x: 0, y: 0 },
+      dragPoint: { x: 1_000_000, y: 0 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    }).length).toBeLessThanOrEqual(201);
+  });
+
+  it("draws a free chain molecule and appends an anchored chain to an existing molecule", () => {
+    const blank = createPhase4Document("Chain Fixture");
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const free = applyNativeChainTool(blank, { x: 200, y: 220 }, { x: 200 + reach * 3, y: 220 });
+    const chain = free.pages[0].objects[0];
+
+    expect(chain.type).toBe("molecule");
+    if (chain.type === "molecule") {
+      expect(chain.atoms).toHaveLength(4);
+      expect(chain.bonds).toHaveLength(3);
+      expect(chain.bonds.every((bond) => bond.order === "single")).toBe(true);
+    }
+    expect(free.selection.objectIds).toEqual([chain.id]);
+
+    const seeded = insertNativeSingleBondMolecule(blank, { x: 300, y: 300 });
+    const molecule = seeded.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected a molecule fixture");
+    }
+    const anchorAtom = molecule.atoms[molecule.atoms.length - 1];
+    const grown = applyNativeChainTool(
+      seeded,
+      { x: anchorAtom.x, y: anchorAtom.y },
+      { x: anchorAtom.x + reach * 2, y: anchorAtom.y },
+      { objectId: molecule.id, atomId: anchorAtom.id }
+    );
+    const grownMolecule = grown.pages[0].objects[0];
+    if (grownMolecule.type !== "molecule") {
+      throw new Error("Expected the grown molecule");
+    }
+    expect(grownMolecule.atoms).toHaveLength(molecule.atoms.length + 2);
+    expect(grownMolecule.bonds).toHaveLength(molecule.bonds.length + 2);
+    expect(grown.selection.objectIds).toEqual([molecule.id]);
+
+    expect(applyNativeChainTool(seeded, { x: 0, y: 0 }, undefined, { objectId: "missing", atomId: "atom_001" })).toBe(seeded);
+  });
+
+  it("never leaves a bond-less carbon when the chain cannot leave the page", () => {
+    const blank = createPhase4Document("Chain Edge Fixture");
+    const page = blank.pages[0];
+
+    // Pressed hard against the top edge. The zig-zag's first step is conventionally the upward one,
+    // which here goes straight off the page — but stopping at one vertex would seed a molecule of a
+    // single bond-less carbon: an invisible speck the user has to hunt down and delete.
+    const atTop = applyNativeChainTool(blank, { x: 300, y: 0 }, { x: 380, y: 0 });
+    const seeded = atTop.pages[0].objects[0];
+    expect(seeded?.type).toBe("molecule");
+    if (seeded?.type === "molecule") {
+      expect(seeded.atoms.length).toBeGreaterThanOrEqual(2);
+      expect(seeded.bonds.length).toBe(seeded.atoms.length - 1);
+      for (const atom of seeded.atoms) {
+        expect(atom.y).toBeGreaterThanOrEqual(0);
+      }
+    }
+
+    // A corner that leaves no room in either direction yields no object at all.
+    const boxed = planNativeChainVertices({
+      start: { x: 0, y: 0 },
+      dragPoint: { x: -400, y: -400 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120,
+      pageBounds: { width: page.width, height: page.height }
+    });
+    expect(boxed).toHaveLength(1);
+    expect(applyNativeChainTool(blank, { x: 0, y: 0 }, { x: -400, y: -400 })).toBe(blank);
+  });
+
+  it("skips whole-molecule chemistry derivation for drag preview frames only", () => {
+    const blank = createPhase4Document("Chain Preview Fixture");
+    const seeded = insertNativeSingleBondMolecule(blank, { x: 300, y: 300 });
+    const molecule = seeded.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected a molecule fixture");
+    }
+    const anchorAtom = molecule.atoms[molecule.atoms.length - 1];
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const drag = { x: anchorAtom.x + reach * 3, y: anchorAtom.y };
+    const anchor = { objectId: molecule.id, atomId: anchorAtom.id };
+
+    const preview = applyNativeChainTool(seeded, anchorAtom, drag, anchor, { preview: true });
+    const committed = applyNativeChainTool(seeded, anchorAtom, drag, anchor);
+    const previewed = preview.pages[0].objects[0];
+    const finished = committed.pages[0].objects[0];
+    if (previewed.type !== "molecule" || finished.type !== "molecule") {
+      throw new Error("Expected molecules");
+    }
+
+    // The frames the user drags through carry the same atoms and bonds — that is all the renderer
+    // reads — so they are visually identical to the committed result.
+    expect(previewed.atoms).toEqual(finished.atoms);
+    expect(previewed.bonds).toEqual(finished.bonds);
+    // What the preview skips is the whole-molecule SMILES walk, which is pure cost per pointermove.
+    expect(previewed.structure).toBe(molecule.structure);
+    // And the commit derives it, so nothing lands in the document under-derived.
+    expect(finished.structure).not.toBe(molecule.structure);
+    expect(finished.structureFormat).toBe("smiles");
+  });
+
+  it("classifies a long digit run in linear time", () => {
+    // The body pattern used to offer two ways to match a digit — `[A-Z][a-z]?\d*` and a standalone
+    // `\d+` — so an n-digit run had 2^(n-1) parses. A trailing character that fails the match sent
+    // the engine through all of them: pasting a 40-digit label froze the app outright.
+    const pathological = `C${"1".repeat(40)}!-`;
+    const started = performance.now();
+    expect(formulaSpansFromText(pathological).map((span) => span.text).join("")).toBe(pathological);
+    expect(performance.now() - started).toBeLessThan(100);
+
+    // Same language as before: the shapes that were formulas still are.
+    // A leading coefficient stays normal text; only a digit run *after* an element or a closing
+    // bracket is a count.
+    expect(formulaSpansFromText("2H2O").map((span) => `${span.text}:${span.script}`)).toEqual([
+      "2H:normal",
+      "2:subscript",
+      "O:normal"
+    ]);
+    expect(formulaSpansFromText("(CH3)3C+").at(-1)).toMatchObject({ text: "+", script: "superscript" });
+    expect(formulaSpansFromText("Fe(CN)63-").at(-1)).toMatchObject({ text: "3-", script: "superscript" });
+    // And a bare sign is still not a charge.
+    expect(formulaSpansFromText("-")).toEqual([{ text: "-", script: "normal", style: {} }]);
+  });
+
+  it("formats formula text spans with subscripts and a superscript charge", () => {
+    expect(formulaSpansFromText("H2O")).toEqual([
+      { text: "H", script: "normal", style: {} },
+      { text: "2", script: "subscript", style: {} },
+      { text: "O", script: "normal", style: {} }
+    ]);
+    expect(formulaSpansFromText("C6H12O6")).toEqual([
+      { text: "C", script: "normal", style: {} },
+      { text: "6", script: "subscript", style: {} },
+      { text: "H", script: "normal", style: {} },
+      { text: "12", script: "subscript", style: {} },
+      { text: "O", script: "normal", style: {} },
+      { text: "6", script: "subscript", style: {} }
+    ]);
+    expect(formulaSpansFromText("SO42-")).toEqual([
+      { text: "SO", script: "normal", style: {} },
+      { text: "4", script: "subscript", style: {} },
+      { text: "2-", script: "superscript", style: {} }
+    ]);
+    expect(formulaSpansFromText("Ca2+")).toEqual([
+      { text: "Ca", script: "normal", style: {} },
+      { text: "2+", script: "superscript", style: {} }
+    ]);
+    expect(formulaSpansFromText("plain")).toEqual([
+      { text: "plain", script: "normal", style: {} }
+    ]);
+  });
+
+  it("separates a charge magnitude from an atom count in common ions", () => {
+    // "Ca2+" and "NH4+" are spelled the same way but the digit means different things: a lone
+    // element symbol takes the digit as its charge, a polyatomic body keeps it as a count.
+    const scripts = (formula: string) =>
+      formulaSpansFromText(formula).map((span) => `${span.text}:${span.script}`);
+
+    expect(scripts("NH4+")).toEqual(["NH:normal", "4:subscript", "+:superscript"]);
+    expect(scripts("NO3-")).toEqual(["NO:normal", "3:subscript", "-:superscript"]);
+    expect(scripts("ClO4-")).toEqual(["ClO:normal", "4:subscript", "-:superscript"]);
+    expect(scripts("MnO4-")).toEqual(["MnO:normal", "4:subscript", "-:superscript"]);
+    expect(scripts("PO43-")).toEqual(["PO:normal", "4:subscript", "3-:superscript"]);
+    expect(scripts("Ca2+")).toEqual(["Ca:normal", "2+:superscript"]);
+    expect(scripts("Fe3+")).toEqual(["Fe:normal", "3+:superscript"]);
+    expect(scripts("Na+")).toEqual(["Na:normal", "+:superscript"]);
+
+    // A trailing hyphen on a prefix is not a charge.
+    expect(scripts("trans-")).toEqual(["trans-:normal"]);
+    expect(scripts("Boc-")).toEqual(["Boc-:normal"]);
+    expect(scripts("tert-")).toEqual(["tert-:normal"]);
+  });
+
+  it("preserves source span styling when reformatting a formula", () => {
+    const styled: TextSpan[] = [
+      { text: "H2", script: "normal", style: { color: "#b3261e", fontWeight: 700 } },
+      { text: "O", script: "normal", style: { color: "#1b5e20" } }
+    ];
+    const spans = formulaSpansFromText("H2O", styled);
+
+    expect(spans.map((span) => `${span.text}:${span.script}`)).toEqual([
+      "H:normal",
+      "2:subscript",
+      "O:normal"
+    ]);
+    expect(spans[0].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
+    expect(spans[1].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
+    expect(spans[2].style).toMatchObject({ color: "#1b5e20" });
+  });
+
+  it("applies formula formatting to selected text objects only", () => {
+    const blank = createPhase4Document("Formula Fixture");
+    const withText = insertNativeTextObject(blank, { x: 200, y: 200 }, "H2O");
+    const formatted = applyFormulaTextFormatting(withText);
+    const object = formatted.pages[0].objects[0];
+
+    if (object.type !== "text") {
+      throw new Error("Expected a text object");
+    }
+    expect(object.spans.map((span) => span.script)).toEqual(["normal", "subscript", "normal"]);
+
+    // No selected text objects -> unchanged document.
+    expect(applyFormulaTextFormatting(blank)).toBe(blank);
+    // Re-applying the same formatting is a no-op.
+    expect(applyFormulaTextFormatting(formatted)).toBe(formatted);
+  });
+
+  it("maps bracket tool commands and inserts a selected default bracket", () => {
+    expect(bracketKindForToolCommand("tool.bracket")).toBe("curly");
+    expect(bracketKindForToolCommand("tool.squareBracket")).toBe("square");
+    expect(bracketKindForToolCommand("tool.text")).toBeUndefined();
+
+    const blank = createPhase4Document("Bracket Fixture");
+    const placed = insertNativeBracket(blank, { x: 200, y: 220 }, "curly");
+    const object = placed.pages[0].objects[0];
+
+    expect(object).toMatchObject({
+      type: "bracket",
+      bracketKind: "curly",
+      width: nativeBracketDefaultSize.width,
+      height: nativeBracketDefaultSize.height
+    });
+    if (object.type === "bracket") {
+      // Centered on the click point.
+      expect(object.x).toBe(200 - nativeBracketDefaultSize.width / 2);
+      expect(object.y).toBe(220 - nativeBracketDefaultSize.height / 2);
+      expect(object.containedObjectIds).toEqual([]);
+    }
+    expect(placed.selection.objectIds).toEqual([object.id]);
+  });
+
+  it("registers orbital tools as closed art shapes with chemistry command ids", () => {
+    const lobe = nativeArtToolForCommand("tool.lobe");
+    expect(lobe).toMatchObject({ id: "lobe", graphicKind: "path" });
+    expect(lobe?.data.pathClosed).toBe(true);
+    // Closed bezier fills need at least three nodes (art-engine pathKindSupportsClosedFill).
+    expect(lobe?.data.pathNodes?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(nativeArtToolForCommand("tool.shadedLobe")?.data.pathNodes?.length ?? 0).toBeGreaterThanOrEqual(3);
+
+    const shadedLobe = nativeArtToolForCommand("tool.shadedLobe");
+    expect(shadedLobe?.style.fillMode).toBe("gloss");
+    expect(shadedLobe?.data.pathClosed).toBe(true);
+
+    const pOrbital = nativeArtToolForCommand("tool.pOrbital");
+    expect(pOrbital?.data.pathNodes).toHaveLength(4);
+    expect(pOrbital?.data.pathClosed).toBe(true);
+
+    const sOrbital = nativeArtToolForCommand("tool.sOrbital");
+    expect(sOrbital).toMatchObject({ graphicKind: "ellipse" });
+    expect(sOrbital?.style.fillMode).toBe("gloss");
+  });
+
+  it("maps arrow tool commands to reaction-arrow kinds", () => {
+    expect(reactionArrowKindForToolCommand("tool.reactionArrow")).toBe("forward");
+    expect(reactionArrowKindForToolCommand("tool.resonanceArrow")).toBe("resonance");
+    expect(reactionArrowKindForToolCommand("tool.equilibriumArrow")).toBe("equilibrium");
+    expect(reactionArrowKindForToolCommand("tool.retroArrow")).toBe("retrosynthesis");
+    expect(reactionArrowKindForToolCommand("tool.bond")).toBeUndefined();
+  });
+
+  it("inserts a default-length reaction arrow at the click point", () => {
+    const blank = createPhase4Document("Arrow Click Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 220 }, "equilibrium");
+    const object = placed.pages[0].objects[0];
+
+    expect(object).toMatchObject({
+      type: "reaction-arrow",
+      arrowKind: "equilibrium",
+      start: { kind: "point", point: { x: 200, y: 220 } },
+      end: { kind: "point", point: { x: 200 + nativeReactionArrowDefaultLengthPx, y: 220 } }
+    });
+    expect(placed.selection.objectIds).toEqual([object.id]);
+    if (object.type === "reaction-arrow") {
+      expect(object.width).toBe(nativeReactionArrowDefaultLengthPx);
+      expect(object.height).toBeGreaterThanOrEqual(24);
+    }
+  });
+
+  it("stretches a placed reaction arrow to the drag point and ignores tiny drags", () => {
+    const blank = createPhase4Document("Arrow Stretch Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 220 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+
+    const stretched = stretchNativeReactionArrowTo(placed, objectId, { x: 200, y: 220 }, { x: 320, y: 300 });
+    const arrow = stretched.pages[0].objects[0];
+    expect(arrow).toMatchObject({
+      type: "reaction-arrow",
+      arrowKind: "forward",
+      start: { kind: "point", point: { x: 200, y: 220 } },
+      end: { kind: "point", point: { x: 320, y: 300 } }
+    });
+    if (arrow.type === "reaction-arrow") {
+      expect(arrow.x).toBe(200);
+      expect(arrow.width).toBe(120);
+      expect(arrow.height).toBe(80);
+    }
+
+    expect(stretchNativeReactionArrowTo(placed, objectId, { x: 200, y: 220 }, { x: 203, y: 221 })).toBe(placed);
+    expect(stretchNativeReactionArrowTo(placed, "missing_object", { x: 0, y: 0 }, { x: 90, y: 0 })).toBe(placed);
+  });
+
+  it("scales arrow endpoints with the frame instead of only the selection box", () => {
+    const blank = createPhase4Document("Arrow Resize Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 300 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+    const before = placed.pages[0].objects[0];
+    if (before.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+
+    const scaled = scaleDocumentObjectsAroundPoint(placed, [objectId], { x: 200, y: 300 }, 2, 2);
+    const after = scaled.pages[0].objects[0];
+    if (after.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+
+    // The drawn arrow must double along with its box, not stay put inside a larger frame.
+    expect(after.width).toBeCloseTo(before.width * 2, 6);
+    const beforeSpan = (before.end.point?.x ?? 0) - (before.start.point?.x ?? 0);
+    const afterSpan = (after.end.point?.x ?? 0) - (after.start.point?.x ?? 0);
+    expect(afterSpan).toBeCloseTo(beforeSpan * 2, 6);
+    // Anchored at the scale centre, so the tail stays put.
+    expect(after.start.point?.x).toBeCloseTo(200, 6);
+  });
+
+  it("rotates and flips an arrow exactly once, counting the renderer's own transform", () => {
+    // Both renderers draw the arrow at its absolute anchors inside a group carrying
+    // rotate(object.rotation, centre). So the only honest check is where the endpoint actually lands
+    // on screen: stored anchor, then the renderer's rotation. Baking the angle into the anchors
+    // *and* incrementing `rotation` swings the arrow to double the angle asked for.
+    const rendered = (document: ChemDraftDocument, objectId: string): { start: PagePoint; end: PagePoint } => {
+      const object = document.pages[0].objects.find((candidate) => candidate.id === objectId);
+      if (object?.type !== "reaction-arrow") {
+        throw new Error("Expected an arrow");
+      }
+      const centre = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+      const radians = (object.rotation * Math.PI) / 180;
+      const place = (point: PagePoint): PagePoint => ({
+        x: centre.x + (point.x - centre.x) * Math.cos(radians) - (point.y - centre.y) * Math.sin(radians),
+        y: centre.y + (point.x - centre.x) * Math.sin(radians) + (point.y - centre.y) * Math.cos(radians)
+      });
+      return { start: place(object.start.point!), end: place(object.end.point!) };
+    };
+
+    const blank = createPhase4Document("Arrow Rotation Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 300 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+    const before = rendered(placed, objectId);
+
+    const pivot = { x: 400, y: 300 };
+    const rotated = rotateDocumentObjectsAroundPoint(placed, [objectId], pivot, 90);
+    const after = rendered(rotated, objectId);
+    const turn = (point: PagePoint): PagePoint => ({
+      x: pivot.x - (point.y - pivot.y),
+      y: pivot.y + (point.x - pivot.x)
+    });
+    expect(after.start.x).toBeCloseTo(turn(before.start).x, 6);
+    expect(after.start.y).toBeCloseTo(turn(before.start).y, 6);
+    expect(after.end.x).toBeCloseTo(turn(before.end).x, 6);
+    expect(after.end.y).toBeCloseTo(turn(before.end).y, 6);
+
+    // A flip must reverse the arrow's direction, not mirror an empty box around it.
+    const flipped = rendered(flipDocumentObjectsAroundPoint(placed, [objectId], pivot, "horizontal"), objectId);
+    expect(flipped.start.x).toBeCloseTo(2 * pivot.x - before.start.x, 6);
+    expect(flipped.start.y).toBeCloseTo(before.start.y, 6);
+    expect(flipped.end.x).toBeCloseTo(2 * pivot.x - before.end.x, 6);
+    expect(flipped.end.y).toBeCloseTo(before.end.y, 6);
+    // The head was to the right of the tail; mirrored, it must be to the left.
+    expect(flipped.end.x).toBeLessThan(flipped.start.x);
+
+    const flippedVertically = rendered(
+      flipDocumentObjectsAroundPoint(placed, [objectId], pivot, "vertical"),
+      objectId
+    );
+    expect(flippedVertically.start.x).toBeCloseTo(before.start.x, 6);
+    expect(flippedVertically.start.y).toBeCloseTo(2 * pivot.y - before.start.y, 6);
+    expect(flippedVertically.end.x).toBeCloseTo(before.end.x, 6);
+  });
+
+  it("gives an axis-aligned arrow a frame wide enough to hold its glyph", () => {
+    const blank = createPhase4Document("Vertical Arrow Fixture");
+    // A straight vertical drag: the cross axis has no natural extent.
+    const vertical = insertNativeReactionArrow(blank, { x: 300, y: 100 }, { x: 300, y: 260 }, "equilibrium");
+    const object = vertical.pages[0].objects[0];
+
+    if (object.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+    expect(object.height).toBe(160);
+    // Equilibrium shafts reach 7.5px either side of the axis; a 1px box would clip the handles.
+    expect(object.width).toBeGreaterThanOrEqual(15);
+    expect(object.x + object.width / 2).toBeCloseTo(300, 6);
+  });
+
+  it("maps symbol tool commands to their stamp glyphs", () => {
+    expect(symbolGlyphForToolCommand("tool.dagger")).toBe("‡");
+    expect(symbolGlyphForToolCommand("tool.symbol")).toBe("°");
+    expect(symbolGlyphForToolCommand("tool.symbol.degree")).toBe("°");
+    expect(symbolGlyphForToolCommand("tool.symbol.plusMinus")).toBe("±");
+    expect(symbolGlyphForToolCommand("tool.symbol.angstrom")).toBe("Å");
+    expect(symbolGlyphForToolCommand("tool.symbol.delta")).toBe("Δ");
+    expect(symbolGlyphForToolCommand("tool.symbol.centerDot")).toBe("·");
+    expect(symbolGlyphForToolCommand("tool.symbol.prime")).toBe("′");
+    expect(symbolGlyphForToolCommand("tool.text")).toBeUndefined();
+    expect(symbolGlyphForToolCommand("tool.bond")).toBeUndefined();
+  });
+
+  it("stamps a symbol glyph as a selected native text object centred on the click", () => {
+    const blank = createPhase4Document("Symbol Stamp Fixture");
+    const stamped = insertNativeSymbolGlyph(blank, { x: 240, y: 200 }, "‡");
+    const object = stamped.pages[0].objects[0];
+
+    expect(stamped.pages[0].objects).toHaveLength(1);
+    expect(object).toMatchObject({ type: "text", text: "‡" });
+    expect(stamped.selection.objectIds).toEqual([object.id]);
+    // Brackets and art shapes centre on the click; a stamp is not a text caret, so it does too.
+    expect(object.x + object.width / 2).toBeCloseTo(240, 6);
+    expect(object.y + object.height / 2).toBeCloseTo(200, 6);
   });
 
   it("reorders the selected document object for layer controls", () => {

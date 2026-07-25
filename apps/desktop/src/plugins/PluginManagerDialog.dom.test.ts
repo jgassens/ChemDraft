@@ -11,6 +11,11 @@ import type { PickedPluginPackage } from "./pickPluginPackage";
 import { buildPluginMenuItems } from "./pluginMenuModel";
 import { PluginManagerDialog } from "./PluginManagerDialog";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
+import type {
+  PluginUpdateCheckResult,
+  PluginUpdateOffer,
+  PreparedPluginUpdate
+} from "./pluginUpdates";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 
@@ -93,9 +98,13 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onClose: () => void;
   onPluginsChanged: () => void;
   installedPlugins?: readonly InstalledPluginCatalogEntry[];
+  installedPluginCatalogReady?: boolean;
   onPickPackage?: () => Promise<PickedPluginPackage | undefined>;
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
+  onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
+  onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
+  onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
 }) {
   const [, refresh] = useReducer((version: number) => version + 1, 0);
   useEffect(() => runtime.host.subscribe(refresh), [runtime]);
@@ -158,10 +167,10 @@ function installedEntry(
 ): InstalledPluginCatalogEntry {
   return {
     record: {
-      id: installedPluginId,
-      version: "2.0.1",
-      name: "Installed Test Plugin",
-      stagedPath: `installed-plugins/${installedPluginId}`,
+      id: entryManifest.id,
+      version: entryManifest.version,
+      name: entryManifest.name,
+      stagedPath: `installed-plugins/${entryManifest.id}`,
       sourceChecksum: "a".repeat(64),
       installedAt: "2026-07-16T00:00:00.000Z"
     },
@@ -171,7 +180,7 @@ function installedEntry(
           manifest: entryManifest,
           options: { commandHandlers: { [installedCommandId]: async () => ({ ok: true }) } },
           bridge: { terminate: () => {} } as never,
-          entryUrl: new URL(`tauri://localhost/installed-plugins/${installedPluginId}/entry.js`),
+          entryUrl: new URL(`tauri://localhost/installed-plugins/${entryManifest.id}/entry.js`),
           provenance: {
             sdk: "@chemdraft/plugin-api",
             sdkVersion: "0.1.0",
@@ -200,11 +209,47 @@ function pickedPackage(packageManifest: PluginManifest = installedManifest): Pic
   };
 }
 
+function updateOffer(): PluginUpdateOffer {
+  return {
+    pluginId: installedPluginId,
+    pluginName: installedManifest.name,
+    installedVersion: installedManifest.version,
+    version: "2.1.0",
+    releaseUrl: "https://github.com/example/plugin/releases/tag/v2.1.0",
+    packageUrl: "https://github.com/example/plugin/releases/download/v2.1.0/plugin-2.1.0.zip",
+    packageName: "plugin-2.1.0.zip",
+    sourceChecksum: "b".repeat(64),
+    compressedBytes: 3_100_000,
+    publishedAt: "2026-07-25T12:00:00.000Z"
+  };
+}
+
+function preparedUpdate(): PreparedPluginUpdate {
+  const picked = pickedPackage({ ...installedManifest, version: "2.1.0" });
+  return {
+    offer: updateOffer(),
+    inspection: picked.inspection,
+    sourcePath: updateOffer().packageUrl,
+    checksumVerified: true
+  };
+}
+
 function mount(element: ReturnType<typeof createElement>): void {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => root!.render(element));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }
 
 describe("PluginManagerDialog", () => {
@@ -252,8 +297,9 @@ describe("PluginManagerDialog", () => {
     // offering an install that would fail on click.
     const addPackage = document.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]');
     expect(addPackage?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')?.disabled).toBe(true);
     expect(document.body.textContent).toContain(
-      "Installing plugins from a package is only available in the ChemDraft desktop app."
+      "Installing and updating plugins is only available in the ChemDraft desktop app."
     );
 
     act(() => {
@@ -298,7 +344,7 @@ describe("PluginManagerDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("cannot be dismissed or toggled while an install is in progress", async () => {
+  it("stays closable but refuses a second operation while an install is in progress", async () => {
     const runtime = createRuntime();
     const onClose = vi.fn();
     let finishInstall: (() => void) | undefined;
@@ -325,24 +371,39 @@ describe("PluginManagerDialog", () => {
       document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
     });
     expect(install).toHaveBeenCalledOnce();
-    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(true);
+    // What must be locked while an operation runs is the ability to start a *second* one.
     expect(document.querySelector<HTMLInputElement>(`[data-plugin-id="${pluginId}"] input`)?.disabled).toBe(true);
+    // Closing is not one of those. A trusted-update download is allowed two minutes, and the work
+    // belongs to the install machinery rather than to this dialog, so refusing to close only traps
+    // the user in front of a progress line they cannot leave.
+    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(
+      false
+    );
 
+    // An accidental backdrop click still must not dismiss mid-operation...
     act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       const backdrop = document.querySelector<HTMLElement>('[data-testid="plugin-manager-backdrop"]')!;
       backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       backdrop.click();
-      document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!.click();
     });
     expect(onClose).not.toHaveBeenCalled();
     expect(runtime.host.getPlugin(pluginId)).toBeDefined();
+
+    // ...but a deliberate Escape does, and so does the Close button.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(onClose).toHaveBeenCalledOnce();
+    act(() => {
+      document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")!.click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       finishInstall?.();
       await Promise.resolve();
     });
-    expect(document.querySelector<HTMLButtonElement>(".plugin-manager-header .plugin-manager-button")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLInputElement>(`[data-plugin-id="${pluginId}"] input`)?.disabled).toBe(false);
   });
 
   it("preserves disabled ids that are absent from the visible catalog", () => {
@@ -537,6 +598,371 @@ describe("PluginManagerDialog", () => {
 
     // A bundled plugin never offers Uninstall — it is not installed, it is compiled in.
     expect(document.querySelector(`[data-action="uninstall-plugin"][data-plugin-id="${pluginId}"]`)).toBeNull();
+  });
+
+  it("waits for the installed-plugin catalog before enabling package and update actions", async () => {
+    const runtime = createRuntime();
+    const entry = installedEntry();
+    const onCheckPluginUpdates = vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => [
+      {
+        status: "upToDate",
+        pluginId: installedPluginId,
+        installedVersion: installedManifest.version,
+        latestVersion: installedManifest.version
+      }
+    ]);
+    const renderDialog = (ready: boolean, installedPlugins: readonly InstalledPluginCatalogEntry[]) =>
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins,
+        installedPluginCatalogReady: ready,
+        onPickPackage: vi.fn(async () => undefined),
+        onInstallPackage: vi.fn(async () => {}),
+        onCheckPluginUpdates,
+        onPreparePluginUpdate: vi.fn(async () => preparedUpdate()),
+        onUpdatePlugin: vi.fn(async () => {})
+      });
+
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(renderDialog(false, []));
+
+    expect(document.querySelector('[data-testid="plugin-manager-status"]')?.textContent).toContain(
+      "Loading installed plugins"
+    );
+    expect(document.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')?.disabled).toBe(true);
+    expect(onCheckPluginUpdates).not.toHaveBeenCalled();
+
+    act(() => {
+      root!.render(renderDialog(true, [entry]));
+    });
+    expect(document.querySelector('[data-testid="plugin-manager-status"]')).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>('[data-action="add-plugin-package"]')?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')?.disabled).toBe(false);
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    expect(onCheckPluginUpdates).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="plugin-manager-status"]')?.textContent).toContain(
+      "All supported installed plugins are up to date"
+    );
+  });
+
+  it("announces progress while checking and downloading an update", async () => {
+    const runtime = createRuntime();
+    const entry = installedEntry();
+    const offer = updateOffer();
+    const check = deferred<readonly PluginUpdateCheckResult[]>();
+    const prepare = deferred<PreparedPluginUpdate>();
+    applyEnabledPlugins(runtime, new Set(), [
+      ...descriptors,
+      { manifest: entry.manifest, options: entry.descriptor!.options }
+    ]);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins: [entry],
+        onCheckPluginUpdates: vi.fn(() => check.promise),
+        onPreparePluginUpdate: vi.fn(() => prepare.promise),
+        onUpdatePlugin: vi.fn(async () => {})
+      })
+    );
+
+    act(() => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    expect(document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')?.textContent).toBe(
+      "Checking…"
+    );
+    expect(document.querySelector('[data-testid="plugin-manager-status"]')?.textContent).toContain(
+      "Checking installed plugins for updates"
+    );
+
+    await act(async () => {
+      check.resolve([
+        {
+          status: "available",
+          pluginId: installedPluginId,
+          installedVersion: installedManifest.version,
+          latestVersion: offer.version,
+          offer
+        }
+      ]);
+      await check.promise;
+    });
+
+    act(() => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="review-plugin-update"][data-plugin-id="${installedPluginId}"]`
+        )!
+        .click();
+    });
+    expect(
+      document.querySelector<HTMLButtonElement>(
+        `[data-action="review-plugin-update"][data-plugin-id="${installedPluginId}"]`
+      )?.textContent
+    ).toBe("Downloading update…");
+    expect(document.querySelector('[data-testid="plugin-manager-status"]')?.textContent).toContain(
+      "Downloading and verifying the Installed Test Plugin update"
+    );
+
+    await act(async () => {
+      prepare.resolve(preparedUpdate());
+      await prepare.promise;
+    });
+    expect(document.querySelector('[data-testid="plugin-package-review"]')).not.toBeNull();
+  });
+
+  it("invalidates checked and prepared updates when the installed catalog changes", async () => {
+    const runtime = createRuntime();
+    const entry = installedEntry();
+    const offer = updateOffer();
+    const onUpdatePlugin = vi.fn(async () => {});
+    const onUninstallPlugin = vi.fn(async () => {});
+    const renderDialog = (installedPlugins: readonly InstalledPluginCatalogEntry[]) =>
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins,
+        onUninstallPlugin,
+        onCheckPluginUpdates: vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => [
+          {
+            status: "available",
+            pluginId: installedPluginId,
+            installedVersion: installedManifest.version,
+            latestVersion: offer.version,
+            offer
+          }
+        ]),
+        onPreparePluginUpdate: vi.fn(async () => preparedUpdate()),
+        onUpdatePlugin
+      });
+
+    applyEnabledPlugins(runtime, new Set(), [
+      ...descriptors,
+      { manifest: entry.manifest, options: entry.descriptor!.options }
+    ]);
+    mount(renderDialog([entry]));
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="review-plugin-update"][data-plugin-id="${installedPluginId}"]`
+        )!
+        .click();
+    });
+    expect(document.querySelector('[data-testid="plugin-package-review"]')).not.toBeNull();
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="uninstall-plugin"][data-plugin-id="${installedPluginId}"]`
+        )!
+        .click();
+    });
+    act(() => {
+      root!.render(renderDialog([]));
+    });
+    expect(document.querySelector('[data-testid="plugin-package-review"]')).toBeNull();
+    expect(document.querySelector('[data-action="confirm-plugin-update"]')).toBeNull();
+
+    const reinstalled = installedEntry();
+    reinstalled.record = {
+      ...reinstalled.record,
+      sourceChecksum: "c".repeat(64),
+      installedAt: "2026-07-25T12:00:00.000Z"
+    };
+    act(() => {
+      root!.render(renderDialog([reinstalled]));
+    });
+    expect(document.querySelector('[data-action="review-plugin-update"]')).toBeNull();
+    expect(onUpdatePlugin).not.toHaveBeenCalled();
+  });
+
+  it("summarizes available updates and failed checks together", async () => {
+    const runtime = createRuntime();
+    const entry = installedEntry();
+    const failedManifest: PluginManifest = {
+      ...installedManifest,
+      id: "org.chemdraft.test.failed-update",
+      name: "Failed Update Test Plugin"
+    };
+    const failedEntry = installedEntry(failedManifest, false);
+    const offer = updateOffer();
+    applyEnabledPlugins(runtime, new Set(), [
+      ...descriptors,
+      { manifest: entry.manifest, options: entry.descriptor!.options }
+    ]);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins: [entry, failedEntry],
+        onCheckPluginUpdates: vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => [
+          {
+            status: "available",
+            pluginId: installedPluginId,
+            installedVersion: installedManifest.version,
+            latestVersion: offer.version,
+            offer
+          },
+          {
+            status: "failed",
+            pluginId: failedManifest.id,
+            installedVersion: failedManifest.version,
+            message: "The release service is unavailable."
+          }
+        ]),
+        onPreparePluginUpdate: vi.fn(async () => preparedUpdate()),
+        onUpdatePlugin: vi.fn(async () => {})
+      })
+    );
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    const summary = document.querySelector('[data-testid="plugin-manager-status"]')?.textContent;
+    expect(summary).toContain("1 plugin update is available");
+    expect(summary).toContain("1 update check failed");
+    expect(summary).toContain("See the plugin list for details");
+  });
+
+  it("checks, reviews, and explicitly applies an available plugin update", async () => {
+    const runtime = createRuntime();
+    const entry = installedEntry();
+    const offer = updateOffer();
+    const prepared = preparedUpdate();
+    const onPluginsChanged = vi.fn();
+    const onCheckPluginUpdates = vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => [
+      {
+        status: "available",
+        pluginId: installedPluginId,
+        installedVersion: installedManifest.version,
+        latestVersion: offer.version,
+        offer
+      }
+    ]);
+    const onPreparePluginUpdate = vi.fn(async () => prepared);
+    const onUpdatePlugin = vi.fn(async () => {});
+    applyEnabledPlugins(runtime, new Set(), [
+      ...descriptors,
+      { manifest: entry.manifest, options: entry.descriptor!.options }
+    ]);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged,
+        installedPlugins: [entry],
+        onPickPackage: vi.fn(async () => undefined),
+        onInstallPackage: vi.fn(async () => {}),
+        onUninstallPlugin: vi.fn(async () => {}),
+        onCheckPluginUpdates,
+        onPreparePluginUpdate,
+        onUpdatePlugin
+      })
+    );
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+
+    const rowSelector = `[data-plugin-id="${installedPluginId}"]`;
+    expect(onCheckPluginUpdates).toHaveBeenCalledOnce();
+    expect(document.querySelector(rowSelector)?.textContent).toContain("Update available");
+    expect(document.querySelector(rowSelector)?.textContent).toContain("Version 2.1.0 is available");
+    expect(onPreparePluginUpdate).not.toHaveBeenCalled();
+    expect(onUpdatePlugin).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="review-plugin-update"][data-plugin-id="${installedPluginId}"]`
+        )!
+        .click();
+    });
+
+    const review = document.querySelector('[data-testid="plugin-package-review"]');
+    expect(onPreparePluginUpdate).toHaveBeenCalledWith(offer);
+    expect(review?.textContent).toContain("Updating v2.0.1 → v2.1.0");
+    expect(review?.textContent).toContain("checksum verified");
+    expect(review?.textContent).toContain("not a cryptographic publisher signature");
+    expect(review?.querySelector('[data-permission="ui.menu"]')).not.toBeNull();
+    expect(onUpdatePlugin).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-plugin-update"]')!.click();
+    });
+
+    expect(onUpdatePlugin).toHaveBeenCalledWith(prepared);
+    expect(document.querySelector('[data-testid="plugin-package-review"]')).toBeNull();
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      "Installed Test Plugin updated to version 2.1.0"
+    );
+    expect(onPluginsChanged).toHaveBeenCalledOnce();
+  });
+
+  it("reports up-to-date and failed checks without inventing an available update", async () => {
+    const runtime = createRuntime();
+    const entry = installedEntry();
+    const onCheckPluginUpdates = vi
+      .fn<() => Promise<readonly PluginUpdateCheckResult[]>>()
+      .mockResolvedValueOnce([
+        {
+          status: "upToDate",
+          pluginId: installedPluginId,
+          installedVersion: installedManifest.version,
+          latestVersion: installedManifest.version
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          status: "failed",
+          pluginId: installedPluginId,
+          installedVersion: installedManifest.version,
+          message: "GitHub release service is unavailable."
+        }
+      ]);
+    applyEnabledPlugins(runtime, new Set(), [
+      ...descriptors,
+      { manifest: entry.manifest, options: entry.descriptor!.options }
+    ]);
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins: [entry],
+        onCheckPluginUpdates,
+        onPreparePluginUpdate: vi.fn(async () => preparedUpdate()),
+        onUpdatePlugin: vi.fn(async () => {})
+      })
+    );
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    expect(document.querySelector('[data-update-status="up-to-date"]')?.textContent).toContain("Up to date");
+    expect(document.querySelector('[data-action="review-plugin-update"]')).toBeNull();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    expect(document.querySelector('[data-update-status="failed"]')?.textContent).toContain(
+      "GitHub release service is unavailable"
+    );
+    expect(document.querySelector('[data-action="review-plugin-update"]')).toBeNull();
   });
 
   it("keeps an older install with an unavailable permission visible and uninstallable, but not enableable", async () => {

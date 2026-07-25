@@ -9,6 +9,7 @@ import {
   installPluginPackage,
   loadInstalledPlugins,
   uninstallPlugin,
+  updateInstalledPluginPackage,
   type InstalledPluginCatalogEntry,
   type PluginPackageInspection
 } from "./installPluginPackage";
@@ -16,6 +17,13 @@ import { pickPluginPackage, type PickedPluginPackage } from "./pickPluginPackage
 import { buildPluginMenuItems } from "./pluginMenuModel";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import { createTauriPluginStagingFs, isTauriHost, type PluginStagingFs } from "./pluginStagingFs";
+import {
+  checkForPluginUpdates,
+  preparePluginUpdate,
+  type PluginUpdateCheckResult,
+  type PluginUpdateOffer,
+  type PreparedPluginUpdate
+} from "./pluginUpdates";
 import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 
@@ -50,10 +58,16 @@ export interface PluginRuntimeView {
   /** Plugins installed from a package (M36). Empty until the startup reload resolves, and always empty
    *  where installing is unsupported (no Tauri host). */
   installedPlugins: readonly InstalledPluginCatalogEntry[];
+  /** True once the desktop's on-disk install catalog has finished its startup reload. Non-Tauri builds
+   *  have no on-disk catalog and are ready immediately. */
+  installedPluginCatalogReady: boolean;
   /** Show the native picker and describe the chosen package; `undefined` when this build cannot install. */
   pickPackage: (() => Promise<PickedPluginPackage | undefined>) | undefined;
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
   uninstallInstalledPlugin: ((pluginId: string) => Promise<void>) | undefined;
+  checkInstalledPluginUpdates: (() => Promise<readonly PluginUpdateCheckResult[]>) | undefined;
+  prepareInstalledPluginUpdate: ((offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>) | undefined;
+  updateInstalledPlugin: ((prepared: PreparedPluginUpdate) => Promise<void>) | undefined;
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
   openPanel: OpenPluginPanel | undefined;
@@ -112,6 +126,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     []
   );
   const [installedPlugins, setInstalledPlugins] = useState<readonly InstalledPluginCatalogEntry[]>([]);
+  const [installedPluginCatalogReady, setInstalledPluginCatalogReady] = useState(stagingFs === undefined);
   /** Which effect invocation currently owns the installed-plugin registrations in the shared host.
    *  The host and runtime are created once and outlive every invocation, so under StrictMode two
    *  invocations register the *same ids* into the *same* host. Ownership is tracked explicitly
@@ -127,37 +142,52 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     const abortController = new AbortController();
     let loaded: readonly InstalledPluginCatalogEntry[] = [];
     void (async () => {
-      // Installs are reloaded asynchronously *after* the bundled plugins are already registered, so a
-      // slow or broken install can never delay or block app startup.
-      const { installed, failures } = await loadInstalledPlugins({
-        runtime,
-        fs: stagingFs,
-        disabledIds: loadDisabledPluginIds(),
-        replacements: bundledPlugins,
-        signal: abortController.signal
-      });
-      loaded = installed;
-      if (cancelled) {
-        // Unregister by id ONLY while this invocation is still the owner. A later invocation
-        // (StrictMode's second mount) registers the same ids into the same host, so an id match
-        // alone would tear down *its* live registration and leave the plugin silently missing.
-        // The worker this invocation started is always ours, so it is always deactivated.
-        const superseded = installOwnerGenerationRef.current !== generation;
-        for (const entry of installed) {
-          if (!superseded && runtime.host.getPlugin(entry.record.id)) {
-            runtime.unregisterPlugin(entry.record.id);
+      try {
+        // Installs are reloaded asynchronously *after* the bundled plugins are already registered, so a
+        // slow or broken install can never delay or block app startup.
+        const { installed, failures } = await loadInstalledPlugins({
+          runtime,
+          fs: stagingFs,
+          disabledIds: loadDisabledPluginIds(),
+          replacements: bundledPlugins,
+          signal: abortController.signal
+        });
+        loaded = installed;
+        if (cancelled) {
+          // Unregister by id ONLY while this invocation is still the owner. A later invocation
+          // (StrictMode's second mount) registers the same ids into the same host, so an id match
+          // alone would tear down *its* live registration and leave the plugin silently missing.
+          // The worker this invocation started is always ours, so it is always deactivated.
+          const superseded = installOwnerGenerationRef.current !== generation;
+          for (const entry of installed) {
+            if (!superseded && runtime.host.getPlugin(entry.record.id)) {
+              runtime.unregisterPlugin(entry.record.id);
+            }
+            entry.descriptor?.deactivate?.();
           }
-          entry.descriptor?.deactivate?.();
+          return;
         }
-        return;
-      }
-      for (const failure of failures) {
+        for (const failure of failures) {
+          runtime.panels.reportDiagnostic(
+            "installed-plugin-load-failed",
+            `Installed plugin "${failure.record.id}" could not be loaded: ${failure.message}`
+          );
+        }
+        setInstalledPlugins(installed);
+      } catch (cause: unknown) {
+        if (cancelled) return;
         runtime.panels.reportDiagnostic(
-          "installed-plugin-load-failed",
-          `Installed plugin "${failure.record.id}" could not be loaded: ${failure.message}`
+          "installed-plugin-catalog-load-failed",
+          `The installed-plugin catalog could not be loaded: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`
         );
+        setInstalledPlugins([]);
+      } finally {
+        if (!cancelled) {
+          setInstalledPluginCatalogReady(true);
+        }
       }
-      setInstalledPlugins(installed);
     })();
     return () => {
       cancelled = true;
@@ -197,6 +227,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         runtime,
         fs: stagingFs,
         pluginId,
+        record: entry?.record,
         descriptor: entry?.descriptor,
         // If this install had taken its id from a bundled plugin, give it back.
         restores: bundledPlugins.find((candidate) => candidate.manifest.id === pluginId),
@@ -209,6 +240,45 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         saveDisabledPluginIds(disabled);
       }
       setInstalledPlugins((current) => current.filter((candidate) => candidate.record.id !== pluginId));
+    },
+    [bundledPlugins, installedPlugins, runtime, stagingFs]
+  );
+
+  const checkInstalledPluginUpdates = useCallback(
+    (): Promise<readonly PluginUpdateCheckResult[]> => checkForPluginUpdates(installedPlugins),
+    [installedPlugins]
+  );
+
+  const prepareInstalledPluginUpdate = useCallback(
+    (offer: PluginUpdateOffer): Promise<PreparedPluginUpdate> => preparePluginUpdate(offer),
+    []
+  );
+
+  const updateInstalledPlugin = useCallback(
+    async (prepared: PreparedPluginUpdate): Promise<void> => {
+      if (!stagingFs) return;
+      const current = installedPlugins.find((entry) => entry.record.id === prepared.offer.pluginId);
+      if (!current) {
+        throw new Error(`Plugin "${prepared.offer.pluginId}" is no longer installed. Check for updates again.`);
+      }
+      if (current.record.version !== prepared.offer.installedVersion) {
+        throw new Error(
+          `Plugin "${prepared.offer.pluginId}" changed from version ${prepared.offer.installedVersion} to ` +
+            `${current.record.version}. Check for updates again.`
+        );
+      }
+      const { record, descriptor } = await updateInstalledPluginPackage({
+        runtime,
+        fs: stagingFs,
+        current,
+        inspection: prepared.inspection,
+        disabled: loadDisabledPluginIds().has(current.record.id),
+        replaces: bundledPlugins.find((candidate) => candidate.manifest.id === current.record.id)
+      });
+      setInstalledPlugins((catalog) => [
+        ...catalog.filter((entry) => entry.record.id !== record.id),
+        { record, manifest: descriptor.manifest, descriptor }
+      ]);
     },
     [bundledPlugins, installedPlugins, runtime, stagingFs]
   );
@@ -243,11 +313,18 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     runtime,
     bundledPlugins,
     installedPlugins,
+    installedPluginCatalogReady,
     // Absent (not merely inert) where staging is unsupported, so the manager can disable its control
     // rather than offer an install that would fail on click.
     pickPackage: stagingFs ? pickPackage : undefined,
     installPackage: stagingFs ? installPackage : undefined,
     uninstallInstalledPlugin: stagingFs ? uninstallInstalledPlugin : undefined,
+    checkInstalledPluginUpdates:
+      stagingFs && installedPluginCatalogReady ? checkInstalledPluginUpdates : undefined,
+    prepareInstalledPluginUpdate:
+      stagingFs && installedPluginCatalogReady ? prepareInstalledPluginUpdate : undefined,
+    updateInstalledPlugin:
+      stagingFs && installedPluginCatalogReady ? updateInstalledPlugin : undefined,
     plugins,
     pluginMenuItems,
     openPanel,

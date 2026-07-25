@@ -625,6 +625,52 @@ describe("native document validation and serialization", () => {
     expect(deserializeDocument(serializeDocument(withMolecule))).toEqual(withMolecule);
   });
 
+  it("degrades an unrecognized classifier to 'unknown' instead of failing the whole document", () => {
+    // A document written by a newer build, or imported from a format with a richer vocabulary. Every
+    // one of these enums spells "unknown" as a member precisely so this case has an answer; without
+    // the degrade, one such value fails its object, its page, and the entire file — the user sees an
+    // unopenable document rather than one arrow drawn plainly.
+    const document = createEmptyDocument({ id: "doc_future", now: timestamp });
+    const serialized = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: unknown[] }>;
+    };
+    serialized.pages[0].objects.push(
+      {
+        id: "obj_arrow",
+        type: "reaction-arrow",
+        x: 10,
+        y: 10,
+        width: 100,
+        height: 12,
+        rotation: 0,
+        style: {},
+        arrowKind: "dashed-forward-from-the-future",
+        start: { kind: "point", point: { x: 10, y: 16 } },
+        end: { kind: "point", point: { x: 110, y: 16 } },
+        labels: []
+      },
+      {
+        id: "obj_bracket",
+        type: "bracket",
+        x: 10,
+        y: 60,
+        width: 14,
+        height: 64,
+        rotation: 0,
+        style: {},
+        bracketKind: "chevron",
+        containedObjectIds: []
+      }
+    );
+
+    const restored = deserializeDocument(JSON.stringify(serialized));
+    const [arrow, bracket] = restored.pages[0].objects.slice(-2);
+    expect(arrow).toMatchObject({ type: "reaction-arrow", arrowKind: "unknown" });
+    expect(bracket).toMatchObject({ type: "bracket", bracketKind: "unknown" });
+    // The rest of the object survives intact — the endpoints are what make it still drawable.
+    expect(arrow).toMatchObject({ end: { kind: "point", point: { x: 110, y: 16 } } });
+  });
+
   it("accepts optional molecule bond display metadata", () => {
     const molecule = {
       ...moleculeObject(),
