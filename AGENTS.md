@@ -49,10 +49,16 @@ The schema-backed toolbar button rules that must keep holding:
 - items with no enabled primary command and no enabled submenu commands must be disabled;
 - inline schema submenus need owner/menu/menuitem ARIA coverage;
 - native palette flyout transport must remain unchanged;
-- generated toolbar command specs must not invent generic tooltip descriptions.
+- generated toolbar command specs must not invent generic tooltip descriptions;
+- shipped toolsets must not contain permanently disabled placeholder buttons: a visible button is
+  either backed by live behavior or removed from the manifest until its feature slice lands;
+- `disabledReason` is reserved for transient, state-dependent unavailability (selection-dependent
+  commands and similar), and such commands must always carry a reason;
+- the customize gallery must exclude permanently stubbed commands.
 
 Do not change command IDs, chemistry behavior, inspector behavior, package dependencies, or app
-build identity unless a test or build process forces a narrow, explained fix.
+build identity unless a test or build process forces a narrow, explained fix, or the active
+PLANS.md slice explicitly documents the command's retirement or introduction.
 
 ## Reuse Existing Systems
 
@@ -639,7 +645,7 @@ Built-in tools and plugin tools should use the same command system whenever prac
 
 Visible menu, quick-action toolbar, floating/dockable palette, keyboard shortcut, command-palette, and plugin menu/toolbar/panel actions must be backed by command definitions where practical.
 
-Do not wire major behavior only through button-local handlers. Placeholder tools may exist as disabled command definitions, but they must not pretend to perform chemistry.
+Do not wire major behavior only through button-local handlers. Disabled command definitions exist only for transient, state-dependent unavailability and must carry a reason; tools whose features are unimplemented are removed from shipped toolsets and the command catalog until their slice lands (see the Toolbar Button Contract).
 
 Examples of commands:
 
@@ -653,7 +659,6 @@ export.pdf
 export.rxn
 clipboard.copy
 clipboard.paste
-style.importStyleSheet
 style.applyPreset
 style.setDefaultPreset
 style.managePresets

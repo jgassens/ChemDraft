@@ -288,7 +288,7 @@ Functional familiarity with classic chemistry drawing tools is acceptable. Direc
 
 Menu items, quick-action toolbar buttons, floating/dockable palette tools, keyboard shortcuts, command-palette actions, and plugin contributions should all be backed by command definitions where practical.
 
-Do not hard-code important actions only inside button click handlers. Placeholder tools may exist as disabled command definitions, but they must not pretend to perform chemistry.
+Do not hard-code important actions only inside button click handlers. Disabled command definitions must carry a reason and reflect transient, state-dependent unavailability only; tools whose features are unimplemented are removed from shipped toolsets until their slice lands — no decorative disabled placeholder buttons.
 
 ### 6.12 Floating toolset architecture
 
@@ -305,7 +305,7 @@ ChemDraft has toolsets, not just one tool palette. Toolsets can be built-in, plu
 
 ### 6.13 Toolbar/toolset customization
 
-Full drag-and-drop toolbar customization UI is deferred until the model is wired and tested. The customization architecture is now part of core UI infrastructure.
+Toolbar customization UI is delivered: the Customize Toolbars dialog and the in-place Main-toolbar editor modify versioned user layout state. The customization architecture is part of core UI infrastructure.
 
 Rules:
 
@@ -317,8 +317,8 @@ Rules:
 - Customization must not grant plugin permissions.
 - Customization must not bypass command registration.
 - Future drag-and-drop editors should modify the same state model.
-- `view.customizeToolbars`, `view.toolset.resetLayout`, `view.toolset.resetAllLayouts`, `view.toolset.createUserToolset`, and `view.toolset.cloneToolset` are valid command concepts.
-- These commands may remain disabled until a real customization UI exists.
+- `view.customizeToolbars` and `view.customizeMainToolbar` are the customization entry points, delivered by the Customize Toolbars dialog and the in-place Main-toolbar editor.
+- Reset, reset-all, create-user-toolset, and clone actions live inside those editors (backed by `layoutStateEdits.ts`); the former standalone `view.toolset.*` command IDs are retired per the active PLANS.md slice.
 
 ### 6.14 ChemDraw toolbar XML boundary
 
