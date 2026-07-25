@@ -639,7 +639,7 @@ function exportReactionArrowObject(
   const graphicId = idFor(ids, arrow.id, allocator);
   const start = resolveAnchorPoint(arrow.start, objectsById) ?? { x: arrow.x, y: arrow.y + arrow.height / 2 };
   const end = resolveAnchorPoint(arrow.end, objectsById) ?? { x: arrow.x + arrow.width, y: arrow.y + arrow.height / 2 };
-  return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(arrow.arrowKind)}" BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
+  return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(cdxmlArrowTypeForKind(arrow.arrowKind))}" BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
 }
 
 function exportGraphicObject(
@@ -2724,11 +2724,37 @@ function resolveAnchorPoint(anchor: Anchor, objectsById: ReadonlyMap<string, Doc
   return undefined;
 }
 
+/**
+ * CDXML `ArrowType` spellings, which are what other programs actually write and read.
+ *
+ * Earlier ChemDraft builds emitted the internal lowercase kind names instead, so those are still
+ * accepted on import — otherwise documents this app itself wrote would come back as `unknown`.
+ */
+const cdxmlArrowTypeByKind: Readonly<Record<Exclude<ArrowObject["arrowKind"], "unknown">, string>> = {
+  forward: "FullHead",
+  resonance: "Resonance",
+  equilibrium: "Equilibrium",
+  retrosynthesis: "RetroSynthetic"
+};
+
+const arrowKindByCdxmlArrowType: ReadonlyMap<string, ArrowObject["arrowKind"]> = new Map([
+  // Real CDXML spellings.
+  ["fullhead", "forward"],
+  ["halfhead", "forward"],
+  ["resonance", "resonance"],
+  ["equilibrium", "equilibrium"],
+  ["retrosynthetic", "retrosynthesis"],
+  // Legacy ChemDraft output.
+  ["forward", "forward"],
+  ["retrosynthesis", "retrosynthesis"]
+] as const);
+
+export function cdxmlArrowTypeForKind(arrowKind: ArrowObject["arrowKind"]): string {
+  return arrowKind === "unknown" ? "FullHead" : cdxmlArrowTypeByKind[arrowKind];
+}
+
 function arrowKindFromCdxml(value: string): ArrowObject["arrowKind"] {
-  if (value === "forward" || value === "resonance" || value === "equilibrium" || value === "retrosynthesis") {
-    return value;
-  }
-  return "unknown";
+  return arrowKindByCdxmlArrowType.get(value.trim().toLowerCase()) ?? "unknown";
 }
 
 function graphicKindFromCdxml(value: string | undefined): GraphicObject["graphicKind"] {

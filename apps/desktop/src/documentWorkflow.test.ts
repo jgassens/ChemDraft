@@ -22,6 +22,7 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
+  type TextSpan,
   type PlusObject,
   type TextObject,
   type VisualEffect
@@ -121,6 +122,7 @@ import {
   bracketKindForToolCommand,
   formulaSpansFromText,
   insertNativeBracket,
+  insertNativeReactionArrow,
   planNativeChainVertices,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
@@ -1156,6 +1158,38 @@ describe("Phase 4 document workflow", () => {
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
   });
 
+  it("retells the structure format when native editing rewrites an imported molfile as SMILES", () => {
+    // Editing re-derives `structure` as SMILES. If the format kept saying molfile, the plugin
+    // selection snapshot and the Ketcher adapter would hand SMILES text to a molfile parser.
+    const pasted = applyClipboardPastePayload(createPhase4Document("Molfile Chain"), {
+      kind: "molfile",
+      format: "molfile-v2000",
+      text: clipboardEtheneMolfile,
+      warnings: []
+    }, { x: 260, y: 260 });
+    const imported = selectedMolecule(pasted.document);
+    if (!imported) {
+      throw new Error("Expected an imported molfile molecule");
+    }
+    expect(imported.structureFormat).toBe("molfile-v2000");
+
+    const anchorAtom = imported.atoms[0];
+    const grown = applyNativeChainTool(
+      pasted.document,
+      { x: anchorAtom.x, y: anchorAtom.y },
+      { x: anchorAtom.x + 60, y: anchorAtom.y },
+      { objectId: imported.id, atomId: anchorAtom.id }
+    );
+    const edited = grown.pages[0].objects.find((object) => object.id === imported.id);
+
+    if (edited?.type !== "molecule") {
+      throw new Error("Expected the edited molecule");
+    }
+    expect(edited.atoms.length).toBeGreaterThan(imported.atoms.length);
+    expect(edited.structureFormat).toBe("smiles");
+    expect(edited.structure).not.toContain("V2000");
+  });
+
   it("plans zig-zag chain vertices from the drag vector and chain angle", () => {
     const single = planNativeChainVertices({
       start: { x: 100, y: 100 },
@@ -1255,6 +1289,44 @@ describe("Phase 4 document workflow", () => {
     expect(formulaSpansFromText("plain")).toEqual([
       { text: "plain", script: "normal", style: {} }
     ]);
+  });
+
+  it("separates a charge magnitude from an atom count in common ions", () => {
+    // "Ca2+" and "NH4+" are spelled the same way but the digit means different things: a lone
+    // element symbol takes the digit as its charge, a polyatomic body keeps it as a count.
+    const scripts = (formula: string) =>
+      formulaSpansFromText(formula).map((span) => `${span.text}:${span.script}`);
+
+    expect(scripts("NH4+")).toEqual(["NH:normal", "4:subscript", "+:superscript"]);
+    expect(scripts("NO3-")).toEqual(["NO:normal", "3:subscript", "-:superscript"]);
+    expect(scripts("ClO4-")).toEqual(["ClO:normal", "4:subscript", "-:superscript"]);
+    expect(scripts("MnO4-")).toEqual(["MnO:normal", "4:subscript", "-:superscript"]);
+    expect(scripts("PO43-")).toEqual(["PO:normal", "4:subscript", "3-:superscript"]);
+    expect(scripts("Ca2+")).toEqual(["Ca:normal", "2+:superscript"]);
+    expect(scripts("Fe3+")).toEqual(["Fe:normal", "3+:superscript"]);
+    expect(scripts("Na+")).toEqual(["Na:normal", "+:superscript"]);
+
+    // A trailing hyphen on a prefix is not a charge.
+    expect(scripts("trans-")).toEqual(["trans-:normal"]);
+    expect(scripts("Boc-")).toEqual(["Boc-:normal"]);
+    expect(scripts("tert-")).toEqual(["tert-:normal"]);
+  });
+
+  it("preserves source span styling when reformatting a formula", () => {
+    const styled: TextSpan[] = [
+      { text: "H2", script: "normal", style: { color: "#b3261e", fontWeight: 700 } },
+      { text: "O", script: "normal", style: { color: "#1b5e20" } }
+    ];
+    const spans = formulaSpansFromText("H2O", styled);
+
+    expect(spans.map((span) => `${span.text}:${span.script}`)).toEqual([
+      "H:normal",
+      "2:subscript",
+      "O:normal"
+    ]);
+    expect(spans[0].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
+    expect(spans[1].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
+    expect(spans[2].style).toMatchObject({ color: "#1b5e20" });
   });
 
   it("applies formula formatting to selected text objects only", () => {
@@ -1366,6 +1438,45 @@ describe("Phase 4 document workflow", () => {
 
     expect(stretchNativeReactionArrowTo(placed, objectId, { x: 200, y: 220 }, { x: 203, y: 221 })).toBe(placed);
     expect(stretchNativeReactionArrowTo(placed, "missing_object", { x: 0, y: 0 }, { x: 90, y: 0 })).toBe(placed);
+  });
+
+  it("scales arrow endpoints with the frame instead of only the selection box", () => {
+    const blank = createPhase4Document("Arrow Resize Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 300 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+    const before = placed.pages[0].objects[0];
+    if (before.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+
+    const scaled = scaleDocumentObjectsAroundPoint(placed, [objectId], { x: 200, y: 300 }, 2, 2);
+    const after = scaled.pages[0].objects[0];
+    if (after.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+
+    // The drawn arrow must double along with its box, not stay put inside a larger frame.
+    expect(after.width).toBeCloseTo(before.width * 2, 6);
+    const beforeSpan = (before.end.point?.x ?? 0) - (before.start.point?.x ?? 0);
+    const afterSpan = (after.end.point?.x ?? 0) - (after.start.point?.x ?? 0);
+    expect(afterSpan).toBeCloseTo(beforeSpan * 2, 6);
+    // Anchored at the scale centre, so the tail stays put.
+    expect(after.start.point?.x).toBeCloseTo(200, 6);
+  });
+
+  it("gives an axis-aligned arrow a frame wide enough to hold its glyph", () => {
+    const blank = createPhase4Document("Vertical Arrow Fixture");
+    // A straight vertical drag: the cross axis has no natural extent.
+    const vertical = insertNativeReactionArrow(blank, { x: 300, y: 100 }, { x: 300, y: 260 }, "equilibrium");
+    const object = vertical.pages[0].objects[0];
+
+    if (object.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+    expect(object.height).toBe(160);
+    // Equilibrium shafts reach 7.5px either side of the axis; a 1px box would clip the handles.
+    expect(object.width).toBeGreaterThanOrEqual(15);
+    expect(object.x + object.width / 2).toBeCloseTo(300, 6);
   });
 
   it("maps symbol tool commands to their stamp glyphs", () => {

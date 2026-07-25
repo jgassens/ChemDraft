@@ -1266,7 +1266,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.25.10.50-fable";
+const CURRENT_BUILD_STAMP = "7.25.15.14-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -7967,6 +7967,19 @@ export function MainWindow({
     }
   }, []);
 
+  /** Abandon an in-flight placement and restore the document it started from. Defined ahead of the
+   *  keydown effect that calls it, so the effect's dependency list can name it. */
+  const cancelNativePlacementDrag = useCallback((): void => {
+    const drag = nativePlacementDragRef.current;
+    if (!drag) {
+      return;
+    }
+    nativePlacementDragRef.current = null;
+    // The capture lives on the page element, which a key event cannot address. Dropping the ref is
+    // what matters: pointerup then finds no drag and releases the capture without committing.
+    replacePresentDocument(drag.startDocument);
+  }, [replacePresentDocument]);
+
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -8078,6 +8091,17 @@ export function MainWindow({
         return;
       }
 
+      // A live placement (bond, template, arrow, chain) has to be abandoned before the generic
+      // tool-escape below: switching to Select leaves the drag armed, and the eventual pointerup
+      // still commits the object the user just tried to cancel.
+      if (event.key === "Escape" && nativePlacementDragRef.current) {
+        event.preventDefault();
+        const label = nativePlacementStatusLabel(nativePlacementDragRef.current);
+        cancelNativePlacementDrag();
+        setStatus(`${capitalizeLabel(label)} canceled`);
+        return;
+      }
+
       if (
         event.key === "Escape" &&
         activeToolCommandIdRef.current !== "tool.select" &&
@@ -8123,6 +8147,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
     clearNativePathArtDraw,
     clearProjectedPlaneTiltDrag,
@@ -19689,8 +19714,11 @@ function PageSvgSurface({
   );
 }
 
-function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
-  if (object.type === "graphic") {
+export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
+  // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
+  // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
+  // #111111. Export is unaffected: it plans the page directly and never applies this filter.
+  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") {
     return false;
   }
 

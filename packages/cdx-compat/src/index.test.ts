@@ -214,7 +214,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(result.contents).toContain(">+</t>");
     expect(result.contents).toContain('<graphic id="');
     expect(result.contents).toContain('GraphicType="Line"');
-    expect(result.contents).toContain('ArrowType="forward"');
+    expect(result.contents).toContain('ArrowType="FullHead"');
     expect(result.warnings.map((item) => item.code)).toEqual([
       "cdxml.reaction_scheme_export_partial",
       "cdxml.mechanism_payload_only"
@@ -968,6 +968,52 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((reactionArrow.document?.pages[0].objects[0] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
   });
 
+  it("writes real CDXML ArrowType spellings and reads foreign and legacy ones", () => {
+    // The previous test asserted our own lowercase output against our own reader, so it passed
+    // while real CDXML imported as "unknown". Assert the wire spellings directly.
+    const arrowAt = (arrowKind: ArrowObject["arrowKind"]) => documentWithObjects([
+      {
+        id: "arrow_wire",
+        type: "reaction-arrow",
+        x: 100, y: 88, width: 120, height: 24, rotation: 0, style: {},
+        arrowKind,
+        start: { kind: "point", point: { x: 100, y: 100 } },
+        end: { kind: "point", point: { x: 220, y: 100 } },
+        labels: []
+      }
+    ]);
+
+    expect(exportDocumentToCdxml(arrowAt("forward"), { creationProgram: "T" }).contents)
+      .toContain('ArrowType="FullHead"');
+    expect(exportDocumentToCdxml(arrowAt("resonance"), { creationProgram: "T" }).contents)
+      .toContain('ArrowType="Resonance"');
+    expect(exportDocumentToCdxml(arrowAt("equilibrium"), { creationProgram: "T" }).contents)
+      .toContain('ArrowType="Equilibrium"');
+    expect(exportDocumentToCdxml(arrowAt("retrosynthesis"), { creationProgram: "T" }).contents)
+      .toContain('ArrowType="RetroSynthetic"');
+
+    // Foreign CDXML — the spellings another program writes. `bactvue-visible-subset` is a real
+    // third-party fixture already carrying ArrowType="FullHead"; substituting into it keeps the
+    // reader on genuinely foreign input rather than on our own output.
+    const foreign = (arrowType: string) => {
+      const cdxml = cdxmlFixture("bactvue-visible-subset.cdxml")
+        .replace('ArrowType="FullHead"', `ArrowType="${arrowType}"`);
+      return openChemDraftPayload(cdxml).document?.pages[0].objects.find(
+        (object): object is ArrowObject => object.type === "reaction-arrow"
+      )?.arrowKind;
+    };
+
+    expect(foreign("FullHead")).toBe("forward");
+    expect(foreign("HalfHead")).toBe("forward");
+    expect(foreign("Resonance")).toBe("resonance");
+    expect(foreign("Equilibrium")).toBe("equilibrium");
+    expect(foreign("RetroSynthetic")).toBe("retrosynthesis");
+    // Legacy ChemDraft output still reads, so documents this app already wrote survive.
+    expect(foreign("forward")).toBe("forward");
+    expect(foreign("retrosynthesis")).toBe("retrosynthesis");
+    expect(foreign("Nonsense")).toBe("unknown");
+  });
+
   it("round-trips a resonance reaction arrow through CDXML", () => {
     const document = documentWithObjects([
       {
@@ -987,7 +1033,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
     const exported = exportDocumentToCdxml(document, { creationProgram: "Resonance Arrow Test" });
 
-    expect(exported.contents).toContain('ArrowType="resonance"');
+    expect(exported.contents).toContain('ArrowType="Resonance"');
     const reopened = openChemDraftPayload(exported.contents);
     const arrow = reopened.document?.pages[0].objects.find(
       (object): object is ArrowObject => object.type === "reaction-arrow"

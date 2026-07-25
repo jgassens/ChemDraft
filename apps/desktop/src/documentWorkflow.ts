@@ -3590,7 +3590,10 @@ export function reactionArrowKindForToolCommand(commandId: string): ArrowObject[
 }
 
 export const nativeReactionArrowDefaultLengthPx = 120;
-const nativeReactionArrowMinHeightPx = 24;
+/** Cross-axis minimum for an arrow's frame. The widest glyph (equilibrium) reaches 7.5 px either
+ *  side of the shaft, so a 24 px box keeps heads, transform handles, and align/marquee bounds
+ *  around the drawing even when the arrow is axis-aligned. */
+const nativeReactionArrowMinExtentPx = 24;
 const nativeReactionArrowMinLengthPx = 8;
 
 export function createNativeReactionArrow(
@@ -3603,15 +3606,17 @@ export function createNativeReactionArrow(
   const maxX = Math.max(startPoint.x, endPoint.x);
   const minY = Math.min(startPoint.y, endPoint.y);
   const maxY = Math.max(startPoint.y, endPoint.y);
-  const height = Math.max(maxY - minY, nativeReactionArrowMinHeightPx);
+  const width = Math.max(maxX - minX, nativeReactionArrowMinExtentPx);
+  const height = Math.max(maxY - minY, nativeReactionArrowMinExtentPx);
+  const midX = (minX + maxX) / 2;
   const midY = (minY + maxY) / 2;
 
   return {
     id: nextObjectId(document, "arrow"),
     type: "reaction-arrow",
-    x: minX,
+    x: midX - width / 2,
     y: midY - height / 2,
-    width: Math.max(maxX - minX, 1),
+    width,
     height,
     rotation: 0,
     style: {},
@@ -3655,7 +3660,7 @@ export function applyReactionArrowToolAtPoint(
 ): ChemDraftDocument {
   const page = firstPage(document);
   const startX = clamp(point.x, 0, Math.max(0, page.width - nativeReactionArrowDefaultLengthPx));
-  const y = clamp(point.y, nativeReactionArrowMinHeightPx / 2, Math.max(nativeReactionArrowMinHeightPx / 2, page.height - nativeReactionArrowMinHeightPx / 2));
+  const y = clamp(point.y, nativeReactionArrowMinExtentPx / 2, Math.max(nativeReactionArrowMinExtentPx / 2, page.height - nativeReactionArrowMinExtentPx / 2));
 
   return insertNativeReactionArrow(
     document,
@@ -3703,49 +3708,100 @@ export function stretchNativeReactionArrowTo(
 /** Chemical-formula span formatting: digit runs that follow an element letter or closing
  *  parenthesis become subscripts, and a trailing charge (optional digits plus +, -, or −) becomes a
  *  superscript. Everything else stays a normal span. */
-export function formulaSpansFromText(text: string): TextSpan[] {
+/** A run of element symbols, groupings, and counts — what a trailing sign must follow to be a
+ *  charge at all. "trans-", "Boc-", and "tert-" fail this and keep their hyphen. */
+const formulaBodyPattern = /^(?:[A-Z][a-z]?\d*|\d+|[()[\]·])+$/;
+const singleElementPattern = /^[A-Z][a-z]?$/;
+
+/**
+ * Index where a trailing charge begins, or `text.length` when there is none.
+ *
+ * The hard case is that a digit before the sign can be either a charge magnitude or an atom count,
+ * and the two are spelled identically: in "Ca2+" the 2 is the charge, in "NH4+" the 4 is a count.
+ * Two or more digits always split (the last is the magnitude, as in "SO42-"); a single digit is
+ * read as the magnitude only when the body is one element symbol, which is what separates the
+ * metal cations from the polyatomic ions.
+ */
+function formulaChargeStart(text: string): number {
+  const match = /(\d*)([+\-±−])$/.exec(text);
+  if (!match) {
+    return text.length;
+  }
+
+  const signIndex = text.length - 1;
+  const digits = match[1];
+  const body = text.slice(0, text.length - match[0].length);
+  if (!formulaBodyPattern.test(body)) {
+    return text.length;
+  }
+  if (digits.length === 0) {
+    return signIndex;
+  }
+  if (digits.length >= 2) {
+    return signIndex - 1;
+  }
+  return singleElementPattern.test(body) ? signIndex - 1 : signIndex;
+}
+
+/** Per-character source styles, so reformatting keeps colour, font, and weight. */
+function formulaCharacterStyles(
+  text: string,
+  sourceSpans: readonly TextSpan[]
+): Array<TextSpan["style"] | undefined> {
+  const styles: Array<TextSpan["style"] | undefined> = [];
+  for (const span of sourceSpans) {
+    for (let index = 0; index < span.text.length; index += 1) {
+      styles.push(span.style);
+    }
+  }
+  while (styles.length < text.length) {
+    styles.push(styles[styles.length - 1]);
+  }
+  return styles;
+}
+
+export function formulaSpansFromText(text: string, sourceSpans: readonly TextSpan[] = []): TextSpan[] {
   if (text.length === 0) {
     return [{ text: "", script: "normal", style: {} }];
   }
 
-  // A trailing charge keeps at most one digit ("Ca2+", "SO42-" -> charge "2-"); formula
-  // subscripts own longer digit runs.
-  const chargeMatch = text.match(/^(.+?)(\d?[+\-±−])$/);
-  const base = chargeMatch ? chargeMatch[1] : text;
-  const charge = chargeMatch ? chargeMatch[2] : undefined;
-
-  const spans: TextSpan[] = [];
-  const pushRun = (runText: string, script: TextSpan["script"]) => {
+  const styles = formulaCharacterStyles(text, sourceSpans);
+  const runs: Array<{ text: string; script: TextSpan["script"]; style: TextSpan["style"] | undefined }> = [];
+  const pushRun = (runText: string, script: TextSpan["script"], at: number) => {
     if (runText.length === 0) {
       return;
     }
-    const previous = spans[spans.length - 1];
-    if (previous && previous.script === script) {
+    const style = styles[at];
+    const previous = runs[runs.length - 1];
+    // Styles come from the source spans, so identical styling is the same object reference.
+    if (previous && previous.script === script && previous.style === style) {
       previous.text += runText;
       return;
     }
-    spans.push({ text: runText, script, style: {} });
+    runs.push({ text: runText, script, style });
   };
 
+  const chargeStart = formulaChargeStart(text);
   let index = 0;
-  while (index < base.length) {
-    const character = base[index];
-    if (/\d/.test(character) && index > 0 && /[A-Za-z)\]]/.test(base[index - 1])) {
+  while (index < chargeStart) {
+    const character = text[index];
+    if (/\d/.test(character) && index > 0 && /[A-Za-z)\]]/.test(text[index - 1])) {
       let end = index;
-      while (end < base.length && /\d/.test(base[end])) {
+      while (end < chargeStart && /\d/.test(text[end])) {
         end += 1;
       }
-      pushRun(base.slice(index, end), "subscript");
+      pushRun(text.slice(index, end), "subscript", index);
       index = end;
       continue;
     }
-    pushRun(character, "normal");
+    pushRun(character, "normal", index);
     index += 1;
   }
-  if (charge) {
-    pushRun(charge, "superscript");
+  if (chargeStart < text.length) {
+    pushRun(text.slice(chargeStart), "superscript", chargeStart);
   }
-  return spans;
+
+  return runs.map((run) => ({ text: run.text, script: run.script, style: { ...(run.style ?? {}) } }));
 }
 
 /** One-shot formula formatting over the selected text objects; returns the same document when the
@@ -3758,7 +3814,7 @@ export function applyFormulaTextFormatting(document: ChemDraftDocument): ChemDra
     if (object.type !== "text" || !selectedIds.has(object.id)) {
       continue;
     }
-    const spans = formulaSpansFromText(object.text);
+    const spans = formulaSpansFromText(object.text, object.spans);
     if (JSON.stringify(spans) === JSON.stringify(object.spans)) {
       continue;
     }
@@ -10645,6 +10701,12 @@ function offsetAnchorPoint(anchor: Anchor, dx: number, dy: number): Anchor {
     : anchor;
 }
 
+function mapAnchorPoint(anchor: Anchor, map: (point: PagePoint) => PagePoint): Anchor {
+  return anchor.kind === "point" && anchor.point
+    ? { ...anchor, point: map(anchor.point) }
+    : anchor;
+}
+
 // Fully validate (and normalize) a clipboard object against the document schema. Shallow base-field
 // checks let objects with missing type-specific fields through, which then throw later at applyPatch
 // instead of being rejected so paste can fall back safely.
@@ -10748,6 +10810,27 @@ function transformOtherObjectAroundPoint(
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
+  }
+  // Arrow endpoints are absolute page points, so scaling or rotating only the frame would leave the
+  // drawn arrow at its original size and angle inside a resized box.
+  if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
+    const mapPoint = (point: PagePoint): PagePoint => {
+      const scaled = {
+        x: center.x + (point.x - center.x) * scaleX,
+        y: center.y + (point.y - center.y) * scaleY
+      };
+      return Math.abs(degrees) >= 0.05
+        ? rotatePointAround(scaled, center, degrees * Math.PI / 180)
+        : scaled;
+    };
+    if (object.type === "reaction-arrow") {
+      changes.start = mapAnchorPoint(object.start, mapPoint);
+      changes.end = mapAnchorPoint(object.end, mapPoint);
+    } else {
+      changes.source = mapAnchorPoint(object.source, mapPoint);
+      changes.target = mapAnchorPoint(object.target, mapPoint);
+      changes.controlPoints = object.controlPoints.map(mapPoint);
+    }
   }
 
   return applyPatch(
@@ -13729,6 +13812,10 @@ function refreshNativeSingleBondGraph(
 ): MoleculeObject {
   return normalizeNativeMoleculeGeometry({
     ...molecule,
+    // `structure` is re-derived as SMILES here, so the format must say so. Leaving an imported
+    // molfile format in place would hand SMILES text to a molfile parser — the plugin selection
+    // snapshot and the Ketcher adapter both choose their parser from this field.
+    structureFormat: "smiles",
     structure: nativeSingleBondGraphSmiles(atoms, bonds),
     chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
     atoms: [...atoms],

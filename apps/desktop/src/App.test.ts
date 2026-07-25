@@ -145,6 +145,7 @@ import {
   selectionInSelectionLasso,
   selectionInSelectionRect,
   selectionInSelectionPolygon,
+  editorPageSvgSurfaceIncludesObject,
   shouldActivateDocumentObject,
   shouldDragDocumentObject,
   shouldLetSystemClipboardHandleCommand,
@@ -3006,6 +3007,49 @@ describe("ChemDraft desktop shell", () => {
     });
   });
 
+  it("lets the overlay own brackets and arrows so the editor does not paint them twice", () => {
+    // The overlay draws both types in full (BracketGlyph, the arrow geometry renderer). Including
+    // them in the editor surface too doubled every stroke in a second colour.
+    expect(editorPageSvgSurfaceIncludesObject({
+      id: "bracket_001",
+      type: "bracket",
+      x: 10, y: 10, width: 16, height: 64, rotation: 0, style: {},
+      bracketKind: "curly",
+      containedObjectIds: []
+    } as DocumentObject)).toBe(false);
+    expect(editorPageSvgSurfaceIncludesObject({
+      id: "arrow_001",
+      type: "reaction-arrow",
+      x: 10, y: 10, width: 120, height: 24, rotation: 0, style: {},
+      arrowKind: "forward",
+      start: { kind: "point", point: { x: 10, y: 22 } },
+      end: { kind: "point", point: { x: 130, y: 22 } },
+      labels: []
+    } as DocumentObject)).toBe(false);
+    // Text still comes from the surface.
+    expect(editorPageSvgSurfaceIncludesObject({
+      id: "text_001",
+      type: "text",
+      x: 10, y: 10, width: 40, height: 24, rotation: 0, style: {},
+      text: "A",
+      spans: []
+    } as DocumentObject)).toBe(true);
+  });
+
+  it("cancels an in-flight placement drag on Escape instead of leaving it armed", () => {
+    // Escape used to only switch to Select, leaving nativePlacementDragRef live — the eventual
+    // pointerup then committed the arrow/chain/bond the user had just canceled.
+    expect(mainWindowSource).toContain('event.key === "Escape" && nativePlacementDragRef.current');
+    expect(mainWindowSource).toContain("cancelNativePlacementDrag();");
+    // The cancel must precede the generic drawing-tool escape that switches to Select.
+    const cancelAt = mainWindowSource.indexOf('event.key === "Escape" && nativePlacementDragRef.current');
+    const genericAt = mainWindowSource.indexOf('activeToolCommandIdRef.current !== "tool.select" &&');
+    expect(cancelAt).toBeGreaterThan(-1);
+    expect(genericAt).toBeGreaterThan(cancelAt);
+    // And it must restore the pre-drag document rather than keep the preview.
+    expect(mainWindowSource).toContain("replacePresentDocument(drag.startDocument);");
+  });
+
   it("filters transitional stubs out of both customize gallery sources", () => {
     expect(mainWindowSource).toContain("shellCommandSpecs.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id))");
     expect(paletteWindowSource).toContain("allCommands.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id))");
@@ -4845,7 +4889,9 @@ describe("ChemDraft desktop shell", () => {
     ).toEqual([4, 1, 1]);
     expect(markup).toContain("DIPEA, DMSO");
     expect(markup).toContain("reaction-arrow-object");
-    expect(markup).toContain('data-arrow-kind="unknown"');
+    // This third-party fixture writes ArrowType="FullHead". It used to degrade to "unknown"
+    // because the reader only accepted ChemDraft's own lowercase spellings.
+    expect(markup).toContain('data-arrow-kind="forward"');
     expect(markup).toContain("reaction-arrow-line");
     expect(markup).toContain("graphic-object");
     expect(markup).toContain('data-graphic-kind="unknown"');
