@@ -843,7 +843,7 @@ Native ChemDraft style presets are the source of truth for drawing appearance. C
 Required style behavior:
 
 - Provide a sensible built-in default style preset.
-- Import `.cds` files through `style.importStyleSheet`, exposed as File > Import Style Sheet or an equivalent Format/Style menu item.
+- Import `.cds` files through the Molecule Inspector's style import, which reads them through the style compatibility boundary. (A separate `style.importStyleSheet` command was retired as redundant; see "Command retirements" in `PLANS.md`. If a File > Import Style Sheet menu entry is wanted later, it should route to the same import path rather than reintroduce a parallel command.)
 - Convert supported bond, text, page, grid, ruler, color, and object appearance settings into native style presets.
 - Allow the user to set an imported native preset as the default for new documents through `style.setDefaultPreset`.
 - Preserve the selected native style preset when a ChemDraft document is saved and reopened.

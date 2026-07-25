@@ -915,12 +915,20 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 If hit-testing, pointer behavior, or the agent bridge changes, also run the relevant DOM/agent bridge/drawing-tool suites.
 
-Manual stress for the active toolbar-wiring slice must cover: drawing each reaction-arrow kind by
-click and by drag (heads render per kind, resize handles work), placing and resizing both bracket
-kinds, stamping dagger and submenu symbols, editing an atom label through tool.atom, dragging a
-chain off an existing atom and off empty canvas, applying formula text to a typed formula,
-undo/redo one entry per gesture, save/reopen, and SVG export parity with the canvas for arrows,
-brackets, and orbitals.
+Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
+scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
+hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
+selection after tab switching/closing.
+
+Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
+kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both
+bracket kinds placed and resized, dagger and submenu symbol stamps, atom labels through `tool.atom`,
+chains dragged off an existing atom and off empty canvas including against a page edge, formula text
+applied to a typed formula, one undo entry per gesture, and SVG export parity with the canvas for
+arrows, brackets, and orbitals.
+
+This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
+replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
 ## Closeout Requirements
 

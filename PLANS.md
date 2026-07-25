@@ -1,11 +1,12 @@
 # ChemDraft Plans
 
-## Host-managed plugin updates (2026-07-25) — landed on `main`
+## Host-managed plugin updates (2026-07-25) — on `feat/toolbar-wiring-and-plugin-updates`
 
-The `codex/plugin-updates` implementation is now on `main`, ported file-by-file rather than merged:
-that branch forked before the toolbar slice, so taking its tree would have reverted eight commits of
-tool wiring. The earlier snapshot that was briefly merged here stays parked at
-`parked/plugin-fixes`; only two things were carried forward from it, both reworked.
+The `codex/plugin-updates` implementation was ported file-by-file rather than merged: that branch
+forked before the toolbar slice, so taking its tree would have reverted eight commits of tool
+wiring. It now rides the same branch as the toolbar slice, open against `main` as PR #21. The
+`codex/plugin-updates` and `parked/plugin-fixes` branches (and the shared worktree) have since been
+deleted; only two things were carried forward from the parked snapshot, both reworked.
 
 Ported forward from the parked snapshot:
 
@@ -70,8 +71,8 @@ explicit user action and must show the target version and package-integrity deta
   success, and error states.
 - Run `pnpm lint`, `pnpm test`, `pnpm build`, `git diff --check`, and the relevant Rust checks when
   native code changes.
-- Launch this worktree through `./run-app` or `./run-app --dev` and verify the visible
-  `chemdraw [codex/plugin-updates]` label.
+- Launch this worktree through `./run-app` or `./run-app --dev` and verify the visible worktree
+  label in the window title and build stamp matches the branch you meant to test.
 
 ## Sparkle macOS updates (2026-07-24)
 
@@ -105,11 +106,11 @@ the style compatibility boundary, `.template` export, and a shared font catalog 
 export font database. Durable schema and architecture notes live in
 `docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
 
-# Toolbar Wiring and Honesty (active, branch `refactor/toolbar-wiring`)
+# Toolbar Wiring and Honesty (branch `feat/toolbar-wiring-and-plugin-updates`, PR #21)
 
-Status: all eight phases implemented on `main`, then hardened after review.
-`TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain zero permanently disabled
-buttons.
+Status: all eight phases implemented and hardened across two review rounds. Shares its branch with
+the plugin-updates slice above. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain
+zero permanently disabled buttons.
 
 An external review plus three adversarial passes found roughly nineteen defects in the first cut of
 this slice. All five P1s and the P2s are now fixed with regression tests: imported structures keep
@@ -121,6 +122,19 @@ painted once; brackets and curved art warn when they degrade in foreign CDXML; c
 page edge and rebuild in one pass; stamps centre on the click and clear stale interaction state;
 arrows and orbitals can start on top of an existing object; and the Customize gallery offers
 neither transitional stubs nor the compat-only art variants.
+
+A second max-effort review over the combined branch found fifteen more, all now fixed with
+regression tests. The four that mattered most: the plugin-update capability scope listed the package
+`.zip` but not the `.zip.sha256` fetched right after it, so trusted updates could never complete —
+the guard test had only checked that the `.zip` pattern *existed* rather than matching real URLs
+against the compiled patterns; rotating a reaction arrow applied the angle twice, because the
+anchors were rotated and `rotation` incremented while both renderers apply that transform
+themselves; flipping never touched arrow anchors at all, so a mirrored scheme kept every arrow's
+original direction; and the formula body pattern backtracked exponentially — measured at 8.8 s for
+26 digits, doubling per digit — so a pasted numeric label froze the UI thread. The rest covered
+plugin-update failure paths that lost catalog records or deleted live payloads, a chain that could
+seed a bond-less carbon at a page edge, CDXML inventing `FullHead` for an unrecognized arrow, and a
+Customize gallery that keyed off the user's own layout and so deleted any art tool they removed.
 
 Known remaining gap: the Art inspector still styles only graphics and molecules, so Color Controls
 and Object Settings route a bracket or arrow selection to a status message rather than a working
@@ -171,7 +185,8 @@ AGENTS.md command-ID stability rule; each can return via git when its feature sl
   styling is applied through the Art inspector's effects.
 
 `surface.canvas.addPageAfter` stays as disabled metadata: the surface registry does not drive
-rendered UI (PLAN.md 6.16 sanctions it).
+rendered UI (PLAN.md 6.15 sanctions it explicitly — "may exist only as disabled metadata until
+`document.addPageAfter` is implemented and wired").
 
 ## Disposition of all audited items
 
