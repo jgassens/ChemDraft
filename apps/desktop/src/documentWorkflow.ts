@@ -3336,6 +3336,31 @@ export function insertNativeTextObject(
   );
 }
 
+const symbolGlyphByToolCommandId: ReadonlyMap<string, string> = new Map([
+  ["tool.dagger", "‡"],
+  ["tool.symbol", "°"],
+  ["tool.symbol.degree", "°"],
+  ["tool.symbol.plusMinus", "±"],
+  ["tool.symbol.angstrom", "Å"],
+  ["tool.symbol.delta", "Δ"],
+  ["tool.symbol.centerDot", "·"],
+  ["tool.symbol.prime", "′"]
+]);
+
+export function symbolGlyphForToolCommand(commandId: string): string | undefined {
+  return symbolGlyphByToolCommandId.get(commandId);
+}
+
+/** Stamp a single symbol glyph as a normal text object. One call per click, one history entry. */
+export function insertNativeSymbolGlyph(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  glyph: string,
+  style: Partial<NativeTextStyle> = {}
+): ChemDraftDocument {
+  return insertNativeTextObject(document, point, glyph, style);
+}
+
 export function createNativeMolfileMolecule(
   document: ChemDraftDocument,
   point: PagePoint,

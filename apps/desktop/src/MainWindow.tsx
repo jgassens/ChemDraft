@@ -189,6 +189,7 @@ import {
   objectStyleTargetCommands,
   ringInspectorToolsetId,
   moleculeInspectorToolsetId,
+  artToolsetId,
   toggleRingInspectorCommandId,
   moleculeInspectorTemplateExportCommandId,
   moleculeInspectorTemplateImportCommandId,
@@ -353,6 +354,8 @@ import {
   getSelectedMolecule,
   getSelectedTextObject,
   insertNativeTextObject,
+  insertNativeSymbolGlyph,
+  symbolGlyphForToolCommand,
   insertNativeArtGraphicObject,
   nativeBezierPathDocument,
   nativeArtToolIsFreehand,
@@ -4698,6 +4701,14 @@ export function MainWindow({
     setStatus("Inserted text - type to replace placeholder");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, focusTextObjectEditor, restoreToolAfterTextPlacement, textStyleDefaults]);
 
+  // Symbol tools stamp one glyph per click and stay active for repeated stamping — no inline text
+  // editor, unlike tool.text.
+  const applySymbolGlyphAtPoint = useCallback((point: ClientPoint, glyph: string) => {
+    const currentDocument = documentRef.current;
+    commitDocumentChange(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
+    setStatus(`Stamped ${glyph}`);
+  }, [commitDocumentChange, textStyleDefaults]);
+
   const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
     const currentDocument = documentRef.current;
     const nextDocument = insertNativeArtGraphicObject(currentDocument, point, commandId);
@@ -6844,6 +6855,18 @@ export function MainWindow({
         }
 
         if (applyTextStyleCommand(tool.id)) {
+          return;
+        }
+
+        // Object Settings and Color Controls open the surfaces that already own those edits: the
+        // Molecule Inspector and the Art toolbar's style controls.
+        if (tool.id === "tool.settings") {
+          void toggleToolset(moleculeInspectorToolsetId);
+          return;
+        }
+
+        if (tool.id === "style.color") {
+          void toggleToolset(artToolsetId);
           return;
         }
 
@@ -10360,6 +10383,23 @@ export function MainWindow({
       return;
     }
 
+    {
+      const symbolGlyph = symbolGlyphForToolCommand(activeToolState.activeCommandId);
+      if (symbolGlyph) {
+        event.preventDefault();
+        event.stopPropagation();
+        applySymbolGlyphAtPoint(point, symbolGlyph);
+        return;
+      }
+    }
+
+    if (activeToolState.activeCommandId === "tool.atom") {
+      event.preventDefault();
+      event.stopPropagation();
+      setStatus("Atom Label Tool: click an atom to edit its label");
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.text") {
       event.preventDefault();
       event.stopPropagation();
@@ -10386,6 +10426,7 @@ export function MainWindow({
     applyNativeArtDocumentAtPoint,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
+    applySymbolGlyphAtPoint,
     applyTextDocumentAtPoint,
     document,
     pagePointFromPointerEvent,
@@ -11496,6 +11537,27 @@ export function MainWindow({
       return;
     }
 
+    {
+      const symbolGlyph = symbolGlyphForToolCommand(activeToolState.activeCommandId);
+      if (symbolGlyph && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        applySymbolGlyphAtPoint(point, symbolGlyph);
+        return;
+      }
+    }
+
+    if (activeToolState.activeCommandId === "tool.atom" && object?.type === "molecule" && point) {
+      if (nativeMoleculeHit?.kind === "atom") {
+        event.stopPropagation();
+        startAtomLabelEdit({ objectId, ...nativeMoleculeHit }, { clearDraft: true });
+        return;
+      }
+      event.stopPropagation();
+      setStatus("Atom Label Tool: click an atom to edit its label");
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "text") {
       event.stopPropagation();
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
@@ -12068,6 +12130,7 @@ export function MainWindow({
     applyNativeBondDisplayStyleDocumentTarget,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
+    applySymbolGlyphAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
     currentEyedropperStatus,

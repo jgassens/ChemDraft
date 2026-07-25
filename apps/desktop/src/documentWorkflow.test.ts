@@ -115,7 +115,9 @@ import {
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   insertAdapterFallbackMolecule,
+  insertNativeSymbolGlyph,
   insertNativeTextObject,
+  symbolGlyphForToolCommand,
   insertNativeMolfileMolecule,
   insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule,
@@ -1140,6 +1142,29 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("maps symbol tool commands to their stamp glyphs", () => {
+    expect(symbolGlyphForToolCommand("tool.dagger")).toBe("‡");
+    expect(symbolGlyphForToolCommand("tool.symbol")).toBe("°");
+    expect(symbolGlyphForToolCommand("tool.symbol.degree")).toBe("°");
+    expect(symbolGlyphForToolCommand("tool.symbol.plusMinus")).toBe("±");
+    expect(symbolGlyphForToolCommand("tool.symbol.angstrom")).toBe("Å");
+    expect(symbolGlyphForToolCommand("tool.symbol.delta")).toBe("Δ");
+    expect(symbolGlyphForToolCommand("tool.symbol.centerDot")).toBe("·");
+    expect(symbolGlyphForToolCommand("tool.symbol.prime")).toBe("′");
+    expect(symbolGlyphForToolCommand("tool.text")).toBeUndefined();
+    expect(symbolGlyphForToolCommand("tool.bond")).toBeUndefined();
+  });
+
+  it("stamps a symbol glyph as a selected native text object", () => {
+    const blank = createPhase4Document("Symbol Stamp Fixture");
+    const stamped = insertNativeSymbolGlyph(blank, { x: 240, y: 200 }, "‡");
+    const object = stamped.pages[0].objects[0];
+
+    expect(stamped.pages[0].objects).toHaveLength(1);
+    expect(object).toMatchObject({ type: "text", text: "‡" });
+    expect(stamped.selection.objectIds).toEqual([object.id]);
   });
 
   it("reorders the selected document object for layer controls", () => {

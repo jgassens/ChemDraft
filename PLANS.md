@@ -115,8 +115,11 @@ AGENTS.md command-ID stability rule; each can return via git when its feature sl
   template corpus plus grid-picker UI is its own future slice.
 - `tool.arrows` — pure duplication of `tool.reactionArrow`'s command-grid submenu.
 - `tool.toolOptions` — no defined behavior; lived only in the hidden `core.style` toolset.
-- `tool.shape`, `tool.shapeShadow` — manifest items re-point to the live `tool.art.rect` /
-  `tool.art.rectShadow` commands; the vague duplicate IDs retire.
+- `tool.shape` — manifest items re-point to the live `tool.art.rect` command (shared `Art_Shapes`
+  asset per the one-asset-per-command rule); the vague duplicate ID retires.
+- `tool.shapeShadow` — retired outright: shadow art variants (`tool.art.rectShadow`,
+  `tool.art.circleGloss`, …) are deliberately compat-only and stay out of shipped toolbars; shadow
+  styling is applied through the Art inspector's effects.
 
 `surface.canvas.addPageAfter` stays as disabled metadata: the surface registry does not drive
 rendered UI (PLAN.md 6.16 sanctions it).
@@ -130,7 +133,8 @@ rendered UI (PLAN.md 6.16 sanctions it).
 | Wire | tool.lobe, tool.shadedLobe, tool.pOrbital, tool.sOrbital | 4 |
 | Wire | tool.bracket, tool.squareBracket | 5 |
 | Wire | tool.chain, style.formulaText | 6 |
-| Re-point | tool.shape → tool.art.rect, tool.shapeShadow → tool.art.rectShadow | 2 |
+| Re-point | tool.shape → tool.art.rect | 2 |
+| Retire | tool.shapeShadow (shadow variants are compat-only; Art inspector effects own shadows) | 2 |
 | Retire | mechanismArrow, templateGrid, arrows, toolOptions, importStyleSheet, bondStroke, textSize, preset.synthetic, 4 × view.toolset.* | 1 |
 | Keep | surface.canvas.addPageAfter (non-rendered metadata) | — |
 

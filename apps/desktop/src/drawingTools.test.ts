@@ -211,12 +211,13 @@ describe("Phase 7 drawing tool activation", () => {
     const withStandalone = withStandaloneDrawingToolCommands(toolsetCommands);
 
     expect(toolsetCommands.some((command) => command.id === "tool.atom")).toBe(false);
-    expect(withStandalone.find((command) => command.id === "tool.atom")).toMatchObject({
+    const atomCommand = withStandalone.find((command) => command.id === "tool.atom");
+    expect(atomCommand).toMatchObject({
       id: "tool.atom",
       title: "Atom Label Tool",
-      enabled: false,
-      disabledReason: "Requires an active structure editor"
+      enabled: true
     });
+    expect(atomCommand?.disabledReason).toBeUndefined();
   });
 
   it("collects only drawing tool command specs for activation routing", () => {

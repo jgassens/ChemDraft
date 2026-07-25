@@ -673,7 +673,6 @@
               "title": "Dagger Symbol Tool",
               "icon": "charge",
               "assetName": "Custom_Dagger",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.dagger",
               "kind": "button",
@@ -745,7 +744,6 @@
               "title": "Symbol Tool Group",
               "icon": "charge",
               "assetName": "Custom_Symbol",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.symbol",
               "kind": "button",
@@ -754,10 +752,54 @@
                 "type": "command",
                 "commandId": "tool.symbol"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Symbol tools",
+                "columns": 3,
+                "items": [
+                  {
+                    "commandId": "tool.symbol.degree",
+                    "label": "Degree Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.plusMinus",
+                    "label": "Plus-Minus Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.angstrom",
+                    "label": "Angstrom Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.delta",
+                    "label": "Delta Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.centerDot",
+                    "label": "Center Dot Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.prime",
+                    "label": "Prime Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  }
+                ],
+                "id": "symbol-tools"
+              },
               "tooltip": {
                 "title": "Symbol Tool Group",
-                "shortcut": null
+                "shortcut": null,
+                "description": "Stamp a ° symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -765,46 +807,21 @@
               }
             },
             {
-              "commandId": "tool.shape",
+              "commandId": "tool.art.rect",
               "title": "Shape Tool",
               "icon": "bracket",
-              "assetName": "Custom_Shape",
-              "disabledReason": "Requires an active structure editor",
+              "assetName": "Art_Shapes",
               "category": "annotation",
-              "id": "tool.shape",
+              "id": "tool.art.rect",
               "kind": "button",
               "label": "Shape Tool",
               "primary": {
                 "type": "command",
-                "commandId": "tool.shape"
+                "commandId": "tool.art.rect"
               },
               "submenu": null,
               "tooltip": {
                 "title": "Shape Tool",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.shapeShadow",
-              "title": "Shadow Shape Tool",
-              "icon": "bracket",
-              "assetName": "Custom_Shape2",
-              "disabledReason": "Requires an active structure editor",
-              "category": "annotation",
-              "id": "tool.shapeShadow",
-              "kind": "button",
-              "label": "Shadow Shape Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.shapeShadow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Shadow Shape Tool",
                 "shortcut": null
               },
               "layout": {
@@ -1583,7 +1600,6 @@
               "title": "Color Controls",
               "icon": "style",
               "assetName": "Custom_Colors",
-              "disabledReason": "unavailable until style presets are connected",
               "category": "style",
               "id": "style.color",
               "kind": "button",
@@ -1607,7 +1623,6 @@
               "title": "Object Settings",
               "icon": "inspector",
               "assetName": "Custom_Settings",
-              "disabledReason": "unavailable until selectable document objects exist",
               "category": "selection",
               "id": "tool.settings",
               "kind": "button",
@@ -2444,7 +2459,6 @@
               "title": "Dagger Symbol Tool",
               "icon": "charge",
               "assetName": "Custom_Dagger",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.dagger",
               "kind": "button",
@@ -2516,7 +2530,6 @@
               "title": "Symbol Tool Group",
               "icon": "charge",
               "assetName": "Custom_Symbol",
-              "disabledReason": "Requires an active structure editor",
               "category": "annotation",
               "id": "tool.symbol",
               "kind": "button",
@@ -2525,10 +2538,54 @@
                 "type": "command",
                 "commandId": "tool.symbol"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Symbol tools",
+                "columns": 3,
+                "items": [
+                  {
+                    "commandId": "tool.symbol.degree",
+                    "label": "Degree Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.plusMinus",
+                    "label": "Plus-Minus Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.angstrom",
+                    "label": "Angstrom Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.delta",
+                    "label": "Delta Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.centerDot",
+                    "label": "Center Dot Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  },
+                  {
+                    "commandId": "tool.symbol.prime",
+                    "label": "Prime Symbol",
+                    "icon": "text",
+                    "assetName": "Custom_Symbol"
+                  }
+                ],
+                "id": "symbol-tools"
+              },
               "tooltip": {
                 "title": "Symbol Tool Group",
-                "shortcut": null
+                "shortcut": null,
+                "description": "Stamp a ° symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -2536,46 +2593,21 @@
               }
             },
             {
-              "commandId": "tool.shape",
+              "commandId": "tool.art.rect",
               "title": "Shape Tool",
               "icon": "bracket",
-              "assetName": "Custom_Shape",
-              "disabledReason": "Requires an active structure editor",
+              "assetName": "Art_Shapes",
               "category": "annotation",
-              "id": "tool.shape",
+              "id": "tool.art.rect",
               "kind": "button",
               "label": "Shape Tool",
               "primary": {
                 "type": "command",
-                "commandId": "tool.shape"
+                "commandId": "tool.art.rect"
               },
               "submenu": null,
               "tooltip": {
                 "title": "Shape Tool",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.shapeShadow",
-              "title": "Shadow Shape Tool",
-              "icon": "bracket",
-              "assetName": "Custom_Shape2",
-              "disabledReason": "Requires an active structure editor",
-              "category": "annotation",
-              "id": "tool.shapeShadow",
-              "kind": "button",
-              "label": "Shadow Shape Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.shapeShadow"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Shadow Shape Tool",
                 "shortcut": null
               },
               "layout": {
@@ -4659,7 +4691,6 @@
               "title": "Color Controls",
               "icon": "style",
               "assetName": "Custom_Colors",
-              "disabledReason": "unavailable until style presets are connected",
               "category": "style",
               "id": "style.color",
               "kind": "button",
@@ -4683,7 +4714,6 @@
               "title": "Object Settings",
               "icon": "inspector",
               "assetName": "Custom_Settings",
-              "disabledReason": "unavailable until selectable document objects exist",
               "category": "selection",
               "id": "tool.settings",
               "kind": "button",

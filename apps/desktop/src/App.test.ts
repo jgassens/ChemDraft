@@ -1897,6 +1897,17 @@ describe("ChemDraft desktop shell", () => {
       structureCleanup3dCommandId,
       "tool.plus",
       "tool.minus",
+      "tool.dagger",
+      "tool.symbol",
+      "tool.symbol.degree",
+      "tool.symbol.plusMinus",
+      "tool.symbol.angstrom",
+      "tool.symbol.delta",
+      "tool.symbol.centerDot",
+      "tool.symbol.prime",
+      "tool.settings",
+      "style.color",
+      "tool.art.rect",
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
@@ -1921,7 +1932,13 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
-    expect(disabledTools.length).toBeGreaterThanOrEqual(20);
+    // Whatever the allowlist misses must be exactly the declared transitional stubs, plus the live
+    // selection-dependent layout commands (disabled here because nothing is selected) — nothing
+    // else in shipped palettes may render disabled.
+    const disabledStubIds = new Set(
+      disabledTools.map((command) => command.id).filter((id) => !/^layout\./.test(id))
+    );
+    expect(disabledStubIds).toEqual(new Set(TRANSITIONAL_STUB_COMMAND_IDS));
     expect(disabledTools.every((command) => command.enabled === false)).toBe(true);
   });
 
@@ -2917,12 +2934,9 @@ describe("ChemDraft desktop shell", () => {
     // disabled outside this list is either a live selection-dependent command or a regression:
     // wire it or retire it.
     const expectedTransitionalStubs = [
-      "style.color",
       "style.formulaText",
-      "tool.atom",
       "tool.bracket",
       "tool.chain",
-      "tool.dagger",
       "tool.equilibriumArrow",
       "tool.lobe",
       "tool.pOrbital",
@@ -2930,12 +2944,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.resonanceArrow",
       "tool.retroArrow",
       "tool.sOrbital",
-      "tool.settings",
       "tool.shadedLobe",
-      "tool.shape",
-      "tool.shapeShadow",
-      "tool.squareBracket",
-      "tool.symbol"
+      "tool.squareBracket"
     ];
     expect([...TRANSITIONAL_STUB_COMMAND_IDS].sort()).toEqual(expectedTransitionalStubs);
 

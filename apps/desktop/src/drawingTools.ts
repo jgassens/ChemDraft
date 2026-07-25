@@ -129,7 +129,7 @@ export const coreDrawingToolDefinitions = [
     kind: "atom",
     category: "structure",
     icon: "atom",
-    disabledReason: EDITOR_ADAPTER_UNAVAILABLE
+    usageHint: usageHint("click atom to edit its label", "type an element symbol", "Esc exits")
   },
   {
     commandId: "tool.cyclopentane",
@@ -198,6 +198,70 @@ export const coreDrawingToolDefinitions = [
     icon: "charge",
     defaultShortcut: "-",
     usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
+  },
+  {
+    commandId: "tool.dagger",
+    title: "Dagger Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click canvas to stamp ‡", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol",
+    title: "Symbol Tool Group",
+    kind: "text",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click canvas to stamp °", "long-press button for other symbols", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.degree",
+    title: "Degree Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp °", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.plusMinus",
+    title: "Plus-Minus Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp ±", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.angstrom",
+    title: "Angstrom Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp Å", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.delta",
+    title: "Delta Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp Δ", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.centerDot",
+    title: "Center Dot Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp ·", "keep clicking to repeat", "Esc exits")
+  },
+  {
+    commandId: "tool.symbol.prime",
+    title: "Prime Symbol Tool",
+    kind: "text",
+    category: "annotation",
+    icon: "text",
+    usageHint: usageHint("click canvas to stamp ′", "keep clicking to repeat", "Esc exits")
   },
   {
     commandId: "tool.reactionArrow",
@@ -290,12 +354,9 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
  *  these ids so a stub can never be dragged onto a real toolbar; each wiring slice shrinks this set
  *  and it must reach empty at closeout. */
 export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
-  "style.color",
   "style.formulaText",
-  "tool.atom",
   "tool.bracket",
   "tool.chain",
-  "tool.dagger",
   "tool.equilibriumArrow",
   "tool.lobe",
   "tool.pOrbital",
@@ -303,12 +364,8 @@ export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
   "tool.resonanceArrow",
   "tool.retroArrow",
   "tool.sOrbital",
-  "tool.settings",
   "tool.shadedLobe",
-  "tool.shape",
-  "tool.shapeShadow",
-  "tool.squareBracket",
-  "tool.symbol"
+  "tool.squareBracket"
 ]);
 
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
