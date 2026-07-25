@@ -371,18 +371,35 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
 export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([]);
 
 /**
+ * Style-preset suffixes: the same shape as its base tool, drawn with a canned style.
+ *
+ * These are what "compat-only variant" means. An *angle* variant like `tool.art.arc120` draws
+ * something the base tool cannot, and is a real tool that simply is not on a default toolbar.
+ */
+const artStylePresetSuffixes = ["Dashed", "Filled", "Gloss", "Shadow", "Bold"] as const;
+
+/**
  * Whether an art command is a preset variant kept only for compatibility.
  *
  * The dashed/gloss/filled/shadow variants stay registered so older documents and plugins keep
  * resolving them, but they are deliberately absent from every shipped toolbar — the same reasoning
  * that retired `tool.shapeShadow`. Offering them in Customize would let a user put a supposedly
- * retired tool back, so membership in a shipped toolset is what decides.
+ * retired tool back.
+ *
+ * `shippedCommandIds` must be the *shipped* manifest's ids, never a customized registry's: keyed off
+ * the user's own layout, "not currently on a toolbar" would hide every tool the moment it was
+ * removed, so Customize could not put it back. Absence from the manifest is not sufficient either —
+ * `tool.art.directEdit` and `tool.art.arc120` are live tools that ship on no default toolbar, and
+ * the earlier prefix-only rule swallowed both. A command must be a style preset *and* unshipped.
  */
 export function isCompatOnlyArtVariantCommandId(
   commandId: string,
   shippedCommandIds: ReadonlySet<string>
 ): boolean {
-  return commandId.startsWith("tool.art.") && !shippedCommandIds.has(commandId);
+  if (!commandId.startsWith("tool.art.") || shippedCommandIds.has(commandId)) {
+    return false;
+  }
+  return artStylePresetSuffixes.some((suffix) => commandId.endsWith(suffix));
 }
 
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {

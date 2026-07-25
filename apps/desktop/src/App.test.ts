@@ -3072,11 +3072,19 @@ describe("ChemDraft desktop shell", () => {
     for (const source of [mainWindowSource, paletteWindowSource]) {
       expect(source).toContain("!TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)");
       expect(source).toContain("!isCompatOnlyArtVariantCommandId(command.id, shipped)");
+      // From the SHIPPED manifest, never the user's customized registry. Keyed off the latter the
+      // gallery ate its own tail: remove a tool from a toolbar and it disappeared from the list you
+      // would put it back with, with no way to recover it short of resetting every layout.
+      // (Scoped to this block on purpose — elsewhere, following the customized registry is right.)
+      const filterAt = source.indexOf("!isCompatOnlyArtVariantCommandId(command.id, shipped)");
+      const galleryBlock = source.slice(Math.max(0, filterAt - 600), filterAt);
+      expect(galleryBlock).toContain("getToolsetCommandSpecs(desktopToolsetRegistry)");
+      expect(galleryBlock).not.toContain("getToolsetCommandSpecs(toolsetRegistry)");
     }
     expect(paletteWindowSource).toContain("commands={galleryCommands}");
   });
 
-  it("treats art preset variants absent from every shipped toolset as compat-only", () => {
+  it("treats art style presets as compat-only but keeps other unshipped art tools offered", () => {
     const shipped = new Set(getToolsetCommandSpecs().map((command) => command.id));
 
     // Registered for compatibility, deliberately on no toolbar — the same reasoning that retired
@@ -3084,10 +3092,20 @@ describe("ChemDraft desktop shell", () => {
     expect(shipped.has("tool.art.rectShadow")).toBe(false);
     expect(isCompatOnlyArtVariantCommandId("tool.art.rectShadow", shipped)).toBe(true);
     expect(isCompatOnlyArtVariantCommandId("tool.art.circleGloss", shipped)).toBe(true);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.lineDashed", shipped)).toBe(true);
 
     // Tools that really do ship stay offered.
     expect(isCompatOnlyArtVariantCommandId("tool.art.rect", shipped)).toBe(false);
     expect(isCompatOnlyArtVariantCommandId("tool.art.pen", shipped)).toBe(false);
+
+    // And so do live tools that simply are not on a default toolbar. A style preset draws its base
+    // tool's shape with a canned style; these draw something the base tool cannot, so hiding them
+    // makes a real tool unreachable rather than retiring a duplicate.
+    expect(shipped.has("tool.art.directEdit")).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.directEdit", shipped)).toBe(false);
+    expect(shipped.has("tool.art.arc120")).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.arc120", shipped)).toBe(false);
+
     // The rule is scoped to art commands only.
     expect(isCompatOnlyArtVariantCommandId("tool.bond", shipped)).toBe(false);
   });

@@ -7522,12 +7522,16 @@ export function MainWindow({
   // used rather than live enabled state, so transiently disabled commands (Undo, align, boolean
   // ops) stay offered.
   const galleryCommands = useMemo(() => {
-    const shipped = new Set(getToolsetCommandSpecs(toolsetRegistry).map((command) => command.id));
+    // Deliberately the *shipped* manifest, not `toolsetRegistry`. The latter is the user's own
+    // customized layout, so keying off it made the gallery eat its own tail: remove a tool from a
+    // toolbar and it vanishes from the list you would put it back with, permanently. What the build
+    // ships is a fixed fact; what the user has arranged is not.
+    const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
     return shellCommandSpecs.filter((command) =>
       !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
       !isCompatOnlyArtVariantCommandId(command.id, shipped)
     );
-  }, [shellCommandSpecs, toolsetRegistry]);
+  }, [shellCommandSpecs]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
