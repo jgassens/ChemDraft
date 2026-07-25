@@ -39,12 +39,20 @@ import {
   getUnavailableDesktopPluginPermissions,
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
-import { installedPluginBaseUrl, installedPluginStagingDir } from "./installedPluginPaths";
+import {
+  assertInstalledPluginStagedPath,
+  installedPluginPackagesRoot,
+  installedPluginStagedBaseUrl,
+  installedPluginStagingDir,
+  installedPluginUpdateStagingDir
+} from "./installedPluginPaths";
 import {
   createInstalledPluginRecord,
   loadInstalledPluginRecords,
+  readInstalledPluginCatalog,
   removeInstalledPluginRecord,
   upsertInstalledPluginRecord,
+  type InstalledPluginCatalog,
   type InstalledPluginRecord
 } from "./installedPluginStore";
 import { loadPackagedPlugin, type PackagedPluginDescriptor } from "./loadPackagedPlugin";
@@ -58,6 +66,7 @@ import {
   type PluginPackageEntry
 } from "./pluginPackageArchive";
 import type { PluginStagingFs } from "./pluginStagingFs";
+import { comparePluginVersions } from "./pluginVersion";
 
 /** Stable codes for the install-level failures (the archive's own codes live in the archive module). */
 export const PluginInstallErrorCodes = {
@@ -67,6 +76,10 @@ export const PluginInstallErrorCodes = {
   IncompatibleApiVersion: "PLUGIN_INSTALL_INCOMPATIBLE_API_VERSION",
   DuplicateId: "PLUGIN_INSTALL_DUPLICATE_ID",
   LoadFailed: "PLUGIN_INSTALL_LOAD_FAILED",
+  UpdateIdMismatch: "PLUGIN_UPDATE_ID_MISMATCH",
+  UpdateVersionNotNewer: "PLUGIN_UPDATE_VERSION_NOT_NEWER",
+  UpdateStateChanged: "PLUGIN_UPDATE_STATE_CHANGED",
+  UpdateFailed: "PLUGIN_UPDATE_FAILED",
   Unsupported: "PLUGIN_INSTALL_UNSUPPORTED"
 } as const;
 
@@ -190,6 +203,21 @@ export interface InstalledPlugin {
   descriptor: PackagedPluginDescriptor;
 }
 
+export interface UpdateInstalledPluginPackageOptions {
+  runtime: DesktopPluginRuntime;
+  fs: PluginStagingFs;
+  current: InstalledPluginCatalogEntry;
+  inspection: PluginPackageInspection;
+  /** The disabled preference is independent of the install record and must survive unchanged. */
+  disabled: boolean;
+  origin?: string;
+  hostApiVersion?: string;
+  createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
+  installedAt?: Date;
+  /** Bundled copy currently shadowed by the install, used only for an exceptional rollback. */
+  replaces?: BundledPluginDescriptor;
+}
+
 /**
  * Stage, load, register and record a package.
  *
@@ -212,16 +240,12 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
   let descriptor: PackagedPluginDescriptor | undefined;
   let replacementRegistered = false;
   try {
-    for (const entry of inspection.entries) {
-      // `safeEntryPath` already refused traversal at read time. This is not that check repeated: it is
-      // the guarantee restated at the boundary that actually writes, so a future caller that unpacks by
-      // some other route cannot quietly lose it.
-      await fs.writeFile(`${stagingDir}/${assertStagedPath(entry.path)}`, entry.bytes);
-    }
+    await stagePluginEntries(fs, stagingDir, inspection.entries);
 
     descriptor = await loadAndRegisterInstalledPlugin({
       runtime,
       manifest: inspection.manifest,
+      stagedPath: stagingDir,
       origin: options.origin,
       hostApiVersion,
       createWorker,
@@ -266,6 +290,198 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
 }
 
 /**
+ * Replace an installed package without ever overwriting its active files in place.
+ *
+ * The candidate is written to its final checksum-addressed directory and handshaken there. The old
+ * directory, descriptor, and record remain authoritative until both the runtime replacement and the
+ * atomic record write succeed. A failed commit restores the still-live old registration.
+ */
+export async function updateInstalledPluginPackage(
+  options: UpdateInstalledPluginPackageOptions
+): Promise<InstalledPlugin> {
+  const {
+    runtime,
+    fs,
+    current,
+    inspection,
+    disabled,
+    hostApiVersion = PluginApiVersion,
+    createWorker,
+    installedAt
+  } = options;
+  const pluginId = current.record.id;
+
+  assertInstallPermissionsAvailable(inspection.manifest);
+  assertInstalledPluginStagedPath(current.record.stagedPath);
+  if (current.manifest.id !== pluginId || inspection.manifest.id !== pluginId) {
+    throw new PluginInstallError(
+      PluginInstallErrorCodes.UpdateIdMismatch,
+      `The update package is for "${inspection.manifest.id}", but the installed plugin is "${pluginId}". ` +
+        "Refusing to replace a different plugin."
+    );
+  }
+  let comparison: number;
+  try {
+    comparison = comparePluginVersions(inspection.manifest.version, current.record.version);
+  } catch (cause: unknown) {
+    throw new PluginInstallError(
+      PluginInstallErrorCodes.UpdateVersionNotNewer,
+      `ChemDraft could not compare plugin versions "${current.record.version}" and ` +
+        `"${inspection.manifest.version}": ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+  if (comparison <= 0) {
+    throw new PluginInstallError(
+      PluginInstallErrorCodes.UpdateVersionNotNewer,
+      `Plugin version ${inspection.manifest.version} is not newer than installed version ` +
+        `${current.record.version}.`
+    );
+  }
+
+  const records = await loadInstalledPluginRecords(fs);
+  const persisted = records.find((record) => record.id === pluginId);
+  if (
+    !persisted ||
+    persisted.version !== current.record.version ||
+    persisted.stagedPath !== current.record.stagedPath ||
+    persisted.sourceChecksum !== current.record.sourceChecksum
+  ) {
+    throw new PluginInstallError(
+      PluginInstallErrorCodes.UpdateStateChanged,
+      `The installed record for "${pluginId}" changed after the update check. Check again before updating.`
+    );
+  }
+
+  const candidatePath = installedPluginUpdateStagingDir(inspection.sourceChecksum);
+  const conflictsWithInstalledPath = records.some((record) => {
+    try {
+      const installedPath = assertInstalledPluginStagedPath(record.stagedPath).toLowerCase();
+      const normalizedCandidatePath = candidatePath.toLowerCase();
+      return (
+        normalizedCandidatePath === installedPath ||
+        normalizedCandidatePath.startsWith(`${installedPath}/`) ||
+        installedPath.startsWith(`${normalizedCandidatePath}/`)
+      );
+    } catch {
+      // A malformed or legacy reserved-path record makes the ownership of this namespace ambiguous.
+      // Fail closed rather than staging bytes where another uninstall could recursively remove them.
+      return true;
+    }
+  });
+  if (conflictsWithInstalledPath) {
+    throw new PluginInstallError(
+      PluginInstallErrorCodes.UpdateStateChanged,
+      `The update staging path for "${pluginId}" conflicts with an installed package. Refusing to overwrite it.`
+    );
+  }
+
+  // Debris from a failed pre-commit attempt is never authoritative; the catalog proves that no
+  // installed plugin owns this content-addressed directory.
+  await fs.removeDir(candidatePath);
+
+  let candidate: PackagedPluginDescriptor | undefined;
+  let candidateRegistered = false;
+  // Whether the superseded descriptor has been deactivated yet; rollback must not re-activate a
+  // descriptor that is still live.
+  let oldDescriptorTornDown = false;
+  try {
+    await stagePluginEntries(fs, candidatePath, inspection.entries);
+    candidate = buildInstalledDescriptor({
+      manifest: inspection.manifest,
+      stagedPath: candidatePath,
+      origin: options.origin,
+      hostApiVersion,
+      createWorker
+    });
+    await candidate.bridge.whenReady();
+
+    if (!disabled) {
+      closePluginPanels(runtime, pluginId);
+      runtime.replacePlugin(pluginId, candidate.manifest, candidate.options);
+      candidateRegistered = true;
+    }
+
+    const record = createInstalledPluginRecord({
+      id: pluginId,
+      version: inspection.manifest.version,
+      name: inspection.manifest.name,
+      sourceChecksum: inspection.sourceChecksum,
+      stagedPath: candidatePath,
+      installedAt
+    });
+    await upsertInstalledPluginRecord(fs, record);
+
+    try {
+      if (disabled) {
+        // The handshake proves loadability, then total teardown preserves the user's disabled state.
+        // applyEnabledPlugins calls activate() before a later user-initiated enable.
+        candidate.deactivate?.();
+        // The superseded descriptor still has to go: its worker may have been started earlier in
+        // the session, and its files are deleted immediately below.
+        current.descriptor?.deactivate?.();
+        if (!current.descriptor) {
+          options.replaces?.deactivate?.();
+        }
+      } else {
+        current.descriptor?.deactivate?.();
+        if (!current.descriptor) {
+          options.replaces?.deactivate?.();
+        }
+      }
+      oldDescriptorTornDown = true;
+    } catch (teardownFailure: unknown) {
+      runtime.panels.reportDiagnostic(
+        "installed-plugin-update-old-worker-teardown-failed",
+        `Plugin "${pluginId}" updated to ${record.version}, but the previous worker did not tear down ` +
+          `cleanly: ${teardownFailure instanceof Error ? teardownFailure.message : String(teardownFailure)}`
+      );
+    }
+
+    try {
+      await fs.removeDir(current.record.stagedPath);
+    } catch (cleanupFailure: unknown) {
+      runtime.panels.reportDiagnostic(
+        "installed-plugin-update-cleanup-failed",
+        `Plugin "${pluginId}" updated to ${record.version}, but its previous package directory could not be ` +
+          `removed: ${cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)}`
+      );
+    }
+    return { record, descriptor: candidate };
+  } catch (cause: unknown) {
+    if (candidateRegistered && candidate) {
+      try {
+        if (current.descriptor) {
+          // Only re-activate what was actually torn down. Before the teardown step the old
+          // descriptor is still live, and activating it twice can throw — which would abort the
+          // rollback and leave the host registered against a candidate whose directory is about to
+          // be deleted.
+          if (oldDescriptorTornDown) {
+            current.descriptor.activate?.();
+          }
+          runtime.replacePlugin(pluginId, current.manifest, current.descriptor.options);
+        } else if (options.replaces) {
+          if (oldDescriptorTornDown) {
+            options.replaces.activate?.();
+          }
+          runtime.replacePlugin(pluginId, options.replaces.manifest, options.replaces.options);
+        } else if (runtime.host.getPlugin(pluginId)) {
+          runtime.unregisterPlugin(pluginId);
+        }
+      } catch (rollbackFailure: unknown) {
+        runtime.panels.reportDiagnostic(
+          "installed-plugin-update-rollback-failed",
+          `Restoring plugin "${pluginId}" after a failed update did not succeed; reload ChemDraft before ` +
+            `using it: ${rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)}`
+        );
+      }
+    }
+    candidate?.deactivate?.();
+    await safelyRemove(fs, candidatePath);
+    throw asUpdateError(cause, pluginId);
+  }
+}
+
+/**
  * Build a descriptor for an already-staged package, pointed at the app's own origin.
  *
  * Cheap and synchronous: the bridge creates its worker lazily, so a plugin that is merely *listed* — or
@@ -275,6 +491,7 @@ export async function installPluginPackage(options: InstallPluginPackageOptions)
  */
 function buildInstalledDescriptor(options: {
   manifest: PluginManifest;
+  stagedPath: string;
   origin?: string;
   hostApiVersion: string;
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
@@ -290,7 +507,7 @@ function buildInstalledDescriptor(options: {
 
   return loadPackagedPlugin(
     {
-      baseUrl: installedPluginBaseUrl(manifest.id, origin),
+      baseUrl: installedPluginStagedBaseUrl(options.stagedPath, origin),
       // Re-serialized rather than passed through: `loadPackagedPlugin` re-parses, so the manifest that
       // governs the load is the package's own document, not a value this module could have edited.
       manifest: JSON.parse(JSON.stringify(toPackagedDocument(manifest, options)))
@@ -309,6 +526,7 @@ function buildInstalledDescriptor(options: {
 async function loadAndRegisterInstalledPlugin(options: {
   runtime: DesktopPluginRuntime;
   manifest: PluginManifest;
+  stagedPath: string;
   origin?: string;
   hostApiVersion: string;
   createWorker?: (entryUrl: URL) => import("@chemdraft/plugin-api").PluginWorkerHandle;
@@ -364,7 +582,11 @@ export async function loadInstalledPlugins(options: {
   failures: readonly InstalledPluginFailure[];
 }> {
   const { runtime, fs, hostApiVersion = PluginApiVersion, disabledIds = new Set<string>(), createWorker } = options;
-  const records = await loadInstalledPluginRecords(fs);
+  const catalog = await readInstalledPluginCatalog(fs);
+  const records = catalog.records;
+  // Reclaim directories left by a failed update or an incomplete cleanup. Safe before loading: the
+  // catalog just read is what defines "live", and the sweep declines to act on an untrusted one.
+  await pruneOrphanedPluginPackages(fs, catalog);
 
   const installed: InstalledPluginCatalogEntry[] = [];
   const failures: InstalledPluginFailure[] = [];
@@ -389,6 +611,7 @@ export async function loadInstalledPlugins(options: {
       // real command handlers rather than an empty set.
       descriptor = buildInstalledDescriptor({
         manifest,
+        stagedPath: record.stagedPath,
         origin: options.origin,
         hostApiVersion,
         createWorker
@@ -416,6 +639,54 @@ export async function loadInstalledPlugins(options: {
   }
 
   return { installed, failures };
+}
+
+/**
+ * Delete checksum-addressed package directories that no install record points at.
+ *
+ * A failed update leaves its staged candidate behind, and a post-commit cleanup that cannot remove
+ * the superseded directory leaves that behind too; neither is reachable, because the catalog is the
+ * only thing that makes a directory live.
+ *
+ * The catalog's *status* is the safety gate, not its emptiness. `loadInstalledPluginRecords` reports
+ * an unreadable, truncated, or partially-invalid file as "no records", and deleting on that signal
+ * would destroy the payload of a perfectly good install the moment its catalog hiccuped. Only an
+ * `absent` or fully `loaded` catalog authorises removal. Confined to the packages subtree, so the
+ * legacy per-id directories are never candidates. Never throws.
+ */
+export async function pruneOrphanedPluginPackages(
+  fs: PluginStagingFs,
+  catalog: InstalledPluginCatalog
+): Promise<readonly string[]> {
+  if (catalog.status === "unreadable") {
+    return [];
+  }
+
+  const root = installedPluginPackagesRoot();
+  const referenced = new Set<string>();
+  for (const record of catalog.records) {
+    // Normalise before comparing: stored-path drift must not make a live directory look orphaned.
+    referenced.add(record.stagedPath.replace(/\/+$/, ""));
+  }
+
+  const removed: string[] = [];
+  try {
+    for (const name of await fs.readDirNames(root)) {
+      const path = `${root}/${name}`;
+      if (referenced.has(path)) {
+        continue;
+      }
+      try {
+        await fs.removeDir(path);
+        removed.push(path);
+      } catch {
+        // A directory that resists removal is retried on the next launch.
+      }
+    }
+  } catch {
+    return removed;
+  }
+  return removed;
 }
 
 function assertInstallPermissionsAvailable(manifest: PluginManifest): void {
@@ -460,6 +731,8 @@ export async function uninstallPlugin(options: {
   runtime: DesktopPluginRuntime;
   fs: PluginStagingFs;
   pluginId: string;
+  /** Exact immutable directory recorded for this install. Legacy callers fall back to the id path. */
+  record?: Pick<InstalledPluginRecord, "stagedPath">;
   descriptor?: PackagedPluginDescriptor;
   /** The bundled plugin this install replaced, if any — re-registered once the install is gone. */
   restores?: BundledPluginDescriptor;
@@ -468,19 +741,20 @@ export async function uninstallPlugin(options: {
 }): Promise<void> {
   const { runtime, fs, pluginId, descriptor, restores, disabledIds } = options;
 
-  if (runtime.panels.getOpenPanel()?.pluginId === pluginId) {
-    runtime.panels.closePanel();
-  }
-  for (const detached of runtime.panels.getDetachedPanels()) {
-    if (detached.pluginId === pluginId) {
-      runtime.panels.closeDetachedPanel(detached.pluginId, detached.panelId);
-    }
-  }
+  // Validate before touching runtime state. A path this validator rejects — an id like "packages"
+  // that an older build was able to install — would otherwise throw after the plugin had already
+  // been torn down but before its record was removed, leaving an unremovable ghost that returns on
+  // the next launch with no way out from the UI.
+  const stagedPath = assertInstalledPluginStagedPath(
+    options.record?.stagedPath ?? installedPluginStagingDir(pluginId)
+  );
+
+  closePluginPanels(runtime, pluginId);
   descriptor?.deactivate?.();
   if (runtime.host.getPlugin(pluginId)) {
     runtime.unregisterPlugin(pluginId);
   }
-  await fs.removeDir(installedPluginStagingDir(pluginId));
+  await fs.removeDir(stagedPath);
   await removeInstalledPluginRecord(fs, pluginId);
 
   // Hand the id back to the bundled copy the install had taken it from, so uninstalling a package
@@ -514,7 +788,8 @@ async function assertInstallable(fs: PluginStagingFs, pluginId: string): Promise
 }
 
 async function readStagedManifest(fs: PluginStagingFs, record: InstalledPluginRecord): Promise<PluginManifest> {
-  const raw = await fs.readTextFile(`${record.stagedPath}/${PACKAGE_MANIFEST_FILE}`);
+  const stagedPath = assertInstalledPluginStagedPath(record.stagedPath);
+  const raw = await fs.readTextFile(`${stagedPath}/${PACKAGE_MANIFEST_FILE}`);
   if (!raw) {
     throw new PluginInstallError(
       PluginInstallErrorCodes.ManifestMissing,
@@ -557,12 +832,46 @@ function assertStagedPath(path: string): string {
   return path;
 }
 
+async function stagePluginEntries(
+  fs: PluginStagingFs,
+  stagingDir: string,
+  entries: readonly PluginPackageEntry[]
+): Promise<void> {
+  for (const entry of entries) {
+    // The archive reader already refused traversal. Restate it at the write boundary so a future
+    // inspection source cannot quietly bypass the invariant.
+    await fs.writeFile(`${stagingDir}/${assertStagedPath(entry.path)}`, entry.bytes);
+  }
+}
+
+function closePluginPanels(runtime: DesktopPluginRuntime, pluginId: string): void {
+  if (runtime.panels.getOpenPanel()?.pluginId === pluginId) {
+    runtime.panels.closePanel();
+  }
+  for (const detached of runtime.panels.getDetachedPanels()) {
+    if (detached.pluginId === pluginId) {
+      runtime.panels.closeDetachedPanel(detached.pluginId, detached.panelId);
+    }
+  }
+}
+
 async function safelyRemove(fs: PluginStagingFs, path: string): Promise<void> {
   try {
     await fs.removeDir(path);
   } catch {
     // The install already failed; a cleanup failure must not mask the real cause.
   }
+}
+
+function asUpdateError(cause: unknown, pluginId: string): Error {
+  if (cause instanceof PluginInstallError || cause instanceof PluginPackageError) {
+    return cause;
+  }
+  return new PluginInstallError(
+    PluginInstallErrorCodes.UpdateFailed,
+    `"${pluginId}" could not be updated, so ChemDraft kept the installed version: ` +
+      `${cause instanceof Error ? cause.message : String(cause)}`
+  );
 }
 
 function asInstallError(cause: unknown, pluginId: string): Error {

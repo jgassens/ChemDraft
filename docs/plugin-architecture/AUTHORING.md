@@ -142,6 +142,27 @@ The checksum sidecar makes either archive independently verifiable. It is an **i
 a signature and not a trust decision — and a successful technical build does not override the license
 terms inside the archive.
 
+## Updates
+
+Plugins do not self-update and manifests do not carry an update URL. ChemDraft owns a small trusted
+catalog keyed by plugin id, performs network access in the desktop host, and subjects a downloaded
+replacement to the same archive, manifest, API, permission, and worker-handshake gates as a manual
+install. The plugin worker remains under its same-origin-only CSP and receives no network or
+filesystem capability for this workflow.
+
+Update checks and installs are user-initiated. ChemDraft first shows an available version, then
+downloads and inspects the package for a second review screen; only an explicit **Update** action
+starts the replacement transaction. The active package stays intact until the candidate has passed
+its worker handshake and the new install record commits.
+
+The first trusted source is `org.chemdraft.nmr.predictor`, published from
+`jgassens/ChemDraft-NMR-Plugin` as a stable `vX.Y.Z` GitHub release containing both
+`nmr-predictor-X.Y.Z.zip` and `nmr-predictor-X.Y.Z.zip.sha256`. The updater requires the sidecar to
+remain present for manual distribution, but verifies downloaded bytes against GitHub's release-asset
+digest. That digest establishes package integrity, not cryptographic publisher identity. Do not
+describe this path as signed or use it for silent updates; a future publisher-signature design needs
+its own plugin key, separate from Sparkle's application-update key.
+
 To host the *extracted source* elsewhere, merge the core-enablement surface
 (`docs/plugin-architecture/CORE-ENABLEMENT.md`) and add one `{ manifest, options }` entry to that
 host's `registerBundledPlugins` catalog.

@@ -1,13 +1,36 @@
 # ChemDraft Plans
 
-## Host-managed plugin updates (2026-07-25, branch `codex/plugin-updates`) — not on this branch
+## Host-managed plugin updates (2026-07-25) — landed on `main`
 
-This plan belongs to the plugin-updates line, which lives on `codex/plugin-updates` (its own
-worktree). An earlier snapshot of that work was briefly merged here and has been backed out to
-`parked/plugin-fixes`; `main` carries no plugin-update code. The review comparing the two
-implementations concluded the `codex/plugin-updates` version supersedes the parked one on every
-axis except an orphaned-package sweep, which is the one piece worth porting forward. Keep this
-section for reference; do not treat it as active work on `main`.
+The `codex/plugin-updates` implementation is now on `main`, ported file-by-file rather than merged:
+that branch forked before the toolbar slice, so taking its tree would have reverted eight commits of
+tool wiring. The earlier snapshot that was briefly merged here stays parked at
+`parked/plugin-fixes`; only two things were carried forward from it, both reworked.
+
+Ported forward from the parked snapshot:
+
+- `pruneOrphanedPluginPackages`, which reclaims checksum-addressed directories left by a failed
+  update or an incomplete cleanup. Its first version keyed off "no records", which
+  `loadInstalledPluginRecords` also returns for an unreadable, truncated, or partially-invalid
+  catalog — so a momentary IO problem would have deleted a healthy install's payload. The catalog
+  now reports `absent` / `loaded` / `unreadable`, and the sweep acts only on the first two.
+- The published `.sha256` is fetched and must agree with the digest GitHub recorded for the asset,
+  which makes the existing sidecar-must-exist rule mean something. It reuses the same bounded,
+  redirect-validating download path as the package, so it is size-capped while streaming rather
+  than after buffering, and accepts the uppercase digests Windows publishers produce.
+
+Fixed in the incoming implementation:
+
+- `uninstallPlugin` validated the recorded staging path *after* unregistering the plugin, so a path
+  the validator rejects left the plugin gone from the session but still in the catalog — an
+  unremovable ghost. Validation now happens before any runtime state changes.
+- Rollback re-activated the superseded descriptor even when it had never been deactivated, which
+  could throw and abort the rollback, leaving the host registered against a candidate whose
+  directory was about to be deleted.
+- A disabled-plugin update tore down only the candidate, leaving the old worker running against
+  files that were then removed.
+- The trusted redirect host was spelled out in both TypeScript and the capability file with nothing
+  keeping them in step; a test now pins them together, since GitHub has moved that host before.
 
 ### Objective
 

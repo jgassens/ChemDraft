@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "plugin-updates",
+  "description": "Allow only the main ChemDraft window to check and download allowlisted plugin releases.",
+  "windows": ["main"],
+  "permissions": [
+    {
+      "identifier": "http:default",
+      "allow": [
+        {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-NMR-Plugin/releases/latest"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/*/nmr-predictor-*.zip"
+        },
+        {
+          "url": "https://release-assets.githubusercontent.com/github-production-release-asset/*"
+        }
+      ]
+    }
+  ]
+}

@@ -45,33 +45,59 @@ interface RecordsDocument {
 }
 
 const RECORDS_VERSION = 1;
+const INSTALLED_PLUGINS_RECORD_TEMP_FILE = `${INSTALLED_PLUGINS_RECORD_FILE}.tmp`;
 
-/** Read the install records. Never throws: a broken file is treated as "nothing installed". */
-export async function loadInstalledPluginRecords(fs: PluginStagingFs): Promise<readonly InstalledPluginRecord[]> {
+/**
+ * Outcome of reading the catalog, which "no records" alone cannot express.
+ *
+ * `absent` means there is genuinely nothing installed. `unreadable` means the file exists but could
+ * not be trusted — an IO error, a denied scope, a truncated write, malformed JSON, or a record that
+ * failed its shape check. Both yield an empty or partial record list, so any caller that treats
+ * "not in the records" as "safe to delete" must tell them apart first.
+ */
+export type InstalledPluginCatalogStatus = "absent" | "loaded" | "unreadable";
+
+export interface InstalledPluginCatalog {
+  status: InstalledPluginCatalogStatus;
+  records: readonly InstalledPluginRecord[];
+}
+
+export async function readInstalledPluginCatalog(fs: PluginStagingFs): Promise<InstalledPluginCatalog> {
   let raw: string | undefined;
   try {
     raw = await fs.readTextFile(INSTALLED_PLUGINS_RECORD_FILE);
   } catch {
     // No app-data dir, an unreadable file, a denied scope: startup must survive all of it.
-    return [];
+    return { status: "unreadable", records: [] };
   }
-  if (!raw) {
-    return [];
+  if (raw === undefined) {
+    return { status: "absent", records: [] };
+  }
+  if (raw.length === 0) {
+    // A zero-byte file is a torn write, not an empty catalog.
+    return { status: "unreadable", records: [] };
   }
 
   try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed === null || typeof parsed !== "object") {
-      return [];
+      return { status: "unreadable", records: [] };
     }
     const plugins = (parsed as Partial<RecordsDocument>).plugins;
     if (!Array.isArray(plugins)) {
-      return [];
+      return { status: "unreadable", records: [] };
     }
-    return plugins.filter(isInstalledPluginRecord);
+    const records = plugins.filter(isInstalledPluginRecord);
+    // Dropping even one record loses the only pointer to that plugin's files.
+    return { status: records.length === plugins.length ? "loaded" : "unreadable", records };
   } catch {
-    return [];
+    return { status: "unreadable", records: [] };
   }
+}
+
+/** Read the install records. Never throws: a broken file is treated as "nothing installed". */
+export async function loadInstalledPluginRecords(fs: PluginStagingFs): Promise<readonly InstalledPluginRecord[]> {
+  return (await readInstalledPluginCatalog(fs)).records;
 }
 
 /** Persist the records, ordered by id so the file stays stable and diffable. */
@@ -83,7 +109,10 @@ export async function saveInstalledPluginRecords(
     version: RECORDS_VERSION,
     plugins: [...records].sort((left, right) => left.id.localeCompare(right.id))
   };
-  await fs.writeTextFile(INSTALLED_PLUGINS_RECORD_FILE, `${JSON.stringify(document, null, 2)}\n`);
+  // A crash during a direct overwrite could truncate the only catalog that points at the immutable
+  // package directories. Write a complete sibling first, then commit it with one rename.
+  await fs.writeTextFile(INSTALLED_PLUGINS_RECORD_TEMP_FILE, `${JSON.stringify(document, null, 2)}\n`);
+  await fs.rename(INSTALLED_PLUGINS_RECORD_TEMP_FILE, INSTALLED_PLUGINS_RECORD_FILE);
 }
 
 /** Add or replace a record, keyed by id. */
@@ -114,13 +143,14 @@ export function createInstalledPluginRecord(options: {
   version: string;
   name: string;
   sourceChecksum: string;
+  stagedPath?: string;
   installedAt?: Date;
 }): InstalledPluginRecord {
   return {
     id: options.id,
     version: options.version,
     name: options.name,
-    stagedPath: installedPluginStagingDir(options.id),
+    stagedPath: options.stagedPath ?? installedPluginStagingDir(options.id),
     sourceChecksum: options.sourceChecksum,
     installedAt: (options.installedAt ?? new Date()).toISOString()
   };

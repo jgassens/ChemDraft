@@ -85,6 +85,7 @@
         { "path": "$DOWNLOAD/**" },
         { "path": "$TEMP/**" },
         { "path": "$APPDATA/installed-plugins.json" },
+        { "path": "$APPDATA/installed-plugins.json.tmp" },
         { "path": "$APPDATA/installed-plugins" },
         { "path": "$APPDATA/installed-plugins/**" }
       ]
@@ -110,6 +111,20 @@
     },
     {
       "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "$APPDATA/installed-plugins" },
+        { "path": "$APPDATA/installed-plugins/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [
+        { "path": "$APPDATA/installed-plugins.json" },
+        { "path": "$APPDATA/installed-plugins.json.tmp" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
       "allow": [
         { "path": "$APPDATA/installed-plugins" },
         { "path": "$APPDATA/installed-plugins/**" }
