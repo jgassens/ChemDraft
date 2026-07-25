@@ -426,7 +426,7 @@ function exportVisibleObject(
     return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator);
   }
   if (object.type === "reaction-arrow") {
-    return exportReactionArrowObject(object, context.ids, allocator, objectsById);
+    return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings);
   }
   if (object.type === "graphic") {
     return exportGraphicObject(object, context.ids, allocator, warnings);
@@ -639,12 +639,27 @@ function exportReactionArrowObject(
   arrow: ArrowObject,
   ids: Map<string, string>,
   allocator: IdAllocator,
-  objectsById: ReadonlyMap<string, DocumentObject>
+  objectsById: ReadonlyMap<string, DocumentObject>,
+  warnings: CompatibilityConversionWarning[]
 ): string {
   const graphicId = idFor(ids, arrow.id, allocator);
   const start = resolveAnchorPoint(arrow.start, objectsById) ?? { x: arrow.x, y: arrow.y + arrow.height / 2 };
   const end = resolveAnchorPoint(arrow.end, objectsById) ?? { x: arrow.x + arrow.width, y: arrow.y + arrow.height / 2 };
-  return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(cdxmlArrowTypeForKind(arrow.arrowKind))}" BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
+  const arrowType = cdxmlArrowTypeForKind(arrow.arrowKind);
+  if (arrowType === undefined) {
+    // "unknown" means the source document's arrow type was not one this build understands. Writing
+    // a concrete spelling would launder that into a claim — a plain reaction arrow — that survives
+    // every later round trip. Omitting the attribute keeps the line and leaves the type unstated.
+    warnings.push({
+      code: "cdxml.arrow_type_unknown",
+      message:
+        "A reaction arrow of an unrecognized type was exported as a plain line with no ArrowType, " +
+        "because inventing a type would misstate the original.",
+      sourceObjectId: arrow.id
+    });
+  }
+  const arrowTypeAttribute = arrowType === undefined ? "" : ` ArrowType="${escapeXmlAttribute(arrowType)}"`;
+  return `<graphic id="${graphicId}" GraphicType="Line"${arrowTypeAttribute} BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
 }
 
 function exportGraphicObject(
@@ -2770,8 +2785,9 @@ const arrowKindByCdxmlArrowType: ReadonlyMap<string, ArrowObject["arrowKind"]> =
   ["retrosynthesis", "retrosynthesis"]
 ] as const);
 
-export function cdxmlArrowTypeForKind(arrowKind: ArrowObject["arrowKind"]): string {
-  return arrowKind === "unknown" ? "FullHead" : cdxmlArrowTypeByKind[arrowKind];
+/** The CDXML spelling for a kind, or `undefined` for `"unknown"` — which has no honest spelling. */
+export function cdxmlArrowTypeForKind(arrowKind: ArrowObject["arrowKind"]): string | undefined {
+  return arrowKind === "unknown" ? undefined : cdxmlArrowTypeByKind[arrowKind];
 }
 
 function arrowKindFromCdxml(value: string): ArrowObject["arrowKind"] {

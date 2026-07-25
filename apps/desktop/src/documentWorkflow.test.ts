@@ -14,6 +14,7 @@ import {
   serializeDocument,
   undo,
   type ChemDraftDocument,
+  type PagePoint,
   type DocumentObject,
   type ElectronMarkObject,
   type GraphicObject,
@@ -1492,6 +1493,60 @@ describe("Phase 4 document workflow", () => {
     expect(afterSpan).toBeCloseTo(beforeSpan * 2, 6);
     // Anchored at the scale centre, so the tail stays put.
     expect(after.start.point?.x).toBeCloseTo(200, 6);
+  });
+
+  it("rotates and flips an arrow exactly once, counting the renderer's own transform", () => {
+    // Both renderers draw the arrow at its absolute anchors inside a group carrying
+    // rotate(object.rotation, centre). So the only honest check is where the endpoint actually lands
+    // on screen: stored anchor, then the renderer's rotation. Baking the angle into the anchors
+    // *and* incrementing `rotation` swings the arrow to double the angle asked for.
+    const rendered = (document: ChemDraftDocument, objectId: string): { start: PagePoint; end: PagePoint } => {
+      const object = document.pages[0].objects.find((candidate) => candidate.id === objectId);
+      if (object?.type !== "reaction-arrow") {
+        throw new Error("Expected an arrow");
+      }
+      const centre = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+      const radians = (object.rotation * Math.PI) / 180;
+      const place = (point: PagePoint): PagePoint => ({
+        x: centre.x + (point.x - centre.x) * Math.cos(radians) - (point.y - centre.y) * Math.sin(radians),
+        y: centre.y + (point.x - centre.x) * Math.sin(radians) + (point.y - centre.y) * Math.cos(radians)
+      });
+      return { start: place(object.start.point!), end: place(object.end.point!) };
+    };
+
+    const blank = createPhase4Document("Arrow Rotation Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 300 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+    const before = rendered(placed, objectId);
+
+    const pivot = { x: 400, y: 300 };
+    const rotated = rotateDocumentObjectsAroundPoint(placed, [objectId], pivot, 90);
+    const after = rendered(rotated, objectId);
+    const turn = (point: PagePoint): PagePoint => ({
+      x: pivot.x - (point.y - pivot.y),
+      y: pivot.y + (point.x - pivot.x)
+    });
+    expect(after.start.x).toBeCloseTo(turn(before.start).x, 6);
+    expect(after.start.y).toBeCloseTo(turn(before.start).y, 6);
+    expect(after.end.x).toBeCloseTo(turn(before.end).x, 6);
+    expect(after.end.y).toBeCloseTo(turn(before.end).y, 6);
+
+    // A flip must reverse the arrow's direction, not mirror an empty box around it.
+    const flipped = rendered(flipDocumentObjectsAroundPoint(placed, [objectId], pivot, "horizontal"), objectId);
+    expect(flipped.start.x).toBeCloseTo(2 * pivot.x - before.start.x, 6);
+    expect(flipped.start.y).toBeCloseTo(before.start.y, 6);
+    expect(flipped.end.x).toBeCloseTo(2 * pivot.x - before.end.x, 6);
+    expect(flipped.end.y).toBeCloseTo(before.end.y, 6);
+    // The head was to the right of the tail; mirrored, it must be to the left.
+    expect(flipped.end.x).toBeLessThan(flipped.start.x);
+
+    const flippedVertically = rendered(
+      flipDocumentObjectsAroundPoint(placed, [objectId], pivot, "vertical"),
+      objectId
+    );
+    expect(flippedVertically.start.x).toBeCloseTo(before.start.x, 6);
+    expect(flippedVertically.start.y).toBeCloseTo(2 * pivot.y - before.start.y, 6);
+    expect(flippedVertically.end.x).toBeCloseTo(before.end.x, 6);
   });
 
   it("gives an axis-aligned arrow a frame wide enough to hold its glyph", () => {

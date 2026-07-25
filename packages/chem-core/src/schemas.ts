@@ -40,6 +40,24 @@ export const PointSchema = z
 const OpacitySchema = z.number().finite().min(0).max(1);
 const NormalizedCoordinateSchema = z.number().finite().min(0).max(1);
 
+/**
+ * An enum that already carries an `"unknown"` member, degrading to it instead of rejecting.
+ *
+ * Every classifier below — arrow kind, bond order, bracket kind, graphic kind — spells `"unknown"`
+ * as a member precisely because the value can come from a file this build does not fully understand:
+ * an imported CDXML, or a document a newer ChemDraft wrote. A bare `z.enum` does not honour that
+ * intent. It fails the field, which fails the object, which fails the page, which fails the *whole
+ * document* — so one arrow of a kind added after this build shipped makes the file unopenable, when
+ * the schema's own vocabulary says the answer is to call that arrow unknown and draw the rest.
+ *
+ * The `"unknown"` member is the contract; this is what makes it true.
+ */
+function degradingEnum<const Values extends readonly ["unknown" | (string & {}), ...("unknown" | (string & {}))[]]>(
+  values: Values & (Extract<Values[number], "unknown"> extends never ? never : unknown)
+) {
+  return z.enum(values as unknown as [Values[number], ...Values[number][]]).catch("unknown" as Values[number]);
+}
+
 export const GraphicGradientStopSchema = z
   .object({
     offset: NormalizedCoordinateSchema,
@@ -245,7 +263,7 @@ export const ChemicalMetadataSchema = z
 export const SuperatomMetadataSchema = z
   .object({
     label: z.string().min(1),
-    expandedStructureFormat: z.enum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]).optional(),
+    expandedStructureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]).optional(),
     expandedStructure: z.string().optional(),
     attachmentPoints: z.array(AnchorSchema).default([]),
     warnings: z.array(CompatibilityWarningSchema).default([])
@@ -289,7 +307,7 @@ export const MoleculeBondSchema = z
     id: IdSchema,
     fromAtomId: IdSchema,
     toAtomId: IdSchema,
-    order: z.enum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
+    order: degradingEnum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
     display: MoleculeBondDisplaySchema.optional()
   })
   .strict();
@@ -344,7 +362,7 @@ export const MoleculeTransformStateSchema = z
 
 export const MoleculeObjectSchema = BaseObjectSchema.extend({
   type: z.literal("molecule"),
-  structureFormat: z.enum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
+  structureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
   structure: z.string(),
   chemistry: ChemicalMetadataSchema.optional(),
   atoms: z.array(MoleculeAtomSchema).default([]),
@@ -365,12 +383,12 @@ export const ReactionObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction"),
   components: z.array(ReactionComponentSchema),
   conditionsTextObjectIds: z.array(IdSchema).default([]),
-  mappingState: z.enum(["absent", "partial", "complete", "unknown"]).default("unknown")
+  mappingState: degradingEnum(["absent", "partial", "complete", "unknown"]).default("unknown")
 }).strict();
 
 export const ArrowObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction-arrow"),
-  arrowKind: z.enum(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"]),
+  arrowKind: degradingEnum(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"]),
   start: AnchorSchema,
   end: AnchorSchema,
   labels: z.array(IdSchema).default([])
@@ -378,7 +396,7 @@ export const ArrowObjectSchema = BaseObjectSchema.extend({
 
 export const MechanismArrowObjectSchema = BaseObjectSchema.extend({
   type: z.literal("mechanism-arrow"),
-  arrowKind: z.enum(["full-headed", "half-headed", "unknown"]),
+  arrowKind: degradingEnum(["full-headed", "half-headed", "unknown"]),
   source: AnchorSchema,
   target: AnchorSchema,
   controlPoints: z.array(PointSchema).default([]),
@@ -387,7 +405,7 @@ export const MechanismArrowObjectSchema = BaseObjectSchema.extend({
 
 export const ElectronMarkObjectSchema = BaseObjectSchema.extend({
   type: z.literal("electron-mark"),
-  markKind: z.enum(["lone-pair", "radical-dot", "charge", "unknown"]),
+  markKind: degradingEnum(["lone-pair", "radical-dot", "charge", "unknown"]),
   anchor: AnchorSchema,
   charge: z.number().int().optional()
 }).strict();
@@ -408,14 +426,14 @@ export const TextObjectSchema = BaseObjectSchema.extend({
 
 export const BracketObjectSchema = BaseObjectSchema.extend({
   type: z.literal("bracket"),
-  bracketKind: z.enum(["square", "round", "curly", "polymer", "unknown"]),
+  bracketKind: degradingEnum(["square", "round", "curly", "polymer", "unknown"]),
   label: z.string().optional(),
   containedObjectIds: z.array(IdSchema).default([])
 }).strict();
 
 export const GraphicObjectSchema = BaseObjectSchema.extend({
   type: z.literal("graphic"),
-  graphicKind: z.enum(["line", "rect", "ellipse", "path", "image", "unknown"]),
+  graphicKind: degradingEnum(["line", "rect", "ellipse", "path", "image", "unknown"]),
   style: GraphicObjectStyleSchema.default({}),
   data: GraphicObjectDataSchema.default({})
 }).strict();

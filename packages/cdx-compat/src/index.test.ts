@@ -1065,6 +1065,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(foreign("forward")).toBe("forward");
     expect(foreign("retrosynthesis")).toBe("retrosynthesis");
     expect(foreign("Nonsense")).toBe("unknown");
+
+    // An arrow whose type this build did not recognize on the way in must not acquire one on the
+    // way out. Writing FullHead would turn "we could not tell" into a positive claim that the arrow
+    // is a plain forward reaction arrow — and that claim survives every later round trip.
+    const degraded = exportDocumentToCdxml(arrowAt("unknown"), { creationProgram: "T" });
+    expect(degraded.contents).toContain('GraphicType="Line"');
+    expect(degraded.contents).not.toContain("ArrowType=");
+    expect(degraded.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_type_unknown");
   });
 
   it("round-trips a resonance reaction arrow through CDXML", () => {

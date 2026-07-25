@@ -10824,18 +10824,20 @@ function transformOtherObjectAroundPoint(
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
   }
-  // Arrow endpoints are absolute page points, so scaling or rotating only the frame would leave the
-  // drawn arrow at its original size and angle inside a resized box.
+  // Arrow endpoints are absolute page points, so scaling only the frame would leave the drawn arrow
+  // at its original size inside a resized box.
+  //
+  // Rotation is deliberately *not* baked into these points. Both renderers draw the arrow at its
+  // absolute anchors inside a group carrying `rotationTransform(object)`, so `changes.rotation`
+  // below already turns it; rotating the anchors too would apply the angle twice and swing the arrow
+  // off its frame. Scaling from the old centre and re-attaching at the new one is exactly what
+  // `resizeGraphicObjectDataForFrame` does for graphics, and composes to the same result the caller
+  // asked for: rotating the frame about `center` carries the offsets along with it.
   if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
-    const mapPoint = (point: PagePoint): PagePoint => {
-      const scaled = {
-        x: center.x + (point.x - center.x) * scaleX,
-        y: center.y + (point.y - center.y) * scaleY
-      };
-      return Math.abs(degrees) >= 0.05
-        ? rotatePointAround(scaled, center, degrees * Math.PI / 180)
-        : scaled;
-    };
+    const mapPoint = (point: PagePoint): PagePoint => ({
+      x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+      y: newCenter.y + (point.y - oldCenter.y) * scaleY
+    });
     if (object.type === "reaction-arrow") {
       changes.start = mapAnchorPoint(object.start, mapPoint);
       changes.end = mapAnchorPoint(object.end, mapPoint);
@@ -10994,14 +10996,21 @@ function flipOtherObjectAroundPoint(
   const newCenter = flipPointAroundAxis(oldCenter, center, axis);
   const scaleX = axis === "horizontal" ? -1 : 1;
   const scaleY = axis === "vertical" ? -1 : 1;
+  const mirrorsOwnGeometry =
+    object.type === "graphic" || object.type === "reaction-arrow" || object.type === "mechanism-arrow";
   const changes: Record<string, unknown> = {
     x: newCenter.x - object.width / 2,
     y: newCenter.y - object.height / 2,
     width: object.width,
     height: object.height,
+    // An object with no mirrorable interior can only fake a horizontal flip as "rotate 180 after a
+    // vertical one". Objects that mirror their own geometry below need no such trick: negating the
+    // angle is the exact rotation of the mirrored shape, for either axis.
     rotation: object.type === "graphic"
       ? object.rotation
-      : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
+      : mirrorsOwnGeometry
+        ? normalizeDegrees(-object.rotation)
+        : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
   };
 
   if (object.type === "electron-mark" && object.markKind === "charge") {
@@ -11010,6 +11019,24 @@ function flipOtherObjectAroundPoint(
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
     changes.style = flipGraphicObjectGradientStyle(object.style, axis);
+  }
+  // Arrow endpoints are absolute page points. Moving only the frame mirrors the box and leaves the
+  // arrow inside it pointing the way it always did — so a flipped reaction scheme kept its original
+  // direction. Mirror the anchors about the object's own centre and re-attach them at the new one;
+  // the renderer's rotation transform (negated above) carries the rest.
+  if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
+    const mapPoint = (point: PagePoint): PagePoint => ({
+      x: newCenter.x + (point.x - oldCenter.x) * scaleX,
+      y: newCenter.y + (point.y - oldCenter.y) * scaleY
+    });
+    if (object.type === "reaction-arrow") {
+      changes.start = mapAnchorPoint(object.start, mapPoint);
+      changes.end = mapAnchorPoint(object.end, mapPoint);
+    } else {
+      changes.source = mapAnchorPoint(object.source, mapPoint);
+      changes.target = mapAnchorPoint(object.target, mapPoint);
+      changes.controlPoints = object.controlPoints.map(mapPoint);
+    }
   }
 
   return applyPatch(
