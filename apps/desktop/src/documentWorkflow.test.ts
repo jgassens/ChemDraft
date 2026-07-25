@@ -1302,7 +1302,9 @@ describe("Phase 4 document workflow", () => {
     const lobe = nativeArtToolForCommand("tool.lobe");
     expect(lobe).toMatchObject({ id: "lobe", graphicKind: "path" });
     expect(lobe?.data.pathClosed).toBe(true);
-    expect(lobe?.data.pathNodes).toHaveLength(2);
+    // Closed bezier fills need at least three nodes (art-engine pathKindSupportsClosedFill).
+    expect(lobe?.data.pathNodes?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(nativeArtToolForCommand("tool.shadedLobe")?.data.pathNodes?.length ?? 0).toBeGreaterThanOrEqual(3);
 
     const shadedLobe = nativeArtToolForCommand("tool.shadedLobe");
     expect(shadedLobe?.style.fillMode).toBe("gloss");

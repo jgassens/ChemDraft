@@ -77,6 +77,10 @@ export font database. Durable schema and architecture notes live in
 
 # Toolbar Wiring and Honesty (active, branch `refactor/toolbar-wiring`)
 
+Status: Phases 0–6 implemented on this branch (one commit per phase); Phase 7 closeout in
+progress. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain zero permanently
+disabled buttons.
+
 ## Objective
 
 An audit found 32 non-functional toolbar buttons/commands: 8 drawing-tool stubs hardcoded to

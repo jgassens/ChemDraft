@@ -398,17 +398,21 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artShapeTool("lobe", "Orbital Lobe", "path", 40, 60, {
     artPathKind: "bezier",
     pathClosed: true,
+    // Closed bezier fills need >= 3 nodes (art-engine pathKindSupportsClosedFill): tip plus two
+    // upper bulb nodes.
     pathNodes: [
-      { point: { x: 20, y: 56 }, inControl: { x: 34, y: 44 }, outControl: { x: 6, y: 44 } },
-      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 18 }, outControl: { x: 38, y: 18 } }
+      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
     ]
   }, artOutlineStyle, "tool.lobe"),
   artShapeTool("shadedLobe", "Shaded Orbital Lobe", "path", 40, 60, {
     artPathKind: "bezier",
     pathClosed: true,
     pathNodes: [
-      { point: { x: 20, y: 56 }, inControl: { x: 34, y: 44 }, outControl: { x: 6, y: 44 } },
-      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 18 }, outControl: { x: 38, y: 18 } }
+      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
     ]
   }, artGlossStyle, "tool.shadedLobe"),
   artShapeTool("pOrbital", "p Orbital", "path", 40, 88, {

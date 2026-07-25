@@ -3233,26 +3233,22 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .expect("default capability should declare permissions");
 
-        expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "dialog:allow-save")
-        }));
-        expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "fs:allow-write-text-file")
-        }));
-        expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "fs:allow-write-file")
-        }));
-        expect_true(permissions.iter().any(|permission| {
-            permission
-                .as_str()
-                .is_some_and(|permission| permission == "allow-rasterize-svg")
-        }));
+        // Permissions appear either as plain strings or as scoped objects with an
+        // "identifier" field; both forms grant the capability.
+        let declares = |name: &str| {
+            permissions.iter().any(|permission| {
+                permission.as_str().is_some_and(|value| value == name)
+                    || permission
+                        .pointer("/identifier")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| value == name)
+            })
+        };
+
+        expect_true(declares("dialog:allow-save"));
+        expect_true(declares("fs:allow-write-text-file"));
+        expect_true(declares("fs:allow-write-file"));
+        expect_true(declares("allow-rasterize-svg"));
     }
 
     #[test]
