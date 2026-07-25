@@ -1912,6 +1912,10 @@ describe("ChemDraft desktop shell", () => {
       "tool.resonanceArrow",
       "tool.equilibriumArrow",
       "tool.retroArrow",
+      "tool.lobe",
+      "tool.shadedLobe",
+      "tool.pOrbital",
+      "tool.sOrbital",
       "layout.bringToFront",
       "layout.bringForward",
       "layout.sendBackward",
@@ -2941,10 +2945,6 @@ describe("ChemDraft desktop shell", () => {
       "style.formulaText",
       "tool.bracket",
       "tool.chain",
-      "tool.lobe",
-      "tool.pOrbital",
-      "tool.sOrbital",
-      "tool.shadedLobe",
       "tool.squareBracket"
     ];
     expect([...TRANSITIONAL_STUB_COMMAND_IDS].sort()).toEqual(expectedTransitionalStubs);
@@ -3076,8 +3076,8 @@ describe("ChemDraft desktop shell", () => {
     expect(wedgeMarkup).toContain(">Solid Wedge Bond</span>");
     expect(wedgeMarkup).not.toContain("toolset action");
     expect(pOrbitalMarkup).toContain('data-shortcut-label="No shortcut"');
-    expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool: Requires an active structure editor"');
-    expect(pOrbitalMarkup).toContain(">Requires an active structure editor</span>");
+    expect(pOrbitalMarkup).toContain('data-tooltip="p Orbital Tool"');
+    expect(pOrbitalMarkup).not.toContain("Requires an active structure editor");
     expect(pOrbitalMarkup).not.toContain("EditorAdapter");
     expect(pOrbitalMarkup).not.toContain("p Orbital Tool (No shortcut)");
     expect(bondMarkup).not.toContain('title="Single Bond (M)"');

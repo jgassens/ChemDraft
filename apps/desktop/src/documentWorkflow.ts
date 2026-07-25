@@ -267,7 +267,11 @@ export type NativeArtToolId =
   | "arc120"
   | "arc120Dashed"
   | "arc90"
-  | "arc90Dashed";
+  | "arc90Dashed"
+  | "lobe"
+  | "shadedLobe"
+  | "pOrbital"
+  | "sOrbital";
 
 export interface NativeArtToolDefinition {
   id: NativeArtToolId;
@@ -387,7 +391,36 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   artArcTool("arc120", "One-third Arc", 120, false),
   artArcTool("arc120Dashed", "Dashed One-third Arc", 120, true),
   artArcTool("arc90", "Quarter Arc", 90, false),
-  artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true)
+  artArcTool("arc90Dashed", "Dashed Quarter Arc", 90, true),
+  // Orbital tools keep their chemistry command ids (tool.lobe, …) but ride the art pipeline:
+  // parametric closed paths get pointer placement, transform chrome, and SVG export for free.
+  artShapeTool("lobe", "Orbital Lobe", "path", 40, 60, {
+    artPathKind: "bezier",
+    pathClosed: true,
+    pathNodes: [
+      { point: { x: 20, y: 56 }, inControl: { x: 34, y: 44 }, outControl: { x: 6, y: 44 } },
+      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 18 }, outControl: { x: 38, y: 18 } }
+    ]
+  }, artOutlineStyle, "tool.lobe"),
+  artShapeTool("shadedLobe", "Shaded Orbital Lobe", "path", 40, 60, {
+    artPathKind: "bezier",
+    pathClosed: true,
+    pathNodes: [
+      { point: { x: 20, y: 56 }, inControl: { x: 34, y: 44 }, outControl: { x: 6, y: 44 } },
+      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 18 }, outControl: { x: 38, y: 18 } }
+    ]
+  }, artGlossStyle, "tool.shadedLobe"),
+  artShapeTool("pOrbital", "p Orbital", "path", 40, 88, {
+    artPathKind: "bezier",
+    pathClosed: true,
+    pathNodes: [
+      { point: { x: 20, y: 44 }, inControl: { x: 6, y: 54 }, outControl: { x: 6, y: 34 } },
+      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 16 }, outControl: { x: 38, y: 16 } },
+      { point: { x: 20, y: 44 }, inControl: { x: 34, y: 34 }, outControl: { x: 34, y: 54 } },
+      { point: { x: 20, y: 84 }, inControl: { x: 38, y: 72 }, outControl: { x: 2, y: 72 } }
+    ]
+  }, artOutlineStyle, "tool.pOrbital"),
+  artShapeTool("sOrbital", "s Orbital", "ellipse", 48, 48, {}, artGlossStyle, "tool.sOrbital")
 ];
 
 const nativeArtToolByCommandId = new Map(nativeArtToolDefinitions.map((tool) => [tool.commandId, tool]));
@@ -399,11 +432,12 @@ function artShapeTool(
   width: number,
   height: number,
   data: GraphicObjectData,
-  style: GraphicObjectStyle
+  style: GraphicObjectStyle,
+  commandId: string = `tool.art.${id}`
 ): NativeArtToolDefinition {
   return {
     id,
-    commandId: `tool.art.${id}`,
+    commandId,
     title,
     graphicKind,
     width,

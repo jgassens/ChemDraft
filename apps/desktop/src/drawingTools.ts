@@ -357,10 +357,6 @@ export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([
   "style.formulaText",
   "tool.bracket",
   "tool.chain",
-  "tool.lobe",
-  "tool.pOrbital",
-  "tool.sOrbital",
-  "tool.shadedLobe",
   "tool.squareBracket"
 ]);
 
@@ -518,7 +514,11 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.arc120", "One-third Arc", "export", artPathUsageHint],
     ["tool.art.arc120Dashed", "Dashed One-third Arc", "export", artPathUsageHint],
     ["tool.art.arc90", "Quarter Arc", "export", artPathUsageHint],
-    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", artPathUsageHint]
+    ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", artPathUsageHint],
+    ["tool.lobe", "Orbital Lobe", "atom", artShapeUsageHint],
+    ["tool.shadedLobe", "Shaded Orbital Lobe", "atom", artShapeUsageHint],
+    ["tool.pOrbital", "p Orbital", "atom", artShapeUsageHint],
+    ["tool.sOrbital", "s Orbital", "atom", artShapeUsageHint]
   ] as const;
 
   return tools.map(([commandId, title, icon, usageHint]) => ({

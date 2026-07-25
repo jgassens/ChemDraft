@@ -118,6 +118,7 @@ import {
   applyReactionArrowToolAtPoint,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
+  nativeArtToolForCommand,
   nativeReactionArrowDefaultLengthPx,
   reactionArrowKindForToolCommand,
   stretchNativeReactionArrowTo,
@@ -1146,6 +1147,25 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("registers orbital tools as closed art shapes with chemistry command ids", () => {
+    const lobe = nativeArtToolForCommand("tool.lobe");
+    expect(lobe).toMatchObject({ id: "lobe", graphicKind: "path" });
+    expect(lobe?.data.pathClosed).toBe(true);
+    expect(lobe?.data.pathNodes).toHaveLength(2);
+
+    const shadedLobe = nativeArtToolForCommand("tool.shadedLobe");
+    expect(shadedLobe?.style.fillMode).toBe("gloss");
+    expect(shadedLobe?.data.pathClosed).toBe(true);
+
+    const pOrbital = nativeArtToolForCommand("tool.pOrbital");
+    expect(pOrbital?.data.pathNodes).toHaveLength(4);
+    expect(pOrbital?.data.pathClosed).toBe(true);
+
+    const sOrbital = nativeArtToolForCommand("tool.sOrbital");
+    expect(sOrbital).toMatchObject({ graphicKind: "ellipse" });
+    expect(sOrbital?.style.fillMode).toBe("gloss");
   });
 
   it("maps arrow tool commands to reaction-arrow kinds", () => {
