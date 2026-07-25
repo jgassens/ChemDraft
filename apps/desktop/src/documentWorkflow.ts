@@ -964,6 +964,19 @@ export interface NativeChainAnchor {
   atomId: string;
 }
 
+export interface NativeChainToolOptions {
+  /**
+   * Skip the chemistry derivation for a frame the user is still dragging.
+   *
+   * SMILES and the chemistry metadata are derived from the *whole* molecule, so re-deriving them on
+   * every pointermove makes a drag quadratic in the size of the molecule being extended — a chain
+   * pulled off a 300-atom structure re-walks all 300 atoms per frame. Nothing on screen reads those
+   * fields; the renderer draws atoms and bonds. The commit at the end of the gesture runs without
+   * this flag and derives once, so what lands in the document is always fully derived.
+   */
+  preview?: boolean;
+}
+
 /** Backstop for a drag with no page bounds; a full-page chain is far shorter than this. */
 const maxNativeChainSegments = 200;
 
@@ -992,17 +1005,28 @@ export function planNativeChainVertices(input: {
     : Math.min(maxNativeChainSegments, Math.max(1, Math.round(dragLength / reachPerSegment)));
 
   const bounds = input.pageBounds;
+  const inBounds = (point: PagePoint): boolean =>
+    !bounds || (point.x >= 0 && point.y >= 0 && point.x <= bounds.width && point.y <= bounds.height);
+  const step = (from: PagePoint, angle: number): PagePoint => ({
+    x: from.x + Math.cos(angle) * segmentLength,
+    y: from.y + Math.sin(angle) * segmentLength
+  });
+
+  // The zig-zag's first step is conventionally the "up" one. Near a page edge that single choice can
+  // be the only thing out of bounds — a chain started just below the top margin would stop dead at
+  // one vertex, which is a lone bond-less carbon rather than a chain. Start on whichever side fits.
+  let phase = -1;
+  if (!inBounds(step(input.start, axisAngle - halfRadians)) && inBounds(step(input.start, axisAngle + halfRadians))) {
+    phase = 1;
+  }
+
   const vertices: PagePoint[] = [{ x: input.start.x, y: input.start.y }];
   for (let index = 1; index <= segmentCount; index += 1) {
     const previous = vertices[index - 1];
-    const stepAngle = axisAngle + (index % 2 === 1 ? -halfRadians : halfRadians);
-    const next = {
-      x: previous.x + Math.cos(stepAngle) * segmentLength,
-      y: previous.y + Math.sin(stepAngle) * segmentLength
-    };
+    const next = step(previous, axisAngle + (index % 2 === 1 ? phase : -phase) * halfRadians);
     // Pointer capture keeps delivering moves well past the page edge; atoms placed out there are
     // unreachable and unprintable, so the chain simply stops at the boundary.
-    if (bounds && (next.x < 0 || next.y < 0 || next.x > bounds.width || next.y > bounds.height)) {
+    if (!inBounds(next)) {
       break;
     }
     vertices.push(next);
@@ -1018,7 +1042,8 @@ export function applyNativeChainTool(
   document: ChemDraftDocument,
   startPoint: PagePoint,
   dragPoint?: PagePoint,
-  anchor?: NativeChainAnchor
+  anchor?: NativeChainAnchor,
+  options: NativeChainToolOptions = {}
 ): ChemDraftDocument {
   const page = firstPage(document);
 
@@ -1040,7 +1065,7 @@ export function applyNativeChainTool(
       pageBounds: { width: page.width, height: page.height }
     });
 
-    const current = appendNativeCarbonVertices(molecule, sourceAtom.id, vertices.slice(1));
+    const current = appendNativeCarbonVertices(molecule, sourceAtom.id, vertices.slice(1), options.preview);
     if (!current) {
       return document;
     }
@@ -1067,6 +1092,11 @@ export function applyNativeChainTool(
     chainAngleDegrees: presetStyle.chainAngleDegrees,
     pageBounds: { width: page.width, height: page.height }
   });
+  if (vertices.length < 2) {
+    // Every direction out of the press point left the page. A single vertex is not a chain — it is a
+    // bond-less carbon the user never asked for, and one they would have to hunt down to delete.
+    return document;
+  }
   const atoms = vertices.map((vertex, index) => ({
     id: `atom_${String(index + 1).padStart(3, "0")}`,
     element: "C",
@@ -3713,9 +3743,17 @@ export function stretchNativeReactionArrowTo(
 /** Chemical-formula span formatting: digit runs that follow an element letter or closing
  *  parenthesis become subscripts, and a trailing charge (optional digits plus +, -, or −) becomes a
  *  superscript. Everything else stays a normal span. */
-/** A run of element symbols, groupings, and counts — what a trailing sign must follow to be a
- *  charge at all. "trans-", "Boc-", and "tert-" fail this and keep their hyphen. */
-const formulaBodyPattern = /^(?:[A-Z][a-z]?\d*|\d+|[()[\]·])+$/;
+/**
+ * A run of element symbols, groupings, and counts — what a trailing sign must follow to be a charge
+ * at all. "trans-", "Boc-", and "tert-" fail this and keep their hyphen.
+ *
+ * Written so that at most one alternative can match at any position: a digit is consumed only by a
+ * `\d*` suffix, never by an alternative of its own. The earlier spelling offered both
+ * `[A-Z][a-z]?\d*` and a standalone `\d+`, so a long digit run had 2^(n-1) parses and a
+ * non-matching tail sent the engine through all of them — a pasted label of ~30 digits froze the
+ * app. Same language, linear time.
+ */
+const formulaBodyPattern = /^\d*(?:(?:[A-Z][a-z]?|[()[\]·])\d*)*$/;
 const singleElementPattern = /^[A-Z][a-z]?$/;
 
 /**
@@ -3736,7 +3774,8 @@ function formulaChargeStart(text: string): number {
   const signIndex = text.length - 1;
   const digits = match[1];
   const body = text.slice(0, text.length - match[0].length);
-  if (!formulaBodyPattern.test(body)) {
+  // The pattern below accepts the empty string; a bare sign is not a charged formula.
+  if (body.length === 0 || !formulaBodyPattern.test(body)) {
     return text.length;
   }
   if (digits.length === 0) {
@@ -13419,10 +13458,15 @@ function extendNativeCarbonGraph(
 function appendNativeCarbonVertices(
   molecule: MoleculeObject,
   sourceAtomId: string,
-  vertices: readonly PagePoint[]
+  vertices: readonly PagePoint[],
+  preview = false
 ): MoleculeObject | undefined {
-  let atoms = [...molecule.atoms];
-  let bonds = [...molecule.bonds];
+  // Allocated up front. `nextIndexedId` rescans every existing id, so calling it per vertex is
+  // quadratic in the molecule being extended — the same cost the batched refresh below avoids.
+  const atomIds = nextIndexedIds("atom", molecule.atoms.map((atom) => atom.id), vertices.length);
+  const bondIds = nextIndexedIds("bond", molecule.bonds.map((bond) => bond.id), vertices.length);
+  const atoms = [...molecule.atoms];
+  const bonds = [...molecule.bonds];
   let attachAtomId = sourceAtomId;
   let added = 0;
 
@@ -13432,25 +13476,30 @@ function appendNativeCarbonVertices(
       break;
     }
     const newAtom: MoleculeAtom = {
-      id: nextIndexedId("atom", atoms.map((atom) => atom.id)),
+      id: atomIds[added],
       element: "C",
       x: vertex.x,
       y: vertex.y,
       formalCharge: 0
     };
-    atoms = [...atoms, newAtom];
-    bonds = [...bonds, {
-      id: nextIndexedId("bond", bonds.map((bond) => bond.id)),
+    atoms.push(newAtom);
+    bonds.push({
+      id: bondIds[added],
       fromAtomId: attachAtomId,
       toAtomId: newAtom.id,
       order: "single" as const,
       ...nativeBondDisplayObject(undefined)
-    }];
+    });
     attachAtomId = newAtom.id;
     added += 1;
   }
 
-  return added === 0 ? undefined : refreshNativeSingleBondGraph(molecule, atoms, bonds);
+  if (added === 0) {
+    return undefined;
+  }
+  return preview
+    ? normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds })
+    : refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
 function addNativeCarbonylToAtom(

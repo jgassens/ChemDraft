@@ -9040,7 +9040,9 @@ export function MainWindow({
     if (drag.kind === "chain") {
       // Chains regenerate from the start document each move: the drag vector sets axis and
       // segment count, so the whole zig-zag is recomputed rather than transformed.
-      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor);
+      // `preview`: the frames the user drags through are drawn from atoms and bonds, so the
+      // whole-molecule SMILES derivation is pure cost until the gesture commits.
+      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, { preview: true });
     }
     return rotateNativeMoleculeObjectAroundPoint(
       drag.placementDocument,
@@ -11733,10 +11735,17 @@ export function MainWindow({
     ) {
       event.preventDefault();
       event.stopPropagation();
-      startNativePlacementDrag(event, point, {
+      const started = startNativePlacementDrag(event, point, {
         kind: "chain",
         anchor: { objectId, atomId: nativeMoleculeHit.atomId }
       });
+      if (!started) {
+        // The press was consumed — stopPropagation above means no other handler will answer for it.
+        // Without this the tool looks broken: the user presses an atom, nothing happens, and nothing
+        // says why. Usually full valence; also a molecule whose graph this build cannot edit, which
+        // is why the wording does not commit to a single cause.
+        setStatus("Can't grow a chain from that atom");
+      }
       return;
     }
 

@@ -14,7 +14,6 @@ import {
   serializeDocument,
   undo,
   type ChemDraftDocument,
-  type PagePoint,
   type DocumentObject,
   type ElectronMarkObject,
   type GraphicObject,
@@ -125,6 +124,7 @@ import {
   insertNativeBracket,
   insertNativeReactionArrow,
   planNativeChainVertices,
+  type PagePoint,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
   nativeArtToolForCommand,
@@ -1230,10 +1230,12 @@ describe("Phase 4 document workflow", () => {
   it("stops a chain at the page edge instead of walking off it", () => {
     const blank = createPhase4Document("Chain Clamp Fixture");
     const page = blank.pages[0];
-    // Start near the bottom-right corner and drag far past it, the way pointer capture allows.
+    // Start inside the bottom-right corner — with room for a few segments, but not the dozens the
+    // drag asks for — and drag far past the corner, the way pointer capture allows. (Pressed right
+    // up against the corner there is no room at all, which is the next test's case.)
     const drawn = applyNativeChainTool(
       blank,
-      { x: page.width - 20, y: page.height - 20 },
+      { x: page.width - 120, y: page.height - 120 },
       { x: page.width + 400, y: page.height + 400 }
     );
     const chain = drawn.pages[0].objects[0];
@@ -1292,6 +1294,90 @@ describe("Phase 4 document workflow", () => {
     expect(grown.selection.objectIds).toEqual([molecule.id]);
 
     expect(applyNativeChainTool(seeded, { x: 0, y: 0 }, undefined, { objectId: "missing", atomId: "atom_001" })).toBe(seeded);
+  });
+
+  it("never leaves a bond-less carbon when the chain cannot leave the page", () => {
+    const blank = createPhase4Document("Chain Edge Fixture");
+    const page = blank.pages[0];
+
+    // Pressed hard against the top edge. The zig-zag's first step is conventionally the upward one,
+    // which here goes straight off the page — but stopping at one vertex would seed a molecule of a
+    // single bond-less carbon: an invisible speck the user has to hunt down and delete.
+    const atTop = applyNativeChainTool(blank, { x: 300, y: 0 }, { x: 380, y: 0 });
+    const seeded = atTop.pages[0].objects[0];
+    expect(seeded?.type).toBe("molecule");
+    if (seeded?.type === "molecule") {
+      expect(seeded.atoms.length).toBeGreaterThanOrEqual(2);
+      expect(seeded.bonds.length).toBe(seeded.atoms.length - 1);
+      for (const atom of seeded.atoms) {
+        expect(atom.y).toBeGreaterThanOrEqual(0);
+      }
+    }
+
+    // A corner that leaves no room in either direction yields no object at all.
+    const boxed = planNativeChainVertices({
+      start: { x: 0, y: 0 },
+      dragPoint: { x: -400, y: -400 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120,
+      pageBounds: { width: page.width, height: page.height }
+    });
+    expect(boxed).toHaveLength(1);
+    expect(applyNativeChainTool(blank, { x: 0, y: 0 }, { x: -400, y: -400 })).toBe(blank);
+  });
+
+  it("skips whole-molecule chemistry derivation for drag preview frames only", () => {
+    const blank = createPhase4Document("Chain Preview Fixture");
+    const seeded = insertNativeSingleBondMolecule(blank, { x: 300, y: 300 });
+    const molecule = seeded.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected a molecule fixture");
+    }
+    const anchorAtom = molecule.atoms[molecule.atoms.length - 1];
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const drag = { x: anchorAtom.x + reach * 3, y: anchorAtom.y };
+    const anchor = { objectId: molecule.id, atomId: anchorAtom.id };
+
+    const preview = applyNativeChainTool(seeded, anchorAtom, drag, anchor, { preview: true });
+    const committed = applyNativeChainTool(seeded, anchorAtom, drag, anchor);
+    const previewed = preview.pages[0].objects[0];
+    const finished = committed.pages[0].objects[0];
+    if (previewed.type !== "molecule" || finished.type !== "molecule") {
+      throw new Error("Expected molecules");
+    }
+
+    // The frames the user drags through carry the same atoms and bonds — that is all the renderer
+    // reads — so they are visually identical to the committed result.
+    expect(previewed.atoms).toEqual(finished.atoms);
+    expect(previewed.bonds).toEqual(finished.bonds);
+    // What the preview skips is the whole-molecule SMILES walk, which is pure cost per pointermove.
+    expect(previewed.structure).toBe(molecule.structure);
+    // And the commit derives it, so nothing lands in the document under-derived.
+    expect(finished.structure).not.toBe(molecule.structure);
+    expect(finished.structureFormat).toBe("smiles");
+  });
+
+  it("classifies a long digit run in linear time", () => {
+    // The body pattern used to offer two ways to match a digit — `[A-Z][a-z]?\d*` and a standalone
+    // `\d+` — so an n-digit run had 2^(n-1) parses. A trailing character that fails the match sent
+    // the engine through all of them: pasting a 40-digit label froze the app outright.
+    const pathological = `C${"1".repeat(40)}!-`;
+    const started = performance.now();
+    expect(formulaSpansFromText(pathological).map((span) => span.text).join("")).toBe(pathological);
+    expect(performance.now() - started).toBeLessThan(100);
+
+    // Same language as before: the shapes that were formulas still are.
+    // A leading coefficient stays normal text; only a digit run *after* an element or a closing
+    // bracket is a count.
+    expect(formulaSpansFromText("2H2O").map((span) => `${span.text}:${span.script}`)).toEqual([
+      "2H:normal",
+      "2:subscript",
+      "O:normal"
+    ]);
+    expect(formulaSpansFromText("(CH3)3C+").at(-1)).toMatchObject({ text: "+", script: "superscript" });
+    expect(formulaSpansFromText("Fe(CN)63-").at(-1)).toMatchObject({ text: "3-", script: "superscript" });
+    // And a bare sign is still not a charge.
+    expect(formulaSpansFromText("-")).toEqual([{ text: "-", script: "normal", style: {} }]);
   });
 
   it("formats formula text spans with subscripts and a superscript charge", () => {
