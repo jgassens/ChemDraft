@@ -964,6 +964,9 @@ export interface NativeChainAnchor {
   atomId: string;
 }
 
+/** Backstop for a drag with no page bounds; a full-page chain is far shorter than this. */
+const maxNativeChainSegments = 200;
+
 /** Zig-zag chain vertex plan. The press point is the first vertex; the drag vector sets the chain
  *  axis, and segment count comes from the drag length divided by the per-segment reach
  *  (bondLength × cos of the half zig-zag angle). No drag (or a sub-threshold drag) yields one
@@ -974,6 +977,8 @@ export function planNativeChainVertices(input: {
   dragPoint?: PagePoint;
   bondLengthPx: number;
   chainAngleDegrees: number;
+  /** When given, the walk stops rather than stepping off the page. */
+  pageBounds?: { width: number; height: number };
 }): PagePoint[] {
   const segmentLength = Math.max(8, input.bondLengthPx);
   const halfRadians = degreesToRadians((180 - clamp(input.chainAngleDegrees, 1, 179)) / 2);
@@ -984,16 +989,23 @@ export function planNativeChainVertices(input: {
   const axisAngle = dragLength < 1e-6 ? 0 : Math.atan2(dy, dx);
   const segmentCount = !input.dragPoint || dragLength < reachPerSegment * 0.75
     ? 1
-    : Math.max(1, Math.round(dragLength / reachPerSegment));
+    : Math.min(maxNativeChainSegments, Math.max(1, Math.round(dragLength / reachPerSegment)));
 
+  const bounds = input.pageBounds;
   const vertices: PagePoint[] = [{ x: input.start.x, y: input.start.y }];
   for (let index = 1; index <= segmentCount; index += 1) {
     const previous = vertices[index - 1];
     const stepAngle = axisAngle + (index % 2 === 1 ? -halfRadians : halfRadians);
-    vertices.push({
+    const next = {
       x: previous.x + Math.cos(stepAngle) * segmentLength,
       y: previous.y + Math.sin(stepAngle) * segmentLength
-    });
+    };
+    // Pointer capture keeps delivering moves well past the page edge; atoms placed out there are
+    // unreachable and unprintable, so the chain simply stops at the boundary.
+    if (bounds && (next.x < 0 || next.y < 0 || next.x > bounds.width || next.y > bounds.height)) {
+      break;
+    }
+    vertices.push(next);
   }
   return vertices;
 }
@@ -1024,20 +1036,12 @@ export function applyNativeChainTool(
       start: { x: sourceAtom.x, y: sourceAtom.y },
       dragPoint,
       bondLengthPx: style.bondLengthPx,
-      chainAngleDegrees: style.chainAngleDegrees
+      chainAngleDegrees: style.chainAngleDegrees,
+      pageBounds: { width: page.width, height: page.height }
     });
 
-    let current = molecule;
-    let sourceAtomId = sourceAtom.id;
-    for (const vertex of vertices.slice(1)) {
-      const extended = extendNativeCarbonGraph(current, sourceAtomId, vertex);
-      if (!extended) {
-        break;
-      }
-      current = extended;
-      sourceAtomId = current.atoms[current.atoms.length - 1].id;
-    }
-    if (current === molecule) {
+    const current = appendNativeCarbonVertices(molecule, sourceAtom.id, vertices.slice(1));
+    if (!current) {
       return document;
     }
 
@@ -1060,7 +1064,8 @@ export function applyNativeChainTool(
     start,
     dragPoint,
     bondLengthPx: presetStyle.bondLengthPx,
-    chainAngleDegrees: presetStyle.chainAngleDegrees
+    chainAngleDegrees: presetStyle.chainAngleDegrees,
+    pageBounds: { width: page.width, height: page.height }
   });
   const atoms = vertices.map((vertex, index) => ({
     id: `atom_${String(index + 1).padStart(3, "0")}`,
@@ -3848,7 +3853,15 @@ export function insertNativeSymbolGlyph(
   glyph: string,
   style: Partial<NativeTextStyle> = {}
 ): ChemDraftDocument {
-  return insertNativeTextObject(document, point, glyph, style);
+  // A stamp lands centred on the click, the way brackets and art shapes do. Plain text keeps the
+  // click as its top-left instead, because that is where its caret starts.
+  const size = nativeTextObjectSizeForText(glyph, textStyleToObjectStyle(style));
+  return insertNativeTextObject(
+    document,
+    { x: point.x - size.width / 2, y: point.y - size.height / 2 },
+    glyph,
+    style
+  );
 }
 
 export function createNativeMolfileMolecule(
@@ -13367,6 +13380,50 @@ function extendNativeCarbonGraph(
   ];
 
   return refreshNativeSingleBondGraph(molecule, atoms, bonds);
+}
+
+/**
+ * Append a run of carbons in one pass.
+ *
+ * Calling {@link extendNativeCarbonGraph} per vertex would re-derive the molecule's SMILES and
+ * chemistry metadata for every atom, making a drag quadratic in chain length. The graph is grown in
+ * plain arrays and refreshed once at the end instead.
+ */
+function appendNativeCarbonVertices(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  vertices: readonly PagePoint[]
+): MoleculeObject | undefined {
+  let atoms = [...molecule.atoms];
+  let bonds = [...molecule.bonds];
+  let attachAtomId = sourceAtomId;
+  let added = 0;
+
+  for (const vertex of vertices) {
+    // Valence is checked against the graph as grown so far, not the original molecule.
+    if (!canGrowNativeAtom({ ...molecule, atoms, bonds }, attachAtomId)) {
+      break;
+    }
+    const newAtom: MoleculeAtom = {
+      id: nextIndexedId("atom", atoms.map((atom) => atom.id)),
+      element: "C",
+      x: vertex.x,
+      y: vertex.y,
+      formalCharge: 0
+    };
+    atoms = [...atoms, newAtom];
+    bonds = [...bonds, {
+      id: nextIndexedId("bond", bonds.map((bond) => bond.id)),
+      fromAtomId: attachAtomId,
+      toAtomId: newAtom.id,
+      order: "single" as const,
+      ...nativeBondDisplayObject(undefined)
+    }];
+    attachAtomId = newAtom.id;
+    added += 1;
+  }
+
+  return added === 0 ? undefined : refreshNativeSingleBondGraph(molecule, atoms, bonds);
 }
 
 function addNativeCarbonylToAtom(

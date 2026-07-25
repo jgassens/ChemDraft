@@ -19,12 +19,13 @@ import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
   computePaletteGridSize,
+  getToolsetCommandSpecs,
   getToolsetPaletteGroups,
   paletteCommandGroupsFromItemGroups,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
-import { TRANSITIONAL_STUB_COMMAND_IDS } from "./drawingTools";
+import { isCompatOnlyArtVariantCommandId, TRANSITIONAL_STUB_COMMAND_IDS } from "./drawingTools";
 import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
@@ -138,10 +139,13 @@ export function PaletteWindow({
   const allCommands = commandSpecs;
   // Same rule as the main window's in-place gallery: transitional stubs are not draggable onto
   // toolbars. The declared stub set is used rather than the snapshot's enabled state.
-  const galleryCommands = useMemo(
-    () => allCommands.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)),
-    [allCommands]
-  );
+  const galleryCommands = useMemo(() => {
+    const shipped = new Set(getToolsetCommandSpecs(toolsetRegistry).map((command) => command.id));
+    return allCommands.filter((command) =>
+      !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
+      !isCompatOnlyArtVariantCommandId(command.id, shipped)
+    );
+  }, [allCommands, toolsetRegistry]);
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
     [allCommands]

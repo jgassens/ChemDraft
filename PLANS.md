@@ -1,6 +1,13 @@
 # ChemDraft Plans
 
-## Host-managed plugin updates (2026-07-25, branch `codex/plugin-updates`)
+## Host-managed plugin updates (2026-07-25, branch `codex/plugin-updates`) — not on this branch
+
+This plan belongs to the plugin-updates line, which lives on `codex/plugin-updates` (its own
+worktree). An earlier snapshot of that work was briefly merged here and has been backed out to
+`parked/plugin-fixes`; `main` carries no plugin-update code. The review comparing the two
+implementations concluded the `codex/plugin-updates` version supersedes the parked one on every
+axis except an orphaned-package sweep, which is the one piece worth porting forward. Keep this
+section for reference; do not treat it as active work on `main`.
 
 ### Objective
 
@@ -77,9 +84,24 @@ export font database. Durable schema and architecture notes live in
 
 # Toolbar Wiring and Honesty (active, branch `refactor/toolbar-wiring`)
 
-Status: Phases 0–6 implemented on this branch (one commit per phase); Phase 7 closeout in
-progress. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain zero permanently
-disabled buttons.
+Status: all eight phases implemented on `main`, then hardened after review.
+`TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain zero permanently disabled
+buttons.
+
+An external review plus three adversarial passes found roughly nineteen defects in the first cut of
+this slice. All five P1s and the P2s are now fixed with regression tests: imported structures keep
+an honest `structureFormat` when edited; CDXML arrows use the real `ArrowType` spellings both ways;
+arrow resize transforms the endpoints, not just the frame; axis-aligned arrows get a frame that
+contains their glyph; formula text distinguishes a charge magnitude from an atom count and keeps
+span styling; Escape cancels an in-flight placement instead of arming it; brackets and arrows are
+painted once; brackets and curved art warn when they degrade in foreign CDXML; chains stop at the
+page edge and rebuild in one pass; stamps centre on the click and clear stale interaction state;
+arrows and orbitals can start on top of an existing object; and the Customize gallery offers
+neither transitional stubs nor the compat-only art variants.
+
+Known remaining gap: the Art inspector still styles only graphics and molecules, so Color Controls
+and Object Settings route a bracket or arrow selection to a status message rather than a working
+panel. Widening `ArtInspectorStyleObject` is its own slice.
 
 ## Objective
 

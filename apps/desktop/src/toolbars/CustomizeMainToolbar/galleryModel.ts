@@ -170,7 +170,9 @@ const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }>
   { pattern: /^tool\.(cyclopentane|cyclohexane|benzene|chairCyclohexane)/, section: "rings" },
   { pattern: /^atom\./, section: "atoms" },
   { pattern: /^tool\.(reactionArrow|resonanceArrow|equilibriumArrow|retroArrow)$/, section: "arrows" },
-  { pattern: /^tool\.(plus|minus|bracket|squareBracket|dagger|symbol)$/, section: "symbols" },
+  // `tool.symbol` also has per-glyph variants (tool.symbol.degree, …), so the family is matched by
+  // prefix rather than anchored exactly.
+  { pattern: /^tool\.(plus|minus|bracket|squareBracket|dagger)$|^tool\.symbol(\.|$)/, section: "symbols" },
   { pattern: /^tool\.(lobe|shadedLobe|pOrbital|sOrbital)$/, section: "orbitals" },
   { pattern: /^(structure|chemistry)\./, section: "chemistry" },
   { pattern: /^tool\.text$/, section: "text" },

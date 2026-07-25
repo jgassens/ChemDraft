@@ -96,6 +96,7 @@ export const toggleRingInspectorCommandId = "view.toggleRingInspector";
 export const moleculeInspectorToolsetId = "core.moleculeInspector";
 export const toggleMoleculeInspectorCommandId = "view.toggleMoleculeInspector";
 export const artToolsetId = "core.art";
+export const textToolsetId = "core.text";
 export const moleculeInspectorTemplateImportCommandId = "moleculeInspector.template.import";
 export const moleculeInspectorTemplateExportCommandId = "moleculeInspector.template.export";
 export const artBooleanOperationCommandIds = {

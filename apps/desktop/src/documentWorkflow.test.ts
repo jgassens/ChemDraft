@@ -1226,6 +1226,36 @@ describe("Phase 4 document workflow", () => {
     expect(short).toHaveLength(2);
   });
 
+  it("stops a chain at the page edge instead of walking off it", () => {
+    const blank = createPhase4Document("Chain Clamp Fixture");
+    const page = blank.pages[0];
+    // Start near the bottom-right corner and drag far past it, the way pointer capture allows.
+    const drawn = applyNativeChainTool(
+      blank,
+      { x: page.width - 20, y: page.height - 20 },
+      { x: page.width + 400, y: page.height + 400 }
+    );
+    const chain = drawn.pages[0].objects[0];
+
+    if (chain.type !== "molecule") {
+      throw new Error("Expected a chain molecule");
+    }
+    for (const atom of chain.atoms) {
+      expect(atom.x).toBeGreaterThanOrEqual(0);
+      expect(atom.y).toBeGreaterThanOrEqual(0);
+      expect(atom.x).toBeLessThanOrEqual(page.width);
+      expect(atom.y).toBeLessThanOrEqual(page.height);
+    }
+
+    // Without bounds the planner still refuses to run away unboundedly.
+    expect(planNativeChainVertices({
+      start: { x: 0, y: 0 },
+      dragPoint: { x: 1_000_000, y: 0 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    }).length).toBeLessThanOrEqual(201);
+  });
+
   it("draws a free chain molecule and appends an anchored chain to an existing molecule", () => {
     const blank = createPhase4Document("Chain Fixture");
     const reach = 22 * Math.cos((Math.PI / 180) * 30);
@@ -1492,7 +1522,7 @@ describe("Phase 4 document workflow", () => {
     expect(symbolGlyphForToolCommand("tool.bond")).toBeUndefined();
   });
 
-  it("stamps a symbol glyph as a selected native text object", () => {
+  it("stamps a symbol glyph as a selected native text object centred on the click", () => {
     const blank = createPhase4Document("Symbol Stamp Fixture");
     const stamped = insertNativeSymbolGlyph(blank, { x: 240, y: 200 }, "‡");
     const object = stamped.pages[0].objects[0];
@@ -1500,6 +1530,9 @@ describe("Phase 4 document workflow", () => {
     expect(stamped.pages[0].objects).toHaveLength(1);
     expect(object).toMatchObject({ type: "text", text: "‡" });
     expect(stamped.selection.objectIds).toEqual([object.id]);
+    // Brackets and art shapes centre on the click; a stamp is not a text caret, so it does too.
+    expect(object.x + object.width / 2).toBeCloseTo(240, 6);
+    expect(object.y + object.height / 2).toBeCloseTo(200, 6);
   });
 
   it("reorders the selected document object for layer controls", () => {

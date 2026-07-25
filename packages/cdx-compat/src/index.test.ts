@@ -968,6 +968,59 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((reactionArrow.document?.pages[0].objects[0] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
   });
 
+  it("warns when brackets and curved art degrade on the way to CDXML", () => {
+    const bracket = exportDocumentToCdxml(documentWithObjects([
+      {
+        id: "bracket_001",
+        type: "bracket",
+        x: 144, y: 126, width: 16, height: 64, rotation: 0, style: {},
+        bracketKind: "curly",
+        containedObjectIds: []
+      }
+    ]), { creationProgram: "T" });
+
+    // The bracket still exports as a placeholder, but no longer silently.
+    expect(bracket.contents).toContain('GraphicType="Unknown"');
+    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_payload_only");
+
+    const orbital = exportDocumentToCdxml(documentWithObjects([
+      {
+        id: "graphic_lobe",
+        type: "graphic",
+        x: 100, y: 100, width: 40, height: 60, rotation: 0,
+        style: { strokeColor: "#000000", fillColor: "none" },
+        graphicKind: "path",
+        data: {
+          artPathKind: "bezier",
+          pathClosed: true,
+          pathNodes: [
+            { point: { x: 20, y: 56 } },
+            { point: { x: 6, y: 16 } },
+            { point: { x: 34, y: 16 } }
+          ]
+        }
+      }
+    ]), { creationProgram: "T" });
+
+    // Bezier curves carry an artPathKind, so the older pathD-only check never fired for them.
+    expect(orbital.contents).toContain('GraphicType="Unknown"');
+    expect(orbital.warnings.map((warning) => warning.code)).toContain("cdxml.graphic_shape_payload_only");
+
+    // A shape CDXML can represent stays quiet.
+    const oval = exportDocumentToCdxml(documentWithObjects([
+      {
+        id: "graphic_oval",
+        type: "graphic",
+        x: 100, y: 100, width: 48, height: 48, rotation: 0,
+        style: { strokeColor: "#000000" },
+        graphicKind: "ellipse",
+        data: {}
+      }
+    ]), { creationProgram: "T" });
+    expect(oval.contents).toContain('GraphicType="Oval"');
+    expect(oval.warnings.map((warning) => warning.code)).not.toContain("cdxml.graphic_shape_payload_only");
+  });
+
   it("writes real CDXML ArrowType spellings and reads foreign and legacy ones", () => {
     // The previous test asserted our own lowercase output against our own reader, so it passed
     // while real CDXML imported as "unknown". Assert the wire spellings directly.

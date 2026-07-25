@@ -370,6 +370,21 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
  *  and it must reach empty at closeout. */
 export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([]);
 
+/**
+ * Whether an art command is a preset variant kept only for compatibility.
+ *
+ * The dashed/gloss/filled/shadow variants stay registered so older documents and plugins keep
+ * resolving them, but they are deliberately absent from every shipped toolbar — the same reasoning
+ * that retired `tool.shapeShadow`. Offering them in Customize would let a user put a supposedly
+ * retired tool back, so membership in a shipped toolset is what decides.
+ */
+export function isCompatOnlyArtVariantCommandId(
+  commandId: string,
+  shippedCommandIds: ReadonlySet<string>
+): boolean {
+  return commandId.startsWith("tool.art.") && !shippedCommandIds.has(commandId);
+}
+
 export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {
   return withStandaloneDrawingToolCommands(commands)
     .filter((command) => isDrawingToolCommand(command.id))

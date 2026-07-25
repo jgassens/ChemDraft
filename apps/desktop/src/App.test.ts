@@ -194,7 +194,11 @@ import {
   getToolsetToggleActions,
   type ToolbarPaletteItemModel
 } from "./toolsets";
-import { TRANSITIONAL_STUB_COMMAND_IDS, withStandaloneDrawingToolCommands } from "./drawingTools";
+import {
+  isCompatOnlyArtVariantCommandId,
+  TRANSITIONAL_STUB_COMMAND_IDS,
+  withStandaloneDrawingToolCommands
+} from "./drawingTools";
 
 // Phase 5: widgets are declared as manifest `control` items and read state from context. This
 // isolates just a toolset's widget item (no grid commands), the way the old `groups: []` +
@@ -3036,6 +3040,20 @@ describe("ChemDraft desktop shell", () => {
     } as DocumentObject)).toBe(true);
   });
 
+  it("lets arrows and art shapes start on top of an existing object", () => {
+    // handleObjectPointerDown stops propagation, so a tool with no branch there is a dead click
+    // over any molecule, text, or graphic — which is exactly how orbitals are meant to be drawn.
+    const objectHandler = mainWindowSource.slice(
+      mainWindowSource.indexOf("const handleObjectPointerDown"),
+      mainWindowSource.indexOf("function isTransformHandleSecondPress")
+    );
+
+    expect(objectHandler).toContain("reactionArrowKindForToolCommand(activeToolState.activeCommandId)");
+    expect(objectHandler).toContain('startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })');
+    // A generic art branch after the polyline/pen/freehand special cases covers the orbitals.
+    expect(objectHandler).toContain("applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId)");
+  });
+
   it("cancels an in-flight placement drag on Escape instead of leaving it armed", () => {
     // Escape used to only switch to Select, leaving nativePlacementDragRef live — the eventual
     // pointerup then committed the arrow/chain/bond the user had just canceled.
@@ -3050,10 +3068,28 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("replacePresentDocument(drag.startDocument);");
   });
 
-  it("filters transitional stubs out of both customize gallery sources", () => {
-    expect(mainWindowSource).toContain("shellCommandSpecs.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id))");
-    expect(paletteWindowSource).toContain("allCommands.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id))");
+  it("filters transitional stubs and compat-only art variants out of both gallery sources", () => {
+    for (const source of [mainWindowSource, paletteWindowSource]) {
+      expect(source).toContain("!TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)");
+      expect(source).toContain("!isCompatOnlyArtVariantCommandId(command.id, shipped)");
+    }
     expect(paletteWindowSource).toContain("commands={galleryCommands}");
+  });
+
+  it("treats art preset variants absent from every shipped toolset as compat-only", () => {
+    const shipped = new Set(getToolsetCommandSpecs().map((command) => command.id));
+
+    // Registered for compatibility, deliberately on no toolbar — the same reasoning that retired
+    // tool.shapeShadow, so Customize must not hand them back.
+    expect(shipped.has("tool.art.rectShadow")).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.rectShadow", shipped)).toBe(true);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.circleGloss", shipped)).toBe(true);
+
+    // Tools that really do ship stay offered.
+    expect(isCompatOnlyArtVariantCommandId("tool.art.rect", shipped)).toBe(false);
+    expect(isCompatOnlyArtVariantCommandId("tool.art.pen", shipped)).toBe(false);
+    // The rule is scoped to art commands only.
+    expect(isCompatOnlyArtVariantCommandId("tool.bond", shipped)).toBe(false);
   });
 
   it("exposes active tool state without rendering fake chemistry", () => {

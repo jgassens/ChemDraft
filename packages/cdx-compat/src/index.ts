@@ -432,6 +432,11 @@ function exportVisibleObject(
     return exportGraphicObject(object, context.ids, allocator, warnings);
   }
   if (object.type === "bracket") {
+    warnings.push({
+      code: "cdxml.bracket_payload_only",
+      message: `Native ${object.bracketKind} brackets have no CDXML equivalent; the exported file keeps only a placeholder graphic, and the bracket is preserved exactly only in the embedded ChemDraft payload.`,
+      sourceObjectId: object.id
+    });
     return exportGraphicObject({
       id: object.id,
       type: "graphic",
@@ -699,6 +704,22 @@ function warnForGraphicCdxmlLimitations(
     warnings.push({
       code: "cdxml.graphic_custom_path_payload_only",
       message: "Native custom graphic paths are preserved exactly only in the embedded ChemDraft payload.",
+      sourceObjectId: graphic.id
+    });
+  }
+
+  // Bezier, polyline, and freehand geometry has no CDXML graphic type, so it exports as
+  // GraphicType="Unknown" with only a bounding box. The earlier pathD check misses these because
+  // they carry an artPathKind — which is how the orbital tools' curves left silently.
+  const hasPathGeometry = Boolean(
+    (graphic.data.pathNodes && graphic.data.pathNodes.length > 0) ||
+      graphic.data.pathD ||
+      graphic.data.freehandOptions
+  );
+  if (hasPathGeometry && cdxmlGraphicTypeForNativeGraphic(graphic) === "Unknown") {
+    warnings.push({
+      code: "cdxml.graphic_shape_payload_only",
+      message: `Native ${graphic.data.artPathKind ?? graphic.graphicKind} geometry has no CDXML graphic type; the exported file keeps only its bounding box, and the shape is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }

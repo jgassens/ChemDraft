@@ -192,6 +192,7 @@ import {
   ringInspectorToolsetId,
   moleculeInspectorToolsetId,
   artToolsetId,
+  textToolsetId,
   toggleRingInspectorCommandId,
   moleculeInspectorTemplateExportCommandId,
   moleculeInspectorTemplateImportCommandId,
@@ -270,6 +271,7 @@ import {
   activateDrawingToolCommand,
   createActiveToolState,
   drawingToolStatusLabel,
+  isCompatOnlyArtVariantCommandId,
   isDrawingToolCommand,
   TRANSITIONAL_STUB_COMMAND_IDS,
   withStandaloneDrawingToolCommands,
@@ -1266,7 +1268,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.25.15.14-fable";
+const CURRENT_BUILD_STAMP = "7.25.15.32-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -4713,13 +4715,38 @@ export function MainWindow({
     setStatus("Inserted text - type to replace placeholder");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, focusTextObjectEditor, restoreToolAfterTextPlacement, textStyleDefaults]);
 
+  /** Drop the interaction chrome a stamp invalidates. Every sibling placement path does this; a
+   *  bond part-selection left lit here would keep receiving style commands aimed at the stamp.
+   *  Uses only stable state setters, so callers need no extra dependencies. */
+  const clearStampInteractionState = useCallback(() => {
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveGraphicTransformObjectId(undefined);
+    setSelectedGraphicPathNode(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+  }, []);
+
   // Symbol tools stamp one glyph per click and stay active for repeated stamping — no inline text
   // editor, unlike tool.text.
   const applySymbolGlyphAtPoint = useCallback((point: ClientPoint, glyph: string) => {
     const currentDocument = documentRef.current;
     commitDocumentChange(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
+    clearStampInteractionState();
+    assignHoveredNativeDeleteTarget(undefined);
     setStatus(`Stamped ${glyph}`);
-  }, [commitDocumentChange, textStyleDefaults]);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange, textStyleDefaults]);
+
+  const applyBracketAtPoint = useCallback((point: ClientPoint, bracketKind: BracketObject["bracketKind"]) => {
+    const currentDocument = documentRef.current;
+    commitDocumentChange(insertNativeBracket(currentDocument, point, bracketKind));
+    clearStampInteractionState();
+    assignHoveredNativeDeleteTarget(undefined);
+    setStatus(`Inserted ${bracketKind} bracket`);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange]);
 
   const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
     const currentDocument = documentRef.current;
@@ -6870,15 +6897,28 @@ export function MainWindow({
           return;
         }
 
-        // Object Settings and Color Controls open the surfaces that already own those edits: the
-        // Molecule Inspector and the Art toolbar's style controls.
-        if (tool.id === "tool.settings") {
-          void toggleToolset(moleculeInspectorToolsetId);
-          return;
-        }
-
-        if (tool.id === "style.color") {
-          void toggleToolset(artToolsetId);
+        // Object Settings and Color Controls open the surface that owns the current selection's
+        // edits. Routing by type matters: the Art inspector styles only graphics and molecules, so
+        // sending a text or bracket selection there produced a panel with everything disabled.
+        if (tool.id === "tool.settings" || tool.id === "style.color") {
+          const types = selectedDocumentObjectTypes(documentRef.current);
+          if (types.size === 0) {
+            void toggleToolset(tool.id === "tool.settings" ? moleculeInspectorToolsetId : artToolsetId);
+            return;
+          }
+          if (tool.id === "tool.settings" && types.has("molecule")) {
+            void toggleToolset(moleculeInspectorToolsetId);
+            return;
+          }
+          if (types.has("graphic") || types.has("molecule")) {
+            void toggleToolset(artToolsetId);
+            return;
+          }
+          if (types.has("text")) {
+            void toggleToolset(textToolsetId);
+            return;
+          }
+          setStatus(`${tool.title} does not cover the selected object yet`);
           return;
         }
 
@@ -7481,10 +7521,13 @@ export function MainWindow({
   // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
   // used rather than live enabled state, so transiently disabled commands (Undo, align, boolean
   // ops) stay offered.
-  const galleryCommands = useMemo(
-    () => shellCommandSpecs.filter((command) => !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id)),
-    [shellCommandSpecs]
-  );
+  const galleryCommands = useMemo(() => {
+    const shipped = new Set(getToolsetCommandSpecs(toolsetRegistry).map((command) => command.id));
+    return shellCommandSpecs.filter((command) =>
+      !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
+      !isCompatOnlyArtVariantCommandId(command.id, shipped)
+    );
+  }, [shellCommandSpecs, toolsetRegistry]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
@@ -10489,8 +10532,7 @@ export function MainWindow({
       if (bracketKind) {
         event.preventDefault();
         event.stopPropagation();
-        commitDocumentChange(insertNativeBracket(documentRef.current, point, bracketKind));
-        setStatus(`Inserted ${bracketKind} bracket`);
+        applyBracketAtPoint(point, bracketKind);
         return;
       }
     }
@@ -11630,6 +11672,16 @@ export function MainWindow({
       return;
     }
 
+    // Plain art shapes — including the orbital tools — must place over existing objects too.
+    // Drawing a lobe onto a structure is the whole point of the orbital toolbar, and without this
+    // the object handler stops the event and the press does nothing.
+    if (activeNativeArtTool && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.eraser") {
       event.preventDefault();
       event.stopPropagation();
@@ -11655,6 +11707,24 @@ export function MainWindow({
       return;
     }
 
+    // Reaction arrows commonly start on top of a reagent, so they need the same branch the page
+    // handler has; the object handler stops propagation before the page ever sees the press.
+    {
+      const arrowKind = reactionArrowKindForToolCommand(activeToolState.activeCommandId);
+      if (arrowKind && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
+          const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
+          if (nextDocument !== documentRef.current) {
+            commitDocumentChange(nextDocument);
+            setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
+          }
+        }
+        return;
+      }
+    }
+
     if (
       activeToolState.activeCommandId === "tool.chain" &&
       object?.type === "molecule" &&
@@ -11675,8 +11745,7 @@ export function MainWindow({
       if (bracketKind && point) {
         event.preventDefault();
         event.stopPropagation();
-        commitDocumentChange(insertNativeBracket(documentRef.current, point, bracketKind));
-        setStatus(`Inserted ${bracketKind} bracket`);
+        applyBracketAtPoint(point, bracketKind);
         return;
       }
     }
@@ -12271,6 +12340,8 @@ export function MainWindow({
     addChargeToHoveredNativeAtom,
     assignHoveredNativeDeleteTarget,
     applyChargeDocumentAtPoint,
+    applyBracketAtPoint,
+    applyNativeArtDocumentAtPoint,
     applyNativeBondDisplayStyleDocumentTarget,
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
@@ -19712,6 +19783,23 @@ function PageSvgSurface({
       })}
     </svg>
   );
+}
+
+/** Object types in the current selection, for routing a command to a surface that can edit them. */
+export function selectedDocumentObjectTypes(document: ChemDraftDocument): ReadonlySet<DocumentObject["type"]> {
+  const selectedIds = new Set(document.selection.objectIds);
+  const types = new Set<DocumentObject["type"]>();
+  if (selectedIds.size === 0) {
+    return types;
+  }
+  for (const page of document.pages) {
+    for (const object of page.objects) {
+      if (selectedIds.has(object.id)) {
+        types.add(object.type);
+      }
+    }
+  }
+  return types;
 }
 
 export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
