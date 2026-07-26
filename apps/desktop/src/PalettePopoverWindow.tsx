@@ -278,16 +278,18 @@ export function PalettePopoverWindow({
               title={command.enabled ? command.title : `${command.title}: ${command.disabledReason ?? "unavailable"}`}
               onClick={() => chooseFlyoutCommand(command)}
             >
-              {command.assetName ? (
-                <img
-                  className="tool-icon-image"
-                  src={toolbarAsset(command.assetName as ToolbarAssetName)}
-                  alt=""
-                  aria-hidden="true"
-                />
-              ) : command.icon ? (
-                <Icon name={command.icon as IconName} />
-              ) : null}
+              {(() => {
+                // Flyout snapshots arrive over IPC, so assetName is an untrusted raw string — an
+                // unknown key makes toolbarAsset() return undefined and renders a broken <img>.
+                // Resolve first, fall through to the named icon when it doesn't resolve.
+                const assetSrc = command.assetName
+                  ? toolbarAsset(command.assetName as ToolbarAssetName)
+                  : undefined;
+                if (assetSrc) {
+                  return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
+                }
+                return command.icon ? <Icon name={command.icon as IconName} /> : null;
+              })()}
               <span>{command.title}</span>
             </button>
           ))}

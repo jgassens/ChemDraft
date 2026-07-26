@@ -76,6 +76,14 @@ export async function reconcileNativePaletteWindows(
       const desired = desiredVisibleToolsetIds().filter(isKnownToolset);
       const target = desired.length > 0 ? desired : defaultVisibleToolsetIds().filter(isKnownToolset);
 
+      // An empty target is a SUCCESSFUL native outcome (there is simply nothing to open), not a
+      // native-windows-unavailable failure. Without this, a run where nothing is desired keeps
+      // finding zero open windows, exhausts its retries, and returns "fallback" — permanently
+      // switching the session to in-window palettes over a legitimately empty set.
+      if (target.length === 0) {
+        return { outcome: "native", openedToolsetIds: [] };
+      }
+
       for (const toolsetId of target) {
         if (opened.has(toolsetId)) {
           continue;

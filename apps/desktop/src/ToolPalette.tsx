@@ -4480,6 +4480,8 @@ export function CommandIconButton({
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}${shortcutText}${stateText}`;
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
+  // Resolve then guard: an unknown assetName yields undefined, which would render a broken <img>.
+  const assetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
 
   return (
     <span
@@ -4511,8 +4513,8 @@ export function CommandIconButton({
         data-tooltip={tooltipText}
         {...invokeHandlers}
       >
-        {command.assetName ? (
-          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        {assetSrc ? (
+          <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />
         ) : command.id.startsWith("tool.art.") ? (
           <ArtToolIcon commandId={command.id} />
         ) : (
@@ -4616,6 +4618,9 @@ function DistributeCommandIconButton({
   const shortcutText = disabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}: ${modeLabel}${shortcutText}${stateText}`;
+  // Resolve then guard: toolbarAsset() returns undefined for an unknown key, so rendering it directly
+  // would produce a broken <img>. Fall through to the named Icon when the asset can't resolve.
+  const distributeAssetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current !== undefined) {
@@ -4767,12 +4772,16 @@ function DistributeCommandIconButton({
           }
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            onInvoke(command.id);
+            // Match the pointer path (onPointerUp): a disabled distribute command must not invoke.
+            // The menu (ArrowDown / hold) stays reachable so the mode can still be changed.
+            if (!disabled) {
+              onInvoke(command.id);
+            }
           }
         }}
       >
-        {command.assetName ? (
-          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        {distributeAssetSrc ? (
+          <img className="tool-icon-image" src={distributeAssetSrc} alt="" aria-hidden="true" />
         ) : (
           <Icon name={command.icon} />
         )}

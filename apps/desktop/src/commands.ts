@@ -81,11 +81,6 @@ export function createQuickActions(
 
 export const paletteGroups = getToolsetCommandGroups("core.main");
 
-export const drawerActions: CommandSpec[] = [
-  { id: "view.toggleInspector", title: "Toggle Inspector", icon: "inspector", source: "core" },
-  { id: "view.togglePlugins", title: "Toggle Plugins", icon: "plugin", source: "core" }
-];
-
 export const structureCleanupCommandId = "structure.cleanup2d";
 export const structureSpin3dCommandId = "structure.spin3d";
 export const structureInteractive3dCommandId = "structure.openInteractive3d";
@@ -206,7 +201,7 @@ export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
 export const viewActions: CommandSpec[] = [
   {
     id: PREFERENCES_COMMAND_ID,
-    title: "Preferencesâ¦",
+    title: "Preferences…",
     icon: "inspector",
     source: "core",
     shortcut: "Cmd+,",
@@ -269,12 +264,12 @@ export const pageSizeActions: CommandSpec[] = MinimalPageSizePresetIds.map((pres
   };
 });
 
-/** Opens the custom page-size dialog (File â¸ Page Setup â¸ Custom Sizeâ¦). */
+/** Opens the custom page-size dialog (File ▸ Page Setup ▸ Custom Size…). */
 export const PAGE_CUSTOM_SIZE_COMMAND_ID = "page.setSizeCustom";
 
 export const pageCustomSizeAction: CommandSpec = {
   id: PAGE_CUSTOM_SIZE_COMMAND_ID,
-  title: "Set Page Size: Customâ¦",
+  title: "Set Page Size: Custom…",
   icon: "grid",
   source: "core",
   category: "page",
@@ -1836,7 +1831,6 @@ export function allShellCommands(
     ...allPaletteCommands(registry),
     ...editActions,
     ...atomElementActions,
-    ...drawerActions,
     ...viewActions,
     ...pageSizeActions,
     pageCustomSizeAction,

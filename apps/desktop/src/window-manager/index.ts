@@ -397,6 +397,11 @@ export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
 /**
  * Persist the full toolbar layout/customization state (visibility, order, user toolsets). JS owns
  * this now; Rust just writes the opaque JSON to disk. No-op off the desktop runtime.
+ *
+ * REJECTS on a native write failure rather than swallowing it: a silently-dropped save leaves the
+ * user's customization looking saved but gone after relaunch. Callers own the save chain and decide
+ * how to surface the failure (see MainWindow — it reports it on the status line and keeps the chain
+ * alive for the next write).
  */
 export async function saveToolsetLayoutState(state: unknown): Promise<void> {
   if (!isDesktopRuntime()) {
@@ -404,7 +409,7 @@ export async function saveToolsetLayoutState(state: unknown): Promise<void> {
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("save_toolset_customization_state", { state }).catch(() => undefined);
+  await invoke("save_toolset_customization_state", { state });
 }
 
 /** Load the working-document autosave envelope (see documentSession.ts). Undefined when there is

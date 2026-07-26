@@ -2343,10 +2343,12 @@ export function MainWindow({
       .filter((id) => resolvedToolsetIdsRef.current.has(id));
     const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
     layoutStateRef.current = nextState;
-    // Chain the writes so their completion order matches the order the states were produced.
+    // Chain the writes so their completion order matches the order the states were produced. Surface a
+    // save failure on the status line (it used to be swallowed, so a lost write looked successful) and
+    // still resolve so the chain stays alive for the next write.
     layoutSaveChainRef.current = layoutSaveChainRef.current
       .then(() => saveToolsetLayoutState(nextState))
-      .catch(() => undefined);
+      .catch(() => setStatus("Couldn't save toolbar visibility; your last change may not persist"));
   }, [visibleToolsetIds, nativePalette, toolsetRegistry]);
 
   useEffect(() => {
@@ -6855,6 +6857,13 @@ export function MainWindow({
 
     toolCommandSpecs.forEach((tool) => {
       if (
+        // `toolCommandSpecs` is derived from the CUSTOMIZABLE toolset registry, so a command the user
+        // dragged onto a toolbar (Undo, Save, a hovered-atom edit, an atom-element key, …) appears
+        // here too. Those already have a real, domain-specific handler registered by an EARLIER loop
+        // (quickActions/editActions/atomElementActions); re-registering would replace it with the
+        // generic "command routed" no-op below and break that command everywhere — menus and
+        // shortcuts share this registry. First binding wins: skip anything already bound.
+        bindings.has(tool.id) ||
         isLayerCommandId(tool.id) ||
         objectStyleCommandIds.has(tool.id) ||
         tool.id === toggleRingInspectorCommandId ||
@@ -7484,10 +7493,12 @@ export function MainWindow({
     // window creation — without this, item hides/reorders/renames never reach them), and again once
     // the save has flushed so a palette window created mid-save can't be left on the stale disk copy.
     void broadcastToolsetLayoutState(next).catch(() => undefined);
+    // Report a persistence failure on the status line instead of swallowing it (a lost write used to
+    // look like a successful save), and still resolve so the chain survives for the next edit.
     layoutSaveChainRef.current = layoutSaveChainRef.current
       .then(() => saveToolsetLayoutState(next))
       .then(() => broadcastToolsetLayoutState(next))
-      .catch(() => undefined);
+      .catch(() => setStatus("Couldn't save toolbar customization; your last change may not persist"));
     if (closeDialog) {
       setCustomizeToolbarsOpen(false);
     }

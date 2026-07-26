@@ -102,4 +102,21 @@ describe("reconcileNativePaletteWindows", () => {
     const result = await reconcileNativePaletteWindows(baseDeps({ isCancelled: () => true }));
     expect(result).toEqual({ outcome: "cancelled" });
   });
+
+  // An empty target (nothing desired AND no defaults) is a successful native outcome — opening
+  // nothing — not a failure. Misreading it as "native windows unavailable" would exhaust the retries
+  // and return fallback, permanently trapping the session in in-window palettes over an empty set.
+  it("stays native (opening nothing) when there is no toolset to open", async () => {
+    const openToolsetWindow = vi.fn(async (id: string) => state(id, true));
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        desiredVisibleToolsetIds: () => [],
+        defaultVisibleToolsetIds: () => [],
+        openToolsetWindow
+      })
+    );
+
+    expect(result).toEqual({ outcome: "native", openedToolsetIds: [] });
+    expect(openToolsetWindow).not.toHaveBeenCalled();
+  });
 });

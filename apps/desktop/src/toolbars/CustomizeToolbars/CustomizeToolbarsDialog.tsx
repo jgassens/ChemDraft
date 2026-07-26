@@ -139,7 +139,16 @@ function SortableToolsetRow({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: toolset.id });
   const isUser = toolset.id.startsWith(USER_TOOLSET_ID_PREFIX);
-  const commitRename = (event: { currentTarget: HTMLInputElement }) => onRename(event.currentTarget.value);
+  const commitRename = (event: { currentTarget: HTMLInputElement }) => {
+    // Only write when the title actually changed. Committing on every blur — including a mere
+    // focus-through with no edit — would pin a title override onto the toolset, freezing it against
+    // future manifest renames and writing junk to disk (edits apply live). Trimmed compare matches
+    // renameToolset, which clears the override when the field is emptied.
+    if (event.currentTarget.value.trim() === toolset.title) {
+      return;
+    }
+    onRename(event.currentTarget.value);
+  };
 
   return (
     <li
@@ -166,6 +175,10 @@ function SortableToolsetRow({
         onChange={(event) => onToggleVisible(event.currentTarget.checked)}
       />
       <input
+        // Uncontrolled for smooth typing, but keyed on the effective title so an external change —
+        // a committed rename, or Reset reverting to the manifest title — remounts the field with the
+        // new value instead of stranding the stale text the user last typed.
+        key={toolset.title}
         type="text"
         className="customize-toolset-title"
         aria-label={`Rename ${toolset.title}`}
@@ -347,8 +360,29 @@ export function CustomizeToolbarsDialog({
     });
   };
 
+  // Every edit applies live (and persists), so dismissing the dialog must ROLL BACK to the state it
+  // opened with — otherwise the ×, a backdrop click, and Escape would silently behave like Apply. Only
+  // the Apply button commits the draft. This is the single dismiss path for all three affordances.
+  const cancelAndClose = () => {
+    onLiveApply?.(initialLayoutRef.current);
+    onClose();
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelAndClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // cancelAndClose closes over stable refs/props (onLiveApply, onClose); rebinding each render is
+    // harmless and keeps the latest closure without extra deps churn.
+  });
+
   return (
-    <div className="customize-toolbars-backdrop" role="presentation" onClick={onClose}>
+    <div className="customize-toolbars-backdrop" role="presentation" onClick={cancelAndClose}>
       <div
         className="customize-toolbars-dialog"
         role="dialog"
@@ -358,7 +392,7 @@ export function CustomizeToolbarsDialog({
       >
         <header className="customize-toolbars-header">
           <h2>Customize Toolbars</h2>
-          <button type="button" className="customize-toolbars-close" aria-label="Close" onClick={onClose}>
+          <button type="button" className="customize-toolbars-close" aria-label="Close" onClick={cancelAndClose}>
             ×
           </button>
         </header>
@@ -438,15 +472,7 @@ export function CustomizeToolbarsDialog({
               This customization can’t be applied. Cancel to keep your current toolbars.
             </span>
           ) : null}
-          <button
-            type="button"
-            className="customize-toolbars-cancel"
-            onClick={() => {
-              // Edits applied live, so Cancel must roll back to the state the dialog opened with.
-              onLiveApply?.(initialLayoutRef.current);
-              onClose();
-            }}
-          >
+          <button type="button" className="customize-toolbars-cancel" onClick={cancelAndClose}>
             Cancel
           </button>
           <button
