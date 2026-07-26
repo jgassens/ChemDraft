@@ -9,12 +9,15 @@ export interface NativePaletteReconcileDeps {
   listToolsetWindowStates: () => Promise<ToolsetWindowState[]>;
   /** Ask Rust to open (or reveal) one toolset's native floating window. */
   openToolsetWindow: (toolsetId: string) => Promise<ToolsetWindowState>;
+  /** Ask Rust to close one toolset's native floating window (to honor a hidden/emptied desired set). */
+  closeToolsetWindow: (toolsetId: string) => Promise<ToolsetWindowState>;
   /** Is this id a real toolset in the current registry? (stale layout ids are ignored). */
   isKnownToolset: (toolsetId: string) => boolean;
-  /** The toolsets the user wants visible right now (from layout state). */
+  /** The toolsets the user wants visible right now (from layout state). This is the authoritative
+   *  target: an EMPTY set means "hide everything" and is honored as such, not replaced with defaults.
+   *  The caller only runs the reconcile once native mode is active, and native mode is disabled on a
+   *  layout-load failure, so an empty set here is always a real user choice, never a load error. */
   desiredVisibleToolsetIds: () => string[];
-  /** Fallback set of toolsets to show when the user hasn't chosen any. */
-  defaultVisibleToolsetIds: () => string[];
   delay?: (ms: number) => Promise<void>;
   /** Lets an unmounting effect abandon the reconcile without touching React state. */
   isCancelled?: () => boolean;
@@ -31,8 +34,16 @@ export type NativePaletteReconcileResult =
 const defaultDelay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * Opens the toolsets that should be visible as native floating windows, and reports whether the
- * app can stay in native-palette mode or must fall back to in-window web palettes.
+ * Reconcile the open native floating windows toward the toolsets the user wants visible: open the
+ * desired-but-closed, close the open-but-undesired, and report whether the app can stay in
+ * native-palette mode or must fall back to in-window web palettes.
+ *
+ * Convergent, not open-only: the previous version only ever OPENED windows, so a toolset saved as
+ * hidden (but restored open by the OS) stayed open, and "hide everything" was silently replaced with
+ * the default set. It now also CLOSES windows that shouldn't be open — but only for KNOWN toolsets.
+ * An open window for an *unknown* toolset (a plugin that hasn't finished loading this launch, or one
+ * being uninstalled) is left alone: closing it here would fight a plugin that's about to claim its
+ * restored window. The reconcile re-runs whenever the registry changes, so it settles as plugins load.
  *
  * Why retry: `open_toolset_window` reports a window as open via `is_visible()`, which can briefly
  * return false on the frame the window is first created — so a single startup pass can see zero
@@ -47,9 +58,9 @@ export async function reconcileNativePaletteWindows(
   const {
     listToolsetWindowStates,
     openToolsetWindow,
+    closeToolsetWindow,
     isKnownToolset,
     desiredVisibleToolsetIds,
-    defaultVisibleToolsetIds,
     delay = defaultDelay,
     isCancelled = () => false,
     maxAttempts = 3,
@@ -69,22 +80,36 @@ export async function reconcileNativePaletteWindows(
         return { outcome: "cancelled" };
       }
 
-      const opened = new Set(
-        existing.filter((state) => state.open && isKnownToolset(state.toolsetId)).map((state) => state.toolsetId)
-      );
+      // The authoritative target — an empty set legitimately means "hide everything".
+      const desired = new Set(desiredVisibleToolsetIds().filter(isKnownToolset));
 
-      const desired = desiredVisibleToolsetIds().filter(isKnownToolset);
-      const target = desired.length > 0 ? desired : defaultVisibleToolsetIds().filter(isKnownToolset);
+      // Close KNOWN windows that are open but no longer wanted (saved hidden, or hidden-all). Unknown
+      // ids are skipped on purpose (see the note above). A per-window close failure is swallowed so it
+      // can't abort opening the rest.
+      for (const state of existing) {
+        if (state.open && isKnownToolset(state.toolsetId) && !desired.has(state.toolsetId)) {
+          try {
+            await closeToolsetWindow(state.toolsetId);
+          } catch {
+            // Ignore: a stubborn close must not block the reconcile or trip the fallback.
+          }
+          if (isCancelled()) {
+            return { outcome: "cancelled" };
+          }
+        }
+      }
 
-      // An empty target is a SUCCESSFUL native outcome (there is simply nothing to open), not a
-      // native-windows-unavailable failure. Without this, a run where nothing is desired keeps
-      // finding zero open windows, exhausts its retries, and returns "fallback" — permanently
-      // switching the session to in-window palettes over a legitimately empty set.
-      if (target.length === 0) {
+      // Nothing desired → success (honors hide-all); the close pass above already tidied up. No point
+      // retrying when there is nothing to open.
+      if (desired.size === 0) {
         return { outcome: "native", openedToolsetIds: [] };
       }
 
-      for (const toolsetId of target) {
+      const opened = new Set(
+        existing.filter((state) => state.open && desired.has(state.toolsetId)).map((state) => state.toolsetId)
+      );
+
+      for (const toolsetId of desired) {
         if (opened.has(toolsetId)) {
           continue;
         }
@@ -97,6 +122,9 @@ export async function reconcileNativePaletteWindows(
         }
       }
 
+      // Lenient success: as long as SOMETHING opened, stay native. A palette that missed its creating
+      // frame while others opened is reopened by a later reconcile pass — we deliberately don't demand
+      // the full desired set here (that would drop to web palettes over one transient miss).
       if (opened.size > 0) {
         return { outcome: "native", openedToolsetIds: [...opened] };
       }

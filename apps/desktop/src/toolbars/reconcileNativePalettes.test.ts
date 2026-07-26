@@ -10,9 +10,9 @@ function baseDeps(overrides: Partial<NativePaletteReconcileDeps> = {}): NativePa
   return {
     listToolsetWindowStates: async () => [],
     openToolsetWindow: async (toolsetId) => state(toolsetId, true),
+    closeToolsetWindow: async (toolsetId) => state(toolsetId, false),
     isKnownToolset: () => true,
     desiredVisibleToolsetIds: () => ["core.main"],
-    defaultVisibleToolsetIds: () => ["core.main"],
     delay: async () => undefined, // no real timers in tests
     maxAttempts: 3,
     retryDelayMs: 0,
@@ -103,20 +103,67 @@ describe("reconcileNativePaletteWindows", () => {
     expect(result).toEqual({ outcome: "cancelled" });
   });
 
-  // An empty target (nothing desired AND no defaults) is a successful native outcome — opening
-  // nothing — not a failure. Misreading it as "native windows unavailable" would exhaust the retries
-  // and return fallback, permanently trapping the session in in-window palettes over an empty set.
-  it("stays native (opening nothing) when there is no toolset to open", async () => {
+  // An empty desired set means "hide everything" — a successful native outcome (opening nothing), not
+  // a failure. It is honored exactly, never replaced with a default set. Misreading it as "native
+  // windows unavailable" would exhaust the retries and trap the session in in-window palettes.
+  it("stays native (opening nothing) when nothing is desired", async () => {
     const openToolsetWindow = vi.fn(async (id: string) => state(id, true));
     const result = await reconcileNativePaletteWindows(
-      baseDeps({
-        desiredVisibleToolsetIds: () => [],
-        defaultVisibleToolsetIds: () => [],
-        openToolsetWindow
-      })
+      baseDeps({ desiredVisibleToolsetIds: () => [], openToolsetWindow })
     );
 
     expect(result).toEqual({ outcome: "native", openedToolsetIds: [] });
     expect(openToolsetWindow).not.toHaveBeenCalled();
+  });
+
+  // Convergence: a toolset saved as hidden but restored open by the OS must be CLOSED, not left open.
+  it("closes a known window that is open but not desired", async () => {
+    const closeToolsetWindow = vi.fn(async (id: string) => state(id, false));
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        listToolsetWindowStates: async () => [state("core.main", true), state("core.art", true)],
+        desiredVisibleToolsetIds: () => ["core.main"],
+        closeToolsetWindow
+      })
+    );
+
+    expect(closeToolsetWindow).toHaveBeenCalledTimes(1);
+    expect(closeToolsetWindow).toHaveBeenCalledWith("core.art");
+    expect(result).toEqual({ outcome: "native", openedToolsetIds: ["core.main"] });
+  });
+
+  // "Hide all": every open known window is closed and the outcome is still native (not fallback).
+  it("closes every open window and stays native when the user hid everything", async () => {
+    const closeToolsetWindow = vi.fn(async (id: string) => state(id, false));
+    const openToolsetWindow = vi.fn(async (id: string) => state(id, true));
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        listToolsetWindowStates: async () => [state("core.main", true), state("core.art", true)],
+        desiredVisibleToolsetIds: () => [],
+        closeToolsetWindow,
+        openToolsetWindow
+      })
+    );
+
+    expect(closeToolsetWindow.mock.calls.map((call) => call[0]).sort()).toEqual(["core.art", "core.main"]);
+    expect(openToolsetWindow).not.toHaveBeenCalled();
+    expect(result).toEqual({ outcome: "native", openedToolsetIds: [] });
+  });
+
+  // An open window for an UNKNOWN toolset (a plugin mid-load, or one being uninstalled) is left alone
+  // — closing it here would fight a plugin about to claim its OS-restored window.
+  it("leaves an unknown/orphan open window alone", async () => {
+    const closeToolsetWindow = vi.fn(async (id: string) => state(id, false));
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        listToolsetWindowStates: async () => [state("core.main", true), state("plugin.pending", true)],
+        isKnownToolset: (id) => id !== "plugin.pending",
+        desiredVisibleToolsetIds: () => ["core.main"],
+        closeToolsetWindow
+      })
+    );
+
+    expect(closeToolsetWindow).not.toHaveBeenCalled();
+    expect(result).toEqual({ outcome: "native", openedToolsetIds: ["core.main"] });
   });
 });

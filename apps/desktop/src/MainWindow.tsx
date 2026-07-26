@@ -8306,9 +8306,9 @@ export function MainWindow({
     void reconcileNativePaletteWindows({
       listToolsetWindowStates,
       openToolsetWindow: (toolsetId) => openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId)),
+      closeToolsetWindow,
       isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
       desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
-      defaultVisibleToolsetIds: () => [...createDefaultVisibleToolsetIds(toolsetRegistry)],
       isCancelled: () => cancelled
     }).then((result) => {
       if (cancelled || result.outcome === "cancelled") {
