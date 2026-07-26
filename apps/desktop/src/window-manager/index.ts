@@ -1,4 +1,5 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
@@ -21,6 +22,8 @@ export const TOOLSET_LAYOUT_STATE_REQUEST_EVENT = "chemdraft://toolset-layout-st
 export const TOOLSET_LAYOUT_EDIT_EVENT = "chemdraft://toolset-layout-edit";
 export const TOOLSET_COMMAND_SPECS_EVENT = "chemdraft://toolset-command-specs";
 export const TOOLSET_COMMAND_SPECS_REQUEST_EVENT = "chemdraft://toolset-command-specs-request";
+export const TOOLSET_DEFINITIONS_EVENT = "chemdraft://toolset-definitions";
+export const TOOLSET_DEFINITIONS_REQUEST_EVENT = "chemdraft://toolset-definitions-request";
 export const TOOLSET_CUSTOMIZE_MODE_EVENT = "chemdraft://toolset-customize-mode";
 export const TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT = "chemdraft://toolset-customize-mode-request";
 export const PALETTE_TOOLTIP_SHOW_EVENT = "chemdraft://palette-tooltip-show";
@@ -62,6 +65,12 @@ export interface ToolsetTextStylePayload {
 
 export interface ToolsetCommandSpecsPayload {
   commands: CommandSpec[];
+}
+
+export interface ToolsetDefinitionsPayload {
+  /** Plugin toolset DEFINITIONS (structure: groups/items/title). Core toolsets are static in every
+   *  palette webview; only runtime plugin contributions need to travel over this channel. */
+  toolsets: ToolsetDefinition[];
 }
 
 /** Stable semantic fingerprint for command snapshots. Array order is intentionally significant
@@ -784,6 +793,73 @@ export async function listenForToolsetCommandSpecsRequests(handler: () => void):
   }
   const { listen } = await import("@tauri-apps/api/event");
   return listen(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
+}
+
+// A native palette webview only ships with the CORE toolset manifest. Plugin toolsets are contributed
+// at runtime in the main window, so their DEFINITIONS (not just command metadata) must be published to
+// the palette webviews — otherwise a window opened for a plugin toolset can't find it and renders the
+// wrong toolbar. Mirrors the command-specs channel: broadcast on change, and answer a late palette's
+// request. Browser/tests use the DOM bus; desktop uses the Tauri event bus.
+function isToolsetDefinitionsPayload(value: unknown): value is ToolsetDefinitionsPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as ToolsetDefinitionsPayload).toolsets) &&
+    (value as ToolsetDefinitionsPayload).toolsets.every((toolset) =>
+      typeof toolset === "object" &&
+      toolset !== null &&
+      typeof (toolset as ToolsetDefinition).id === "string" &&
+      typeof (toolset as ToolsetDefinition).title === "string" &&
+      Array.isArray((toolset as ToolsetDefinition).groups)
+    )
+  );
+}
+
+/** Main → palettes: publish the current plugin toolset definitions. */
+export async function broadcastToolsetDefinitions(toolsets: readonly ToolsetDefinition[]): Promise<void> {
+  const payload: ToolsetDefinitionsPayload = { toolsets: [...toolsets] };
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, payload);
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, payload);
+}
+
+export async function listenForToolsetDefinitions(
+  handler: (toolsets: ToolsetDefinition[]) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return listenForDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, (event) => {
+      if (isToolsetDefinitionsPayload(event.detail)) {
+        handler(event.detail.toolsets);
+      }
+    });
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, (event) => {
+    if (isToolsetDefinitionsPayload(event.payload)) {
+      handler(event.payload.toolsets);
+    }
+  });
+}
+
+/** A detached palette asks the main window for the current plugin toolset definitions after subscribing. */
+export async function requestToolsetDefinitions(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, {});
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_DEFINITIONS_REQUEST_EVENT);
+}
+
+export async function listenForToolsetDefinitionsRequests(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return listenForDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
 }
 
 // ————————————————————————————————————————————————————————————————————————————————————————————————

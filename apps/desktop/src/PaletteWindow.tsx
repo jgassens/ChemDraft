@@ -22,6 +22,7 @@ import {
   getToolsetCommandSpecs,
   getToolsetPaletteGroups,
   paletteCommandGroupsFromItemGroups,
+  type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
@@ -39,12 +40,14 @@ import {
   listenForToolsetActiveTool,
   listenForToolsetCommandSpecs,
   listenForToolsetCustomizeMode,
+  listenForToolsetDefinitions,
   listenForToolsetLayoutState,
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
   requestToolsetCustomizeMode,
   requestToolsetCommandSpecs,
+  requestToolsetDefinitions,
   requestToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
@@ -82,12 +85,30 @@ type PaletteWindowDrag = {
  *  waiting for its next layout/spec broadcast. */
 export function createPaletteRegistryFromLayoutState(
   layoutState: unknown,
-  commandSpecs: readonly CommandSpec[]
+  commandSpecs: readonly CommandSpec[],
+  pluginToolsets: readonly DesktopToolsetDefinition[] = []
 ): DesktopToolsetRegistry {
   return createDesktopToolsetRegistry(
     layoutState,
-    new Set([...SHELL_COMMAND_IDS, ...commandSpecs.map((command) => command.id)])
+    new Set([...SHELL_COMMAND_IDS, ...commandSpecs.map((command) => command.id)]),
+    pluginToolsets
   );
+}
+
+/** A neutral, empty stand-in for a toolset whose definition hasn't reached this webview yet (a plugin
+ *  or user toolbar window before its definitions broadcast lands, or an orphaned window for a toolset
+ *  that no longer exists). It carries the window's real id so the title bar, close button, and popover
+ *  routing all target the correct window — the point is precisely NOT to masquerade as core.main. The
+ *  OS-level window title (set by Rust at open time) still shows the real toolbar name meanwhile. */
+function pendingPlaceholderToolset(toolsetId: string): DesktopToolsetDefinition {
+  return {
+    id: toolsetId,
+    title: "",
+    source: "plugin",
+    defaultVisible: true,
+    defaultMode: "floating",
+    groups: [{ id: `${toolsetId}.pending`, items: [] }]
+  };
 }
 
 export function PaletteWindow({
@@ -114,6 +135,10 @@ export function PaletteWindow({
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
   const latestLayoutStateRef = useRef<unknown>(undefined);
+  // Plugin toolset definitions arrive over IPC (they aren't in the static manifest this webview ships
+  // with). Held in a ref so every registry rebuild — layout, command-spec, or definitions — folds in
+  // the latest set from one source.
+  const pluginToolsetsRef = useRef<readonly DesktopToolsetDefinition[]>([]);
   commandSpecsRef.current = commandSpecs;
   const [activeTool, setActiveTool] = useState("tool.select");
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
@@ -122,15 +147,25 @@ export function PaletteWindow({
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
-  const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
+  // A window opened for a plugin/user toolset starts with the core-only registry (its definition
+  // arrives over the definitions IPC channel a beat later). While it's unknown, render an empty
+  // placeholder carrying THIS window's real id — never fall back to core.main, which would render the
+  // Main toolbar under the plugin's title AND make its close button target the real Main window.
+  const knownToolset = toolsetRegistry.get(toolsetId);
+  const toolset = useMemo(
+    () => knownToolset ?? pendingPlaceholderToolset(toolsetId),
+    [knownToolset, toolsetId]
+  );
   const commandOverrides = useMemo(
     () => new Map(commandSpecs.map((command) => [command.id, command] as const)),
     [commandSpecs]
   );
-  // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them.
+  // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them. An
+  // as-yet-unknown toolset (placeholder) isn't in the registry, so render no groups until its
+  // definition lands rather than throwing on registry.require().
   const paletteGroups = useMemo(
-    () => getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides),
-    [commandOverrides, toolset.id, toolsetRegistry]
+    () => (knownToolset ? getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides) : []),
+    [knownToolset, commandOverrides, toolset.id, toolsetRegistry]
   );
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
@@ -185,7 +220,11 @@ export function PaletteWindow({
     void loadToolsetLayoutState()
       .then((layoutState) => {
         if (active && layoutState !== undefined) {
-          const nextRegistry = createPaletteRegistryFromLayoutState(layoutState, commandSpecsRef.current);
+          const nextRegistry = createPaletteRegistryFromLayoutState(
+            layoutState,
+            commandSpecsRef.current,
+            pluginToolsetsRef.current
+          );
           latestLayoutStateRef.current = layoutState;
           setToolsetRegistry(nextRegistry);
         }
@@ -209,7 +248,11 @@ export function PaletteWindow({
         return;
       }
       try {
-        const nextRegistry = createPaletteRegistryFromLayoutState(layoutState, commandSpecsRef.current);
+        const nextRegistry = createPaletteRegistryFromLayoutState(
+          layoutState,
+          commandSpecsRef.current,
+          pluginToolsetsRef.current
+        );
         latestLayoutStateRef.current = layoutState;
         setToolsetRegistry(nextRegistry);
       } catch {
@@ -247,7 +290,9 @@ export function PaletteWindow({
         setCommandSpecs(commands);
         if (latestLayoutStateRef.current !== undefined) {
           try {
-            setToolsetRegistry(createPaletteRegistryFromLayoutState(latestLayoutStateRef.current, commands));
+            setToolsetRegistry(
+              createPaletteRegistryFromLayoutState(latestLayoutStateRef.current, commands, pluginToolsetsRef.current)
+            );
           } catch {
             // Retain the last good registry if a future schema/version makes rehydration fail.
           }
@@ -261,6 +306,49 @@ export function PaletteWindow({
         }
         unlisten = cleanup;
         void requestToolsetCommandSpecs().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Learn plugin toolset DEFINITIONS from the main window — this webview ships only the core manifest,
+  // so without them a window opened for a plugin toolset can never resolve it (and would render the
+  // placeholder forever). Fold the latest definitions into the registry, and request the current set
+  // once subscribed since they may have been published before this window finished mounting. Rebuild
+  // unconditionally (unlike the command-spec path): a plugin window with no layout customization still
+  // needs its definition to render. In production the registry derives purely from the layout/command/
+  // plugin refs, so folding them in is complete; the test-only `initialRegistry` seam never broadcasts
+  // definitions, so it can't be clobbered here.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetDefinitions((toolsets) => {
+      if (!active) {
+        return;
+      }
+      pluginToolsetsRef.current = toolsets as DesktopToolsetDefinition[];
+      try {
+        setToolsetRegistry(
+          createPaletteRegistryFromLayoutState(
+            latestLayoutStateRef.current,
+            commandSpecsRef.current,
+            pluginToolsetsRef.current
+          )
+        );
+      } catch {
+        // Keep the last good registry if a malformed definition slips past the shape check.
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+        void requestToolsetDefinitions().catch(() => undefined);
       })
       .catch(() => undefined);
     return () => {

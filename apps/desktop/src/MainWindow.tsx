@@ -503,6 +503,7 @@ import {
   broadcastToolsetActiveTool,
   broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
+  broadcastToolsetDefinitions,
   broadcastToolsetLayoutState,
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
@@ -516,6 +517,7 @@ import {
   listenForToolsetActiveToolRequests,
   listenForToolsetCommandSpecsRequests,
   listenForToolsetCustomizeModeRequests,
+  listenForToolsetDefinitionsRequests,
   listenForToolsetLayoutEdits,
   listenForToolsetLayoutStateRequests,
   listenForToolsetTextStyleRequests,
@@ -549,6 +551,7 @@ import {
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
   migrateLegacyMainToolbarLayoutState,
+  type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
@@ -1602,6 +1605,9 @@ export function MainWindow({
     applyRegistry();
     return toolbarCatalog.onDidChange(applyRegistry);
   }, [toolbarCatalog]);
+  // Latest plugin toolset definitions, cached so a late-joining palette window's request can be
+  // answered (mirrors shellCommandSpecsRef for the command-spec channel).
+  const pluginToolsetsRef = useRef<readonly DesktopToolsetDefinition[]>([]);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
@@ -7186,10 +7192,18 @@ export function MainWindow({
     : false;
 
   // Keep the catalog's plugin toolsets in sync with the runtime, and register the dev-only
-  // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development.
+  // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development. Also
+  // publish the definitions to the detached palette webviews (they only ship the core manifest, so
+  // this is how a plugin toolset window learns what to render) and cache them for the request
+  // responder below.
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
-    const syncPluginToolsets = () => toolbarCatalog.setPluginToolsets(runtime.listPluginToolsets());
+    const syncPluginToolsets = () => {
+      const pluginToolsets = runtime.listPluginToolsets();
+      pluginToolsetsRef.current = pluginToolsets;
+      toolbarCatalog.setPluginToolsets(pluginToolsets);
+      void broadcastToolsetDefinitions(pluginToolsets).catch(() => undefined);
+    };
     const unsubscribe = runtime.onDidChange(syncPluginToolsets);
     if (import.meta.env.DEV) {
       try {
@@ -8342,6 +8356,7 @@ export function MainWindow({
     let unlistenState: (() => void) | undefined;
     let unlistenActiveToolRequest: (() => void) | undefined;
     let unlistenCommandSpecsRequest: (() => void) | undefined;
+    let unlistenDefinitionsRequest: (() => void) | undefined;
     let unlistenTextStyleRequest: (() => void) | undefined;
     let unlistenPreview: (() => void) | undefined;
     let unlistenCommit: (() => void) | undefined;
@@ -8392,6 +8407,17 @@ export function MainWindow({
           return;
         }
         unlistenCommandSpecsRequest = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForToolsetDefinitionsRequests(() => {
+      void broadcastToolsetDefinitions(pluginToolsetsRef.current).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenDefinitionsRequest = cleanup;
       })
       .catch(() => undefined);
     void listenForToolsetTextStyleRequests(() => {
@@ -8445,6 +8471,7 @@ export function MainWindow({
       unlistenState?.();
       unlistenActiveToolRequest?.();
       unlistenCommandSpecsRequest?.();
+      unlistenDefinitionsRequest?.();
       unlistenTextStyleRequest?.();
       unlistenPreview?.();
       unlistenCommit?.();

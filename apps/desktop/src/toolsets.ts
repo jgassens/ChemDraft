@@ -66,14 +66,20 @@ export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopTo
 
 export function createDesktopToolsetRegistry(
   layoutState?: unknown,
-  additionalCommandIds?: ReadonlySet<string>
+  additionalCommandIds?: ReadonlySet<string>,
+  // Plugin toolsets are contributed at runtime and are NOT baked into the static manifest. A detached
+  // palette webview learns about them over the definitions IPC channel and passes them here so its
+  // registry can resolve a plugin toolset window (instead of falling back to the Main toolbar). Empty
+  // for the core-only case and every existing caller.
+  pluginToolsets: readonly DesktopToolsetDefinition[] = []
 ): DesktopToolsetRegistry {
+  const base = pluginToolsets.length > 0 ? [...desktopToolsets, ...pluginToolsets] : desktopToolsets;
   const toolsets = layoutState === undefined || layoutState === null
-    ? desktopToolsets
+    ? base
     // Prune (not throw) so persisted customization referencing a since-removed command degrades
     // gracefully instead of discarding the whole layout; `additionalCommandIds` lets in-place-added
     // shell commands (e.g. edit.undo) count as valid targets so they aren't pruned as "unknown".
-    : applyToolsetLayoutState<IconName, ToolbarAssetName>(desktopToolsets, migrateLegacyMainToolbarLayoutState(layoutState), {
+    : applyToolsetLayoutState<IconName, ToolbarAssetName>(base, migrateLegacyMainToolbarLayoutState(layoutState), {
         additionalCommandIds,
         onUnknownCommand: "prune"
       });
