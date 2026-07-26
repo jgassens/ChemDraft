@@ -91,3 +91,23 @@ shipped bytes.
   postinstall, run `npm approve-scripts esbuild` first.
 - `npm install` pulls `openchemlib/zod/vite/tsx/typescript/vitest` from the public registry; the SDK is
   fully offline via `vendor/`.
+
+---
+
+## Addendum (2026-07-25) — the graft source moved, but nothing was lost
+
+The `codex/nmr-plugin` branch named above no longer exists: every branch except `main` was deleted
+from `origin` on 2026-07-25. The recovery step 2 as written cannot be run.
+
+The history itself is intact. `125aebeb` — the branch tip, and the root of the 335-commit NMR
+lineage — is an **ancestor of `origin/main`**, carried in through the union merge `1232a444`
+(ADR-0030). Because it is reachable from a live ref it is not garbage-collectable, so the subtree
+split is still available; take it from `main`'s ancestry and name the commit rather than the branch:
+
+```bash
+git subtree split --prefix=examples/plugins/nmr-predictor 125aebeb -b nmr-plugin-standalone
+```
+
+Verified 2026-07-25: `git merge-base --is-ancestor 125aebeb origin/main` succeeds.
+
+The body of this report is left as written — it is a dated record of what was true on 2026-07-17.

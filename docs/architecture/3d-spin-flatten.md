@@ -1,6 +1,6 @@
 # Roadmap: 3D Spin → Flatten Perspective Tool
 
-**Status:** Phases 1A, 1B, 1C, 2, 3, 4, 5.0, 5, and 6 complete on `feature/3d-spin`;
+**Status:** Phases 1A, 1B, 1C, 2, 3, 4, 5.0, 5, and 6 complete, on `main`;
 all green (`tsc` clean, 628 tests). The full feature works end-to-end and is
 browser-verified: draw → Spin 3D → lazy OCL conformer → drag-rotate overlay →
 release flattens the perspective into the document (one undo step) → Cmd+Z reverts.
