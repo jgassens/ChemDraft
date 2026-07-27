@@ -149,8 +149,8 @@ const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
 ));
 const TOOLTIP_DELAY_MS = 500;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
-const DISTRIBUTE_MENU_HOLD_MS = 420;
-const COMMAND_FLYOUT_HOLD_MS = 420;
+const DISTRIBUTE_MENU_HOLD_MS = 150;
+const COMMAND_FLYOUT_HOLD_MS = 150;
 
 const ART_SHAPE_COMMAND_IDS = [
   "tool.art.rect",
