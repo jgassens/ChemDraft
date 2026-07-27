@@ -261,6 +261,8 @@ export type NativeArtToolId =
   | "pencil"
   | "brush"
   | "arrow"
+  | "reactionArrow"
+  | "resonanceArrow"
   | "arc270"
   | "arc270Dashed"
   | "arc180"
@@ -383,6 +385,18 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   }, { strokeColor: "#111111", fillColor: "none" }),
   artShapeTool("arrow", "Arrow", "path", 82, 46, {
     artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Reaction/resonance arrows are drawn with the full art-arrow mechanics (draggable ends, arc,
+  // arrowhead size) but carry their chemical identity in `artToolId`, which the CDXML layer reads to
+  // emit/parse them as reaction arrows (single-headed reaction = forward; double-headed resonance).
+  artShapeTool("reactionArrow", "Reaction Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("resonanceArrow", "Resonance Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerStart: { kind: "filled-arrow", sizePx: 10 },
     markerEnd: { kind: "filled-arrow", sizePx: 10 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   artArcTool("arc270", "Three-quarter Arc", 270, false),

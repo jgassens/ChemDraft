@@ -549,6 +549,8 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.brush", "Brush", "style", usageHint("drag to paint", "keep dragging to continue", "release ends, Esc cancels")],
     ["tool.art.eyedropper", "Eyedropper", "style", usageHint("click source art", "⌥ copies full appearance", "Esc exits")],
     ["tool.art.arrow", "Arrow", "export", artPathUsageHint],
+    ["tool.art.reactionArrow", "Reaction Arrow", "export", artPathUsageHint],
+    ["tool.art.resonanceArrow", "Resonance Arrow", "export", artPathUsageHint],
     ["tool.art.arc270", "Three-quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc180", "Half Arc", "export", artPathUsageHint],

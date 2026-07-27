@@ -1913,8 +1913,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.settings",
       "style.color",
       "tool.art.rect",
-      "tool.reactionArrow",
-      "tool.resonanceArrow",
+      "tool.art.reactionArrow",
+      "tool.art.resonanceArrow",
       "tool.equilibriumArrow",
       "tool.retroArrow",
       "tool.lobe",
@@ -4942,11 +4942,10 @@ describe("ChemDraft desktop shell", () => {
       .map((object) => object.bonds.length)
     ).toEqual([4, 1, 1]);
     expect(markup).toContain("DIPEA, DMSO");
-    expect(markup).toContain("reaction-arrow-object");
-    // This third-party fixture writes ArrowType="FullHead". It used to degrade to "unknown"
-    // because the reader only accepted ChemDraft's own lowercase spellings.
-    expect(markup).toContain('data-arrow-kind="forward"');
-    expect(markup).toContain("reaction-arrow-line");
+    // This third-party fixture writes ArrowType="FullHead". It now imports as an editable art arrow
+    // (a graphic with a filled end marker) rather than the legacy reaction-arrow object, so it renders
+    // with the graphic arrowhead marker. Its chemical identity is preserved for CDXML re-export.
+    expect(markup).toContain("graphic-marker-end-");
     expect(markup).toContain("graphic-object");
     expect(markup).toContain('data-graphic-kind="unknown"');
     expect(markup).toContain("generic-object");

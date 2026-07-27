@@ -670,10 +670,42 @@ function exportGraphicObject(
 ): string {
   const graphicId = idFor(ids, graphic.id, allocator);
   warnForGraphicCdxmlLimitations(graphic, warnings);
+  if (isSemanticReactionArrowGraphic(graphic)) {
+    return exportSemanticReactionArrowGraphic(graphic, graphicId);
+  }
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
   }
   return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
+}
+
+/** The chemical arrow kind an art arrow stands in for, or undefined for a plain (decorative) art
+ *  arrow. Reaction/resonance arrows are drawn with the art-arrow tools for their rich editing but
+ *  carry their chemistry in `artToolId`, which is how the CDXML layer knows to write/read them as
+ *  reaction arrows rather than generic graphics. */
+function semanticReactionArrowKind(graphic: GraphicObject): "forward" | "resonance" | undefined {
+  if (graphic.data.artToolId === "reactionArrow") {
+    return "forward";
+  }
+  if (graphic.data.artToolId === "resonanceArrow") {
+    return "resonance";
+  }
+  return undefined;
+}
+
+function isSemanticReactionArrowGraphic(graphic: GraphicObject): boolean {
+  return semanticReactionArrowKind(graphic) !== undefined;
+}
+
+/** Export a reaction/resonance-tagged art arrow as the standard CDXML reaction arrow
+ *  (`<graphic GraphicType="Line" ArrowType=…>`) so other programs read it as a reaction arrow. The
+ *  exact art geometry (arc, arrowhead size, style) still round-trips within ChemDraft via the
+ *  embedded native payload; this is purely the interop representation. */
+function exportSemanticReactionArrowGraphic(graphic: GraphicObject, graphicId: string): string {
+  const line = graphicLineEndpointsForCdxml(graphic);
+  const arrowKind = semanticReactionArrowKind(graphic) ?? "forward";
+  const arrowType = cdxmlArrowTypeByKind[arrowKind];
+  return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(arrowType)}" BoundingBox="${formatLineBoundingBox(line.start, line.end)}" Start="${formatPoint(line.start)}" End="${formatPoint(line.end)}"/>`;
 }
 
 function warnForGraphicCdxmlLimitations(
@@ -1887,6 +1919,13 @@ function importGraphic(
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
+    const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType);
+    // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
+    // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
+    // and unknown stay the legacy `reaction-arrow` object until they're migrated in a later pass.
+    if (arrowKind === "forward" || arrowKind === "resonance") {
+      return importReactionArrowAsArtArrow(element, pageIndex, objectIndex, context, arrowKind);
+    }
     const start = parseCdxmlPoint(element.attributes.Start) ?? { x: box.x, y: box.y };
     const end = parseCdxmlPoint(element.attributes.End) ?? { x: box.x + box.width, y: box.y + box.height };
     return {
@@ -1898,7 +1937,7 @@ function importGraphic(
       height: box.height,
       rotation: 0,
       style: {},
-      arrowKind: arrowKindFromCdxml(element.attributes.ArrowType),
+      arrowKind,
       start: { kind: "point", point: start },
       end: { kind: "point", point: end },
       labels: [],
@@ -1912,6 +1951,32 @@ function importGraphic(
   }
 
   return importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
+}
+
+/** Import a CDXML reaction/resonance arrow as an editable art-arrow graphic (the reverse of
+ *  {@link exportSemanticReactionArrowGraphic}). Reuses the line-graphic importer for correct
+ *  geometry/style, then tags it: single filled head for a reaction (forward) arrow, heads at both
+ *  ends for a resonance arrow, plus the `artToolId` that round-trips its chemical identity. */
+function importReactionArrowAsArtArrow(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext,
+  arrowKind: "forward" | "resonance"
+): GraphicObject {
+  const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
+  const marker = { kind: "filled-arrow" as const, sizePx: 10 };
+  return {
+    ...graphic,
+    graphicKind: "path",
+    data: {
+      ...graphic.data,
+      artPathKind: "line",
+      markerEnd: marker,
+      ...(arrowKind === "resonance" ? { markerStart: marker } : {}),
+      artToolId: arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow"
+    }
+  };
 }
 
 function importArrowGraphic(

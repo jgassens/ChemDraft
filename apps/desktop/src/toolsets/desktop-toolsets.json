@@ -481,17 +481,17 @@
               }
             },
             {
-              "commandId": "tool.reactionArrow",
+              "commandId": "tool.art.reactionArrow",
               "title": "Reaction Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow",
               "category": "arrows",
-              "id": "tool.reactionArrow",
+              "id": "tool.art.reactionArrow",
               "kind": "button",
               "label": "Reaction Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.reactionArrow"
+                "commandId": "tool.art.reactionArrow"
               },
               "submenu": {
                 "type": "command-grid",
@@ -499,13 +499,13 @@
                 "columns": 3,
                 "items": [
                   {
-                    "commandId": "tool.reactionArrow",
+                    "commandId": "tool.art.reactionArrow",
                     "label": "Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow"
                   },
                   {
-                    "commandId": "tool.resonanceArrow",
+                    "commandId": "tool.art.resonanceArrow",
                     "label": "Resonance Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Resonance"
@@ -536,17 +536,17 @@
               }
             },
             {
-              "commandId": "tool.resonanceArrow",
+              "commandId": "tool.art.resonanceArrow",
               "title": "Resonance Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Resonance",
               "category": "arrows",
-              "id": "tool.resonanceArrow",
+              "id": "tool.art.resonanceArrow",
               "kind": "button",
               "label": "Resonance Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.resonanceArrow"
+                "commandId": "tool.art.resonanceArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -2221,17 +2221,17 @@
           "id": "core.arrows.tools",
           "items": [
             {
-              "commandId": "tool.reactionArrow",
+              "commandId": "tool.art.reactionArrow",
               "title": "Reaction Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow",
               "category": "arrows",
-              "id": "tool.reactionArrow",
+              "id": "tool.art.reactionArrow",
               "kind": "button",
               "label": "Reaction Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.reactionArrow"
+                "commandId": "tool.art.reactionArrow"
               },
               "submenu": {
                 "type": "command-grid",
@@ -2239,13 +2239,13 @@
                 "columns": 3,
                 "items": [
                   {
-                    "commandId": "tool.reactionArrow",
+                    "commandId": "tool.art.reactionArrow",
                     "label": "Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow"
                   },
                   {
-                    "commandId": "tool.resonanceArrow",
+                    "commandId": "tool.art.resonanceArrow",
                     "label": "Resonance Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Resonance"
@@ -2276,17 +2276,17 @@
               }
             },
             {
-              "commandId": "tool.resonanceArrow",
+              "commandId": "tool.art.resonanceArrow",
               "title": "Resonance Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Resonance",
               "category": "arrows",
-              "id": "tool.resonanceArrow",
+              "id": "tool.art.resonanceArrow",
               "kind": "button",
               "label": "Resonance Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.resonanceArrow"
+                "commandId": "tool.art.resonanceArrow"
               },
               "submenu": null,
               "tooltip": {

@@ -433,7 +433,7 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
     });
     const [items] = getToolsetItemGroups("core.main", registry);
     const ids = items.map((item) => item.id);
-    expect(ids.indexOf("user.spacer.9")).toBe(ids.indexOf("tool.reactionArrow") + 1);
-    expect(ids.indexOf("user.spacer.9")).toBeLessThan(ids.indexOf("tool.resonanceArrow"));
+    expect(ids.indexOf("user.spacer.9")).toBe(ids.indexOf("tool.art.reactionArrow") + 1);
+    expect(ids.indexOf("user.spacer.9")).toBeLessThan(ids.indexOf("tool.art.resonanceArrow"));
   });
 });

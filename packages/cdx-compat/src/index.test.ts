@@ -901,7 +901,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(opened.document?.pages[0].objects.map((object) => object.type)).toEqual([
       "text",
-      "reaction-arrow",
+      "graphic",
       "molecule",
       "molecule",
       "molecule",
@@ -909,7 +909,8 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       "unknown-compatibility-object"
     ]);
     expect((opened.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("DIPEA, DMSO");
-    expect((opened.document?.pages[0].objects[1] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
+    // The FullHead reaction arrow imports as an editable art arrow tagged with its chemical identity.
+    expect((opened.document?.pages[0].objects[1] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
   });
@@ -965,7 +966,8 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
     expect((textPlusMolecule.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("  reagent & label  ");
     expect((textPlusMolecule.document?.pages[0].objects[1] as TextObject | undefined)?.text).toBe("+");
-    expect((reactionArrow.document?.pages[0].objects[0] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
+    // A reaction (FullHead) arrow imports as an editable art arrow carrying its chemical identity.
+    expect((reactionArrow.document?.pages[0].objects[0] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
   });
 
   it("warns when brackets and curved art degrade on the way to CDXML", () => {
@@ -1048,12 +1050,21 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // Foreign CDXML — the spellings another program writes. `bactvue-visible-subset` is a real
     // third-party fixture already carrying ArrowType="FullHead"; substituting into it keeps the
     // reader on genuinely foreign input rather than on our own output.
+    // The imported semantic arrow kind, regardless of representation: reaction/resonance arrive as
+    // tagged art arrows (graphic + artToolId), equilibrium/retro/unknown as legacy reaction-arrow objects.
     const foreign = (arrowType: string) => {
       const cdxml = cdxmlFixture("bactvue-visible-subset.cdxml")
         .replace('ArrowType="FullHead"', `ArrowType="${arrowType}"`);
-      return openChemDraftPayload(cdxml).document?.pages[0].objects.find(
-        (object): object is ArrowObject => object.type === "reaction-arrow"
-      )?.arrowKind;
+      const objects = openChemDraftPayload(cdxml).document?.pages[0].objects ?? [];
+      const artArrow = objects.find(
+        (object): object is GraphicObject =>
+          object.type === "graphic" &&
+          (object.data.artToolId === "reactionArrow" || object.data.artToolId === "resonanceArrow")
+      );
+      if (artArrow) {
+        return artArrow.data.artToolId === "resonanceArrow" ? "resonance" : "forward";
+      }
+      return objects.find((object): object is ArrowObject => object.type === "reaction-arrow")?.arrowKind;
     };
 
     expect(foreign("FullHead")).toBe("forward");
@@ -1073,6 +1084,44 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(degraded.contents).toContain('GraphicType="Line"');
     expect(degraded.contents).not.toContain("ArrowType=");
     expect(degraded.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_type_unknown");
+  });
+
+  it("exports reaction/resonance art arrows as standard CDXML reaction arrows (interop half of the round trip)", () => {
+    const marker = { kind: "filled-arrow" as const, sizePx: 10 };
+    const artArrow = (artToolId: "reactionArrow" | "resonanceArrow", double: boolean): GraphicObject => ({
+      id: `art_${artToolId}`,
+      type: "graphic",
+      x: 100,
+      y: 158,
+      width: 120,
+      height: 4,
+      rotation: 0,
+      style: { strokeColor: "#111111", fillColor: "none", strokeWidth: 2, strokeLineCap: "butt" },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        lineStart: { x: 100, y: 160 },
+        lineEnd: { x: 220, y: 160 },
+        markerEnd: marker,
+        ...(double ? { markerStart: marker } : {}),
+        artToolId
+      }
+    });
+
+    // A reaction/resonance art arrow (rich editable object) emits the STANDARD reaction-arrow CDXML so
+    // other programs read it as a reaction arrow — not as a generic <graphic>/<arrow>.
+    const reactionCdxml = exportDocumentToCdxml(
+      documentWithObjects([artArrow("reactionArrow", false)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(reactionCdxml).toContain('GraphicType="Line"');
+    expect(reactionCdxml).toContain('ArrowType="FullHead"');
+
+    const resonanceCdxml = exportDocumentToCdxml(
+      documentWithObjects([artArrow("resonanceArrow", true)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(resonanceCdxml).toContain('ArrowType="Resonance"');
   });
 
   it("round-trips a resonance reaction arrow through CDXML", () => {
