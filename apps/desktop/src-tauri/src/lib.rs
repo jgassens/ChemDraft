@@ -701,12 +701,43 @@ fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindow
         .collect()
 }
 
+/// Read a file, distinguishing "not there yet" (`Ok(None)`) from a genuine read failure (`Err`).
+/// Swallowing every error as "absent" is a data-loss trap: a transient or permission read miss then
+/// looks like "no saved state", and the caller's next save overwrites the real file with defaults.
+fn read_optional_file(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Write `contents` to `path` atomically. A plain `fs::write` truncates then rewrites, so a crash or
+/// power loss mid-write can leave a partial, unparseable file. Instead write a complete sibling temp
+/// in the SAME directory (so the rename stays on one filesystem) and `rename` it over the target:
+/// `rename(2)` atomically replaces the destination, leaving either the old complete file or the new
+/// complete one, never a torn one. The temp name carries this process's pid so two ChemDraft
+/// instances writing the same file can't clobber each other's temp.
+fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, contents).map_err(|error| error.to_string())?;
+    fs::rename(&tmp, path).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        error.to_string()
+    })
+}
+
 #[tauri::command]
 fn load_toolset_customization_state(
     app: tauri::AppHandle,
 ) -> Result<Option<serde_json::Value>, String> {
     let path = toolset_customization_state_path(&app)?;
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Some(contents) = read_optional_file(&path)? else {
         return Ok(None);
     };
 
@@ -723,18 +754,14 @@ fn save_toolset_customization_state(
     state: serde_json::Value,
 ) -> Result<(), String> {
     let path = toolset_customization_state_path(&app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 #[tauri::command]
 fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
     let path = document_session_path(&app)?;
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Some(contents) = read_optional_file(&path)? else {
         return Ok(None);
     };
 
@@ -749,12 +776,8 @@ fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Val
 #[tauri::command]
 fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
     let path = document_session_path(&app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 /// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
@@ -886,10 +909,7 @@ fn plugin_storage_write(
         ));
     }
     let path = plugin_storage_path(&app, &plugin_id)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    std::fs::write(&path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -2996,12 +3016,8 @@ fn save_toolset_layout_state<R: Runtime>(
     layout_state: &ToolsetLayoutState,
 ) -> Result<(), String> {
     let path = toolset_layout_state_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let contents = serde_json::to_string_pretty(layout_state).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 fn toolset_layout_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -3102,6 +3118,54 @@ fn find_menu_item_by_id<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_optional_file_distinguishes_absent_from_present() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-read-optional-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("state.json");
+
+        // Absent file → Ok(None), NOT an error — so a caller never mistakes a transient miss for
+        // "no saved state" and clobbers the real file with defaults.
+        expect_true(matches!(read_optional_file(&path), Ok(None)));
+
+        fs::write(&path, "{\"v\":1}").expect("seed file");
+        match read_optional_file(&path) {
+            Ok(Some(contents)) => expect_eq("{\"v\":1}", &contents),
+            other => panic!("expected Ok(Some(..)), got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_file_atomic_replaces_completely_creates_parents_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-write-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // Parent dir does not exist yet — write_file_atomic must create it.
+        let path = dir.join("nested").join("state.json");
+
+        write_file_atomic(&path, "first").expect("first write");
+        expect_eq("first", &fs::read_to_string(&path).expect("read first"));
+
+        // Overwriting a longer payload fully replaces the file (never torn).
+        write_file_atomic(&path, "second-longer-payload").expect("second write");
+        expect_eq(
+            "second-longer-payload",
+            &fs::read_to_string(&path).expect("read second"),
+        );
+
+        // No sibling temp file lingers after a successful commit.
+        let leftover_temps = fs::read_dir(path.parent().expect("parent"))
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        expect_eq(&0usize.to_string(), &leftover_temps.to_string());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn toolset_window_labels_are_stable_and_sanitized() {
