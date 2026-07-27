@@ -3798,6 +3798,23 @@ textarea:focus-visible,
   box-shadow: 0 0 0 3px rgb(29 127 104 / 18%), 0 0 0 5px rgb(255 255 255 / 75%);
 }
 
+/* Arrow-mode hover handles: small translucent dots (ChemDraw-style) marking the grab points on an
+   arrow you're hovering, rather than the full opaque Select-tool chrome. The base `pointer-events: all`
+   and `cursor: move` are inherited so the dots stay grabbable; they brighten on hover of each dot. */
+.graphic-path-edit-handle-dot {
+  width: 9px;
+  height: 9px;
+  border-width: 1px;
+  background: color-mix(in srgb, var(--cd-accent) 32%, transparent);
+  border-color: color-mix(in srgb, var(--cd-accent) 60%, transparent);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 55%);
+}
+
+.graphic-path-edit-handle-dot:hover {
+  background: color-mix(in srgb, var(--cd-accent) 70%, transparent);
+  border-color: var(--cd-accent-strong);
+}
+
 .graphic-path-segment-hit-layer {
   position: absolute;
   inset: 0;

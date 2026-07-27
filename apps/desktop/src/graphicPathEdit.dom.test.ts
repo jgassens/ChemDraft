@@ -362,7 +362,7 @@ describe("graphic path direct editing interactions", () => {
 
     expect(debugArtObject(objectId).object.data.markerEnd).toEqual({
       kind: "filled-arrow",
-      sizePx: 10
+      sizePx: 16
     });
   });
 

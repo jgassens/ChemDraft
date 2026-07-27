@@ -8,6 +8,7 @@ import {
   deleteGraphicPathNode,
   editGraphicCornerRadius,
   editGraphicMarkerSize,
+  MARKER_SIZE_STEP_PX,
   editGraphicPathGeometry,
   graphicCornerRadiusEditPoint,
   graphicObjectIntersectsPolygon,
@@ -572,6 +573,77 @@ describe("art-engine native art planning", () => {
       kind: "filled-arrow",
       sizePx: 24
     });
+  });
+
+  it("snaps arrowhead marker size to discrete 4px steps", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const handle = plan.markerHandles.find((candidate) => candidate.id === "markerEnd");
+    if (!handle) {
+      throw new Error("Expected marker end handle.");
+    }
+
+    // Every snapped size is a multiple of the 4px step, regardless of the exact drag distance.
+    const sizesByDistance = [18, 22, 30, 44, 60].map((distance) => {
+      const edited = editGraphicMarkerSize(graphic, "markerEnd", {
+        x: handle.terminal.point.x - handle.terminal.direction.x * distance,
+        y: handle.terminal.point.y - handle.terminal.direction.y * distance
+      });
+      const sizePx = edited?.data.markerEnd?.sizePx;
+      if (typeof sizePx !== "number") {
+        throw new Error("Expected a resized arrowhead.");
+      }
+      return sizePx;
+    });
+    for (const sizePx of sizesByDistance) {
+      expect(sizePx % MARKER_SIZE_STEP_PX).toBe(0);
+    }
+    // Larger drags never produce a smaller snapped size (monotonic, stepped).
+    for (let index = 1; index < sizesByDistance.length; index += 1) {
+      expect(sizesByDistance[index]).toBeGreaterThanOrEqual(sizesByDistance[index - 1]);
+    }
+  });
+
+  it("resizes both arrowheads symmetrically by default and only one when asked", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerStart: { kind: "filled-arrow", sizePx: 16 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const handle = plan.markerHandles.find((candidate) => candidate.id === "markerEnd");
+    if (!handle) {
+      throw new Error("Expected marker end handle.");
+    }
+    const dragPoint = {
+      x: handle.terminal.point.x - handle.terminal.direction.x * 40,
+      y: handle.terminal.point.y - handle.terminal.direction.y * 40
+    };
+
+    // Default (symmetric): dragging the end head also grows the start head to the same size.
+    const symmetric = editGraphicMarkerSize(graphic, "markerEnd", dragPoint, { symmetric: true });
+    expect(symmetric?.data.markerEnd?.sizePx).toBe(40);
+    expect(symmetric?.data.markerStart?.sizePx).toBe(40);
+
+    // Shift held (symmetric: false): only the dragged head changes.
+    const single = editGraphicMarkerSize(graphic, "markerEnd", dragPoint, { symmetric: false });
+    expect(single?.data.markerEnd?.sizePx).toBe(40);
+    expect(single?.data.markerStart?.sizePx).toBe(16);
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {

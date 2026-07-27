@@ -385,19 +385,19 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   }, { strokeColor: "#111111", fillColor: "none" }),
   artShapeTool("arrow", "Arrow", "path", 82, 46, {
     artPathKind: "line",
-    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   // Reaction/resonance arrows are drawn with the full art-arrow mechanics (draggable ends, arc,
   // arrowhead size) but carry their chemical identity in `artToolId`, which the CDXML layer reads to
   // emit/parse them as reaction arrows (single-headed reaction = forward; double-headed resonance).
   artShapeTool("reactionArrow", "Reaction Arrow", "path", 82, 46, {
     artPathKind: "line",
-    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   artShapeTool("resonanceArrow", "Resonance Arrow", "path", 82, 46, {
     artPathKind: "line",
-    markerStart: { kind: "filled-arrow", sizePx: 10 },
-    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+    markerStart: { kind: "filled-arrow", sizePx: 16 },
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   artArcTool("arc270", "Three-quarter Arc", 270, false),
   artArcTool("arc270Dashed", "Dashed Three-quarter Arc", 270, true),
@@ -1641,6 +1641,117 @@ export function insertNativeArtGraphicObject(
   );
 }
 
+/** Default length of a click-placed (undragged) art line/arrow, in page units. Matches the reaction
+ *  arrow default so a plain click drops a sensible horizontal arrow rather than a zero-length dot. */
+export const nativeArtLineDefaultLengthPx = 120;
+
+/** Line-family art tools (straight and wavy lines, plain/reaction/resonance arrows) draw between two
+ *  endpoints, so — like bonds and reaction arrows — they support press-drag-release placement rather
+ *  than plopping a fixed box. Arc/quadratic/bezier/polyline/freehand tools are excluded. */
+export function nativeArtToolIsLineDraw(commandId: string): boolean {
+  const kind = nativeArtToolForCommand(commandId)?.data.artPathKind;
+  return kind === "line" || kind === "wavy";
+}
+
+/** Build a line-family art graphic with explicit endpoints. The bounding box encloses both ends plus
+ *  padding for stroke + arrowhead so selection/hit-testing stay honest; `lineStart`/`lineEnd` make the
+ *  arrow immediately editable (drag ends, curve the middle) and let the CDXML layer read its geometry. */
+export function createNativeArtLineGraphicObject(
+  document: ChemDraftDocument,
+  start: PagePoint,
+  end: PagePoint,
+  commandId: string
+): GraphicObject | undefined {
+  const tool = nativeArtToolForCommand(commandId);
+  if (!tool || !nativeArtToolIsLineDraw(commandId)) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const clampedStart = {
+    x: clamp(start.x, 0, page.width),
+    y: clamp(start.y, 0, page.height)
+  };
+  const clampedEnd = {
+    x: clamp(end.x, 0, page.width),
+    y: clamp(end.y, 0, page.height)
+  };
+  const strokeWidth = typeof tool.style.strokeWidth === "number" ? tool.style.strokeWidth : 2;
+  const markerSize = Math.max(tool.data.markerStart?.sizePx ?? 0, tool.data.markerEnd?.sizePx ?? 0);
+  const padding = Math.max(8, strokeWidth * 2 + markerSize);
+  const minX = Math.min(clampedStart.x, clampedEnd.x) - padding;
+  const minY = Math.min(clampedStart.y, clampedEnd.y) - padding;
+  const maxX = Math.max(clampedStart.x, clampedEnd.x) + padding;
+  const maxY = Math.max(clampedStart.y, clampedEnd.y) + padding;
+
+  return {
+    id: nextObjectId(document, `art_${tool.id}`),
+    type: "graphic",
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+    rotation: 0,
+    style: {
+      ...tool.style,
+      source: "chemdraft-native-art",
+      artToolCommandId: tool.commandId
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    graphicKind: tool.graphicKind,
+    data: {
+      ...tool.data,
+      lineStart: { x: clampedStart.x, y: clampedStart.y },
+      lineEnd: { x: clampedEnd.x, y: clampedEnd.y },
+      artToolId: tool.id
+    }
+  };
+}
+
+/** Insert a line-family art graphic spanning `start`→`end` and select it. */
+export function applyNativeArtLineToolAtPoint(
+  document: ChemDraftDocument,
+  start: PagePoint,
+  end: PagePoint,
+  commandId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeArtLineGraphicObject(document, start, end, commandId);
+  if (!object) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/** Click (no drag) placement: drop a default-length horizontal arrow with the press point as the tail. */
+export function applyNativeArtLineToolDefaultAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  commandId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const startX = clamp(point.x, 0, Math.max(0, page.width - nativeArtLineDefaultLengthPx));
+  const y = clamp(point.y, 0, page.height);
+  return applyNativeArtLineToolAtPoint(
+    document,
+    { x: startX, y },
+    { x: startX + nativeArtLineDefaultLengthPx, y },
+    commandId
+  );
+}
+
 export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphicPathEditPoints | undefined {
   return graphicPathEditPoints(object);
 }
@@ -1879,14 +1990,15 @@ export function updateNativeGraphicMarkerHandle(
   document: ChemDraftDocument,
   objectId: string,
   markerId: NativeGraphicMarkerHandleId,
-  point: PagePoint
+  point: PagePoint,
+  options: { symmetric?: boolean } = {}
 ): ChemDraftDocument {
   const object = findDocumentObject(document, objectId);
   if (!object || object.type !== "graphic") {
     return document;
   }
 
-  const edited = editGraphicMarkerSize(object, markerId, point);
+  const edited = editGraphicMarkerSize(object, markerId, point, options);
   if (!edited || edited === object) {
     return document;
   }

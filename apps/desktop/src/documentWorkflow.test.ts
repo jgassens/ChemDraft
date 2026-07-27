@@ -115,6 +115,10 @@ import {
   groupSelectedDocumentObjects,
   getSelectedMolecule,
   insertNativeArtGraphicObject,
+  nativeArtToolIsLineDraw,
+  applyNativeArtLineToolAtPoint,
+  applyNativeArtLineToolDefaultAtPoint,
+  nativeArtLineDefaultLengthPx,
   insertAdapterFallbackMolecule,
   applyFormulaTextFormatting,
   applyNativeChainTool,
@@ -4522,13 +4526,81 @@ describe("Phase 4 document workflow", () => {
       data: {
         artPathKind: "line",
         artToolId: "arrow",
-        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
       },
       style: {
         artToolCommandId: "tool.art.arrow",
         strokeLineCap: "butt"
       }
     });
+  });
+
+  it("draws reaction/resonance art arrows between two dragged endpoints", () => {
+    const start = { x: 200, y: 300 };
+    const end = { x: 520, y: 360 };
+    const drawn = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Native Art Reaction Arrow"),
+      start,
+      end,
+      "tool.art.reactionArrow"
+    );
+    const objectId = drawn.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected drawn reaction arrow to be selected.");
+    }
+
+    const object = graphicById(drawn, objectId);
+    // The tail follows the press and the head follows the release, so length + angle track the drag —
+    // exactly what a fixed-box plop cannot express.
+    expect(object.data.lineStart).toEqual(start);
+    expect(object.data.lineEnd).toEqual(end);
+    expect(object.data.artToolId).toBe("reactionArrow");
+    expect(object.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(object.data.markerStart).toBeUndefined();
+    // Bounding box encloses both endpoints (plus stroke/arrowhead padding).
+    expect(object.x).toBeLessThanOrEqual(start.x);
+    expect(object.y).toBeLessThanOrEqual(start.y);
+    expect(object.x + object.width).toBeGreaterThanOrEqual(end.x);
+    expect(object.y + object.height).toBeGreaterThanOrEqual(end.y);
+
+    const resonance = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Native Art Resonance Arrow"),
+      start,
+      end,
+      "tool.art.resonanceArrow"
+    );
+    const resonanceObject = graphicById(resonance, resonance.selection.objectIds[0]!);
+    expect(resonanceObject.data.artToolId).toBe("resonanceArrow");
+    expect(resonanceObject.data.markerStart).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(resonanceObject.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+  });
+
+  it("drops a default horizontal art arrow on a plain click (no drag)", () => {
+    const clicked = applyNativeArtLineToolDefaultAtPoint(
+      createPhase4Document("Native Art Default Arrow"),
+      { x: 240, y: 260 },
+      "tool.art.reactionArrow"
+    );
+    const object = graphicById(clicked, clicked.selection.objectIds[0]!);
+    const startPoint = object.data.lineStart!;
+    const endPoint = object.data.lineEnd!;
+    // Horizontal, default length, tail at the press point.
+    expect(startPoint).toEqual({ x: 240, y: 260 });
+    expect(endPoint.y).toBe(260);
+    expect(endPoint.x - startPoint.x).toBe(nativeArtLineDefaultLengthPx);
+  });
+
+  it("classifies only line/wavy art tools as drag-to-draw", () => {
+    expect(nativeArtToolIsLineDraw("tool.art.reactionArrow")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.resonanceArrow")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.arrow")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.line")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.lineWavy")).toBe(true);
+    // Arcs, closed shapes, and node-path tools keep fixed-box / multi-click placement.
+    expect(nativeArtToolIsLineDraw("tool.art.arc180")).toBe(false);
+    expect(nativeArtToolIsLineDraw("tool.art.rect")).toBe(false);
+    expect(nativeArtToolIsLineDraw("tool.art.polyline")).toBe(false);
+    expect(nativeArtToolIsLineDraw("tool.art.pen")).toBe(false);
   });
 
   it("inserts native art polylines as path-node graphics", () => {
@@ -4848,7 +4920,8 @@ describe("Phase 4 document workflow", () => {
 
     const marker = graphicById(edited, objectId).data.markerEnd;
     expect(marker?.kind).toBe("filled-arrow");
-    expect(marker?.sizePx).toBeCloseTo(36.77, 3);
+    // Arrowhead size snaps to 4px steps: the ~36.77px drag distance rounds to 36.
+    expect(marker?.sizePx).toBe(36);
     expect(edited.selection.objectIds).toEqual([objectId]);
   });
 
@@ -5799,7 +5872,7 @@ describe("Phase 4 document workflow", () => {
       strokeDasharray: "8 6",
       strokeLineCap: "square"
     });
-    expect(graphicById(copiedStroke, lineTargetId).data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 10 });
+    expect(graphicById(copiedStroke, lineTargetId).data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
     expect(graphicById(copiedStroke, lineTargetId).style.fillColor).toBe("none");
 
     const fullAppearanceTarget = applyPatches(paintedSource, [

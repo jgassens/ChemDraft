@@ -790,10 +790,14 @@ function nativeArtMarkerHandle(
   };
 }
 
+/** Arrowhead size increments (px) — dragging the marker handle snaps to multiples of this step. */
+export const MARKER_SIZE_STEP_PX = 4;
+
 export function editGraphicMarkerSize(
   object: GraphicObject,
   markerId: NativeArtMarkerHandleId,
-  point: NativeArtPoint
+  point: NativeArtPoint,
+  options: { symmetric?: boolean } = {}
 ): GraphicObject | undefined {
   const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
   const handle = plan.markerHandles.find((candidate) => candidate.id === markerId);
@@ -808,9 +812,22 @@ export function editGraphicMarkerSize(
   if (!Number.isFinite(distance)) {
     return undefined;
   }
-  const nextSize = roundLayoutNumber(clamp(distance, 4, 96));
+  // Arrowhead size snaps to discrete steps (4, 8, 12, 16, … px = levels 1, 2, 3, 4, …) so dragging
+  // steps cleanly between sizes instead of sliding continuously. The default 16 px lands on a step.
+  const snapped = Math.round(clamp(distance, MARKER_SIZE_STEP_PX, 96) / MARKER_SIZE_STEP_PX) * MARKER_SIZE_STEP_PX;
+  const nextSize = roundLayoutNumber(clamp(snapped, MARKER_SIZE_STEP_PX, 96));
+
+  // Symmetric resize (double-headed arrows, default): the opposite arrowhead tracks this one so both
+  // heads stay the same size. Holding Shift (symmetric === false) resizes only the dragged head.
+  const otherId: NativeArtMarkerHandleId = markerId === "markerStart" ? "markerEnd" : "markerStart";
+  const otherMarker = otherId === "markerStart" ? object.data.markerStart : object.data.markerEnd;
+  const syncOther = options.symmetric === true && otherMarker !== undefined && otherMarker.kind !== "none";
+
   const currentSize = metadataNumber(currentMarker.sizePx) ?? handle.marker.sizePx;
-  if (Math.abs(nextSize - currentSize) < 0.001) {
+  const otherSize = syncOther ? metadataNumber(otherMarker.sizePx) : undefined;
+  const draggedUnchanged = Math.abs(nextSize - currentSize) < 0.001;
+  const otherUnchanged = otherSize === undefined || Math.abs(nextSize - otherSize) < 0.001;
+  if (draggedUnchanged && otherUnchanged) {
     return object;
   }
 
@@ -821,7 +838,8 @@ export function editGraphicMarkerSize(
       [markerId]: {
         ...currentMarker,
         sizePx: nextSize
-      }
+      },
+      ...(syncOther ? { [otherId]: { ...otherMarker, sizePx: nextSize } } : {})
     }
   };
 }
