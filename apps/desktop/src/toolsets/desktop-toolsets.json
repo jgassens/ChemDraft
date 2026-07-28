@@ -496,13 +496,23 @@
               "submenu": {
                 "type": "command-grid",
                 "title": "Arrow tools",
-                "columns": 3,
+                "columns": 4,
                 "items": [
                   {
                     "commandId": "tool.art.reactionArrow",
                     "label": "Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow"
+                  },
+                  {
+                    "commandId": "tool.art.reactionArrowBold",
+                    "label": "Reaction Arrow (Large Head)",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.reactionArrowDashed",
+                    "label": "Dashed Reaction Arrow",
+                    "icon": "export"
                   },
                   {
                     "commandId": "tool.art.resonanceArrow",
@@ -521,6 +531,31 @@
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
+                  },
+                  {
+                    "commandId": "tool.art.noReactionArrow",
+                    "label": "No-Reaction Arrow",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow90",
+                    "label": "Curved Arrow (Gentle)",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow180",
+                    "label": "Curved Arrow (Pronounced)",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookArrow",
+                    "label": "Fishhook Arrow",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookCurved",
+                    "label": "Curved Fishhook Arrow",
+                    "icon": "export"
                   }
                 ],
                 "id": "arrow-tools"
@@ -2236,13 +2271,23 @@
               "submenu": {
                 "type": "command-grid",
                 "title": "Arrow tools",
-                "columns": 3,
+                "columns": 4,
                 "items": [
                   {
                     "commandId": "tool.art.reactionArrow",
                     "label": "Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow"
+                  },
+                  {
+                    "commandId": "tool.art.reactionArrowBold",
+                    "label": "Reaction Arrow (Large Head)",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.reactionArrowDashed",
+                    "label": "Dashed Reaction Arrow",
+                    "icon": "export"
                   },
                   {
                     "commandId": "tool.art.resonanceArrow",
@@ -2261,6 +2306,31 @@
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
+                  },
+                  {
+                    "commandId": "tool.art.noReactionArrow",
+                    "label": "No-Reaction Arrow",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow90",
+                    "label": "Curved Arrow (Gentle)",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow180",
+                    "label": "Curved Arrow (Pronounced)",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookArrow",
+                    "label": "Fishhook Arrow",
+                    "icon": "export"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookCurved",
+                    "label": "Curved Fishhook Arrow",
+                    "icon": "export"
                   }
                 ],
                 "id": "arrow-tools"

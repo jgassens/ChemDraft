@@ -262,7 +262,14 @@ export type NativeArtToolId =
   | "brush"
   | "arrow"
   | "reactionArrow"
+  | "reactionArrowBold"
+  | "reactionArrowDashed"
   | "resonanceArrow"
+  | "curvedArrow90"
+  | "curvedArrow180"
+  | "fishhookArrow"
+  | "fishhookCurved"
+  | "noReactionArrow"
   | "arc270"
   | "arc270Dashed"
   | "arc180"
@@ -394,10 +401,46 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
     artPathKind: "line",
     markerEnd: { kind: "filled-arrow", sizePx: 16 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("reactionArrowBold", "Reaction Arrow (Large Head)", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 24 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("reactionArrowDashed", "Dashed Reaction Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt", strokeDasharray: "6 6" }),
   artShapeTool("resonanceArrow", "Resonance Arrow", "path", 82, 46, {
     artPathKind: "line",
     markerStart: { kind: "filled-arrow", sizePx: 16 },
     markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Electron/arrow-pushing curves: the existing arc geometry with a reaction arrowhead. Dragging an
+  // endpoint flips the sweep, so clockwise presets cover both directions.
+  artShapeTool("curvedArrow90", "Curved Arrow (Gentle)", "path", 58, 58, {
+    artPathKind: "arc",
+    arcSweepRadians: degreesToRadians(90),
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("curvedArrow180", "Curved Arrow (Pronounced)", "path", 58, 58, {
+    artPathKind: "arc",
+    arcSweepRadians: degreesToRadians(180),
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Fishhook (single-barb) arrows for radical / single-electron pushing.
+  artShapeTool("fishhookArrow", "Fishhook Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "half-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("fishhookCurved", "Curved Fishhook Arrow", "path", 58, 58, {
+    artPathKind: "arc",
+    arcSweepRadians: degreesToRadians(180),
+    markerEnd: { kind: "half-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // "Reaction didn't work": a reaction arrow crossed with an X at the shaft midpoint.
+  artShapeTool("noReactionArrow", "No-Reaction Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 16 },
+    shaftMark: "cross"
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   artArcTool("arc270", "Three-quarter Arc", 270, false),
   artArcTool("arc270Dashed", "Dashed Three-quarter Arc", 270, true),
@@ -1651,6 +1694,17 @@ export const nativeArtLineDefaultLengthPx = 120;
 export function nativeArtToolIsLineDraw(commandId: string): boolean {
   const kind = nativeArtToolForCommand(commandId)?.data.artPathKind;
   return kind === "line" || kind === "wavy";
+}
+
+/** Arrow-mode in-place editing applies to line-draw tools and to arrow-family arcs (curved pushing /
+ *  fishhook arrows — arcs that carry an arrowhead marker). Plain arcs and shapes are excluded. */
+export function nativeArtToolSupportsArrowHoverEdit(commandId: string): boolean {
+  if (nativeArtToolIsLineDraw(commandId)) {
+    return true;
+  }
+  const tool = nativeArtToolForCommand(commandId);
+  return tool?.data.artPathKind === "arc" &&
+    (tool.data.markerStart !== undefined || tool.data.markerEnd !== undefined);
 }
 
 /** Build a line-family art graphic with explicit endpoints. The bounding box encloses both ends plus

@@ -646,6 +646,67 @@ describe("art-engine native art planning", () => {
     expect(single?.data.markerStart?.sizePx).toBe(16);
   });
 
+  it("plans half-arrow markers on lines and arcs with size handles", () => {
+    const fishhookLine = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "half-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const linePlan = planNativeArtVisual(fishhookLine, { coordinateSpace: "page" });
+    expect(linePlan.markerEnd).toMatchObject({ kind: "half-arrow", sizePx: 16 });
+    expect(linePlan.markerEndTerminal).toBeDefined();
+    expect(linePlan.markerHandles.some((handle) => handle.id === "markerEnd")).toBe(true);
+
+    const fishhookArc = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 58,
+      height: 58,
+      data: {
+        artPathKind: "arc",
+        arcSweepRadians: Math.PI,
+        markerEnd: { kind: "half-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const arcPlan = planNativeArtVisual(fishhookArc, { coordinateSpace: "page" });
+    expect(arcPlan.markerEnd).toMatchObject({ kind: "half-arrow", sizePx: 16 });
+    expect(arcPlan.markerEndTerminal).toBeDefined();
+    expect(arcPlan.markerHandles.some((handle) => handle.id === "markerEnd")).toBe(true);
+  });
+
+  it("plans the no-reaction cross at the shaft midpoint", () => {
+    const noReaction = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        lineStart: { x: 10, y: 20 },
+        lineEnd: { x: 74, y: 20 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 },
+        shaftMark: "cross"
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(noReaction, { coordinateSpace: "page" });
+    expect(plan.shaftMark?.kind).toBe("cross");
+    // Midpoint of the horizontal shaft, tangent along +x.
+    expect(plan.shaftMark?.point.x).toBeCloseTo(42, 0);
+    expect(plan.shaftMark?.point.y).toBeCloseTo(20, 0);
+    expect(Math.abs(plan.shaftMark?.direction.x ?? 0)).toBeCloseTo(1, 1);
+    // No mark without the data flag.
+    const plain = planNativeArtVisual({
+      ...noReaction,
+      data: { ...noReaction.data, shaftMark: undefined }
+    }, { coordinateSpace: "page" });
+    expect(plain.shaftMark).toBeUndefined();
+  });
+
   it("derives fill and corner capabilities for custom path topology", () => {
     const rectangle = {
       ...baseGraphic,

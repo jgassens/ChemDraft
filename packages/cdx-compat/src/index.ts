@@ -684,7 +684,11 @@ function exportGraphicObject(
  *  carry their chemistry in `artToolId`, which is how the CDXML layer knows to write/read them as
  *  reaction arrows rather than generic graphics. */
 function semanticReactionArrowKind(graphic: GraphicObject): "forward" | "resonance" | undefined {
-  if (graphic.data.artToolId === "reactionArrow") {
+  if (
+    graphic.data.artToolId === "reactionArrow" ||
+    graphic.data.artToolId === "reactionArrowBold" ||
+    graphic.data.artToolId === "reactionArrowDashed"
+  ) {
     return "forward";
   }
   if (graphic.data.artToolId === "resonanceArrow") {

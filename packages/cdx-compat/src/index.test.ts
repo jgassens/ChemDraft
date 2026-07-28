@@ -1124,6 +1124,50 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(resonanceCdxml).toContain('ArrowType="Resonance"');
   });
 
+  it("exports the preconfigured bold/dashed reaction arrow variants as forward reaction arrows", () => {
+    const variantArrow = (artToolId: string, sizePx: number): GraphicObject => ({
+      id: `art_${artToolId}`,
+      type: "graphic",
+      x: 100,
+      y: 158,
+      width: 120,
+      height: 4,
+      rotation: 0,
+      style: { strokeColor: "#111111", fillColor: "none", strokeWidth: 2, strokeLineCap: "butt" },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        lineStart: { x: 100, y: 160 },
+        lineEnd: { x: 220, y: 160 },
+        markerEnd: { kind: "filled-arrow", sizePx },
+        artToolId
+      }
+    });
+
+    for (const artToolId of ["reactionArrowBold", "reactionArrowDashed"]) {
+      const cdxml = exportDocumentToCdxml(
+        documentWithObjects([variantArrow(artToolId, artToolId === "reactionArrowBold" ? 24 : 16)]),
+        { creationProgram: "T" }
+      ).contents;
+      expect(cdxml).toContain('GraphicType="Line"');
+      expect(cdxml).toContain('ArrowType="FullHead"');
+    }
+
+    // Fishhook and no-reaction arrows have no standard CDXML reaction-arrow equivalent: they stay
+    // generic graphics (exact round-trip rides the native payload).
+    const fishhookCdxml = exportDocumentToCdxml(
+      documentWithObjects([{
+        ...variantArrow("fishhookArrow", 16),
+        data: {
+          ...variantArrow("fishhookArrow", 16).data,
+          markerEnd: { kind: "half-arrow", sizePx: 16 }
+        }
+      }]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(fishhookCdxml).not.toContain("ArrowType=");
+  });
+
   it("round-trips a resonance reaction arrow through CDXML", () => {
     const document = documentWithObjects([
       {

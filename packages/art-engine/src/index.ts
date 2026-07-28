@@ -199,8 +199,17 @@ export interface NativeArtVisualPlan {
   markerStartTerminal?: NativeArtStrokeTerminalPlan;
   markerEndTerminal?: NativeArtStrokeTerminalPlan;
   markerHandles: NativeArtMarkerHandlePlan[];
+  /** Decoration across the shaft midpoint (the no-reaction X), positioned along the sampled path. */
+  shaftMark?: NativeArtShaftMarkPlan;
   projectedShapePathD?: string;
   glossGradient?: NativeArtGlossGradientPlan;
+}
+
+export interface NativeArtShaftMarkPlan {
+  kind: "cross";
+  point: NativeArtPoint;
+  direction: NativeArtPoint;
+  sizePx: number;
 }
 
 export type GraphicPathEditHandle =
@@ -453,6 +462,9 @@ export function planNativeArtVisual(
       markerStartTerminal: openStrokeTerminals?.start,
       markerEndTerminal: openStrokeTerminals?.end
     }),
+    shaftMark: capabilities.isOpenStroke && rendersStroke
+      ? nativeArtShaftMarkPlan(object, line, pathPoints, stroke.width)
+      : undefined,
     projectedShapePathD,
     glossGradient: capabilities.supportsFill && fill.mode === "gloss"
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
@@ -770,7 +782,7 @@ function shouldSampleGraphicPathForPlan(input: {
 
   return input.capabilities.isOpenStroke &&
     input.rendersStroke &&
-    (input.markerStart !== undefined || input.markerEnd !== undefined);
+    (input.markerStart !== undefined || input.markerEnd !== undefined || input.object.data.shaftMark !== undefined);
 }
 
 function nativeArtMarkerHandle(
@@ -943,7 +955,12 @@ function nativeArtVisibleOpenStroke(input: {
 }
 
 function nativeArtMarkerShaftInset(marker: NativeArtMarkerPlan, strokeWidth: number): number {
-  if (marker.kind === "filled-arrow" || marker.kind === "chevron" || marker.kind === "diamond") {
+  if (
+    marker.kind === "filled-arrow" ||
+    marker.kind === "half-arrow" ||
+    marker.kind === "chevron" ||
+    marker.kind === "diamond"
+  ) {
     return Math.max(strokeWidth * 1.5, marker.sizePx * 0.42);
   }
   if (marker.kind === "dot") {
@@ -1027,6 +1044,44 @@ function nativeArtPolylinePointAtLength(
   }
 
   return points[points.length - 1];
+}
+
+/** Midpoint + local tangent of the shaft, for the no-reaction cross. Uses the sampled path points so
+ *  the mark sits on the curve for arcs, or the straight line for line arrows. */
+function nativeArtShaftMarkPlan(
+  object: GraphicObject,
+  line: NativeArtVisualPlan["line"],
+  pathPoints: NativeArtPoint[] | undefined,
+  strokeWidth: number
+): NativeArtShaftMarkPlan | undefined {
+  if (object.data.shaftMark !== "cross") {
+    return undefined;
+  }
+
+  const points = pathPoints && pathPoints.length >= 2
+    ? pathPoints
+    : line
+      ? [{ x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 }]
+      : undefined;
+  if (!points) {
+    return undefined;
+  }
+
+  const halfLength = nativeArtPolylineLength(points) / 2;
+  const point = nativeArtPolylinePointAtLength(points, halfLength);
+  const before = nativeArtPolylinePointAtLength(points, Math.max(0, halfLength - 1));
+  const after = nativeArtPolylinePointAtLength(points, halfLength + 1);
+  if (!point || !before || !after) {
+    return undefined;
+  }
+
+  const direction = normalizedVector({ x: after.x - before.x, y: after.y - before.y }) ?? { x: 1, y: 0 };
+  return {
+    kind: "cross",
+    point,
+    direction,
+    sizePx: Math.max(12, strokeWidth * 5)
+  };
 }
 
 function nativeArtPointsPathD(points: readonly NativeArtPoint[]): string {
@@ -2896,6 +2951,7 @@ function isNativeArtMarkerKind(kind: unknown): kind is NativeArtMarkerKind {
   return kind === "none" ||
     kind === "open-arrow" ||
     kind === "filled-arrow" ||
+    kind === "half-arrow" ||
     kind === "bar" ||
     kind === "dot" ||
     kind === "diamond" ||

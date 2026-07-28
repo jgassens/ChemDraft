@@ -186,7 +186,7 @@ export const GraphicObjectStyleSchema = z
 
 export const GraphicMarkerSchema = z
   .object({
-    kind: z.enum(["none", "open-arrow", "filled-arrow", "bar", "dot", "diamond", "chevron"]),
+    kind: z.enum(["none", "open-arrow", "filled-arrow", "half-arrow", "bar", "dot", "diamond", "chevron"]),
     sizePx: z.number().finite().positive().optional(),
     angleDegrees: z.number().finite().optional()
   })
@@ -238,6 +238,8 @@ export const GraphicObjectDataSchema = z
     arcSweepRadians: z.number().finite().optional(),
     markerStart: GraphicMarkerSchema.optional(),
     markerEnd: GraphicMarkerSchema.optional(),
+    // Decoration drawn across the shaft midpoint ("cross" = X, the no-reaction mark).
+    shaftMark: z.enum(["cross"]).optional(),
     cornerRadiusPx: z.number().finite().nonnegative().optional(),
     imageHref: z.string().optional(),
     imageMimeType: z.string().optional(),

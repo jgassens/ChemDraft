@@ -116,6 +116,7 @@ import {
   getSelectedMolecule,
   insertNativeArtGraphicObject,
   nativeArtToolIsLineDraw,
+  nativeArtToolSupportsArrowHoverEdit,
   applyNativeArtLineToolAtPoint,
   applyNativeArtLineToolDefaultAtPoint,
   nativeArtLineDefaultLengthPx,
@@ -4588,6 +4589,57 @@ describe("Phase 4 document workflow", () => {
     expect(startPoint).toEqual({ x: 240, y: 260 });
     expect(endPoint.y).toBe(260);
     expect(endPoint.x - startPoint.x).toBe(nativeArtLineDefaultLengthPx);
+  });
+
+  it("defines the preconfigured arrow variants with their expected geometry", () => {
+    const document = createPhase4Document("Preconfigured Arrow Variants");
+    const byTool = (commandId: string) => {
+      const inserted = insertNativeArtGraphicObject(document, { x: 220, y: 180 }, commandId);
+      const objectId = inserted.selection.objectIds[0];
+      if (!objectId) {
+        throw new Error(`Expected ${commandId} to insert and select an object.`);
+      }
+      return graphicById(inserted, objectId);
+    };
+
+    const bold = byTool("tool.art.reactionArrowBold");
+    expect(bold.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 24 });
+    expect(bold.data.artPathKind).toBe("line");
+
+    const dashed = byTool("tool.art.reactionArrowDashed");
+    expect(dashed.style.strokeDasharray).toBe("6 6");
+    expect(dashed.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+
+    const curved = byTool("tool.art.curvedArrow180");
+    expect(curved.data.artPathKind).toBe("arc");
+    expect(curved.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+
+    const fishhook = byTool("tool.art.fishhookArrow");
+    expect(fishhook.data.markerEnd).toEqual({ kind: "half-arrow", sizePx: 16 });
+
+    const fishhookCurved = byTool("tool.art.fishhookCurved");
+    expect(fishhookCurved.data.artPathKind).toBe("arc");
+    expect(fishhookCurved.data.markerEnd).toEqual({ kind: "half-arrow", sizePx: 16 });
+
+    const noReaction = byTool("tool.art.noReactionArrow");
+    expect(noReaction.data.shaftMark).toBe("cross");
+    expect(noReaction.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+  });
+
+  it("classifies arrow-family tools for arrow-mode hover editing", () => {
+    // Line-family arrows and lines: hover-editable and drag-to-draw.
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.reactionArrowBold")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.reactionArrowDashed")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.fishhookArrow")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.noReactionArrow")).toBe(true);
+    // Arrow-family arcs: hover-editable but not drag-to-draw (preset arc placement).
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.curvedArrow90")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.curvedArrow180")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.fishhookCurved")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.curvedArrow180")).toBe(false);
+    // Plain arcs and shapes stay excluded.
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.arc180")).toBe(false);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.rect")).toBe(false);
   });
 
   it("classifies only line/wavy art tools as drag-to-draw", () => {

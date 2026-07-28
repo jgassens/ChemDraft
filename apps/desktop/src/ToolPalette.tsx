@@ -4933,6 +4933,65 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
     );
   }
 
+  if (toolId === "reactionArrow" || toolId === "reactionArrowBold" || toolId === "reactionArrowDashed" || toolId === "noReactionArrow") {
+    const bold = toolId === "reactionArrowBold";
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path
+          className={["art-tool-stroke", toolId === "reactionArrowDashed" ? "dashed" : ""].filter(Boolean).join(" ")}
+          d="M2 8.5 L13 8.5"
+        />
+        <path
+          className="art-tool-stroke filled"
+          d={bold ? "M15.4 8.5 L10.6 5.6 L10.6 11.4 Z" : "M15 8.5 L11.6 6.5 L11.6 10.5 Z"}
+        />
+        {toolId === "noReactionArrow" ? (
+          <path className="art-tool-stroke" d="M5.6 5.6 L9.4 11.4 M9.4 5.6 L5.6 11.4" />
+        ) : null}
+      </svg>
+    );
+  }
+
+  if (toolId === "resonanceArrow") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M4 8.5 L13 8.5" />
+        <path className="art-tool-stroke filled" d="M15 8.5 L11.6 6.5 L11.6 10.5 Z" />
+        <path className="art-tool-stroke filled" d="M2 8.5 L5.4 6.5 L5.4 10.5 Z" />
+      </svg>
+    );
+  }
+
+  if (toolId === "curvedArrow90" || toolId === "curvedArrow180") {
+    const gentle = toolId === "curvedArrow90";
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d={gentle ? "M3 12.5 A8 8 0 0 1 11.5 4.5" : "M2.6 10.5 A6.1 6.1 0 0 1 14 8"} />
+        {gentle
+          ? <path className="art-tool-stroke filled" d="M13.6 3.9 L10.2 3.4 L11.6 6.6 Z" />
+          : <path className="art-tool-stroke filled" d="M14.6 10.2 L14.7 6.6 L11.6 8.3 Z" />}
+      </svg>
+    );
+  }
+
+  if (toolId === "fishhookArrow") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M3 11 L13.5 5.5" />
+        <path className="art-tool-stroke filled" d="M13.5 5.5 L10.6 5.4 L12.3 6.4 Z" />
+      </svg>
+    );
+  }
+
+  if (toolId === "fishhookCurved") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M2.6 10.5 A6.1 6.1 0 0 1 14 8" />
+        <path className="art-tool-stroke filled" d="M14.6 9.8 L14.7 6.6 L13 7.9 Z" />
+      </svg>
+    );
+  }
+
   if (toolId.startsWith("arc")) {
     return (
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>

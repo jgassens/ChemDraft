@@ -370,6 +370,7 @@ import {
   type NativeChainAnchor,
   insertNativeArtGraphicObject,
   nativeArtToolIsLineDraw,
+  nativeArtToolSupportsArrowHoverEdit,
   applyNativeArtLineToolAtPoint,
   applyNativeArtLineToolDefaultAtPoint,
   nativeBezierPathDocument,
@@ -1981,9 +1982,10 @@ export function MainWindow({
   const bondToolActive = activeNativeBondToolStyle !== undefined;
   const activeChargeToolValue = chargeValueForToolCommand(activeToolState.activeCommandId);
   const activeNativeArtTool = nativeArtToolForCommand(activeToolState.activeCommandId);
-  // A line-family art tool (arrow/line) is active: the just-drawn arrow keeps its direct-edit handles.
+  // An arrow-editing art tool (line/arrow, or a curved/fishhook arrow arc) is active: the arrow under
+  // the pointer (or just drawn) keeps its direct-edit dot handles.
   const activeArtLineDrawToolActive = activeNativeArtTool !== undefined &&
-    nativeArtToolIsLineDraw(activeNativeArtTool.commandId);
+    nativeArtToolSupportsArrowHoverEdit(activeNativeArtTool.commandId);
   const activePage = document.pages[0];
   const plannedDisplayPage = useMemo(() => {
     if (!nativeDoubleBondSidePreview) {
@@ -4797,6 +4799,14 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
+    if (nativeArtToolSupportsArrowHoverEdit(commandId)) {
+      // Arrow-family arcs (curved pushing / fishhook arrows) behave like the straight arrows: the tool
+      // stays active for the next placement and the placed arrow opens with its dot handles.
+      setArrowEditTargetId(nextDocument.selection.objectIds[0]);
+      const tool = nativeArtToolForCommand(commandId);
+      setStatus(tool ? `Inserted ${tool.title.toLowerCase()}` : "Inserted arrow");
+      return;
+    }
     switchToSelectTool();
     setStatus(selectToolStatusLabel());
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
@@ -13009,7 +13019,7 @@ export function MainWindow({
     // Selection tools always edit path handles; a line-family art tool also edits the handles of the
     // arrow it's currently hovering/just drew (arrowEditTargetId), so arrow mode reshapes arrows in place.
     const artLineHoverEdit = objectId === arrowEditTargetIdRef.current &&
-      nativeArtToolIsLineDraw(activeToolCommandIdRef.current);
+      nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current);
     if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !artLineHoverEdit)) {
       return;
     }
@@ -13115,7 +13125,7 @@ export function MainWindow({
     event.stopPropagation();
     // Also allow arrowhead-size dragging on the arrow arrow mode is hovering/just drew.
     const artLineHoverEdit = objectId === arrowEditTargetIdRef.current &&
-      nativeArtToolIsLineDraw(activeToolCommandIdRef.current);
+      nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current);
     if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !artLineHoverEdit)) {
       return;
     }
@@ -13435,7 +13445,7 @@ export function MainWindow({
     // Arrow mode doubles as an arrow-editing mode: hovering (no button pressed) over a line-family art
     // arrow opens it for in-place handle editing — its translucent dot handles appear and become
     // grabbable. Hovering a non-arrow clears the target; pointer-leave (below) clears it on exit.
-    if (event.buttons === 0 && nativeArtToolIsLineDraw(activeToolCommandIdRef.current)) {
+    if (event.buttons === 0 && nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current)) {
       const hovered = findDocumentObject(documentRef.current, objectId);
       const nextTarget = hovered && isNativeArtLineFamilyGraphic(hovered) ? objectId : undefined;
       if (arrowEditTargetIdRef.current !== nextTarget) {
@@ -21646,6 +21656,11 @@ function reactSvgFlattenedMarker(
   if (marker.kind === "filled-arrow") {
     return <path key={id} {...sharedProps} d={markerPath([tip, markerPoint(size, -half), markerPoint(size, half)])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
   }
+  if (marker.kind === "half-arrow") {
+    // Fishhook: a single-sided barb (radical / single-electron pushing). One triangle on one side of
+    // the shaft; the inner point sits slightly back along the shaft so the hook reads as a curl.
+    return <path key={id} {...sharedProps} d={markerPath([tip, markerPoint(size, -half), markerPoint(size * 0.4, 0)])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
+  }
   if (marker.kind === "open-arrow") {
     return <path key={id} {...sharedProps} d={[
       `M ${tip.x} ${tip.y}`,
@@ -21678,6 +21693,44 @@ function reactSvgFlattenedMarker(
   const barStart = markerPoint(0, -half);
   const barEnd = markerPoint(0, half);
   return <path key={id} {...sharedProps} d={`M ${barStart.x} ${barStart.y} L ${barEnd.x} ${barEnd.y}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />;
+}
+
+/** The no-reaction X: two short segments crossing the shaft at its midpoint, rotated ±45° to the
+ *  local tangent so the mark tracks the arrow's angle (and the curve, for arcs). */
+function reactSvgShaftMark(
+  mark: NonNullable<NativeArtVisualPlan["shaftMark"]>,
+  id: string,
+  color: string,
+  strokeWidth: number,
+  opacity: number
+) {
+  const direction = mark.direction;
+  const normal = { x: -direction.y, y: direction.x };
+  const arm = mark.sizePx / 2;
+  const invSqrt2 = Math.SQRT1_2;
+  // Unit vectors at ±45° to the tangent.
+  const armA = { x: (direction.x + normal.x) * invSqrt2, y: (direction.y + normal.y) * invSqrt2 };
+  const armB = { x: (direction.x - normal.x) * invSqrt2, y: (direction.y - normal.y) * invSqrt2 };
+  const d = [
+    `M ${mark.point.x - armA.x * arm} ${mark.point.y - armA.y * arm}`,
+    `L ${mark.point.x + armA.x * arm} ${mark.point.y + armA.y * arm}`,
+    `M ${mark.point.x - armB.x * arm} ${mark.point.y - armB.y * arm}`,
+    `L ${mark.point.x + armB.x * arm} ${mark.point.y + armB.y * arm}`
+  ].join(" ");
+  return (
+    <path
+      key={id}
+      id={id}
+      data-graphic-shaft-mark={mark.kind}
+      d={d}
+      fill="none"
+      stroke={color}
+      strokeOpacity={opacity === 1 ? undefined : opacity}
+      strokeWidth={Math.max(1.6, strokeWidth)}
+      strokeLinecap="round"
+      vectorEffect="non-scaling-stroke"
+    />
+  );
 }
 
 function markerTerminalDirection(terminal: NonNullable<NativeArtVisualPlan["markerEndTerminal"]>) {
@@ -21886,6 +21939,9 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const markerEnd = plan.markerEnd && plan.markerEndTerminal
     ? reactSvgFlattenedMarker(plan.markerEnd, plan.markerEndTerminal, markerEndId, "end", strokeColor, plan.stroke.opacity)
     : null;
+  const shaftMark = plan.shaftMark
+    ? reactSvgShaftMark(plan.shaftMark, `graphic-shaft-mark-${object.id}`, strokeColor, strokeWidth, plan.stroke.opacity)
+    : null;
   return (
     <svg
       className="graphic-glyph"
@@ -22059,6 +22115,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             {sketchPaths}
             {markerStart}
             {markerEnd}
+            {shaftMark}
           </>
         ) : line && visibleLine ? (
           <>
@@ -22095,6 +22152,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             {sketchPaths}
             {markerStart}
             {markerEnd}
+            {shaftMark}
           </>
         ) : (
           <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
@@ -22109,14 +22167,18 @@ function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
   return object.graphicKind === "path" && object.data.artPathKind === "freehand";
 }
 
-/** Line-family art graphics (straight/wavy lines, arrows, and lines bent into a quadratic curve) — the
- *  objects arrow mode hover-edits in place. Arcs, closed shapes, and node paths are excluded. */
+/** Line-family art graphics (straight/wavy lines, arrows, lines bent into a quadratic curve, and
+ *  arrow-family arcs — curved pushing/fishhook arrows carrying a marker) — the objects arrow mode
+ *  hover-edits in place. Plain arcs, closed shapes, and node paths are excluded. */
 function isNativeArtLineFamilyGraphic(object: DocumentObject): boolean {
   if (object.type !== "graphic") {
     return false;
   }
   const kind = object.data.artPathKind;
-  return kind === "line" || kind === "wavy" || kind === "quadratic";
+  if (kind === "line" || kind === "wavy" || kind === "quadratic") {
+    return true;
+  }
+  return kind === "arc" && (object.data.markerStart !== undefined || object.data.markerEnd !== undefined);
 }
 
 function graphicObjectHasDirectEditChrome(object: GraphicObject, target: GraphicStylePaintTarget): boolean {
