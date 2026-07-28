@@ -21138,7 +21138,9 @@ function DocumentObjectView({
         selectedNodeIndex={selectedGraphicPathNodeIndex}
         segmentHitTargetsActive={graphicSegmentEraseActive}
         counterRotationDegrees={graphicVisualRotationDegrees}
-        dotStyle={graphicArrowEditActive && !selected}
+        // Line-family arrows use the small translucent dot handles in every mode (arrow-mode hover
+        // and Select-tool editing alike); other art shapes keep the full opaque direct-edit handles.
+        dotStyle={isNativeArtLineFamilyGraphic(object)}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
