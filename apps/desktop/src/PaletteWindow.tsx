@@ -642,8 +642,10 @@ export function PaletteWindow({
   // (they overflow the little palette and float over the document). The window is content-agnostic,
   // so opening one after another just swaps its content — no second window to keep in sync. `anchor`
   // is a client rect inside this webview; add our window position to get screen coords. We remember
-  // the last content so the window can re-request it after it mounts (the create-vs-emit race).
-  const lastPopoverContentRef = useRef<ToolsetPopoverContent>({ kind: "artColor" });
+  // the last content so the window can re-request it after it mounts (the create-vs-emit race);
+  // `undefined` until the first real open, so a prewarmed popover's mount request — which fires with
+  // no open in flight — gets no answer and the hidden window stays hidden.
+  const lastPopoverContentRef = useRef<ToolsetPopoverContent | undefined>(undefined);
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
     lastPopoverContentRef.current = content;
@@ -653,7 +655,7 @@ export function PaletteWindow({
       const screenY = (windowPosition?.y ?? 0) + anchor.bottom + 4;
       await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
       await setToolsetPopoverContent(toolset.id, content);
-    })();
+    })().catch(() => undefined);
   };
 
   // Clicking the swatch always (re)opens + repositions — deliberately NOT a toggle: the panel hides
@@ -696,7 +698,13 @@ export function PaletteWindow({
       if (requestedToolsetId !== toolset.id) {
         return;
       }
-      void setToolsetPopoverContent(toolset.id, lastPopoverContentRef.current).catch(() => undefined);
+      // No open has happened yet (a prewarmed popover requesting on mount): stay silent — an answer
+      // would masquerade as an open and reveal a popover nobody asked for.
+      const lastContent = lastPopoverContentRef.current;
+      if (!lastContent) {
+        return;
+      }
+      void setToolsetPopoverContent(toolset.id, lastContent).catch(() => undefined);
     })
       .then((cleanup) => {
         unlisten = cleanup;
