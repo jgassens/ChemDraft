@@ -451,6 +451,7 @@ pub fn run() {
             plugin_storage_write,
             open_plugin_panel_window,
             open_toolset_popover,
+            prewarm_toolset_popover,
             show_toolset_tooltip_window,
             close_toolset_popover,
             set_toolset_window_focusable,
@@ -980,20 +981,52 @@ fn open_toolset_popover(
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
     if let Some(window) = app.get_webview_window(&label) {
-        // Warm reuse: the webview already has content, so position + show immediately.
+        // Warm reuse: position it, but do NOT show yet — the palette pushes the requested content
+        // right after this call, and the popover webview reveals itself once that content has
+        // painted at the right size. Showing here would flash whatever the webview painted last
+        // (a stale flyout, or a prewarmed window's empty shell) before the swap landed.
         window
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|error| error.to_string())?;
-        window.show().map_err(|error| error.to_string())?;
-        configure_toolset_popover_window(&window, true)?;
+        configure_toolset_popover_window(&window, false)?;
         return Ok(());
     }
 
+    build_toolset_popover_window(&app, &label, &toolset_id, &kind, false, x, y)
+}
+
+/// Builds a palette's popover window hidden, before any flyout/color press needs it. The cold build
+/// is the expensive part of a popover open (a fresh webview loading the whole app bundle — easily a
+/// second or more), which used to land on the FIRST press-and-hold as a long, sometimes-gave-up-
+/// looking delay. Prewarming at palette startup moves that cost off the interaction entirely: every
+/// user-visible open then takes the warm path (reposition + content push + self-reveal, a frame or
+/// two). The `prewarm=1` route param tells the webview to stay hidden until real content arrives.
+#[tauri::command]
+fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
+    let label = toolset_popover_window_label(&toolset_id);
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+
+    build_toolset_popover_window(&app, &label, &toolset_id, "artColor", true, 0.0, 0.0)
+}
+
+fn build_toolset_popover_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    toolset_id: &str,
+    kind: &str,
+    prewarm: bool,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
     let window = WebviewWindowBuilder::new(
-        &app,
-        &label,
+        app,
+        label,
         WebviewUrl::App(
-            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}").into(),
+            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
+                .into(),
         ),
     )
     .title("ChemDraft color picker")

@@ -39,16 +39,19 @@ function hidePopoverWindow() {
 
 export function PalettePopoverWindow({
   toolsetId = "core.art",
-  kind = "artColor"
+  kind = "artColor",
+  prewarm = false
 }: {
   toolsetId?: string;
   kind?: string;
+  /** Built hidden ahead of use (Rust prewarm_toolset_popover): stay invisible until the palette
+   *  pushes real content — never reveal off the initial placeholder state. */
+  prewarm?: boolean;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
-  // The window is built hidden (Rust open_toolset_popover) so the cold webview never flashes a blank
-  // loading window; we reveal it once it has painted real content at the right size. One-shot per
-  // window lifetime — warm reuse is shown by Rust.
-  const revealedRef = useRef(false);
+  // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
+  // (or answer its own mount content-request) before then — its initial state is a placeholder.
+  const contentPushedRef = useRef(false);
   const [content, setContent] = useState<ToolsetPopoverContent>(() =>
     kind === "flyout"
       ? { kind: "flyout", flyout: { flyoutId: "", title: "", commands: [] } }
@@ -75,23 +78,28 @@ export function PalettePopoverWindow({
     };
   }, []);
 
-  // The owning palette pushes what this window should show. Request it on mount too — the palette
-  // may have emitted the content before this window finished subscribing (first open).
+  // The owning palette pushes what this window should show. A cold user-initiated open also requests
+  // it on mount — the palette may have emitted before this window finished subscribing. A prewarmed
+  // window must NOT request: nothing was opened, and the palette's remembered answer (its default)
+  // would masquerade as a push and reveal an unrequested popover.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listenForToolsetPopoverContent((payload) => {
       if (payload.toolsetId !== toolsetId) {
         return;
       }
+      contentPushedRef.current = true;
       setContent(payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" });
     })
       .then((cleanup) => {
         unlisten = cleanup;
-        void requestToolsetPopoverContent(toolsetId).catch(() => undefined);
+        if (!prewarm) {
+          void requestToolsetPopoverContent(toolsetId).catch(() => undefined);
+        }
       })
       .catch(() => undefined);
     return () => unlisten?.();
-  }, [toolsetId]);
+  }, [prewarm, toolsetId]);
 
   // Follow the shared broadcast so the colour picker always opens on the current object's colour.
   useEffect(() => {
@@ -137,46 +145,47 @@ export function PalettePopoverWindow({
     return () => observer.disconnect();
   }, []);
 
-  // Reveal the (initially hidden) window once it has real content to show — the color picker is ready
-  // immediately; a flyout is ready when its commands arrive. Size to the painted content on the next
-  // frame, then show, so the first open appears already-correct instead of blank.
+  // Reveal the window once the requested content has painted at the right size. This runs on EVERY
+  // content push, not once: Rust never shows a reused window (that would flash whatever it painted
+  // last), so each open — cold, warm, or after a dismissal — is revealed here, already-correct.
+  // The color picker is ready immediately; a flyout is ready when its commands arrive. A prewarmed
+  // window sits on placeholder state until the first push, and must not reveal before it.
   useEffect(() => {
     const ready = content.kind === "artColor" || (content.kind === "flyout" && content.flyout.commands.length > 0);
-    if (!ready || revealedRef.current) {
+    if (!ready || (prewarm && !contentPushedRef.current)) {
       return;
     }
     const raf = requestAnimationFrame(() => {
-      if (revealedRef.current) {
-        return;
-      }
       const rect = shellRef.current?.getBoundingClientRect();
       if (rect && rect.width > 0 && rect.height > 0) {
         void setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
           () => undefined
         );
       }
-      revealedRef.current = true;
       void import("@tauri-apps/api/window")
         .then(({ getCurrentWindow }) => getCurrentWindow().show())
         .catch(() => undefined);
     });
     return () => cancelAnimationFrame(raf);
-  }, [content]);
+  }, [content, prewarm]);
 
-  // Safety net: if content never arrives (e.g. the owning palette went away mid-open), show anyway so
-  // the window can't get stuck invisible.
+  // Safety net for a cold user-initiated open: if content never arrives (e.g. the owning palette went
+  // away mid-open), show anyway so the window can't get stuck invisible. Prewarmed windows are the
+  // opposite case — hidden is their correct resting state, so they get no net.
   useEffect(() => {
+    if (prewarm) {
+      return undefined;
+    }
     const fallback = window.setTimeout(() => {
-      if (revealedRef.current) {
+      if (contentPushedRef.current) {
         return;
       }
-      revealedRef.current = true;
       void import("@tauri-apps/api/window")
         .then(({ getCurrentWindow }) => getCurrentWindow().show())
         .catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
-  }, []);
+  }, [prewarm]);
 
   // Escape dismisses (and cancels any in-flight colour preview).
   useEffect(() => {

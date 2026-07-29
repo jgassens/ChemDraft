@@ -192,6 +192,20 @@ export async function openToolsetPopoverWindow(
   await invoke("open_toolset_popover", { toolsetId, kind, x, y });
 }
 
+/**
+ * Builds a palette's popover window hidden, ahead of any press that needs it. The cold build (a
+ * fresh webview loading the app bundle) is what made the first flyout/color open slow; prewarming at
+ * palette startup moves that cost off the interaction, so every visible open takes the warm path.
+ */
+export async function prewarmToolsetPopoverWindow(toolsetId: string): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("prewarm_toolset_popover", { toolsetId }).catch(() => undefined);
+}
+
 export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;

@@ -35,6 +35,7 @@ import {
   dismissToolsetPopovers,
   hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
+  prewarmToolsetPopoverWindow,
   listenForPalettePointer,
   listenForPalettePointerLeave,
   listenForToolsetActiveTool,
@@ -667,6 +668,18 @@ export function PaletteWindow({
   const openFlyoutPopover = (request: ToolbarFlyoutRequest) => {
     openPopover(request.anchor, "flyout", { kind: "flyout", flyout: request.flyout });
   };
+
+  // Build this palette's popover window hidden, ahead of the first flyout/color press. The cold
+  // build (a fresh webview loading the app bundle) is the slow part of a popover open — leaving it
+  // to the first press made that press look unresponsive for a second or more. Deferred briefly so
+  // palette startup itself stays snappy; by the first hold the window is warm and opens in a frame
+  // or two.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void prewarmToolsetPopoverWindow(toolset.id).catch(() => undefined);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [toolset.id]);
 
   // If this palette goes away, don't leave its popover window orphaned on screen.
   useEffect(() => {
