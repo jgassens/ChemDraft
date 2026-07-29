@@ -2743,6 +2743,24 @@ export function MainWindow({
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
+    // Arrow mode: Delete removes the arrow under the pointer. Arrow mode is the arrow-editing mode,
+    // so clearing one shouldn't mean switching to Select and selecting it first.
+    const hoveredArrowId = arrowEditTargetIdRef.current;
+    if (hoveredArrowId && nativeArtToolIsLineDraw(activeToolCommandIdRef.current)) {
+      const nextDocument = deleteSelectedDocumentObjects(
+        selectDocumentObject(currentDocument, hoveredArrowId)
+      );
+      if (nextDocument !== currentDocument) {
+        commitDocumentChange(nextDocument);
+        toolbarStyleTargetRef.current = undefined;
+        setArrowEditTargetId(undefined);
+        setActiveEditorObjectId(undefined);
+        setObjectContextMenu(undefined);
+        setStatus("Deleted arrow");
+        return;
+      }
+    }
+
     // A lasso fragment selection ("parts") takes precedence over a hovered atom/bond:
     // delete every selected atom and bond in one step. A non-fragment selected part
     // (single atom/bond) still routes through the same part-delete path.
@@ -11803,6 +11821,48 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       startNativeFreehandArtDrag(event, point, activeNativeArtTool.commandId);
+      return;
+    }
+
+    // Arrow mode over an existing arrow: press its body (anywhere that isn't one of its handles —
+    // those are buttons that take the press themselves) to MOVE it. Arrow mode is the arrow-editing
+    // mode, so repositioning an arrow shouldn't require a trip to the Select tool; a press on empty
+    // canvas still draws a new one.
+    if (
+      activeNativeArtTool &&
+      nativeArtToolIsLineDraw(activeNativeArtTool.commandId) &&
+      point &&
+      object &&
+      isNativeArtLineFamilyGraphic(object)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedDocument = document.selection.objectIds.includes(objectId)
+        ? document
+        : selectDocumentObject(document, objectId);
+      replacePresentDocument(selectedDocument);
+      setArrowEditTargetId(objectId);
+      objectDragRef.current = {
+        pointerId: event.pointerId,
+        objectId,
+        startDocument: selectedDocument,
+        startPoint: point,
+        latestPoint: point,
+        startObjectX: object.x,
+        startObjectY: object.y,
+        bondTarget: undefined,
+        groupObjectIds: undefined,
+        artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
+        dragging: false
+      };
+      objectDragMachineRef.current = interactionReducer(initialInteractionState(), {
+        type: "pointerDown",
+        pointerId: event.pointerId,
+        world: point,
+        target: { kind: "object", objectId },
+        dragKind: "object-move"
+      });
+      captureElement.setPointerCapture(event.pointerId);
       return;
     }
 

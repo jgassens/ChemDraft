@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MainWindow, type MainWindowProps } from "./MainWindow";
 import {
+  applyNativeArtLineToolAtPoint,
   createPhase4Document,
   insertNativeArtGraphicObject,
   nativeGraphicPathEditPoints,
@@ -1731,5 +1732,73 @@ describe("graphic path direct editing interactions", () => {
       (after.projectedEditPoints?.end.y ?? 0) - target.y
     )).toBeLessThan(0.75);
     expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
+  });
+
+  it("drags an existing arrow to move it while the arrow tool is still active", async () => {
+    // Arrow mode doubles as the arrow-editing mode: pressing an arrow's body (anywhere that isn't
+    // one of its handles) moves it, so repositioning never needs a trip to the Select tool.
+    const document = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Arrow Move In Arrow Mode"),
+      { x: 200, y: 300 },
+      { x: 360, y: 300 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    const before = debugArtObject(objectId);
+    const renderedArrowCount = () => container.querySelectorAll(".graphic-object").length;
+    const arrowsBefore = renderedArrowCount();
+
+    // Hover first: arrow mode opens the hovered arrow for editing, which is what routes the press
+    // to a move instead of drawing a new arrow.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 280, y: 300 }, 31);
+    });
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointerdown", { x: 280, y: 300 }, 31);
+      dispatchPointer(pageElement(), "pointermove", { x: 320, y: 340 }, 31);
+      dispatchPointer(pageElement(), "pointerup", { x: 320, y: 340 }, 31);
+    });
+
+    const after = debugArtObject(objectId);
+    expect(after.object.x - before.object.x).toBeCloseTo(40, 0);
+    expect(after.object.y - before.object.y).toBeCloseTo(40, 0);
+    // Moved the existing arrow rather than drawing an extra one on top of it.
+    expect(renderedArrowCount()).toBe(arrowsBefore);
+  });
+
+  it("deletes the hovered arrow on Delete while the arrow tool is active", async () => {
+    // Two arrows, with the SECOND left selected: Delete must take the one under the pointer, not the
+    // selected one, or this passes on the ordinary delete-selection path without exercising hover.
+    const hoveredDocument = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Arrow Delete On Hover"),
+      { x: 200, y: 300 },
+      { x: 360, y: 300 },
+      "tool.art.reactionArrow"
+    );
+    const hoveredId = hoveredDocument.selection.objectIds[0] ?? "";
+    const document = applyNativeArtLineToolAtPoint(
+      hoveredDocument,
+      { x: 200, y: 500 },
+      { x: 360, y: 500 },
+      "tool.art.reactionArrow"
+    );
+    const selectedId = document.selection.objectIds[0] ?? "";
+    expect(selectedId).not.toBe(hoveredId);
+
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).not.toBeNull();
+
+    await act(async () => {
+      // buttons: 0 — a genuine hover. Arrow mode only opens an arrow for editing when nothing is
+      // being dragged, so a move with a button held would not register as hovering it.
+      dispatchPointer(objectElement(hoveredId), "pointermove", { x: 280, y: 300 }, 32, 1, { buttons: 0 });
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Delete" }));
+    });
+
+    expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).toBeNull();
+    expect(container.querySelector(`[data-object-id="${selectedId}"]`)).not.toBeNull();
   });
 });
