@@ -1355,15 +1355,13 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
   const explicitControl = pointMetadata(object.data.pathControlPoint);
   const start = explicitStart ?? fallback.start;
   const end = explicitEnd ?? fallback.end;
-  const equilibrium = graphicEquilibriumGeometry(object);
+  const shafts = graphicEquilibriumHandlePoints(object);
   return {
     start,
     end,
     middle: explicitControl ?? fallback.middle ?? midpoint(start, end),
     pathKind,
-    ...(equilibrium
-      ? { shafts: { forward: equilibrium.forward.end, reverse: equilibrium.reverse.end } }
-      : {})
+    ...(shafts ? { shafts } : {})
   };
 }
 
@@ -1452,7 +1450,9 @@ function editEquilibriumShaftLength(
   const origin = forward ? start : end;
   const sign = forward ? 1 : -1;
   const along = ((point.x - origin.x) * axis.x + (point.y - origin.y) * axis.y) * sign;
-  const frac = clamp(along / length, EQUILIBRIUM_MIN_FRAC, 1);
+  // The handle is seated back from the arrowhead tip, so add that inset back: the tip tracks the
+  // pointer's own offset from the tail rather than lagging by the seat distance.
+  const frac = clamp((along + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX) / length, EQUILIBRIUM_MIN_FRAC, 1);
   const key = forward ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
   if (Math.abs(equilibriumShaftFraction(object.data[key]) - frac) < 0.001) {
     return object;
@@ -3783,9 +3783,17 @@ export interface NativeArtEquilibriumGeometry {
   reverse: NativeArtEquilibriumShaft;
 }
 
-export const EQUILIBRIUM_DEFAULT_GAP_PX = 7;
+export const EQUILIBRIUM_DEFAULT_GAP_PX = 10;
 /** Shafts never shrink past this fraction of the axis, so both halves stay grabbable. */
 const EQUILIBRIUM_MIN_FRAC = 0.15;
+/**
+ * How far back along its shaft a length handle sits from the arrowhead tip.
+ *
+ * At full length a shaft's head lands exactly on the axis endpoint, so a handle drawn at the tip would
+ * stack on top of the endpoint handle and the endpoint would always win the press. Seating the handle
+ * at the base of the arrowhead keeps the two apart and grabbable.
+ */
+export const EQUILIBRIUM_SHAFT_HANDLE_INSET_PX = 16;
 
 export function equilibriumShaftFraction(value: unknown): number {
   const frac = metadataNumber(value);
@@ -3821,7 +3829,11 @@ export function graphicEquilibriumGeometry(
     return undefined;
   }
 
-  const normal = { x: -axis.y, y: axis.x };
+  // The forward shaft takes the -normal side (above a left-to-right axis) and the reverse shaft the
+  // +normal side, which is the conventional equilibrium layout: forward on top, reverse beneath. It
+  // also puts each half-arrow's barb — always drawn on one fixed side of its own direction — on the
+  // outside of the pair rather than facing inward, which reads as upside down.
+  const normal = { x: axis.y, y: -axis.x };
   const half = (metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2;
   const forwardLength = length * equilibriumShaftFraction(object.data.dualShaftForwardFrac);
   const reverseLength = length * equilibriumShaftFraction(object.data.dualShaftReverseFrac);
@@ -3844,6 +3856,27 @@ export function graphicEquilibriumGeometry(
       direction: { x: -axis.x, y: -axis.y }
     }
   };
+}
+
+/** Where each half-shaft's length handle sits: back along the shaft from its arrowhead tip. */
+export function graphicEquilibriumHandlePoints(
+  object: GraphicObject
+): { forward: NativeArtPoint; reverse: NativeArtPoint } | undefined {
+  const geometry = graphicEquilibriumGeometry(object);
+  if (!geometry) {
+    return undefined;
+  }
+
+  const seat = (shaft: NativeArtEquilibriumShaft): NativeArtPoint => {
+    const length = Math.hypot(shaft.end.x - shaft.start.x, shaft.end.y - shaft.start.y);
+    const inset = Math.min(EQUILIBRIUM_SHAFT_HANDLE_INSET_PX, Math.max(0, length * 0.5));
+    return {
+      x: shaft.end.x - shaft.direction.x * inset,
+      y: shaft.end.y - shaft.direction.y * inset
+    };
+  };
+
+  return { forward: seat(geometry.forward), reverse: seat(geometry.reverse) };
 }
 
 /** Both shafts as one two-subpath `d`, each already shortened to leave room for its arrowhead. */
