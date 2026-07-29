@@ -616,10 +616,15 @@ describe("art-engine native art planning", () => {
     expect(handles?.forward.x).toBeCloseTo(100 - EQUILIBRIUM_SHAFT_HANDLE_INSET_PX, 6);
     expect(handles?.reverse.x).toBeCloseTo(EQUILIBRIUM_SHAFT_HANDLE_INSET_PX, 6);
 
-    // Each direction's length is independent — an equilibrium's two sides are rarely equal.
+    // Each direction's length is independent — an equilibrium's two sides are rarely equal — but a
+    // shorter shaft stays centred on the axis rather than sliding to one end.
     const lopsided = graphicEquilibriumGeometry(equilibrium({ dualShaftForwardFrac: 0.4 }));
-    expect(lopsided?.forward.end.x).toBeCloseTo(40, 6);
-    expect(lopsided?.reverse.end.x).toBeCloseTo(0, 6);
+    expect(lopsided?.forward.start.x).toBeCloseTo(30, 6);
+    expect(lopsided?.forward.end.x).toBeCloseTo(70, 6);
+    const forwardCentre = ((lopsided?.forward.start.x ?? 0) + (lopsided?.forward.end.x ?? 0)) / 2;
+    const reverseCentre = ((lopsided?.reverse.start.x ?? 0) + (lopsided?.reverse.end.x ?? 0)) / 2;
+    expect(forwardCentre).toBeCloseTo(50, 6);
+    expect(reverseCentre).toBeCloseTo(50, 6);
 
     // Both shafts render in one two-subpath `d`, and the marker terminals sit at the two heads.
     const plan = planNativeArtVisual(equilibrium(), { coordinateSpace: "page" });
@@ -645,16 +650,16 @@ describe("art-engine native art planning", () => {
       }
     } as GraphicObject;
 
-    // Forward shaft: the pointer projects onto the axis, plus the handle's seat inset so the head
-    // tracks the cursor rather than lagging behind it.
-    const seat = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX / 100;
+    // Shafts are centred, so a drag measures the head's distance from the midpoint (x=50) — half the
+    // shaft — and the handle's seat inset is added back so the tip tracks the cursor.
+    const fracFor = (headX: number) => (2 * (headX - 50 + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX)) / 100;
     const shortened = editGraphicPathGeometry(graphic, "shaft:forward", { x: 60, y: 44 });
-    expect(shortened?.data.dualShaftForwardFrac).toBeCloseTo(0.6 + seat, 3);
+    expect(shortened?.data.dualShaftForwardFrac).toBeCloseTo(fracFor(60), 3);
     expect(shortened?.data.dualShaftReverseFrac).toBeUndefined();
 
-    // Reverse shaft measures back from the far end instead.
+    // The reverse shaft measures the other way from the same midpoint.
     const reverse = editGraphicPathGeometry(graphic, "shaft:reverse", { x: 25, y: 4 });
-    expect(reverse?.data.dualShaftReverseFrac).toBeCloseTo(0.75 + seat, 3);
+    expect(reverse?.data.dualShaftReverseFrac).toBeCloseTo(fracFor(75), 3);
     expect(reverse?.data.dualShaftForwardFrac).toBeUndefined();
 
     // An equilibrium's axis is straight: the middle handle must not bend it into a curve.

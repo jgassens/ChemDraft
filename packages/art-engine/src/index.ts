@@ -1446,13 +1446,15 @@ function editEquilibriumShaftLength(
     return undefined;
   }
 
+  // Shafts are centred on the axis midpoint, so a drag measures the head's distance from the centre —
+  // half the shaft's length — and the shaft grows or shrinks symmetrically about it. The handle sits
+  // seated back from the tip, so add that inset back for the tip to track the pointer.
   const forward = handle === "shaft:forward";
-  const origin = forward ? start : end;
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
   const sign = forward ? 1 : -1;
-  const along = ((point.x - origin.x) * axis.x + (point.y - origin.y) * axis.y) * sign;
-  // The handle is seated back from the arrowhead tip, so add that inset back: the tip tracks the
-  // pointer's own offset from the tail rather than lagging by the seat distance.
-  const frac = clamp((along + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX) / length, EQUILIBRIUM_MIN_FRAC, 1);
+  const fromCentre = ((point.x - mid.x) * axis.x + (point.y - mid.y) * axis.y) * sign;
+  const shaftLength = 2 * (fromCentre + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX);
+  const frac = clamp(shaftLength / length, EQUILIBRIUM_MIN_FRAC, 1);
   const key = forward ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
   if (Math.abs(equilibriumShaftFraction(object.data[key]) - frac) < 0.001) {
     return object;
@@ -3837,22 +3839,23 @@ export function graphicEquilibriumGeometry(
   const half = (metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2;
   const forwardLength = length * equilibriumShaftFraction(object.data.dualShaftForwardFrac);
   const reverseLength = length * equilibriumShaftFraction(object.data.dualShaftReverseFrac);
+  // Both shafts stay centred on the axis midpoint: an equilibrium's two halves are often unequal in
+  // length, but they are always centred on each other rather than anchored to opposite ends.
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const reach = (shaftLength: number, towards: 1 | -1, side: 1 | -1): NativeArtPoint => ({
+    x: mid.x + axis.x * (shaftLength / 2) * towards + normal.x * half * side,
+    y: mid.y + axis.y * (shaftLength / 2) * towards + normal.y * half * side
+  });
 
   return {
     forward: {
-      start: { x: a.x + normal.x * half, y: a.y + normal.y * half },
-      end: {
-        x: a.x + axis.x * forwardLength + normal.x * half,
-        y: a.y + axis.y * forwardLength + normal.y * half
-      },
+      start: reach(forwardLength, -1, 1),
+      end: reach(forwardLength, 1, 1),
       direction: axis
     },
     reverse: {
-      start: { x: b.x - normal.x * half, y: b.y - normal.y * half },
-      end: {
-        x: b.x - axis.x * reverseLength - normal.x * half,
-        y: b.y - axis.y * reverseLength - normal.y * half
-      },
+      start: reach(reverseLength, 1, -1),
+      end: reach(reverseLength, -1, -1),
       direction: { x: -axis.x, y: -axis.y }
     }
   };
