@@ -3806,6 +3806,11 @@ const EQUILIBRIUM_MIN_FRAC = 0.15;
 export const EQUILIBRIUM_SHAFT_HANDLE_INSET_PX = 16;
 /** How far short of the head's vertex a retrosynthetic arrow's shafts stop. */
 const RETRO_SHAFT_TIP_GAP_PX = 3;
+/** Retrosynthetic head arms: how far back along the axis they sweep from the tip, and how far past
+ *  each shaft they reach. Proportions follow the long-standing retrosynthesis drawing (arms ~10px
+ *  back, ~4.5px beyond shafts sitting 2.5px off the axis). */
+const RETRO_HEAD_ARM_BACK_PX = 10;
+const RETRO_HEAD_ARM_CLEARANCE_PX = 4.5;
 
 export function equilibriumShaftFraction(value: unknown): number {
   const frac = metadataNumber(value);
@@ -3919,9 +3924,9 @@ function graphicEquilibriumPathD(
 
   const shaft = (part: NativeArtEquilibriumShaft, marker: unknown): string => {
     const plan = nativeArtMarkerPlan(marker, strokeWidth);
-    // A parallel arrow's single open head is a V whose vertex is the tip, so its shafts run almost to
-    // that vertex — stopping only a hair short. The generic inset is no use here: it is zero for an
-    // open head (nothing to hide behind), which would leave the shafts poking through the V.
+    // A parallel arrow's shafts run right up to the head arms; the tiny gap keeps the joint from
+    // reading as a blob at typical stroke widths. The generic inset is no use here: it is zero for
+    // open shapes, which would leave the shafts poking past the arms.
     const inset = geometry.head
       ? RETRO_SHAFT_TIP_GAP_PX
       : plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
@@ -3935,7 +3940,29 @@ function graphicEquilibriumPathD(
       `L ${formatNumber(tip.x)} ${formatNumber(tip.y)}`;
   };
 
-  return `${shaft(geometry.forward, object.data.markerEnd)} ${shaft(geometry.reverse, object.data.markerStart)}`;
+  const shafts = `${shaft(geometry.forward, object.data.markerEnd)} ${shaft(geometry.reverse, object.data.markerStart)}`;
+  if (!geometry.head) {
+    return shafts;
+  }
+
+  // Retrosynthetic head, drawn as part of the arrow's own geometry (not a marker): two arms from the
+  // tip sweeping back past BOTH shafts, the classic "=>" — an ordinary arrowhead marker centred on
+  // the axis can never span the pair. Arm reach scales off the shaft gap so the arms always clear it.
+  const { point: tip, direction } = geometry.head;
+  const normal = { x: direction.y, y: -direction.x };
+  const halfGap = Math.abs(
+    (geometry.forward.start.x - geometry.reverse.start.x) * normal.x +
+    (geometry.forward.start.y - geometry.reverse.start.y) * normal.y
+  ) / 2;
+  const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX;
+  const arm = (side: 1 | -1): string => {
+    const end = {
+      x: tip.x - direction.x * RETRO_HEAD_ARM_BACK_PX + normal.x * reach * side,
+      y: tip.y - direction.y * RETRO_HEAD_ARM_BACK_PX + normal.y * reach * side
+    };
+    return `M ${formatNumber(tip.x)} ${formatNumber(tip.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
+  };
+  return `${shafts} ${arm(1)} ${arm(-1)}`;
 }
 
 function graphicPathEndpoints(

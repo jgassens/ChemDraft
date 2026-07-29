@@ -1983,9 +1983,7 @@ function importReactionArrowAsArtArrow(
   const retro = arrowKind === "retrosynthesis";
   const marker = equilibrium
     ? { kind: "half-arrow" as const, sizePx: 14 }
-    : retro
-      ? { kind: "open-arrow" as const, sizePx: 20 }
-      : { kind: "filled-arrow" as const, sizePx: 10 };
+    : { kind: "filled-arrow" as const, sizePx: 10 };
   const artToolId = equilibrium
     ? "equilibriumArrow"
     : retro
@@ -1997,7 +1995,8 @@ function importReactionArrowAsArtArrow(
     data: {
       ...graphic.data,
       artPathKind: "line",
-      markerEnd: marker,
+      // A retrosynthetic arrow has no marker: its "=>" head is part of the path geometry.
+      ...(retro ? {} : { markerEnd: marker }),
       ...(arrowKind === "resonance" || equilibrium ? { markerStart: marker } : {}),
       ...(equilibrium ? { dualShaft: true, dualShaftGapPx: 7 } : {}),
       ...(retro ? { dualShaft: true, dualShaftParallel: true, dualShaftGapPx: 9 } : {}),

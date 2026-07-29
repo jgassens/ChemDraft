@@ -644,10 +644,9 @@ describe("art-engine native art planning", () => {
         artPathKind: "line",
         dualShaft: true,
         dualShaftParallel: true,
-        dualShaftGapPx: 9,
+        dualShaftGapPx: 5,
         lineStart: { x: 0, y: 20 },
-        lineEnd: { x: 100, y: 20 },
-        markerEnd: { kind: "open-arrow", sizePx: 20 }
+        lineEnd: { x: 100, y: 20 }
       }
     } as GraphicObject;
 
@@ -657,14 +656,21 @@ describe("art-engine native art planning", () => {
     }
     // Both shafts run the SAME way (unlike an equilibrium's opposed halves), straddling the axis...
     expect(geometry.forward.direction).toEqual(geometry.reverse.direction);
-    expect(geometry.forward.start).toEqual({ x: 0, y: 15.5 });
-    expect(geometry.reverse.start).toEqual({ x: 0, y: 24.5 });
+    expect(geometry.forward.start).toEqual({ x: 0, y: 17.5 });
+    expect(geometry.reverse.start).toEqual({ x: 0, y: 22.5 });
     // ...under a single head centred on the axis end, spanning them.
     expect(geometry.head?.point).toEqual({ x: 100, y: 20 });
 
+    // Four subpaths: two shafts plus the two head arms — the "=>" head is path geometry, not a
+    // marker, because an axis-centred marker can never span both shafts.
     const plan = planNativeArtVisual(retro, { coordinateSpace: "page" });
-    expect((plan.pathD ?? "").match(/M/g)?.length).toBe(2);
-    expect(plan.markerEndTerminal?.point).toEqual({ x: 100, y: 20 });
+    const subpaths = (plan.pathD ?? "").split("M").map((part) => part.trim()).filter(Boolean);
+    expect(subpaths).toHaveLength(4);
+    // Arms start at the tip and sweep back past both shafts (shafts at y=17.5/22.5; arms reach ±7).
+    expect(subpaths[2]).toBe("100 20 L 90 13");
+    expect(subpaths[3]).toBe("100 20 L 90 27");
+    expect(plan.markerEnd).toBeUndefined();
+    expect(plan.markerHandles).toHaveLength(0);
 
     // The two halves are one arrow, so there are no independent shaft-length handles to offer.
     expect(graphicEquilibriumHandlePoints(retro)).toBeUndefined();
