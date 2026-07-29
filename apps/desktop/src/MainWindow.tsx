@@ -22700,11 +22700,18 @@ function GraphicPathEditHandles({
             label: "Adjust reverse arrow length"
           }
         ]
-      : [
-          { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
-          { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
-          { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
-        ];
+      : object.data.dualShaft === true
+        // Retrosynthetic: two shafts, one arrow. Its axis stays straight, so there is no curve to
+        // bend — offering the middle handle would just be a knob that does nothing.
+        ? [
+            { handle: "start", point: projectedPoints.start, label: "Adjust arrow start" },
+            { handle: "end", point: projectedPoints.end, label: "Adjust arrow end" }
+          ]
+        : [
+            { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
+            { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
+            { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
+          ];
   const handles = allHandles;
 
   return (

@@ -429,12 +429,14 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   // Retrosynthetic: the same two-shaft geometry, but both shafts run the same way with a single open
   // head spanning them ("=>"). Being an art arrow is what gives it the hover dots, drag-to-move and
   // hover-delete the other arrows have; `artToolId` still exports it as ArrowType="RetroSynthetic".
+  // Gap and head size follow the long-standing retrosynthesis drawing (shafts ~2.5px either side of
+  // the axis, head arms ~12px): a wider gap or bigger head makes the arms sprawl across the shafts.
   artShapeTool("retroArrow", "Retrosynthesis Arrow", "path", 82, 46, {
     artPathKind: "line",
     dualShaft: true,
     dualShaftParallel: true,
-    dualShaftGapPx: 9,
-    markerEnd: { kind: "open-arrow", sizePx: 20 }
+    dualShaftGapPx: 5,
+    markerEnd: { kind: "open-arrow", sizePx: 12 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   // Electron/arrow-pushing curves: the existing arc geometry with a reaction arrowhead. Dragging an
   // endpoint flips the sweep, so clockwise presets cover both directions.

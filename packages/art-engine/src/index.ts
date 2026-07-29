@@ -3804,6 +3804,8 @@ const EQUILIBRIUM_MIN_FRAC = 0.15;
  * at the base of the arrowhead keeps the two apart and grabbable.
  */
 export const EQUILIBRIUM_SHAFT_HANDLE_INSET_PX = 16;
+/** How far short of the head's vertex a retrosynthetic arrow's shafts stop. */
+const RETRO_SHAFT_TIP_GAP_PX = 3;
 
 export function equilibriumShaftFraction(value: unknown): number {
   const frac = metadataNumber(value);
@@ -3917,8 +3919,12 @@ function graphicEquilibriumPathD(
 
   const shaft = (part: NativeArtEquilibriumShaft, marker: unknown): string => {
     const plan = nativeArtMarkerPlan(marker, strokeWidth);
-    // A parallel arrow's single head sits ahead of BOTH shafts, so both are trimmed for it.
-    const inset = plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
+    // A parallel arrow's single open head is a V whose vertex is the tip, so its shafts run almost to
+    // that vertex — stopping only a hair short. The generic inset is no use here: it is zero for an
+    // open head (nothing to hide behind), which would leave the shafts poking through the V.
+    const inset = geometry.head
+      ? RETRO_SHAFT_TIP_GAP_PX
+      : plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
     const length = Math.hypot(part.end.x - part.start.x, part.end.y - part.start.y);
     const trim = Math.min(inset, Math.max(0, length - 1));
     const tip = {
