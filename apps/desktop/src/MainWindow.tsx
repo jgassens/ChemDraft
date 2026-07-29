@@ -22432,6 +22432,15 @@ function GraphicRadialGradientHandles({
   );
 }
 
+/**
+ * Whether arrows show a draggable arrowhead-size handle. Off for now: it crowded the arrow, and it sat
+ * within a couple of pixels of an equilibrium's shaft-length handle (both seat themselves just behind
+ * the arrowhead), so it swallowed the presses meant for the shaft. The sizing pipeline underneath —
+ * discrete size steps, symmetric-vs-Shift behaviour, the drag handlers — is untouched, so restoring
+ * the handle is a matter of flipping this back once it has a design that earns the space.
+ */
+const ARROWHEAD_SIZE_HANDLES_ENABLED = false;
+
 function GraphicPathEditHandles({
   object,
   nodeEditPoints,
@@ -22460,10 +22469,12 @@ function GraphicPathEditHandles({
   }
 
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
-  const markerHandles = plan.markerHandles.map((handle) => ({
-    ...handle,
-    point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
-  }));
+  const markerHandles = ARROWHEAD_SIZE_HANDLES_ENABLED
+    ? plan.markerHandles.map((handle) => ({
+        ...handle,
+        point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
+      }))
+    : [];
   if (nodeEditPoints) {
     const bezierControlHandles = nodeEditPoints.pathKind === "bezier" && selectedNodeIndex !== undefined
       ? bezierControlHandlePlans(nodeEditPoints, selectedNodeIndex)
