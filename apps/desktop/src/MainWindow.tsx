@@ -22433,13 +22433,16 @@ function GraphicRadialGradientHandles({
 }
 
 /**
- * Whether arrows show a draggable arrowhead-size handle. Off for now: it crowded the arrow, and it sat
- * within a couple of pixels of an equilibrium's shaft-length handle (both seat themselves just behind
- * the arrowhead), so it swallowed the presses meant for the shaft. The sizing pipeline underneath —
- * discrete size steps, symmetric-vs-Shift behaviour, the drag handlers — is untouched, so restoring
- * the handle is a matter of flipping this back once it has a design that earns the space.
+ * Whether this object shows draggable arrowhead-size handles.
+ *
+ * Suppressed only on equilibrium arrows: their shaft-length handles seat themselves at the base of
+ * each arrowhead, which is where the arrowhead-size handle also sits — measured 2px apart, so the
+ * size handle covered the shaft handle outright and took every press. Every other arrow keeps the
+ * handle, since dragging it is the only way to size an arrowhead at all.
  */
-const ARROWHEAD_SIZE_HANDLES_ENABLED = false;
+function graphicShowsArrowheadSizeHandles(object: GraphicObject): boolean {
+  return object.data.dualShaft !== true;
+}
 
 function GraphicPathEditHandles({
   object,
@@ -22469,7 +22472,7 @@ function GraphicPathEditHandles({
   }
 
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
-  const markerHandles = ARROWHEAD_SIZE_HANDLES_ENABLED
+  const markerHandles = graphicShowsArrowheadSizeHandles(object)
     ? plan.markerHandles.map((handle) => ({
         ...handle,
         point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })

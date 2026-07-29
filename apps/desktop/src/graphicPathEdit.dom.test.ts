@@ -317,10 +317,7 @@ describe("graphic path direct editing interactions", () => {
     });
   });
 
-  // Skipped while the arrowhead-size handle is hidden (ARROWHEAD_SIZE_HANDLES_ENABLED in
-  // MainWindow.tsx): it crowded the arrow and covered the equilibrium shaft-length handles. The
-  // resize pipeline it exercises is still in place, so this returns with the handle.
-  it.skip("drags an arrowhead handle to resize the marker as one undoable edit", async () => {
+  it("drags an arrowhead handle to resize the marker as one undoable edit", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Arrowhead Marker Drag"),
       { x: 220, y: 180 },
@@ -867,8 +864,7 @@ describe("graphic path direct editing interactions", () => {
     expectPositionUsesPageScale(pathHandle("start"));
     expectPositionUsesPageScale(pathHandle("middle"));
     expectPositionUsesPageScale(pathHandle("end"));
-    // The arrowhead-size handle is hidden for now (ARROWHEAD_SIZE_HANDLES_ENABLED), so it is not
-    // among the handles whose placement can be checked here.
+    expectPositionUsesPageScale(markerHandle("markerEnd"));
   });
 
   it("positions native art corner-radius handles through the active page scale", async () => {
