@@ -216,6 +216,9 @@ export type GraphicPathEditHandle =
   | "start"
   | "middle"
   | "end"
+  // Equilibrium arrows only: drag a half-shaft's head end to lengthen or shorten that direction.
+  | "shaft:forward"
+  | "shaft:reverse"
   | `node:${number}`
   | `node:${number}:in`
   | `node:${number}:out`
@@ -236,6 +239,10 @@ export interface GraphicPathEditPoints {
   middle: NativeArtPoint;
   end: NativeArtPoint;
   pathKind: GraphicPathKind;
+  /** Equilibrium arrows: head-end of each half-shaft, draggable to set that direction's length. The
+   *  middle handle is absent for these — an equilibrium's axis is straight, so there is no curve to
+   *  bend, and its slot is taken by the two shaft handles. */
+  shafts?: { forward: NativeArtPoint; reverse: NativeArtPoint };
 }
 
 export interface GraphicPathNodeEditPoint {
@@ -402,10 +409,22 @@ export function planNativeArtVisual(
   })
     ? graphicPathSamplePoints(object, coordinateSpace)
     : undefined;
-  const openStrokeTerminals = capabilities.isOpenStroke && rendersStroke
-    ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
+  // Equilibrium arrows carry two disjoint shafts in one `d`, so the generic terminal derivation (which
+  // walks the path as a single polyline) would straddle the gap between them. Take the terminals
+  // straight from the geometry instead: `markerEnd` heads the forward shaft, `markerStart` the reverse.
+  // The shafts are pre-trimmed for their heads in `graphicPathD`, so the visible-stroke pass is a no-op.
+  const equilibrium = capabilities.isOpenStroke && rendersStroke
+    ? graphicEquilibriumGeometry(object, coordinateSpace)
     : undefined;
-  const visibleStroke = nativeArtVisibleOpenStroke({
+  const openStrokeTerminals = equilibrium
+    ? {
+        start: { point: equilibrium.reverse.end, direction: equilibrium.reverse.direction },
+        end: { point: equilibrium.forward.end, direction: equilibrium.forward.direction }
+      }
+    : capabilities.isOpenStroke && rendersStroke
+      ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
+      : undefined;
+  const visibleStroke = equilibrium ? undefined : nativeArtVisibleOpenStroke({
     line,
     pathD,
     pathPoints,
@@ -1336,11 +1355,15 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
   const explicitControl = pointMetadata(object.data.pathControlPoint);
   const start = explicitStart ?? fallback.start;
   const end = explicitEnd ?? fallback.end;
+  const equilibrium = graphicEquilibriumGeometry(object);
   return {
     start,
     end,
     middle: explicitControl ?? fallback.middle ?? midpoint(start, end),
-    pathKind
+    pathKind,
+    ...(equilibrium
+      ? { shafts: { forward: equilibrium.forward.end, reverse: equilibrium.reverse.end } }
+      : {})
   };
 }
 
@@ -1381,7 +1404,14 @@ export function editGraphicPathGeometry(
   }
 
   const kind = graphicPathKind(object);
+  if (handle === "shaft:forward" || handle === "shaft:reverse") {
+    return editEquilibriumShaftLength(object, handle, point);
+  }
   if (kind === "line" && handle === "middle") {
+    // An equilibrium's axis stays straight — it has no curve to bend into.
+    if (object.data.dualShaft === true) {
+      return undefined;
+    }
     return promoteLineToQuadraticCurve(object, point);
   }
   if (kind === "quadratic" || isLegacyQuadraticArc(object)) {
@@ -1394,6 +1424,47 @@ export function editGraphicPathGeometry(
     return editOpenSegmentGeometry(object, handle, point);
   }
   return undefined;
+}
+
+/**
+ * Drag one half-shaft's head to set that direction's length, as a fraction of the axis. The pointer is
+ * projected onto the axis, so the shaft slides along it rather than chasing the cursor sideways — the
+ * two halves stay parallel however the user drags.
+ */
+function editEquilibriumShaftLength(
+  object: GraphicObject,
+  handle: "shaft:forward" | "shaft:reverse",
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  if (object.data.dualShaft !== true || !start || !end) {
+    return undefined;
+  }
+
+  const axis = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  if (!axis || length <= 0.001) {
+    return undefined;
+  }
+
+  const forward = handle === "shaft:forward";
+  const origin = forward ? start : end;
+  const sign = forward ? 1 : -1;
+  const along = ((point.x - origin.x) * axis.x + (point.y - origin.y) * axis.y) * sign;
+  const frac = clamp(along / length, EQUILIBRIUM_MIN_FRAC, 1);
+  const key = forward ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
+  if (Math.abs(equilibriumShaftFraction(object.data[key]) - frac) < 0.001) {
+    return object;
+  }
+
+  return {
+    ...object,
+    data: {
+      ...object.data,
+      [key]: roundLayoutNumber(frac * 1000) / 1000
+    }
+  };
 }
 
 export function deleteGraphicPathNode(
@@ -3449,6 +3520,14 @@ function graphicPathD(
   }
 
   if (pathKind === "line") {
+    const equilibrium = graphicEquilibriumPathD(
+      object,
+      coordinateSpace,
+      metadataNumber(object.style.strokeWidth) ?? 2
+    );
+    if (equilibrium) {
+      return equilibrium;
+    }
     const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
     return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
   }
@@ -3690,6 +3769,108 @@ function formattedNodePoint(
 ): string {
   const resolved = pointForArtSpace(object, point, coordinateSpace);
   return `${formatNumber(resolved.x)} ${formatNumber(resolved.y)}`;
+}
+
+/** One half of an equilibrium arrow: tail at `start`, arrowhead at `end` pointing along `direction`. */
+export interface NativeArtEquilibriumShaft {
+  start: NativeArtPoint;
+  end: NativeArtPoint;
+  direction: NativeArtPoint;
+}
+
+export interface NativeArtEquilibriumGeometry {
+  forward: NativeArtEquilibriumShaft;
+  reverse: NativeArtEquilibriumShaft;
+}
+
+export const EQUILIBRIUM_DEFAULT_GAP_PX = 7;
+/** Shafts never shrink past this fraction of the axis, so both halves stay grabbable. */
+const EQUILIBRIUM_MIN_FRAC = 0.15;
+
+export function equilibriumShaftFraction(value: unknown): number {
+  const frac = metadataNumber(value);
+  return frac === undefined ? 1 : clamp(frac, EQUILIBRIUM_MIN_FRAC, 1);
+}
+
+/**
+ * The two half-shafts of an equilibrium arrow, derived from the `lineStart`->`lineEnd` axis.
+ *
+ * The forward shaft sits one half-gap to the left of the axis and runs from the tail toward the head;
+ * the reverse shaft mirrors it on the other side, running back the other way. Each length is an
+ * independent fraction of the axis so the two directions can be drawn unequal.
+ */
+export function graphicEquilibriumGeometry(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace = "page"
+): NativeArtEquilibriumGeometry | undefined {
+  if (object.data.dualShaft !== true) {
+    return undefined;
+  }
+
+  const rawStart = pointMetadata(object.data.lineStart);
+  const rawEnd = pointMetadata(object.data.lineEnd);
+  if (!rawStart || !rawEnd) {
+    return undefined;
+  }
+
+  const a = pointForArtSpace(object, rawStart, coordinateSpace);
+  const b = pointForArtSpace(object, rawEnd, coordinateSpace);
+  const axis = normalizedVector({ x: b.x - a.x, y: b.y - a.y });
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!axis || length <= 0.001) {
+    return undefined;
+  }
+
+  const normal = { x: -axis.y, y: axis.x };
+  const half = (metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2;
+  const forwardLength = length * equilibriumShaftFraction(object.data.dualShaftForwardFrac);
+  const reverseLength = length * equilibriumShaftFraction(object.data.dualShaftReverseFrac);
+
+  return {
+    forward: {
+      start: { x: a.x + normal.x * half, y: a.y + normal.y * half },
+      end: {
+        x: a.x + axis.x * forwardLength + normal.x * half,
+        y: a.y + axis.y * forwardLength + normal.y * half
+      },
+      direction: axis
+    },
+    reverse: {
+      start: { x: b.x - normal.x * half, y: b.y - normal.y * half },
+      end: {
+        x: b.x - axis.x * reverseLength - normal.x * half,
+        y: b.y - axis.y * reverseLength - normal.y * half
+      },
+      direction: { x: -axis.x, y: -axis.y }
+    }
+  };
+}
+
+/** Both shafts as one two-subpath `d`, each already shortened to leave room for its arrowhead. */
+function graphicEquilibriumPathD(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  strokeWidth: number
+): string | undefined {
+  const geometry = graphicEquilibriumGeometry(object, coordinateSpace);
+  if (!geometry) {
+    return undefined;
+  }
+
+  const shaft = (part: NativeArtEquilibriumShaft, marker: unknown): string => {
+    const plan = nativeArtMarkerPlan(marker, strokeWidth);
+    const inset = plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
+    const length = Math.hypot(part.end.x - part.start.x, part.end.y - part.start.y);
+    const trim = Math.min(inset, Math.max(0, length - 1));
+    const tip = {
+      x: part.end.x - part.direction.x * trim,
+      y: part.end.y - part.direction.y * trim
+    };
+    return `M ${formatNumber(part.start.x)} ${formatNumber(part.start.y)} ` +
+      `L ${formatNumber(tip.x)} ${formatNumber(tip.y)}`;
+  };
+
+  return `${shaft(geometry.forward, object.data.markerEnd)} ${shaft(geometry.reverse, object.data.markerStart)}`;
 }
 
 function graphicPathEndpoints(

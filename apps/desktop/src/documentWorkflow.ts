@@ -265,6 +265,7 @@ export type NativeArtToolId =
   | "reactionArrowBold"
   | "reactionArrowDashed"
   | "resonanceArrow"
+  | "equilibriumArrow"
   | "curvedArrow90"
   | "curvedArrow180"
   | "fishhookArrow"
@@ -413,6 +414,16 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
     artPathKind: "line",
     markerStart: { kind: "filled-arrow", sizePx: 16 },
     markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Equilibrium: two parallel half-shafts pointing opposite ways. `markerEnd` heads the forward shaft
+  // and `markerStart` the reverse one, so head sizing reuses the ordinary marker handles; each shaft's
+  // length is an independent fraction of the axis (an equilibrium's two sides are rarely equal).
+  artShapeTool("equilibriumArrow", "Equilibrium Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    dualShaft: true,
+    dualShaftGapPx: 7,
+    markerStart: { kind: "half-arrow", sizePx: 14 },
+    markerEnd: { kind: "half-arrow", sizePx: 14 }
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   // Electron/arrow-pushing curves: the existing arc geometry with a reaction arrowhead. Dragging an
   // endpoint flips the sweep, so clockwise presets cover both directions.

@@ -1050,8 +1050,13 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // Foreign CDXML — the spellings another program writes. `bactvue-visible-subset` is a real
     // third-party fixture already carrying ArrowType="FullHead"; substituting into it keeps the
     // reader on genuinely foreign input rather than on our own output.
-    // The imported semantic arrow kind, regardless of representation: reaction/resonance arrive as
-    // tagged art arrows (graphic + artToolId), equilibrium/retro/unknown as legacy reaction-arrow objects.
+    // The imported semantic arrow kind, regardless of representation: reaction/resonance/equilibrium
+    // arrive as tagged art arrows (graphic + artToolId), retro/unknown as legacy reaction-arrow objects.
+    const ART_ARROW_KINDS: Readonly<Record<string, ArrowObject["arrowKind"]>> = {
+      reactionArrow: "forward",
+      resonanceArrow: "resonance",
+      equilibriumArrow: "equilibrium"
+    };
     const foreign = (arrowType: string) => {
       const cdxml = cdxmlFixture("bactvue-visible-subset.cdxml")
         .replace('ArrowType="FullHead"', `ArrowType="${arrowType}"`);
@@ -1059,10 +1064,11 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       const artArrow = objects.find(
         (object): object is GraphicObject =>
           object.type === "graphic" &&
-          (object.data.artToolId === "reactionArrow" || object.data.artToolId === "resonanceArrow")
+          typeof object.data.artToolId === "string" &&
+          object.data.artToolId in ART_ARROW_KINDS
       );
       if (artArrow) {
-        return artArrow.data.artToolId === "resonanceArrow" ? "resonance" : "forward";
+        return ART_ARROW_KINDS[artArrow.data.artToolId as string];
       }
       return objects.find((object): object is ArrowObject => object.type === "reaction-arrow")?.arrowKind;
     };

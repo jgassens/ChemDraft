@@ -8824,10 +8824,12 @@ export function MainWindow({
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
-    // Art lines/arrows don't paint anything on the initial press: the arrow only appears once the
-    // pointer moves (custom length/angle) or the press is released (default-length arrow). Other
-    // placements keep their long-standing press-time preview.
-    replacePresentDocument(placement.kind === "art-line" ? startDocument : placementDocument);
+    // Arrows of every family — art lines and the legacy reaction arrows alike — paint nothing on the
+    // initial press: the arrow appears once the pointer moves (custom length/angle) or the press is
+    // released (default-length arrow). Bonds, templates, and chains keep their press-time preview,
+    // where seeing the placement under the cursor is the point.
+    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow";
+    replacePresentDocument(paintsOnPress ? placementDocument : startDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -9320,7 +9322,13 @@ export function MainWindow({
 
   const graphicMarkerDocumentFromDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint): ChemDraftDocument => {
     const editPoint = nativeGraphicPathEditPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
-    return updateNativeGraphicMarkerHandle(drag.startDocument, drag.objectId, drag.markerId, editPoint, { symmetric: !drag.shiftKey });
+    // Two-headed arrows default to whichever behaviour is usually wanted, and Shift asks for the other:
+    // a resonance arrow's heads should match, so it scales both unless Shift; an equilibrium's two
+    // halves are routinely unequal, so it sizes one head unless Shift.
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    const dualShaft = object?.type === "graphic" && object.data.dualShaft === true;
+    const symmetric = dualShaft ? drag.shiftKey : !drag.shiftKey;
+    return updateNativeGraphicMarkerHandle(drag.startDocument, drag.objectId, drag.markerId, editPoint, { symmetric });
   }, []);
 
   const previewGraphicMarkerDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint) => {
@@ -22601,11 +22609,28 @@ function GraphicPathEditHandles({
         { handle: "middle", point: projectedPoints.middle, label: "Adjust arc radius" },
         { handle: "end", point: projectedPoints.end, label: "Adjust arc sweep" }
       ]
-    : [
-        { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
-        { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
-        { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
-      ];
+    : points.shafts
+      // Equilibrium: the axis stays straight, so the middle handle's curve-bend slot gives way to one
+      // handle per half-shaft, each setting that direction's length.
+      ? [
+          { handle: "start", point: projectedPoints.start, label: "Adjust equilibrium start" },
+          { handle: "end", point: projectedPoints.end, label: "Adjust equilibrium end" },
+          {
+            handle: "shaft:forward" as const,
+            point: projectGraphicObjectPoint(object, points.shafts.forward),
+            label: "Adjust forward arrow length"
+          },
+          {
+            handle: "shaft:reverse" as const,
+            point: projectGraphicObjectPoint(object, points.shafts.reverse),
+            label: "Adjust reverse arrow length"
+          }
+        ]
+      : [
+          { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
+          { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
+          { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
+        ];
   const handles = allHandles;
 
   return (

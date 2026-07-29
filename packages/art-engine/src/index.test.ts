@@ -10,6 +10,7 @@ import {
   editGraphicMarkerSize,
   MARKER_SIZE_STEP_PX,
   editGraphicPathGeometry,
+  graphicEquilibriumGeometry,
   graphicCornerRadiusEditPoint,
   graphicObjectIntersectsPolygon,
   graphicPathEditPoints,
@@ -573,6 +574,80 @@ describe("art-engine native art planning", () => {
       kind: "filled-arrow",
       sizePx: 24
     });
+  });
+
+  it("plans an equilibrium arrow as two opposed half-shafts with independent lengths", () => {
+    const equilibrium = (extra: Record<string, unknown> = {}) => ({
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftGapPx: 8,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 },
+        ...extra
+      }
+    }) as GraphicObject;
+
+    const geometry = graphicEquilibriumGeometry(equilibrium());
+    if (!geometry) {
+      throw new Error("Expected equilibrium geometry.");
+    }
+    // The shafts straddle the axis, one per side, pointing opposite ways.
+    expect(geometry.forward.start).toEqual({ x: 0, y: 24 });
+    expect(geometry.forward.end).toEqual({ x: 100, y: 24 });
+    expect(geometry.forward.direction).toEqual({ x: 1, y: 0 });
+    expect(geometry.reverse.start).toEqual({ x: 100, y: 16 });
+    expect(geometry.reverse.end).toEqual({ x: 0, y: 16 });
+    expect(geometry.reverse.direction.x).toBe(-1);
+    expect(geometry.reverse.direction.y).toBeCloseTo(0, 10);
+
+    // Each direction's length is independent — an equilibrium's two sides are rarely equal.
+    const lopsided = graphicEquilibriumGeometry(equilibrium({ dualShaftForwardFrac: 0.4 }));
+    expect(lopsided?.forward.end.x).toBeCloseTo(40, 6);
+    expect(lopsided?.reverse.end.x).toBeCloseTo(0, 6);
+
+    // Both shafts render in one two-subpath `d`, and the marker terminals sit at the two heads.
+    const plan = planNativeArtVisual(equilibrium(), { coordinateSpace: "page" });
+    expect((plan.pathD ?? "").match(/M/g)?.length).toBe(2);
+    expect(plan.markerEndTerminal?.point).toEqual(geometry.forward.end);
+    expect(plan.markerStartTerminal?.point).toEqual(geometry.reverse.end);
+    expect(plan.markerHandles.map((handle) => handle.id).sort()).toEqual(["markerEnd", "markerStart"]);
+  });
+
+  it("drags an equilibrium half-shaft to set only that direction's length", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    } as GraphicObject;
+
+    // Forward shaft: the pointer projects onto the axis, so 60 units along means 60% of it.
+    const shortened = editGraphicPathGeometry(graphic, "shaft:forward", { x: 60, y: 44 });
+    expect(shortened?.data.dualShaftForwardFrac).toBeCloseTo(0.6, 3);
+    expect(shortened?.data.dualShaftReverseFrac).toBeUndefined();
+
+    // Reverse shaft measures back from the far end instead.
+    const reverse = editGraphicPathGeometry(graphic, "shaft:reverse", { x: 25, y: 4 });
+    expect(reverse?.data.dualShaftReverseFrac).toBeCloseTo(0.75, 3);
+    expect(reverse?.data.dualShaftForwardFrac).toBeUndefined();
+
+    // An equilibrium's axis is straight: the middle handle must not bend it into a curve.
+    expect(editGraphicPathGeometry(graphic, "middle", { x: 50, y: 0 })).toBeUndefined();
   });
 
   it("snaps arrowhead marker size to discrete 4px steps", () => {

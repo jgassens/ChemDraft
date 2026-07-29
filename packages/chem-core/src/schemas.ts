@@ -240,6 +240,14 @@ export const GraphicObjectDataSchema = z
     markerEnd: GraphicMarkerSchema.optional(),
     // Decoration drawn across the shaft midpoint ("cross" = X, the no-reaction mark).
     shaftMark: z.enum(["cross"]).optional(),
+    // Equilibrium arrows: two parallel half-shafts pointing opposite ways along lineStart->lineEnd.
+    // `markerEnd` heads the forward (offset +normal) shaft, `markerStart` the reverse one, so head
+    // sizing rides the ordinary marker machinery. Each shaft's length is an independent fraction of
+    // the axis, because an equilibrium's two directions are rarely equal.
+    dualShaft: z.boolean().optional(),
+    dualShaftGapPx: z.number().finite().positive().optional(),
+    dualShaftForwardFrac: z.number().finite().positive().optional(),
+    dualShaftReverseFrac: z.number().finite().positive().optional(),
     cornerRadiusPx: z.number().finite().nonnegative().optional(),
     imageHref: z.string().optional(),
     imageMimeType: z.string().optional(),

@@ -523,7 +523,7 @@
                     "assetName": "Custom_Arrow_Resonance"
                   },
                   {
-                    "commandId": "tool.equilibriumArrow",
+                    "commandId": "tool.art.equilibriumArrow",
                     "label": "Equilibrium Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Equilibrium"
@@ -601,17 +601,17 @@
               }
             },
             {
-              "commandId": "tool.equilibriumArrow",
+              "commandId": "tool.art.equilibriumArrow",
               "title": "Equilibrium Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Equilibrium",
               "category": "arrows",
-              "id": "tool.equilibriumArrow",
+              "id": "tool.art.equilibriumArrow",
               "kind": "button",
               "label": "Equilibrium Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.equilibriumArrow"
+                "commandId": "tool.art.equilibriumArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -2305,7 +2305,7 @@
                     "assetName": "Custom_Arrow_Resonance"
                   },
                   {
-                    "commandId": "tool.equilibriumArrow",
+                    "commandId": "tool.art.equilibriumArrow",
                     "label": "Equilibrium Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Equilibrium"
@@ -2383,17 +2383,17 @@
               }
             },
             {
-              "commandId": "tool.equilibriumArrow",
+              "commandId": "tool.art.equilibriumArrow",
               "title": "Equilibrium Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Equilibrium",
               "category": "arrows",
-              "id": "tool.equilibriumArrow",
+              "id": "tool.art.equilibriumArrow",
               "kind": "button",
               "label": "Equilibrium Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.equilibriumArrow"
+                "commandId": "tool.art.equilibriumArrow"
               },
               "submenu": null,
               "tooltip": {

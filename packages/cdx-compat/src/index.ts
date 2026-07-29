@@ -683,7 +683,9 @@ function exportGraphicObject(
  *  arrow. Reaction/resonance arrows are drawn with the art-arrow tools for their rich editing but
  *  carry their chemistry in `artToolId`, which is how the CDXML layer knows to write/read them as
  *  reaction arrows rather than generic graphics. */
-function semanticReactionArrowKind(graphic: GraphicObject): "forward" | "resonance" | undefined {
+function semanticReactionArrowKind(
+  graphic: GraphicObject
+): "forward" | "resonance" | "equilibrium" | undefined {
   if (
     graphic.data.artToolId === "reactionArrow" ||
     graphic.data.artToolId === "reactionArrowBold" ||
@@ -693,6 +695,9 @@ function semanticReactionArrowKind(graphic: GraphicObject): "forward" | "resonan
   }
   if (graphic.data.artToolId === "resonanceArrow") {
     return "resonance";
+  }
+  if (graphic.data.artToolId === "equilibriumArrow") {
+    return "equilibrium";
   }
   return undefined;
 }
@@ -1927,7 +1932,7 @@ function importGraphic(
     // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
     // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
     // and unknown stay the legacy `reaction-arrow` object until they're migrated in a later pass.
-    if (arrowKind === "forward" || arrowKind === "resonance") {
+    if (arrowKind === "forward" || arrowKind === "resonance" || arrowKind === "equilibrium") {
       return importReactionArrowAsArtArrow(element, pageIndex, objectIndex, context, arrowKind);
     }
     const start = parseCdxmlPoint(element.attributes.Start) ?? { x: box.x, y: box.y };
@@ -1966,10 +1971,17 @@ function importReactionArrowAsArtArrow(
   pageIndex: number,
   objectIndex: number,
   context: ImportPageContext,
-  arrowKind: "forward" | "resonance"
+  arrowKind: "forward" | "resonance" | "equilibrium"
 ): GraphicObject {
   const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
-  const marker = { kind: "filled-arrow" as const, sizePx: 10 };
+  // Equilibrium is the two-shaft form: half-arrow heads facing opposite ways, one per shaft.
+  const equilibrium = arrowKind === "equilibrium";
+  const marker = equilibrium
+    ? { kind: "half-arrow" as const, sizePx: 14 }
+    : { kind: "filled-arrow" as const, sizePx: 10 };
+  const artToolId = equilibrium
+    ? "equilibriumArrow"
+    : arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow";
   return {
     ...graphic,
     graphicKind: "path",
@@ -1977,8 +1989,9 @@ function importReactionArrowAsArtArrow(
       ...graphic.data,
       artPathKind: "line",
       markerEnd: marker,
-      ...(arrowKind === "resonance" ? { markerStart: marker } : {}),
-      artToolId: arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow"
+      ...(arrowKind === "resonance" || equilibrium ? { markerStart: marker } : {}),
+      ...(equilibrium ? { dualShaft: true, dualShaftGapPx: 7 } : {}),
+      artToolId
     }
   };
 }

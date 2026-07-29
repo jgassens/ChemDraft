@@ -1915,7 +1915,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.art.rect",
       "tool.art.reactionArrow",
       "tool.art.resonanceArrow",
-      "tool.equilibriumArrow",
+      "tool.art.equilibriumArrow",
       "tool.retroArrow",
       "tool.lobe",
       "tool.shadedLobe",
