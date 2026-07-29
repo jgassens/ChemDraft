@@ -3839,8 +3839,6 @@ const EQUILIBRIUM_MIN_FRAC = 0.15;
  * at the base of the arrowhead keeps the two apart and grabbable.
  */
 export const EQUILIBRIUM_SHAFT_HANDLE_INSET_PX = 16;
-/** How far short of the head's vertex a retrosynthetic arrow's shafts stop. */
-const RETRO_SHAFT_TIP_GAP_PX = 3;
 /** Retrosynthetic head arms: how far back along the axis they sweep from the tip, and how far past
  *  each shaft they reach. Proportions follow the long-standing retrosynthesis drawing (arms ~10px
  *  back, ~4.5px beyond shafts sitting 2.5px off the axis). */
@@ -3995,13 +3993,29 @@ function graphicEquilibriumPathD(
     return undefined;
   }
 
+  // Retrosynthetic head geometry, needed up front because the shafts stop where they MEET the arms.
+  // The arms sweep from the tip back past both shafts, so each shaft's trim is the along-axis
+  // distance at which an arm crosses its offset: back * (halfGap / reach). A fixed trim only worked
+  // at scale 1 — grow the head and the shafts speared straight through the V.
+  const head = geometry.head
+    ? (() => {
+        const { point: tip, direction } = geometry.head;
+        const normal = { x: direction.y, y: -direction.x };
+        const halfGap = Math.abs(
+          (geometry.forward.start.x - geometry.reverse.start.x) * normal.x +
+          (geometry.forward.start.y - geometry.reverse.start.y) * normal.y
+        ) / 2;
+        const scale = retroArrowScale(object);
+        const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX * scale;
+        const back = RETRO_HEAD_ARM_BACK_PX * scale;
+        return { tip, direction, normal, reach, back, shaftTrim: back * (halfGap / reach) };
+      })()
+    : undefined;
+
   const shaft = (part: NativeArtEquilibriumShaft, marker: unknown): string => {
     const plan = nativeArtMarkerPlan(marker, strokeWidth);
-    // A parallel arrow's shafts run right up to the head arms; the tiny gap keeps the joint from
-    // reading as a blob at typical stroke widths. The generic inset is no use here: it is zero for
-    // open shapes, which would leave the shafts poking past the arms.
-    const inset = geometry.head
-      ? RETRO_SHAFT_TIP_GAP_PX
+    const inset = head
+      ? head.shaftTrim
       : plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
     const length = Math.hypot(part.end.x - part.start.x, part.end.y - part.start.y);
     const trim = Math.min(inset, Math.max(0, length - 1));
@@ -4014,28 +4028,18 @@ function graphicEquilibriumPathD(
   };
 
   const shafts = `${shaft(geometry.forward, object.data.markerEnd)} ${shaft(geometry.reverse, object.data.markerStart)}`;
-  if (!geometry.head) {
+  if (!head) {
     return shafts;
   }
 
-  // Retrosynthetic head, drawn as part of the arrow's own geometry (not a marker): two arms from the
-  // tip sweeping back past BOTH shafts, the classic "=>" — an ordinary arrowhead marker centred on
-  // the axis can never span the pair. Arm reach scales off the shaft gap so the arms always clear it.
-  const { point: tip, direction } = geometry.head;
-  const normal = { x: direction.y, y: -direction.x };
-  const halfGap = Math.abs(
-    (geometry.forward.start.x - geometry.reverse.start.x) * normal.x +
-    (geometry.forward.start.y - geometry.reverse.start.y) * normal.y
-  ) / 2;
-  const scale = retroArrowScale(object);
-  const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX * scale;
-  const back = RETRO_HEAD_ARM_BACK_PX * scale;
+  // Two arms from the tip sweeping back past BOTH shafts, the classic "=>" — an ordinary arrowhead
+  // marker centred on the axis can never span the pair. Drawn as the arrow's own path geometry.
   const arm = (side: 1 | -1): string => {
     const end = {
-      x: tip.x - direction.x * back + normal.x * reach * side,
-      y: tip.y - direction.y * back + normal.y * reach * side
+      x: head.tip.x - head.direction.x * head.back + head.normal.x * head.reach * side,
+      y: head.tip.y - head.direction.y * head.back + head.normal.y * head.reach * side
     };
-    return `M ${formatNumber(tip.x)} ${formatNumber(tip.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
+    return `M ${formatNumber(head.tip.x)} ${formatNumber(head.tip.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
   };
   return `${shafts} ${arm(1)} ${arm(-1)}`;
 }

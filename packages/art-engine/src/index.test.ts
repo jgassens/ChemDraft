@@ -711,13 +711,31 @@ describe("art-engine native art planning", () => {
       Math.abs(g.forward.start.y - g.reverse.start.y);
     expect(gap(after)).toBeCloseTo(gap(before) * 2, 3);
 
-    const armReach = (object: GraphicObject) => {
-      const subpaths = (planNativeArtVisual(object, { coordinateSpace: "page" }).pathD ?? "")
+    const subpathsOf = (object: GraphicObject) =>
+      (planNativeArtVisual(object, { coordinateSpace: "page" }).pathD ?? "")
         .split("M").map((part) => part.trim()).filter(Boolean);
-      const [, armY] = subpaths[2]!.split("L")[1]!.trim().split(" ").map(Number);
+    const armReach = (object: GraphicObject) => {
+      const [, armY] = subpathsOf(object)[2]!.split("L")[1]!.trim().split(" ").map(Number);
       return Math.abs(20 - armY!);
     };
     expect(armReach(bigger)).toBeCloseTo(armReach(retro) * 2, 3);
+
+    // The shafts stop where the head arms cross them AT EVERY SCALE — with a fixed trim, growing the
+    // head sent the shafts spearing straight through the V. Where an arm crosses a shaft's offset:
+    // x = tip - back * (halfGap / reach); each shaft must end there, not past it.
+    for (const object of [retro, bigger]) {
+      const subpaths = subpathsOf(object);
+      const geometry = graphicEquilibriumGeometry(object)!;
+      const halfGap = Math.abs(geometry.forward.start.y - geometry.reverse.start.y) / 2;
+      const armEnd = subpaths[2]!.split("L")[1]!.trim().split(" ").map(Number);
+      const back = 100 - armEnd[0]!;
+      const reach = Math.abs(20 - armEnd[1]!);
+      const crossingX = 100 - back * (halfGap / reach);
+      for (const shaftIndex of [0, 1]) {
+        const shaftEndX = Number(subpaths[shaftIndex]!.split("L")[1]!.trim().split(" ")[0]);
+        expect(shaftEndX).toBeCloseTo(crossingX, 3);
+      }
+    }
 
     // Resizing must never bend it — the axis of a retrosynthetic arrow stays straight.
     expect(bigger.data.pathControlPoint).toBeUndefined();
