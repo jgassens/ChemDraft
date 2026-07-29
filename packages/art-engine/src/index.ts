@@ -1410,7 +1410,12 @@ export function editGraphicPathGeometry(
     return editEquilibriumShaftLength(object, handle, point);
   }
   if (kind === "line" && handle === "middle") {
-    // An equilibrium's axis stays straight — it has no curve to bend into.
+    // A retrosynthetic arrow's middle knob resizes it rather than bending it — its axis stays
+    // straight, but the whole arrow (shaft gap and head together) grows or shrinks.
+    if (object.data.dualShaftParallel === true) {
+      return editRetroArrowScale(object, point);
+    }
+    // An equilibrium's axis stays straight too, and it has nothing to resize this way.
     if (object.data.dualShaft === true) {
       return undefined;
     }
@@ -1426,6 +1431,36 @@ export function editGraphicPathGeometry(
     return editOpenSegmentGeometry(object, handle, point);
   }
   return undefined;
+}
+
+/**
+ * Drag the middle knob to resize a retrosynthetic arrow. Scale comes from how far the pointer sits
+ * off the axis, measured the same way the knob is placed, so the arrow tracks the cursor 1:1.
+ */
+function editRetroArrowScale(object: GraphicObject, point: NativeArtPoint): GraphicObject | undefined {
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  if (!start || !end) {
+    return undefined;
+  }
+
+  const axis = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+  if (!axis) {
+    return undefined;
+  }
+
+  const normal = { x: axis.y, y: -axis.x };
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const offAxis = Math.abs((point.x - mid.x) * normal.x + (point.y - mid.y) * normal.y);
+  const scale = clamp(offAxis / RETRO_SCALE_HANDLE_OFFSET_PX, RETRO_MIN_SCALE, RETRO_MAX_SCALE);
+  if (Math.abs(retroArrowScale(object) - scale) < 0.001) {
+    return object;
+  }
+
+  return {
+    ...object,
+    data: { ...object.data, dualShaftScale: roundLayoutNumber(scale * 100) / 100 }
+  };
 }
 
 /**
@@ -3811,6 +3846,17 @@ const RETRO_SHAFT_TIP_GAP_PX = 3;
  *  back, ~4.5px beyond shafts sitting 2.5px off the axis). */
 const RETRO_HEAD_ARM_BACK_PX = 10;
 const RETRO_HEAD_ARM_CLEARANCE_PX = 4.5;
+/** Where the resize knob floats off the axis at scale 1; it tracks the scale, so grabbing it never
+ *  jumps and the drag distance reads directly as the new scale. */
+const RETRO_SCALE_HANDLE_OFFSET_PX = 12;
+const RETRO_MIN_SCALE = 0.4;
+const RETRO_MAX_SCALE = 6;
+
+/** Overall heft of a retrosynthetic arrow: scales its shaft gap and head together. */
+export function retroArrowScale(object: GraphicObject): number {
+  const scale = metadataNumber(object.data.dualShaftScale);
+  return scale === undefined ? 1 : clamp(scale, RETRO_MIN_SCALE, RETRO_MAX_SCALE);
+}
 
 export function equilibriumShaftFraction(value: unknown): number {
   const frac = metadataNumber(value);
@@ -3856,9 +3902,10 @@ export function graphicEquilibriumGeometry(
   // Retrosynthetic: both shafts run the same way, full length, with one head spanning them at the
   // axis end. There is nothing per-shaft to vary here — it reads as a single double-shafted arrow.
   if (object.data.dualShaftParallel === true) {
+    const scaledHalf = half * retroArrowScale(object);
     const offset = (side: 1 | -1): NativeArtEquilibriumShaft => ({
-      start: { x: a.x + normal.x * half * side, y: a.y + normal.y * half * side },
-      end: { x: b.x + normal.x * half * side, y: b.y + normal.y * half * side },
+      start: { x: a.x + normal.x * scaledHalf * side, y: a.y + normal.y * scaledHalf * side },
+      end: { x: b.x + normal.x * scaledHalf * side, y: b.y + normal.y * scaledHalf * side },
       direction: axis
     });
     return { forward: offset(1), reverse: offset(-1), head: { point: b, direction: axis } };
@@ -3885,6 +3932,32 @@ export function graphicEquilibriumGeometry(
       end: reach(reverseLength, -1, -1),
       direction: { x: -axis.x, y: -axis.y }
     }
+  };
+}
+
+/**
+ * Where a retrosynthetic arrow's resize knob sits: off the axis midpoint, at a distance that tracks
+ * the current scale. Because position and scale share one factor, grabbing the knob never makes it
+ * jump, and the drag distance maps straight back to the new scale.
+ */
+export function graphicRetroScaleHandlePoint(object: GraphicObject): NativeArtPoint | undefined {
+  const geometry = graphicEquilibriumGeometry(object);
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  if (!geometry?.head || !start || !end) {
+    return undefined;
+  }
+
+  const axis = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+  if (!axis) {
+    return undefined;
+  }
+
+  const normal = { x: axis.y, y: -axis.x };
+  const reach = RETRO_SCALE_HANDLE_OFFSET_PX * retroArrowScale(object);
+  return {
+    x: (start.x + end.x) / 2 + normal.x * reach,
+    y: (start.y + end.y) / 2 + normal.y * reach
   };
 }
 
@@ -3954,11 +4027,13 @@ function graphicEquilibriumPathD(
     (geometry.forward.start.x - geometry.reverse.start.x) * normal.x +
     (geometry.forward.start.y - geometry.reverse.start.y) * normal.y
   ) / 2;
-  const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX;
+  const scale = retroArrowScale(object);
+  const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX * scale;
+  const back = RETRO_HEAD_ARM_BACK_PX * scale;
   const arm = (side: 1 | -1): string => {
     const end = {
-      x: tip.x - direction.x * RETRO_HEAD_ARM_BACK_PX + normal.x * reach * side,
-      y: tip.y - direction.y * RETRO_HEAD_ARM_BACK_PX + normal.y * reach * side
+      x: tip.x - direction.x * back + normal.x * reach * side,
+      y: tip.y - direction.y * back + normal.y * reach * side
     };
     return `M ${formatNumber(tip.x)} ${formatNumber(tip.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
   };

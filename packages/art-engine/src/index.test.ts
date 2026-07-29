@@ -12,6 +12,7 @@ import {
   editGraphicPathGeometry,
   graphicEquilibriumGeometry,
   graphicEquilibriumHandlePoints,
+  graphicRetroScaleHandlePoint,
   EQUILIBRIUM_SHAFT_HANDLE_INSET_PX,
   graphicCornerRadiusEditPoint,
   graphicObjectIntersectsPolygon,
@@ -675,6 +676,52 @@ describe("art-engine native art planning", () => {
     // The two halves are one arrow, so there are no independent shaft-length handles to offer.
     expect(graphicEquilibriumHandlePoints(retro)).toBeUndefined();
     expect(editGraphicPathGeometry(retro, "shaft:forward", { x: 60, y: 20 })).toBeUndefined();
+  });
+
+  it("resizes a retrosynthetic arrow from its middle knob, keeping the proportions", () => {
+    const retro = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftParallel: true,
+        dualShaftGapPx: 5,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 }
+      }
+    } as GraphicObject;
+
+    // The knob sits off the axis at a distance that tracks the scale, so grabbing it never jumps.
+    expect(graphicRetroScaleHandlePoint(retro)).toEqual({ x: 50, y: 8 });
+
+    // Dragging it to twice that distance doubles the arrow: shaft gap and head grow together.
+    const bigger = editGraphicPathGeometry(retro, "middle", { x: 50, y: -4 });
+    if (!bigger) {
+      throw new Error("Expected a resized retrosynthetic arrow.");
+    }
+    expect(bigger.data.dualShaftScale).toBeCloseTo(2, 3);
+    expect(graphicRetroScaleHandlePoint(bigger)).toEqual({ x: 50, y: -4 });
+
+    const before = graphicEquilibriumGeometry(retro)!;
+    const after = graphicEquilibriumGeometry(bigger)!;
+    const gap = (g: NonNullable<ReturnType<typeof graphicEquilibriumGeometry>>) =>
+      Math.abs(g.forward.start.y - g.reverse.start.y);
+    expect(gap(after)).toBeCloseTo(gap(before) * 2, 3);
+
+    const armReach = (object: GraphicObject) => {
+      const subpaths = (planNativeArtVisual(object, { coordinateSpace: "page" }).pathD ?? "")
+        .split("M").map((part) => part.trim()).filter(Boolean);
+      const [, armY] = subpaths[2]!.split("L")[1]!.trim().split(" ").map(Number);
+      return Math.abs(20 - armY!);
+    };
+    expect(armReach(bigger)).toBeCloseTo(armReach(retro) * 2, 3);
+
+    // Resizing must never bend it — the axis of a retrosynthetic arrow stays straight.
+    expect(bigger.data.pathControlPoint).toBeUndefined();
+    expect(bigger.data.artPathKind).toBe("line");
   });
 
   it("drags an equilibrium half-shaft to set only that direction's length", () => {

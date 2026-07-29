@@ -16,6 +16,7 @@ import {
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
+  graphicRetroScaleHandlePoint,
   maxGraphicCornerRadius,
   projectGraphicObjectPoint,
   unprojectGraphicObjectPoint,
@@ -22671,6 +22672,7 @@ function GraphicPathEditHandles({
   }
 
   const circularArc = isSemanticCircularGraphicArc(object, points);
+  const retroScaleHandlePoint = graphicRetroScaleHandlePoint(object);
   const projectedPoints = {
     start: projectGraphicObjectPoint(object, points.start),
     middle: projectGraphicObjectPoint(object, points.middle),
@@ -22701,11 +22703,19 @@ function GraphicPathEditHandles({
           }
         ]
       : object.data.dualShaft === true
-        // Retrosynthetic: two shafts, one arrow. Its axis stays straight, so there is no curve to
-        // bend — offering the middle handle would just be a knob that does nothing.
+        // Retrosynthetic: two shafts, one arrow. Its axis stays straight, so the middle knob resizes
+        // the arrow — shaft gap and head together — instead of bending it. The knob sits off the
+        // axis, where its distance reads as the arrow's heft.
         ? [
             { handle: "start", point: projectedPoints.start, label: "Adjust arrow start" },
-            { handle: "end", point: projectedPoints.end, label: "Adjust arrow end" }
+            { handle: "end", point: projectedPoints.end, label: "Adjust arrow end" },
+            ...(retroScaleHandlePoint
+              ? [{
+                  handle: "middle" as const,
+                  point: projectGraphicObjectPoint(object, retroScaleHandlePoint),
+                  label: "Resize arrow"
+                }]
+              : [])
           ]
         : [
             { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
