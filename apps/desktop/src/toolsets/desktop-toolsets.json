@@ -529,7 +529,7 @@
                     "assetName": "Custom_Arrow_Equilibrium"
                   },
                   {
-                    "commandId": "tool.retroArrow",
+                    "commandId": "tool.art.retroArrow",
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
@@ -624,17 +624,17 @@
               }
             },
             {
-              "commandId": "tool.retroArrow",
+              "commandId": "tool.art.retroArrow",
               "title": "Retrosynthesis Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Retro",
               "category": "arrows",
-              "id": "tool.retroArrow",
+              "id": "tool.art.retroArrow",
               "kind": "button",
               "label": "Retrosynthesis Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.retroArrow"
+                "commandId": "tool.art.retroArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -2311,7 +2311,7 @@
                     "assetName": "Custom_Arrow_Equilibrium"
                   },
                   {
-                    "commandId": "tool.retroArrow",
+                    "commandId": "tool.art.retroArrow",
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
@@ -2406,17 +2406,17 @@
               }
             },
             {
-              "commandId": "tool.retroArrow",
+              "commandId": "tool.art.retroArrow",
               "title": "Retrosynthesis Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Retro",
               "category": "arrows",
-              "id": "tool.retroArrow",
+              "id": "tool.art.retroArrow",
               "kind": "button",
               "label": "Retrosynthesis Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.retroArrow"
+                "commandId": "tool.art.retroArrow"
               },
               "submenu": null,
               "tooltip": {

@@ -554,6 +554,7 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.reactionArrowDashed", "Dashed Reaction Arrow", "export", artPathUsageHint],
     ["tool.art.resonanceArrow", "Resonance Arrow", "export", artPathUsageHint],
     ["tool.art.equilibriumArrow", "Equilibrium Arrow", "export", artPathUsageHint],
+    ["tool.art.retroArrow", "Retrosynthesis Arrow", "export", artPathUsageHint],
     ["tool.art.curvedArrow90", "Curved Arrow (Gentle)", "export", artPathUsageHint],
     ["tool.art.curvedArrow180", "Curved Arrow (Pronounced)", "export", artPathUsageHint],
     ["tool.art.fishhookArrow", "Fishhook Arrow", "export", artPathUsageHint],

@@ -1050,12 +1050,13 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // Foreign CDXML — the spellings another program writes. `bactvue-visible-subset` is a real
     // third-party fixture already carrying ArrowType="FullHead"; substituting into it keeps the
     // reader on genuinely foreign input rather than on our own output.
-    // The imported semantic arrow kind, regardless of representation: reaction/resonance/equilibrium
-    // arrive as tagged art arrows (graphic + artToolId), retro/unknown as legacy reaction-arrow objects.
+    // The imported semantic arrow kind, regardless of representation: every named arrow kind now
+    // arrive as tagged art arrows (graphic + artToolId), unknown as a legacy reaction-arrow object.
     const ART_ARROW_KINDS: Readonly<Record<string, ArrowObject["arrowKind"]>> = {
       reactionArrow: "forward",
       resonanceArrow: "resonance",
-      equilibriumArrow: "equilibrium"
+      equilibriumArrow: "equilibrium",
+      retroArrow: "retrosynthesis"
     };
     const foreign = (arrowType: string) => {
       const cdxml = cdxmlFixture("bactvue-visible-subset.cdxml")

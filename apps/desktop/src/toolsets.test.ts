@@ -379,7 +379,7 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
     ]);
     expect(order.indexOf("core.main.divider.1")).toBeLessThan(order.indexOf("tool.bond"));
     expect(order.indexOf("art.boolean.union")).toBeGreaterThan(order.indexOf("tool.equilibriumArrow"));
-    expect(order.indexOf("art.boolean.union")).toBeLessThan(order.indexOf("tool.retroArrow"));
+    expect(order.indexOf("art.boolean.union")).toBeLessThan(order.indexOf("tool.art.retroArrow"));
     expect(override.groupOrder).toBeUndefined();
     expect(override.hiddenCommandIds).toEqual(["tool.lasso"]);
   });

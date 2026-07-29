@@ -634,6 +634,43 @@ describe("art-engine native art planning", () => {
     expect(plan.markerHandles.map((handle) => handle.id).sort()).toEqual(["markerEnd", "markerStart"]);
   });
 
+  it("plans a retrosynthetic arrow as two parallel shafts under one head", () => {
+    const retro = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftParallel: true,
+        dualShaftGapPx: 9,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerEnd: { kind: "open-arrow", sizePx: 20 }
+      }
+    } as GraphicObject;
+
+    const geometry = graphicEquilibriumGeometry(retro);
+    if (!geometry) {
+      throw new Error("Expected retrosynthetic geometry.");
+    }
+    // Both shafts run the SAME way (unlike an equilibrium's opposed halves), straddling the axis...
+    expect(geometry.forward.direction).toEqual(geometry.reverse.direction);
+    expect(geometry.forward.start).toEqual({ x: 0, y: 15.5 });
+    expect(geometry.reverse.start).toEqual({ x: 0, y: 24.5 });
+    // ...under a single head centred on the axis end, spanning them.
+    expect(geometry.head?.point).toEqual({ x: 100, y: 20 });
+
+    const plan = planNativeArtVisual(retro, { coordinateSpace: "page" });
+    expect((plan.pathD ?? "").match(/M/g)?.length).toBe(2);
+    expect(plan.markerEndTerminal?.point).toEqual({ x: 100, y: 20 });
+
+    // The two halves are one arrow, so there are no independent shaft-length handles to offer.
+    expect(graphicEquilibriumHandlePoints(retro)).toBeUndefined();
+    expect(editGraphicPathGeometry(retro, "shaft:forward", { x: 60, y: 20 })).toBeUndefined();
+  });
+
   it("drags an equilibrium half-shaft to set only that direction's length", () => {
     const graphic = {
       ...baseGraphic,

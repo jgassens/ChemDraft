@@ -245,6 +245,9 @@ export const GraphicObjectDataSchema = z
     // sizing rides the ordinary marker machinery. Each shaft's length is an independent fraction of
     // the axis, because an equilibrium's two directions are rarely equal.
     dualShaft: z.boolean().optional(),
+    // Retrosynthetic arrows: both shafts run the same way with one open head spanning them (the
+    // double-shafted "=>"), rather than the equilibrium's two opposed half-arrows.
+    dualShaftParallel: z.boolean().optional(),
     dualShaftGapPx: z.number().finite().positive().optional(),
     dualShaftForwardFrac: z.number().finite().positive().optional(),
     dualShaftReverseFrac: z.number().finite().positive().optional(),

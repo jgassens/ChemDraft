@@ -417,10 +417,14 @@ export function planNativeArtVisual(
     ? graphicEquilibriumGeometry(object, coordinateSpace)
     : undefined;
   const openStrokeTerminals = equilibrium
-    ? {
-        start: { point: equilibrium.reverse.end, direction: equilibrium.reverse.direction },
-        end: { point: equilibrium.forward.end, direction: equilibrium.forward.direction }
-      }
+    ? equilibrium.head
+      // Parallel (retrosynthetic): one head at the axis end, spanning both shafts. Both terminals
+      // resolve to it so the head renders once wherever the marker is declared.
+      ? { start: equilibrium.head, end: equilibrium.head }
+      : {
+          start: { point: equilibrium.reverse.end, direction: equilibrium.reverse.direction },
+          end: { point: equilibrium.forward.end, direction: equilibrium.forward.direction }
+        }
     : capabilities.isOpenStroke && rendersStroke
       ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
       : undefined;
@@ -1436,7 +1440,8 @@ function editEquilibriumShaftLength(
 ): GraphicObject | undefined {
   const start = pointMetadata(object.data.lineStart);
   const end = pointMetadata(object.data.lineEnd);
-  if (object.data.dualShaft !== true || !start || !end) {
+  // Parallel (retrosynthetic) arrows have no independent half-lengths — both shafts are one arrow.
+  if (object.data.dualShaft !== true || object.data.dualShaftParallel === true || !start || !end) {
     return undefined;
   }
 
@@ -3783,6 +3788,9 @@ export interface NativeArtEquilibriumShaft {
 export interface NativeArtEquilibriumGeometry {
   forward: NativeArtEquilibriumShaft;
   reverse: NativeArtEquilibriumShaft;
+  /** Retrosynthetic (parallel) arrows only: the single head spanning both shafts, at the axis end.
+   *  Its presence is also what marks the geometry as parallel rather than opposed. */
+  head?: { point: NativeArtPoint; direction: NativeArtPoint };
 }
 
 export const EQUILIBRIUM_DEFAULT_GAP_PX = 10;
@@ -3837,6 +3845,18 @@ export function graphicEquilibriumGeometry(
   // outside of the pair rather than facing inward, which reads as upside down.
   const normal = { x: axis.y, y: -axis.x };
   const half = (metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2;
+
+  // Retrosynthetic: both shafts run the same way, full length, with one head spanning them at the
+  // axis end. There is nothing per-shaft to vary here — it reads as a single double-shafted arrow.
+  if (object.data.dualShaftParallel === true) {
+    const offset = (side: 1 | -1): NativeArtEquilibriumShaft => ({
+      start: { x: a.x + normal.x * half * side, y: a.y + normal.y * half * side },
+      end: { x: b.x + normal.x * half * side, y: b.y + normal.y * half * side },
+      direction: axis
+    });
+    return { forward: offset(1), reverse: offset(-1), head: { point: b, direction: axis } };
+  }
+
   const forwardLength = length * equilibriumShaftFraction(object.data.dualShaftForwardFrac);
   const reverseLength = length * equilibriumShaftFraction(object.data.dualShaftReverseFrac);
   // Both shafts stay centred on the axis midpoint: an equilibrium's two halves are often unequal in
@@ -3866,7 +3886,9 @@ export function graphicEquilibriumHandlePoints(
   object: GraphicObject
 ): { forward: NativeArtPoint; reverse: NativeArtPoint } | undefined {
   const geometry = graphicEquilibriumGeometry(object);
-  if (!geometry) {
+  // Parallel (retrosynthetic) arrows have nothing per-shaft to adjust — both halves are one arrow —
+  // so they get the ordinary endpoint handles only.
+  if (!geometry || geometry.head) {
     return undefined;
   }
 
@@ -3895,6 +3917,7 @@ function graphicEquilibriumPathD(
 
   const shaft = (part: NativeArtEquilibriumShaft, marker: unknown): string => {
     const plan = nativeArtMarkerPlan(marker, strokeWidth);
+    // A parallel arrow's single head sits ahead of BOTH shafts, so both are trimmed for it.
     const inset = plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
     const length = Math.hypot(part.end.x - part.start.x, part.end.y - part.start.y);
     const trim = Math.min(inset, Math.max(0, length - 1));

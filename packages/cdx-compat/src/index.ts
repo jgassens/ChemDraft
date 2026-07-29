@@ -685,7 +685,7 @@ function exportGraphicObject(
  *  reaction arrows rather than generic graphics. */
 function semanticReactionArrowKind(
   graphic: GraphicObject
-): "forward" | "resonance" | "equilibrium" | undefined {
+): "forward" | "resonance" | "equilibrium" | "retrosynthesis" | undefined {
   if (
     graphic.data.artToolId === "reactionArrow" ||
     graphic.data.artToolId === "reactionArrowBold" ||
@@ -698,6 +698,9 @@ function semanticReactionArrowKind(
   }
   if (graphic.data.artToolId === "equilibriumArrow") {
     return "equilibrium";
+  }
+  if (graphic.data.artToolId === "retroArrow") {
+    return "retrosynthesis";
   }
   return undefined;
 }
@@ -1932,7 +1935,7 @@ function importGraphic(
     // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
     // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
     // and unknown stay the legacy `reaction-arrow` object until they're migrated in a later pass.
-    if (arrowKind === "forward" || arrowKind === "resonance" || arrowKind === "equilibrium") {
+    if (arrowKind === "forward" || arrowKind === "resonance" || arrowKind === "equilibrium" || arrowKind === "retrosynthesis") {
       return importReactionArrowAsArtArrow(element, pageIndex, objectIndex, context, arrowKind);
     }
     const start = parseCdxmlPoint(element.attributes.Start) ?? { x: box.x, y: box.y };
@@ -1971,17 +1974,23 @@ function importReactionArrowAsArtArrow(
   pageIndex: number,
   objectIndex: number,
   context: ImportPageContext,
-  arrowKind: "forward" | "resonance" | "equilibrium"
+  arrowKind: "forward" | "resonance" | "equilibrium" | "retrosynthesis"
 ): GraphicObject {
   const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
-  // Equilibrium is the two-shaft form: half-arrow heads facing opposite ways, one per shaft.
+  // The two-shaft forms: equilibrium is opposed half-arrows, one head per shaft; retrosynthesis runs
+  // both shafts the same way under a single open head.
   const equilibrium = arrowKind === "equilibrium";
+  const retro = arrowKind === "retrosynthesis";
   const marker = equilibrium
     ? { kind: "half-arrow" as const, sizePx: 14 }
-    : { kind: "filled-arrow" as const, sizePx: 10 };
+    : retro
+      ? { kind: "open-arrow" as const, sizePx: 20 }
+      : { kind: "filled-arrow" as const, sizePx: 10 };
   const artToolId = equilibrium
     ? "equilibriumArrow"
-    : arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow";
+    : retro
+      ? "retroArrow"
+      : arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow";
   return {
     ...graphic,
     graphicKind: "path",
@@ -1991,6 +2000,7 @@ function importReactionArrowAsArtArrow(
       markerEnd: marker,
       ...(arrowKind === "resonance" || equilibrium ? { markerStart: marker } : {}),
       ...(equilibrium ? { dualShaft: true, dualShaftGapPx: 7 } : {}),
+      ...(retro ? { dualShaft: true, dualShaftParallel: true, dualShaftGapPx: 9 } : {}),
       artToolId
     }
   };
