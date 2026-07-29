@@ -22,6 +22,7 @@ fn main() {
             "plugin_storage_write",
             "open_plugin_panel_window",
             "open_toolset_popover",
+            "prewarm_toolset_popover",
             "show_toolset_tooltip_window",
             "close_toolset_popover",
             "set_toolset_window_focusable",

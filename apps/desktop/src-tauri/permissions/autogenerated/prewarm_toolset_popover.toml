@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-prewarm-toolset-popover"
+description = "Enables the prewarm_toolset_popover command without any pre-configured scope."
+commands.allow = ["prewarm_toolset_popover"]
+
+[[permission]]
+identifier = "deny-prewarm-toolset-popover"
+description = "Denies the prewarm_toolset_popover command without any pre-configured scope."
+commands.deny = ["prewarm_toolset_popover"]

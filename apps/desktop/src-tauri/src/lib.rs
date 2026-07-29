@@ -983,7 +983,8 @@ fn open_toolset_popover(
     if let Some(window) = app.get_webview_window(&label) {
         // Warm reuse: position it, but do NOT show yet — the palette pushes the requested content
         // right after this call, and the popover webview reveals itself once that content has
-        // painted at the right size. Showing here would flash whatever the webview painted last
+        // painted at the right size (getCurrentWindow().show(), permitted by
+        // core:window:allow-show). Showing here would flash whatever the webview painted last
         // (a stale flyout, or a prewarmed window's empty shell) before the swap landed.
         window
             .set_position(tauri::LogicalPosition::new(x, y))
