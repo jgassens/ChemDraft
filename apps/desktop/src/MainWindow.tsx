@@ -16,7 +16,7 @@ import {
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
-  graphicRetroScaleHandlePoint,
+  graphicDualShaftScaleHandlePoint,
   maxGraphicCornerRadius,
   projectGraphicObjectPoint,
   unprojectGraphicObjectPoint,
@@ -22672,7 +22672,7 @@ function GraphicPathEditHandles({
   }
 
   const circularArc = isSemanticCircularGraphicArc(object, points);
-  const retroScaleHandlePoint = graphicRetroScaleHandlePoint(object);
+  const dualShaftScaleHandlePoint = graphicDualShaftScaleHandlePoint(object);
   const projectedPoints = {
     start: projectGraphicObjectPoint(object, points.start),
     middle: projectGraphicObjectPoint(object, points.middle),
@@ -22686,8 +22686,9 @@ function GraphicPathEditHandles({
         { handle: "end", point: projectedPoints.end, label: "Adjust arc sweep" }
       ]
     : points.shafts
-      // Equilibrium: the axis stays straight, so the middle handle's curve-bend slot gives way to one
-      // handle per half-shaft, each setting that direction's length.
+      // Equilibrium: the axis stays straight, so instead of the curve-bend slot it gets one handle
+      // per half-shaft (each setting that direction's length) plus the off-axis resize knob that
+      // grows the whole arrow — shaft gap and both harpoon heads together.
       ? [
           { handle: "start", point: projectedPoints.start, label: "Adjust equilibrium start" },
           { handle: "end", point: projectedPoints.end, label: "Adjust equilibrium end" },
@@ -22700,7 +22701,14 @@ function GraphicPathEditHandles({
             handle: "shaft:reverse" as const,
             point: projectGraphicObjectPoint(object, points.shafts.reverse),
             label: "Adjust reverse arrow length"
-          }
+          },
+          ...(dualShaftScaleHandlePoint
+            ? [{
+                handle: "middle" as const,
+                point: projectGraphicObjectPoint(object, dualShaftScaleHandlePoint),
+                label: "Resize arrow"
+              }]
+            : [])
         ]
       : object.data.dualShaft === true
         // Retrosynthetic: two shafts, one arrow. Its axis stays straight, so the middle knob resizes
@@ -22709,10 +22717,10 @@ function GraphicPathEditHandles({
         ? [
             { handle: "start", point: projectedPoints.start, label: "Adjust arrow start" },
             { handle: "end", point: projectedPoints.end, label: "Adjust arrow end" },
-            ...(retroScaleHandlePoint
+            ...(dualShaftScaleHandlePoint
               ? [{
                   handle: "middle" as const,
-                  point: projectGraphicObjectPoint(object, retroScaleHandlePoint),
+                  point: projectGraphicObjectPoint(object, dualShaftScaleHandlePoint),
                   label: "Resize arrow"
                 }]
               : [])

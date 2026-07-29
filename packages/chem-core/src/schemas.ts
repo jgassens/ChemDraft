@@ -249,8 +249,9 @@ export const GraphicObjectDataSchema = z
     // double-shafted "=>"), rather than the equilibrium's two opposed half-arrows.
     dualShaftParallel: z.boolean().optional(),
     dualShaftGapPx: z.number().finite().positive().optional(),
-    // Retrosynthetic arrows: overall heft. Scales the shaft gap and the head together, so a bigger
-    // arrow keeps its proportions rather than growing a head onto hairline shafts.
+    // Dual-shaft arrows: overall heft (the middle-knob resize). Scales the shaft gap together with
+    // the head(s) — a retrosynthetic's spanning head, an equilibrium's harpoon pair — so a bigger
+    // arrow keeps its proportions rather than growing heads onto hairline shafts.
     dualShaftScale: z.number().finite().positive().optional(),
     dualShaftForwardFrac: z.number().finite().positive().optional(),
     dualShaftReverseFrac: z.number().finite().positive().optional(),

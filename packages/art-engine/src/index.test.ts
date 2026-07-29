@@ -12,7 +12,7 @@ import {
   editGraphicPathGeometry,
   graphicEquilibriumGeometry,
   graphicEquilibriumHandlePoints,
-  graphicRetroScaleHandlePoint,
+  graphicDualShaftScaleHandlePoint,
   EQUILIBRIUM_SHAFT_HANDLE_INSET_PX,
   graphicCornerRadiusEditPoint,
   graphicObjectIntersectsPolygon,
@@ -678,6 +678,57 @@ describe("art-engine native art planning", () => {
     expect(editGraphicPathGeometry(retro, "shaft:forward", { x: 60, y: 20 })).toBeUndefined();
   });
 
+  it("resizes an equilibrium arrow from its middle knob: gap, harpoons, and seats together", () => {
+    const equilibrium = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftGapPx: 8,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    } as GraphicObject;
+
+    // The knob sits off the axis and its distance reads as the scale — same idiom as retrosynthetic.
+    expect(graphicDualShaftScaleHandlePoint(equilibrium)).toEqual({ x: 50, y: 8 });
+    const bigger = editGraphicPathGeometry(equilibrium, "middle", { x: 50, y: -4 });
+    if (!bigger) {
+      throw new Error("Expected a resized equilibrium arrow.");
+    }
+    expect(bigger.data.dualShaftScale).toBeCloseTo(2, 3);
+
+    // Gap doubles...
+    const gap = (object: GraphicObject) => {
+      const geometry = graphicEquilibriumGeometry(object)!;
+      return Math.abs(geometry.forward.start.y - geometry.reverse.start.y);
+    };
+    expect(gap(bigger)).toBeCloseTo(gap(equilibrium) * 2, 3);
+
+    // ...both harpoon heads double with it...
+    const planBefore = planNativeArtVisual(equilibrium, { coordinateSpace: "page" });
+    const planAfter = planNativeArtVisual(bigger, { coordinateSpace: "page" });
+    expect(planAfter.markerStart?.sizePx).toBeCloseTo((planBefore.markerStart?.sizePx ?? 0) * 2, 3);
+    expect(planAfter.markerEnd?.sizePx).toBeCloseTo((planBefore.markerEnd?.sizePx ?? 0) * 2, 3);
+
+    // ...and the shaft-length seats slide back so they stay at the base of the grown heads.
+    const seatBefore = graphicEquilibriumHandlePoints(equilibrium)!;
+    const seatAfter = graphicEquilibriumHandlePoints(bigger)!;
+    expect(100 - seatAfter.forward.x).toBeCloseTo((100 - seatBefore.forward.x) * 2, 3);
+
+    // Per-shaft length dragging still works at the new scale, measuring through the scaled seat.
+    const shortened = editGraphicPathGeometry(bigger, "shaft:forward", { x: 60, y: 44 });
+    expect(shortened?.data.dualShaftForwardFrac).toBeCloseTo((2 * (60 - 50 + 32)) / 100, 3);
+
+    // The middle knob never bends the axis.
+    expect(bigger.data.pathControlPoint).toBeUndefined();
+  });
+
   it("resizes a retrosynthetic arrow from its middle knob, keeping the proportions", () => {
     const retro = {
       ...baseGraphic,
@@ -695,7 +746,7 @@ describe("art-engine native art planning", () => {
     } as GraphicObject;
 
     // The knob sits off the axis at a distance that tracks the scale, so grabbing it never jumps.
-    expect(graphicRetroScaleHandlePoint(retro)).toEqual({ x: 50, y: 8 });
+    expect(graphicDualShaftScaleHandlePoint(retro)).toEqual({ x: 50, y: 8 });
 
     // Dragging it to twice that distance doubles the arrow: shaft gap and head grow together.
     const bigger = editGraphicPathGeometry(retro, "middle", { x: 50, y: -4 });
@@ -703,7 +754,7 @@ describe("art-engine native art planning", () => {
       throw new Error("Expected a resized retrosynthetic arrow.");
     }
     expect(bigger.data.dualShaftScale).toBeCloseTo(2, 3);
-    expect(graphicRetroScaleHandlePoint(bigger)).toEqual({ x: 50, y: -4 });
+    expect(graphicDualShaftScaleHandlePoint(bigger)).toEqual({ x: 50, y: -4 });
 
     const before = graphicEquilibriumGeometry(retro)!;
     const after = graphicEquilibriumGeometry(bigger)!;
@@ -770,8 +821,11 @@ describe("art-engine native art planning", () => {
     expect(reverse?.data.dualShaftReverseFrac).toBeCloseTo(fracFor(75), 3);
     expect(reverse?.data.dualShaftForwardFrac).toBeUndefined();
 
-    // An equilibrium's axis is straight: the middle handle must not bend it into a curve.
-    expect(editGraphicPathGeometry(graphic, "middle", { x: 50, y: 0 })).toBeUndefined();
+    // An equilibrium's axis is straight: the middle handle resizes the arrow, never bends it.
+    const resized = editGraphicPathGeometry(graphic, "middle", { x: 50, y: 0 });
+    expect(resized?.data.pathControlPoint).toBeUndefined();
+    expect(resized?.data.artPathKind).toBe("line");
+    expect(resized?.data.dualShaftScale).toBeGreaterThan(1);
   });
 
   it("snaps arrowhead marker size to discrete 4px steps", () => {

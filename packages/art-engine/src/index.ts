@@ -397,8 +397,12 @@ export function planNativeArtVisual(
   const pathD = object.graphicKind === "path"
     ? graphicPathD(object, coordinateSpace)
     : undefined;
-  const markerStart = rendersStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
-  const markerEnd = rendersStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
+  const markerStart = rendersStroke
+    ? nativeArtMarkerPlan(dualShaftScaledMarker(object, object.data.markerStart), stroke.width)
+    : undefined;
+  const markerEnd = rendersStroke
+    ? nativeArtMarkerPlan(dualShaftScaledMarker(object, object.data.markerEnd), stroke.width)
+    : undefined;
   const pathPoints = object.graphicKind === "path" && shouldSampleGraphicPathForPlan({
     object,
     matrix,
@@ -1410,14 +1414,11 @@ export function editGraphicPathGeometry(
     return editEquilibriumShaftLength(object, handle, point);
   }
   if (kind === "line" && handle === "middle") {
-    // A retrosynthetic arrow's middle knob resizes it rather than bending it — its axis stays
-    // straight, but the whole arrow (shaft gap and head together) grows or shrinks.
-    if (object.data.dualShaftParallel === true) {
-      return editRetroArrowScale(object, point);
-    }
-    // An equilibrium's axis stays straight too, and it has nothing to resize this way.
+    // A dual-shaft arrow's middle knob resizes it rather than bending it — its axis stays straight,
+    // but the whole arrow grows or shrinks: shaft gap and head for a retrosynthetic, shaft gap and
+    // both harpoon heads for an equilibrium.
     if (object.data.dualShaft === true) {
-      return undefined;
+      return editDualShaftArrowScale(object, point);
     }
     return promoteLineToQuadraticCurve(object, point);
   }
@@ -1437,7 +1438,7 @@ export function editGraphicPathGeometry(
  * Drag the middle knob to resize a retrosynthetic arrow. Scale comes from how far the pointer sits
  * off the axis, measured the same way the knob is placed, so the arrow tracks the cursor 1:1.
  */
-function editRetroArrowScale(object: GraphicObject, point: NativeArtPoint): GraphicObject | undefined {
+function editDualShaftArrowScale(object: GraphicObject, point: NativeArtPoint): GraphicObject | undefined {
   const start = pointMetadata(object.data.lineStart);
   const end = pointMetadata(object.data.lineEnd);
   if (!start || !end) {
@@ -1453,7 +1454,7 @@ function editRetroArrowScale(object: GraphicObject, point: NativeArtPoint): Grap
   const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
   const offAxis = Math.abs((point.x - mid.x) * normal.x + (point.y - mid.y) * normal.y);
   const scale = clamp(offAxis / RETRO_SCALE_HANDLE_OFFSET_PX, RETRO_MIN_SCALE, RETRO_MAX_SCALE);
-  if (Math.abs(retroArrowScale(object) - scale) < 0.001) {
+  if (Math.abs(dualShaftArrowScale(object) - scale) < 0.001) {
     return object;
   }
 
@@ -1493,7 +1494,7 @@ function editEquilibriumShaftLength(
   const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
   const sign = forward ? 1 : -1;
   const fromCentre = ((point.x - mid.x) * axis.x + (point.y - mid.y) * axis.y) * sign;
-  const shaftLength = 2 * (fromCentre + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX);
+  const shaftLength = 2 * (fromCentre + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object));
   const frac = clamp(shaftLength / length, EQUILIBRIUM_MIN_FRAC, 1);
   const key = forward ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
   if (Math.abs(equilibriumShaftFraction(object.data[key]) - frac) < 0.001) {
@@ -3850,10 +3851,27 @@ const RETRO_SCALE_HANDLE_OFFSET_PX = 12;
 const RETRO_MIN_SCALE = 0.4;
 const RETRO_MAX_SCALE = 6;
 
-/** Overall heft of a retrosynthetic arrow: scales its shaft gap and head together. */
-export function retroArrowScale(object: GraphicObject): number {
+/** Overall heft of a dual-shaft arrow: scales its shaft gap and head(s) together. */
+export function dualShaftArrowScale(object: GraphicObject): number {
   const scale = metadataNumber(object.data.dualShaftScale);
   return scale === undefined ? 1 : clamp(scale, RETRO_MIN_SCALE, RETRO_MAX_SCALE);
+}
+
+/** Dual-shaft arrows draw their marker heads scaled by the arrow's heft, so the middle-knob resize
+ *  grows an equilibrium's harpoons together with its shaft gap. Non-dual-shaft markers pass through. */
+function dualShaftScaledMarker(
+  object: GraphicObject,
+  marker: GraphicMarker | undefined
+): GraphicMarker | undefined {
+  if (object.data.dualShaft !== true || !marker || marker.kind === "none") {
+    return marker;
+  }
+  const scale = dualShaftArrowScale(object);
+  const sizePx = metadataNumber(marker.sizePx);
+  if (scale === 1 || sizePx === undefined) {
+    return marker;
+  }
+  return { ...marker, sizePx: sizePx * scale };
 }
 
 export function equilibriumShaftFraction(value: unknown): number {
@@ -3895,15 +3913,16 @@ export function graphicEquilibriumGeometry(
   // also puts each half-arrow's barb — always drawn on one fixed side of its own direction — on the
   // outside of the pair rather than facing inward, which reads as upside down.
   const normal = { x: axis.y, y: -axis.x };
-  const half = (metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2;
+  // Both dual-shaft forms scale their gap with the arrow's heft (the middle-knob resize).
+  const half = ((metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2) *
+    dualShaftArrowScale(object);
 
   // Retrosynthetic: both shafts run the same way, full length, with one head spanning them at the
   // axis end. There is nothing per-shaft to vary here — it reads as a single double-shafted arrow.
   if (object.data.dualShaftParallel === true) {
-    const scaledHalf = half * retroArrowScale(object);
     const offset = (side: 1 | -1): NativeArtEquilibriumShaft => ({
-      start: { x: a.x + normal.x * scaledHalf * side, y: a.y + normal.y * scaledHalf * side },
-      end: { x: b.x + normal.x * scaledHalf * side, y: b.y + normal.y * scaledHalf * side },
+      start: { x: a.x + normal.x * half * side, y: a.y + normal.y * half * side },
+      end: { x: b.x + normal.x * half * side, y: b.y + normal.y * half * side },
       direction: axis
     });
     return { forward: offset(1), reverse: offset(-1), head: { point: b, direction: axis } };
@@ -3934,15 +3953,16 @@ export function graphicEquilibriumGeometry(
 }
 
 /**
- * Where a retrosynthetic arrow's resize knob sits: off the axis midpoint, at a distance that tracks
- * the current scale. Because position and scale share one factor, grabbing the knob never makes it
- * jump, and the drag distance maps straight back to the new scale.
+ * Where a dual-shaft arrow's resize knob sits (retrosynthetic and equilibrium alike): off the axis
+ * midpoint, at a distance that tracks the current scale. Because position and scale share one
+ * factor, grabbing the knob never makes it jump, and the drag distance maps straight back to the
+ * new scale.
  */
-export function graphicRetroScaleHandlePoint(object: GraphicObject): NativeArtPoint | undefined {
+export function graphicDualShaftScaleHandlePoint(object: GraphicObject): NativeArtPoint | undefined {
   const geometry = graphicEquilibriumGeometry(object);
   const start = pointMetadata(object.data.lineStart);
   const end = pointMetadata(object.data.lineEnd);
-  if (!geometry?.head || !start || !end) {
+  if (!geometry || !start || !end) {
     return undefined;
   }
 
@@ -3952,7 +3972,7 @@ export function graphicRetroScaleHandlePoint(object: GraphicObject): NativeArtPo
   }
 
   const normal = { x: axis.y, y: -axis.x };
-  const reach = RETRO_SCALE_HANDLE_OFFSET_PX * retroArrowScale(object);
+  const reach = RETRO_SCALE_HANDLE_OFFSET_PX * dualShaftArrowScale(object);
   return {
     x: (start.x + end.x) / 2 + normal.x * reach,
     y: (start.y + end.y) / 2 + normal.y * reach
@@ -3970,9 +3990,12 @@ export function graphicEquilibriumHandlePoints(
     return undefined;
   }
 
+  // The seat scales with the arrow's heft so the handle stays at the base of the (scaled) harpoon
+  // head instead of disappearing inside a grown one.
+  const seatInset = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object);
   const seat = (shaft: NativeArtEquilibriumShaft): NativeArtPoint => {
     const length = Math.hypot(shaft.end.x - shaft.start.x, shaft.end.y - shaft.start.y);
-    const inset = Math.min(EQUILIBRIUM_SHAFT_HANDLE_INSET_PX, Math.max(0, length * 0.5));
+    const inset = Math.min(seatInset, Math.max(0, length * 0.5));
     return {
       x: shaft.end.x - shaft.direction.x * inset,
       y: shaft.end.y - shaft.direction.y * inset
@@ -4005,15 +4028,15 @@ function graphicEquilibriumPathD(
           (geometry.forward.start.x - geometry.reverse.start.x) * normal.x +
           (geometry.forward.start.y - geometry.reverse.start.y) * normal.y
         ) / 2;
-        const scale = retroArrowScale(object);
+        const scale = dualShaftArrowScale(object);
         const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX * scale;
         const back = RETRO_HEAD_ARM_BACK_PX * scale;
         return { tip, direction, normal, reach, back, shaftTrim: back * (halfGap / reach) };
       })()
     : undefined;
 
-  const shaft = (part: NativeArtEquilibriumShaft, marker: unknown): string => {
-    const plan = nativeArtMarkerPlan(marker, strokeWidth);
+  const shaft = (part: NativeArtEquilibriumShaft, marker: GraphicMarker | undefined): string => {
+    const plan = nativeArtMarkerPlan(dualShaftScaledMarker(object, marker), strokeWidth);
     const inset = head
       ? head.shaftTrim
       : plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
