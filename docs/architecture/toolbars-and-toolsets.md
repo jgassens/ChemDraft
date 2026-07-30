@@ -166,7 +166,7 @@ The menu item command remains `view.toolset.toggle.<toolsetId>`. `view.customize
 opens the editor (routed to JS via `MENU_COMMAND_IDS`, mirrored in the web menu by `appMenu.ts`). The
 standalone `view.toolset.{resetLayout,resetAllLayouts,createUserToolset,cloneToolset}` commands are
 retired: the dialog performs those actions directly through `layoutStateEdits.ts`, so the command
-entries were dead redirects. See "Command retirements" in `PLANS.md`.
+entries were dead redirects. See "Command retirements" in `docs/shipped/README.md`.
 
 ## ChemDraw XML Boundary
 
