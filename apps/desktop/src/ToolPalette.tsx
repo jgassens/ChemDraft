@@ -36,6 +36,7 @@ import {
   fontFamilyLabel,
   usePaletteButtonInvoke
 } from "./toolbars/toolbarCells";
+import { MainStyleWidget } from "./toolbars/mainStyleWidget";
 import {
   normalizeHexColor,
   distributeModeCommandIds,
@@ -147,14 +148,6 @@ export type ToolbarFlyoutRequest = {
   flyout: ToolsetFlyoutSnapshot;
 };
 
-const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
-  command.id === "text.color.black"
-  || command.id === "text.color.white"
-  || command.id === "text.color.blue"
-  || command.id === "text.color.red"
-  || command.id === "text.color.green"
-  || command.id === "text.color.gray"
-));
 const TOOLTIP_DELAY_MS = 500;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
 const DISTRIBUTE_MENU_HOLD_MS = 150;
@@ -535,7 +528,7 @@ const TOOLBAR_WIDGET_REGISTRY: Record<
     gridMode: "append",
     className: "main-style-palette",
     title: "Style Controls",
-    render: () => <MainToolbarStyleControls />
+    render: () => <MainStyleWidget />
   },
   [TOOLBAR_WIDGET_IDS.textStyleControls]: {
     gridMode: "append",
@@ -801,122 +794,6 @@ function useNativeFloatingTooltip(shellRef: { current: HTMLElement | null }, vis
       );
     };
   }, [shellRef, visible]);
-}
-
-function MainToolbarStyleControls() {
-  const { currentTextStyle, currentTextScript = "normal", onInvoke } = useToolbarWidgetState();
-  const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
-  const textAlign = currentTextStyle?.textAlign ?? "left";
-  const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
-  const boldActive = (currentTextStyle?.fontWeight ?? 400) >= 600;
-  const italicActive = currentTextStyle?.fontStyle === "italic";
-  const underlineActive = currentTextStyle?.textDecoration === "underline";
-  // Superscript rides the top row (above subscript on the bottom row — they stack in the last
-  // column); subscript stays with the B/I/U toggles on the bottom row. Both rows are the same total
-  // cell count, so their right edges align and the x²/x₂ pair lines up vertically.
-  const superscriptCommand = textScriptCommands.find((command) => command.script === "superscript");
-  const subscriptCommand = textScriptCommands.find((command) => command.script === "subscript");
-
-  return (
-    <div className="main-toolbar-style-controls" data-toolbar-style-controls="main">
-      <div className="toolbar-style-row toolbar-style-row-primary">
-        <div className="toolbar-swatch-group" role="group" aria-label="Text color">
-          {mainToolbarTextColorCommands.map((command) => (
-            <ToolbarColorSwatchButton
-              active={normalizeHexColor(command.color) === currentColor}
-              command={command}
-              key={command.id}
-              onInvoke={onInvoke}
-            />
-          ))}
-        </div>
-        <div className="toolbar-align-group" role="group" aria-label="Text alignment">
-          {textAlignmentCommands.map((command) => (
-            <ToolbarAlignButton
-              active={textAlign === command.textAlign}
-              command={command}
-              key={command.id}
-              onInvoke={onInvoke}
-            />
-          ))}
-        </div>
-        {superscriptCommand ? (
-          <ToolbarTextButton
-            commandId={superscriptCommand.id}
-            label={superscriptCommand.title}
-            active={currentTextScript === "superscript"}
-            onInvoke={onInvoke}
-          >
-            <span className="toolbar-script-glyph" data-text-script="superscript">
-              x<span>2</span>
-            </span>
-          </ToolbarTextButton>
-        ) : null}
-      </div>
-      <div className="toolbar-style-row toolbar-style-row-secondary">
-        <TextFontSelect
-          currentTextStyle={currentTextStyle}
-          labelClassName="toolbar-control-label toolbar-font-control"
-          onInvoke={onInvoke}
-        />
-        <label className="toolbar-control-label toolbar-size-control">
-          <span className="visually-hidden">Text size</span>
-          <select
-            className="toolbar-select toolbar-size-select"
-            value={sizeCommandId}
-            aria-label="Text size"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {textSizeCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {command.title.replace("Size: ", "")}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="toolbar-type-group" role="group" aria-label="Text style">
-          <ToolbarTextButton
-            commandId="text.bold"
-            label="Bold Text"
-            active={boldActive}
-            onInvoke={onInvoke}
-          >
-            B
-          </ToolbarTextButton>
-          <ToolbarTextButton
-            commandId="text.italic"
-            label="Italic Text"
-            active={italicActive}
-            onInvoke={onInvoke}
-          >
-            I
-          </ToolbarTextButton>
-          <ToolbarTextButton
-            commandId="text.underline"
-            label="Underline Text"
-            active={underlineActive}
-            onInvoke={onInvoke}
-          >
-            U
-          </ToolbarTextButton>
-          {subscriptCommand ? (
-            <ToolbarTextButton
-              commandId={subscriptCommand.id}
-              label={subscriptCommand.title}
-              active={currentTextScript === "subscript"}
-              onInvoke={onInvoke}
-            >
-              <span className="toolbar-script-glyph" data-text-script="subscript">
-                x<span>2</span>
-              </span>
-            </ToolbarTextButton>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function TextToolbarStyleControls() {

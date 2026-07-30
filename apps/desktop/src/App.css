@@ -1262,14 +1262,16 @@ textarea:focus-visible,
 }
 
 .main-toolbar-style-controls {
-  /* Size to content (both rows) instead of a fixed 344px — the old fixed width + `1fr` columns
-     below left dead whitespace between the swatch/align groups and made the font box sprawl. */
   display: grid;
   grid-template-rows: 24px 24px;
   align-items: stretch;
   justify-items: start;
   justify-content: start;
-  width: max-content;
+  /* The footprint is pinned by construction: every variant's rows budget exactly 11 cells
+     (11×24px + 10×4px gaps = 304px), so the widget can never resize or slide as the selection
+     changes variants. A row that overruns its budget clips visibly instead of drifting. */
+  width: calc(var(--cd-control-height) * 11 + var(--cd-space-2) * 10);
+  overflow: hidden;
   gap: var(--cd-space-2);
   padding-left: var(--cd-space-2);
 }
@@ -2599,7 +2601,21 @@ textarea:focus-visible,
 .toolbar-widget-grid-slot {
   display: grid;
   align-items: center;
-  justify-items: center;
+  /* Start-aligned, not centered: the style widget's width is pinned (11 cells in a 12-cell slot),
+     and centering would slide every control sideways if the two ever disagreed. */
+  justify-items: start;
+}
+
+/* Generic n-cell width for widget selects/gaps on the 24px toolbar grid; n rides in a CSS var. */
+.toolbar-cell-span {
+  width: calc(
+    var(--cd-control-height) * var(--toolbar-cell-span, 1) +
+    var(--cd-space-2) * (var(--toolbar-cell-span, 1) - 1)
+  );
+}
+
+.toolbar-cell-gap {
+  height: var(--cd-control-height);
 }
 
 /* In customize mode the widget rides inside its sortable slot, inert — the slot owns the drag. */
