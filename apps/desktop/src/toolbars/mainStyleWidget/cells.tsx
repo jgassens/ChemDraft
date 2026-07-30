@@ -34,6 +34,8 @@ export type StyleToggleSpec = {
   active: boolean;
   content: ReactNode;
   disabled?: boolean;
+  /** Hover text when it should say more than the label — e.g. why the toggle is currently inert. */
+  tooltip?: string;
 };
 
 export type StyleCell =
@@ -388,7 +390,10 @@ export function StyleCellView({
       );
     case "toggle":
       return (
-        <CellShell tooltipId={`${tooltipScope}-${cell.toggle.commandId}`} title={cell.toggle.label}>
+        <CellShell
+          tooltipId={`${tooltipScope}-${cell.toggle.commandId}`}
+          title={cell.toggle.tooltip ?? cell.toggle.label}
+        >
           <ToolbarTextButton
             commandId={cell.toggle.commandId}
             label={cell.toggle.label}
@@ -405,7 +410,11 @@ export function StyleCellView({
       return (
         <div className="toolbar-type-group" role="group" aria-label={cell.ariaLabel}>
           {cell.toggles.map((toggle) => (
-            <CellShell key={toggle.commandId} tooltipId={`${tooltipScope}-${toggle.commandId}`} title={toggle.label}>
+            <CellShell
+              key={toggle.commandId}
+              tooltipId={`${tooltipScope}-${toggle.commandId}`}
+              title={toggle.tooltip ?? toggle.label}
+            >
               <ToolbarTextButton
                 commandId={toggle.commandId}
                 label={toggle.label}

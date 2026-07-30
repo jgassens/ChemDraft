@@ -43,8 +43,13 @@ export function moleculeVariantRows(state: ToolbarWidgetState): MainStyleRows {
   // (atomLabelHideImplicitHydrogens), so it is negated here — surfacing it raw would light the H
   // toggle for "hidden" while the C toggle lights for "shown", and a lit pair would mean opposite
   // things. A mixed (or absent) value reads as not-shown, so clicking unifies the selection.
-  const showImplicitHydrogens = atomLabels?.values.hideImplicitHydrogens.value === false;
   const showTerminalCarbons = atomLabels?.values.showTerminalCarbons.value === true;
+  // Implicit hydrogens only render on atoms that already carry a label, so on a plain skeletal
+  // carbon chain the toggle can't change anything on the canvas. Show it dim and disabled with a
+  // tooltip that says how to make it apply, rather than lit for hydrogens nobody can see.
+  const implicitHydrogensApply = atomLabels?.implicitHydrogensAffectLabels === true;
+  const showImplicitHydrogens = implicitHydrogensApply
+    && atomLabels?.values.hideImplicitHydrogens.value === false;
 
   return {
     primary: [
@@ -78,8 +83,11 @@ export function moleculeVariantRows(state: ToolbarWidgetState): MainStyleRows {
           // Lit → clicking hides (sets the inverted field true); dim → clicking shows.
           commandId: moleculeAtomLabelHideImplicitHydrogensCommandId(showImplicitHydrogens),
           label: "Show Implicit Hydrogens",
+          tooltip: implicitHydrogensApply
+            ? "Show Implicit Hydrogens"
+            : "Show Implicit Hydrogens — the selection has no labelled atom to put them on; show terminal carbons or select a heteroatom",
           active: showImplicitHydrogens,
-          disabled: atomLabelsDisabled,
+          disabled: atomLabelsDisabled || !implicitHydrogensApply,
           content: "H"
         }
       },
