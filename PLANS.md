@@ -575,9 +575,31 @@ an Analyze item ships only when it computes something).
   every real-valued descriptor's conventions rather than buried in a test tolerance. And the corpus
   parse check caught `C[n+]1ccnc1`, which RDKit rejects outright: every assertion on that entry had
   been passing vacuously.
-- **Phase 3 — Interpretation ledger in anger.** `largest-organic-fragment` and `neutralized`
-  interpretations with real atom mappings and populated `Transformation` ledgers; per-analysis
-  interpretation selection; the sodium-benzoate regression as a first-class test.
+- **Phase 3 — Interpretation ledger in anger. ✅ landed.** `largest-organic-fragment` and `neutralized`
+  with real atom mappings and populated `Transformation` ledgers, per-analysis interpretation
+  selection, and the sodium-benzoate regression as a first-class test.
+
+  **A declined method now gets a second chance, and both answers stay in the run.** Sodium benzoate
+  carries `rdkit.crippen-logp` → `unsupported` (Na has no parameters) *and*
+  `rdkit.crippen-logp@largest-organic-fragment` → 0.0501, labelled "Crippen logP · largest organic
+  fragment · Na removed" and carrying an `interpretation.derived` info warning. Nothing is substituted;
+  the UI chooses which to lead with. `fallbackInterpretations: []` computes strictly against the
+  drawing, and `interpretationOverride` is the "— change" affordance §1 asks for — overriding sodium
+  benzoate to `neutralized` chains both steps and returns benzoic acid, C7H6O2, logP 1.3848.
+
+  **Neither derivation re-decides chemistry**, which is what §7 demands. Component selection edits
+  RDKit's JSON and hands it back to `get_mol`, which round-trips atom order, isotope labels, and CIP
+  assignments exactly. Neutralisation *cannot* go through JSON — `impHs` there is authoritative rather
+  than a hint, so zeroing charges yields a radical on every aromatic carbon — so it strips `M  CHG`
+  from a V2000 molblock and re-parses, letting RDKit recompute the hydrogen count. That path also fails
+  in the right direction: a quaternary ammonium and a nitro group both come back `null`, so the
+  interpretation is reported unavailable rather than fabricated.
+
+  Three details worth keeping. RDKit's `extensions` block is keyed to the original atom numbering, so a
+  subset that carries it makes `get_mol` return null — it is dropped, and re-perception is RDKit's job.
+  `chargeChanges` counts *atoms neutralised* rather than net charge, because a zwitterion's net is zero
+  while two atoms changed. And when a discarded component is organic and no smaller than the one kept —
+  ferrocene's second cyclopentadienyl — the ledger records that the choice was arbitrary.
 - **Phase 4 — Worker and session cache.** Persistent analysis worker with cancellation, supersession on
   edit, debounce, molecule-size and memory limits, and the §1 cache key. Transport decision from §3
   settled here and documented.

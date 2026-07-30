@@ -41,6 +41,16 @@ import {
 import { compositionFromRdkitJson, type DerivedComposition, type RdkitJson } from "./composition";
 import { ensureRdkit, type RdkitJsMol, type RdkitMinimalModule } from "./conformer";
 import {
+  deriveInterpretation,
+  describeInterpretation,
+  fragmentTransformation,
+  largestOrganicFragmentPlan,
+  neutralizeTransformation,
+  stripMolblockCharges,
+  subsetRdkitJson,
+  type DerivedInterpretationId
+} from "./interpretations";
+import {
   descriptorBindings,
   PINNED_RDKIT_VERSION,
   PINNED_RDKIT_WASM_SHA256,
@@ -59,7 +69,29 @@ export interface AnalyzeStructureRequest {
   finishedAt?: string;
   /** Restrict the run to these method ids. Omit for every registered method. */
   methodIds?: readonly string[];
+  /**
+   * Derived interpretations to offer, in preference order, when a method declines under `source`
+   * because of an element it has no parameters for (PLANS.md §1).
+   *
+   * The source result is **kept** alongside the derived one — nothing is silently substituted. A run
+   * on sodium benzoate carries both "Crippen logP: unsupported, Na has no parameters" and "Crippen
+   * logP on the largest organic fragment: 0.0501, [Na+] removed", and the UI picks which to lead with.
+   *
+   * Pass `[]` to compute strictly against the structure as drawn.
+   */
+  fallbackInterpretations?: readonly DerivedInterpretationId[];
+  /**
+   * Force every method onto one derived interpretation instead of `source` — the "— change"
+   * affordance §1 asks the UI to offer. When the interpretation cannot be derived for this structure,
+   * the run falls back to `source` and says so.
+   */
+  interpretationOverride?: DerivedInterpretationId;
 }
+
+const DEFAULT_FALLBACK_INTERPRETATIONS: readonly DerivedInterpretationId[] = [
+  "largest-organic-fragment",
+  "neutralized"
+];
 
 /** The analysis surface `analyzeStructure` needs beyond what the conformer path already uses. */
 interface AnalysisMol extends RdkitJsMol {
@@ -70,6 +102,8 @@ interface AnalysisMol extends RdkitJsMol {
   get_num_bonds(): number;
   is_valid(): boolean;
   get_stereo_tags(): string;
+  /** V2000 serialisation, used by the neutralisation derivation (see ./interpretations). */
+  get_v2Kmolblock(): string;
 }
 
 interface AnalysisModule extends RdkitMinimalModule {
@@ -83,7 +117,8 @@ const REQUIRED_MOL_METHODS = [
   "get_num_atoms",
   "get_num_bonds",
   "get_smiles",
-  "get_stereo_tags"
+  "get_stereo_tags",
+  "get_v2Kmolblock"
 ] as const;
 
 /**
@@ -139,11 +174,25 @@ interface ResultContext {
   composition: DerivedComposition;
 }
 
+/**
+ * Result ids: the method id alone under `source`, `method@interpretation` otherwise.
+ *
+ * The asymmetry is deliberate. A run can now carry the same method twice — declined as drawn, answered
+ * on a derived interpretation — so the ids must differ, but the source result stays addressable by
+ * plain method id for every caller written before interpretations existed.
+ */
+export function resultId(methodId: string, interpretationId: string): string {
+  return interpretationId === SOURCE_INTERPRETATION_ID ? methodId : `${methodId}@${interpretationId}`;
+}
+
 /** Shared fields every result carries, so a variant only spells out what makes it that variant. */
 function resultBase(context: ResultContext) {
   return {
-    id: context.contract.id,
-    label: context.contract.publicName,
+    id: resultId(context.contract.id, context.interpretation.id),
+    label:
+      context.interpretation.id === SOURCE_INTERPRETATION_ID
+        ? context.contract.publicName
+        : `${context.contract.publicName} · ${describeInterpretation(context.interpretation)}`,
     methodId: context.contract.id,
     methodVersion: context.contract.version,
     interpretationId: context.interpretation.id,
@@ -271,6 +320,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     );
   }
 
+  /**
+   * Interpretations derived during this run, keyed by id. Populated lazily — a neutral single-component
+   * structure never pays for a derivation nothing would use — and every molecule handle in here is
+   * deleted before the run returns.
+   */
+  const derivedInterpretations = new Map<DerivedInterpretationId, DerivedContext>();
+
   const finish = (
     status: AnalysisStatus,
     results: AnalysisResult[],
@@ -283,7 +339,14 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       schemaVersion: AnalysisSchemaVersion,
       runId: request.runId,
       sourceHash: interpretation.sourceHash,
-      interpretations: [interpretation],
+      // Every interpretation any result references, so provenance can always be reconstructed —
+      // AnalysisRunSchema rejects a run that omits one.
+      interpretations: [
+        interpretation,
+        ...[...new Set(results.map((entry) => entry.interpretationId))]
+          .filter((id) => id !== interpretation.id)
+          .map((id) => derivedInterpretations.get(id as DerivedInterpretationId)!.interpretation)
+      ],
       engines: [
         {
           name: "rdkit-minimallib-wasm",
@@ -298,10 +361,16 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       warnings: [...runWarnings, ...extraWarnings],
       fingerprint: runFingerprint({
         sourceHash: interpretation.sourceHash,
-        interpretationHashes: [interpretation.interpretationHash],
+        interpretationHashes: [
+          interpretation.interpretationHash,
+          ...[...derivedInterpretations.values()].map((entry) => entry.interpretation.interpretationHash)
+        ],
         methodKeys: results.map((result) => {
           const contract = registry.get(result.methodId);
-          return contract ? methodKey(contract) : result.methodId;
+          const key = contract ? methodKey(contract) : result.methodId;
+          // The interpretation is part of the key, not a free variation on it: the same method on the
+          // salt and on its organic fragment are two different computations.
+          return `${key}#${result.interpretationId}`;
         }),
         engineHashes: [PINNED_RDKIT_WASM_SHA256]
       })
@@ -337,36 +406,203 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       );
     }
 
-    const composition = compositionFromRdkitJson(JSON.parse(mol.get_json()) as RdkitJson);
+    const sourceJson = JSON.parse(mol.get_json()) as RdkitJson;
+    const composition = compositionFromRdkitJson(sourceJson);
     const descriptors = JSON.parse(mol.get_descriptors()) as Record<string, number>;
+    const sourceContext: DerivedContext = { interpretation, mol, composition, descriptors };
+
+    const derive = (id: DerivedInterpretationId): DerivedContext | undefined =>
+      resolveDerivedContext(id, module, sourceContext, sourceJson, derivedInterpretations);
+
     const wanted = request.methodIds ? new Set(request.methodIds) : undefined;
     const selected = contracts.filter((contract) => !wanted || wanted.has(contract.id));
+    const fallbacks = request.fallbackInterpretations ?? DEFAULT_FALLBACK_INTERPRETATIONS;
     const results: AnalysisResult[] = [];
+    const extraWarnings: AnalysisWarning[] = [];
+
+    // The "— change" affordance: one interpretation for the whole run, chosen by the caller.
+    let primary = sourceContext;
+    if (request.interpretationOverride) {
+      const overridden = derive(request.interpretationOverride);
+      if (overridden) {
+        primary = overridden;
+      } else {
+        extraWarnings.push(
+          warning(
+            "interpretation.override_unavailable",
+            `The "${request.interpretationOverride}" interpretation cannot be derived for this structure; ` +
+              "computing against the structure as drawn instead.",
+            "warning"
+          )
+        );
+      }
+    }
 
     for (const contract of selected) {
       // Runs the §1 tautomer-policy check before anything touches the engine.
-      registry.assertRunnable(contract.id, interpretation);
-      const context: ResultContext = { contract, interpretation, composition };
+      registry.assertRunnable(contract.id, primary.interpretation);
+      const outside = elementsOutsideParameterization(contract, primary.composition.presentElements);
 
-      const outside = elementsOutsideParameterization(contract, composition.presentElements);
-      if (outside.length > 0) {
-        results.push(declineForElements(context, outside));
+      if (outside.length === 0) {
+        results.push(resultFor(contract, primary, module));
         continue;
       }
 
-      results.push(computeResult(context, module, mol, descriptors, composition));
+      // Declined as given. Keep that result — nothing is silently substituted — and then look for an
+      // interpretation that brings the method into its domain, so the run can carry both.
+      results.push(declineForElements({ contract, interpretation: primary.interpretation, composition: primary.composition }, outside));
+      if (primary !== sourceContext) continue;
+
+      for (const fallbackId of fallbacks) {
+        const candidate = derive(fallbackId);
+        if (!candidate) continue;
+        if (elementsOutsideParameterization(contract, candidate.composition.presentElements).length > 0) continue;
+        registry.assertRunnable(contract.id, candidate.interpretation);
+        results.push(withDerivationNotice(resultFor(contract, candidate, module), candidate.interpretation, outside));
+        break;
+      }
     }
 
-    return finish(aggregateStatus(results.map((result) => result.status)), results, [], {
-      composition,
+    return finish(aggregateStatus(results.map((result) => result.status)), results, extraWarnings, {
+      composition: primary.composition,
       stereochemistry: stereochemistryLabels(
-        mol.get_stereo_tags(),
-        descriptors.NumUnspecifiedAtomStereoCenters ?? 0
+        primary.mol.get_stereo_tags(),
+        primary.descriptors.NumUnspecifiedAtomStereoCenters ?? 0
       )
     });
   } finally {
     mol.delete();
+    for (const derived of derivedInterpretations.values()) derived.mol.delete();
   }
+}
+
+/** One interpretation's live molecule and everything read off it. */
+interface DerivedContext {
+  interpretation: MolecularInterpretation;
+  mol: AnalysisMol;
+  composition: DerivedComposition;
+  descriptors: Record<string, number>;
+}
+
+function contextFor(interpretation: MolecularInterpretation, mol: AnalysisMol): DerivedContext {
+  return {
+    interpretation,
+    mol,
+    composition: compositionFromRdkitJson(JSON.parse(mol.get_json()) as RdkitJson),
+    descriptors: JSON.parse(mol.get_descriptors()) as Record<string, number>
+  };
+}
+
+function resultFor(contract: MethodContract, context: DerivedContext, module: AnalysisModule): AnalysisResult {
+  return computeResult(
+    { contract, interpretation: context.interpretation, composition: context.composition },
+    module,
+    context.mol,
+    context.descriptors,
+    context.composition
+  );
+}
+
+/**
+ * Attach the disclosure §1 requires to a result computed on a derived interpretation.
+ *
+ * An `info` warning rather than a `warning`: the derivation is not a problem, it is a fact the reader
+ * must have. Naming the element that forced it keeps the two results legible as a pair.
+ */
+function withDerivationNotice(
+  result: AnalysisResult,
+  interpretation: MolecularInterpretation,
+  forcedBy: readonly string[]
+): AnalysisResult {
+  return {
+    ...result,
+    warnings: [
+      ...result.warnings,
+      warning(
+        "interpretation.derived",
+        `Computed on ${describeInterpretation(interpretation)}, because the structure as drawn contains ` +
+          `${forcedBy.join(", ")}, which this method has no parameters for.`,
+        "info",
+        [result.id]
+      )
+    ]
+  };
+}
+
+/**
+ * Derive an interpretation once per run, or report that it does not exist for this structure.
+ *
+ * `undefined` is a real answer, not a failure: a single-component neutral molecule has no largest
+ * organic fragment distinct from itself, cisplatin has no organic fragment at all, and a quaternary
+ * ammonium has no neutral form. In each case the honest move is to offer nothing.
+ */
+function resolveDerivedContext(
+  id: DerivedInterpretationId,
+  module: AnalysisModule,
+  source: DerivedContext,
+  sourceJson: RdkitJson,
+  cache: Map<DerivedInterpretationId, DerivedContext>
+): DerivedContext | undefined {
+  const cached = cache.get(id);
+  if (cached) return cached;
+
+  if (id === "largest-organic-fragment") {
+    const plan = largestOrganicFragmentPlan(sourceJson);
+    if (!plan) return undefined;
+    const fragmentMol = module.get_mol(subsetRdkitJson(sourceJson, plan.keptAtoms)) as AnalysisMol | null;
+    if (!fragmentMol) return undefined;
+
+    const context = contextFor(
+      deriveInterpretation({
+        id,
+        base: source.interpretation,
+        step: fragmentTransformation(plan),
+        componentPolicy: "largest-organic-fragment"
+      }),
+      fragmentMol
+    );
+    cache.set(id, context);
+    return context;
+  }
+
+  // Neutralisation stacks on the fragment when there is one, so the interpretation §7 actually names —
+  // "a neutralized largest organic fragment" — is reachable in one step from a salt.
+  const base = resolveDerivedContext("largest-organic-fragment", module, source, sourceJson, cache) ?? source;
+
+  // The molblock is the single source of truth for "is there a charge to remove": it also catches the
+  // zwitterion, whose net charge is zero while two of its atoms are charged.
+  const stripped = stripMolblockCharges(base.mol.get_v2Kmolblock());
+  if (stripped.chargedAtomCount === 0) return undefined;
+
+  // `null` here is RDKit refusing to make a neutral molecule — a quaternary ammonium or a nitro group
+  // has no valid neutral form. That is the correct outcome, and inventing one would be exactly the
+  // chemistry call this module must not make.
+  const neutralMol = module.get_mol(stripped.molblock) as AnalysisMol | null;
+  if (!neutralMol) return undefined;
+
+  const neutralised = contextFor(base.interpretation, neutralMol);
+  const step = neutralizeTransformation({
+    atomCount: base.composition.atomCount,
+    neutralizedFormula: neutralised.composition.formula,
+    chargedAtomCount: stripped.chargedAtomCount,
+    netChargeRemoved: stripped.netChargeRemoved,
+    // Read back off the derived molecule rather than predicted: RDKit decided the hydrogen count, and
+    // working it out ourselves would be the interpretation §7 forbids.
+    hydrogenChanges: hydrogenCount(neutralised.composition) - hydrogenCount(base.composition)
+  });
+
+  const context: DerivedContext = {
+    ...neutralised,
+    interpretation: deriveInterpretation({ id, base: base.interpretation, step })
+  };
+  cache.set(id, context);
+  return context;
+}
+
+function hydrogenCount(composition: DerivedComposition): number {
+  return composition.elements
+    .filter((element) => element.symbol === "H")
+    .reduce((total, element) => total + element.count, 0);
 }
 
 const DESCRIPTOR_BINDINGS = new Map(descriptorBindings().map((binding) => [binding.methodId, binding]));

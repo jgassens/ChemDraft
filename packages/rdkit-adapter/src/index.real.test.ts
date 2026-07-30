@@ -90,6 +90,22 @@ describe("createRdkitAdapter", () => {
     expect(declines.every((warning) => warning.message.includes("Na"))).toBe(true);
   });
 
+  it("carries the derivation notice through to the narrow contract too", async () => {
+    // The adapter cannot express "answered on a different interpretation" in StructureProperties, so
+    // the disclosure has to reach a caller as a warning or it is lost at exactly the moment it matters.
+    const adapter = createRdkitAdapter();
+    const result = await adapter.analyzeStructure({ format: "smiles", value: "[Na+].[O-]C(=O)c1ccccc1" });
+
+    const derived = result.warnings.filter((warning) => warning.code === "interpretation.derived");
+    expect(derived.length).toBeGreaterThan(0);
+    expect(derived.every((warning) => warning.severity === "info")).toBe(true);
+    expect(derived.some((warning) => warning.message.includes("largest organic fragment · Na removed"))).toBe(
+      true
+    );
+    // The properties still describe the salt as drawn, not the fragment.
+    expect(result.properties.formula).toBe("C7H5NaO2");
+  });
+
   it("rejects a format it cannot read", async () => {
     const adapter = createRdkitAdapter();
     await expect(adapter.validateStructure({ format: "unknown", value: "anything" })).resolves.toMatchObject({

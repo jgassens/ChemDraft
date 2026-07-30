@@ -37,6 +37,13 @@ export interface RdkitBondJson {
 export interface RdkitMoleculeJson {
   atoms: RdkitAtomJson[];
   bonds: RdkitBondJson[];
+  /**
+   * RDKit's `rdkitRepresentation` block — aromatic atom and bond indices, CIP ranks, ring membership.
+   * Declared so its existence is visible, and deliberately untyped because nothing here reads it:
+   * every index in it is keyed to the molecule's own numbering, so it cannot survive a subset (see
+   * `subsetRdkitJson` in ./interpretations).
+   */
+  extensions?: unknown[];
 }
 
 export interface RdkitJson {

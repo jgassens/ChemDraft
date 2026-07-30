@@ -17,6 +17,9 @@ export * from "./conformer";
 // hardcoded SMILES with hand-entered masses — "a second implementation by another name" (§7).
 export * from "./analysis";
 export * from "./composition";
+// Derived interpretations (PLANS.md §1): the largest-organic-fragment and neutralised views a method
+// falls back to when the structure as drawn is outside its domain.
+export * from "./interpretations";
 export * from "./methods";
 
 import { analyzeStructureDetailed, type AnalysisInputFormat, type DetailedAnalysis } from "./analysis";
