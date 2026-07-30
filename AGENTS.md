@@ -458,8 +458,9 @@ Not allowed:
 
 ### 6.17 `analysis-core`
 
-Pure contracts for the property & prediction suite. No RDKit, no OpenChemLib, no worker, no DOM — the
-adapters produce these types and the worker, panel, and provenance report consume them.
+Pure contracts for the property & prediction suite (scoped by `PLANS.md`; the rules are in §8b). No
+RDKit, no OpenChemLib, no worker, no DOM — the adapters produce these types and the worker, panel, and
+provenance report consume them.
 
 Allowed:
 
@@ -662,6 +663,14 @@ travel with any redistribution, including a packaged plugin zip. Never describe 
 package.json) — the project owner's call; do not change it.
 
 ## 8b. Property & prediction suite rules (branch `chemdraft-analyzers`)
+
+**The plan of record is `PLANS.md`**, whose first heading is "ChemDraft property & prediction suite".
+It holds the architecture document this work was scoped from — §1 interpretation ledger, §2
+classification, §3 run and result union, §4 the two tracks, §5 execution, §6 corrections register, §7
+engine findings, §8 dependency triage, §9 rollout, §10 verification — plus the phase-by-phase delivery
+sequence and the definition of done. **Every bare "§n" below and in the analysis source comments refers
+to a section of that document.** Read it before changing anything in `analysis-core` or the RDKit
+adapter's analysis path; the rules here are its conclusions, not their derivation.
 
 **One parse, many named interpretations.** Parse and sanitise once through RDKit, keep the source
 representation, and derive explicitly named interpretations from it. Composition, charge, mass, and
