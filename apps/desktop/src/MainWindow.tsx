@@ -371,6 +371,10 @@ import {
   type NativeChainAnchor,
   insertNativeArtGraphicObject,
   nativeArtToolIsLineDraw,
+  nativeArrowStyleDefaultFromGraphic,
+  setNativeArrowStyleDefault,
+  loadNativeArrowStyleDefaults,
+  nativeArrowStyleDefaultsSnapshot,
   nativeArtToolSupportsArrowHoverEdit,
   applyNativeArtLineToolAtPoint,
   applyNativeArtLineToolDefaultAtPoint,
@@ -1440,6 +1444,11 @@ function isTransformHandleDoublePress(
     Math.hypot(current.x - previous.x, current.y - previous.y) <= radiusPx
   );
 }
+/** Persisted per-tool "draw new arrows like this" defaults (documentWorkflow's session registry). */
+const ARROW_STYLE_DEFAULTS_STORAGE_KEY = "chemdraft.arrowStyleDefaults.v1";
+/** Context-menu command handled locally at the menu's render site, not via the command registry. */
+const SET_DEFAULT_ARROW_STYLE_COMMAND_ID = "arrow.setDefaultStyle";
+
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.bringForward", label: "Move Object Forward" },
   { commandId: "layout.bringToFront", label: "Move Object to Front" },
@@ -1854,6 +1863,18 @@ export function MainWindow({
     : undefined;
   useEffect(() => {
     prewarmNativeDialogModule();
+  }, []);
+  // "Set as Default Arrow Style" survives restarts: seed the in-session defaults from localStorage
+  // once on mount; each set writes the snapshot back (see the context-menu handler).
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(ARROW_STYLE_DEFAULTS_STORAGE_KEY);
+      if (raw) {
+        loadNativeArrowStyleDefaults(JSON.parse(raw));
+      }
+    } catch {
+      // Unreadable storage (or corrupted JSON) just means factory defaults this session.
+    }
   }, []);
   useEffect(() => {
     if (!selectedGraphicPathNode) {
@@ -14964,10 +14985,33 @@ export function MainWindow({
           objectCount={activePage.objects.length}
           targetKind={objectContextMenu.targetKind}
           bondDepthContext={objectContextMenu.bondDepthContext}
+          arrowStyleSource={(() => {
+            const menuObject = findDocumentObject(document, objectContextMenu.objectId);
+            return menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
+          })()}
           position={{ x: objectContextMenu.x, y: objectContextMenu.y }}
           onInvoke={(commandId) => {
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (commandId === SET_DEFAULT_ARROW_STYLE_COMMAND_ID && menu) {
+              const menuObject = findDocumentObject(documentRef.current, menu.objectId);
+              const captured = menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
+              if (!captured) {
+                setStatus("No arrow style to capture");
+                return;
+              }
+              setNativeArrowStyleDefault(captured.toolId, captured.style);
+              try {
+                window.localStorage.setItem(
+                  ARROW_STYLE_DEFAULTS_STORAGE_KEY,
+                  JSON.stringify(nativeArrowStyleDefaultsSnapshot())
+                );
+              } catch {
+                // Session-only defaults when storage is unavailable.
+              }
+              setStatus(`New ${captured.title.toLowerCase()}s will use this style`);
+              return;
+            }
             if (isBondDepthCommandId(commandId) && menu?.bondDepthContext) {
               const changed = commitDocumentChange((current) => {
                 const patches = planBondDepthPatches(current.pages[0].id, menu.bondDepthContext, commandId);
@@ -18380,6 +18424,7 @@ export function ObjectLayerContextMenu({
   objectCount,
   targetKind,
   bondDepthContext,
+  arrowStyleSource,
   position,
   onInvoke
 }: {
@@ -18388,6 +18433,8 @@ export function ObjectLayerContextMenu({
   objectCount: number;
   targetKind: ObjectContextMenuState["targetKind"];
   bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
+  /** Present when the clicked object is an arrow whose look can become the tool's default. */
+  arrowStyleSource?: { title: string };
   position: ClientPoint;
   onInvoke(commandId: string): void;
 }) {
@@ -18409,6 +18456,21 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {arrowStyleSource ? (
+        <>
+          <div className="object-context-menu-title">{arrowStyleSource.title}</div>
+          <button
+            type="button"
+            role="menuitem"
+            className="object-context-menu-item"
+            data-command-id={SET_DEFAULT_ARROW_STYLE_COMMAND_ID}
+            onClick={() => onInvoke(SET_DEFAULT_ARROW_STYLE_COMMAND_ID)}
+          >
+            Set as Default Arrow Style
+          </button>
+          <div className="object-context-menu-separator" role="separator" />
+        </>
+      ) : null}
       {hasBondDepthContext ? (
         <>
           <div className="object-context-menu-title">Bond depth</div>

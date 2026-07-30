@@ -1767,7 +1767,7 @@ describe("ChemDraft desktop shell", () => {
   it("ships only live customize-toolbar commands", () => {
     // The Customize Toolbars dialog and the in-place Main-toolbar editor own reset/create/clone
     // through layoutStateEdits; the standalone view.toolset.* redirect commands are retired
-    // (PLANS.md, Toolbar Wiring and Honesty).
+    // (docs/shipped/README.md, Toolbar Wiring and Honesty).
     expect(toolbarCustomizationActions.map((command) => command.id).sort()).toEqual([
       "view.customizeMainToolbar",
       "view.customizeToolbars"
@@ -2946,8 +2946,8 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("ships only the declared transitional stub tools, each disabled with a reason", () => {
-    // The exact set of ids still awaiting their wiring slice (PLANS.md, Toolbar Wiring and
-    // Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
+    // The exact set of ids still awaiting their wiring slice (docs/shipped/README.md, Toolbar
+    // Wiring and Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
     // disabled outside this list is either a live selection-dependent command or a regression:
     // wire it or retire it.
     const expectedTransitionalStubs: string[] = [];

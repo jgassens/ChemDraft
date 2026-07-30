@@ -119,6 +119,9 @@ import {
   nativeArtToolSupportsArrowHoverEdit,
   applyNativeArtLineToolAtPoint,
   applyNativeArtLineToolDefaultAtPoint,
+  nativeArrowStyleDefaultFromGraphic,
+  setNativeArrowStyleDefault,
+  clearNativeArrowStyleDefaults,
   nativeArtLineDefaultLengthPx,
   insertAdapterFallbackMolecule,
   applyFormulaTextFormatting,
@@ -4534,6 +4537,120 @@ describe("Phase 4 document workflow", () => {
         strokeLineCap: "butt"
       }
     });
+  });
+
+  it("captures a right-clicked arrow's style as the tool default and applies it to new arrows", () => {
+    try {
+      // A resized retro arrow becomes the default: subsequent retros draw at that heft.
+      const retroDoc = applyNativeArtLineToolDefaultAtPoint(
+        createPhase4Document("Arrow Default Retro"),
+        { x: 120, y: 200 },
+        "tool.art.retroArrow"
+      );
+      const retroId = retroDoc.selection.objectIds[0]!;
+      const scaledRetroDoc = applyPatches(retroDoc, [{
+        op: "updateObject",
+        objectId: retroId,
+        changes: { data: { ...graphicById(retroDoc, retroId).data, dualShaftScale: 2.5 } }
+      }]);
+      const captured = nativeArrowStyleDefaultFromGraphic(graphicById(scaledRetroDoc, retroId));
+      if (!captured) {
+        throw new Error("Expected the retro arrow to yield a default style.");
+      }
+      expect(captured.toolId).toBe("retroArrow");
+      expect(captured.style.dualShaftScale).toBe(2.5);
+      setNativeArrowStyleDefault(captured.toolId, captured.style);
+
+      const nextRetro = applyNativeArtLineToolDefaultAtPoint(
+        createPhase4Document("Arrow Default Retro Applied"),
+        { x: 140, y: 220 },
+        "tool.art.retroArrow"
+      );
+      expect(graphicById(nextRetro, nextRetro.selection.objectIds[0]!).data.dualShaftScale).toBe(2.5);
+
+      // A bent reaction arrow with a grown head: new reaction arrows bow proportionally and keep the
+      // head size, at any drawn length.
+      const reactionDoc = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Arrow Default Reaction"),
+        { x: 100, y: 300 },
+        { x: 220, y: 300 },
+        "tool.art.reactionArrow"
+      );
+      const reactionId = reactionDoc.selection.objectIds[0]!;
+      const bentDoc = applyPatches(reactionDoc, [{
+        op: "updateObject",
+        objectId: reactionId,
+        changes: {
+          data: {
+            ...graphicById(reactionDoc, reactionId).data,
+            artPathKind: "quadratic",
+            pathControlPoint: { x: 160, y: 270 },
+            markerEnd: { kind: "filled-arrow", sizePx: 24 }
+          }
+        }
+      }]);
+      const reactionCaptured = nativeArrowStyleDefaultFromGraphic(graphicById(bentDoc, reactionId));
+      if (!reactionCaptured) {
+        throw new Error("Expected the reaction arrow to yield a default style.");
+      }
+      expect(reactionCaptured.style.markerEndSizePx).toBe(24);
+      expect(reactionCaptured.style.bowFrac).toBeCloseTo(0.25, 3);
+      setNativeArrowStyleDefault(reactionCaptured.toolId, reactionCaptured.style);
+
+      const nextReaction = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Arrow Default Reaction Applied"),
+        { x: 100, y: 400 },
+        { x: 340, y: 400 },
+        "tool.art.reactionArrow"
+      );
+      const drawn = graphicById(nextReaction, nextReaction.selection.objectIds[0]!);
+      expect(drawn.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 24 });
+      expect(drawn.data.artPathKind).toBe("quadratic");
+      // Bow scales with the drawn length: 0.25 x 240 = 60 above the midpoint (240, 400).
+      expect(drawn.data.pathControlPoint?.x).toBeCloseTo(220, 3);
+      expect(drawn.data.pathControlPoint?.y).toBeCloseTo(340, 3);
+
+      // Curved (arc) arrows: sweep and head size carry through the click-placement path.
+      const curvedDoc = insertNativeArtGraphicObject(
+        createPhase4Document("Arrow Default Curved"),
+        { x: 200, y: 200 },
+        "tool.art.curvedArrow90"
+      );
+      const curvedId = curvedDoc.selection.objectIds[0]!;
+      const sweptDoc = applyPatches(curvedDoc, [{
+        op: "updateObject",
+        objectId: curvedId,
+        changes: {
+          data: {
+            ...graphicById(curvedDoc, curvedId).data,
+            arcSweepRadians: Math.PI * 1.2
+          }
+        }
+      }]);
+      const curvedCaptured = nativeArrowStyleDefaultFromGraphic(graphicById(sweptDoc, curvedId));
+      if (!curvedCaptured) {
+        throw new Error("Expected the curved arrow to yield a default style.");
+      }
+      setNativeArrowStyleDefault(curvedCaptured.toolId, curvedCaptured.style);
+      const nextCurved = insertNativeArtGraphicObject(
+        createPhase4Document("Arrow Default Curved Applied"),
+        { x: 260, y: 260 },
+        "tool.art.curvedArrow90"
+      );
+      expect(graphicById(nextCurved, nextCurved.selection.objectIds[0]!).data.arcSweepRadians)
+        .toBeCloseTo(Math.PI * 1.2, 6);
+
+      // Non-arrow art objects never offer the capture.
+      const lobeDoc = insertNativeArtGraphicObject(
+        createPhase4Document("Arrow Default Lobe"),
+        { x: 200, y: 200 },
+        "tool.lobe"
+      );
+      expect(nativeArrowStyleDefaultFromGraphic(graphicById(lobeDoc, lobeDoc.selection.objectIds[0]!)))
+        .toBeUndefined();
+    } finally {
+      clearNativeArrowStyleDefaults();
+    }
   });
 
   it("draws reaction/resonance art arrows between two dragged endpoints", () => {

@@ -363,11 +363,11 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
 }
 
 /** The declared set of tool ids that ship visibly in toolsets but still await their wiring slice
- *  (PLANS.md, Toolbar Wiring and Honesty). Declaration is deliberate: stub-ness cannot be derived
- *  from disabled state alone, because selection-dependent commands (layout.align*, boolean ops) are
- *  also disabled-with-reason in the manifest yet have live behavior. The customize gallery excludes
- *  these ids so a stub can never be dragged onto a real toolbar; each wiring slice shrinks this set
- *  and it must reach empty at closeout. */
+ *  (docs/shipped/README.md, Toolbar Wiring and Honesty). Declaration is deliberate: stub-ness
+ *  cannot be derived from disabled state alone, because selection-dependent commands
+ *  (layout.align*, boolean ops) are also disabled-with-reason in the manifest yet have live
+ *  behavior. The customize gallery excludes these ids so a stub can never be dragged onto a real
+ *  toolbar; each wiring slice shrinks this set and it must reach empty at closeout. */
 export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([]);
 
 /**

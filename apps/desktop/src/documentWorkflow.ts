@@ -1284,7 +1284,8 @@ export function createNativeArtGraphicObject(
   const page = firstPage(document);
   const x = clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
   const y = clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
-  const data = nativeArtToolDataForPlacement(tool.data, x, y);
+  const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
+  const data = nativeArtToolDataForPlacement(toolData, x, y);
   return {
     id: nextObjectId(document, `art_${tool.id}`),
     type: "graphic",
@@ -1294,7 +1295,7 @@ export function createNativeArtGraphicObject(
     height: tool.height,
     rotation: 0,
     style: {
-      ...tool.style,
+      ...toolStyle,
       source: "chemdraft-native-art",
       artToolCommandId: tool.commandId
     },
@@ -1711,6 +1712,199 @@ export function insertNativeArtGraphicObject(
  *  arrow default so a plain click drops a sensible horizontal arrow rather than a zero-length dot. */
 export const nativeArtLineDefaultLengthPx = 120;
 
+/** The arrow-family art tools — the ones "Set as Default Arrow Style" applies to. */
+const nativeArrowStyleToolIds = new Set<NativeArtToolId>([
+  "arrow",
+  "reactionArrow",
+  "reactionArrowBold",
+  "reactionArrowDashed",
+  "resonanceArrow",
+  "equilibriumArrow",
+  "retroArrow",
+  "curvedArrow90",
+  "curvedArrow180",
+  "fishhookArrow",
+  "fishhookCurved",
+  "noReactionArrow"
+]);
+
+/**
+ * The reusable parts of an arrow's look — everything "Set as Default Arrow Style" carries from a
+ * right-clicked arrow onto every subsequent one drawn with the same tool. Geometry that the draw
+ * gesture itself decides (endpoints, length, angle) is deliberately absent; the bow is stored as a
+ * signed fraction of the length so a curved default bends new arrows proportionally at any size.
+ */
+export interface NativeArrowStyleDefault {
+  markerStartSizePx?: number;
+  markerEndSizePx?: number;
+  dualShaftScale?: number;
+  dualShaftForwardFrac?: number;
+  dualShaftReverseFrac?: number;
+  arcSweepRadians?: number;
+  bowFrac?: number;
+  strokeColor?: string;
+  strokeWidth?: number;
+  strokeDasharray?: string;
+}
+
+/** Per-tool "draw new arrows like this" defaults. Session state seeded from persistence by the main
+ *  window; consulted by the art-object constructors so every creation path picks them up. */
+const nativeArrowStyleDefaults = new Map<NativeArtToolId, NativeArrowStyleDefault>();
+
+export function setNativeArrowStyleDefault(toolId: NativeArtToolId, style: NativeArrowStyleDefault): void {
+  nativeArrowStyleDefaults.set(toolId, style);
+}
+
+export function loadNativeArrowStyleDefaults(record: Readonly<Record<string, NativeArrowStyleDefault>>): void {
+  for (const [toolId, style] of Object.entries(record)) {
+    if (nativeArrowStyleToolIds.has(toolId as NativeArtToolId) && style && typeof style === "object") {
+      nativeArrowStyleDefaults.set(toolId as NativeArtToolId, style);
+    }
+  }
+}
+
+export function nativeArrowStyleDefaultsSnapshot(): Record<string, NativeArrowStyleDefault> {
+  return Object.fromEntries(nativeArrowStyleDefaults);
+}
+
+export function clearNativeArrowStyleDefaults(): void {
+  nativeArrowStyleDefaults.clear();
+}
+
+/**
+ * Read a right-clicked arrow's reusable style, or undefined when the object isn't an arrow. Captures
+ * only what the object actually expresses: marker sizes it has, dual-shaft heft and half-lengths, an
+ * arc's sweep, a bent line's bow, and explicit stroke styling.
+ */
+export function nativeArrowStyleDefaultFromGraphic(
+  object: DocumentObject
+): { toolId: NativeArtToolId; title: string; style: NativeArrowStyleDefault } | undefined {
+  if (object.type !== "graphic") {
+    return undefined;
+  }
+  const toolId = object.data.artToolId as NativeArtToolId | undefined;
+  if (!toolId || !nativeArrowStyleToolIds.has(toolId)) {
+    return undefined;
+  }
+  const tool = nativeArtToolDefinitions.find((definition) => definition.id === toolId);
+  if (!tool) {
+    return undefined;
+  }
+
+  const style: NativeArrowStyleDefault = {};
+  const markerStartSize = object.data.markerStart?.sizePx;
+  const markerEndSize = object.data.markerEnd?.sizePx;
+  if (typeof markerStartSize === "number") {
+    style.markerStartSizePx = markerStartSize;
+  }
+  if (typeof markerEndSize === "number") {
+    style.markerEndSizePx = markerEndSize;
+  }
+  if (object.data.dualShaft === true) {
+    if (typeof object.data.dualShaftScale === "number") {
+      style.dualShaftScale = object.data.dualShaftScale;
+    }
+    if (object.data.dualShaftParallel !== true) {
+      if (typeof object.data.dualShaftForwardFrac === "number") {
+        style.dualShaftForwardFrac = object.data.dualShaftForwardFrac;
+      }
+      if (typeof object.data.dualShaftReverseFrac === "number") {
+        style.dualShaftReverseFrac = object.data.dualShaftReverseFrac;
+      }
+    }
+  }
+  if (object.data.artPathKind === "arc" && typeof object.data.arcSweepRadians === "number") {
+    style.arcSweepRadians = object.data.arcSweepRadians;
+  }
+  const bow = nativeArrowBowFraction(object);
+  if (bow !== undefined) {
+    style.bowFrac = bow;
+  }
+  if (typeof object.style.strokeColor === "string") {
+    style.strokeColor = object.style.strokeColor;
+  }
+  if (typeof object.style.strokeWidth === "number") {
+    style.strokeWidth = object.style.strokeWidth;
+  }
+  if (typeof object.style.strokeDasharray === "string") {
+    style.strokeDasharray = object.style.strokeDasharray;
+  }
+
+  return { toolId, title: tool.title, style };
+}
+
+/** A bent line's bow: the control point's signed perpendicular offset at the midpoint, as a fraction
+ *  of the length — transplantable onto a new arrow of any length or angle. */
+function nativeArrowBowFraction(object: GraphicObject): number | undefined {
+  if (object.data.artPathKind !== "quadratic") {
+    return undefined;
+  }
+  const start = object.data.lineStart;
+  const end = object.data.lineEnd;
+  const control = object.data.pathControlPoint;
+  if (!start || !end || !control) {
+    return undefined;
+  }
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  if (length < 1) {
+    return undefined;
+  }
+  const axis = { x: (end.x - start.x) / length, y: (end.y - start.y) / length };
+  const normal = { x: axis.y, y: -axis.x };
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  return ((control.x - mid.x) * normal.x + (control.y - mid.y) * normal.y) / length;
+}
+
+/** Overlay a tool's stored default style onto freshly built creation data + style. */
+function nativeArrowStyleDefaultOverlay(
+  tool: NativeArtToolDefinition,
+  data: GraphicObjectData,
+  style: GraphicObjectStyle
+): { data: GraphicObjectData; style: GraphicObjectStyle } {
+  const stored = nativeArrowStyleDefaults.get(tool.id);
+  if (!stored) {
+    return { data, style };
+  }
+
+  const nextData: GraphicObjectData = { ...data };
+  // Marker sizes only resize heads the tool already draws — a default never adds or removes one.
+  if (typeof stored.markerStartSizePx === "number" && nextData.markerStart) {
+    nextData.markerStart = { ...nextData.markerStart, sizePx: stored.markerStartSizePx };
+  }
+  if (typeof stored.markerEndSizePx === "number" && nextData.markerEnd) {
+    nextData.markerEnd = { ...nextData.markerEnd, sizePx: stored.markerEndSizePx };
+  }
+  if (nextData.dualShaft === true) {
+    if (typeof stored.dualShaftScale === "number") {
+      nextData.dualShaftScale = stored.dualShaftScale;
+    }
+    if (nextData.dualShaftParallel !== true) {
+      if (typeof stored.dualShaftForwardFrac === "number") {
+        nextData.dualShaftForwardFrac = stored.dualShaftForwardFrac;
+      }
+      if (typeof stored.dualShaftReverseFrac === "number") {
+        nextData.dualShaftReverseFrac = stored.dualShaftReverseFrac;
+      }
+    }
+  }
+  if (nextData.artPathKind === "arc" && typeof stored.arcSweepRadians === "number") {
+    nextData.arcSweepRadians = stored.arcSweepRadians;
+  }
+
+  const nextStyle: GraphicObjectStyle = { ...style };
+  if (typeof stored.strokeColor === "string") {
+    nextStyle.strokeColor = stored.strokeColor;
+  }
+  if (typeof stored.strokeWidth === "number") {
+    nextStyle.strokeWidth = stored.strokeWidth;
+  }
+  if (typeof stored.strokeDasharray === "string") {
+    nextStyle.strokeDasharray = stored.strokeDasharray;
+  }
+
+  return { data: nextData, style: nextStyle };
+}
+
 /** Line-family art tools (straight and wavy lines, plain/reaction/resonance arrows) draw between two
  *  endpoints, so — like bonds and reaction arrows — they support press-drag-release placement rather
  *  than plopping a fixed box. Arc/quadratic/bezier/polyline/freehand tools are excluded. */
@@ -1753,13 +1947,32 @@ export function createNativeArtLineGraphicObject(
     x: clamp(end.x, 0, page.width),
     y: clamp(end.y, 0, page.height)
   };
-  const strokeWidth = typeof tool.style.strokeWidth === "number" ? tool.style.strokeWidth : 2;
-  const markerSize = Math.max(tool.data.markerStart?.sizePx ?? 0, tool.data.markerEnd?.sizePx ?? 0);
+  const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
+
+  // A stored bow default bends the new arrow proportionally: same signed fraction of its length.
+  const bowFrac = nativeArrowStyleDefaults.get(tool.id)?.bowFrac;
+  const bowData: GraphicObjectData = {};
+  if (typeof bowFrac === "number" && toolData.artPathKind === "line" && toolData.dualShaft !== true) {
+    const length = Math.hypot(clampedEnd.x - clampedStart.x, clampedEnd.y - clampedStart.y);
+    if (length >= 1 && Math.abs(bowFrac) > 0.001) {
+      const axis = { x: (clampedEnd.x - clampedStart.x) / length, y: (clampedEnd.y - clampedStart.y) / length };
+      const normal = { x: axis.y, y: -axis.x };
+      bowData.artPathKind = "quadratic";
+      bowData.pathControlPoint = {
+        x: (clampedStart.x + clampedEnd.x) / 2 + normal.x * bowFrac * length,
+        y: (clampedStart.y + clampedEnd.y) / 2 + normal.y * bowFrac * length
+      };
+    }
+  }
+
+  const strokeWidth = typeof toolStyle.strokeWidth === "number" ? toolStyle.strokeWidth : 2;
+  const markerSize = Math.max(toolData.markerStart?.sizePx ?? 0, toolData.markerEnd?.sizePx ?? 0);
   const padding = Math.max(8, strokeWidth * 2 + markerSize);
-  const minX = Math.min(clampedStart.x, clampedEnd.x) - padding;
-  const minY = Math.min(clampedStart.y, clampedEnd.y) - padding;
-  const maxX = Math.max(clampedStart.x, clampedEnd.x) + padding;
-  const maxY = Math.max(clampedStart.y, clampedEnd.y) + padding;
+  const boxPoints = [clampedStart, clampedEnd, ...(bowData.pathControlPoint ? [bowData.pathControlPoint] : [])];
+  const minX = Math.min(...boxPoints.map((point) => point.x)) - padding;
+  const minY = Math.min(...boxPoints.map((point) => point.y)) - padding;
+  const maxX = Math.max(...boxPoints.map((point) => point.x)) + padding;
+  const maxY = Math.max(...boxPoints.map((point) => point.y)) + padding;
 
   return {
     id: nextObjectId(document, `art_${tool.id}`),
@@ -1770,7 +1983,7 @@ export function createNativeArtLineGraphicObject(
     height: Math.max(1, maxY - minY),
     rotation: 0,
     style: {
-      ...tool.style,
+      ...toolStyle,
       source: "chemdraft-native-art",
       artToolCommandId: tool.commandId
     },
@@ -1781,9 +1994,10 @@ export function createNativeArtLineGraphicObject(
     },
     graphicKind: tool.graphicKind,
     data: {
-      ...tool.data,
+      ...toolData,
       lineStart: { x: clampedStart.x, y: clampedStart.y },
       lineEnd: { x: clampedEnd.x, y: clampedEnd.y },
+      ...bowData,
       artToolId: tool.id
     }
   };
