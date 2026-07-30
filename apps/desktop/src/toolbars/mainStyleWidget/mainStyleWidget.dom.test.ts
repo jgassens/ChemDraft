@@ -152,23 +152,40 @@ describe("MainStyleWidget variants", () => {
     expect(onInvoke).toHaveBeenCalledWith("text.color.blue");
   });
 
-  it("toggles hydrogen and terminal-carbon display with negated boolean commands", () => {
+  it("keeps both atom-label toggles on show polarity — lit always means visible", () => {
     const { document: moleculeDocument, selection } = moleculeSelection();
     const inspector = createMoleculeInspectorModel(moleculeDocument, {
       selectedObjectIds: moleculeDocument.selection.objectIds
     });
     const { onInvoke } = renderWidget({ currentSelection: selection, currentMoleculeInspector: inspector });
 
-    const hideH = widgetRoot().querySelector<HTMLButtonElement>("[aria-label=\"Hide Implicit Hydrogens\"]");
-    if (!hideH) {
-      throw new Error("Expected the hide-hydrogens toggle.");
-    }
-    expect(hideH.getAttribute("aria-pressed")).toBe("false");
-    act(() => {
-      hideH.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
-      hideH.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    const toggle = (label: string): HTMLButtonElement => {
+      const button = widgetRoot().querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+      if (!button) {
+        throw new Error(`Expected the ${label} toggle.`);
+      }
+      return button;
+    };
+    const press = (button: HTMLButtonElement) => {
+      act(() => {
+        button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+        button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    };
+
+    // Defaults: implicit hydrogens render, terminal carbon labels don't. The H toggle's underlying
+    // field is inverted (hideImplicitHydrogens), so surfacing it raw would light H for "hidden"
+    // while C lights for "shown" — a lit pair would mean opposite things.
+    const showHydrogens = toggle("Show Implicit Hydrogens");
+    const showCarbons = toggle("Show Terminal Carbons");
+    expect(showHydrogens.getAttribute("aria-pressed")).toBe("true");
+    expect(showCarbons.getAttribute("aria-pressed")).toBe("false");
+
+    // Lit → hides. Dim → shows.
+    press(showHydrogens);
     expect(onInvoke).toHaveBeenCalledWith("molecule.atomLabel.hideImplicitHydrogens:true");
+    press(showCarbons);
+    expect(onInvoke).toHaveBeenCalledWith("molecule.atomLabel.showTerminalCarbons:true");
   });
 
   it("renders the shape layout for a plain graphic and targets fill or stroke", async () => {

@@ -38,7 +38,12 @@ export function moleculeVariantRows(state: ToolbarWidgetState): MainStyleRows {
   const structureDisabled = structure ? !structure.enabled : true;
   const atomLabelsDisabled = atomLabels ? !atomLabels.enabled : true;
   const currentColor = normalizeHexColor(state.currentTextStyle?.color) ?? textColorCommands[0].color;
-  const hideHydrogens = atomLabels?.values.hideImplicitHydrogens.value === true;
+  // Both label toggles are show/hide on the SAME polarity: lit means those labels are visible on
+  // the canvas. The underlying style field for hydrogens is inverted
+  // (atomLabelHideImplicitHydrogens), so it is negated here — surfacing it raw would light the H
+  // toggle for "hidden" while the C toggle lights for "shown", and a lit pair would mean opposite
+  // things. A mixed (or absent) value reads as not-shown, so clicking unifies the selection.
+  const showImplicitHydrogens = atomLabels?.values.hideImplicitHydrogens.value === false;
   const showTerminalCarbons = atomLabels?.values.showTerminalCarbons.value === true;
 
   return {
@@ -70,9 +75,11 @@ export function moleculeVariantRows(state: ToolbarWidgetState): MainStyleRows {
       {
         kind: "toggle",
         toggle: {
-          commandId: moleculeAtomLabelHideImplicitHydrogensCommandId(!hideHydrogens),
-          label: "Hide Implicit Hydrogens",
-          active: hideHydrogens,
+          // Lit → clicking hides (sets the inverted field true); dim → clicking shows.
+          commandId: moleculeAtomLabelHideImplicitHydrogensCommandId(showImplicitHydrogens),
+          label: "Show Implicit Hydrogens",
+          active: showImplicitHydrogens,
+          disabled: atomLabelsDisabled,
           content: "H"
         }
       },
@@ -82,6 +89,7 @@ export function moleculeVariantRows(state: ToolbarWidgetState): MainStyleRows {
           commandId: moleculeAtomLabelShowTerminalCarbonsCommandId(!showTerminalCarbons),
           label: "Show Terminal Carbons",
           active: showTerminalCarbons,
+          disabled: atomLabelsDisabled,
           content: "C"
         }
       }
