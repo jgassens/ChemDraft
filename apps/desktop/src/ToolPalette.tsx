@@ -7,7 +7,6 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
@@ -15,7 +14,6 @@ import iro from "@jaames/iro";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
 import {
@@ -27,6 +25,17 @@ import {
   type ToolbarWidgetGridMode,
   type ToolbarWidgetState
 } from "./toolbars/toolbarWidgets";
+import {
+  ScriptGlyph,
+  TextFontSelect,
+  ToolbarAlignButton,
+  ToolbarColorSwatchButton,
+  ToolbarTextButton,
+  closestSizeCommandId,
+  defaultFontFaces,
+  fontFamilyLabel,
+  usePaletteButtonInvoke
+} from "./toolbars/toolbarCells";
 import {
   normalizeHexColor,
   distributeModeCommandIds,
@@ -102,7 +111,6 @@ import {
 	  textAlignmentCommands,
   textColorCommands,
   textFontCommands,
-  textFontFamilyCommandId,
   textLetterSpacingCommands,
   textLineHeightCommands,
   textParagraphSpacingCommands,
@@ -786,78 +794,6 @@ function useNativeFloatingTooltip(shellRef: { current: HTMLElement | null }, vis
       );
     };
   }, [shellRef, visible]);
-}
-
-// Text objects can use any installed font. The four legacy presets stay pinned at the
-// top for quick access; the full system catalog (shared with the atom-label picker via
-// loadSystemFonts) follows. A non-preset family round-trips through a dynamic
-// `text.font.family:` command id, mirroring how custom text colors are applied.
-function TextFontSelect({
-  currentTextStyle,
-  labelClassName,
-  onInvoke
-}: {
-  currentTextStyle?: NativeTextStyle;
-  labelClassName: string;
-  onInvoke: (commandId: string) => void;
-}) {
-  const currentFontFamily = currentTextStyle?.fontFamily;
-  const presetCommandId = presetTextFontCommandId(currentFontFamily);
-  // A non-preset family is a specific installed font; keep it selectable even before the
-  // catalog resolves (and on the web build, where there is no system-font bridge).
-  const customFamily = presetCommandId ? undefined : currentFontFamily?.trim() || undefined;
-  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
-
-  useEffect(() => {
-    let disposed = false;
-    void loadSystemFonts(customFamily ? [customFamily] : []).then((fonts) => {
-      if (!disposed) {
-        setSystemFonts(fonts);
-      }
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [customFamily]);
-
-  const systemFontFamilies = systemFonts.length > 0
-    ? systemFonts
-    : customFamily
-      ? [{ family: customFamily, faces: defaultFontFaces() }]
-      : [];
-  const value = presetCommandId
-    ?? (customFamily ? textFontFamilyCommandId(customFamily) : textFontCommands[0].id);
-
-  return (
-    <label className={labelClassName}>
-      <span className="visually-hidden">Text font</span>
-      <select
-        className="toolbar-select toolbar-font-select"
-        value={value}
-        aria-label="Text font"
-        data-palette-control="true"
-        onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onInvoke(event.currentTarget.value)}
-      >
-        <optgroup label="Suggested">
-          {textFontCommands.map((command) => (
-            <option key={command.id} value={command.id}>
-              {fontLabel(command.title)}
-            </option>
-          ))}
-        </optgroup>
-        {systemFontFamilies.length > 0 ? (
-          <optgroup label="System fonts">
-            {systemFontFamilies.map((font) => (
-              <option key={font.family} value={textFontFamilyCommandId(font.family)}>
-                {fontFamilyLabel(font.family)}
-              </option>
-            ))}
-          </optgroup>
-        ) : null}
-      </select>
-    </label>
-  );
 }
 
 function MainToolbarStyleControls() {
@@ -1995,19 +1931,6 @@ function fontFacesForFamily(
     .sort((left, right) => left.weight - right.weight || left.style.localeCompare(right.style));
 }
 
-function defaultFontFaces(): SystemFontFace[] {
-  return [
-    { weight: 400, style: "normal" },
-    { weight: 700, style: "normal" },
-    { weight: 400, style: "italic" },
-    { weight: 700, style: "italic" }
-  ];
-}
-
-function fontFamilyLabel(fontFamily: string): string {
-  return fontFamily.split(",")[0]?.replace(/^["']|["']$/g, "") ?? fontFamily;
-}
-
 function fontFaceLabel(weight: number, style: "normal" | "italic"): string {
   const weightLabel = weight === 400
     ? "Regular"
@@ -3105,11 +3028,6 @@ type IroColorPickerInstance = ReturnType<typeof iro.ColorPicker>;
 type IroColorLike = {
   hexString: string;
 };
-type ColorCommand = {
-  id: string;
-  title: string;
-  color: string;
-};
 type ColorPaletteSet = {
   id: string;
   title: string;
@@ -3586,63 +3504,6 @@ function IroColorWheel({
   );
 }
 
-function ToolbarTextButton({
-  active,
-  children,
-  commandId,
-  label,
-  onInvoke
-}: {
-  active: boolean;
-  children: ReactNode;
-  commandId: string;
-  label: string;
-  onInvoke: (commandId: string) => void;
-}) {
-  const invokeHandlers = usePaletteButtonInvoke(commandId, onInvoke);
-
-  return (
-    <button
-      type="button"
-      className={["toolbar-text-button", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      data-command-id={commandId}
-      data-palette-control="true"
-      {...invokeHandlers}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ToolbarColorSwatchButton({
-  active,
-  command,
-  onInvoke
-}: {
-  active: boolean;
-  command: ColorCommand;
-  onInvoke: (commandId: string) => void;
-}) {
-  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
-
-  return (
-    <button
-      type="button"
-      className={["toolbar-color-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
-      aria-label={command.title}
-      aria-pressed={active}
-      data-command-id={command.id}
-      data-palette-control="true"
-      style={{ "--swatch-color": command.color } as CSSProperties}
-      {...invokeHandlers}
-    />
-  );
-}
-
 function ColorPaletteSwatchButton({
   active,
   color,
@@ -3673,106 +3534,6 @@ function ColorPaletteSwatchButton({
       onClick={() => onApply(normalizedColor)}
     />
   );
-}
-
-function ToolbarAlignButton({
-  active,
-  command,
-  onInvoke
-}: {
-  active: boolean;
-  command: typeof textAlignmentCommands[number];
-  onInvoke: (commandId: string) => void;
-}) {
-  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
-
-  return (
-    <button
-      type="button"
-      className={["toolbar-align-button", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
-      aria-label={command.title}
-      aria-pressed={active}
-      data-command-id={command.id}
-      data-palette-control="true"
-      {...invokeHandlers}
-    >
-      <span className={`toolbar-align-glyph toolbar-align-${command.textAlign}`} aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </span>
-    </button>
-  );
-}
-
-function usePaletteButtonInvoke(
-  commandId: string,
-  onInvoke: (commandId: string) => void,
-  disabled = false
-) {
-  const pointerInvokedRef = useRef(false);
-
-  return {
-    onPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
-      event.stopPropagation();
-      if (disabled || event.button !== 0) {
-        return;
-      }
-
-      pointerInvokedRef.current = true;
-      onInvoke(commandId);
-    },
-    onMouseDown(event: ReactMouseEvent<HTMLButtonElement>) {
-      event.stopPropagation();
-      if (pointerInvokedRef.current || disabled || event.button !== 0) {
-        return;
-      }
-
-      pointerInvokedRef.current = true;
-      onInvoke(commandId);
-    },
-    onClick() {
-      if (pointerInvokedRef.current) {
-        pointerInvokedRef.current = false;
-        return;
-      }
-
-      if (!disabled) {
-        onInvoke(commandId);
-      }
-    }
-  };
-}
-
-function ScriptGlyph({ script }: { script: TextSpan["script"] }) {
-  if (script === "normal") {
-    return <span className="toolbar-script-glyph" data-text-script="normal">x</span>;
-  }
-
-  return (
-    <span className="toolbar-script-glyph" data-text-script={script}>
-      x<span>2</span>
-    </span>
-  );
-}
-
-function fontLabel(title: string): string {
-  return title.replace(/^Font: /, "").replace("System Sans", "Arial");
-}
-
-function presetTextFontCommandId(fontFamily: string | undefined): string | undefined {
-  return textFontCommands.find((command) => fontFamily === command.fontFamily)?.id;
-}
-
-function closestSizeCommandId(fontSizePx: number | undefined): string {
-  if (fontSizePx === undefined) {
-    return textSizeCommands[2]?.id ?? textSizeCommands[0].id;
-  }
-
-  return textSizeCommands.reduce((best, command) => (
-    Math.abs(command.fontSizePx - fontSizePx) < Math.abs(best.fontSizePx - fontSizePx) ? command : best
-  ), textSizeCommands[0]).id;
 }
 
 export function hexToRgbColor(hex: string): RgbColor | undefined {
