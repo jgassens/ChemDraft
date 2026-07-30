@@ -678,12 +678,6 @@ The user must approve insertion. The plugin host applies accepted patches throug
 
 ## 8. MolScribe OCSR plugin rules
 
-<!-- OPEN DECISION (flagged 2026-07-30): this section was written as forward-looking roadmap. Every
-     precondition it names has shipped, and the NMR predictor — not MolScribe — became the first
-     serious plugin before moving to its own repository (§8a). Phases A–E below are aspiration, not
-     plan. Candidate change: cut to a short "if OCSR is picked up, these are the rules" paragraph,
-     or keep the phases as a design sketch. Left as-is pending the project owner's call. -->
-
 The command registry, plugin API, permission system, and proposed-patch workflow all exist, and the
 first serious plugin turned out to be the NMR predictor rather than this one. MolScribe OCSR is
 still a scaffold (§6.13). If it is picked up, these rules apply.
@@ -711,17 +705,13 @@ network inference used
 local model/checkpoint missing
 ```
 
-Allowed implementation path:
-
-```text
-Phase A: plugin scaffold with mocked fixture output
-Phase B: native-service/Python sidecar contract
-Phase C: local model inference with user-supplied checkpoint
-Phase D: optional checkpoint download with explicit approval
-Phase E: confidence overlay and fixture-based accuracy tests
-```
-
-Do not vendor large checkpoints into the repository. Do not present recognized structures as guaranteed correct.
+Implementation order, if it is picked up: begin from the existing scaffold's mocked fixture output;
+then a native-service or sidecar contract; then local inference against a user-supplied checkpoint;
+then, only behind explicit user approval, optional checkpoint download; and last, a confidence
+overlay with fixture-based accuracy tests. The sequence is not bureaucracy — each step exists to keep
+heavy dependencies and model weights from arriving before the permission and review flow that gates
+them. Do not vendor large checkpoints into the repository. Do not present recognized structures as
+guaranteed correct.
 
 ## 8a. Plugin runtime, packaging, and NMR rules (merged 2026-07-16, `1232a444`; see ADR-0030)
 
