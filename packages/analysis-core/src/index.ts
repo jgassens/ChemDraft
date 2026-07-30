@@ -9,6 +9,7 @@
  *   §1 `interpretation` — parse once, derive named interpretations, keep the atom mapping
  *   §2 `classification` — three display axes, three branchable flags
  *   §3 `results`        — the discriminated union, the run, schema versioning
+ *   §5 `scheduler`, `session` — debounce, supersession, cancellation, and the session cache
  *   §10 `methodContract`, `propertyCorpus`, `invariance` — what keeps the UI and the science aligned
  */
 export * from "./classification";
@@ -18,4 +19,6 @@ export * from "./methodContract";
 export * from "./propertyCorpus";
 export * from "./provenance";
 export * from "./results";
+export * from "./scheduler";
+export * from "./session";
 export * from "./units";

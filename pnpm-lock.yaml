@@ -38,6 +38,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@chemdraft/analysis-core':
+        specifier: workspace:*
+        version: link:../../packages/analysis-core
       '@chemdraft/art-engine':
         specifier: workspace:*
         version: link:../../packages/art-engine

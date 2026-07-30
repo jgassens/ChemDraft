@@ -86,6 +86,13 @@ export interface AnalyzeStructureRequest {
    * the run falls back to `source` and says so.
    */
   interpretationOverride?: DerivedInterpretationId;
+  /**
+   * Refuse a structure with more than this many heavy atoms (PLANS.md §5, "molecule and memory
+   * limits"). Enforced here rather than in the scheduler because the atom count is only knowable after
+   * parsing, and it is the honest proxy for memory: MinimalLib exposes no heap cap, so bounding the
+   * molecule is what bounds worst-case allocation. Omit for no limit.
+   */
+  maxHeavyAtoms?: number;
 }
 
 const DEFAULT_FALLBACK_INTERPRETATIONS: readonly DerivedInterpretationId[] = [
@@ -403,6 +410,22 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         "failed",
         [],
         [warning("structure.empty", "The input parsed to a structure with no atoms.", "error")]
+      );
+    }
+
+    if (request.maxHeavyAtoms !== undefined && mol.get_num_atoms() > request.maxHeavyAtoms) {
+      // Refused before any descriptor runs. `unsupported` rather than `failed`: nothing went wrong,
+      // the structure is outside what this call agreed to compute.
+      return finish(
+        "unsupported",
+        [],
+        [
+          warning(
+            "structure.too_many_atoms",
+            `The structure has ${mol.get_num_atoms()} heavy atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
+            "warning"
+          )
+        ]
       );
     }
 

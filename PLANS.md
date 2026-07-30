@@ -600,9 +600,34 @@ an Analyze item ships only when it computes something).
   `chargeChanges` counts *atoms neutralised* rather than net charge, because a zwitterion's net is zero
   while two atoms changed. And when a discarded component is organic and no smaller than the one kept —
   ferrocene's second cyclopentadienyl — the ledger records that the choice was arbitrary.
-- **Phase 4 — Worker and session cache.** Persistent analysis worker with cancellation, supersession on
-  edit, debounce, molecule-size and memory limits, and the §1 cache key. Transport decision from §3
-  settled here and documented.
+- **Phase 4 — Worker and session cache. ✅ landed.** A persistent analysis worker
+  (`apps/desktop/src/analysisWorker.ts`) keeps the 7.5 MB WASM resident for the session, and
+  `AnalysisScheduler` in `analysis-core` owns the policy — debounce, supersession, cancellation, the
+  session cache, and the size guards — so all of it is testable in Node against a fake transport that
+  never loads a byte of WASM. Measured through the app's own loader: **311 ms cold** (including WASM
+  instantiation), **30 ms warm**, **0 ms cached**.
+
+  **Every outcome is an `AnalysisRun`.** §5 says runtime failures map onto `AnalysisStatus`, "never
+  onto prose warnings", and that applies to scheduling too: a superseded request resolves with a
+  result-less run of status `cancelled` carrying `analysis.superseded`, not a rejected promise. A
+  caller that renders `run.results` needs no special case, and every one of these validates against
+  `AnalysisRunSchema`.
+
+  The organising idea is a **slot** — a thing being analysed, holding at most one live analysis. A
+  second request for the same slot supersedes the first, because the user edited and the older answer
+  is about a molecule that no longer exists. A superseded run that completes late is discarded and
+  never enters the cache, which is the race that otherwise leaves a stale panel.
+
+  **Two honest limits rather than one dishonest one.** Input length is checked before anything parses,
+  and heavy-atom count in the adapter, which is the only layer that knows it. MinimalLib exposes no
+  WASM heap cap, so bounding the molecule is what bounds worst-case memory — that is the enforceable
+  proxy, and claiming a memory limit would overstate it. Cancellation is likewise cooperative and
+  coarse: `analyzeStructure` is one synchronous WASM call per method with no yield point, so a cancel
+  stops the *reply*, not the computation.
+
+  Caught only by running it: `@chemdraft/analysis-core` was missing from the desktop app's
+  dependencies. `tsc` resolved it through `tsconfig.base.json` paths and vitest through its alias
+  table, so both passed while Vite could not resolve the import at all.
 - **Phase 5 — Analyze surface.** Analyze menu and panel wiring, TS model plus the `lib.rs` native mirror
   (`build_analyze_submenu`, `MENU_COMMAND_IDS`) kept in step with the existing drift check; copyable and
   exportable provenance report showing the active interpretation and its "— change" affordance.

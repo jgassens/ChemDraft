@@ -250,6 +250,36 @@ describe("unsupported and malformed input", () => {
     expect(run.status).toBe("failed");
     expect(run.warnings.map((entry) => entry.code)).toContain("structure.empty");
   });
+
+  it("refuses a structure over the heavy-atom limit before any descriptor runs", async () => {
+    // The molecule-size limit §5 asks for, enforced here because the atom count is only knowable after
+    // parsing. `unsupported` rather than `failed`: nothing went wrong, the structure is outside what
+    // this call agreed to compute.
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "C".repeat(40),
+      runId: "limit-1",
+      startedAt: "2026-07-30T12:00:00.000Z",
+      maxHeavyAtoms: 20
+    });
+
+    expect(run.status).toBe("unsupported");
+    expect(run.results).toHaveLength(0);
+    expect(run.warnings[0]?.code).toBe("structure.too_many_atoms");
+    expect(run.warnings[0]?.message).toMatch(/40 heavy atoms, over the 20 limit/);
+  });
+
+  it("lets a structure at the limit through", async () => {
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "C".repeat(20),
+      runId: "limit-2",
+      startedAt: "2026-07-30T12:00:00.000Z",
+      maxHeavyAtoms: 20,
+      methodIds: ["rdkit.composition"]
+    });
+    expect(run.status).toBe("ok");
+  });
 });
 
 describe("run identity", () => {
