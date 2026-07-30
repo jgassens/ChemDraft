@@ -462,6 +462,20 @@ describe("status aggregation", () => {
     expect(aggregateStatus(["cancelled", "timed-out"])).toBe("timed-out");
   });
 
+  it("does not let an inapplicable method drag down a run that worked", () => {
+    // Aspirin has no nitrogen, so "[M+H−NH₃]⁺" correctly does not apply. Reporting the whole run as
+    // not-applicable because of it would tell the user something went wrong with an analysis in which
+    // nothing did.
+    expect(aggregateStatus(["ok", "not-applicable"])).toBe("ok");
+    expect(aggregateStatus(["ok", "not-applicable", "partial"])).toBe("partial");
+    // A capability gap still counts — that one belongs in the headline.
+    expect(aggregateStatus(["ok", "not-applicable", "unsupported"])).toBe("unsupported");
+  });
+
+  it("keeps not-applicable when it is the whole story", () => {
+    expect(aggregateStatus(["not-applicable", "not-applicable"])).toBe("not-applicable");
+  });
+
   it("treats an empty suite as ok", () => {
     expect(aggregateStatus([])).toBe("ok");
   });

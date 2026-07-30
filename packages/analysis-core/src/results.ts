@@ -589,22 +589,33 @@ export const AnalysisRunSchema = z
   });
 
 /**
- * A run's status is the worst of its results' — a suite where one descriptor declined has not "ok"d.
- * Ordered worst-first so `find` returns the dominant outcome.
+ * A run's status is the worst of its results', ordered worst-first so `find` returns the dominant
+ * outcome — with one deliberate exception.
+ *
+ * **`not-applicable` does not drag a run down.** A method that does not apply to this structure is its
+ * contract working, not a shortfall: aspirin has no nitrogen, so "[M+H−NH₃]⁺" correctly does not
+ * apply, and a run that reported `not-applicable` overall because of it would tell the user something
+ * went wrong with an analysis in which nothing did. `unsupported` still counts, because that IS a
+ * capability gap worth putting in the headline.
+ *
+ * A run where *everything* was inapplicable is still `not-applicable` — there, it is the whole story.
  */
-const STATUS_SEVERITY: readonly AnalysisStatus[] = [
+const STATUS_SEVERITY: readonly Exclude<AnalysisStatus, "not-applicable">[] = [
   "failed",
   "timed-out",
   "cancelled",
   "unsupported",
-  "not-applicable",
   "partial",
   "ok"
 ];
 
 export function aggregateStatus(statuses: readonly AnalysisStatus[]): AnalysisStatus {
   if (statuses.length === 0) return "ok";
-  return STATUS_SEVERITY.find((candidate) => statuses.includes(candidate)) ?? "ok";
+  const applicable = statuses.filter(
+    (status): status is Exclude<AnalysisStatus, "not-applicable"> => status !== "not-applicable"
+  );
+  if (applicable.length === 0) return "not-applicable";
+  return STATUS_SEVERITY.find((candidate) => applicable.includes(candidate)) ?? "ok";
 }
 
 /**

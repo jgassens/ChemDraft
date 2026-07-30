@@ -695,10 +695,37 @@ an Analyze item ships only when it computes something).
   have been an overstatement, so the inventory says so. Two packages whose licence pnpm could not parse
   (`eve-raphael` "Unknown", `font-face-observer` "BSD") were resolved from their own LICENSE files to
   Apache-2.0 and BSD-2-Clause.
-- **Phase 8 — Release 2, mass tooling.** IsoSpec through the existing Emscripten lane; isotope envelopes
-  with truncation policy in provenance; m/z and adduct tooling; fragment formulas and exact-mass
-  bookkeeping; retire the M/M+1/M+2 approximation in the mass-fragment demo. No intensity or MS/MS
-  claims.
+- **Phase 8 — Release 2, mass tooling. ◐ two of three clauses landed; the envelope is build-blocked.**
+
+  **Landed: m/z and adduct tooling, and fragment/exact-mass bookkeeping.** Nine electrospray adducts
+  ([M+H]⁺ through [M−2H]²⁻) and seven neutral losses from the protonated ion, each with its own method
+  contract, in an "Ions (m/z)" report section of their own. Verified live: aspirin gives [M+H]⁺
+  181.0495, [M+Na]⁺ 203.0315, [M+2H]²⁺ 91.0284, [M−H]⁻ 179.0350.
+
+  **Every mass comes from RDKit — no second mass table, and no invented electron constant.** Measured
+  on the vendored build, `[NH4+]` is exactly one electron mass below NH₃+H, so RDKit's `[H+]` is the
+  proton (1.00727645) rather than hydrogen. That makes `[M+H]⁺ = M + mass([H+])` and
+  `[M−H]⁻ = M − mass([H+])` both correct with the engine's own bookkeeping, and the ion-component
+  masses are read once per module and then only added and subtracted.
+
+  **No intensity claims, and two kinds of decline.** The section is positions only. An adduct or loss
+  is `not-applicable` for an already-charged structure (there is no neutral M for `[M+…]` to refer to)
+  and a loss is `not-applicable` when the composition cannot supply it — gated on element counts only,
+  which the contract states plainly: it will offer a water loss from a molecule whose oxygens are all
+  ketones, because that check is arithmetic, not chemistry.
+
+  **Blocked: the isotope envelope.** It needs per-isotope abundances, and neither the vendored RDKit
+  nor OpenChemLib exposes any — checked directly, not assumed (see the dependency inventory). So it
+  needs IsoSpec through the Emscripten lane, which is the same Docker requirement as the Phase 6
+  rebuild. The mass-fragment demo's M/M+1/M+2 approximation therefore stays; it is already correctly
+  labelled ("first-order approx.", "not a full isotopic convolution"), though the abundance table it
+  ships has no recorded provenance, which is now on the distribution track.
+
+  One design flaw the new methods exposed and fixed: `aggregateStatus` let a single `not-applicable`
+  result drag a whole run down, so aspirin reported `not-applicable` overall because it has no nitrogen
+  to lose. A method that does not apply is its contract working, not a shortfall — `unsupported` still
+  counts, because that is a real capability gap. The status line says "2 not applicable" rather than
+  "2 declined" for the same reason.
 - **Later phases** as scoped in §9 — estimates, computational sidecars, experimental. Not this branch's
   release gate.
 

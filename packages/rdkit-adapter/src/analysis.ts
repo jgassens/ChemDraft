@@ -51,6 +51,18 @@ import {
   type DerivedInterpretationId
 } from "./interpretations";
 import {
+  ADDUCTS,
+  NEUTRAL_LOSSES,
+  adductComponentSmiles,
+  adductContracts,
+  adductMethodId,
+  adductMz,
+  lossIsCompositionallyPossible,
+  neutralLossContracts,
+  neutralLossMethodId,
+  neutralLossMz
+} from "./mass";
+import {
   DESCRIPTOR_DETAILS_INCLUDE_SANDP,
   INCLUDE_SANDP_PROBE_SMILES,
   UNPATCHED_CAPABILITIES,
@@ -194,6 +206,55 @@ export function detectEngineCapabilities(module: AnalysisModule): RdkitEngineCap
   return capabilities;
 }
 
+/**
+ * Every contract this adapter ships, composed in one place.
+ *
+ * Single-sourced deliberately: the Release 2 adduct series was first added to the run without being
+ * added to the canonical list, and `closeout.real.test.ts` caught it as "a result with no registered
+ * contract". One function means the run and the closeout check cannot disagree again.
+ */
+export function rdkitAnalysisContracts(
+  engineVersion: string = PINNED_RDKIT_VERSION,
+  capabilities: RdkitEngineCapabilities = UNPATCHED_CAPABILITIES
+): MethodContract[] {
+  return [
+    ...rdkitMethodContracts(engineVersion, capabilities),
+    ...adductContracts(engineVersion),
+    ...neutralLossContracts(engineVersion)
+  ];
+}
+
+/**
+ * Exact masses for every ion component the adduct table needs, read from the loaded engine.
+ *
+ * Measured once per module and then reused arithmetically, so a run pays no extra `get_mol` per
+ * keystroke. Reading them from RDKit rather than shipping a table is what keeps §7's rule intact —
+ * and it is also what makes the electron bookkeeping correct for free, since RDKit's `[H+]` is the
+ * proton rather than hydrogen.
+ */
+const ION_MASS_CACHE = new WeakMap<object, Map<string, number>>();
+
+export function resolveIonComponentMasses(module: AnalysisModule): ReadonlyMap<string, number> {
+  const cached = ION_MASS_CACHE.get(module);
+  if (cached) return cached;
+
+  const masses = new Map<string, number>();
+  for (const smiles of adductComponentSmiles()) {
+    const ion = module.get_mol(smiles) as AnalysisMol | null;
+    if (!ion) continue;
+    try {
+      const exact = (JSON.parse(ion.get_descriptors()) as Record<string, number>).exactmw;
+      // A component the engine cannot mass is left out; `adductMz` then declines rather than guessing.
+      if (typeof exact === "number" && Number.isFinite(exact)) masses.set(smiles, exact);
+    } finally {
+      ion.delete();
+    }
+  }
+
+  ION_MASS_CACHE.set(module, masses);
+  return masses;
+}
+
 /** The source interpretation: what the user drew, sanitised but not derived. */
 export function sourceInterpretation(format: string, value: string): MolecularInterpretation {
   const sourceHash = hashSource(format, value);
@@ -237,6 +298,23 @@ interface ResultContext {
  */
 export function resultId(methodId: string, interpretationId: string): string {
   return interpretationId === SOURCE_INTERPRETATION_ID ? methodId : `${methodId}@${interpretationId}`;
+}
+
+/**
+ * `[M+…]` and `[M+H−…]` both name species derived from a *neutral* M. When the drawing already carries
+ * a charge there is no such M, so the notation does not apply — `not-applicable` rather than
+ * `unsupported`, because nothing is missing from the method; the claim just does not fit.
+ */
+function chargedInputDecline(base: ReturnType<typeof resultBase>, message: string): AnalysisResult {
+  return {
+    ...base,
+    kind: "scalar",
+    status: "not-applicable",
+    value: null,
+    unit: "thomson",
+    applicability: { status: "out-of-domain", reasons: [message], unsupportedFeatures: [] },
+    warnings: [warning("mass.charged_input", message, "info", [base.id])]
+  };
 }
 
 /** Shared fields every result carries, so a variant only spells out what makes it that variant. */
@@ -358,7 +436,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
   const module = (await ensureRdkit()) as AnalysisModule;
   const engineVersion = typeof module.version === "function" ? module.version() : PINNED_RDKIT_VERSION;
   const capabilities = detectEngineCapabilities(module);
-  const contracts = rdkitMethodContracts(engineVersion, capabilities);
+  const contracts = rdkitAnalysisContracts(engineVersion, capabilities);
   const registry = new MethodRegistry();
   for (const contract of contracts) registry.register(contract);
   // Only sent when the artifact honours it; an unpatched binding would ignore it silently, and a
@@ -484,6 +562,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     const composition = compositionFromRdkitJson(sourceJson);
     const descriptors = readDescriptors(mol, descriptorDetails);
     const sourceContext: DerivedContext = { interpretation, mol, composition, descriptors };
+    const ionMasses = resolveIonComponentMasses(module);
 
     const derive = (id: DerivedInterpretationId): DerivedContext | undefined =>
       resolveDerivedContext(id, module, sourceContext, sourceJson, derivedInterpretations, descriptorDetails);
@@ -518,7 +597,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       const outside = elementsOutsideParameterization(contract, primary.composition.presentElements);
 
       if (outside.length === 0) {
-        results.push(resultFor(contract, primary, module));
+        results.push(resultFor(contract, primary, module, ionMasses));
         continue;
       }
 
@@ -532,7 +611,9 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         if (!candidate) continue;
         if (elementsOutsideParameterization(contract, candidate.composition.presentElements).length > 0) continue;
         registry.assertRunnable(contract.id, candidate.interpretation);
-        results.push(withDerivationNotice(resultFor(contract, candidate, module), candidate.interpretation, outside));
+        results.push(
+          withDerivationNotice(resultFor(contract, candidate, module, ionMasses), candidate.interpretation, outside)
+        );
         break;
       }
     }
@@ -575,13 +656,19 @@ function contextFor(
   };
 }
 
-function resultFor(contract: MethodContract, context: DerivedContext, module: AnalysisModule): AnalysisResult {
+function resultFor(
+  contract: MethodContract,
+  context: DerivedContext,
+  module: AnalysisModule,
+  ionMasses: ReadonlyMap<string, number>
+): AnalysisResult {
   return computeResult(
     { contract, interpretation: context.interpretation, composition: context.composition },
     module,
     context.mol,
     context.descriptors,
-    context.composition
+    context.composition,
+    ionMasses
   );
 }
 
@@ -698,10 +785,102 @@ function computeResult(
   module: AnalysisModule,
   mol: AnalysisMol,
   descriptors: Record<string, number>,
-  composition: DerivedComposition
+  composition: DerivedComposition,
+  ionMasses: ReadonlyMap<string, number>
 ): AnalysisResult {
   const base = resultBase(context);
   const inDomain = { status: "in-domain" as const, reasons: [], unsupportedFeatures: [] };
+
+  const loss = NEUTRAL_LOSSES.find((candidate) => neutralLossMethodId(candidate) === context.contract.id);
+  if (loss) {
+    const elementCounts = new Map<string, number>();
+    for (const element of composition.elements) {
+      elementCounts.set(element.symbol, (elementCounts.get(element.symbol) ?? 0) + element.count);
+    }
+
+    if (composition.formalCharge !== 0) {
+      const message = `${context.contract.publicName} is not defined for an already-charged structure.`;
+      return chargedInputDecline(base, message);
+    }
+    if (!lossIsCompositionallyPossible(loss, elementCounts)) {
+      // Compositional, not chemical: the molecule simply does not contain the atoms to lose.
+      const message =
+        `${composition.formula} does not contain ${loss.label}, so the loss is not compositionally possible.`;
+      return {
+        ...base,
+        kind: "scalar",
+        status: "not-applicable",
+        value: null,
+        unit: "thomson",
+        applicability: { status: "out-of-domain", reasons: [message], unsupportedFeatures: [loss.label] },
+        warnings: [warning("mass.loss_impossible", message, "info", [base.id])]
+      };
+    }
+
+    const lossMz = neutralLossMz(descriptors.exactmw ?? Number.NaN, loss, ionMasses);
+    if (lossMz === undefined || !Number.isFinite(lossMz)) {
+      const message = `The engine supplied no mass for the lost ${loss.label}.`;
+      return {
+        ...base,
+        kind: "scalar",
+        status: "failed",
+        value: null,
+        unit: "thomson",
+        applicability: { status: "undetermined", reasons: [message], unsupportedFeatures: [] },
+        warnings: [warning("mass.component_unavailable", message, "error", [base.id])]
+      };
+    }
+
+    return {
+      ...base,
+      kind: "scalar",
+      status: "ok",
+      applicability: inDomain,
+      warnings: [],
+      value: lossMz,
+      unit: "thomson",
+      decimalPlaces: 4
+    };
+  }
+
+  const adduct = ADDUCTS.find((candidate) => adductMethodId(candidate) === context.contract.id);
+  if (adduct) {
+    // [M+…] names an adduct *of a neutral M*. When the drawing already carries a charge there is no
+    // such M, so the notation does not apply — `not-applicable` rather than `unsupported`, because
+    // nothing is missing from the method; the claim just does not fit this structure.
+    if (composition.formalCharge !== 0) {
+      return chargedInputDecline(
+        base,
+        `${context.contract.publicName} is not defined for a structure that already carries a net ` +
+          `charge of ${composition.formalCharge > 0 ? "+" : ""}${composition.formalCharge}.`
+      );
+    }
+
+    const mz = adductMz(descriptors.exactmw ?? Number.NaN, adduct, ionMasses);
+    if (mz === undefined || !Number.isFinite(mz)) {
+      const message = `The engine supplied no mass for one of ${adduct.label}'s ion components.`;
+      return {
+        ...base,
+        kind: "scalar",
+        status: "failed",
+        value: null,
+        unit: "thomson",
+        applicability: { status: "undetermined", reasons: [message], unsupportedFeatures: [] },
+        warnings: [warning("mass.component_unavailable", message, "error", [base.id])]
+      };
+    }
+
+    return {
+      ...base,
+      kind: "scalar",
+      status: "ok",
+      applicability: inDomain,
+      warnings: [],
+      value: mz,
+      unit: "thomson",
+      decimalPlaces: 4
+    };
+  }
 
   switch (context.contract.id) {
     case "rdkit.composition":

@@ -24666,14 +24666,19 @@ function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
  */
 function formatAnalysisRunStatus(run: AnalysisRun): string {
   const computed = run.results.filter((result) => result.status === "ok").length;
-  const declined = run.results.filter(
-    (result) => result.status === "unsupported" || result.status === "not-applicable"
-  ).length;
+  // Two different words for two different things: "declined" is a capability gap (Crippen has no
+  // sodium parameters), "not applicable" is a method whose claim does not fit this structure (a
+  // molecule with no nitrogen cannot lose ammonia). Collapsing them makes an ordinary analysis read
+  // as though something went wrong.
+  const declined = run.results.filter((result) => result.status === "unsupported").length;
+  const inapplicable = run.results.filter((result) => result.status === "not-applicable").length;
   if (computed === 0) {
     return run.warnings[0]?.message ?? "Analysis produced no results";
   }
-  const declinedText = declined > 0 ? `, ${declined} declined` : "";
-  return `Analyzed: ${computed} propert${computed === 1 ? "y" : "ies"}${declinedText}`;
+  const parts = [`${computed} propert${computed === 1 ? "y" : "ies"}`];
+  if (declined > 0) parts.push(`${declined} declined`);
+  if (inapplicable > 0) parts.push(`${inapplicable} not applicable`);
+  return `Analyzed: ${parts.join(", ")}`;
 }
 
 function formatAnalysisStatus(analysis: StructureAnalysisResult): string {

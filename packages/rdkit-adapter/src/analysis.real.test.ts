@@ -101,15 +101,27 @@ describe("engine regression — aspirin, pinned to RDKit 2026.03.3", () => {
     );
   });
 
-  it("reports every descriptor as a finite number with a unit", async () => {
+  it("reports every applicable descriptor as a finite number with a unit", async () => {
+    // Aspirin has no nitrogen, so "[M+H−NH₃]⁺" correctly does not apply. The invariant is not "every
+    // scalar succeeds" — it is that nothing is half-formed: an answer has a finite value and a unit,
+    // and a non-answer has a reason and no value.
     const run = await analyze("CC(=O)Oc1ccccc1C(=O)O");
     const scalars = run.results.filter((entry): entry is Extract<AnalysisResult, { kind: "scalar" }> => entry.kind === "scalar");
     expect(scalars.length).toBeGreaterThan(30);
+
     for (const entry of scalars) {
-      expect(entry.status, `${entry.id} status`).toBe("ok");
-      expect(Number.isFinite(entry.value), `${entry.id} value`).toBe(true);
       expect(entry.unit, `${entry.id} unit`).toBeTruthy();
+      if (entry.status === "ok") {
+        expect(Number.isFinite(entry.value), `${entry.id} value`).toBe(true);
+      } else {
+        expect(entry.status, `${entry.id} status`).toBe("not-applicable");
+        expect(entry.value, `${entry.id} value`).toBeNull();
+        expect(entry.applicability.reasons.length, `${entry.id} reason`).toBeGreaterThan(0);
+      }
     }
+
+    // And the run as a whole still reads as the success it was.
+    expect(run.status).toBe("ok");
   });
 });
 

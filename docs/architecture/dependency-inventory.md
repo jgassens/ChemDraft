@@ -74,3 +74,26 @@ resolving by hand rather than accepting the tool's answer:
 Everything else resolves to MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, Zlib, Unlicense, CC0-1.0,
 BlueOak-1.0.0, MPL-2.0 (`@jaames/iro` and `@irojs/iro-core`, already recorded above), or a permissive
 `OR` composite.
+
+## Isotope-abundance data — the Release 2 gap (2026-07-30)
+
+Release 2's isotope envelope needs per-isotope natural abundances. **Nothing already in the dependency
+graph supplies them**, checked directly rather than assumed:
+
+- The vendored RDKit MinimalLib exports no isotope or abundance accessor — `get_descriptors` gives
+  `amw` and `exactmw` for a whole molecule and nothing per-isotope.
+- OpenChemLib 9.22.1 exposes no abundance table and no isotope-pattern calculator. Its public surface
+  has `getMolecularFormula()` (absolute and relative weights, i.e. the same two numbers RDKit gives),
+  `getAtomMass`/`setAtomMass`, and `isNaturalAbundance` — no distribution engine.
+
+So the envelope needs one of: **IsoSpec** (BSD-2-Clause, brings both the algorithm and its data) built
+through the Emscripten lane, or a separately licensed abundance table. PLANS.md §6 is explicit that
+NIST's Standard Reference Data can carry terms, so a table cannot simply be copied in — its title,
+version, endpoint, and terms have to be recorded first.
+
+**One table already ships without that record.** `examples/plugins/mass-fragment-demo` carries an
+eight-element abundance table (`ISOTOPE_ABUNDANCES` in `src/massAnalysis.ts`) with no source or terms
+recorded. The plugin is honest about the *method* — its panel says "first-order approx." and "not a
+full isotopic convolution" — but the data's provenance is unrecorded and should be resolved with the
+rest of the distribution track. The plugin is separately MIT-licensed; consolidating its adduct table
+with the core's is a product decision, not a compliance one.

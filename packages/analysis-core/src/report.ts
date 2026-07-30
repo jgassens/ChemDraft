@@ -96,6 +96,25 @@ function row(result: AnalysisResult, value: string, label = result.label): Repor
 }
 
 /**
+ * A key-value section, with a note every one of its rows shares hoisted into the title.
+ *
+ * Nine adduct rows each ending "· convention-dependent — see Provenance" is a wall of identical text
+ * that pushes the numbers off the edge of the panel, and a disclosure nobody reads has stopped
+ * disclosing. Hoisting only when the note is *unanimous* keeps it per-row wherever a section mixes
+ * calibrated and uncalibrated values — Composition, where the masses are noted and the formula is not.
+ */
+function keyValueSection(title: string, rows: ReportRow[]): AnalysisReportSection {
+  const notes = new Set(rows.map((entry) => entry.note ?? ""));
+  const shared = notes.size === 1 ? [...notes][0] : "";
+  if (!shared) return { kind: "keyValue", title, rows };
+  return {
+    kind: "keyValue",
+    title: `${title} — ${shared}`,
+    rows: rows.map(({ label, value }) => ({ label, value }))
+  };
+}
+
+/**
  * Drop the interpretation suffix from a row label when the whole report is about one interpretation.
  *
  * A derived result is labelled "Crippen logP · largest organic fragment · Na removed" so it stays
@@ -170,18 +189,14 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   // --- identity -----------------------------------------------------------------------------
   const identifiers = ok.filter(isKind("identifier"));
   if (identifiers.length > 0) {
-    sections.push({
-      kind: "keyValue",
-      title: "Identity",
-      rows: identifiers.map((result) => row(result, result.value ?? "—", displayLabel(result)))
-    });
+    sections.push(keyValueSection("Identity", identifiers.map((result) => row(result, result.value ?? "—", displayLabel(result)))));
   }
 
   // --- composition --------------------------------------------------------------------------
   const composition = ok.find(isKind("composition"));
   const massRows = ok
     .filter(isKind("scalar"))
-    .filter((result) => result.classification.claim === "composition")
+    .filter((result) => result.classification.claim === "composition" && result.unit !== "thomson")
     .map((result) => row(result, formatScalar(result), displayLabel(result)));
 
   if (composition || massRows.length > 0) {
@@ -196,7 +211,7 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
         rows.push({ label: "Isotope labels", value: "present — reflected in the formula and masses" });
       }
     }
-    sections.push({ kind: "keyValue", title: "Composition", rows: [...rows, ...massRows] });
+    sections.push(keyValueSection("Composition", [...rows, ...massRows]));
   }
 
   // Components get their own table only when there is more than one — a single-component molecule
@@ -215,24 +230,30 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
     });
   }
 
-  // --- descriptors and predictions ------------------------------------------------------------
+  // --- ions -------------------------------------------------------------------------------------
+  // Split out by unit rather than by claim: an m/z is a mass-to-charge ratio, which is a different
+  // dimension from every other number in the report, and a dimension is a real distinction rather
+  // than another classification axis. Positions only — the section carries no intensities, because
+  // which ions a spectrum actually shows is not something this knows (PLANS.md §9, Release 2).
   const scalars = ok.filter(isKind("scalar"));
-  const descriptors = scalars.filter((result) => result.classification.claim === "descriptor");
-  const predictions = scalars.filter((result) => result.classification.claim === "prediction");
+  const ions = scalars.filter((result) => result.unit === "thomson");
+  if (ions.length > 0) {
+    sections.push(keyValueSection("Ions (m/z)", ions.map((result) => row(result, formatScalar(result), displayLabel(result)))));
+  }
+
+  // --- descriptors and predictions ------------------------------------------------------------
+  const descriptors = scalars.filter(
+    (result) => result.classification.claim === "descriptor" && result.unit !== "thomson"
+  );
+  const predictions = scalars.filter(
+    (result) => result.classification.claim === "prediction" && result.unit !== "thomson"
+  );
 
   if (predictions.length > 0) {
-    sections.push({
-      kind: "keyValue",
-      title: "Predicted properties",
-      rows: predictions.map((result) => row(result, formatScalar(result), displayLabel(result)))
-    });
+    sections.push(keyValueSection("Predicted properties", predictions.map((result) => row(result, formatScalar(result), displayLabel(result)))));
   }
   if (descriptors.length > 0) {
-    sections.push({
-      kind: "keyValue",
-      title: "Descriptors",
-      rows: descriptors.map((result) => row(result, formatScalar(result), displayLabel(result)))
-    });
+    sections.push(keyValueSection("Descriptors", descriptors.map((result) => row(result, formatScalar(result), displayLabel(result)))));
   }
 
   // --- declined -------------------------------------------------------------------------------

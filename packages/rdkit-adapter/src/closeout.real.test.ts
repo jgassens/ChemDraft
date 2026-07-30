@@ -25,9 +25,8 @@ import {
   type MethodContract
 } from "@chemdraft/analysis-core";
 
-import { analyzeStructure } from "./analysis";
+import { analyzeStructure, rdkitAnalysisContracts } from "./analysis";
 import { resetRdkitForTesting } from "./conformer";
-import { rdkitMethodContracts } from "./methods";
 import { installRealRdkitModuleLoader } from "./testing";
 
 beforeAll(() => {
@@ -38,7 +37,8 @@ afterAll(() => {
   resetRdkitForTesting();
 });
 
-const CONTRACTS: MethodContract[] = rdkitMethodContracts();
+// The canonical set — descriptors, identifiers, composition, and the Release 2 adduct series.
+const CONTRACTS: MethodContract[] = rdkitAnalysisContracts();
 
 let counter = 0;
 function analyze(value: string): Promise<AnalysisRun> {

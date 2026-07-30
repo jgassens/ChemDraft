@@ -41,18 +41,28 @@ function analyze(value: string, options: Record<string, unknown> = {}): Promise<
   });
 }
 
+/**
+ * Sections whose rows all share one note carry it in the title ("Descriptors — convention-dependent
+ * — see Provenance"), so lookups match on the leading name rather than the whole string.
+ */
 function section(report: AnalysisReport, title: string) {
-  const found = report.sections.find((entry) => entry.title === title);
+  const found = report.sections.find((entry) => entry.title === title || entry.title.startsWith(`${title} — `));
   if (!found) throw new Error(`No "${title}" section. Have: ${report.sections.map((s) => s.title).join(", ")}`);
   return found;
+}
+
+function sectionTitle(report: AnalysisReport, title: string): string {
+  return section(report, title).title;
 }
 
 describe("aspirin", () => {
   it("groups results by claim class — the display side of §2's bargain", async () => {
     const report = buildAnalysisReport(await analyze("CC(=O)Oc1ccccc1C(=O)O"));
 
-    expect(report.sections.map((entry) => entry.title)).toEqual(
-      expect.arrayContaining(["Identity", "Composition", "Predicted properties", "Descriptors", "Provenance"])
+    // Titles carry a hoisted note where every row shares one, so compare on the leading name.
+    const names = report.sections.map((entry) => entry.title.split(" — ")[0]);
+    expect(names).toEqual(
+      expect.arrayContaining(["Identity", "Composition", "Ions (m/z)", "Predicted properties", "Descriptors", "Provenance"])
     );
 
     // Crippen logP is a prediction; TPSA is a descriptor. The claim class is what puts them in
@@ -75,14 +85,24 @@ describe("aspirin", () => {
   });
 
   it("marks convention-dependent and calibrated values rather than presenting them bare", async () => {
+    // Where a section's rows all share one disclosure it is hoisted into the title: nine adduct rows
+    // each ending with the same clause is a wall of identical text, and a disclosure nobody reads has
+    // stopped disclosing.
     const report = buildAnalysisReport(await analyze("CC(=O)Oc1ccccc1C(=O)O"));
-    const predicted = section(report, "Predicted properties");
-    const logP = predicted.kind === "keyValue" ? predicted.rows.find((r) => r.label === "Crippen logP") : undefined;
-    expect(logP?.note).toMatch(/calibrated/);
+    expect(sectionTitle(report, "Predicted properties")).toMatch(/calibrated method/);
+    expect(sectionTitle(report, "Descriptors")).toMatch(/convention-dependent/);
+    expect(sectionTitle(report, "Ions (m/z)")).toMatch(/convention-dependent/);
+  });
 
-    const descriptors = section(report, "Descriptors");
-    const tpsa = descriptors.kind === "keyValue" ? descriptors.rows.find((r) => r.label.includes("TPSA")) : undefined;
-    expect(tpsa?.note).toMatch(/convention-dependent/);
+  it("keeps the note per row where a section mixes noted and unnoted values", async () => {
+    // Composition holds the formula (a plain fact) beside the masses (convention-dependent), so
+    // hoisting would attach the masses' disclosure to the formula too.
+    const report = buildAnalysisReport(await analyze("CC(=O)Oc1ccccc1C(=O)O"));
+    const composition = section(report, "Composition");
+    const rows = composition.kind === "keyValue" ? composition.rows : [];
+    expect(composition.title).toBe("Composition");
+    expect(rows.find((r) => r.label === "Formula")?.note).toBeUndefined();
+    expect(rows.find((r) => r.label === "Average mass")?.note).toMatch(/convention-dependent/);
   });
 
   it("carries identity, masses, and the engine pin", async () => {
@@ -223,7 +243,7 @@ describe("renderings", () => {
     expect(markdown).toContain("**Computed on:** as drawn");
     expect(markdown).toContain("## Composition");
     expect(markdown).toContain("| Formula | C9H8O4 |");
-    expect(markdown).toContain("_(calibrated method — see Provenance)_");
+    expect(markdown).toContain("## Predicted properties — calibrated method — see Provenance");
     expect(markdown).toMatch(/_Run fingerprint: `fnv1a64:[0-9a-f]+`_/);
   });
 
