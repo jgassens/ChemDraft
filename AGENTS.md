@@ -17,7 +17,7 @@ Bump the build stamp (`CURRENT_BUILD_STAMP` in `apps/desktop/src/MainWindow.tsx`
 slice of work, so a stale build is obvious on sight. Its suffix names the agent that authored the
 work (`-opus`, `-codex`, `-fable`, …), never the branch.
 
-## Required Reading Before Coding
+## 1. Required Reading Before Coding
 
 Before editing implementation files, read:
 
@@ -30,16 +30,37 @@ package.json
 pnpm-workspace.yaml
 ```
 
-If the work touches a package, also read that package's README or local documentation before editing.
+<!-- OPEN DECISION (flagged 2026-07-30): PLAN.md is ~79 KB and PLANS.md ~19 KB. Requiring both
+     before every edit is a heavy tax for a narrow slice. Candidate change: keep PLANS.md required
+     (it is the active slice), and demote PLAN.md to "consult the sections covering the area you
+     are about to touch." Left as-is pending the project owner's call. -->
+
+Repo-wide scope lives in `PLAN.md`; the active slice lives in `PLANS.md`. One further scoped plan
+sits beside them: `PLAN-spin3d-forcefields.md` (Spin 3D refinement engines) — Phases 1 and 2 shipped,
+Phase 3 is blocked on installing OpenBabel and a GPL packaging review, both owner decisions.
+
+The selection-architecture plan finished and moved to `docs/shipped/selection-policy-refactor.md`;
+read it before touching selection, hit resolution, or ring picking.
+
+If the work touches a package, also read that package's README or local documentation before
+editing. Architecture notes for the larger subsystems live in `docs/architecture/` — in particular
+`toolbars-and-toolsets.md` and `toolbar-command-map.md` for toolbar work, `plugin-runtime.md` for
+plugin work, and `viewport-and-rulers.md` for viewport work. `docs/plugin-architecture/` carries the
+plugin developer documentation.
 
 When `PLANS.md` exists, treat it as the active scoped implementation plan unless the user gives
 newer instructions. Keep edits focused on the files, behaviors, and verification listed there; do
 not broaden the slice into adjacent chemistry, rendering, UI polish, or format work.
 
+`PLANS.md` describes only the slice in flight. Completed slices move to `docs/shipped/README.md`
+when they land — read that file for how a shipped subsystem got the shape it has, and for which
+earlier decisions a later slice superseded. Keep the move part of closeout, so `PLANS.md` never
+decays back into a changelog.
+
 Notary and app-signing instructions live at `/Users/jeremiahgassensmith/programming/.notary`.
 Read that directory before signing, notarizing, packaging, or changing release automation.
 
-## Toolbar Button Contract
+## 2. Toolbar Button Contract
 
 The schema-backed toolbar button rules that must keep holding:
 
@@ -60,7 +81,7 @@ Do not change command IDs, chemistry behavior, inspector behavior, package depen
 build identity unless a test or build process forces a narrow, explained fix, or the active
 PLANS.md slice explicitly documents the command's retirement or introduction.
 
-## Reuse Existing Systems
+## 3. Reuse Existing Systems
 
 Verify existing code before adding new code.
 
@@ -70,7 +91,7 @@ Verify existing code before adding new code.
 - `apps/desktop/src/PalettePopoverWindow.tsx` renders native flyout snapshots. Preserve this transport unless a focused test proves a bug in that path.
 - Commands use value-encoded IDs and factory helpers. Do not introduce generic `*.set` commands with hidden value parameters.
 
-## Hard Boundaries
+## 4. Hard Boundaries
 
 - Work only in the worktree checked out for the branch you are on; never edit another worktree's files.
 - Do not copy proprietary assets, icons, dialog art, help text, sample files, command IDs, trade dress, or branded UI.
@@ -79,70 +100,19 @@ Verify existing code before adding new code.
 - Inline submenu ARIA must describe real inline DOM menus only; native flyout owner buttons may advertise `aria-haspopup="menu"` but must not point `aria-controls` at nonexistent DOM.
 - Generated toolbar commands may preserve explicit tooltip descriptions and command overrides, but must not synthesize filler text such as `toolset action`.
 
-## Verification
+## 5. Shared-Code Rules
 
-Run focused suites for touched files, including:
+Rules about code that more than one surface depends on.
 
-```bash
-pnpm vitest run packages/toolset-registry/src/index.test.ts apps/desktop/src/toolsets.test.ts apps/desktop/src/ToolPalette.test.ts apps/desktop/src/ToolPalette.dom.test.ts apps/desktop/src/App.test.ts
-pnpm lint
-pnpm test
-pnpm build
-git diff --check
-```
+The subsection numbers below are deliberately non-contiguous. §5 once held a long list of hard
+rules (§5.1–§5.19) that later rewrites folded into §1–§4 and §6–§22; source comments still cite the
+old numbers, so the numbers that remain keep their historical values rather than being compacted.
+The one still cited from code:
 
-Also smoke `./run-app --dev` long enough to confirm startup, then stop the dev server.
-
-## Launch Verification
-
-Every newly built or freshly verified ChemDraft app must be launched from this worktree with
-one of the repository launchers:
-
-```bash
-./run-app
-./run-app --dev
-```
-
-Use `./run-app` for packaged-app verification and `./run-app --dev` for Tauri/Vite HMR
-verification. Do not treat an already-open ChemDraft window, a sibling worktree's app,
-`cargo run`, a direct `tauri dev`, or a browser tab on an old Vite port as proof that the
-current branch was launched. When reporting launch verification, include the exact command
-and the observable success signal, such as the app bundle path for `./run-app` or the
-selected Vite port plus `target/debug/chemdraft` launch for `./run-app --dev`.
-
-Before launching a fresh build, close or stop other running ChemDraft instances that come
-from this checkout or the same build history. Use process working directories, target paths,
-Vite ports, and bundle paths to distinguish same-history instances from unrelated sibling
-worktrees. If a stale instance from the same branch/build lineage is still running, stop it
-before treating the new launch as verified.
-
-If the app feels like the wrong build, check active Vite ports and process working directories
-before editing source. A different checkout listening on `5173` while this worktree uses
-`5174` is a stale-session problem, not proof that this branch failed to build.
-
-### Every build is labeled by its worktree (do not remove)
-
-Several ChemDraft worktrees are checked out at once, and every one builds an app literally named
-"ChemDraft" — so nothing on screen tells them apart unless we label it. Every build therefore
-carries its worktree/branch label in three places, all driven by `CHEMDRAFT_WORKTREE_LABEL`
-(exported automatically by `run-app` as `<dir> [<branch>]`):
-
-- the **window title** — `ChemDraft — <dir> [<branch>]`. `index.html` ships
-  `<title>ChemDraft</title>`, while MainWindow sets the labeled web-document title from the
-  `__WORKTREE_LABEL__` vite define. Rust applies the same label with `main_window_title()` via
-  `option_env!` (`build.rs` re-emits the env as `rustc-env`) during startup and again from the Tauri
-  page-load hook, after WKWebView has applied the initial HTML title; this second native write is what
-  keeps the actual macOS title bar labeled;
-- the **on-screen build stamp** — the worktree label leads the stamp (vite.config.ts `buildStamp()`
-  reads the env, or derives it from git as a fallback);
-- a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.
-
-This is automatic — there is nothing to remember and nothing to type. Do NOT strip the label out of
-`run-app`, `vite.config.ts`, `apps/desktop/src-tauri/src/lib.rs` (`main_window_title`), or
-`build.rs`; it is the thing that stops "wrong build launched" confusion. When you report launch
-verification, state the label you saw (title bar or build stamp) and confirm it matches this
-worktree. If a worktree's build still shows a bare "ChemDraft" with no label, that mechanism is
-missing there and must be ported in from the branch that has it.
+- **§5.7 "Do not silently degrade chemistry"** now lives in §10 (Chemistry invariants) and §14
+  (Error handling rules). An operation that cannot preserve chemical meaning must warn or fail —
+  never degrade quietly. Cited from `packages/ocl-adapter/src/index.ts` and
+  `apps/desktop/src/documentWorkflow.ts`.
 
 ### 5.26 Do not duplicate layout-engine rendering math
 
@@ -163,19 +133,25 @@ layout-engine name for different behavior.
 
 ### 5.27 Spin 3D rotation parity is scoped to `ScreenPlacement`
 
-For the current Spin 3D rotation-parity work, follow `PLANS.md`. The shared visual contract is
-`ScreenPlacement`: live overlay, flatten/release, reopen, modeled X/Y drag, modeled typed X/Y,
-drag Z, and typed Z must all preserve one placement contract for modeled molecules.
+Spin 3D's rotation-parity slice shipped; this is the standing contract it left behind. The shared
+visual contract is `ScreenPlacement`: live overlay, flatten/release, reopen, modeled X/Y drag,
+modeled typed X/Y, drag Z, and typed Z must all preserve one placement contract for modeled
+molecules.
 
 `flattenSpunMolecule(..., { placement })` must match `projectSpin` for the same conformer,
 orientation, and placement. Keep projection and scale helpers in `apps/desktop/src/interaction/`
 and keep flattening in `documentWorkflow`; do not add duplicate projectors or one-off rendering
 math in `MainWindow.tsx`.
 
-This fix must not change chemical identity, stereo validation, wedge/hash assignment, crossing
+Changes here must not alter chemical identity, stereo validation, wedge/hash assignment, crossing
 behavior, depth cues, molfile rewrite behavior, CDXML/CDX behavior, legacy non-modeled X/Y tilt,
-or art-object tilt. If a change touches those surfaces, prove it with the focused tests in
-`PLANS.md` or narrow the edit back to the placement/parity path.
+or art-object tilt. If a change touches those surfaces, prove it with the focused suites —
+`apps/desktop/src/spin3dModel.test.ts`, `spinFlatten.test.ts`, `spinFlattenStereo.test.ts`,
+`flattenRoundTrip.test.ts`, and `apps/desktop/src/interaction/{spinOverlay,rotation3d}.test.ts` —
+or narrow the edit back to the placement/parity path.
+
+Refinement-engine and force-field work on Spin 3D is a separate scope with its own plan:
+`PLAN-spin3d-forcefields.md`.
 
 ## 6. Package-specific rules
 
@@ -381,7 +357,21 @@ Not allowed:
 - Committing user-provided `.cds` files or derived proprietary fixtures without clear redistribution rights
 - Pretending a failed or partial import fully succeeded
 
-### 6.13 `examples/plugins/molscribe-ocsr`
+### 6.13 `examples/plugins/`
+
+Five example plugins live here. Two carry code; three are README-only placeholders.
+
+- `mass-fragment-demo` — a working, deliberately non-NMR analyzer that proves the plugin
+  infrastructure is domain-agnostic: Hill-notation formula, monoisotopic and average mass, and
+  common ESI adduct m/z via OpenChemLib, rendered through the same declarative panel report as any
+  other analyzer. Keep it free of spectroscopy concepts, workers, and reference databases — that
+  absence is the point of it.
+- `molscribe-ocsr` — image-to-structure scaffold; its rules follow below.
+- `advanced-style-pack`, `journal-style-pack`, `opsin-name-to-structure` — README-only
+  placeholders. Keep them placeholders until a slice implements them, and never describe them as
+  shipped plugins; a README naming a future plugin is not a plugin.
+
+`molscribe-ocsr` specifically:
 
 Allowed:
 
@@ -455,6 +445,139 @@ Not allowed:
 - Chemistry object ownership
 - Direct renderer ownership
 - Dependency-specific black-box state
+
+### 6.17 `chemistry-adapter`
+
+The abstract chemistry contract every engine implements. Dependency-free by design.
+
+Allowed:
+
+- `ChemistryAdapter` interface, capability descriptors, validation/property/analysis result types
+- Structure input/format types and `ChemistryWarning`
+- 3D conformer contracts: `ConformerGenerator3D`, conformer input/result types, force-field report
+  types, `defaultRefineForceField`
+
+Not allowed:
+
+- Concrete engine implementations
+- Depending on OpenChemLib, RDKit, or any other engine package
+- Document mutation or UI
+
+### 6.18 `ocl-adapter`
+
+The shipped OpenChemLib-backed implementation of `chemistry-adapter`.
+
+Allowed:
+
+- OCL resource loading (`setOclResourcesUrl`, `ensureOclResources`)
+- 2D depiction and molfile relayout
+- Stereo-center perception and unrepresentable-stereo detection
+- `oclConformerGenerator` and conformer trace events
+
+Not allowed:
+
+- Becoming the native document model
+- Silently degrading chemistry — an OCL bond order that cannot be represented exactly must be
+  reported as `aromatic`/`unknown`, never collapsed to a single bond (see §5 and §10)
+- Owning UI or document state
+
+### 6.19 `rdkit-adapter`
+
+Currently a **placeholder** (`rdkitAdapterStatus === "placeholder"`).
+
+Allowed:
+
+- Placeholder adapter and honest capability reporting (`createRdkitPlaceholderAdapter`)
+- Real RDKit-WASM wiring when that slice lands
+
+Not allowed:
+
+- Presenting placeholder results as real chemistry
+- Loading RDKit/WASM at startup rather than lazily (§15)
+- Vendoring RDKit builds into the repository
+
+### 6.20 `engine3d-api`
+
+The versioned wire protocol shared by the app and the 3D sidecar. Dependency-free.
+
+Allowed:
+
+- `Engine3DProtocolVersion`, message envelopes, session/drag/commit request and response types
+- Graph-signature inputs, coordinate-reason tags, force-field status/report types
+- Transport limits such as `DefaultEngine3DMaxMessageBytes`
+
+Not allowed:
+
+- Owning the sidecar process, transport, or lifecycle
+- Chemistry behavior or document mutation
+- Changing the protocol shape without bumping `Engine3DProtocolVersion`
+
+Sidecar behavior is exercised by `pnpm audit:engine3d-sidecar` and the `smoke:engine3d-*` scripts
+(see §20).
+
+### 6.21 `art-engine`
+
+Visual planning for native art objects — the geometry behind arrows, shapes, and graphic markers.
+Consumed by `layout-engine`, `documentWorkflow`, and `agentBridge`.
+
+Allowed:
+
+- Stroke/fill/marker/gradient/shadow/glow plans and visual-effect kinds
+- Coordinate spaces and projection matrices for art visuals
+- Boolean operations on art geometry
+- Arrow shaft/head geometry and handle plans, including multi-shaft scaling helpers
+
+Not allowed:
+
+- Changing chemical identity, or mutating molecules, bonds, or reactions
+- Owning document state
+- Re-implementing molecule rendering math that belongs to `layout-engine` (§5.26)
+
+### 6.22 `export-engine`
+
+Export formats and writers: SVG, PDF, and CDXML text/binary output with typed results.
+
+Allowed:
+
+- Format descriptors, implementation status, and format enumeration
+- SVG/PDF/CDXML writers
+- `TextExportResult`/`BinaryExportResult` with `ExportWarning` payloads
+
+Not allowed:
+
+- Reporting a format as implemented when it is not — `isExportFormatImplemented` is the source of
+  truth for shipped format lists and UI
+- Silent lossy export; loss must produce warnings
+- Diverging from on-canvas rendering; exported arrows, brackets, and orbitals must match what the
+  canvas draws (§20)
+
+### 6.23 `editor-shell`
+
+Shell region and panel *types* only (`EditorShellRegion`, `EditorShellPanel`). It currently has no
+consumers.
+
+Not allowed:
+
+- Growing it speculatively, or adding rendering, layout, or state ownership. Retire it or wire it
+  deliberately; do not treat it as a dumping ground for shell code.
+
+### 6.24 `fixtures`
+
+Shared test fixture descriptors and content, currently CDXML, consumed by `cdx-compat` tests.
+
+Not allowed:
+
+- Committing proprietary, user-supplied, or otherwise unredistributable fixtures (§6.6, §6.12)
+- Runtime/production imports — fixtures are for tests
+
+### 6.25 `test-utils`
+
+Deterministic test helpers (`stableIsoDate`, `unreachable`). Currently unreferenced.
+
+Not allowed:
+
+- Importing it from shipped app or package code
+- Growing it into a second home for production helpers
 
 ## 7. Plugin API rules
 
@@ -545,7 +668,15 @@ The user must approve insertion. The plugin host applies accepted patches throug
 
 ## 8. MolScribe OCSR plugin rules
 
-The MolScribe OCSR plugin is the preferred first serious plugin after the command registry, plugin API, permission system, and proposed-patch workflow exist.
+<!-- OPEN DECISION (flagged 2026-07-30): this section was written as forward-looking roadmap. Every
+     precondition it names has shipped, and the NMR predictor — not MolScribe — became the first
+     serious plugin before moving to its own repository (§8a). Phases A–E below are aspiration, not
+     plan. Candidate change: cut to a short "if OCSR is picked up, these are the rules" paragraph,
+     or keep the phases as a design sketch. Left as-is pending the project owner's call. -->
+
+The command registry, plugin API, permission system, and proposed-patch workflow all exist, and the
+first serious plugin turned out to be the NMR predictor rather than this one. MolScribe OCSR is
+still a scaffold (§6.13). If it is picked up, these rules apply.
 
 Required behavior:
 
@@ -789,6 +920,8 @@ cdx-compat:       parser, writer, best-effort CDX read, round-trip fixture tests
 style-compat:     synthetic/legal .cds import, unsupported-field warnings, malformed-input failures
 clipboard:        format detection and lossy/warning behavior where testable
 export-engine:    export output and warning tests
+art-engine:       visual-plan geometry, arrow shaft/head/handle plans, and canvas/export parity
+engine3d:         protocol envelope, version, and sidecar audit/smoke coverage
 adapters:         adapter contract tests
 ui:               command wiring, floating/docked palette routing, and smoke tests
 toolsets:         customization state, persisted layout application, plugin/user toolsets, unregistered command rejection, native menu/window alignment where practical
@@ -899,9 +1032,23 @@ Recommended next task:
 - One concrete next step
 ```
 
-## 19. Initial commands
+## 19. Verification
 
-Use the actual repository scripts once they exist. Initial expected commands:
+Run focused suites for touched files, including:
+
+```bash
+pnpm vitest run packages/toolset-registry/src/index.test.ts apps/desktop/src/toolsets.test.ts apps/desktop/src/ToolPalette.test.ts apps/desktop/src/ToolPalette.dom.test.ts apps/desktop/src/App.test.ts
+pnpm lint
+pnpm test
+pnpm build
+git diff --check
+```
+
+Also smoke `./run-app --dev` long enough to confirm startup, then stop the dev server.
+
+## 20. Repository commands and manual stress
+
+The full command surface:
 
 ```bash
 pnpm install
@@ -911,6 +1058,20 @@ pnpm build
 git diff --check
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+```
+
+Scoped scripts, to run when the work enters their area:
+
+```bash
+pnpm dev                          # desktop dev; prefer ./run-app --dev for launch verification
+pnpm dev:web                      # browser-only shell
+pnpm build:sdk                    # plugin SDK bundle
+pnpm plugin:extract               # SDK boundary extraction + guard
+pnpm plugin:package               # build a distributable plugin zip
+pnpm audit:engine3d-sidecar       # 3D sidecar protocol audit
+pnpm smoke:engine3d-real-structure
+pnpm smoke:engine3d-hold-steady
+pnpm smoke:engine3d-anneal-energy
 ```
 
 If hit-testing, pointer behavior, or the agent bridge changes, also run the relevant DOM/agent bridge/drawing-tool suites.
@@ -930,7 +1091,62 @@ arrows, brackets, and orbitals.
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
-## Closeout Requirements
+## 21. Launch verification
+
+Every newly built or freshly verified ChemDraft app must be launched from this worktree with
+one of the repository launchers:
+
+```bash
+./run-app
+./run-app --dev
+```
+
+Use `./run-app` for packaged-app verification and `./run-app --dev` for Tauri/Vite HMR
+verification. Do not treat an already-open ChemDraft window, a sibling worktree's app,
+`cargo run`, a direct `tauri dev`, or a browser tab on an old Vite port as proof that the
+current branch was launched. When reporting launch verification, include the exact command
+and the observable success signal, such as the app bundle path for `./run-app` or the
+selected Vite port plus `target/debug/chemdraft` launch for `./run-app --dev`.
+
+Before launching a fresh build, close or stop other running ChemDraft instances that come
+from this checkout or the same build history. Use process working directories, target paths,
+Vite ports, and bundle paths to distinguish same-history instances from unrelated sibling
+worktrees. If a stale instance from the same branch/build lineage is still running, stop it
+before treating the new launch as verified.
+
+If the app feels like the wrong build, check active Vite ports and process working directories
+before editing source. A different checkout listening on `5173` while this worktree uses
+`5174` is a stale-session problem, not proof that this branch failed to build.
+
+### 21.1 Every build is labeled by its worktree (do not remove)
+
+Several ChemDraft worktrees are checked out at once, and every one builds an app literally named
+"ChemDraft" — so nothing on screen tells them apart unless we label it, which has repeatedly caused
+"wrong build launched" confusion. Every build therefore carries its worktree/branch label in three
+places, all driven by `CHEMDRAFT_WORKTREE_LABEL` (exported automatically by `run-app` as
+`<dir> [<branch>]`):
+
+- the **window title** — `ChemDraft — <dir> [<branch>]`. `index.html` ships
+  `<title>ChemDraft</title>`, while MainWindow sets the labeled web-document title from the
+  `__WORKTREE_LABEL__` vite define. Rust applies the same label with `main_window_title()` via
+  `option_env!` during startup and again from the Tauri page-load hook, after WKWebView has applied
+  the initial HTML title; that second native write is what keeps the actual macOS title bar
+  labeled. `build.rs` re-emits the env as `cargo:rustc-env` so cargo actually recompiles the title
+  when it changes — a bare env var is NOT a tracked compile input;
+- the **on-screen build stamp** — the worktree label leads the stamp (`vite.config.ts`
+  `buildStamp()` reads the env, or derives it from git as a fallback);
+- a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.
+
+This is automatic — there is nothing to remember and nothing to type. Do NOT strip the label out of
+`run-app`, `vite.config.ts`, `apps/desktop/src-tauri/src/lib.rs` (`main_window_title`), or
+`build.rs`; it is the thing that stops "wrong build launched" confusion. When you report launch
+verification, state the label you saw (title bar or build stamp) and confirm it matches this
+worktree.
+
+If a worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed on
+that branch yet — pick it up by merging from `main`, which carries all four files above.
+
+## 22. Closeout requirements
 
 At implementation closeout:
 
@@ -939,25 +1155,3 @@ At implementation closeout:
 - Close or stop other running ChemDraft instances from this checkout or the same build history before launch verification.
 - Report tests run and any skipped verification.
 - Keep the final answer focused on the branch and the specific slice completed.
-
-## Label every build by its worktree (do not remove)
-
-Several ChemDraft worktrees are checked out at once, and every one builds an app literally named
-"ChemDraft" — so nothing on screen tells them apart unless we label it, which has repeatedly caused
-"wrong build launched" confusion. Every build must therefore carry its worktree/branch label, driven
-by `CHEMDRAFT_WORKTREE_LABEL` (exported automatically by `run-app` as `<dir> [<branch>]`), in three
-places:
-
-- the **window title** — `ChemDraft — <dir> [<branch>]` (Rust `main_window_title()` reads it via
-  `option_env!`; `build.rs` re-emits it as `cargo:rustc-env` so cargo actually recompiles the title
-  when it changes — a bare env var is NOT a tracked compile input);
-- the **on-screen build stamp** — the label leads the stamp (`vite.config.ts` `buildStamp()`);
-- a **launch banner** printed by `run-app` at every `./run-app` / `./run-app --dev`.
-
-This is automatic — nothing to remember, nothing to type. Do NOT strip the label out of `run-app`,
-`vite.config.ts`, `apps/desktop/src-tauri/src/lib.rs` (`main_window_title`), or `build.rs`. When you
-report launch verification, state the label you saw (title bar or build stamp) and confirm it matches
-this worktree.
-
-If a worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed on
-that branch yet — pick it up by merging from `main`, which carries all four files above.

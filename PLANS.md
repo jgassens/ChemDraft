@@ -1,297 +1,275 @@
 # ChemDraft Plans
 
-## Host-managed plugin updates (2026-07-25) — on `main` (PR #21, merge `a7c88a69`)
+This file describes **the slice currently in flight** — nothing else. Completed slices move to
+`docs/shipped/README.md` when they land, so that an agent told to "follow PLANS.md" gets the work
+in progress rather than a changelog.
 
-A concurrent session's implementation was ported file-by-file rather than merged: its branch forked
-before the toolbar slice, so taking its tree would have reverted eight commits of tool wiring. It
-landed on `main` alongside the toolbar slice through PR #21. Only two things were carried forward
-from an earlier parked snapshot, both reworked.
+Repo-wide scope lives in `PLAN.md`. One further scoped plan applies inside its area:
+`PLAN-spin3d-forcefields.md` (Phase 3 blocked on owner decisions). The selection-architecture plan
+finished and moved to `docs/shipped/selection-policy-refactor.md`.
 
-(Every branch involved — the concurrent session's, the parked snapshot's, and the shared feature
-branch — has been deleted. PR numbers and commit SHAs are the durable references; branch names are
-not, so this file names them only where one still exists.)
+---
 
-Ported forward from the parked snapshot:
+# Active slice: toolbar, palette, and arrow bug fixes
 
-- `pruneOrphanedPluginPackages`, which reclaims checksum-addressed directories left by a failed
-  update or an incomplete cleanup. Its first version keyed off "no records", which
-  `loadInstalledPluginRecords` also returns for an unreadable, truncated, or partially-invalid
-  catalog — so a momentary IO problem would have deleted a healthy install's payload. The catalog
-  now reports `absent` / `loaded` / `unreadable`, and the sweep acts only on the first two.
-- The published `.sha256` is fetched and must agree with the digest GitHub recorded for the asset,
-  which makes the existing sidecar-must-exist rule mean something. It reuses the same bounded,
-  redirect-validating download path as the package, so it is size-capped while streaming rather
-  than after buffering, and accepts the uppercase digests Windows publishers produce.
+Branch: `codex/toolbar-bug-fixes`, opened 2026-07-26, 26 commits as of 2026-07-30.
 
-Fixed in the incoming implementation:
+Two independent threads share the branch. Thread A hardens the native toolbar/palette window
+system after a Claude + Codex review; Thread B rebuilds the arrow family on the art pipeline. They
+touch different files and can be reviewed separately.
 
-- `uninstallPlugin` validated the recorded staging path *after* unregistering the plugin, so a path
-  the validator rejects left the plugin gone from the session but still in the catalog — an
-  unremovable ghost. Validation now happens before any runtime state changes.
-- Rollback re-activated the superseded descriptor even when it had never been deactivated, which
-  could throw and abort the rollback, leaving the host registered against a candidate whose
-  directory was about to be deleted.
-- A disabled-plugin update tore down only the candidate, leaving the old worker running against
-  files that were then removed.
-- The trusted redirect host was spelled out in both TypeScript and the capability file with nothing
-  keeping them in step; a test now pins them together, since GitHub has moved that host before.
+## Thread A — Native toolbars, palettes, and popover flyouts
 
-### Objective
+### A1. Customization could break commands app-wide (`ad98d4f9`)
 
-Add a separate, user-initiated plugin update path to the existing Plugin Manager. ChemDraft owns
-the update source, download, package verification, worker handshake, replacement transaction, and
-rollback. Plugins remain sandboxed and receive no new network, filesystem, or native-execution
-capabilities. Sparkle continues to update only the ChemDraft application bundle.
+`toolCommandSpecs` is derived from the customizable registry, and its binding loop ran *after* the
+domain-handler loops with last-wins semantics. Dragging Undo, Save, or a hovered-atom edit onto any
+toolbar re-registered that id with the generic "command routed" no-op — and because the registry is
+shared, it broke the command in menus and keyboard shortcuts too. The generic tool loop now skips
+ids an earlier handler has claimed.
 
-The first trusted catalog entry is the standalone NMR Predictor plugin
-(`org.chemdraft.nmr.predictor`). A check must distinguish update available, up to date, unsupported,
-and failed states without silently installing anything. Applying an offered update requires an
-explicit user action and must show the target version and package-integrity details.
+Landed alongside it: dead gallery commands removed (`view.toggleInspector`, `view.togglePlugins`
+had no handler anywhere yet were offered in Customize); mojibake labels repaired repo-wide
+("Preferences…", "Set Page Size: Custom…"); the Distribute button no longer invokes on Enter/Space
+while disabled, matching its pointer path, while its mode menu stays reachable; and `toolbarAsset()`
+is guarded at its three direct-render sites against an unknown or IPC-sourced value.
 
-### Safety and compatibility contract
+### A2. Plugin palette windows rendered as the Main toolbar (`17dcbde3`)
 
-- Update metadata is host-owned and allowlisted by plugin id; an installed plugin cannot choose its
-  own download URL.
-- Remote version and checksum metadata are treated as untrusted input and validated before use.
-- The downloaded archive must pass the existing SHA-256, CRC/path, strict manifest, API-version,
-  permission-review, and worker-handshake gates.
-- The archive manifest id must match the installed plugin id, and its version must be strictly newer.
-- Replacement is transactional: keep the current package and registration usable until the new
-  package has passed staging and handshake, then commit the new package and record. Any failure
-  restores the old package, record, registration, and enabled/disabled preference.
-- Update checks and installs are user-initiated in this slice. No background polling, silent
-  download, silent install, or restart-time mutation.
-- A checksum proves integrity only, not publisher identity. The UI and documentation must not call
-  an unsigned package cryptographically signed or fully automatic; publisher-signature support is
-  a separate follow-up.
+A native palette webview ships only the **core** toolset manifest. Plugin toolsets are contributed
+at runtime in the main window, and nothing carried their definitions to the detached palette
+webviews — so a window opened for a plugin toolset couldn't find its own toolset, fell back to
+`core.main`, and rendered the Main toolbar under the plugin's title, with a close button that
+targeted the real Main window.
 
-### Verification
+A toolset-definitions IPC channel (broadcast / listen / request / respond) now mirrors the existing
+command-specs channel. MainWindow broadcasts whenever the plugin runtime changes and answers a
+late-joining palette from a cached ref; PaletteWindow subscribes, folds the definitions into all
+three registry rebuild paths, and requests them on mount. The `core.main` fallback is replaced by an
+empty placeholder carrying *this* window's real id, so title, close, and popover routing target the
+correct window and no Main tools leak in.
 
-- Focused tests cover catalog allowlisting, metadata parsing, semantic version comparison, download
-  checksum enforcement, manifest-id/version enforcement, successful replacement, rollback, and
-  disabled-plugin preservation.
-- Plugin Manager DOM tests cover checking, up-to-date, available-update, progress, confirmation,
-  success, and error states.
-- Run `pnpm lint`, `pnpm test`, `pnpm build`, `git diff --check`, and the relevant Rust checks when
-  native code changes.
-- Launch this worktree through `./run-app` or `./run-app --dev` and verify the visible worktree
-  label in the window title and build stamp matches the branch you meant to test.
+### A3. Palette reconciliation was open-only (`3ff9a5de`)
 
-## Sparkle macOS updates (2026-07-24)
+The startup reconciler opened the toolsets that should be visible but never closed any, and
+substituted the default set whenever the desired set was empty. A toolbar saved as hidden but
+restored open by the OS stayed open, and "hide everything" was silently overridden with defaults.
 
-The desktop app uses Sparkle 2 to check the signed macOS appcast automatically and offer newer
-versions through Sparkle's native UI. File > Check for Updates… triggers a visible user-initiated
-check. Sparkle replaces the application bundle only; installed plugin packages remain in the stable
-Application Support `installed-plugins` directory and are revalidated by the normal runtime after
-relaunch. Plugin/API incompatibility remains the plugin author's responsibility and must not block or
-rewrite an app update.
+`reconcileNativePaletteWindows` now converges toward the desired set: it closes **known** windows
+that are open but not desired, and honors an empty desired set as hide-all (close everything, stay
+native — never fall back to web palettes). It re-runs on every registry change so it settles as the
+layout hydrates. Unknown/orphan windows — a plugin still loading, or one being uninstalled — are
+deliberately left alone, since closing them here would fight a plugin about to claim its
+OS-restored window. Success stays lenient (native as long as something opened) so one palette
+missing its creating frame can't drop the whole session to in-window palettes.
 
-## Runtime union merge (2026-07-16, merge commit `1232a444`)
+### A4. Two data-loss traps in Rust persistence (`13067a1b`)
 
-The plugin program (M1–M36: plugin runtime, NMR/mass analyzers, worker isolation, packaging,
-installer, manager) merged into the trunk per ADR-0030: trunk = `main`, plugin architecture = the
-plugin program's, with main's four unique plugin pieces (stable command registry,
-toolset-contribution stage, disk-backed plugin storage, patch-review tray) ported onto that runtime
-and one unified panel renderer serving both the in-app surface and floating panel windows. That
-program's full plan and milestone records live in the planning workspace
-(`~/Documents/programming/Chemdraw-NMRplugin`) and in `docs/nmr-plugin-planning/`; they are not
-duplicated here. Remaining plugin-separation work (publish the SDK, strip bundled NMR,
-from-zero install test) is queued there as PLAN-plugin-separation Phases 2+.
+Reads swallowed **every** error as "file absent". A transient or permission read miss therefore
+looked like "no saved state", so JS enabled saving and the next write overwrote the real file with
+defaults. `read_optional_file` now returns `Ok(None)` only for `NotFound` and propagates anything
+else, so the load path's catch leaves the file untouched until a launch reads it cleanly.
 
-The sections below are the trunk's active plan.
+Writes used a plain `fs::write` (truncate-then-rewrite), so a crash or power loss mid-write could
+leave a partial, unparseable file — which then fails to load and strands the user in the fallback
+with customization gone. `write_file_atomic` writes a complete pid-namespaced sibling temp in the
+same directory and `rename(2)`s it over the target.
 
-## Rings Toolbar and Molecule Inspector Tabs (completed 2026-07)
+Both helpers are `std::fs`, not the capability-gated plugin-fs, matching the existing Rust commands,
+so no capability changes were needed. Rewired: toolset customization state, document session (the
+user's autosave — highest stakes), internal toolset layout state, and plugin storage.
 
-The Rings/Structure/Atom Labels slice shipped: ring appearance lives in its own compact
-`core.ringInspector` toolbar, and the Molecule Inspector carries Structure and Atom Labels tabs with
-multi-molecule targeting, mixed values, sparse per-atom overrides, `.cds` style-sheet import through
-the style compatibility boundary, `.template` export, and a shared font catalog backed by the raster
-export font database. Durable schema and architecture notes live in
-`docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
+### A5. Flyouts that never appeared (`eb6612d9`, `f247e922`, `68e7d920`, `6239db8a`)
 
-# Toolbar Wiring and Honesty (2026-07-25) — on `main` (PR #21, merge `a7c88a69`)
+Four commits, and the last one is the actual root cause. Worth reading as a sequence, because the
+first three are real fixes that could not possibly have made the flyout appear:
 
-Status: all eight phases implemented and hardened across two review rounds, landed together with the
-plugin-updates slice above. `TRANSITIONAL_STUB_COMMAND_IDS` is empty — shipped toolsets contain zero
-permanently disabled buttons.
+1. **Hold delay** cut from 420 ms to 150 ms, so options appear on a brief press while a genuine
+   quick tap still selects the primary tool.
+2. **Prewarm + content-acknowledged reveal.** Cold open was building the popover window at press
+   time — a fresh webview loading the whole app bundle mid-interaction. Each palette now builds its
+   popover hidden ~1 s after startup (`prewarm_toolset_popover`). Warm reuse had Rust `show()` the
+   window immediately, flashing a stale grid before new content swapped in, so reveal now waits for
+   painted content. Prewarmed windows carry `prewarm=1`, never reveal off their placeholder state,
+   and get no show-anyway safety net — hidden is their correct resting state.
+3. **Synchronous reveal.** The content-acknowledged reveal gated `show()` on a
+   `requestAnimationFrame`, but rAF is *suspended in a hidden webview* and only resumes once the
+   window is shown. Deadlock: the reveal waited for a frame that could not arrive until the reveal
+   happened. Reveal now runs synchronously after the React commit; layout still runs while hidden
+   and the ResizeObserver corrects the size once painting resumes.
+4. **The capability was never granted.** The popover webview reveals itself with
+   `getCurrentWindow().show()`, but the capability granted `core:window:allow-hide` and never
+   `core:window:allow-show`. The reveal had been silently denied since the popover was built —
+   every JS error path swallowed the rejection. That single denial explains the entire bug history:
+   originally the *first* (cold) open never appeared and pressing again worked, because warm reuse
+   was shown by Rust; the prewarm rework then removed the Rust warm-path show — the only show that
+   was ever permitted — so no flyout could appear at all. `prewarm_toolset_popover` was
+   invoke-denied for the same silent reason, so no popover was ever actually prewarmed; it is now
+   registered in `build.rs`'s app-manifest command list and in the capability.
 
-An external review plus three adversarial passes found roughly nineteen defects in the first cut of
-this slice. All five P1s and the P2s are now fixed with regression tests: imported structures keep
-an honest `structureFormat` when edited; CDXML arrows use the real `ArrowType` spellings both ways;
-arrow resize transforms the endpoints, not just the frame; axis-aligned arrows get a frame that
-contains their glyph; formula text distinguishes a charge magnitude from an atom count and keeps
-span styling; Escape cancels an in-flight placement instead of arming it; brackets and arrows are
-painted once; brackets and curved art warn when they degrade in foreign CDXML; chains stop at the
-page edge and rebuild in one pass; stamps centre on the click and clear stale interaction state;
-arrows and orbitals can start on top of an existing object; and the Customize gallery offers
-neither transitional stubs nor the compat-only art variants.
+**Standing lesson for this codebase:** a missing Tauri capability fails silently through swallowed
+JS rejections, and presents as intermittent UI rather than as an error. When a native-window
+behavior is intermittent, read `capabilities/default.json` and the window server before rewriting
+the JS.
 
-A second max-effort review over the combined branch found fifteen more, all now fixed with
-regression tests. The four that mattered most: the plugin-update capability scope listed the package
-`.zip` but not the `.zip.sha256` fetched right after it, so trusted updates could never complete —
-the guard test had only checked that the `.zip` pattern *existed* rather than matching real URLs
-against the compiled patterns; rotating a reaction arrow applied the angle twice, because the
-anchors were rotated and `rotation` incremented while both renderers apply that transform
-themselves; flipping never touched arrow anchors at all, so a mirrored scheme kept every arrow's
-original direction; and the formula body pattern backtracked exponentially — measured at 8.8 s for
-26 digits, doubling per digit — so a pasted numeric label froze the UI thread. The rest covered
-plugin-update failure paths that lost catalog records or deleted live payloads, a chain that could
-seed a bond-less carbon at a page edge, CDXML inventing `FullHead` for an unrecognized arrow, and a
-Customize gallery that keyed off the user's own layout and so deleted any art tool they removed.
+## Thread B — Arrows become art objects
 
-Known remaining gap: the Art inspector still styles only graphics and molecules, so Color Controls
-and Object Settings route a bracket or arrow selection to a status message rather than a working
-panel. Widening `ArtInspectorStyleObject` is its own slice.
+### B1. This supersedes a shipped design decision
 
-## Objective
+The *Toolbar Wiring and Honesty* slice decided that the four tool-drawn arrows would be semantic
+`reaction-arrow` objects and explicitly rejected the art route, on the grounds that "art-route
+arrows would make tool-drawn and CDXML-imported arrows different object types"
+(`docs/shipped/README.md`).
 
-An audit found 32 non-functional toolbar buttons/commands: 8 drawing-tool stubs hardcoded to
-"Requires an active structure editor" (`apps/desktop/src/drawingTools.ts`), 15 manifest-only stubs
-with no live handler (`apps/desktop/src/toolsets/desktop-toolsets.json`), 4 orphaned
-`view.toolset.*` customization commands and 4 unwired `style.*` commands
-(`apps/desktop/src/commands.ts`), and the Customize gallery offering all of them for drag-out. Two
-documented policies conflicted: the older contract tolerated disabled-with-reason placeholders,
-while `docs/architecture/native-art-toolbar-chrome-plan.md` mandates hide-don't-disable.
+That decision is reversed, by agreement with the project owner (`49d4de52`: "per the design we
+agreed on"). All four families — reaction, resonance, equilibrium, retrosynthesis — are now art
+arrows. The rejected risk is real and has been answered rather than avoided; see B3.
 
-This slice adopts the strict policy repo-wide and wires real functionality wherever existing
-infrastructure supports it. After it, shipped toolsets contain zero permanently disabled buttons:
-every visible button performs its action, and `disabledReason` is reserved for transient,
-state-dependent unavailability (selection-dependent commands and similar).
+**Why the reversal.** The semantic object was rigid. Art arrows carry the editing mechanics it
+never had: draggable endpoints, arc, arrowhead sizing, hover dot handles, drag-to-move,
+hover-delete, drag-to-draw. As `cf3c3569` puts it, retrosynthetic "was the last legacy
+reaction-arrow object, so it missed everything arrow mode gained."
 
-Key mechanic: `apps/desktop/src/toolsets.ts` merges live `CommandSpec`s over manifest items, so a
-live command's enabled state and `disabledReason` win. Un-stubbing means registering live behavior;
-the JSON `disabledReason` strings are only fallbacks for commands with no live spec.
+### B2. The architecture as it now stands
 
-## Command retirements (the narrow, explained fix)
+Arrows are `GraphicObject`s tagged with `artToolId` (`packages/chem-core/src/schemas.ts:182`), which
+is the semantic marker the CDXML layer reads. `insertNativeReactionArrow` survives in
+`documentWorkflow.ts` but has **no live caller** — only `documentWorkflow.test.ts` references it.
+The `reaction-arrow` type remains in the schema (`schemas.ts:407`) for older documents and for
+arrows that import as `unknown`.
 
-These command IDs are retired in this slice. Retirement is deliberate and documented here per the
-AGENTS.md command-ID stability rule; each can return via git when its feature slice lands.
+### B3. CDXML interop contract
 
-- `view.toolset.resetLayout`, `view.toolset.resetAllLayouts`, `view.toolset.createUserToolset`,
-  `view.toolset.cloneToolset` — the Customize Toolbars dialog performs these actions directly
-  through `layoutStateEdits.ts`; the standalone command entries were dead redirects.
-- `style.bondStroke`, `style.textSize`, `style.preset.synthetic` — reasonless disabled stubs with
-  zero references; superseded by the live style widgets and Molecule Inspector.
-- `style.importStyleSheet` — redundant: the Molecule Inspector already imports `.cds` style sheets
-  through the style compatibility boundary.
-- `tool.mechanismArrow` — mechanism arrows need a real subsystem (atom/bond anchoring, curved
-  geometry, half-head markers, renderers, CDXML mapping; `packages/mechanism-tools` is a type stub).
-  Deferred to its own future slice; no decorative button meanwhile.
-- `tool.templateGrid` — the template library (`packages/template-library`) is an empty stub; a
-  template corpus plus grid-picker UI is its own future slice.
-- `tool.arrows` — pure duplication of `tool.reactionArrow`'s command-grid submenu.
-- `tool.toolOptions` — no defined behavior; lived only in the hidden `core.style` toolset.
-- `tool.shape` — manifest items re-point to the live `tool.art.rect` command (shared `Art_Shapes`
-  asset per the one-asset-per-command rule); the vague duplicate ID retires.
-- `tool.shapeShadow` — retired outright: shadow art variants (`tool.art.rectShadow`,
-  `tool.art.circleGloss`, …) are deliberately compat-only and stay out of shipped toolbars; shadow
-  styling is applied through the Art inspector's effects.
+Export re-emits the standard spellings, so other programs still read these as reaction arrows:
+`<graphic GraphicType="Line" ArrowType="FullHead" | "Resonance" | "Equilibrium" | "RetroSynthetic">`.
+Exact ChemDraft geometry round-trips internally through the embedded native payload. Import turns a
+foreign arrow of any of those four kinds back into an editable tagged art arrow
+(`packages/cdx-compat/src/index.ts:1938`). Internal copy-paste uses the native payload and round-trips
+exactly; external clipboard is CDXML. Bold and dashed reaction variants also export as `FullHead`;
+fishhook stays a generic graphic with no `ArrowType` mapping.
 
-`surface.canvas.addPageAfter` stays as disabled metadata: the surface registry does not drive
-rendered UI (PLAN.md 6.15 sanctions it explicitly — "may exist only as disabled metadata until
-`document.addPageAfter` is implemented and wired").
+So tool-drawn and imported arrows are now the *same* object type after import — the original
+objection — at the cost of `unknown` arrows remaining legacy objects.
 
-## Disposition of all audited items
+### B4. Geometry model
 
-| Disposition | Items | Phase |
-| --- | --- | --- |
-| Wire | tool.atom, tool.settings, style.color, tool.dagger, tool.symbol | 2 |
-| Wire | tool.reactionArrow, tool.resonanceArrow, tool.equilibriumArrow, tool.retroArrow | 3 |
-| Wire | tool.lobe, tool.shadedLobe, tool.pOrbital, tool.sOrbital | 4 |
-| Wire | tool.bracket, tool.squareBracket | 5 |
-| Wire | tool.chain, style.formulaText | 6 |
-| Re-point | tool.shape → tool.art.rect | 2 |
-| Retire | tool.shapeShadow (shadow variants are compat-only; Art inspector effects own shadows) | 2 |
-| Retire | mechanismArrow, templateGrid, arrows, toolOptions, importStyleSheet, bondStroke, textSize, preset.synthetic, 4 × view.toolset.* | 1 |
-| Keep | surface.canvas.addPageAfter (non-rendered metadata) | — |
+New `dualShaft` graphic data (`schemas.ts:247`):
 
-## Design decisions
+- **Equilibrium** — two parallel half-shafts straddling the `lineStart`→`lineEnd` axis pointing
+  opposite ways, `markerEnd` heading the forward shaft and `markerStart` the reverse, so arrowhead
+  sizing rides the ordinary marker handles. Each shaft's length is an independent fraction of the
+  axis with its own handle, since an equilibrium's two directions are rarely equal. Rendered as one
+  two-subpath `d` with each shaft pre-trimmed for its head, so the generic terminal and
+  visible-stroke passes — which walk a path as a single polyline — never straddle the gap.
+- **Retrosynthetic** — `dualShaftParallel` (`schemas.ts:250`): both shafts run the same way under a
+  single open head spanning them (the double-shafted "⇒"). Both halves are one arrow, so it offers
+  no per-shaft length handles, just the ordinary endpoints. Its shafts stop where the head arms
+  cross them, at every scale.
+- **Gap** — `dualShaftGapPx` (`schemas.ts:251`). On dual-shaft arrows the middle knob resizes the
+  whole arrow — gap, harpoons, and seats together — instead of bending the axis into a curve, so
+  the arrow keeps its proportions rather than growing heads onto hairline shafts.
 
-- **Arrows are semantic objects.** The four wired arrow tools create `reaction-arrow` document
-  objects (`packages/chem-core`), not art graphics: the semantic type already has canvas rendering,
-  selection/move/transform support, SVG export, and CDXML export+import. Art-route arrows would make
-  tool-drawn and CDXML-imported arrows different object types. `arrowKind` gains `"resonance"`
-  (additive; round-trips verbatim). Head geometry gets one shared plan in `packages/layout-engine`
-  (`planReactionArrowGeometry`: forward filled head, equilibrium harpoon pair, retrosynthesis open
-  double-shaft, resonance double-head) consumed by both the canvas renderer and SVG export.
-- **Unwirable remainder is deleted, not hidden.** No new schema `hidden` field, no seeded layout
-  state. Deletion is git-reversible and keeps exactly one honesty mechanism.
-- **The Customize gallery excludes permanent stubs** using a static manifest-derived set (specs from
-  `getToolsetCommandSpecs()` are availability-independent) — never live `enabled === false`, which
-  would wrongly hide transiently disabled commands like Undo and the align/boolean family.
-- **Chain uses press-drag rubber-band**: one gesture, one undo entry, no modal click-state machine.
-  Segment count from drag length / `bondLengthPx`; zig-zag `±(180 − chainAngleDegrees)/2` about the
-  drag axis, with `chainAngleDegrees` resolved from the target molecule's style.
+### B5. Interaction rules established by this slice
 
-## Delivery sequence
+- **Nothing paints on the initial press**, for every arrow family. The arrow appears once the
+  pointer moves (custom length and angle) or the press is released (default horizontal arrow).
+  Bonds, templates, and chains keep their press-time preview.
+- **Arrow mode doubles as an arrow-editing mode.** Hovering any arrow reveals small translucent dot
+  handles (tail, arc-middle, arrowhead) that are grabbable without leaving the draw tool. The tool
+  stays active after placing, so repeated clicks keep laying down arrows.
+- **Select mode uses the same small translucent dots** for line-family arrows; other art shapes keep
+  the full opaque handles.
+- **Arrowhead size snaps to discrete 4 px steps**; default head is 16 px (was 10 px).
+- **Head sizing follows what each family usually wants, with Shift asking for the other**: resonance
+  scales both heads unless Shift; equilibrium sizes one head unless Shift.
+- **Body drag moves the arrow; hover-delete removes the hovered one**, in arrow mode.
 
-Each phase is one independently green commit (code + pinned-test updates together). The
-"expected stub set" test introduced in Phase 1 asserts the exact remaining stub command IDs and
-shrinks every phase, reaching empty in Phase 6 and locked by a policy test in Phase 7.
+### B6. Per-tool arrow style defaults (`5b5c08a2`)
 
-- **Phase 0 — Docs.** This PLANS.md section; AGENTS.md Toolbar Button Contract and §9 updates;
-  PLAN.md §6.11/§6.13 updates; build stamp.
-- **Phase 1 — Cleanup.** Delete the retired commands (`commands.ts`, `drawingTools.ts`,
-  `desktop-toolsets.json` including the two retired IDs inside `tool.reactionArrow`'s submenu);
-  gallery stub filter at the `MainWindow.tsx` call site; rewrite the placeholder-count test into the
-  exact-stub-set test; update customize-command, chrome-cluster, and manifest-position tests; add a
-  gallery-exclusion test.
-- **Phase 2 — Quick wires.** `tool.atom` activates the existing atom-label editor on atom click;
-  `tool.settings` toggles the Molecule Inspector toolset; `style.color` opens the existing
-  object-color controls for the selection; shape/shapeShadow manifest re-points; `tool.dagger` and
-  `tool.symbol` become glyph-stamp tools (one text object per click, command-grid submenu of common
-  chemistry symbols).
-- **Phase 3 — Arrows.** Enum + CDXML import case; shared geometry plan; canvas + SVG renderers on
-  the plan; `insertNativeReactionArrow` with click-place and drag-place; enable the four tools.
-- **Phase 4 — Orbitals.** Four parametric art-shape rows (teardrop lobe, gradient shaded lobe,
-  mirrored two-lobe p orbital, radial-gradient s orbital) with their chemistry command IDs; the art
-  pipeline provides pointer handling, transform chrome, and SVG export for free.
-- **Phase 5 — Brackets.** Shared `bracketGlyphPathD` generator moves into `layout-engine`; real SVG
-  export fragment replaces the labeled-box fallback; `insertNativeBracket` click placement; canvas
-  glyph consumes the shared generator.
-- **Phase 6 — Chain + formula text.** `planNativeChain`/`applyNativeChainPlan` press-drag tool with
-  live preview, Esc cancel, single history entry; `style.formulaText` becomes a one-shot formatting
-  command (element-trailing digits → subscript, trailing charge → superscript) over selected text
-  objects.
-- **Phase 7 — Closeout.** Policy lock test (zero permanently disabled specs in shipped toolsets;
-  gallery exclusion holds); usage-hint invariant covers every definition; final stamps.
+Right-clicking any arrow — all eleven families plus the plain art arrow — offers "Set as Default
+Arrow Style" at the top of the object context menu. It captures the arrow's reusable look and
+applies it to every subsequent arrow drawn with that tool: arrowhead sizes (only for heads the tool
+already draws, so a default never adds or removes one), dual-shaft heft and half-lengths, an arc's
+sweep, and explicit stroke color, width, and dash. A bent arrow's bow is stored as a signed fraction
+of its length, so a curved default bends new arrows proportionally at any drawn length or angle.
+
+Defaults are per-tool, held in a session registry consulted by both creation paths (drag-drawn line
+arrows and click-placed arc arrows), and persisted through localStorage so they survive restarts.
+Geometry the draw gesture itself decides — endpoints, length, angle — is deliberately not captured.
+
+### B7. The curated flyout (`c2567d8e`, `12718cc5`)
+
+An 11-item grid covering ChemDraw's arrow families rather than the full ~56-cell wall — every
+variant is a preconfigured, fully editable arrow, so one of each geometry suffices. New
+preconfigured tools are pure data over the existing art pipeline: bold (24 px head) and dashed
+reaction arrows; `curvedArrow90`/`curvedArrow180` electron-pushing curves (existing arc geometry
+plus an arrowhead — dragging an endpoint flips the sweep, so clockwise presets cover both
+directions); `fishhookArrow`/`fishhookCurved` using a new `half-arrow` marker kind (single-sided
+barb) for radical single-electron pushing; and `noReactionArrow` using a new `shaftMark: "cross"`
+field that renders an X at the shaft midpoint, oriented to the local tangent so it tracks curves.
+No per-open cost was added: the grid is pre-rendered and the new items use the procedural
+`ArtToolIcon` SVG fallback rather than PNG assets.
+
+## Open items
+
+1. **Art inspector still styles only graphics and molecules.** `ArtInspectorStyleObject` is
+   `GraphicObject | MoleculeObject` (`apps/desktop/src/artInspectorModel.ts:128`), so Color Controls
+   and Object Settings route a bracket or arrow selection to a status message rather than a working
+   panel. Carried over from the toolbar-honesty slice and still open; widening it is its own slice.
+   This is more visible now that arrows are art objects.
+2. **Electron-pushing arrows are art, not mechanism annotations.** The curved and fishhook arrows
+   from B7 are arcs with markers — they carry no atom/bond anchoring and are not semantic mechanism
+   objects. `tool.mechanismArrow` remains retired and `packages/mechanism-tools` remains a type stub.
+   Do not describe the mechanism subsystem as shipped; the real one still needs anchoring, curved
+   geometry, half-head markers, renderers, and CDXML mapping.
+3. **Stale comment in the CDXML importer.** `packages/cdx-compat/src/index.ts:1935-1937` says
+   equilibrium and retrosynthesis "stay the legacy `reaction-arrow` object until they're migrated in
+   a later pass" — they were migrated in `6ccb9086` and `cf3c3569`, and the condition on the line
+   below already routes all four kinds to `importReactionArrowAsArtArrow`. Only `unknown` is legacy
+   now. One-line comment fix.
 
 ## Verification
 
-Per phase:
+Suites this branch touches:
 
 ```bash
 pnpm vitest run \
   apps/desktop/src/App.test.ts \
-  apps/desktop/src/drawingTools.test.ts \
   apps/desktop/src/toolsets.test.ts \
-  apps/desktop/src/commands.test.ts \
   apps/desktop/src/documentWorkflow.test.ts \
-  apps/desktop/src/toolbars/CustomizeMainToolbar/galleryModel.test.ts \
-  packages/layout-engine/src/index.test.ts
+  apps/desktop/src/graphicPathEdit.dom.test.ts \
+  apps/desktop/src/PaletteWindow.pluginToolset.dom.test.ts \
+  apps/desktop/src/toolbars/reconcileNativePalettes.test.ts \
+  packages/art-engine/src/index.test.ts \
+  packages/cdx-compat/src/index.test.ts
 ```
 
-plus `packages/chem-core` and `packages/cdx-compat` suites when touched. At closeout:
+Native code changed (`build.rs`, `capabilities/default.json`,
+`permissions/autogenerated/prewarm_toolset_popover.toml`, `src/lib.rs`), so also:
 
 ```bash
 pnpm lint
+pnpm test
 pnpm build
 git diff --check
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-Manual stress pass in the running app after Phases 3, 5, and 6: draw each arrow kind and resize its
-heads, place and resize both bracket kinds, drag a chain off an existing atom and off empty canvas,
-apply formula text to a typed formula, and confirm SVG export matches the canvas for each.
+Manual stress in the running app, per AGENTS.md §21 launch verification: draw each of the four
+arrow families by click and by drag; resize heads and confirm the 4 px stepping; drag equilibrium
+half-shafts independently; use the middle knob on equilibrium and retrosynthetic and confirm it
+resizes rather than bends; move an arrow by its body and hover-delete it in arrow mode; open every
+palette flyout — cold, warm, and after a long idle — and confirm it appears promptly; hide all
+toolbars and relaunch; confirm a plugin toolset window renders its own tools under its own title.
 
-Definition of done:
+## Definition of done
 
-- Shipped toolsets contain zero permanently disabled buttons; every visible button performs its
-  action.
-- The Customize gallery cannot produce a decorative disabled button.
-- Reaction, resonance, equilibrium, and retrosynthesis arrows are semantic objects that round-trip
-  CDXML.
-- Orbitals, brackets, symbols, chain, and formula text create real document objects with undo/redo,
-  save/reopen, and SVG export parity.
-- AGENTS.md, PLAN.md, and this file describe the shipped state; build stamps updated.
+- All four arrow families are art arrows with the full editing mechanics, and round-trip CDXML
+  under their standard `ArrowType` spellings.
+- No arrow paints on press; every family behaves identically at placement time.
+- Palette flyouts open promptly on cold, warm, and idle paths.
+- Plugin toolset windows render their own toolset, never the Main toolbar.
+- Hidden-toolbar and hide-all states survive relaunch; a partial write can never strand the user in
+  the fallback.
+- The three open items above are either closed or explicitly deferred with a named successor slice.

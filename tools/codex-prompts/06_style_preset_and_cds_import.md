@@ -58,7 +58,7 @@ Required deliverables:
    - `style.managePresets`
 
    Do **not** add `style.importStyleSheet`. That id was retired (see "Command retirements" in
-   `PLANS.md`) because the Molecule Inspector already imports `.cds` through the style
+   `docs/shipped/README.md`) because the Molecule Inspector already imports `.cds` through the style
    compatibility boundary, and `App.test.ts` asserts an exact command-id set that reintroducing it
    would fail. Route any new import entry point to the existing path instead.
 

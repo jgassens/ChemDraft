@@ -1,8 +1,48 @@
-# Selection Policy Refactor — Implementation Plan
+# Selection Policy Refactor — shipped
 
-Status: planning only. Do not start coding until the user explicitly asks (AGENTS.md).
-Companion to: `PLANS.md` (Rings-First Slice 1). This plan corrects the *selection
-architecture* that slice exposed; it does not change ring geometry, chemistry, or UI surface.
+**Status: complete. All phases (0–7) landed.** Verified against the code 2026-07-30.
+
+This file carried `Status: planning only. Do not start coding until the user explicitly asks` long
+after the refactor had shipped in full — only Phase 7 was ever marked. It moved here from the repo
+root on 2026-07-30. It is kept as written, because the design section is still the clearest
+description of how selection works; the phase list below now records what landed.
+
+Companion to the Rings-First slice (`docs/shipped/README.md`). This plan corrected the *selection
+architecture* that slice exposed; it did not change ring geometry, chemistry, or UI surface.
+
+## What shipped, and where to find it
+
+| Phase | Outcome | Evidence |
+| --- | --- | --- |
+| 0 — Characterization tests | landed | one legacy helper reference remains in `MainWindow.tsx`; the rest were subsumed |
+| 1 — Policy module | landed | `apps/desktop/src/selection/selectionPolicy.ts` (+ `.test.ts`) |
+| 2 — Ring geometry + resolver | landed | `nativeMoleculeRingAtPoint` (`packages/layout-engine/src/index.ts:1717`), `resolveSelectionHit` (`apps/desktop/src/interaction/hitTest.ts:323`) |
+| 3 — Click through the policy | landed | `MainWindow.tsx` imports `applySelection`, `fromSelectionItems`, `selectionModeFromEvent` |
+| 4 — Additive marquee + lasso | landed | `selectionModeFromEvent(event, { gesture: "region", … })` at the marquee and lasso call sites |
+| 5 — Remove workarounds | landed | `ringSelectionActiveOnObject` and `ringSelectionContinuationPress` are both gone |
+| 6 — Ring catcher into the render plan | landed | catcher emitted from layout-engine; `MainWindow.tsx` keeps only the `data-ring-hit-key` tiebreak read |
+| 7 — Single-set storage / cross-molecule | landed | `selectedNativeMoleculeParts` (plural) in `MainWindow.tsx` |
+
+**A note for anyone auditing the store split.** `selectedNativeMoleculePart` (singular) still appears
+~98 times in `MainWindow.tsx`, which looks like the original two-disjoint-stores problem survived. It
+did not. Phase 7 made the storage a per-molecule array and left `selectedNativeMoleculePart` as a
+derived "primary" plus a back-compat setter, deliberately so the ~97 reads and ~80 setter sites did
+not have to change. Count the plural form, not the singular, when checking this.
+
+## The open decisions, as the implementation answered them
+
+All three were marked "need user input before P3/P7" and were settled by what shipped:
+
+- **D1 (scope)** — Phase 7 was done, not skipped: storage is cross-molecule.
+- **D2 (continuation UX)** — the no-shift "click another ring to add" behavior was dropped, as
+  recommended. Both carve-outs are deleted from the source.
+- **D3 (region rings)** — regions stay object/atom/bond-only. The code says so at its own call site:
+  *"Regions stay object/atom/bond-only (no ring interiors, D3)."*
+
+---
+
+*Everything below is the plan as written, preserved unedited apart from the Phase 7 marker that was
+already there.*
 
 ## Problem recap (from the investigation)
 

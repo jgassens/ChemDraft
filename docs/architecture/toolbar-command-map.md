@@ -6,7 +6,7 @@ The source files in `Custom_Toolbar/2_Images` are treated as user-provided custo
 
 Current status: every command in this map is active and dispatched through the shared command registry. The only "disabled" states left are transient and selection-dependent — the align and distribute commands need two or more selected objects — which is honest feedback about the current selection, not a placeholder for unbuilt work. Shipped toolsets carry no permanently disabled buttons; see the toolbar honesty contract in `AGENTS.md`. Toolbars are data-driven end to end — see `docs/architecture/toolbars-and-toolsets.md` for the single-brain architecture, widget items, and the Customize Toolbars editor.
 
-Commands retired rather than wired (mechanism arrows, template grid, and the duplicate/undefined entries) are listed with their reasons under "Command retirements" in `PLANS.md`; each can return through git when its feature slice lands. They are deliberately absent from this map so it cannot be read as a promise.
+Commands retired rather than wired (mechanism arrows, template grid, and the duplicate/undefined entries) are listed with their reasons under "Command retirements" in `docs/shipped/README.md`; each can return through git when its feature slice lands. They are deliberately absent from this map so it cannot be read as a promise.
 
 ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a typed ChemDraft toolset manifest, currently read from `apps/desktop/src/toolsets/desktop-toolsets.json` and validated through `@chemdraft/toolset-registry`. Future user-editable XML or JSON toolbar files should be added through a compatibility/import layer, not by adopting proprietary toolbar XML as the native model.
 

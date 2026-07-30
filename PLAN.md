@@ -24,26 +24,67 @@ Create a plugin architecture that lets users add analysis, prediction, import/ex
 
 ## 1.1 Roadmap synchronization note
 
-Recent implementation work corrected the desktop product direction rather than adding random UI polish. ChemDraft now has or scaffolds:
+**Last synchronized: 2026-07-30.**
 
-- Tauri desktop as the default launch target.
-- Native floating toolset windows for desktop builds.
-- Declarative command-backed toolsets.
-- `packages/toolset-registry`.
-- Built-in, plugin-contributed, and user-created toolset concepts.
-- Versioned user toolbar layout/customization state.
-- Disabled toolbar customization command surface.
-- `packages/viewport-engine`.
-- Ruler rendering through `@scena/react-ruler`, with ChemDraft viewport state remaining the source of truth.
-- A tiny local UX surface metadata scaffold in `apps/desktop/src/surfaces` for menu, status, canvas-control, panel, and empty-state chrome.
-- `KetcherAdapter` as a host adapter boundary with capability reporting and molecule load/save contracts.
-- A narrow lazy Ketcher desktop host for active selected-molecule editing through `ketcher-react` and `ketcher-standalone`.
-- Native page layout and paper-size infrastructure with File > Page Setup commands, document-backed viewport/ruler/crosshair/export geometry, and physical SVG size metadata.
-- Phase 7 has started with command-backed active drawing tools, shortcut routing, a minimal native single-bond insertion path, and first connected carbon-chain extension backed by `chem-core` atoms and bonds.
+Keep this section dated, and re-date it whenever you reconcile it. It exists so a reader can tell how
+far the implementation has moved past the phase list in §17. A stale sync note is worse than no sync
+note, because it reads as current: this one sat unchanged from late May through 2026-07-29 while the
+entire plugin program, the toolbar honesty slice, Spin 3D refinement, and three releases shipped
+past it.
 
-The UX surface scaffold is metadata-only. Existing rendered UI is not driven by it yet, and it should not be treated as a full UX registry package, plugin surface renderer, customization UI, or add-page implementation.
+The active slice is never described here — it lives in `PLANS.md`. Completed slices and the
+reasoning behind them live in `docs/shipped/README.md`.
 
-Treat this as core drawing-workspace infrastructure. `Phase 6: Editor engine hardening` is conditionally complete as an adapter boundary. `Phase 7.1` now uses Ketcher only as the active molecule-internal editor for a selected `MoleculeObject`; ChemDraft still owns the composited page/document state. `Phase 6.5: Canvas page-size infrastructure` is closed out and should now be treated as the page-layout baseline. The next implementation lane remains `Phase 7: Core drawing productivity`; do not backslide into broad UI polish, a full Page Setup feature, a rendered surface-system task, or a new chemistry phase.
+### Shipped and stable
+
+- Tauri desktop as the default launch target, plus a browser-only shell through `pnpm dev:web`.
+  There is still no separate `apps/web` package.
+- Native floating toolset windows, declarative command-backed toolsets, `packages/toolset-registry`,
+  built-in/plugin-contributed/user-created toolsets, and versioned user layout state persisted
+  without mutating source manifests.
+- Toolbar customization UI is **delivered** — the Customize Toolbars dialog and the in-place
+  Main-toolbar editor. The four standalone `view.toolset.*` commands were retired into those
+  editors.
+- Every button in a shipped toolset performs its action. `TRANSITIONAL_STUB_COMMAND_IDS` is empty
+  and a policy test keeps it empty (§6.11).
+- `packages/viewport-engine`, rulers through `@scena/react-ruler` with ChemDraft viewport state as
+  the source of truth, native page layout and paper sizes, File > Page Setup.
+- Drawing tools: bonds, chains, atom labels, rings, brackets, orbitals, glyph stamps, formula text,
+  and the full arrow family as editable art objects that round-trip CDXML.
+- `packages/art-engine` and the art inspector, which styles graphics and molecules.
+- Spin 3D with selectable refinement modes, a Preferences window, and `packages/engine3d-api` as the
+  versioned protocol to a 3D sidecar.
+- `KetcherAdapter` as a host adapter boundary; a narrow lazy Ketcher host edits a selected
+  `MoleculeObject` only. ChemDraft still owns the composited page/document state.
+- The plugin program end to end: one persistent runtime, per-plugin Web Workers, declarative panel
+  reports through a single renderer, packaged installs, a Plugin Manager, and host-managed updates.
+  See AGENTS.md §8a.
+- macOS release path: Sparkle auto-update against a signed appcast, notarization, v0.3.0 published.
+
+### Not shipped, whatever §17's phase list may imply
+
+Verified against the code on 2026-07-30. §17 marks these phases with the same detail.
+
+- **Chemistry-format export.** MOL, SDF, RXN, SMILES, and CML are `status: "planned"` in
+  `packages/export-engine/src/formats.ts`. Only SVG, PDF, PNG, JPEG, BMP, GIF, TIFF, and CDXML are
+  `"implemented"`.
+- **Most clipboard paste.** Molfile and SMILES paste work. CDXML, CDX, and RXN paste each return an
+  explicit "not implemented yet" message instead of parsing — honest, but not delivered.
+- **Office-friendly image copy.** The Rust side exposes `write_clipboard_text_items` only; there is
+  no image write.
+- **CDX binary read or write** (`status: "deferred"`).
+- **Mechanism annotations as semantic objects.** `packages/mechanism-tools` is a type stub and
+  `tool.mechanismArrow` is retired. The curved and fishhook arrows in the arrow flyout are art arcs
+  with markers — no atom or bond anchoring, no semantic mechanism model.
+- **Templates.** `packages/template-library` is empty; `tool.templateGrid` is retired pending a
+  template corpus and grid-picker UI.
+- **User-facing documentation.** `docs/migration/`, `docs/compatibility/`, and `docs/file-formats/`
+  READMEs are five-line stubs, so Phase 11's ChemDraw migration guide and known-limitations page are
+  not started.
+
+The UX surface scaffold in `apps/desktop/src/surfaces` remains metadata-only. Rendered UI is not
+driven by it, and it should not be treated as a full UX registry package, plugin surface renderer,
+customization UI, or add-page implementation.
 
 ## 2. Target users
 
@@ -143,7 +184,7 @@ Clarifications:
 - OLE or double-click-to-edit Office embedding is out of scope for v1, but the migration guide must state this plainly and explain the substitute workflow: copy/paste as SVG/PNG plus chemical payload where available, or reopen/edit from the saved native file.
 - Name-to-structure and structure-to-name are migration pressure points, not solved core features. A limited OPSIN-style name-to-structure plugin is plausible. Reliable open structure-to-name is harder and should be presented honestly as a known migration blocker until a dependable implementation exists.
 - CDXML export/import should precede broad CDX writing, but best-effort CDX read and CDX clipboard paste should come early because a migrant's back-catalog and clipboard payloads may be CDX.
-- Image-to-structure recognition is not a core feature, but it is an excellent first real plugin target because it tests image input, optional native-service execution, large model dependencies, confidence reporting, and review-before-insert document patches. The preferred candidate is an optional **MolScribe OCSR** plugin based on the external MolScribe image-to-graph project.
+- Image-to-structure recognition is not a core feature, but it is a strong plugin target because it tests image input, optional native-service execution, large model dependencies, confidence reporting, and review-before-insert document patches. The preferred candidate is an optional **MolScribe OCSR** plugin based on the external MolScribe image-to-graph project. It is no longer the *first* such target — the NMR predictor took that role and exercised the same infrastructure; see §14.
 
 ## 6. Core design principles
 
@@ -318,7 +359,7 @@ Rules:
 - Customization must not bypass command registration.
 - Future drag-and-drop editors should modify the same state model.
 - `view.customizeToolbars` and `view.customizeMainToolbar` are the customization entry points, delivered by the Customize Toolbars dialog and the in-place Main-toolbar editor.
-- Reset, reset-all, create-user-toolset, and clone actions live inside those editors (backed by `layoutStateEdits.ts`); the former standalone `view.toolset.*` command IDs are retired per the active PLANS.md slice.
+- Reset, reset-all, create-user-toolset, and clone actions live inside those editors (backed by `layoutStateEdits.ts`); the former standalone `view.toolset.*` command IDs are retired per the Toolbar Wiring and Honesty slice (`docs/shipped/README.md`).
 
 ### 6.14 ChemDraw toolbar XML boundary
 
@@ -439,57 +480,70 @@ Keep most chemistry workflow logic in TypeScript packages until there is a stron
 
 ### 7.4 Monorepo layout
 
-Suggested repository layout:
+Repository layout as it stands (2026-07-30). `apps/web/` is the one entry below that does not exist
+yet — the browser shell runs the desktop app through `pnpm dev:web`.
 
 ```text
 chemdraft/
   apps/
     desktop/                  Tauri desktop app
-    web/                      Optional browser version later
+    web/                      Optional browser version later — NOT YET CREATED
 
   packages/
     chem-core/                Native document model, schemas, patches, migrations
-    editor-shell/             App UI around the drawing/editor area
+    editor-shell/             Shell region/panel types (dormant — no consumers)
     editor-adapter/           Abstract drawing editor interface
     ketcher-adapter/          Ketcher implementation of EditorAdapter
     chemistry-adapter/        Abstract chemistry computation interface
-    rdkit-adapter/            RDKit implementation where appropriate
-    cdx-compat/               CDXML/CDX compatibility layer
+    ocl-adapter/              OpenChemLib implementation — the shipped chemistry engine
+    rdkit-adapter/            RDKit implementation — currently a declared placeholder
+    engine3d-api/             Versioned wire protocol for the 3D sidecar
+    art-engine/               Native art geometry: paths, paint, markers, arrow geometry
+    cdx-compat/               CDXML/CDX compatibility layer and the native save envelope
     style-compat/             External style-sheet compatibility such as .cds import
     clipboard-adapter/        Platform clipboard formats and Office-friendly copy/paste
     export-engine/            SVG, PNG, PDF, MOL, SDF, RXN, SMILES export orchestration
     layout-engine/            Align, distribute, group, rotate, flip, page, and guide logic
     shortcut-engine/          Command-bound keyboard shortcuts and type-to-build behavior
-    mechanism-tools/          Curved arrows, electron marks, lone pairs, radical glyphs
-    template-library/         Original built-in fragments, superatoms, templates, style presets
+    mechanism-tools/          Curved arrows, electron marks, lone pairs, radical glyphs (stub)
+    template-library/         Original built-in fragments, superatoms, templates, presets (stub)
     toolset-registry/         Typed toolset manifests, customization state, menu models
     viewport-engine/          Viewport state, coordinate conversion, zoom, ruler state
     plugin-api/               Public plugin API types
     plugin-host/              Plugin loading, permissions, command registry
     ui-kit/                   Original app UI components and icons
     fixtures/                 Shared chemistry, clipboard, recognition, and compatibility fixtures
-    test-utils/               Shared test utilities
+    test-utils/               Shared test utilities (dormant — no consumers)
 
   examples/
     plugins/
-      mass-fragment-demo/     Lightweight fixture-backed analysis plugin
+      mass-fragment-demo/     Working non-NMR analyzer; proves the plugin API is domain-agnostic
       molscribe-ocsr/         Optional image-to-structure plugin scaffold
-      opsin-name-to-structure/
-      advanced-style-pack/
-      journal-style-pack/
+      opsin-name-to-structure/  README-only placeholder
+      advanced-style-pack/      README-only placeholder
+      journal-style-pack/       README-only placeholder
 
   docs/
     architecture/
-    plugin-development/
-    file-formats/
+    benchmarks/
     compatibility/
+    file-formats/
     migration/
+    nmr-plugin-planning/
+    plugin-architecture/
+    plugin-development/
+    releasing/
+    shipped/                  Completed slices and the decisions behind them
 
   tools/
     codex-prompts/
+    plugin-extract/
+    plugin-package/
+    rdkit-oracle/
     scripts/
 
   PLAN.md
+  PLANS.md
   AGENTS.md
   README.md
   LICENSE
@@ -533,7 +587,11 @@ Defines chemistry computation interfaces: parsing, conversion, formula, mass, va
 
 ### 8.5 `packages/rdkit-adapter`
 
-Implements chemistry operations using RDKit where appropriate. It should lazy-load where possible and must not mutate the native document directly.
+Intended to implement chemistry operations using RDKit. **Currently a declared placeholder**
+(`rdkitAdapterStatus === "placeholder"`): it reports honest capabilities rather than pretending
+RDKit is present. The shipped chemistry engine is `ocl-adapter` (§8.19). When real RDKit wiring
+lands it should lazy-load, must not mutate the native document directly, and must not vendor RDKit
+builds into the repository.
 
 ### 8.6 `packages/cdx-compat`
 
@@ -638,6 +696,56 @@ Responsibilities:
 - Keeping rulers, page rendering, hit testing, and future editor interactions in one coordinate system.
 
 Must not own chemistry object state, become a black-box canvas editor, let ruler rendering own the coordinate model, or hide coordinate math inside React components.
+
+### 8.19 `packages/ocl-adapter`
+
+The shipped implementation of `chemistry-adapter` (§8.4), backed by OpenChemLib.
+
+Responsibilities:
+
+- OCL resource loading.
+- 2D depiction and molfile relayout.
+- Stereo-center perception and unrepresentable-stereo detection.
+- 3D conformer generation and force-field refinement, with trace events.
+
+Must not become the native document model, own UI, or silently degrade chemistry: an OCL bond order
+that cannot be represented exactly is reported as `aromatic` or `unknown`, never collapsed to a
+single bond.
+
+### 8.20 `packages/art-engine`
+
+Owns the geometry and paint planning behind native art objects — the layer the whole arrow family,
+shapes, and graphic markers are built on. Consumed by `layout-engine`, `documentWorkflow`, and
+`agentBridge`.
+
+Responsibilities:
+
+- Canonical path planning, projection, bounds, and paint resolution.
+- Stroke, fill, marker, gradient, shadow, and glow plans.
+- Arrow shaft and head geometry, including the dual-shaft equilibrium and retrosynthetic forms.
+- Export fragments shared by the canvas renderer and SVG export.
+
+Must not change chemical identity, own document state, or re-implement molecule rendering math that
+belongs to `layout-engine`. The ownership split with app code is stated in §7 under "Native Art
+Inspector".
+
+### 8.21 `packages/engine3d-api`
+
+Owns the versioned wire protocol between the app and the 3D sidecar. Dependency-free.
+
+Responsibilities:
+
+- Protocol version constant, message envelopes, session/drag/commit request and response types.
+- Graph-signature inputs, coordinate-reason tags, force-field status and report types.
+- Transport limits such as the maximum message size.
+
+Must not own the sidecar process, transport, or lifecycle, carry chemistry behavior, or change shape
+without bumping the protocol version. Sidecar behavior is exercised by `pnpm audit:engine3d-sidecar`
+and the `smoke:engine3d-*` scripts.
+
+`editor-shell`, `fixtures`, and `test-utils` are listed in §7.4 but have no responsibilities section
+here: `fixtures` is test data, and `editor-shell` and `test-utils` are currently dormant with no
+consumers. Do not grow them speculatively.
 
 ## 9. Native document model and patches
 
@@ -843,7 +951,7 @@ Native ChemDraft style presets are the source of truth for drawing appearance. C
 Required style behavior:
 
 - Provide a sensible built-in default style preset.
-- Import `.cds` files through the Molecule Inspector's style import, which reads them through the style compatibility boundary. (A separate `style.importStyleSheet` command was retired as redundant; see "Command retirements" in `PLANS.md`. If a File > Import Style Sheet menu entry is wanted later, it should route to the same import path rather than reintroduce a parallel command.)
+- Import `.cds` files through the Molecule Inspector's style import, which reads them through the style compatibility boundary. (A separate `style.importStyleSheet` command was retired as redundant; see "Command retirements" in `docs/shipped/README.md`. If a File > Import Style Sheet menu entry is wanted later, it should route to the same import path rather than reintroduce a parallel command.)
 - Convert supported bond, text, page, grid, ruler, color, and object appearance settings into native style presets.
 - Allow the user to set an imported native preset as the default for new documents through `style.setDefaultPreset`.
 - Preserve the selected native style preset when a ChemDraft document is saved and reopened.
@@ -1093,9 +1201,19 @@ native-service    Rust/Python/binary sidecar with explicit permissions
 
 Native-service plugins must never run silently.
 
-## 14. First real plugin target: MolScribe OCSR
+## 14. MolScribe OCSR as a plugin target
 
-The first serious plugin should be an optical chemical-structure recognition plugin based on the existing **MolScribe** image-to-graph model.
+**Superseded as "first" (2026-07-30).** This section was written when no serious plugin existed. The
+first one turned out to be the NMR predictor, which exercised the same infrastructure this section
+was meant to stress — plugin permissions, worker isolation, heavy reference data, confidence
+reporting, and review-before-insert — and then moved to its own repository. The plugin runtime,
+packaging, installer, and update path are all shipped (AGENTS.md §8a).
+
+MolScribe OCSR remains a scaffold and a legitimate future target. Everything below still applies if
+it is picked up; only its "first" status has lapsed.
+
+An optical chemical-structure recognition plugin based on the existing **MolScribe** image-to-graph
+model.
 
 Facts to account for:
 
@@ -1245,11 +1363,18 @@ Every fixture should track expected canonical SMILES where applicable, formula, 
 
 ## 17. Development roadmap
 
-Stage correction note:
+**How to read this roadmap (reconciled 2026-07-30).**
 
-This documentation update is a correction after the first scaffold. The existing scaffold is acceptable only as technical proof that the workspace builds; its dashboard-like UI is not product direction. Do not continue polishing that scaffold.
+The phases below are kept in their original order for traceability, not as a work queue. Work has not
+proceeded phase-by-phase for some time: the plugin program (Phase 12 territory) shipped in full while
+Phases 8 and 9 remain partial, and release engineering (Phase 11) shipped ahead of the documentation
+in the same phase. Each phase now carries a status line; trust the status lines and §1.1 over the
+phase ordering.
 
-This closeout update also reconciles the phase handoff after the first drawing workflow work. Phase 4 should be treated as conditionally complete only when the closeout criteria below are met. The roadmap keeps the historical Phase 4.5, Phase 5, and Phase 6 lanes for traceability. `Phase 6: Editor engine hardening` is conditionally complete as an adapter boundary, and `Phase 6.5: Canvas page-size infrastructure` is now closed out. The current next implementation lane is `Phase 7: Core drawing productivity`.
+The original "stage correction" note is preserved because its warning still holds: the first
+scaffold's dashboard-like UI was never product direction, and nothing should go back to polishing it.
+
+There is no single "current lane". The active slice lives in `PLANS.md`.
 
 ### Phase 0: Repository foundation
 
@@ -1430,7 +1555,21 @@ Future work should preserve this behavior rather than reimplementing page geomet
 
 ### Phase 7: Core drawing productivity
 
-Status: in progress. The command-backed active-tool and shortcut-routing slices are in place. The first narrow real editing slices add native single-bond insertion, selected carbon-chain extension backed by `chem-core` atom and bond payloads, and a lazy Ketcher host for active selected-molecule editing.
+Status: **substantially delivered, two deliverables outstanding.** Command-backed tool state,
+shortcut routing, bonds, atom labels, rings, chains, wedge/dash, charge/radical placement, reaction
+arrows, brackets, text with subscript/superscript, group/ungroup, align/distribute, rotate/flip,
+z-order, style presets with `.cds`-derived application, and the keyboard shortcut registry are all
+in place, along with the art inspector and the Customize Toolbars UI. Still outstanding from the
+deliverable list below:
+
+- **Mechanism annotations.** `packages/mechanism-tools` is a type stub, `tool.mechanismArrow` is
+  retired, and the flyout's curved and fishhook arrows are art arcs with markers — no atom or bond
+  anchoring, no semantic mechanism model.
+- **Abbreviations/superatoms and R-group display.** `chem-core` represents both (`superatom` object
+  type, `SuperatomMetadataSchema`, `RGroupDisplaySchema`, `RGroupLabelObjectSchema`), but no drawing
+  tool or command authors them — the model is ready and the authoring surface is missing.
+  `packages/template-library` is still an 8-line stub, so ring templates come from elsewhere and
+  `tool.templateGrid` stays retired.
 
 First slice:
 
@@ -1596,6 +1735,13 @@ Future arrowhead direction:
 
 ### Phase 8: Import/export and Office-friendly clipboard MVP
 
+Status: **partial — the image half shipped, the chemistry half did not.** SVG, PDF, PNG, JPEG, BMP,
+GIF, and TIFF export are `"implemented"` in `packages/export-engine/src/formats.ts`. MOL, SDF, RXN,
+SMILES, and CML are still `"planned"`. The clipboard adapter detects every payload kind and molfile
+and SMILES paste work, but CDXML, CDX, and RXN paste return explicit "not implemented yet" messages.
+Clipboard writing is text-only (`write_clipboard_text_items`), so Office-friendly *image* copy is
+not delivered.
+
 Deliverables:
 
 - MOL/SDF/SMILES/RXN import/export
@@ -1607,6 +1753,12 @@ Deliverables:
 - Export and clipboard warnings
 
 ### Phase 9: CDXML compatibility and best-effort CDX read/paste
+
+Status: **CDXML delivered; CDX not started.** `packages/cdx-compat` owns both the CDXML writer/parser
+and the native save envelope (`openChemDraftPayload`, `CdxmlEnvelopeCodecVersion`), so CDXML is
+simultaneously ChemDraft's own container and its interop format; foreign CDXML imports through the
+same path. CDX binary is `"deferred"` for export and its clipboard paste is unimplemented, so the
+"best-effort CDX read/paste early" intent of §5 has not been met.
 
 Deliverables:
 
@@ -1624,6 +1776,9 @@ Deliverables:
 
 ### Phase 10: First real MolScribe OCSR local-service spike
 
+Status: **not started, and overtaken.** The first serious plugin was the NMR predictor, not MolScribe
+— see §14. `examples/plugins/molscribe-ocsr` remains a scaffold.
+
 Deliverables:
 
 - Optional local native-service or Python sidecar contract
@@ -1638,6 +1793,13 @@ Deliverables:
 If native-service or PyTorch packaging is not ready, keep mocked inference and do not pull heavy dependencies into the core app.
 
 ### Phase 11: Beta hardening
+
+Status: **release engineering shipped well ahead of the documentation.** Installer builds, signed
+releases, notarization, and Sparkle auto-update against a signed appcast are all live, with v0.3.0
+published (`docs/releasing/macos-updates.md`). The documentation deliverables are untouched:
+`docs/migration/`, `docs/compatibility/`, and `docs/file-formats/` are five-line stubs, so the
+ChemDraw migration guide and the known-limitations page do not exist. Given how much of §5's
+non-goal list is still non-goal, the known-limitations page is the higher-value of the two.
 
 Deliverables:
 
@@ -1654,14 +1816,20 @@ Deliverables:
 
 ### Phase 12: Advanced features through plugins
 
+Status: **the plugin infrastructure shipped, out of phase order, and two plugins with it.** The whole
+runtime — persistent host, per-plugin Web Workers, declarative panel reports, packaged installs,
+Plugin Manager, host-managed updates — is delivered (AGENTS.md §8a). NMR prediction shipped as the
+first serious plugin and has since moved to its own repository; the mass/`m/z` analyzer ships as
+`examples/plugins/mass-fragment-demo`. The rest of the list below remains candidate work.
+
 Candidate plugins:
 
 - MolScribe OCSR image-to-structure
 - RxnScribe-style reaction-image parsing, if license and service shape are acceptable
 - OPSIN name-to-structure
 - InChI/InChIKey
-- NMR prediction
-- Mass-spec fragmentation
+- ~~NMR prediction~~ — shipped, now a standalone repository
+- ~~Mass-spec fragmentation~~ — shipped as `examples/plugins/mass-fragment-demo`
 - pKa/logP/logS
 - Reaction mapping
 - Advanced journal style packs
@@ -1671,6 +1839,16 @@ Candidate plugins:
 - Structure-to-name exploration only if a reliable option exists
 
 ## 18. Suggested Codex sequence
+
+**Historical (reviewed 2026-07-30).** Tasks 1–11 are done, and the sequence stopped being followed
+well before that — the plugin program ran to completion out of order. Kept for traceability and
+because the *shape* of the guidance still holds: small, sequential, bounded tasks. Do not read it as
+a queue; take the next piece of work from `PLANS.md` or from the outstanding items flagged in §1.1
+and §17.
+
+Remaining unstarted: Task 12 (MOL/SDF/SMILES/RXN import/export), Task 15 (best-effort CDX
+read/paste), and Task 16 (MolScribe OCSR local-service spike). Tasks 13 and 14 (CDXML export and
+import) are delivered.
 
 Use small, sequential tasks.
 
@@ -1734,7 +1912,7 @@ Task 10:
 Implement native style preset schema and default-style preservation in documents, including tests that save/reopen the selected preset.
 ```
 
-Task 10:
+Task 10a:
 
 ```text
 Implement `.cds` style-sheet import through the style compatibility boundary, converting supported settings into native ChemDraft style presets with warnings and synthetic/legal fixtures.
@@ -1778,6 +1956,12 @@ Upgrade the MolScribe OCSR plugin from scaffold to optional local-service spike.
 
 ## 19. Release readiness checklist
 
+Note (2026-07-30): macOS builds are already published (v0.3.0) under the release path in
+`docs/releasing/macos-updates.md`. This checklist describes the bar for a *public, promoted* release
+rather than for shipping a build at all, and several lines below are not yet met — MOL/SDF/SMILES/RXN
+export, CDX read/paste, Office-friendly image copy, mechanisms, abbreviations/superatoms, R-group
+display, and the user documentation. See §1.1.
+
 Before public release:
 
 - Native documents save and reopen reliably.
@@ -1807,19 +1991,18 @@ Before public release:
 
 ## 20. Open questions
 
-Decisions still needed:
+Reviewed 2026-07-30. Re-review when a slice settles one of these; a question the code has already
+answered is worse than no list, because it invites re-litigating a shipped decision.
+
+### Still open
 
 - Final project name, with ChemDraft preferred for now to avoid collision with the external MolScribe OCSR package.
-- Final native file extension.
-- Final license.
-- Whether the app supports a browser version initially.
-- Whether plugins are distributed through a registry later.
+- Final native file extension. (The *container* is settled — CDXML with ChemDraft object tags, §8.6 — but the extension is not.)
+- Final license for the repository root. `package.json` still says `UNLICENSED`. The example plugins are settled at MIT (2026-07-16), with the bundled NMR reference database carved out under the nmrshiftdb2 Database License; see AGENTS.md §8a.
 - How strict the first CDXML compatibility target should be.
 - Whether Ketcher is the long-term editor engine or just the first adapter.
 - How the page/editor architecture keeps one composited page while using an active structure editor.
-- Whether RDKit loads in the frontend, backend, or both.
 - Which platform clipboard formats are supported on Windows, macOS, and Linux for the first release.
-- Which mechanism arrows are chemically semantic versus graphical annotations.
 - Which built-in templates and style presets are included without turning the app into a template-heavy suite.
 - Which `.cds` settings are in the first supported style-sheet import subset.
 - Whether a user-supplied `Tot_Syn_Style.cds` can remain local-only as a private reference or has clear redistribution rights for fixtures.
@@ -1828,8 +2011,15 @@ Decisions still needed:
 - Whether the MolScribe OCSR plugin runs local-only by default or supports an explicitly configured remote inference service.
 - How the MolScribe OCSR plugin distributes or locates model checkpoints.
 - Whether the MolScribe OCSR plugin should use a local Python sidecar, ONNX/WASM later, or another service path.
-- How native plugins are signed and approved.
-- What installer/distribution system is preferred for each OS.
+- How native plugins are signed and approved. (Package *integrity* is enforced by SHA-256 with a published sidecar; publisher *identity* is not, and the UI must not conflate the two.)
+
+### Answered by shipped work
+
+- ~~Whether the app supports a browser version initially.~~ Yes, as a shell: `pnpm dev:web` runs the desktop app in the browser. There is still no separate `apps/web` package.
+- ~~Whether plugins are distributed through a registry later.~~ Not a registry — a host-owned catalog allowlisted by plugin id, with the app owning source, download, verification, handshake, replacement, and rollback. An installed plugin cannot choose its own download URL.
+- ~~Whether RDKit loads in the frontend, backend, or both.~~ Moot for now: OpenChemLib is the shipped engine (§8.19) and `rdkit-adapter` is a declared placeholder (§8.5). The question returns if real RDKit wiring lands.
+- ~~Which mechanism arrows are chemically semantic versus graphical annotations.~~ Currently all graphical. The four reaction-arrow families and the curved/fishhook electron-pushing arrows are art objects; no arrow carries atom or bond anchoring. A semantic mechanism model remains unbuilt (Phase 7).
+- ~~What installer/distribution system is preferred for each OS.~~ Settled for macOS: signed and notarized bundle, Sparkle auto-update against a signed appcast (`docs/releasing/macos-updates.md`). Windows and Linux remain open.
 
 ## 21. Guiding rule
 
