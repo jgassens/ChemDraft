@@ -80,6 +80,7 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
 import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
 import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
@@ -372,6 +373,7 @@ import {
   insertNativeArtGraphicObject,
   nativeArtToolIsLineDraw,
   nativeArrowStyleDefaultFromGraphic,
+  selectedDocumentObjectTypes,
   setNativeArrowStyleDefault,
   loadNativeArrowStyleDefaults,
   nativeArrowStyleDefaultsSnapshot,
@@ -1971,6 +1973,14 @@ export function MainWindow({
     ? eyedropperStatusLabel(effectiveArtPaintTarget)
     : eyedropperChooseTargetStatusLabel(effectiveArtPaintTarget);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
+  const currentToolbarSelection = useMemo(
+    () => classifyToolbarSelection({
+      document,
+      moleculeContext: currentMoleculeInspector.targets.context,
+      activeTextEditObjectId
+    }),
+    [activeTextEditObjectId, currentMoleculeInspector.targets.context, document]
+  );
 
   useEffect(() => {
     if (activeToolState.activeCommandId === "tool.art.eyedropper") {
@@ -1984,7 +1994,8 @@ export function MainWindow({
       currentToolbarTextScript,
       currentArtStyle,
       activeArtPaintTarget,
-      currentMoleculeInspector
+      currentMoleculeInspector,
+      currentToolbarSelection
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -1992,7 +2003,8 @@ export function MainWindow({
     currentToolbarTextScript,
     currentArtStyle,
     activeArtPaintTarget,
-    currentMoleculeInspector
+    currentMoleculeInspector,
+    currentToolbarSelection
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -2432,10 +2444,18 @@ export function MainWindow({
         currentToolbarTextScript,
         currentArtStyle,
         activeArtPaintTarget,
-        currentMoleculeInspector
+        currentMoleculeInspector,
+        currentToolbarSelection
       )
     ).catch(() => undefined);
-  }, [activeArtPaintTarget, currentArtStyle, currentMoleculeInspector, currentToolbarTextScript, currentToolbarTextStyle]);
+  }, [
+    activeArtPaintTarget,
+    currentArtStyle,
+    currentMoleculeInspector,
+    currentToolbarSelection,
+    currentToolbarTextScript,
+    currentToolbarTextStyle
+  ]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -14437,6 +14457,7 @@ export function MainWindow({
                   currentArtStyle,
                   currentArtStyleTarget: activeArtPaintTarget,
                   currentMoleculeInspector,
+                  currentSelection: currentToolbarSelection,
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
@@ -20086,23 +20107,6 @@ function PageSvgSurface({
       })}
     </svg>
   );
-}
-
-/** Object types in the current selection, for routing a command to a surface that can edit them. */
-export function selectedDocumentObjectTypes(document: ChemDraftDocument): ReadonlySet<DocumentObject["type"]> {
-  const selectedIds = new Set(document.selection.objectIds);
-  const types = new Set<DocumentObject["type"]>();
-  if (selectedIds.size === 0) {
-    return types;
-  }
-  for (const page of document.pages) {
-    for (const object of page.objects) {
-      if (selectedIds.has(object.id)) {
-        types.add(object.type);
-      }
-    }
-  }
-  return types;
 }
 
 export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {

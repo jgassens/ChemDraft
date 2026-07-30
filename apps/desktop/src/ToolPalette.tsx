@@ -353,8 +353,15 @@ export function ToolPalette({
       })
     : [];
 
+  // Widgets learn about customize mode through the context so variant-swapping widgets can pin
+  // themselves to their default layout while being dragged around.
+  const effectiveWidgetState = useMemo<ToolbarWidgetState>(
+    () => ({ ...(widgetState ?? { onInvoke }), customizing: customize !== undefined }),
+    [customize, onInvoke, widgetState]
+  );
+
   return (
-    <ToolbarWidgetStateContext.Provider value={widgetState ?? { onInvoke }}>
+    <ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
       <aside
         className={[
           "tool-palette",

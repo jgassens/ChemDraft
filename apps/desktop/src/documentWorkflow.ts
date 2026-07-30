@@ -1771,6 +1771,43 @@ export function clearNativeArrowStyleDefaults(): void {
   nativeArrowStyleDefaults.clear();
 }
 
+/** The arrow-family tool ids as a stable list, for exhaustive tests and UI enumerations. */
+export const nativeArrowStyleToolIdList: readonly NativeArtToolId[] = [...nativeArrowStyleToolIds];
+
+/** The arrow-family tool id a graphic was drawn with, or undefined for non-arrow graphics. The one
+ *  membership check for "is this an arrow" — the style-default capture and the selection classifier
+ *  both key off it. */
+export function nativeArrowToolIdForGraphic(object: DocumentObject): NativeArtToolId | undefined {
+  if (object.type !== "graphic") {
+    return undefined;
+  }
+  const toolId = object.data.artToolId as NativeArtToolId | undefined;
+  return toolId && nativeArrowStyleToolIds.has(toolId) ? toolId : undefined;
+}
+
+/** True when the graphic was drawn with one of the twelve arrow tools. */
+export function isNativeArrowGraphic(object: DocumentObject): boolean {
+  return nativeArrowToolIdForGraphic(object) !== undefined;
+}
+
+/** Object types present in the current selection, for routing a command (or a selection-aware
+ *  widget) to a surface that can edit them. */
+export function selectedDocumentObjectTypes(document: ChemDraftDocument): ReadonlySet<DocumentObject["type"]> {
+  const selectedIds = new Set(document.selection.objectIds);
+  const types = new Set<DocumentObject["type"]>();
+  if (selectedIds.size === 0) {
+    return types;
+  }
+  for (const page of document.pages) {
+    for (const object of page.objects) {
+      if (selectedIds.has(object.id)) {
+        types.add(object.type);
+      }
+    }
+  }
+  return types;
+}
+
 /**
  * Read a right-clicked arrow's reusable style, or undefined when the object isn't an arrow. Captures
  * only what the object actually expresses: marker sizes it has, dual-shaft heft and half-lengths, an
@@ -1782,8 +1819,8 @@ export function nativeArrowStyleDefaultFromGraphic(
   if (object.type !== "graphic") {
     return undefined;
   }
-  const toolId = object.data.artToolId as NativeArtToolId | undefined;
-  if (!toolId || !nativeArrowStyleToolIds.has(toolId)) {
+  const toolId = nativeArrowToolIdForGraphic(object);
+  if (!toolId) {
     return undefined;
   }
   const tool = nativeArtToolDefinitions.find((definition) => definition.id === toolId);

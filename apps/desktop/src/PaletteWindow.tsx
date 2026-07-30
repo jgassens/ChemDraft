@@ -11,6 +11,7 @@ import {
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
@@ -148,6 +149,7 @@ export function PaletteWindow({
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
+  const [currentSelection, setCurrentSelection] = useState<ToolbarSelectionModel | undefined>();
   // A window opened for a plugin/user toolset starts with the core-only registry (its definition
   // arrives over the definitions IPC channel a beat later). While it's unknown, render an empty
   // placeholder carrying THIS window's real id — never fall back to core.main, which would render the
@@ -475,6 +477,13 @@ export function PaletteWindow({
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setCurrentMoleculeInspector(payload.currentMoleculeInspector);
+      // Version skew degrades to the pre-variant behavior: an unknown kind reads as no selection
+      // model at all rather than freezing the palette on a rejected payload.
+      setCurrentSelection(
+        payload.currentSelection && TOOLBAR_SELECTION_KINDS.includes(payload.currentSelection.kind)
+          ? payload.currentSelection
+          : undefined
+      );
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -919,6 +928,7 @@ export function PaletteWindow({
           currentArtStyle,
           currentArtStyleTarget,
           currentMoleculeInspector,
+          currentSelection,
           currentTextStyle,
           currentTextScript,
           onColorPickerOpenChange: setColorPickerOpen,

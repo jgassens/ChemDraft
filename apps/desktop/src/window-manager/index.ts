@@ -3,6 +3,7 @@ import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
+import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
@@ -61,6 +62,8 @@ export interface ToolsetTextStylePayload {
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+  /** Selection classification for variant-swapping widgets; absent in older payloads. */
+  currentSelection?: ToolbarSelectionModel;
 }
 
 export interface ToolsetCommandSpecsPayload {
@@ -126,13 +129,15 @@ export function createToolsetTextStylePayload(
   currentTextScript: TextSpan["script"] = "normal",
   currentArtStyle?: ToolsetArtStylePayload,
   currentArtStyleTarget: ToolsetArtPaintTarget = "fill",
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload,
+  currentSelection?: ToolbarSelectionModel
 ): ToolsetTextStylePayload {
   return {
     currentTextStyle,
     currentTextScript,
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
-    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {})
+    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {}),
+    ...(currentSelection ? { currentSelection } : {})
   };
 }
 
