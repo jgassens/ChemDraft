@@ -182,8 +182,10 @@ export const propertyCorpus: readonly PropertyCorpusEntry[] = [
   },
   {
     id: "imidazolium",
-    name: "1-Methylimidazolium",
-    smiles: "C[n+]1ccnc1",
+    name: "1-Methyl-1H-imidazol-3-ium",
+    // Written with the explicit [nH+] rather than C[n+]1ccnc1, which RDKit rejects outright: the
+    // neutral ring nitrogen has no hydrogen to kekulise around. Caught by the corpus parse check.
+    smiles: "Cn1cc[nH+]c1",
     tags: ["charged-heterocycle", "aromaticity"],
     rationale:
       "Aromatic nitrogen carrying a formal charge. Aromaticity model and charge handling interact here; " +

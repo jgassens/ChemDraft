@@ -143,7 +143,7 @@ import {
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
-import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
+import { createRdkitAdapter } from "@chemdraft/rdkit-adapter";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
@@ -1573,7 +1573,7 @@ export function MainWindow({
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
-  const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
+  const chemistryAdapter = useMemo(() => createRdkitAdapter(), []);
   const [documentHistory, setDocumentHistory] = useState(() =>
     createDocumentHistory(initialDocument ?? createPhase4Document())
   );
@@ -6697,8 +6697,17 @@ export function MainWindow({
             return;
           }
 
+          // The chemistry adapter is the real RDKit engine now, so the WASM loader has to be
+          // registered before the first call. Dynamically imported for the same reason the SMILES
+          // paste path does it: `rdkitWasmLoader` inlines the 102 KB Emscripten glue, and neither it
+          // nor the 7.5 MB `.wasm` belongs in the static startup graph.
+          const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
+          registerRdkitWasmLoader();
+
+          // The real engine reads molfiles too, so the format is passed through rather than
+          // collapsed to "unknown" as it was under the SMILES-only placeholder.
           const analysis = await chemistryAdapter.analyzeStructure({
-            format: molecule.structureFormat === "smiles" ? "smiles" : "unknown",
+            format: molecule.structureFormat,
             value: molecule.structure
           });
           setLastAnalysis(analysis);

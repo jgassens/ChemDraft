@@ -164,6 +164,14 @@ describe("atom mapping", () => {
     // A derived atom with no source (an added hydrogen) is silently absent, not mapped to 0.
     expect(sourceAtomsFor(salt, [9])).toEqual([]);
   });
+
+  it("treats an empty ledger as the identity, not as a total loss of mapping", () => {
+    // The `source` interpretation carries no transformations, so derived index *is* source index.
+    // Returning the empty set here would silently drop every per-atom result on the one
+    // interpretation guaranteed to exist.
+    expect(sourceAtomsFor(interpretation(), [0, 3, 11])).toEqual([0, 3, 11]);
+    expect(sourceAtomsFor(interpretation(), [])).toEqual([]);
+  });
 });
 
 describe("identity-changing transformations", () => {

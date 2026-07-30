@@ -215,11 +215,18 @@ export function interpretationChangesIdentity(interpretation: MolecularInterpret
   return interpretation.transformations.some(changesChemicalIdentity);
 }
 
-/** Source atom indices for a result computed in this interpretation's atom space. */
+/**
+ * Source atom indices for a result computed in this interpretation's atom space.
+ *
+ * An empty ledger means the interpretation *is* the source — derived index and source index are the
+ * same number — so the identity is the answer, not the empty set. Getting this wrong would silently
+ * drop every per-atom result on the one interpretation that is guaranteed to exist.
+ */
 export function sourceAtomsFor(
   interpretation: MolecularInterpretation,
   derivedAtomIndices: readonly number[]
 ): number[] {
+  if (interpretation.transformations.length === 0) return [...derivedAtomIndices];
   const composed = composeTransformationChain(interpretation.transformations);
   const derivedToSource = new Map<number, number>();
   for (const [source, derived] of composed) derivedToSource.set(derived, source);

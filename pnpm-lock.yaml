@@ -310,6 +310,9 @@ importers:
 
   packages/rdkit-adapter:
     dependencies:
+      '@chemdraft/analysis-core':
+        specifier: workspace:*
+        version: link:../analysis-core
       '@chemdraft/chemistry-adapter':
         specifier: workspace:*
         version: link:../chemistry-adapter

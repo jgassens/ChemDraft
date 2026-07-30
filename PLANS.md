@@ -553,11 +553,28 @@ an Analyze item ships only when it computes something).
   conventions and a calibrated one cites its parameters; `metric: "unknown"` cannot smuggle a number
   back in; a run cannot reference an interpretation it does not carry; and a tautomer-sensitive method
   cannot run against an interpretation with no `tautomerPolicy`.
-- **Phase 2 — Real RDKit adapter.** Replace `rdkitAdapterStatus = "placeholder"` and delete the
-  ten-SMILES fixture table. Parse and sanitize once; emit the `source` interpretation; derive composition
-  from `get_json()`; masses from the isotope-aware composition; InChI/InChIKey; the 43 descriptors mapped
-  to named methods with contracts. Pinned engine-regression fixtures tagged with RDKit 2026.03.3, so a
-  vendor bump fails loudly.
+- **Phase 2 — Real RDKit adapter. ✅ landed.** `rdkitAdapterStatus` is `"real"`; the ten-SMILES fixture
+  table is gone. Parse and sanitize once; emit the `source` interpretation; derive composition from
+  `get_json()`; masses, InChI/InChIKey, canonical SMILES, and 37 named descriptors, each behind a
+  method contract. Engine-regression fixtures pinned to RDKit 2026.03.3 — exact values, so a vendor
+  bump is a visible failure. `createRdkitAdapter` replaces `createRdkitPlaceholderAdapter` at
+  `MainWindow.tsx`, which now passes molfile formats through instead of collapsing them to `"unknown"`
+  and registers the WASM loader before the first analysis.
+
+  **The decline rule, and why it is the phase's real deliverable.** RDKit answers every descriptor for
+  every structure it parses, and some of those answers come from an unparameterised element taking a
+  fallback: Crippen logP reads **−2.95 for sodium benzoate against +0.05 for the benzoate anion**, a
+  three-log-unit swing produced entirely by sodium. Nothing in the engine flags it. So each contract
+  declares `parameterizedElements`, and a structure carrying an element outside that set gets
+  `unsupported` plus a warning naming the element — never a number. Crippen logP/MR and Ertl TPSA carry
+  the organic set; every topological count is unparameterised and answers regardless, so ferrocene
+  still reports its rings and its composition while its logP declines.
+
+  Two findings from the phase worth keeping. The invariance harness caught RDKit's TPSA differing by
+  7.1e-15 between two spellings of aspirin — summation order over fragment contributions, now stated in
+  every real-valued descriptor's conventions rather than buried in a test tolerance. And the corpus
+  parse check caught `C[n+]1ccnc1`, which RDKit rejects outright: every assertion on that entry had
+  been passing vacuously.
 - **Phase 3 — Interpretation ledger in anger.** `largest-organic-fragment` and `neutralized`
   interpretations with real atom mappings and populated `Transformation` ledgers; per-analysis
   interpretation selection; the sodium-benzoate regression as a first-class test.

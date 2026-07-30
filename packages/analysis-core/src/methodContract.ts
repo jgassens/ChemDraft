@@ -49,6 +49,17 @@ export interface MethodContract {
   classification: Classification;
   supportedChemistry: string[];
   knownUnsupportedChemistry: string[];
+  /**
+   * Element symbols the method's parameters actually cover. Absent means the method is topological and
+   * has no element parameterization to fall outside of.
+   *
+   * This is the machine-readable half of `declinesWhen`, and it exists because the alternative is a
+   * decline rule buried in adapter code where nobody can audit it. The concrete case: RDKit reports
+   * Crippen logP −2.95 for sodium benzoate and +0.05 for the benzoate anion — a 3-log-unit swing
+   * produced entirely by sodium falling through to a fallback atom contribution. Listing the covered
+   * elements is what turns that into a decline.
+   */
+  parameterizedElements?: string[];
   /** The conditions under which the method returns `unsupported` or `not-applicable` rather than a number. */
   declinesWhen: string[];
   accuracyClaims: Uncertainty[];
@@ -96,6 +107,7 @@ export const MethodContractSchema = z
     classification: ClassificationSchema,
     supportedChemistry: z.array(z.string().min(1)).default([]),
     knownUnsupportedChemistry: z.array(z.string().min(1)).default([]),
+    parameterizedElements: z.array(z.string().min(1).max(3)).min(1).optional(),
     declinesWhen: z.array(z.string().min(1)).default([]),
     accuracyClaims: z.array(UncertaintySchema).default([]),
     validationCorpus: z
@@ -155,6 +167,22 @@ export const MethodContractSchema = z
       });
     }
   });
+
+/**
+ * Elements present in the structure that the method has no parameters for, in input order.
+ *
+ * Empty means the method is in-domain on element grounds — either every element is covered, or the
+ * method declares no element parameterization because it is purely topological. Callers turn a
+ * non-empty result into `AnalysisStatus.unsupported` plus a warning naming the elements.
+ */
+export function elementsOutsideParameterization(
+  contract: MethodContract,
+  presentElements: readonly string[]
+): string[] {
+  if (!contract.parameterizedElements) return [];
+  const covered = new Set(contract.parameterizedElements);
+  return [...new Set(presentElements)].filter((symbol) => !covered.has(symbol));
+}
 
 /** The cache-key half a method owns: id, version, and every parameter that changes the number. */
 export function methodKey(contract: MethodContract): string {

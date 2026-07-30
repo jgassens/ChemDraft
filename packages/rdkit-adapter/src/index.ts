@@ -1,274 +1,158 @@
 import type {
   ChemistryAdapter,
   ChemistryAdapterCapabilities,
+  ChemistryStructureFormat,
   ChemistryStructureInput,
   ChemistryWarning,
-  StructureAnalysisResult,
   StructureProperties,
   StructureValidationResult
 } from "@chemdraft/chemistry-adapter";
+import type { AnalysisResult, AnalysisRun } from "@chemdraft/analysis-core";
 
 // Real RDKit ETKDGv3 3D conformer engine (custom MinimalLib WASM — see vendor/BUILD.md).
-// Separate from the fixture-backed structure-analysis placeholder below.
 export * from "./conformer";
 
-export const rdkitAdapterStatus = "placeholder" as const;
+// Real RDKit structure analysis: composition, masses, identifiers, and named descriptors, each behind
+// a method contract (PLANS.md §9 Release 1). Replaces the fixture-backed placeholder that shipped ten
+// hardcoded SMILES with hand-entered masses — "a second implementation by another name" (§7).
+export * from "./analysis";
+export * from "./composition";
+export * from "./methods";
 
-const placeholderWarning: ChemistryWarning = {
-  code: "rdkit.placeholder",
-  message: "RDKit is not bundled; this adapter provides fixture-backed Phase 5 chemistry checks only.",
-  severity: "warning"
-};
+import { analyzeStructureDetailed, type AnalysisInputFormat, type DetailedAnalysis } from "./analysis";
+import { PINNED_RDKIT_VERSION } from "./methods";
 
-export const rdkitPlaceholderCapabilities: ChemistryAdapterCapabilities = {
-  implementationName: "RDKit placeholder",
-  implementationVersion: "0.0.0",
-  supportedFormats: ["smiles"],
+export const rdkitAdapterStatus = "real" as const;
+
+const SUPPORTED_FORMATS: readonly ChemistryStructureFormat[] = ["smiles", "molfile-v2000", "molfile-v3000"];
+
+export const rdkitAdapterCapabilities: ChemistryAdapterCapabilities = {
+  implementationName: "RDKit MinimalLib (WASM)",
+  implementationVersion: PINNED_RDKIT_VERSION,
+  supportedFormats: SUPPORTED_FORMATS,
   canValidateStructure: true,
   canCalculateFormula: true,
   canCalculateAverageMass: true,
   canCalculateExactMass: true,
   canCalculateTotalCharge: true,
   canReportStereochemistryWarnings: true,
-  warnings: [placeholderWarning]
+  warnings: []
 };
 
-interface FixtureAnalysis {
-  properties: StructureProperties;
-  warnings?: ChemistryWarning[];
+function isSupportedFormat(format: ChemistryStructureFormat): format is AnalysisInputFormat {
+  return (SUPPORTED_FORMATS as readonly string[]).includes(format);
 }
 
-const fixtureAnalyses = new Map<string, FixtureAnalysis>([
-  [
-    "C",
-    {
-      properties: {
-        formula: "CH4",
-        averageMass: 16.043,
-        exactMass: 16.0313,
-        totalCharge: 0,
-        atomCount: 1,
-        bondCount: 0,
-        stereochemistry: []
-      }
-    }
-  ],
-  [
-    "CCO",
-    {
-      properties: {
-        formula: "C2H6O",
-        averageMass: 46.069,
-        exactMass: 46.0419,
-        totalCharge: 0,
-        atomCount: 3,
-        bondCount: 2,
-        stereochemistry: []
-      }
-    }
-  ],
-  [
-    "C[C@H](O)C(=O)O",
-    {
-      properties: {
-        formula: "C3H6O3",
-        averageMass: 90.078,
-        exactMass: 90.0317,
-        totalCharge: 0,
-        atomCount: 6,
-        bondCount: 5,
-        stereochemistry: ["tetrahedral"]
-      },
-      warnings: [
-        {
-          code: "stereochemistry.placeholder",
-          message: "Stereochemistry was detected, but assignment requires a real chemistry engine.",
-          severity: "warning"
-        }
-      ]
-    }
-  ],
-  [
-    "c1ccccc1",
-    {
-      properties: {
-        formula: "C6H6",
-        averageMass: 78.114,
-        exactMass: 78.047,
-        totalCharge: 0,
-        atomCount: 6,
-        bondCount: 6,
-        stereochemistry: []
-      }
-    }
-  ],
-  [
-    "CC(=O)Oc1ccccc1C(=O)O",
-    {
-      properties: {
-        formula: "C9H8O4",
-        averageMass: 180.159,
-        exactMass: 180.0423,
-        totalCharge: 0,
-        atomCount: 13,
-        bondCount: 13,
-        stereochemistry: []
-      }
-    }
-  ],
-  [
-    "O=[N+]([O-])c1ccccc1",
-    {
-      properties: {
-        formula: "C6H5NO2",
-        averageMass: 123.111,
-        exactMass: 123.032,
-        totalCharge: 0,
-        atomCount: 9,
-        bondCount: 9,
-        stereochemistry: []
-      }
-    }
-  ],
-  [
-    "[NH4+]",
-    {
-      properties: {
-        formula: "H4N",
-        averageMass: 18.039,
-        exactMass: 18.0344,
-        totalCharge: 1,
-        atomCount: 1,
-        bondCount: 0,
-        stereochemistry: []
-      }
-    }
-  ],
-  [
-    "[Na+].[Cl-]",
-    {
-      properties: {
-        formula: "ClNa",
-        averageMass: 58.443,
-        exactMass: 57.9586,
-        totalCharge: 0,
-        atomCount: 2,
-        bondCount: 0,
-        stereochemistry: []
-      },
-      warnings: [
-        {
-          code: "structure.multi_fragment_placeholder",
-          message: "Disconnected salt pairs are fixture-backed only until a real chemistry engine is connected.",
-          severity: "warning"
-        }
-      ]
-    }
-  ],
-  [
-    "F/C=C/F",
-    {
-      properties: {
-        formula: "C2H2F2",
-        averageMass: 64.034,
-        exactMass: 64.0125,
-        totalCharge: 0,
-        atomCount: 4,
-        bondCount: 3,
-        stereochemistry: ["alkene-e-or-z"]
-      },
-      warnings: [
-        {
-          code: "stereochemistry.placeholder",
-          message: "Alkene stereochemistry was detected, but assignment requires a real chemistry engine.",
-          severity: "warning"
-        }
-      ]
-    }
-  ],
-  [
-    "F[C@H](Cl)Br",
-    {
-      properties: {
-        formula: "CHBrClF",
-        averageMass: 147.374,
-        exactMass: 145.8934,
-        totalCharge: 0,
-        atomCount: 4,
-        bondCount: 3,
-        stereochemistry: ["tetrahedral"]
-      },
-      warnings: [
-        {
-          code: "stereochemistry.placeholder",
-          message: "Stereochemistry was detected, but assignment requires a real chemistry engine.",
-          severity: "warning"
-        }
-      ]
-    }
-  ]
-]);
+function scalarValue(run: AnalysisRun, methodId: string): number | undefined {
+  const result = run.results.find((candidate) => candidate.id === methodId);
+  if (!result || result.kind !== "scalar" || result.value === null) return undefined;
+  return result.value;
+}
 
-export function createRdkitPlaceholderAdapter(): ChemistryAdapter {
+function compositionResult(run: AnalysisRun): Extract<AnalysisResult, { kind: "composition" }> | undefined {
+  const result = run.results.find((candidate) => candidate.kind === "composition");
+  return result?.kind === "composition" ? result : undefined;
+}
+
+/**
+ * Translate a run into the older `ChemistryAdapter` vocabulary.
+ *
+ * Deliberately lossy: `StructureProperties` has no room for per-method provenance, declines, or the
+ * interpretation a number was computed against, so the richer surface stays on `analyzeStructure`.
+ * Every decline still travels out as a warning rather than vanishing — a caller reading only
+ * `properties` must still be able to see that Crippen logP refused and why.
+ */
+function toStructureProperties(detailed: DetailedAnalysis): StructureProperties {
+  const composition = compositionResult(detailed.run);
+  const averageMass = scalarValue(detailed.run, "rdkit.average-mass");
+  const exactMass = scalarValue(detailed.run, "rdkit.monoisotopic-mass");
   return {
-    id: "rdkit-placeholder",
+    ...(composition?.formula ? { formula: composition.formula } : {}),
+    ...(averageMass !== undefined ? { averageMass } : {}),
+    ...(exactMass !== undefined ? { exactMass } : {}),
+    ...(composition?.formalCharge != null ? { totalCharge: composition.formalCharge } : {}),
+    ...(detailed.composition
+      ? { atomCount: detailed.composition.atomCount, bondCount: detailed.composition.bondCount }
+      : {}),
+    stereochemistry: detailed.stereochemistry
+  };
+}
+
+function toWarnings(run: AnalysisRun): ChemistryWarning[] {
+  return [
+    ...run.warnings.map((entry) => ({ code: entry.code, message: entry.message, severity: entry.severity })),
+    ...run.results.flatMap((result) =>
+      result.warnings.map((entry) => ({ code: entry.code, message: entry.message, severity: entry.severity }))
+    )
+  ];
+}
+
+function unsupportedFormatError(format: ChemistryStructureFormat): ChemistryWarning {
+  return {
+    code: "structure.unsupported_format",
+    message: `The RDKit adapter accepts ${SUPPORTED_FORMATS.join(", ")}; received "${format}".`,
+    severity: "error"
+  };
+}
+
+let runCounter = 0;
+
+/**
+ * The real chemistry adapter. Each call is one `AnalysisRun`.
+ *
+ * Callers that want provenance — which interpretation a number describes, which method produced it,
+ * why a method declined — should call `analyzeStructure` directly rather than through this narrower
+ * contract, which predates the run model.
+ */
+export function createRdkitAdapter(): ChemistryAdapter {
+  const analyze = async (input: ChemistryStructureInput): Promise<DetailedAnalysis | ChemistryWarning> => {
+    if (!isSupportedFormat(input.format)) return unsupportedFormatError(input.format);
+    runCounter += 1;
+    return analyzeStructureDetailed({
+      format: input.format,
+      value: input.value,
+      runId: `chemistry-adapter-${runCounter}`,
+      startedAt: new Date().toISOString()
+    });
+  };
+
+  return {
+    id: "rdkit-minimallib-wasm",
     getCapabilities() {
-      return rdkitPlaceholderCapabilities;
+      return rdkitAdapterCapabilities;
     },
-    async validateStructure(input) {
-      return validateFixture(input);
+    async validateStructure(input): Promise<StructureValidationResult> {
+      const outcome = await analyze(input);
+      if ("severity" in outcome) return { valid: false, errors: [outcome], warnings: [] };
+
+      const warnings = toWarnings(outcome.run);
+      const errors = warnings.filter((entry) => entry.severity === "error");
+      return {
+        valid: errors.length === 0,
+        errors,
+        warnings: warnings.filter((entry) => entry.severity !== "error")
+      };
     },
     async analyzeStructure(input) {
-      const validation = validateFixture(input);
-      const fixture = validation.valid ? fixtureAnalyses.get(normalizeInput(input.value)) : undefined;
-      const fixtureWarnings = fixture?.warnings ?? [];
-      const warnings = [...rdkitPlaceholderCapabilities.warnings, ...validation.warnings, ...fixtureWarnings];
+      const outcome = await analyze(input);
+      if ("severity" in outcome) {
+        return {
+          input,
+          validation: { valid: false, errors: [outcome], warnings: [] },
+          properties: { stereochemistry: [] },
+          warnings: [outcome]
+        };
+      }
 
+      const warnings = toWarnings(outcome.run);
+      const errors = warnings.filter((entry) => entry.severity === "error");
+      const nonErrors = warnings.filter((entry) => entry.severity !== "error");
       return {
         input,
-        validation: {
-          ...validation,
-          warnings: [...validation.warnings, ...fixtureWarnings]
-        },
-        properties: fixture?.properties ?? { stereochemistry: [] },
+        validation: { valid: errors.length === 0, errors, warnings: nonErrors },
+        properties: errors.length === 0 ? toStructureProperties(outcome) : { stereochemistry: [] },
         warnings
       };
     }
   };
-}
-
-function validateFixture(input: ChemistryStructureInput): StructureValidationResult {
-  if (input.format !== "smiles") {
-    const error = {
-      code: "structure.unsupported_format",
-      message: `RDKit placeholder only supports SMILES input, received "${input.format}".`,
-      severity: "error" as const
-    };
-    return { valid: false, errors: [error], warnings: [] };
-  }
-
-  const normalized = normalizeInput(input.value);
-  if (normalized.length === 0) {
-    const error = {
-      code: "structure.empty",
-      message: "Structure input is empty.",
-      severity: "error" as const
-    };
-    return { valid: false, errors: [error], warnings: [] };
-  }
-
-  if (!fixtureAnalyses.has(normalized)) {
-    const warning = {
-      code: "structure.placeholder_unsupported",
-      message: `SMILES "${normalized}" is outside the placeholder fixture set.`,
-      severity: "warning" as const
-    };
-    return { valid: false, errors: [], warnings: [warning] };
-  }
-
-  return { valid: true, errors: [], warnings: [] };
-}
-
-function normalizeInput(value: string): string {
-  return value.trim();
 }
