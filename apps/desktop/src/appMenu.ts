@@ -265,7 +265,13 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     {
       id: "analyze",
       label: "Analyze",
-      items: [command("chemistry.validateSelection", "Validate Selected Structure", { enabled: context.hasSelectedMolecule })]
+      items: [
+        command("analyze.molecularProperties", "Molecular Properties…", {
+          enabled: context.hasSelectedMolecule
+        }),
+        separator(),
+        command("chemistry.validateSelection", "Validate Selected Structure", { enabled: context.hasSelectedMolecule })
+      ]
     },
     {
       id: "plugins",

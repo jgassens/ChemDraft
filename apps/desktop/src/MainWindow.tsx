@@ -144,6 +144,9 @@ import {
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter";
+import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
+import { AnalysisPanel } from "./analysis/AnalysisPanel";
+import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
@@ -1574,6 +1577,50 @@ export function MainWindow({
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
   const chemistryAdapter = useMemo(() => createRdkitAdapter(), []);
+  /**
+   * Run the property suite for the selected structure through the analysis worker and show the report.
+   *
+   * Off the main thread on purpose (§5): the descriptor pass is a synchronous WASM call, and running
+   * it inline is what makes the canvas stutter. `slot: "selection"` means a second invocation while
+   * one is in flight supersedes it rather than racing it.
+   */
+  const runMolecularProperties = useCallback(
+    async (format: string, structure: string, interpretationOverride: string | undefined): Promise<void> => {
+      const client = analysisClient();
+      if (!client) {
+        setStatus("Analysis is unavailable in this runtime");
+        return;
+      }
+      setAnalysisBusy(true);
+      setStatus("Analyzing structure…");
+      try {
+        const run = await client.analyze(
+          "selection",
+          {
+            format,
+            value: structure,
+            ...(interpretationOverride ? { interpretationOverride } : {})
+          },
+          { immediate: true }
+        );
+        // A superseded run is not an answer; the newer invocation owns the panel.
+        if (run.status === "cancelled") return;
+        const report = buildAnalysisReport(run);
+        setAnalysisReport(report);
+        setAnalysisInterpretation(interpretationOverride);
+        setStatus(formatAnalysisRunStatus(run));
+      } finally {
+        setAnalysisBusy(false);
+      }
+    },
+    []
+  );
+
+  // The Analyze surface (PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
+  // it re-runs the same selection against a derived interpretation and replaces the report.
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | undefined>();
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
   const [documentHistory, setDocumentHistory] = useState(() =>
     createDocumentHistory(initialDocument ?? createPhase4Document())
   );
@@ -6689,6 +6736,15 @@ export function MainWindow({
         }
         if (action.id === "export.open") {
           openExportDialog();
+        }
+        if (action.id === "analyze.molecularProperties") {
+          const molecule = getSelectedMolecule(document);
+          if (!molecule) {
+            setStatus("No selected structure");
+            return;
+          }
+          await runMolecularProperties(molecule.structureFormat, molecule.structure, analysisInterpretation);
+          return;
         }
         if (action.id === "chemistry.validateSelection") {
           const molecule = getSelectedMolecule(document);
@@ -14165,6 +14221,23 @@ export function MainWindow({
           onUpdatePlugin={pluginRuntime.updateInstalledPlugin}
           onClose={() => setPluginManagerOpen(false)}
           onPluginsChanged={() => setStatus("Plugin settings updated")}
+        />
+      ) : null}
+
+      {analysisReport ? (
+        <AnalysisPanel
+          report={analysisReport}
+          busy={analysisBusy}
+          onChangeInterpretation={(interpretationId) => {
+            const molecule = getSelectedMolecule(document);
+            if (!molecule) return;
+            void runMolecularProperties(molecule.structureFormat, molecule.structure, interpretationId);
+          }}
+          onCopy={(text) => {
+            void navigator.clipboard?.writeText(text);
+            setStatus("Provenance report copied");
+          }}
+          onClose={() => setAnalysisReport(undefined)}
         />
       ) : null}
 
@@ -24583,6 +24656,24 @@ function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   return buffer;
+}
+
+/**
+ * The status line for a completed run.
+ *
+ * Counts what declined rather than only what succeeded: "46 properties" beside a silent decline reads
+ * as a complete answer, which is the impression PLANS.md §10 spends a paragraph warning against.
+ */
+function formatAnalysisRunStatus(run: AnalysisRun): string {
+  const computed = run.results.filter((result) => result.status === "ok").length;
+  const declined = run.results.filter(
+    (result) => result.status === "unsupported" || result.status === "not-applicable"
+  ).length;
+  if (computed === 0) {
+    return run.warnings[0]?.message ?? "Analysis produced no results";
+  }
+  const declinedText = declined > 0 ? `, ${declined} declined` : "";
+  return `Analyzed: ${computed} propert${computed === 1 ? "y" : "ies"}${declinedText}`;
 }
 
 function formatAnalysisStatus(analysis: StructureAnalysisResult): string {

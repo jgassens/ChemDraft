@@ -70,6 +70,13 @@ export function createQuickActions(
     { id: "view.toggleToolPalette", title: "Toggle Tool Palette", icon: "palette", source: "core" },
     { id: "export.open", title: "Export...", icon: "export", shortcut: "Shift+Cmd+E", source: "core" },
     {
+      id: "analyze.molecularProperties",
+      title: "Molecular Properties…",
+      icon: "atom",
+      source: "core",
+      enabled: selectedMolecule !== undefined
+    },
+    {
       id: "chemistry.validateSelection",
       title: "Validate Selected Structure",
       icon: "atom",

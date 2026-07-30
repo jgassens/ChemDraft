@@ -10,6 +10,7 @@
  *   §2 `classification` — three display axes, three branchable flags
  *   §3 `results`        — the discriminated union, the run, schema versioning
  *   §5 `scheduler`, `session` — debounce, supersession, cancellation, and the session cache
+ *   §9 `report`        — the copyable, exportable provenance report
  *   §10 `methodContract`, `propertyCorpus`, `invariance` — what keeps the UI and the science aligned
  */
 export * from "./classification";
@@ -18,6 +19,7 @@ export * from "./invariance";
 export * from "./methodContract";
 export * from "./propertyCorpus";
 export * from "./provenance";
+export * from "./report";
 export * from "./results";
 export * from "./scheduler";
 export * from "./session";

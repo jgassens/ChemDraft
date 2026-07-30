@@ -720,13 +720,7 @@ function computeResult(
 
     default: {
       const binding = DESCRIPTOR_BINDINGS.get(context.contract.id);
-      const descriptorKey =
-        binding?.descriptorKey ??
-        (context.contract.id === "rdkit.average-mass"
-          ? "amw"
-          : context.contract.id === "rdkit.monoisotopic-mass"
-            ? "exactmw"
-            : undefined);
+      const descriptorKey = binding?.descriptorKey;
 
       if (!descriptorKey) {
         return {

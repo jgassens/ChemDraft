@@ -103,6 +103,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
     PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
+    "analyze.molecularProperties",
     "chemistry.validateSelection",
     "structure.openInteractive3d",
     "plugins.manage",
@@ -2055,6 +2056,13 @@ fn build_analyze_submenu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Submenu<R>> {
+    let properties = MenuItem::with_id(
+        app,
+        "analyze.molecularProperties",
+        "Molecular Properties\u{2026}",
+        true,
+        None::<&str>,
+    )?;
     let validate = MenuItem::with_id(
         app,
         "chemistry.validateSelection",
@@ -2062,6 +2070,8 @@ fn build_analyze_submenu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    // Separates the core Analyze commands from the plugin-contributed items below them.
+    let core_separator = PredefinedMenuItem::separator(app)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let plugin_menu_items = plugin_items
         .iter()
@@ -2076,7 +2086,8 @@ fn build_analyze_submenu<R: Runtime>(
         })
         .collect::<tauri::Result<Vec<_>>>()?;
 
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![&validate];
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+        vec![&properties, &core_separator, &validate];
     if !plugin_menu_items.is_empty() {
         items.push(&separator);
         for item in &plugin_menu_items {

@@ -533,11 +533,19 @@ export interface DescriptorBinding {
 }
 
 export function descriptorBindings(): DescriptorBinding[] {
-  return DESCRIPTORS.map((spec) => ({
-    methodId: spec.id,
-    descriptorKey: spec.descriptorKey,
-    ...(spec.decimalPlaces !== undefined ? { decimalPlaces: spec.decimalPlaces } : {})
-  }));
+  return [
+    // The two masses read `get_descriptors()` like everything else; they sit outside the DESCRIPTORS
+    // table only because their contracts carry mass-specific conventions. Their decimal places are the
+    // precision the values are conventionally quoted to — reporting RDKit's full float
+    // (144.01872368000002) would claim significance the engine's own atomic masses do not have.
+    { methodId: "rdkit.average-mass", descriptorKey: "amw", decimalPlaces: 3 },
+    { methodId: "rdkit.monoisotopic-mass", descriptorKey: "exactmw", decimalPlaces: 5 },
+    ...DESCRIPTORS.map((spec) => ({
+      methodId: spec.id,
+      descriptorKey: spec.descriptorKey,
+      ...(spec.decimalPlaces !== undefined ? { decimalPlaces: spec.decimalPlaces } : {})
+    }))
+  ];
 }
 
 /**

@@ -628,9 +628,32 @@ an Analyze item ships only when it computes something).
   Caught only by running it: `@chemdraft/analysis-core` was missing from the desktop app's
   dependencies. `tsc` resolved it through `tsconfig.base.json` paths and vitest through its alias
   table, so both passed while Vite could not resolve the import at all.
-- **Phase 5 — Analyze surface.** Analyze menu and panel wiring, TS model plus the `lib.rs` native mirror
-  (`build_analyze_submenu`, `MENU_COMMAND_IDS`) kept in step with the existing drift check; copyable and
-  exportable provenance report showing the active interpretation and its "— change" affordance.
+- **Phase 5 — Analyze surface. ✅ landed.** Analyze ▸ **Molecular Properties…** (`analyze.molecularProperties`)
+  runs the suite through the Phase 4 worker and opens a panel. The command exists in the TS model, in
+  `commands.ts`, and in the `lib.rs` native mirror (`MENU_COMMAND_IDS`, `build_analyze_submenu`); the
+  existing drift check parses the Rust list and fails if the two disagree.
+
+  **`buildAnalysisReport` is the deliverable underneath it.** §9 asks for "a copyable/exportable
+  provenance report"; it lives in `analysis-core`, is engine- and UI-neutral, and renders to plain text
+  and Markdown, so what lands on the clipboard is the artifact the tests pin rather than whatever the
+  panel happened to draw. Sections group by `classification.claim` — the display side of §2's bargain,
+  and the only place in the codebase a claim class decides anything.
+
+  **Declined methods get their own "Not computed" section.** A report that omits what it could not
+  compute makes "TPSA unavailable" indistinguishable from "TPSA not asked for", and §10 is blunt about
+  which of those is dangerous. The status line counts both: *"Analyzed: 46 properties, 3 declined"*.
+
+  **The panel is core-owned chrome around the shared `PluginReportRenderer`.** AGENTS.md §8a's
+  one-renderer rule is about the renderer, not about pretending core analysis is a plugin — the command
+  carries no `pluginId` and never enters the plugin runtime. The header carries §1's disclosure line,
+  *"Computed on: largest organic fragment · Na removed — identity changed"*, with the ledger beneath it
+  and a select that is the "— change": choosing another interpretation re-runs the same selection and
+  replaces the report.
+
+  Two display defects the live panel exposed and this phase fixed: masses rendered at full float
+  precision (`144.01872368000002 Da`), now bound to the precision they are conventionally quoted to;
+  and every row repeated the interpretation the header already stated, so the suffix is dropped when
+  the whole report is about one interpretation and kept when a derived row sits beside a declined one.
 - **Phase 6 — MinimalLib patch #6.** Expose `includeSandP` on `get_descriptors`; add
   `vendor/patches/0006-*`, update `vendor/BUILD.md`, rebuild the artifact, and record the new patch count
   in the dependency inventory.
