@@ -675,10 +675,26 @@ an Analyze item ships only when it computes something).
   with "not selectable — see BUILD.md" today, version 2.0.0 with the S-included convention once a
   rebuilt artifact really honours it. Because the version is part of `methodKey`, the rebuild also
   invalidates every cached TPSA rather than serving old numbers under the new convention.
-- **Phase 7 — Release 1 closeout.** Property corpus green across salts, zwitterions, radicals, isotope
-  labels, S/P, boron/silicon, charged heterocycles, tautomers, organometallics, oversize, and unsupported
-  atom types — with declines where declining is correct. Method contracts complete for every shipped
-  capability. Docs and build stamps updated.
+- **Phase 7 — Release 1 closeout. ✅ landed.** The corpus is green across every adversarial category it
+  declares, method contracts are complete for every shipped capability, and AGENTS.md carries the rules
+  (§6.17 `analysis-core`, §8b the property-suite scientific-claim rules). The build stamp is generated
+  from git, so there is nothing to hand-edit.
+
+  **Three gaps the closeout found, none of which a feature test would have.** `oversize` and
+  `stereochemistry` were declared corpus categories with no entries — a coverage gap that reads exactly
+  like coverage — so the tag list is now a value and a test asserts every category has an entry. The
+  acetylacetone entry was filed as `-enol` while carrying the keto SMILES; adding the real pair made the
+  mislabelling visible, and the pair now demonstrates tautomer sensitivity (same formula, same
+  heavy-atom count, different logP and HBD) rather than asserting it. And `closeout.real.test.ts` locks
+  what no single feature test covers: every contract produces a result somewhere, every result has a
+  contract, every corpus run is schema-valid, no result can claim to be a measurement.
+
+  **The copyleft scan found one thing worth recording.** No GPL or AGPL in either graph, and the Rust
+  graph is permissive-only — but `rollup-plugin-dts` is LGPL-3.0-only. It is a root devDependency used
+  only by `scripts/build-sdk.mjs`, so it is not linked, bundled, or redistributed; "no copyleft" would
+  have been an overstatement, so the inventory says so. Two packages whose licence pnpm could not parse
+  (`eve-raphael` "Unknown", `font-face-observer` "BSD") were resolved from their own LICENSE files to
+  Apache-2.0 and BSD-2-Clause.
 - **Phase 8 — Release 2, mass tooling.** IsoSpec through the existing Emscripten lane; isotope envelopes
   with truncation policy in provenance; m/z and adduct tooling; fragment formulas and exact-mass
   bookkeeping; retire the M/M+1/M+2 approximation in the mass-fragment demo. No intensity or MS/MS
@@ -709,22 +725,31 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 Launch through `./run-app` or `./run-app --dev` and confirm the worktree label in the window title and
 build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 
-## Definition of done (Release 1)
+## Definition of done (Release 1) — verified 2026-07-30
 
-- No `rdkitAdapterStatus = "placeholder"` and no fixture-backed analysis path outside tests.
-- Every shipped number carries a method contract naming its implementation, version, interpretation
-  policy, units, convention, and declining conditions.
-- The active interpretation is visible and changeable for every analysis; per-atom results map back to
-  source atom indices.
-- Sodium benzoate reports sodium benzoate's formula, mass, and charge — and says so explicitly when a
-  predictor asked for the neutralized fragment instead.
-- Out-of-domain structures decline (`unsupported` / `not-applicable`) rather than returning a number.
-- Representation-invariance property tests pass over SMILES permutations, atom renumberings, Kekulé vs
-  aromatic forms, and hydrogen styles.
-- Engine-regression fixtures are pinned to RDKit 2026.03.3 and fail on a vendor bump.
-- The dependency inventory lists every chemistry engine, vendored binary, patch count, and bundled
-  dataset.
-- `pnpm lint`, `pnpm test`, `pnpm build`, the plugin boundary test, and the Rust checks are green.
+- ✅ No `rdkitAdapterStatus = "placeholder"` and no fixture-backed analysis path outside tests.
+- ✅ Every shipped number carries a method contract naming its implementation, version, interpretation
+  policy, units, convention, and declining conditions — locked by `closeout.real.test.ts`, which also
+  fails on a contract that never produces a result or a result with no contract.
+- ✅ The active interpretation is visible and changeable for every analysis; per-atom results map back
+  to source atom indices.
+- ✅ Sodium benzoate reports sodium benzoate's formula, mass, and charge — and says so explicitly when
+  a predictor asked for the organic fragment instead, keeping both results in the run.
+- ✅ Out-of-domain structures decline (`unsupported` / `not-applicable`) rather than returning a number.
+- ✅ Representation-invariance property tests pass over SMILES permutations, atom renumberings, Kekulé
+  vs aromatic forms, and hydrogen styles — integer counts exactly, real values to 1e-9 with the
+  summation-order sensitivity stated in each contract.
+- ✅ Engine-regression fixtures are pinned to RDKit 2026.03.3 and fail on a vendor bump.
+- ✅ The dependency inventory lists every chemistry engine, vendored binary, patch count, and bundled
+  dataset, plus the closeout copyleft scan.
+- ✅ `pnpm lint`, `pnpm test` (2139), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
+  `cargo test` (47) are green.
+
+**Not done, and deliberately so.** The MinimalLib artifact is not rebuilt, so vendor patches `0003`
+(`useRandomCoords`) and `0006` (`includeSandP`) are authored and pinned but not in the shipped binary —
+the runtime detects that by value and reports the convention it actually used. And **releases stay
+blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline, and the
+plugin-distribution rules are the project owner's calls, not engineering's.
 
 ## Open items owned by the project owner
 

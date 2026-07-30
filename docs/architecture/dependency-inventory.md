@@ -56,3 +56,21 @@ decisions remain the project owner's (PLANS.md §4).
 | `avogadrolibs` (Avogadro Core + Calc) | The interactive-3D sidecar's UFF optimizer. Built from source into `avogadro3d-sidecar`, not linked into the app binary. | BSD-3-Clause | Optional native sidecar dependency | Pinned to `OpenChemistry/avogadrolibs` commit `416651ddaef33a4e20392392e7c0b505d446491b`. Built with `CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL=OFF`, `CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS=OFF`, and `CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT=OFF`; `pnpm audit:engine3d-sidecar` fails the build if those guards or the pinned commit change. Only `avogadro3d-sidecar-aarch64-apple-darwin` is a real binary (1.1 MB); the Intel-macOS, Linux, and Windows `externalBin` entries are 113–141-byte placeholders (`apps/desktop/src-tauri/binaries/README.md`). |
 | Eigen 3.4.0 | Header-only linear algebra required by avogadrolibs. Build-time only. | MPL-2.0 (with legacy LGPL-licensed modules that this build must be confirmed not to use) | Optional native sidecar build dependency | Cloned at `--branch 3.4.0` from `https://gitlab.com/libeigen/eigen` into `native/avogadro3d-sidecar/_deps/eigen`. Header-only: no separate runtime artifact ships, but the MPL-2.0 notice obligation travels with the sidecar binary. |
 | nmrshiftdb2-derived reference database | Statistics behind the shipped ¹H/¹³C NMR predictor, distributed with the standalone NMR plugin rather than the app. | nmrshiftdb2 Database License (ODbL-derived) — **share-alike and attribution obligations travel with any redistribution** | First-party plugin data, not core | Not in this repository's tree; lives with `org.chemdraft.nmr.predictor`. The plugin's original code is MIT (finalized 2026-07-16); the database is **not** covered by that MIT grant and must never be described as MIT (AGENTS.md §8a). The open interpretation question — whether an MIT plugin running only inside an unlicensed host satisfies the license's functional-end-user-software clause — is tracked in PLANS.md §4 and is the highest-priority distribution-track item. |
+
+## Copyleft scan (Release 1 closeout, 2026-07-30)
+
+`pnpm licenses list` over the JS graph and `cargo tree --format "{l}"` over the Rust graph, run as the
+PLANS.md §10 closeout check ("confirm no GPL/AGPL package enters the core graph").
+
+**No GPL or AGPL anywhere in either graph.** The Rust graph is permissive-only. Three JS entries needed
+resolving by hand rather than accepting the tool's answer:
+
+| Package | Reported | Resolved | Disposition |
+| --- | --- | --- | --- |
+| `rollup-plugin-dts` 6.4.1 | `LGPL-3.0-only` | as reported | The only copyleft in the tree. A **root devDependency**, used solely by `scripts/build-sdk.mjs` to bundle plugin-SDK `.d.ts` files. Build-time tool: it is not linked, not bundled, and not redistributed, and its output is type declarations rather than a derivative of the plugin. Recorded because "no copyleft" would otherwise be an overstatement. Revisit if the SDK build ever ships the tool itself. |
+| `eve-raphael` 0.5.0 | `Unknown` | **Apache-2.0** (from the package's own `LICENSE`) | Transitive of `raphael`, itself present only for the Ketcher host's browser-time dynamic require. "Unknown" is pnpm reporting a missing `license` field in `package.json`, not an absent licence. |
+| `font-face-observer` 1.0.0 | `BSD` | **BSD-2-Clause** (two condition clauses, no non-endorsement clause) | Transitive of `ketcher-react`. The bare `"BSD"` string predates SPDX identifiers. |
+
+Everything else resolves to MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD, Zlib, Unlicense, CC0-1.0,
+BlueOak-1.0.0, MPL-2.0 (`@jaames/iro` and `@irojs/iro-core`, already recorded above), or a permissive
+`OR` composite.

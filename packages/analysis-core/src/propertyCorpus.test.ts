@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CORPUS_TAGS,
   corpusEntriesTagged,
   corpusEntry,
   methodsExpectedToDecline,
@@ -23,24 +24,28 @@ describe("property corpus", () => {
     }
   });
 
-  it("covers every adversarial category PLANS.md §10 names", () => {
-    const required = [
-      "salt",
-      "disconnected",
-      "zwitterion",
-      "radical",
-      "isotope-label",
-      "sulfur-phosphorus",
-      "boron",
-      "silicon",
-      "charged-heterocycle",
-      "tautomer",
-      "organometallic",
-      "unsupported-atom"
-    ] as const;
-
-    for (const tag of required) {
+  it("covers every adversarial category it declares", () => {
+    // Checked against CORPUS_TAGS rather than a hand-maintained list, because a hand-maintained list
+    // is how `oversize` and `stereochemistry` sat here declared and unused — a coverage gap that
+    // reads exactly like coverage.
+    for (const tag of CORPUS_TAGS) {
       expect(corpusEntriesTagged(tag).length, `no corpus entry tagged "${tag}"`).toBeGreaterThan(0);
+    }
+  });
+
+  it("pairs the tautomers, so tautomer sensitivity can be demonstrated rather than asserted", () => {
+    const tautomers = corpusEntriesTagged("tautomer");
+    expect(tautomers.length).toBeGreaterThanOrEqual(2);
+    // Same formula, different structures: that is what makes the pair a test rather than two entries.
+    expect(new Set(tautomers.map((entry) => entry.expectedSourceFormula)).size).toBe(1);
+    expect(new Set(tautomers.map((entry) => entry.smiles)).size).toBe(tautomers.length);
+  });
+
+  it("carries a structure large enough to exercise the size path", () => {
+    const oversize = corpusEntriesTagged("oversize");
+    expect(oversize.length).toBeGreaterThan(0);
+    for (const entry of oversize) {
+      expect(entry.smiles.length, `${entry.id} is not actually large`).toBeGreaterThan(200);
     }
   });
 

@@ -456,6 +456,28 @@ Not allowed:
 - Direct renderer ownership
 - Dependency-specific black-box state
 
+### 6.17 `analysis-core`
+
+Pure contracts for the property & prediction suite. No RDKit, no OpenChemLib, no worker, no DOM — the
+adapters produce these types and the worker, panel, and provenance report consume them.
+
+Allowed:
+
+- The interpretation ledger (`MolecularInterpretation`, `Transformation`, the atom-mapping algebra)
+- Classification, units, uncertainty, applicability, citations, dataset references, warning codes
+- The `AnalysisResult` discriminated union, `AnalysisRun`, and their `.strict()` Zod schemas
+- The method contract and its registry
+- Scheduling policy (debounce, supersession, session cache) over an injected transport
+- The provenance report model and its text/Markdown renderings
+- The property corpus and the representation-invariance harness
+
+Not allowed:
+
+- Importing a chemistry engine, or any code that loads one
+- Deriving chemistry: valence, implicit hydrogens, aromaticity, and tautomers are the engine's calls
+- Reading `classification.derivation` or `classification.claim` to decide behaviour — those two axes
+  are for display and grouping; behaviour branches on `classification.flags` (see §8b)
+
 ## 7. Plugin API rules
 
 Plugins must declare a manifest.
@@ -638,6 +660,43 @@ the nmrshiftdb2 Database License (ODbL-derived) with share-alike and attribution
 travel with any redistribution, including a packaged plugin zip. Never describe a packaged plugin as
 "MIT" without that carve-out. The root repository `LICENSE` remains unfinalized (`UNLICENSED` in
 package.json) — the project owner's call; do not change it.
+
+## 8b. Property & prediction suite rules (branch `chemdraft-analyzers`)
+
+**One parse, many named interpretations.** Parse and sanitise once through RDKit, keep the source
+representation, and derive explicitly named interpretations from it. Composition, charge, mass, and
+isotope specification always describe what the user drew. A method that wants a desalted or neutralised
+molecule gets a *derived* interpretation with a populated `Transformation` ledger — never a silent
+substitution, and never in place of the source result. Sodium benzoate must not become benzoic acid
+because a predictor prefers neutrals.
+
+**The active interpretation is visible and changeable.** Every analysis surface shows which
+interpretation its numbers describe and offers a way to change it. Per-atom results map back through
+the ledger to the atoms that were drawn; an interpretation that reindexes without updating its atom
+mapping silently breaks every per-atom feature.
+
+**Classification: enums display, flags decide.** `derivation` and `claim` group and label.
+`ClassificationFlags` is what code branches on. Do not add a fourth axis.
+
+**Declining is a feature.** A method with an element parameterisation must decline (`unsupported`) for
+elements outside it rather than report a fallback contribution: RDKit answers Crippen logP −2.95 for
+sodium benzoate against +0.05 for the benzoate anion, and nothing in the engine flags the difference.
+Runtime failures map onto `AnalysisStatus` and `applicability`, never onto prose. A report must show
+what it could not compute — "unavailable" and "not asked for" must never look the same.
+
+**Every number carries a method contract.** Public name, exact implementation and version, default
+interpretation, units, the conventions it chose, supported and unsupported chemistry, declining
+conditions, and version-increment triggers. Nearly every descriptor here is convention-dependent —
+ring counts go through SSSR, masses through the standard atomic weights in force — and the contract is
+where that is stated. Where a contract's value depends on the loaded artifact rather than the source
+tree, detect the capability **by value**: on the committed MinimalLib build, `get_descriptors` silently
+ignores an unsupported details argument instead of rejecting it, so an arity check would report a
+capability that is not there and label an old number with a new convention.
+
+**Never build a second molecular-interpretation engine.** Formula, charge, and composition come from
+the sanitised RDKit molecule via `get_json()`; masses come from RDKit's own `amw`/`exactmw`. Reading
+and selecting over the engine's own atom and bond lists is bookkeeping and is fine. Re-deciding
+valence, hydrogen counts, or aromaticity is not.
 
 ## 9. Command registry rules
 

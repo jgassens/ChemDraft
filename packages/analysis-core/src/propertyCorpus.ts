@@ -15,23 +15,33 @@
  * returning `ok` is a test failure, not a nice-to-have.
  */
 
-export type CorpusTag =
-  | "salt"
-  | "disconnected"
-  | "zwitterion"
-  | "radical"
-  | "isotope-label"
-  | "sulfur-phosphorus"
-  | "boron"
-  | "silicon"
-  | "charged-heterocycle"
-  | "tautomer"
-  | "organometallic"
-  | "oversize"
-  | "unsupported-atom"
-  | "stereochemistry"
-  | "aromaticity"
-  | "baseline";
+/**
+ * The adversarial categories PLANS.md §10 names, as a value rather than a type alone.
+ *
+ * A value is what lets `propertyCorpus.test.ts` assert that every declared category has an entry —
+ * the check that caught `oversize` and `stereochemistry` sitting in this list with nothing tagged
+ * them, which is a coverage gap that reads exactly like coverage.
+ */
+export const CORPUS_TAGS = [
+  "salt",
+  "disconnected",
+  "zwitterion",
+  "radical",
+  "isotope-label",
+  "sulfur-phosphorus",
+  "boron",
+  "silicon",
+  "charged-heterocycle",
+  "tautomer",
+  "organometallic",
+  "oversize",
+  "unsupported-atom",
+  "stereochemistry",
+  "aromaticity",
+  "baseline"
+] as const;
+
+export type CorpusTag = (typeof CORPUS_TAGS)[number];
 
 export interface PropertyCorpusEntry {
   id: string;
@@ -170,14 +180,53 @@ export const propertyCorpus: readonly PropertyCorpusEntry[] = [
     expectedComponentCount: 3
   },
   {
-    id: "acetylacetone-enol",
-    name: "Acetylacetone (enol tautomer)",
+    id: "acetylacetone-keto",
+    name: "Acetylacetone (keto tautomer)",
+    // 2,4-pentanedione. This entry was originally filed as "-enol" while carrying the keto SMILES;
+    // the pair below is what made the mislabelling visible.
     smiles: "CC(=O)CC(C)=O",
     tags: ["tautomer"],
     rationale:
-      "Paired with its enol form, this is the tautomer-policy test: any tautomer-sensitive method must " +
-      "refuse to run against an interpretation that declares no `tautomerPolicy`.",
+      "Half of the tautomer-policy test: any tautomer-sensitive method must refuse to run against an " +
+      "interpretation that declares no `tautomerPolicy`, because which of these two it was handed " +
+      "changes the answer.",
     expectedSourceFormula: "C5H8O2",
+    expectedComponentCount: 1
+  },
+  {
+    id: "acetylacetone-enol",
+    name: "Acetylacetone (enol tautomer)",
+    smiles: "CC(O)=CC(C)=O",
+    tags: ["tautomer"],
+    rationale:
+      "The other half of the pair. Same formula and same heavy-atom count as the keto form, different " +
+      "hydrogen positions — so a method whose answer differs between the two is tautomer-sensitive by " +
+      "demonstration rather than by assertion.",
+    expectedSourceFormula: "C5H8O2",
+    expectedComponentCount: 1
+  },
+  {
+    id: "threonine-partial-stereo",
+    name: "Threonine, one centre unspecified",
+    smiles: "CC(O)[C@@H](N)C(=O)O",
+    tags: ["stereochemistry"],
+    rationale:
+      "Two stereocentres, one assigned and one not. The unspecified centre is where a predictor is " +
+      "most tempted to quietly assume a configuration; the run must report it as unspecified rather " +
+      "than silently picking one, and the CIP labels must name only the centre that was drawn.",
+    expectedSourceFormula: "C4H9NO3",
+    expectedComponentCount: 1
+  },
+  {
+    id: "oversize-alkane",
+    name: "Linear C320 alkane",
+    smiles: "C".repeat(320),
+    tags: ["oversize"],
+    rationale:
+      "Deliberately synthetic: it carries no chemistry worth predicting and exists only to prove the " +
+      "pipeline survives a structure far larger than anything drawn by hand — no quadratic blowup, no " +
+      "truncated formula, and a clean decline once it crosses a caller's heavy-atom limit.",
+    expectedSourceFormula: "C320H642",
     expectedComponentCount: 1
   },
   {
