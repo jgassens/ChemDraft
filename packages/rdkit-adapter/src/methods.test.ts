@@ -153,3 +153,47 @@ describe("rdkitMethodContracts", () => {
     expect(logP.declinesWhen.join(" ")).toMatch(/sodium benzoate/);
   });
 });
+
+describe("vendor patch #6 — TPSA includeSandP", () => {
+  const unpatched = rdkitMethodContracts(PINNED_RDKIT_VERSION, { descriptorIncludeSandP: false });
+  const patched = rdkitMethodContracts(PINNED_RDKIT_VERSION, { descriptorIncludeSandP: true });
+  const tpsaOf = (contracts: ReturnType<typeof rdkitMethodContracts>) =>
+    contracts.find((contract) => contract.id === "rdkit.tpsa")!;
+
+  it("says so when the loaded artifact cannot select the convention", () => {
+    // The committed WASM predates the patch. Saying "S and P excluded" without saying it is not
+    // currently selectable would leave a reader unable to tell a choice from a limitation.
+    const tpsa = tpsaOf(unpatched);
+    expect(tpsa.version).toBe("1.0.0");
+    expect(tpsa.implementation.parameters.includeSandP).toBe(false);
+    expect(tpsa.conventions.join(" ")).toMatch(/predates vendor patch #6/);
+    expect(tpsa.conventions.join(" ")).toMatch(/EXCLUDED/);
+  });
+
+  it("bumps its own version when the capability is really present", () => {
+    // The contract's versionIncrementTriggers name this bump; doing it here rather than in a literal
+    // means the version cannot lag the artifact.
+    const tpsa = tpsaOf(patched);
+    expect(tpsa.version).toBe("2.0.0");
+    expect(tpsa.implementation.parameters.includeSandP).toBe(true);
+    expect(tpsa.conventions.join(" ")).toMatch(/INCLUDED/);
+    expect(tpsa.conventions.join(" ")).not.toMatch(/predates vendor patch #6/);
+  });
+
+  it("changes the method key, so a rebuild cannot serve S-excluded numbers from the cache", () => {
+    expect(methodKey(tpsaOf(unpatched))).not.toBe(methodKey(tpsaOf(patched)));
+  });
+
+  it("leaves every other contract untouched by the capability", () => {
+    const others = (contracts: ReturnType<typeof rdkitMethodContracts>) =>
+      contracts.filter((contract) => contract.id !== "rdkit.tpsa").map(methodKey);
+    expect(others(unpatched)).toEqual(others(patched));
+  });
+
+  it("keeps the registry happy under both capabilities", () => {
+    for (const contracts of [unpatched, patched]) {
+      const registry = new MethodRegistry();
+      for (const contract of contracts) expect(() => registry.register(contract)).not.toThrow();
+    }
+  });
+});

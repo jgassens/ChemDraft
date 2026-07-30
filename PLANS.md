@@ -654,9 +654,27 @@ an Analyze item ships only when it computes something).
   precision (`144.01872368000002 Da`), now bound to the precision they are conventionally quoted to;
   and every row repeated the interpretation the header already stated, so the suffix is dropped when
   the whole report is about one interpretation and kept when a derived row sits beside a declined one.
-- **Phase 6 — MinimalLib patch #6.** Expose `includeSandP` on `get_descriptors`; add
-  `vendor/patches/0006-*`, update `vendor/BUILD.md`, rebuild the artifact, and record the new patch count
-  in the dependency inventory.
+- **Phase 6 — MinimalLib patch #6. ✅ authored; ⏳ rebuild outstanding.**
+  `vendor/patches/0006-minimallib-tpsa-includeSandP.patch` adds an optional details JSON to
+  `get_descriptors` and honours `{"includeSandP":true}` by recomputing **only** `tpsa` through RDKit's
+  own `calcTPSA(m, force, includeSandP)` — every other descriptor stays exactly as
+  `Descriptors::Properties` produced it. Verified to apply in sequence after `0001–0005` against a
+  pristine checkout of the pinned commit. Patch count recorded as **six** in `vendor/BUILD.md` and the
+  dependency inventory.
+
+  **The artifact is not rebuilt.** That needs Docker plus a multi-GB Emscripten build, which
+  `vendor/BUILD.md` has always called deferred — patch `0003`'s `useRandomCoords` has been in the same
+  state since June 2026. The repo now records two pending rebuild reasons instead of one.
+
+  **So the runtime detects the capability by value, and that is not a stylistic choice.** Measured
+  against the committed binary, `get_descriptors('{"includeSandP":true}')` does **not** throw — it
+  silently ignores the argument and returns the same `tpsa` 34.14 for `CS(=O)(=O)C`. Detecting by "did
+  the call succeed" would report patch #6 as present and label an S-excluded number with the S-included
+  convention, which is the exact failure this branch exists to prevent. `detectEngineCapabilities`
+  compares the number on a sulfone probe instead, and `rdkit.tpsa`'s contract follows: version 1.0.0
+  with "not selectable — see BUILD.md" today, version 2.0.0 with the S-included convention once a
+  rebuilt artifact really honours it. Because the version is part of `methodKey`, the rebuild also
+  invalidates every cached TPSA rather than serving old numbers under the new convention.
 - **Phase 7 — Release 1 closeout.** Property corpus green across salts, zwitterions, radicals, isotope
   labels, S/P, boron/silicon, charged heterocycles, tautomers, organometallics, oversize, and unsupported
   atom types — with declines where declining is correct. Method contracts complete for every shipped

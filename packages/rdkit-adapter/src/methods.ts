@@ -35,6 +35,33 @@ export const PINNED_RDKIT_WASM_SHA256 = "5b1bc1126950a42056ce529cde32946491daa4a
 
 const ENGINE = "rdkit-minimallib-wasm";
 
+/**
+ * What the *loaded* artifact can do, as opposed to what the patch set says it should.
+ *
+ * The committed `RDKit_minimal.wasm` predates vendor patch #6, so `get_descriptors` there takes no
+ * arguments — and, measured against the real binary, an extra argument is **silently ignored rather
+ * than rejected**: `CS(=O)(=O)C` returns tpsa 34.14 with or without `{"includeSandP":true}`. Arity
+ * detection would therefore report the patch as present and label the old number with the new
+ * convention, which is exactly the silent-wrong-provenance failure this whole design exists to
+ * prevent. Detection has to compare the value (see `detectEngineCapabilities`).
+ */
+export interface RdkitEngineCapabilities {
+  /** True when the loaded artifact honours the TPSA `includeSandP` details flag (vendor patch #6). */
+  descriptorIncludeSandP: boolean;
+}
+
+/** What the committed artifact can do today. */
+export const UNPATCHED_CAPABILITIES: RdkitEngineCapabilities = { descriptorIncludeSandP: false };
+
+/** The details JSON patch #6 adds to `get_descriptors`. */
+export const DESCRIPTOR_DETAILS_INCLUDE_SANDP = '{"includeSandP":true}';
+
+/**
+ * A sulfone: its TPSA differs between the two conventions, so a value comparison on it distinguishes
+ * a patched binding from one that ignored the argument. A structure without S or P could not.
+ */
+export const INCLUDE_SANDP_PROBE_SMILES = "CS(=O)(=O)C";
+
 /** Elements the Wildman–Crippen atom-contribution tables and the Ertl TPSA fragments actually cover. */
 const ORGANIC_PARAMETER_SET = ["H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"];
 
@@ -554,7 +581,10 @@ export function descriptorBindings(): DescriptorBinding[] {
  * The version is a parameter rather than a constant so a rebuilt WASM flows into `methodKey` — and
  * therefore into every cache key — without anyone remembering to edit a literal.
  */
-export function rdkitMethodContracts(engineVersion: string = PINNED_RDKIT_VERSION): MethodContract[] {
+export function rdkitMethodContracts(
+  engineVersion: string = PINNED_RDKIT_VERSION,
+  capabilities: RdkitEngineCapabilities = UNPATCHED_CAPABILITIES
+): MethodContract[] {
   const nonDescriptor: MethodContract[] = [
     {
       id: "rdkit.composition",
@@ -752,5 +782,44 @@ export function rdkitMethodContracts(engineVersion: string = PINNED_RDKIT_VERSIO
     }
   ];
 
-  return [...nonDescriptor, ...DESCRIPTORS.map((spec) => descriptorContract(spec, engineVersion))];
+  const descriptors = DESCRIPTORS.map((spec) => descriptorContract(spec, engineVersion));
+  return [...nonDescriptor, ...descriptors.map((contract) => withCapabilities(contract, capabilities))];
+}
+
+/**
+ * Rewrite a contract to describe what the loaded artifact actually did.
+ *
+ * TPSA is the only contract this touches today. Its own `versionIncrementTriggers` say that exposing
+ * `includeSandP` bumps the version — so the bump happens here, when the capability is really present,
+ * rather than being a literal someone has to remember to edit. The version is part of `methodKey`, so
+ * a rebuilt artifact also invalidates every cached TPSA rather than serving S-excluded numbers under
+ * the S-included convention.
+ */
+function withCapabilities(contract: MethodContract, capabilities: RdkitEngineCapabilities): MethodContract {
+  if (contract.id !== "rdkit.tpsa") return contract;
+
+  if (!capabilities.descriptorIncludeSandP) {
+    return {
+      ...contract,
+      conventions: [
+        ...contract.conventions,
+        "the loaded artifact predates vendor patch #6, so this convention is not selectable — see packages/rdkit-adapter/vendor/BUILD.md"
+      ]
+    };
+  }
+
+  return {
+    ...contract,
+    version: "2.0.0",
+    implementation: {
+      ...contract.implementation,
+      parameters: { ...contract.implementation.parameters, includeSandP: true }
+    },
+    conventions: [
+      "Ertl 2000 fragment contributions",
+      "sulfur and phosphorus INCLUDED (vendor patch #6 exposes RDKit's includeSandP) — sulfonamides and " +
+        "phosphates therefore read higher than an implementation using RDKit's default of false",
+      SUMMATION_ORDER_CONVENTION
+    ]
+  };
 }

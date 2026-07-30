@@ -1,0 +1,84 @@
+--- a/Code/MinimalLib/common.h
++++ b/Code/MinimalLib/common.h
+@@ -833,7 +833,7 @@
+   return svgDrawer.draw_rxn(rxn);
+ }
+ 
+-std::string get_descriptors(const ROMol &m) {
++std::string get_descriptors(const ROMol &m, const std::string &details_json) {
+   bj::object doc;
+ 
+   Descriptors::Properties props;
+@@ -843,9 +843,32 @@
+     doc[dns[i]] = dvs[i];
+   }
+ 
++  // ChemDraft: the Properties calculator hard-codes calcTPSA's includeSandP
++  // default of false, so every sulfonamide and phosphate reads low with no way
++  // to ask for the other convention. Recompute that one property when the
++  // caller opts in; every other value stays exactly as Properties produced it.
++  if (!details_json.empty()) {
++    try {
++      auto parsed = bj::parse(details_json);
++      if (parsed.is_object()) {
++        const auto &obj = parsed.as_object();
++        auto it = obj.find("includeSandP");
++        if (it != obj.end() && it->value().is_bool() && it->value().as_bool()) {
++          doc["tpsa"] = Descriptors::calcTPSA(m, /*force=*/true,
++                                              /*includeSandP=*/true);
++        }
++      }
++    } catch (...) {
++      // A malformed details object leaves every descriptor at its default
++      // convention rather than failing the whole call.
++    }
++  }
++
+   return bj::serialize(doc);
+ }
+ 
++std::string get_descriptors(const ROMol &m) { return get_descriptors(m, ""); }
++
+ namespace {
+ template <typename T, typename U>
+ std::unique_ptr<RWMol> standardize_func(T &mol, const std::string &details_json,
+--- a/Code/MinimalLib/minilib.h
++++ b/Code/MinimalLib/minilib.h
+@@ -67,7 +67,8 @@
+   std::string get_substruct_matches(const JSMolBase &q) const {
+     return get_substruct_matches(q, "");
+   };
+-  std::string get_descriptors() const;
++  std::string get_descriptors(const std::string &details) const;
++  std::string get_descriptors() const { return get_descriptors(""); }
+   std::string get_morgan_fp(const std::string &details) const;
+   std::string get_morgan_fp() const { return get_morgan_fp("{}"); }
+   std::string get_morgan_fp_as_binary_text(const std::string &details) const;
+--- a/Code/MinimalLib/minilib.cpp
++++ b/Code/MinimalLib/minilib.cpp
+@@ -208,8 +208,8 @@
+   return res;
+ }
+ 
+-std::string JSMolBase::get_descriptors() const {
+-  return MinimalLib::get_descriptors(get());
++std::string JSMolBase::get_descriptors(const std::string &details) const {
++  return MinimalLib::get_descriptors(get(), details);
+ }
+ 
+ std::string JSMolBase::get_morgan_fp(const std::string &details) const {
+--- a/Code/MinimalLib/jswrapper.cpp
++++ b/Code/MinimalLib/jswrapper.cpp
+@@ -670,7 +670,11 @@
+           "get_substruct_matches",
+           select_overload<std::string(const JSMolBase &, const std::string &)
+                               const>(&JSMolBase::get_substruct_matches))
+-      .function("get_descriptors", &JSMolBase::get_descriptors)
++      .function("get_descriptors", select_overload<std::string() const>(
++                                       &JSMolBase::get_descriptors))
++      .function("get_descriptors",
++                select_overload<std::string(const std::string &) const>(
++                    &JSMolBase::get_descriptors))
+       .function("get_morgan_fp",
+                 select_overload<std::string() const>(&JSMolBase::get_morgan_fp))
+       .function("get_morgan_fp",

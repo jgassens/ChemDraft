@@ -51,10 +51,14 @@ import {
   type DerivedInterpretationId
 } from "./interpretations";
 import {
+  DESCRIPTOR_DETAILS_INCLUDE_SANDP,
+  INCLUDE_SANDP_PROBE_SMILES,
+  UNPATCHED_CAPABILITIES,
   descriptorBindings,
   PINNED_RDKIT_VERSION,
   PINNED_RDKIT_WASM_SHA256,
-  rdkitMethodContracts
+  rdkitMethodContracts,
+  type RdkitEngineCapabilities
 } from "./methods";
 
 export type AnalysisInputFormat = "smiles" | "molfile-v2000" | "molfile-v3000";
@@ -102,7 +106,8 @@ const DEFAULT_FALLBACK_INTERPRETATIONS: readonly DerivedInterpretationId[] = [
 
 /** The analysis surface `analyzeStructure` needs beyond what the conformer path already uses. */
 interface AnalysisMol extends RdkitJsMol {
-  get_descriptors(): string;
+  /** Optional details JSON — only honoured by an artifact carrying vendor patch #6. */
+  get_descriptors(details?: string): string;
   get_json(): string;
   get_inchi(): string;
   get_num_atoms(): number;
@@ -145,6 +150,48 @@ function assertAnalysisSurface(module: RdkitMinimalModule, mol: RdkitJsMol): ass
         `Expected the vendored ${PINNED_RDKIT_VERSION} artifact (see packages/rdkit-adapter/vendor/BUILD.md).`
     );
   }
+}
+
+/**
+ * Whether the loaded artifact honours the TPSA `includeSandP` details flag.
+ *
+ * Value-based, not arity-based, and that is not a stylistic preference. Measured against the
+ * committed artifact, `get_descriptors('{"includeSandP":true}')` does not throw — it silently ignores
+ * the argument and returns the same 34.14 for `CS(=O)(=O)C`. Detecting by "did the call succeed"
+ * would report patch #6 as present, and the run would then label an S-excluded number with the
+ * S-included convention. Comparing the number cannot produce that false positive.
+ *
+ * Memoised per loaded module, so the probe costs one extra parse per worker rather than one per
+ * keystroke, and a reloaded module re-probes on its own.
+ */
+const CAPABILITY_CACHE = new WeakMap<object, RdkitEngineCapabilities>();
+
+export function detectEngineCapabilities(module: AnalysisModule): RdkitEngineCapabilities {
+  const cached = CAPABILITY_CACHE.get(module);
+  if (cached) return cached;
+
+  let capabilities = UNPATCHED_CAPABILITIES;
+  const probe = module.get_mol(INCLUDE_SANDP_PROBE_SMILES) as AnalysisMol | null;
+  if (probe) {
+    try {
+      const withoutFlag = JSON.parse(probe.get_descriptors()) as Record<string, number>;
+      const withFlag = JSON.parse(probe.get_descriptors(DESCRIPTOR_DETAILS_INCLUDE_SANDP)) as Record<string, number>;
+      capabilities = {
+        descriptorIncludeSandP:
+          typeof withFlag.tpsa === "number" &&
+          typeof withoutFlag.tpsa === "number" &&
+          withFlag.tpsa !== withoutFlag.tpsa
+      };
+    } catch {
+      // A binding that rejects the argument outright is simply unpatched.
+      capabilities = UNPATCHED_CAPABILITIES;
+    } finally {
+      probe.delete();
+    }
+  }
+
+  CAPABILITY_CACHE.set(module, capabilities);
+  return capabilities;
 }
 
 /** The source interpretation: what the user drew, sanitised but not derived. */
@@ -310,9 +357,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
   const interpretation = sourceInterpretation(request.format, request.value);
   const module = (await ensureRdkit()) as AnalysisModule;
   const engineVersion = typeof module.version === "function" ? module.version() : PINNED_RDKIT_VERSION;
-  const contracts = rdkitMethodContracts(engineVersion);
+  const capabilities = detectEngineCapabilities(module);
+  const contracts = rdkitMethodContracts(engineVersion, capabilities);
   const registry = new MethodRegistry();
   for (const contract of contracts) registry.register(contract);
+  // Only sent when the artifact honours it; an unpatched binding would ignore it silently, and a
+  // request that is silently ignored has no business appearing in a cache key.
+  const descriptorDetails = capabilities.descriptorIncludeSandP ? DESCRIPTOR_DETAILS_INCLUDE_SANDP : undefined;
 
   const runWarnings: AnalysisWarning[] = [];
   if (engineVersion !== PINNED_RDKIT_VERSION) {
@@ -431,11 +482,11 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
 
     const sourceJson = JSON.parse(mol.get_json()) as RdkitJson;
     const composition = compositionFromRdkitJson(sourceJson);
-    const descriptors = JSON.parse(mol.get_descriptors()) as Record<string, number>;
+    const descriptors = readDescriptors(mol, descriptorDetails);
     const sourceContext: DerivedContext = { interpretation, mol, composition, descriptors };
 
     const derive = (id: DerivedInterpretationId): DerivedContext | undefined =>
-      resolveDerivedContext(id, module, sourceContext, sourceJson, derivedInterpretations);
+      resolveDerivedContext(id, module, sourceContext, sourceJson, derivedInterpretations, descriptorDetails);
 
     const wanted = request.methodIds ? new Set(request.methodIds) : undefined;
     const selected = contracts.filter((contract) => !wanted || wanted.has(contract.id));
@@ -507,12 +558,20 @@ interface DerivedContext {
   descriptors: Record<string, number>;
 }
 
-function contextFor(interpretation: MolecularInterpretation, mol: AnalysisMol): DerivedContext {
+function readDescriptors(mol: AnalysisMol, details: string | undefined): Record<string, number> {
+  return JSON.parse(details ? mol.get_descriptors(details) : mol.get_descriptors()) as Record<string, number>;
+}
+
+function contextFor(
+  interpretation: MolecularInterpretation,
+  mol: AnalysisMol,
+  descriptorDetails: string | undefined
+): DerivedContext {
   return {
     interpretation,
     mol,
     composition: compositionFromRdkitJson(JSON.parse(mol.get_json()) as RdkitJson),
-    descriptors: JSON.parse(mol.get_descriptors()) as Record<string, number>
+    descriptors: readDescriptors(mol, descriptorDetails)
   };
 }
 
@@ -564,7 +623,8 @@ function resolveDerivedContext(
   module: AnalysisModule,
   source: DerivedContext,
   sourceJson: RdkitJson,
-  cache: Map<DerivedInterpretationId, DerivedContext>
+  cache: Map<DerivedInterpretationId, DerivedContext>,
+  descriptorDetails: string | undefined
 ): DerivedContext | undefined {
   const cached = cache.get(id);
   if (cached) return cached;
@@ -582,7 +642,8 @@ function resolveDerivedContext(
         step: fragmentTransformation(plan),
         componentPolicy: "largest-organic-fragment"
       }),
-      fragmentMol
+      fragmentMol,
+      descriptorDetails
     );
     cache.set(id, context);
     return context;
@@ -590,7 +651,9 @@ function resolveDerivedContext(
 
   // Neutralisation stacks on the fragment when there is one, so the interpretation §7 actually names —
   // "a neutralized largest organic fragment" — is reachable in one step from a salt.
-  const base = resolveDerivedContext("largest-organic-fragment", module, source, sourceJson, cache) ?? source;
+  const base =
+    resolveDerivedContext("largest-organic-fragment", module, source, sourceJson, cache, descriptorDetails) ??
+    source;
 
   // The molblock is the single source of truth for "is there a charge to remove": it also catches the
   // zwitterion, whose net charge is zero while two of its atoms are charged.
@@ -603,7 +666,7 @@ function resolveDerivedContext(
   const neutralMol = module.get_mol(stripped.molblock) as AnalysisMol | null;
   if (!neutralMol) return undefined;
 
-  const neutralised = contextFor(base.interpretation, neutralMol);
+  const neutralised = contextFor(base.interpretation, neutralMol, descriptorDetails);
   const step = neutralizeTransformation({
     atomCount: base.composition.atomCount,
     neutralizedFormula: neutralised.composition.formula,

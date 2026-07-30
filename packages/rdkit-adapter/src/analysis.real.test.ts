@@ -19,9 +19,9 @@ import {
   type RepresentationVariant
 } from "@chemdraft/analysis-core";
 
-import { analyzeStructure, analyzeStructureDetailed, sourceInterpretation } from "./analysis";
-import { resetRdkitForTesting } from "./conformer";
-import { PINNED_RDKIT_VERSION } from "./methods";
+import { analyzeStructure, analyzeStructureDetailed, detectEngineCapabilities, sourceInterpretation } from "./analysis";
+import { DESCRIPTOR_DETAILS_INCLUDE_SANDP, INCLUDE_SANDP_PROBE_SMILES, PINNED_RDKIT_VERSION } from "./methods";
+import { ensureRdkit, resetRdkitForTesting } from "./conformer";
 import { installRealRdkitModuleLoader } from "./testing";
 
 beforeAll(() => {
@@ -420,5 +420,37 @@ describe("method selection", () => {
       methodIds: ["rdkit.composition", "rdkit.tpsa"]
     });
     expect(run.results.map((entry) => entry.id).sort()).toEqual(["rdkit.composition", "rdkit.tpsa"]);
+  });
+});
+
+describe("engine capability detection (vendor patch #6)", () => {
+  it("reports the committed artifact as unpatched, because it is", async () => {
+    const module = (await ensureRdkit()) as never as Parameters<typeof detectEngineCapabilities>[0];
+    expect(detectEngineCapabilities(module)).toEqual({ descriptorIncludeSandP: false });
+  });
+
+  it("detects by value, not by whether the call succeeded", async () => {
+    // The measurement that forces this: on the committed artifact,
+    // get_descriptors('{"includeSandP":true}') does NOT throw — it returns the same 34.14 for
+    // CS(=O)(=O)C. Arity detection would report the patch as present and the run would then label an
+    // S-excluded number with the S-included convention.
+    const module = (await ensureRdkit()) as never as {
+      get_mol(smiles: string): { get_descriptors(details?: string): string; delete(): void } | null;
+    };
+    const probe = module.get_mol(INCLUDE_SANDP_PROBE_SMILES)!;
+    const withoutFlag = JSON.parse(probe.get_descriptors()) as Record<string, number>;
+    const withFlag = JSON.parse(probe.get_descriptors(DESCRIPTOR_DETAILS_INCLUDE_SANDP)) as Record<string, number>;
+    probe.delete();
+
+    expect(withoutFlag.tpsa).toBe(34.14);
+    expect(withFlag.tpsa).toBe(34.14);
+  });
+
+  it("keeps TPSA on the unpatched convention, and says so in the run", async () => {
+    const run = await analyze("Cc1onc(c1)NS(=O)(=O)c1ccc(N)cc1", { methodIds: ["rdkit.tpsa"] } as never);
+    // Sulfamethoxazole, the §7 case: 98.22 with S excluded. A rebuilt artifact makes this a visible
+    // failure here rather than a silent shift.
+    expect(scalar(run, "rdkit.tpsa")).toBe(98.22);
+    expect(result(run, "rdkit.tpsa").methodVersion).toBe("1.0.0");
   });
 });
