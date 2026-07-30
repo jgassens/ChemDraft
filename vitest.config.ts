@@ -10,6 +10,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@chemdraft/analysis-core": workspacePackage("./packages/analysis-core/src/index.ts"),
       "@chemdraft/chem-core": workspacePackage("./packages/chem-core/src/index.ts"),
       "@chemdraft/art-engine": workspacePackage("./packages/art-engine/src/index.ts"),
       "@chemdraft/ocl-adapter": workspacePackage("./packages/ocl-adapter/src/index.ts"),

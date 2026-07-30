@@ -151,6 +151,7 @@ contains results as a **discriminated union**, so each kind *requires* what it n
 type AnalysisResult =
   | ScalarResult        // value, unit
   | IdentifierResult    // InChI, InChIKey, SMILES — stops masquerading as a property
+  | CompositionResult   // formula, charge, per-element and per-component breakdown (see below)
   | DistributionResult  // isotope envelope: masses, intensities, truncation policy
   | SpectrumResult      // axes, units, sticks, broadening parameters
   | GeometryResult      // coordinates + atom mapping back to source
@@ -162,19 +163,32 @@ type AnalysisStatus =
   | "failed" | "cancelled" | "timed-out";
 ```
 
+**`CompositionResult` is a recorded extension to the seven variants above.** Release 1's first
+deliverable — source-preserving formula, charge, components, isotope specification — has no home among
+them, and flattening per-element counts and a per-component breakdown into an `IdentifierResult` string
+throws away exactly the structure that makes a salt legible as a salt. Added deliberately, noted here so
+it reads as a decision rather than drift.
+
 Also required: **structured unit identifiers** (not free strings), **multiple** uncertainty objects per
 result, structured citations and dataset references, warning **codes** with severity and affected
 outputs, random/conformer seeds, raw-artifact references, and **schema versioning with runtime
 validation from day one** — matching the repo's existing Zod discipline
-(`packages/chem-core/src/schemas.ts` is `.strict()` throughout, with the `degradingEnum` pattern for
-forward compatibility; reuse both).
+(`packages/chem-core/src/schemas.ts` is `.strict()` throughout).
+
+`chem-core`'s `degradingEnum` is deliberately **not** carried over. It exists because a document read
+from a foreign file must degrade an unrecognised arrow kind rather than fail the whole page; analysis
+results are computed in-process, so degrading an unknown value there would turn a typo into a silent
+`"unknown"`. Revisit only if a vocabulary gains an explicit `"unknown"` member — none does in Release 1
+— and never for a result `kind`, which must fail loudly rather than be dropped (AGENTS.md §8a).
 
 Two things to settle now rather than retrofit:
 
-- **Payload transport.** Decide transferable typed arrays vs JSON, and memory ownership across the WASM
-  and worker boundaries, *before* spectra and orbital grids exist. A spectrum is not a few numbers, and
-  JSON-serializing grids will force an ugly rewrite. Note the constraint the plugin runtime already
-  imposes: everything crossing the panel bridge is structured-clone-safe plain data.
+- **Payload transport — settled: typed arrays.** Bulk numeric channels (spectra, geometries, orbital
+  grids, isotope envelopes) are `Float64Array`/`Int32Array`, which are structured-clone-safe *and*
+  transferable; small fixed-arity data stays plain JSON. The rule is: anything whose length scales with
+  atom count, grid size, or point count is a typed array. Decided in Phase 1 rather than after spectra
+  exist, because JSON-serializing grids would force an ugly rewrite. This also satisfies the constraint
+  the plugin runtime already imposes — everything crossing the panel bridge is structured-clone-safe.
 - **Uncertainty will often be unknown.** Where redistributable experimental validation data is scarce —
   logP and pKa especially — several methods will ship `metric: "unknown"` plus a citation. The type
   permits it; plan for it rather than treating it as a gap to fill later.
@@ -526,13 +540,19 @@ an Analyze item ships only when it computes something).
 - **Phase 0 — Plan of record.** This PLANS.md section. Dependency-inventory rows for RDKit MinimalLib
   (version, patch count, build flags, BSD-3-Clause), InChI, OpenChemLib, the Avogadro sidecar
   components, Eigen, and freetype — facts only; the license *choice* stays with the owner (§4).
-- **Phase 1 — Contracts.** New `packages/analysis-core`: `MolecularInterpretation`, `Transformation`,
-  the §2 classification triple plus flags, the §3 `AnalysisResult` discriminated union, `AnalysisStatus`,
-  structured units, uncertainty, citations, warning codes, the method-contract type, and schema
-  versioning with `.strict()` Zod validation and the `degradingEnum` forward-compatibility pattern. Pure
-  data — no engine import, so `pnpm lint` and the boundary test stay cheap. Ships with the
-  property-based representation-invariance harness and a `propertyCorpus.ts` sibling to
-  `chem-core/src/corpus.ts`.
+- **Phase 1 — Contracts. ✅ landed.** New `packages/analysis-core`: `MolecularInterpretation`,
+  `Transformation`, the atom-mapping algebra, the §2 classification triple plus flags, the §3
+  `AnalysisResult` discriminated union, `AnalysisStatus`, structured units, uncertainty, citations,
+  warning codes, the method contract plus its registry, and schema versioning with `.strict()` Zod
+  validation. Pure data — no engine import. Ships with the property-based representation-invariance
+  harness and a `propertyCorpus.ts` sibling to `chem-core/src/corpus.ts`. 99 tests.
+
+  The invariants the schemas actually enforce, since they are the part that has to survive review: a
+  non-value status cannot carry a payload and `"ok"` cannot lack one; every non-ok status carries a
+  warning; a seeded or stochastic method carries a seed; a convention-dependent method names its
+  conventions and a calibrated one cites its parameters; `metric: "unknown"` cannot smuggle a number
+  back in; a run cannot reference an interpretation it does not carry; and a tautomer-sensitive method
+  cannot run against an interpretation with no `tautomerPolicy`.
 - **Phase 2 — Real RDKit adapter.** Replace `rdkitAdapterStatus = "placeholder"` and delete the
   ten-SMILES fixture table. Parse and sanitize once; emit the `source` interpretation; derive composition
   from `get_json()`; masses from the isotope-aware composition; InChI/InChIKey; the 43 descriptors mapped

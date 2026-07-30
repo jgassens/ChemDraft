@@ -17,6 +17,7 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
+      "@chemdraft/analysis-core": ["packages/analysis-core/src/index.ts"],
       "@chemdraft/chem-core": ["packages/chem-core/src/index.ts"],
       "@chemdraft/editor-shell": ["packages/editor-shell/src/index.ts"],
       "@chemdraft/editor-adapter": ["packages/editor-adapter/src/index.ts"],
