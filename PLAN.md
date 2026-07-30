@@ -1,5 +1,18 @@
 # ChemDraft Project Plan
 
+> **What this file is (2026-07-30).** The product charter: what ChemDraft is for, what it refuses to
+> become, and what "done" means. It is **not** the engineering reference and is deliberately not
+> required reading before editing code — **AGENTS.md** is the authority on how to write code here,
+> and it is enforced. This file is the authority on *whether a thing should be built at all*.
+>
+> Read it when scoping a feature (§3, §4, §5, §19, §21), deciding core versus plugin (§5, §21),
+> adding a dependency or touching licensing (§15), or changing a user-facing surface (§6.15).
+>
+> Rules that AGENTS.md enforces — package boundaries, plugin permissions, chemistry invariants,
+> CDXML tiers, required tests — used to be duplicated here and were cut on 2026-07-30. Duplicated
+> rules drift, and when they drift an agent gets two answers with no way to tell which one binds.
+> Sections §8, §11.3, §13, and §16 now point at AGENTS.md instead. Do not re-inline them.
+
 Working project name: **ChemDraft**.
 
 The earlier working name **MolScribe** should not be used for the app unless the naming decision is intentionally reopened. An established MIT-licensed project named **MolScribe** already exists for image-to-graph molecular structure recognition. ChemDraft should treat that project as an optional first plugin target, not as the app identity.
@@ -251,20 +264,9 @@ Image-to-structure recognition        -> Recognizer plugin or NativeServicePlugi
 
 A beautiful drawing app that changes chemical identity during import/export is useless. Every import/export/conversion path needs tests.
 
-Chemistry invariants:
-
-- Do not silently change atom identity.
-- Do not silently change bond order.
-- Do not silently remove charge.
-- Do not silently remove radical state.
-- Do not silently remove isotope labels.
-- Do not silently lose stereochemistry.
-- Do not silently flatten or drop abbreviations/superatoms.
-- Do not silently drop R-group display information.
-- Do not silently combine or split reaction components.
-- Do not silently mutate molecule identity during layout cleanup.
-- Do not silently drop mechanism annotations, reaction arrows, or reaction conditions during export or clipboard transfer.
-- Do not silently replace an image with an AI-recognized structure.
+The enforceable invariant list lives in **AGENTS.md §10** — what every conversion path must preserve,
+and what tests should compare. It is not repeated here; two copies of a rule drift, and the copy in
+AGENTS.md is the one agents are required to read.
 
 ### 6.6 Original UI assets only
 
@@ -549,203 +551,31 @@ chemdraft/
   LICENSE
 ```
 
-## 8. Package responsibilities
-
-### 8.1 `packages/chem-core`
-
-Owns the native document model.
-
-Responsibilities:
-
-- Versioned document schema
-- Page model
-- Object model for molecules, reactions, mechanism annotations, text, arrows, brackets, graphics, plus signs, groups, and unknown compatibility objects
-- Molecule object model, including superatom/abbreviation metadata where represented
-- Basic R-group/generic-atom display metadata
-- Selection model
-- Native style preset model and selected document style preset reference
-- Plugin result references
-- Document patches
-- Schema migrations
-- Serialization and validation
-
-Must not import Ketcher, RDKit, MolScribe OCSR, Tauri, or plugin implementation code.
-
-### 8.2 `packages/editor-adapter`
-
-Defines the abstract drawing editor API. It reports capabilities rather than assuming Ketcher can represent every ChemDraft object.
-
-### 8.3 `packages/ketcher-adapter`
-
-Wraps Ketcher behind `EditorAdapter`. It must not leak Ketcher-specific types outside the package or own the native document model.
-
-Watch this seam carefully: anything Ketcher can represent that `chem-core` cannot represent is a risk for silent loss. Anything ChemDraw migrants need that Ketcher does not provide, such as mechanism-specific annotations, must be implemented by ChemDraft or explicitly scoped as a limitation.
-
-### 8.4 `packages/chemistry-adapter`
-
-Defines chemistry computation interfaces: parsing, conversion, formula, mass, validation, canonicalization, stereochemistry checks, and warning generation.
-
-### 8.5 `packages/rdkit-adapter`
-
-Intended to implement chemistry operations using RDKit. **Currently a declared placeholder**
-(`rdkitAdapterStatus === "placeholder"`): it reports honest capabilities rather than pretending
-RDKit is present. The shipped chemistry engine is `ocl-adapter` (§8.19). When real RDKit wiring
-lands it should lazy-load, must not mutate the native document directly, and must not vendor RDKit
-builds into the repository.
-
-### 8.6 `packages/cdx-compat`
-
-Owns CDXML/CDX compatibility.
-
-Responsibilities:
-
-- CDXML parser and writer
-- Best-effort CDX reader early
-- CDX writer later
-- Intermediate compatibility model
-- Unknown object preservation where practical
-- Compatibility warnings
-- Fixture-driven round-trip tests
-
-Must not become the native document model.
-
-### 8.7 `packages/clipboard-adapter`
-
-Owns platform clipboard behavior for SVG, PNG, CDXML, CDX, MOL, RXN, SMILES, and plain-text fallbacks. It must warn when paste/import becomes image-only or chemically lossy.
-
-### 8.8 `packages/layout-engine`
-
-Owns page/object operations: group, ungroup, align, distribute, rotate, flip, z-order, page size, margins, scaling, snap, guides, and bond-length normalization.
-
-### 8.9 `packages/shortcut-engine`
-
-Owns keyboard shortcuts and type-to-build behavior. Shortcuts should route through command IDs, not through hard-coded button handlers.
-
-### 8.10 `packages/mechanism-tools`
-
-Owns mechanism annotation primitives and rendering hooks: curved arrows, half-headed arrows, lone-pair marks, radical dots, and related editable annotations.
-
-### 8.11 `packages/template-library`
-
-Owns original built-in fragments, superatoms/abbreviations, common rings, basic R-group display helpers, and style presets. Do not copy proprietary templates.
-
-### 8.12 `packages/style-compat`
-
-Owns external style-sheet compatibility such as ChemDraw `.cds` import.
-
-Responsibilities:
-
-- Parse/import external style-sheet formats such as `.cds`.
-- Convert supported drawing, text, page, grid, ruler, color, and object-style settings into native ChemDraft style preset objects.
-- Preserve source metadata and unknown fields where practical.
-- Return warnings for unsupported, lossy, or approximated settings.
-- Provide legal/synthetic fixture tests.
-
-Must not become the native style source of truth. `.cds` import converts into native style preset objects.
-
-If the repository is too early for a package, the placeholder boundary may temporarily live under `template-library` or `cdx-compat`, but the same conversion and warning rules apply.
-
-### 8.13 `packages/plugin-api`
-
-Defines public plugin API types: manifests, permissions, commands, document API, selection API, chemistry API, UI contributions, storage, analysis results, and recognizer results.
-
-### 8.14 `packages/plugin-host`
-
-Loads plugins, validates manifests, enforces permissions, registers commands/panels/menus, scopes storage, and applies user-approved plugin patches. Plugins must not mutate live document objects directly.
-
-### 8.15 `packages/export-engine`
-
-Coordinates SVG, PNG, PDF, MOL, SDF, RXN, SMILES, CDXML, and CDX export through the correct adapters.
-
-### 8.16 `packages/ui-kit`
-
-Owns original UI components and icons. It must not contain chemistry logic or copied proprietary assets.
-
-### 8.17 `packages/toolset-registry`
-
-Owns typed toolbar/toolset data.
-
-Responsibilities:
-
-- Typed toolset manifest schema.
-- Built-in, plugin, and user toolset definitions.
-- Toolset source separation: core, plugin, and user.
-- Toolset visibility and mode metadata.
-- Grid, row, column, and item placement metadata.
-- Toolset toggle command generation.
-- View > Toolbars menu model generation.
-- Versioned user customization state.
-- User-created toolsets.
-- User overrides for order, visibility, hidden commands, placement, size, and mode.
-- Validation that user customizations only reference registered command IDs.
-
-Must not own chemistry behavior, own plugin permissions, mutate plugin manifests, grant command permissions, copy ChemDraw XML/schema/command IDs/icons/assets, or become a hard-coded React-only palette model.
-
-### 8.18 `packages/viewport-engine`
-
-Owns the shared viewport coordinate system.
-
-Responsibilities:
-
-- Viewport scale.
-- Scroll and page origins.
-- Screen/page coordinate conversion.
-- Focal-point zoom.
-- Ruler render state.
-- Future pan/pinch integration boundary.
-- Keeping rulers, page rendering, hit testing, and future editor interactions in one coordinate system.
-
-Must not own chemistry object state, become a black-box canvas editor, let ruler rendering own the coordinate model, or hide coordinate math inside React components.
-
-### 8.19 `packages/ocl-adapter`
-
-The shipped implementation of `chemistry-adapter` (§8.4), backed by OpenChemLib.
-
-Responsibilities:
-
-- OCL resource loading.
-- 2D depiction and molfile relayout.
-- Stereo-center perception and unrepresentable-stereo detection.
-- 3D conformer generation and force-field refinement, with trace events.
-
-Must not become the native document model, own UI, or silently degrade chemistry: an OCL bond order
-that cannot be represented exactly is reported as `aromatic` or `unknown`, never collapsed to a
-single bond.
-
-### 8.20 `packages/art-engine`
-
-Owns the geometry and paint planning behind native art objects — the layer the whole arrow family,
-shapes, and graphic markers are built on. Consumed by `layout-engine`, `documentWorkflow`, and
-`agentBridge`.
-
-Responsibilities:
-
-- Canonical path planning, projection, bounds, and paint resolution.
-- Stroke, fill, marker, gradient, shadow, and glow plans.
-- Arrow shaft and head geometry, including the dual-shaft equilibrium and retrosynthetic forms.
-- Export fragments shared by the canvas renderer and SVG export.
-
-Must not change chemical identity, own document state, or re-implement molecule rendering math that
-belongs to `layout-engine`. The ownership split with app code is stated in §7 under "Native Art
-Inspector".
-
-### 8.21 `packages/engine3d-api`
-
-Owns the versioned wire protocol between the app and the 3D sidecar. Dependency-free.
-
-Responsibilities:
-
-- Protocol version constant, message envelopes, session/drag/commit request and response types.
-- Graph-signature inputs, coordinate-reason tags, force-field status and report types.
-- Transport limits such as the maximum message size.
-
-Must not own the sidecar process, transport, or lifecycle, carry chemistry behavior, or change shape
-without bumping the protocol version. Sidecar behavior is exercised by `pnpm audit:engine3d-sidecar`
-and the `smoke:engine3d-*` scripts.
-
-`editor-shell`, `fixtures`, and `test-utils` are listed in §7.4 but have no responsibilities section
-here: `fixtures` is test data, and `editor-shell` and `test-utils` are currently dormant with no
-consumers. Do not grow them speculatively.
+## 8. Package boundaries
+
+Per-package rules — what each package may and may not contain — live in **AGENTS.md §6**, which
+covers all 24 packages and is the list agents are required to read. `§7.4` above gives the one-line
+role of each. This section used to restate both and has been cut back to the seams that are easy to
+get wrong and are recorded nowhere else.
+
+### 8.1 Seams to watch
+
+**Ketcher (`ketcher-adapter`).** Anything Ketcher can represent that `chem-core` cannot is a risk of
+silent loss. Anything ChemDraw migrants need that Ketcher does not provide — mechanism-specific
+annotations above all — must be implemented by ChemDraft or explicitly scoped as a limitation. The
+adapter must not leak Ketcher types outside the package or own the native document model.
+
+**Chemistry engines (`chemistry-adapter` / `ocl-adapter` / `rdkit-adapter`).** The contract is
+engine-neutral and dependency-free; OpenChemLib is the shipped implementation and RDKit is a declared
+placeholder. Code that reaches past the contract to an engine is the failure mode here.
+
+**Compatibility formats (`cdx-compat`, `style-compat`).** Neither may become a source of truth.
+CDXML is both an interop format and ChemDraft's own save envelope, which makes it tempting to treat
+the compatibility model as the document model — do not. `.cds` is a style-sheet input only, never a
+molecule, reaction, or document import.
+
+**Rendering math (`layout-engine`, `art-engine`).** One home per formula. App code imports; it never
+keeps a private copy. See AGENTS.md §5.26 for why this rule exists.
 
 ## 9. Native document model and patches
 
@@ -1006,51 +836,7 @@ CDX writing can be later than CDX reading.
 
 ### 11.3 CDXML/CDX support tiers
 
-Tier A: initial reliable support
-
-```text
-atoms
-bonds
-charges
-isotopes
-radicals
-coordinates
-wedge/dash stereochemistry
-E/Z geometry where represented
-abbreviations/superatoms
-basic R-group/generic-atom display
-text labels
-simple arrows
-plus signs
-basic reaction schemes
-basic brackets
-basic styles
-```
-
-Tier B: careful support after fixtures
-
-```text
-full R-group logic
-S-groups
-polymers/SRU brackets
-atom lists
-reaction mapping
-equilibrium arrows
-retrosynthesis arrows
-automatic R/S and E/Z descriptor display
-```
-
-Tier C: preserve or approximate
-
-```text
-complex graphical objects
-embedded images
-unusual fonts
-multi-tailed arrows
-proprietary style state
-Office-embedded ChemDraw objects
-legacy edge cases
-```
+The Tier A / Tier B / Tier C object lists live in **AGENTS.md §11**, together with the unknown-object preservation rule and the "never claim full compatibility without fixture coverage" rule. Tier A is what must round-trip reliably; Tier B waits for fixtures; Tier C is preserve-or-approximate and must never be described as supported.
 
 ### 11.4 Clipboard plan
 
@@ -1139,31 +925,8 @@ template      Fragments, rings, reactions, style presets
 service       Optional native/WASM/backend computational tools
 ```
 
-Initial permission list:
-
-```text
-document.read
-document.write
-document.proposePatch
-selection.read
-selection.write
-analysis.write
-ui.panel
-ui.toolbar
-ui.menu
-chemistry.compute
-clipboard.read
-clipboard.write
-image.read
-ml.inference
-model.load
-model.download
-filesystem.read
-filesystem.write
-network.fetch
-native.execute
-plugin.storage
-```
+The permission vocabulary and the dangerous-permission list live in **AGENTS.md §7**. They are not
+repeated here — they are enforced by `plugin-host`, and a second copy would drift.
 
 Default safe permissions for most analysis plugins:
 
@@ -1173,19 +936,6 @@ selection.read
 analysis.write
 ui.panel
 plugin.storage
-```
-
-Dangerous permissions:
-
-```text
-filesystem.write
-network.fetch
-native.execute
-clipboard.read
-document.write
-image.read when it can access anything beyond a user-selected image or crop
-model.load
-model.download
 ```
 
 Prefer `document.proposePatch` over `document.write` for generated chemistry, recognizer plugins, and transformer plugins.
@@ -1304,35 +1054,12 @@ Rules:
 
 ## 16. Testing strategy
 
-Required tests:
+The required test types, listed by area, live in **AGENTS.md §13** — that is the list an agent is
+obliged to satisfy for a change, so it is not duplicated here.
 
-- Document schema validation.
-- Document patches.
-- Plugin manifest validation.
-- Permission enforcement.
-- Command registry.
-- CDXML parsing/writing.
-- Best-effort CDX reading/paste fixtures.
-- Chemistry adapters.
-- Chemistry validation, formula, mass, charge, and warning fixtures.
-- Native style preset schema, default-style selection, and save/reopen preservation.
-- `.cds` style-sheet import with synthetic/legal fixtures, unsupported-field warnings, and malformed-file failures.
-- Style application identity invariants.
-- Export functions.
-- Clipboard operations where testable.
-- Toolset layout state parsing.
-- Applying user toolset overrides.
-- User-created and plugin-contributed toolsets.
-- View > Toolbars generation from built-in, plugin, and user state.
-- Startup application of persisted user toolbar state.
-- Rust/Tauri menu and window behavior staying aligned with the manifest/layout model.
-- Toolbar command IDs rejecting unregistered commands.
-- Viewport coordinate conversion.
-- Focal-point zoom.
-- Ruler state sync with viewport state.
-- Gesture and pinch behavior where practical.
-- Visual regression tests for molecule, reaction, mechanism, text, arrow, bracket, and export rendering.
-- Recognition plugin tests with mocked MolScribe output, confidence display, warning display, source-image preservation, and proposed-patch approval.
+What this section owns is the **fixture corpus**: the specific molecules and documents that
+compatibility work must be proven against. A test list says what kind of test to write; this says
+what to write it about.
 
 Compatibility fixtures should include:
 
@@ -1997,7 +1724,7 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 ### Still open
 
 - Final project name, with ChemDraft preferred for now to avoid collision with the external MolScribe OCSR package.
-- Final native file extension. (The *container* is settled — CDXML with ChemDraft object tags, §8.6 — but the extension is not.)
+- Final native file extension. (The *container* is settled — CDXML with ChemDraft object tags, per `packages/cdx-compat` — but the extension is not.)
 - Final license for the repository root. `package.json` still says `UNLICENSED`. The example plugins are settled at MIT (2026-07-16), with the bundled NMR reference database carved out under the nmrshiftdb2 Database License; see AGENTS.md §8a.
 - How strict the first CDXML compatibility target should be.
 - Whether Ketcher is the long-term editor engine or just the first adapter.
@@ -2017,7 +1744,7 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 
 - ~~Whether the app supports a browser version initially.~~ Yes, as a shell: `pnpm dev:web` runs the desktop app in the browser. There is still no separate `apps/web` package.
 - ~~Whether plugins are distributed through a registry later.~~ Not a registry — a host-owned catalog allowlisted by plugin id, with the app owning source, download, verification, handshake, replacement, and rollback. An installed plugin cannot choose its own download URL.
-- ~~Whether RDKit loads in the frontend, backend, or both.~~ Moot for now: OpenChemLib is the shipped engine (§8.19) and `rdkit-adapter` is a declared placeholder (§8.5). The question returns if real RDKit wiring lands.
+- ~~Whether RDKit loads in the frontend, backend, or both.~~ Moot for now: OpenChemLib is the shipped engine and `rdkit-adapter` is a declared placeholder (AGENTS.md §6.18-6.19). The question returns if real RDKit wiring lands.
 - ~~Which mechanism arrows are chemically semantic versus graphical annotations.~~ Currently all graphical. The four reaction-arrow families and the curved/fishhook electron-pushing arrows are art objects; no arrow carries atom or bond anchoring. A semantic mechanism model remains unbuilt (Phase 7).
 - ~~What installer/distribution system is preferred for each OS.~~ Settled for macOS: signed and notarized bundle, Sparkle auto-update against a signed appcast (`docs/releasing/macos-updates.md`). Windows and Linux remain open.
 

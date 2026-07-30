@@ -22,7 +22,6 @@ work (`-opus`, `-codex`, `-fable`, …), never the branch.
 Before editing implementation files, read:
 
 ```text
-PLAN.md
 PLANS.md
 AGENTS.md
 README.md
@@ -30,14 +29,25 @@ package.json
 pnpm-workspace.yaml
 ```
 
-<!-- OPEN DECISION (flagged 2026-07-30): PLAN.md is ~79 KB and PLANS.md ~19 KB. Requiring both
-     before every edit is a heavy tax for a narrow slice. Candidate change: keep PLANS.md required
-     (it is the active slice), and demote PLAN.md to "consult the sections covering the area you
-     are about to touch." Left as-is pending the project owner's call. -->
+**`PLAN.md` is deliberately not on that list** (decided 2026-07-30). It is the product charter, not
+an engineering reference: what ChemDraft is for, what it refuses to become, and what "done" means.
+Requiring 80 KB before every edit taxed every task to serve a few. This file is the authority on how
+to write code here; `PLAN.md` is the authority on whether a thing should be built at all.
 
-Repo-wide scope lives in `PLAN.md`; the active slice lives in `PLANS.md`. One further scoped plan
-sits beside them: `PLAN-spin3d-forcefields.md` (Spin 3D refinement engines) — Phases 1 and 2 shipped,
-Phase 3 is blocked on installing OpenBabel and a GPL packaging review, both owner decisions.
+Read `PLAN.md` when you are:
+
+- **scoping a feature** — §3 (the two release bars), §4 and §19 (what a first release must do), §5
+  (non-goals: what must NOT go in the core), §21 (the core-versus-plugin test);
+- **deciding core versus plugin** — §5 and §21;
+- **adding or changing a dependency, or touching licensing** — §15, which carries the only
+  GPL/AGPL-in-permissive-core rule in the repo and the license defaults;
+- **judging release readiness** — §4, §19, and §1.1's list of what has not shipped;
+- **changing a user-facing surface** — §6.15, which separates stable contracts from volatile ones,
+  and owner defaults from user preferences from document state.
+
+One further scoped plan sits beside them: `PLAN-spin3d-forcefields.md` (Spin 3D refinement engines)
+— Phases 1 and 2 shipped, Phase 3 is blocked on installing OpenBabel and a GPL packaging review,
+both owner decisions.
 
 The selection-architecture plan finished and moved to `docs/shipped/selection-policy-refactor.md`;
 read it before touching selection, hit resolution, or ring picking.
@@ -875,6 +885,31 @@ simple arrows
 plus signs
 basic brackets
 basic styles
+```
+
+Tier B objects — careful support, only once fixtures exist:
+
+```text
+full R-group logic
+S-groups
+polymers/SRU brackets
+atom lists
+reaction mapping
+equilibrium arrows
+retrosynthesis arrows
+automatic R/S and E/Z descriptor display
+```
+
+Tier C objects — preserve or approximate, never claim support:
+
+```text
+complex graphical objects
+embedded images
+unusual fonts
+multi-tailed arrows
+proprietary style state
+Office-embedded ChemDraft objects
+legacy edge cases
 ```
 
 Unknown CDXML/CDX objects should be preserved where practical. If they cannot be preserved, produce a warning.
