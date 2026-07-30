@@ -19,11 +19,11 @@ describe("mainStyleRowsForVariant", () => {
     }
   });
 
-  it("reports the variant it actually rendered when a builder is missing", () => {
-    // A variant without a builder renders the text layout and must say so, so the
-    // data-main-style-variant attribute never lies about the visible controls.
-    expect(mainStyleRowsForVariant("text", minimalState).effectiveVariant).toBe("text");
-    expect(mainStyleRowsForVariant("molecule", minimalState).effectiveVariant).toBe("molecule");
-    expect(mainStyleRowsForVariant("shape", minimalState).effectiveVariant).toBe("shape");
+  it("renders every variant under its own name", () => {
+    // The data-main-style-variant attribute must never lie about the visible controls; the text
+    // fallback for builderless variants exists only for future additions.
+    for (const variant of VARIANTS) {
+      expect(mainStyleRowsForVariant(variant, minimalState).effectiveVariant).toBe(variant);
+    }
   });
 });

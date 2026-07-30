@@ -1,5 +1,6 @@
 import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
-import type { ChemDraftDocument, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
+import type { ChemDraftDocument, GraphicMarker, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
+import { graphicObjectSupportsMarkers, nativeArrowToolIdForGraphic } from "./documentWorkflow";
 import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
@@ -25,6 +26,7 @@ export interface ArtInspectorSkippedObjectIdsByControl {
   fill?: ArtInspectorSkippedObject[];
   lineEnds?: ArtInspectorSkippedObject[];
   corners?: ArtInspectorSkippedObject[];
+  markers?: ArtInspectorSkippedObject[];
 }
 
 export interface ArtInspectorMixedValue<T> {
@@ -91,6 +93,14 @@ export interface ArtInspectorModel {
   supportsFillOpacityAll: boolean;
   supportsStrokeOpacityAny: boolean;
   supportsStrokeOpacityAll: boolean;
+  /** Marker-capable = an open-stroke path whose ends can carry arrowhead markers. */
+  supportsMarkersAny: boolean;
+  supportsMarkersAll: boolean;
+  /** Arrow-family membership (drawn with one of the arrow tools), for the arrow style widget. */
+  isArrowAny: boolean;
+  isArrowAll: boolean;
+  /** Distinct arrow tool ids in the selection, sorted. */
+  arrowToolIds: string[];
   fillSupportedCount: number;
   strokeSupportedCount: number;
   dashSupportedCount: number;
@@ -98,6 +108,7 @@ export interface ArtInspectorModel {
   cornersSupportedCount: number;
   fillOpacitySupportedCount: number;
   strokeOpacitySupportedCount: number;
+  markersSupportedCount: number;
   values: {
     fillPaintType: ArtInspectorMixedValue<ArtInspectorPaintType>;
     strokePaintType: ArtInspectorMixedValue<ArtInspectorPaintType>;
@@ -111,6 +122,11 @@ export interface ArtInspectorModel {
     dash: ArtInspectorMixedValue<string>;
     lineEnds: ArtInspectorMixedValue<ArtInspectorLineCap>;
     corners: ArtInspectorMixedValue<ArtInspectorLineJoin>;
+    /** Absent marker keys read as "none" so a bare tail is a real value, not a mixed-null. */
+    markerStartKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
+    markerEndKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
+    /** The STORED head size — the render floors it at strokeWidth×4, which the widget clamps for. */
+    markerSizePx: ArtInspectorMixedValue<number>;
   };
   activeGradient: ArtInspectorGradientModel;
   effectControls: Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
@@ -124,7 +140,7 @@ export interface CreateArtInspectorModelOptions {
   requestedPaintTarget?: ArtInspectorPaintTarget;
 }
 
-type ArtInspectorCapabilityKey = "fill" | "stroke" | "dash" | "lineEnds" | "corners";
+type ArtInspectorCapabilityKey = "fill" | "stroke" | "dash" | "lineEnds" | "corners" | "markers";
 type ArtInspectorStyleObject = GraphicObject | MoleculeObject;
 type ArtInspectorPlannedEntry =
   | { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }
@@ -155,11 +171,15 @@ export function createArtInspectorModel({
   const supportsDash = planned.map((entry) => entry.plan?.capabilities.supportsDash === true);
   const supportsLineEnds = planned.map((entry) => entry.plan?.capabilities.supportsLineCap === true);
   const supportsCorners = planned.map((entry) => entry.plan?.capabilities.supportsLineJoin === true);
+  const supportsMarkers = planned.map((entry) => entry.object.type === "graphic" && graphicObjectSupportsMarkers(entry.object));
+  const arrowToolIdByEntry = planned.map((entry) => entry.object.type === "graphic" ? nativeArrowToolIdForGraphic(entry.object) : undefined);
+  const arrowCount = arrowToolIdByEntry.filter((toolId) => toolId !== undefined).length;
   const fillSupportedCount = countSupported(supportsFill);
   const strokeSupportedCount = countSupported(supportsStroke);
   const dashSupportedCount = countSupported(supportsDash);
   const lineEndsSupportedCount = countSupported(supportsLineEnds);
   const cornersSupportedCount = countSupported(supportsCorners);
+  const markersSupportedCount = countSupported(supportsMarkers);
   const activePaintTarget = requestedPaintTarget === "fill" && fillSupportedCount === 0 && strokeSupportedCount > 0
     ? "stroke"
     : requestedPaintTarget === "stroke" && strokeSupportedCount === 0 && fillSupportedCount > 0
@@ -178,7 +198,23 @@ export function createArtInspectorModel({
     strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.strokeWidth, 1.5) : undefined),
     dash: uniformSupportedValue(planned, supportsDash, ({ object }) => object.type === "graphic" ? metadataStringValue(object.style.strokeDasharray) ?? "solid" : undefined),
     lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan?.stroke.lineCap),
-    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan?.stroke.lineJoin)
+    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan?.stroke.lineJoin),
+    markerStartKind: uniformSupportedValue(planned, supportsMarkers, ({ object }) =>
+      object.type === "graphic" ? object.data.markerStart?.kind ?? "none" : undefined),
+    markerEndKind: uniformSupportedValue(planned, supportsMarkers, ({ object }) =>
+      object.type === "graphic" ? object.data.markerEnd?.kind ?? "none" : undefined),
+    markerSizePx: uniformSupportedValue(
+      planned,
+      // Narrow further to objects with at least one real head — a bare line has no size to report.
+      planned.map((entry, index) =>
+        supportsMarkers[index] &&
+        entry.object.type === "graphic" &&
+        ((entry.object.data.markerStart !== undefined && entry.object.data.markerStart.kind !== "none") ||
+          (entry.object.data.markerEnd !== undefined && entry.object.data.markerEnd.kind !== "none"))),
+      ({ object }) => object.type === "graphic"
+        ? metadataNumberValue(object.data.markerEnd?.sizePx ?? object.data.markerStart?.sizePx, 16)
+        : undefined
+    )
   };
   const effectControls = {
     shadow: effectModelForKind(planned, "shadow", selectedCount),
@@ -214,6 +250,11 @@ export function createArtInspectorModel({
     supportsFillOpacityAll: selectedCount > 0 && fillSupportedCount === selectedCount,
     supportsStrokeOpacityAny: strokeSupportedCount > 0,
     supportsStrokeOpacityAll: selectedCount > 0 && strokeSupportedCount === selectedCount,
+    supportsMarkersAny: markersSupportedCount > 0,
+    supportsMarkersAll: selectedCount > 0 && markersSupportedCount === selectedCount,
+    isArrowAny: arrowCount > 0,
+    isArrowAll: selectedCount > 0 && arrowCount === selectedCount,
+    arrowToolIds: [...new Set(arrowToolIdByEntry.flatMap((toolId) => (toolId === undefined ? [] : [toolId as string])))].sort(),
     fillSupportedCount,
     strokeSupportedCount,
     dashSupportedCount,
@@ -221,6 +262,7 @@ export function createArtInspectorModel({
     cornersSupportedCount,
     fillOpacitySupportedCount: fillSupportedCount,
     strokeOpacitySupportedCount: strokeSupportedCount,
+    markersSupportedCount,
     values,
     activeGradient: gradientModelForTarget(
       planned,
@@ -271,6 +313,11 @@ export function createMoleculeRingArtInspectorModel(
     supportsFillOpacityAll: true,
     supportsStrokeOpacityAny: false,
     supportsStrokeOpacityAll: false,
+    supportsMarkersAny: false,
+    supportsMarkersAll: false,
+    isArrowAny: false,
+    isArrowAll: false,
+    arrowToolIds: [],
     fillSupportedCount: selectedCount,
     strokeSupportedCount: 0,
     dashSupportedCount: 0,
@@ -278,6 +325,7 @@ export function createMoleculeRingArtInspectorModel(
     cornersSupportedCount: 0,
     fillOpacitySupportedCount: selectedCount,
     strokeOpacitySupportedCount: 0,
+    markersSupportedCount: 0,
     values: {
       fillPaintType: moleculeInspector.values.fillPaintType,
       strokePaintType: { value: null, mixed: false },
@@ -290,7 +338,10 @@ export function createMoleculeRingArtInspectorModel(
       strokeWidth: { value: null, mixed: false },
       dash: { value: null, mixed: false },
       lineEnds: { value: null, mixed: false },
-      corners: { value: null, mixed: false }
+      corners: { value: null, mixed: false },
+      markerStartKind: { value: null, mixed: false },
+      markerEndKind: { value: null, mixed: false },
+      markerSizePx: { value: null, mixed: false }
     },
     activeGradient: {
       paintType: null,
@@ -380,10 +431,12 @@ function skippedObjectIdsByControl(
   const fill = skippedForControl(planned, "fill");
   const lineEnds = skippedForControl(planned, "lineEnds");
   const corners = skippedForControl(planned, "corners");
+  const markers = skippedForControl(planned, "markers");
   return {
     ...(fill.length > 0 ? { fill } : {}),
     ...(lineEnds.length > 0 ? { lineEnds } : {}),
-    ...(corners.length > 0 ? { corners } : {})
+    ...(corners.length > 0 ? { corners } : {}),
+    ...(markers.length > 0 ? { markers } : {})
   };
 }
 
@@ -411,6 +464,14 @@ function skippedForControl(
       return [{
         objectId: object.id,
         reason: plan.capabilities.hasCorners ? "unsupported" : "no-corners"
+      }];
+    }
+    if (control === "markers" && !graphicObjectSupportsMarkers(object)) {
+      return [{
+        objectId: object.id,
+        // Closed shapes have no terminals to head; retro arrows (path-geometry "⇒") and other
+        // ineligible opens read as plain unsupported.
+        reason: plan.capabilities.isClosedShape ? "closed-shape" : "unsupported"
       }];
     }
     return [];

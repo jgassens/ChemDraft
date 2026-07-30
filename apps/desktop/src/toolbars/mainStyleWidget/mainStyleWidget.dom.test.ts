@@ -211,6 +211,62 @@ describe("MainStyleWidget variants", () => {
     expect(onInvoke).toHaveBeenCalledWith("object.style.target.stroke");
   });
 
+  it("renders the arrow layout for an arrow selection with head kind, tail toggle, and head size", async () => {
+    const { createPhase4Document, insertNativeArtGraphicObject } = await import("../../documentWorkflow");
+    const { createArtInspectorModel, selectedGraphicObjectsForArtInspector } = await import("../../artInspectorModel");
+    const arrowDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow widget"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const selection = classifyToolbarSelection({ document: arrowDocument, moleculeContext: "none" });
+    expect(selection.kind).toBe("arrow");
+    const artStyle = createArtInspectorModel({
+      document: arrowDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(arrowDocument),
+      requestedPaintTarget: "fill"
+    });
+    expect(artStyle.supportsMarkersAll).toBe(true);
+    expect(artStyle.isArrowAll).toBe(true);
+    const { onInvoke } = renderWidget({ currentSelection: selection, currentArtStyle: artStyle });
+
+    const widget = widgetRoot();
+    expect(widget.dataset.mainStyleVariant).toBe("arrow");
+
+    const headKindSelect = widget.querySelector<HTMLSelectElement>("[aria-label=\"Arrowhead style\"]");
+    if (!headKindSelect) {
+      throw new Error("Expected the arrowhead style select.");
+    }
+    expect(headKindSelect.value).toBe("object.marker.end.kind.filledArrow");
+    act(() => {
+      headKindSelect.value = "object.marker.end.kind.bar";
+      headKindSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.marker.end.kind.bar");
+
+    const headSizeSelect = widget.querySelector<HTMLSelectElement>("[aria-label=\"Arrowhead size\"]");
+    if (!headSizeSelect) {
+      throw new Error("Expected the arrowhead size select.");
+    }
+    expect(headSizeSelect.value).toBe("object.marker.size:16");
+
+    const tailToggle = widget.querySelector<HTMLButtonElement>("[aria-label=\"Add Arrow Tail Head\"]");
+    if (!tailToggle) {
+      throw new Error("Expected the tail-head toggle.");
+    }
+    expect(tailToggle.getAttribute("aria-pressed")).toBe("false");
+    act(() => {
+      tailToggle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      tailToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.marker.start.kind.filledArrow");
+
+    const setDefault = widget.querySelector<HTMLButtonElement>("[data-command-id=\"arrow.setDefaultStyle\"]");
+    expect(setDefault).not.toBeNull();
+    expect(setDefault?.disabled).toBe(false);
+    expect(widget.querySelector("[data-command-id=\"layout.flipHorizontal\"]")).not.toBeNull();
+  });
+
   it("pins the text layout while customizing, whatever is selected", () => {
     const { selection } = moleculeSelection();
     renderWidget({ currentSelection: selection }, true);

@@ -5,6 +5,7 @@ import { StyleCellView, type MainStyleRows, type StyleCell } from "./cells";
 import { textVariantRows } from "./TextVariant";
 import { moleculeVariantRows } from "./MoleculeVariant";
 import { shapeVariantRows } from "./ShapeVariant";
+import { arrowVariantRows } from "./ArrowVariant";
 
 type VariantRowsBuilder = (state: ToolbarWidgetState) => MainStyleRows;
 
@@ -13,7 +14,8 @@ type VariantRowsBuilder = (state: ToolbarWidgetState) => MainStyleRows;
 const VARIANT_ROW_BUILDERS: Partial<Record<ToolbarStyleVariant, VariantRowsBuilder>> = {
   text: textVariantRows,
   molecule: moleculeVariantRows,
-  shape: shapeVariantRows
+  shape: shapeVariantRows,
+  arrow: arrowVariantRows
 };
 
 export function mainStyleRowsForVariant(

@@ -832,6 +832,17 @@ function nativeArtMarkerHandle(
 /** Arrowhead size increments (px) — dragging the marker handle snaps to multiples of this step. */
 export const MARKER_SIZE_STEP_PX = 4;
 
+/** Largest arrowhead the marker handle (or a size command) can set. */
+export const MARKER_SIZE_MAX_PX = 96;
+
+/** Snap an arrowhead size to the discrete steps the marker handle drags between (4, 8, … 96 px).
+ *  The single source of truth for the step/limits — the handle drag and the toolbar size command
+ *  both funnel through it. */
+export function snapGraphicMarkerSizePx(sizePx: number): number {
+  const snapped = Math.round(clamp(sizePx, MARKER_SIZE_STEP_PX, MARKER_SIZE_MAX_PX) / MARKER_SIZE_STEP_PX) * MARKER_SIZE_STEP_PX;
+  return roundLayoutNumber(clamp(snapped, MARKER_SIZE_STEP_PX, MARKER_SIZE_MAX_PX));
+}
+
 export function editGraphicMarkerSize(
   object: GraphicObject,
   markerId: NativeArtMarkerHandleId,
@@ -853,8 +864,7 @@ export function editGraphicMarkerSize(
   }
   // Arrowhead size snaps to discrete steps (4, 8, 12, 16, … px = levels 1, 2, 3, 4, …) so dragging
   // steps cleanly between sizes instead of sliding continuously. The default 16 px lands on a step.
-  const snapped = Math.round(clamp(distance, MARKER_SIZE_STEP_PX, 96) / MARKER_SIZE_STEP_PX) * MARKER_SIZE_STEP_PX;
-  const nextSize = roundLayoutNumber(clamp(snapped, MARKER_SIZE_STEP_PX, 96));
+  const nextSize = snapGraphicMarkerSizePx(distance);
 
   // Symmetric resize (double-headed arrows, default): the opposite arrowhead tracks this one so both
   // heads stay the same size. Holding Shift (symmetric === false) resizes only the dragged head.

@@ -1,5 +1,6 @@
 import {
   editGraphicMarkerSize,
+  snapGraphicMarkerSizePx,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
   deleteGraphicPathNode,
@@ -59,6 +60,7 @@ import {
   type FlattenWarning,
   type GraphicFreehandOptions,
   type GraphicFreehandPoint,
+  type GraphicMarker,
   type GraphicObjectData,
   type GraphicObject,
   type GroupObject,
@@ -8026,6 +8028,115 @@ function updateGraphicObjects(
   );
 
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+/** Sibling of {@link updateGraphicObjects} for `data` patches (markers live in data, not style).
+ *  The updater returns the ORIGINAL `object.data` reference to signal "no change" — reference
+ *  equality is the bail, so no-op invokes never create patches (or undo entries). */
+function updateGraphicObjectData(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  updateData: (object: GraphicObject) => GraphicObjectData,
+  supportsUpdate: (object: GraphicObject) => boolean = () => true
+): ChemDraftDocument {
+  const targetIds = new Set(objectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "graphic" || !targetIds.has(object.id) || !supportsUpdate(object)) {
+        return [];
+      }
+
+      const nextData = updateData(object);
+      return nextData === object.data
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              data: nextData
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+/**
+ * Ends that can carry an arrowhead marker: open-stroke paths whose terminals the marker machinery
+ * plans. Keyed off `isOpenStroke` (not "has a handle today") so an arrow with a bare tail still
+ * counts — growing a tail head is the point. Retrosynthetic arrows are excluded: their "⇒" head is
+ * path geometry, not a marker, so a marker command would draw a second head.
+ */
+export function graphicObjectSupportsMarkers(object: DocumentObject | undefined): boolean {
+  if (!object || object.type !== "graphic" || object.graphicKind !== "path" || object.data.dualShaftParallel === true) {
+    return false;
+  }
+  return planNativeArtVisual(object, { coordinateSpace: "local" }).capabilities.isOpenStroke === true;
+}
+
+/**
+ * Set one end's arrowhead kind on every marker-capable graphic in the selection. `kind: "none"`
+ * deletes the marker key rather than storing `{kind: "none"}` — the render plan treats both as
+ * absent, and a deleted key keeps "Set as Default Arrow Style"'s never-adds-or-removes-heads
+ * contract honest. Adding a head to a bare end seeds its size from the opposite head (falling back
+ * to the 16px tool default) so the pair matches.
+ */
+export function applyGraphicObjectMarkerKindToSelection(
+  document: ChemDraftDocument,
+  markerId: NativeArtMarkerHandleId,
+  kind: GraphicMarker["kind"],
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    const current = object.data[markerId];
+    if (kind === "none") {
+      if (!current) {
+        return object.data;
+      }
+      const nextData = { ...object.data };
+      delete nextData[markerId];
+      return nextData;
+    }
+    if (current?.kind === kind) {
+      return object.data;
+    }
+    const otherId: NativeArtMarkerHandleId = markerId === "markerStart" ? "markerEnd" : "markerStart";
+    const seedSizePx = current?.sizePx ?? object.data[otherId]?.sizePx ?? 16;
+    return {
+      ...object.data,
+      [markerId]: {
+        kind,
+        sizePx: seedSizePx,
+        ...(current?.angleDegrees !== undefined ? { angleDegrees: current.angleDegrees } : {})
+      }
+    };
+  }, graphicObjectSupportsMarkers);
+}
+
+/** Set every non-none head's size on the selection's marker-capable graphics, snapped to the same
+ *  4px steps the canvas handle drags between (both ends together, matching the handle's symmetric
+ *  default — asymmetric sizing stays a canvas Shift-drag capability). */
+export function applyGraphicObjectMarkerSizeToSelection(
+  document: ChemDraftDocument,
+  sizePx: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const snapped = snapGraphicMarkerSizePx(sizePx);
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    let nextData = object.data;
+    for (const markerId of ["markerStart", "markerEnd"] as const) {
+      const marker = nextData[markerId];
+      if (marker && marker.kind !== "none" && marker.sizePx !== snapped) {
+        nextData = { ...nextData, [markerId]: { ...marker, sizePx: snapped } };
+      }
+    }
+    return nextData;
+  }, graphicObjectSupportsMarkers);
 }
 
 function updateVisualEffectObjects(

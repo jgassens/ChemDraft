@@ -216,6 +216,34 @@ field that renders an X at the shaft midpoint, oriented to the local tangent so 
 No per-open cost was added: the grid is pre-rendered and the new items use the procedural
 `ArtToolIcon` SVG fallback rather than PNG assets.
 
+## Thread C — Selection-aware Main Toolbar style widget
+
+The Main Toolbar's style widget (`widget.core.mainStyleControls`) now swaps its layout by what is
+selected: **text** (the old widget verbatim — also the fallback for empty/mixed selections and
+customize mode), **molecule** (bond width, double-bond spacing, atom-label font/size, H/terminal-C
+toggles), **shape** (fill/stroke target, paint type, width/dash/corners, swap), and **arrow**
+(head kind/size, tail toggle, width/dash, set-as-default, flip). One widget id, one 12×2 grid
+slot; every layout budgets exactly 11 cells per row and the CSS pins the footprint so variants
+can never resize the toolbar. The classifier (`toolbars/toolbarSelectionKind.ts`) rides the
+text-style broadcast to detached palette windows.
+
+**Command ids introduced by this slice** (per the AGENTS.md command-id rule):
+
+- `object.marker.end.kind.*` / `object.marker.start.kind.*` — 8 static presets per end
+  (`none`/`filledArrow`/`openArrow`/`halfArrow`/`bar`/`dot`/`diamond`/`chevron`), setting one
+  end's arrowhead kind on marker-capable graphics. `none` deletes the marker key; adding a head
+  seeds its size from the opposite end.
+- `object.marker.size:<n>` — dynamic head size, snapped to the same 4–96px steps as the canvas
+  handle (`snapGraphicMarkerSizePx`, now the single source of truth in art-engine); sets every
+  non-none head on the selection, matching the handle's symmetric default.
+- `arrow.setDefaultStyle` — previously a context-menu-local string; now also handled inside
+  `invoke` (`applyArrowStyleDefaultCommand`) so the arrow widget's button can capture the single
+  selected arrow. The context menu still captures the right-clicked object, selected or not.
+
+Retro arrows are excluded from marker commands (their "⇒" head is path geometry); anchor-point
+add/remove stays with the Scissors/Eraser tools because splitting converts arrows to plain
+polylines and destroys their arrow identity (`splitLinePathSegmentAtPoint`).
+
 ## Open items
 
 1. **Art inspector still styles only graphics and molecules.** `ArtInspectorStyleObject` is

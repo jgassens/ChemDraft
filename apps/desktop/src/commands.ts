@@ -3,6 +3,7 @@ import {
   findPageSizePreset,
   type ChemDraftDocument,
   type GraphicEffect,
+  type GraphicMarker,
   type MoleculeObject,
   type NativeAtomLabelAlignment,
   type NativeAtomLabelPlacement,
@@ -12,6 +13,7 @@ import {
   type NativeTextFontStyle,
   type TextSpan
 } from "@chemdraft/chem-core";
+import { MARKER_SIZE_MAX_PX, MARKER_SIZE_STEP_PX } from "@chemdraft/art-engine";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
@@ -434,6 +436,50 @@ export const objectStrokeDashCommands = [
   strokeLineCap?: "round";
 }[];
 
+export type ObjectMarkerHandleId = "markerStart" | "markerEnd";
+
+const objectMarkerKindEntries = [
+  { key: "none", kind: "none", label: "None" },
+  { key: "filledArrow", kind: "filled-arrow", label: "Filled" },
+  { key: "openArrow", kind: "open-arrow", label: "Open" },
+  { key: "halfArrow", kind: "half-arrow", label: "Half" },
+  { key: "bar", kind: "bar", label: "Bar" },
+  { key: "dot", kind: "dot", label: "Dot" },
+  { key: "diamond", kind: "diamond", label: "Diamond" },
+  { key: "chevron", kind: "chevron", label: "Chevron" }
+] as const satisfies readonly { key: string; kind: GraphicMarker["kind"]; label: string }[];
+
+/** Arrowhead (markerEnd) and tail (markerStart) kind presets — a closed enum crossed with the two
+ *  ends, so a static array like the other stroke-family commands. Rendered as select options in the
+ *  arrow style widget; never manifest items. */
+export const objectMarkerKindCommands = (["markerEnd", "markerStart"] as const).flatMap((markerId) =>
+  objectMarkerKindEntries.map((entry) => ({
+    id: `object.marker.${markerId === "markerEnd" ? "end" : "start"}.kind.${entry.key}`,
+    title: `${markerId === "markerEnd" ? "Arrowhead" : "Arrow Tail"}: ${entry.label}`,
+    markerId,
+    kind: entry.kind,
+    label: entry.label
+  }))
+) satisfies readonly {
+  id: string;
+  title: string;
+  markerId: ObjectMarkerHandleId;
+  kind: GraphicMarker["kind"];
+  label: string;
+}[];
+
+export function objectMarkerKindCommandId(markerId: ObjectMarkerHandleId, kind: GraphicMarker["kind"]): string {
+  const entry = objectMarkerKindEntries.find((candidate) => candidate.kind === kind) ?? objectMarkerKindEntries[0];
+  return `object.marker.${markerId === "markerEnd" ? "end" : "start"}.kind.${entry.key}`;
+}
+
+export function objectMarkerKindForCommand(
+  commandId: string
+): { markerId: ObjectMarkerHandleId; kind: GraphicMarker["kind"] } | undefined {
+  const command = objectMarkerKindCommands.find((candidate) => candidate.id === commandId);
+  return command ? { markerId: command.markerId, kind: command.kind } : undefined;
+}
+
 export const objectStrokeLineCapCommands = [
   { id: "object.stroke.cap.butt", title: "Line Ends: Flat", strokeLineCap: "butt" },
   { id: "object.stroke.cap.round", title: "Line Ends: Round", strokeLineCap: "round" },
@@ -501,6 +547,14 @@ export const customMoleculeAtomLabelAlignmentCommandPrefix = "molecule.atomLabel
 export const customMoleculeAtomLabelPlacementCommandPrefix = "molecule.atomLabel.placement:";
 export const customMoleculeAtomLabelShowTerminalCarbonsCommandPrefix = "molecule.atomLabel.showTerminalCarbons:";
 export const customMoleculeAtomLabelHideImplicitHydrogensCommandPrefix = "molecule.atomLabel.hideImplicitHydrogens:";
+// Arrowhead size rides a dynamic id like the molecule numerics; it sets every non-none head on the
+// selection, matching the canvas handle's symmetric default. Range/step come from the art engine so
+// the command and the handle drag can never disagree about the snap.
+export const customObjectMarkerSizeCommandPrefix = "object.marker.size:";
+
+export const objectMarkerNumberRanges = {
+  markerSizePx: { min: MARKER_SIZE_STEP_PX, max: MARKER_SIZE_MAX_PX, step: MARKER_SIZE_STEP_PX }
+} as const;
 
 export const moleculeStructureNumberRanges = {
   chainAngleDegrees: { min: 1, max: 179, step: 1 },
@@ -843,6 +897,14 @@ export function moleculeStructureChainAngleForCommand(commandId: string): { valu
 
 export function moleculeStructureBondLengthForCommand(commandId: string): { value: number } | undefined {
   return numberCommandValue(commandId, customMoleculeStructureBondLengthCommandPrefix, moleculeStructureNumberRanges.bondLengthPx);
+}
+
+export function objectMarkerSizeCommandId(value: number): string {
+  return `${customObjectMarkerSizeCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function objectMarkerSizeForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customObjectMarkerSizeCommandPrefix, objectMarkerNumberRanges.markerSizePx);
 }
 
 export function moleculeStructureBondStrokeWidthForCommand(commandId: string): { value: number } | undefined {

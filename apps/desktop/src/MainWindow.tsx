@@ -175,6 +175,8 @@ import {
   objectOpacityForCommand,
   objectPaintTypeForCommand,
   objectStyleActions,
+  objectMarkerKindForCommand,
+  objectMarkerSizeForCommand,
   objectStrokeDashCommands,
   objectStrokeLineCapCommands,
   objectStrokeLineJoinCommands,
@@ -322,7 +324,10 @@ import {
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
+  applyGraphicObjectMarkerKindToSelection,
+  applyGraphicObjectMarkerSizeToSelection,
   applyGraphicObjectStrokeStyleToSelection,
+  graphicObjectSupportsMarkers,
   applyMoleculeObjectColorToSelection,
   applyMoleculeObjectNoneToSelection,
   applyMoleculeObjectOpacityToSelection,
@@ -1448,7 +1453,8 @@ function isTransformHandleDoublePress(
 }
 /** Persisted per-tool "draw new arrows like this" defaults (documentWorkflow's session registry). */
 const ARROW_STYLE_DEFAULTS_STORAGE_KEY = "chemdraft.arrowStyleDefaults.v1";
-/** Context-menu command handled locally at the menu's render site, not via the command registry. */
+/** Handled by applyArrowStyleDefaultCommand inside `invoke` (and the object context menu, which
+ *  passes the right-clicked object), not via the command registry. */
 const SET_DEFAULT_ARROW_STYLE_COMMAND_ID = "arrow.setDefaultStyle";
 
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
@@ -5462,6 +5468,32 @@ export function MainWindow({
       }, moleculeObjectIds, ringOverrideMode);
     }
 
+    const markerKind = objectMarkerKindForCommand(commandId);
+    if (markerKind) {
+      // Stricter than the stroke family's `targeted`: markers only exist on open-stroke paths, so a
+      // selection of rectangles must report untargeted rather than "Updated selected arrowhead".
+      const markerObjectIds = graphicObjectIds.filter((objectId) =>
+        graphicObjectSupportsMarkers(findDocumentObject(currentDocument, objectId)));
+      return {
+        document: applyGraphicObjectMarkerKindToSelection(currentDocument, markerKind.markerId, markerKind.kind, markerObjectIds),
+        handled: true,
+        targeted: markerObjectIds.length > 0,
+        message: markerKind.markerId === "markerEnd" ? "Updated selected arrowhead" : "Updated selected arrow tail"
+      };
+    }
+
+    const markerSize = objectMarkerSizeForCommand(commandId);
+    if (markerSize) {
+      const markerObjectIds = graphicObjectIds.filter((objectId) =>
+        graphicObjectSupportsMarkers(findDocumentObject(currentDocument, objectId)));
+      return {
+        document: applyGraphicObjectMarkerSizeToSelection(currentDocument, markerSize.value, markerObjectIds),
+        handled: true,
+        targeted: markerObjectIds.length > 0,
+        message: "Updated selected arrowhead size"
+      };
+    }
+
     const strokeWidth = objectStrokeWidthCommands.find((command) => command.id === commandId);
     if (strokeWidth) {
       return {
@@ -5592,6 +5624,36 @@ export function MainWindow({
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
   }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
+
+  // "Set as Default Arrow Style", shared by the object context menu (which passes the right-clicked
+  // object, selected or not) and the arrow style widget's button (which reads the single selected
+  // arrow). Returns true when the command id was handled, even if only with a status message.
+  const applyArrowStyleDefaultCommand = useCallback((commandId: string, sourceObjectId?: string): boolean => {
+    if (commandId !== SET_DEFAULT_ARROW_STYLE_COMMAND_ID) {
+      return false;
+    }
+    const currentDocument = documentRef.current;
+    const targetObjectId = sourceObjectId ?? (
+      currentDocument.selection.objectIds.length === 1 ? currentDocument.selection.objectIds[0] : undefined
+    );
+    const targetObject = targetObjectId ? findDocumentObject(currentDocument, targetObjectId) : undefined;
+    const captured = targetObject ? nativeArrowStyleDefaultFromGraphic(targetObject) : undefined;
+    if (!captured) {
+      setStatus(targetObjectId ? "No arrow style to capture" : "Select one arrow first");
+      return true;
+    }
+    setNativeArrowStyleDefault(captured.toolId, captured.style);
+    try {
+      window.localStorage.setItem(
+        ARROW_STYLE_DEFAULTS_STORAGE_KEY,
+        JSON.stringify(nativeArrowStyleDefaultsSnapshot())
+      );
+    } catch {
+      // Session-only defaults when storage is unavailable.
+    }
+    setStatus(`New ${captured.title.toLowerCase()}s will use this style`);
+    return true;
+  }, []);
 
   const previewObjectStyleCommand = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current;
@@ -7495,6 +7557,10 @@ export function MainWindow({
     }
 
     if (applyObjectStyleCommand(commandId)) {
+      return;
+    }
+
+    if (applyArrowStyleDefaultCommand(commandId)) {
       return;
     }
 
@@ -15014,23 +15080,7 @@ export function MainWindow({
           onInvoke={(commandId) => {
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
-            if (commandId === SET_DEFAULT_ARROW_STYLE_COMMAND_ID && menu) {
-              const menuObject = findDocumentObject(documentRef.current, menu.objectId);
-              const captured = menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
-              if (!captured) {
-                setStatus("No arrow style to capture");
-                return;
-              }
-              setNativeArrowStyleDefault(captured.toolId, captured.style);
-              try {
-                window.localStorage.setItem(
-                  ARROW_STYLE_DEFAULTS_STORAGE_KEY,
-                  JSON.stringify(nativeArrowStyleDefaultsSnapshot())
-                );
-              } catch {
-                // Session-only defaults when storage is unavailable.
-              }
-              setStatus(`New ${captured.title.toLowerCase()}s will use this style`);
+            if (menu && applyArrowStyleDefaultCommand(commandId, menu.objectId)) {
               return;
             }
             if (isBondDepthCommandId(commandId) && menu?.bondDepthContext) {
