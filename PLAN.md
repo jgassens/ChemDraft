@@ -63,7 +63,9 @@ reasoning behind them live in `docs/shipped/README.md`.
 - `packages/viewport-engine`, rulers through `@scena/react-ruler` with ChemDraft viewport state as
   the source of truth, native page layout and paper sizes, File > Page Setup.
 - Drawing tools: bonds, chains, atom labels, rings, brackets, orbitals, glyph stamps, formula text,
-  and the full arrow family as editable art objects that round-trip CDXML.
+  and the four reaction-arrow families as semantic `reaction-arrow` objects. (Rebuilding those
+  arrows as editable art objects is in flight on `codex/toolbar-bug-fixes`, not yet on `main` —
+  see `PLANS.md`.)
 - `packages/art-engine` and the art inspector, which styles graphics and molecules.
 - Spin 3D with selectable refinement modes, a Preferences window, and `packages/engine3d-api` as the
   versioned protocol to a 3D sidecar.
@@ -1739,13 +1741,13 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 - How the MolScribe OCSR plugin distributes or locates model checkpoints.
 - Whether the MolScribe OCSR plugin should use a local Python sidecar, ONNX/WASM later, or another service path.
 - How native plugins are signed and approved. (Package *integrity* is enforced by SHA-256 with a published sidecar; publisher *identity* is not, and the UI must not conflate the two.)
+- Which mechanism arrows are chemically semantic versus graphical annotations. On `main` the four reaction-arrow families are semantic `reaction-arrow` objects and there is no mechanism-arrow tool at all (`tool.mechanismArrow` is retired, `packages/mechanism-tools` is a type stub). The in-flight `codex/toolbar-bug-fixes` slice answers this "all graphical": arrows become art objects with no atom or bond anchoring, and electron-pushing curves ship as art arcs. Treat it as settled once that branch merges.
 
 ### Answered by shipped work
 
 - ~~Whether the app supports a browser version initially.~~ Yes, as a shell: `pnpm dev:web` runs the desktop app in the browser. There is still no separate `apps/web` package.
 - ~~Whether plugins are distributed through a registry later.~~ Not a registry — a host-owned catalog allowlisted by plugin id, with the app owning source, download, verification, handshake, replacement, and rollback. An installed plugin cannot choose its own download URL.
 - ~~Whether RDKit loads in the frontend, backend, or both.~~ Moot for now: OpenChemLib is the shipped engine and `rdkit-adapter` is a declared placeholder (AGENTS.md §6.18-6.19). The question returns if real RDKit wiring lands.
-- ~~Which mechanism arrows are chemically semantic versus graphical annotations.~~ Currently all graphical. The four reaction-arrow families and the curved/fishhook electron-pushing arrows are art objects; no arrow carries atom or bond anchoring. A semantic mechanism model remains unbuilt (Phase 7).
 - ~~What installer/distribution system is preferred for each OS.~~ Settled for macOS: signed and notarized bundle, Sparkle auto-update against a signed appcast (`docs/releasing/macos-updates.md`). Windows and Linux remain open.
 
 ## 21. Guiding rule

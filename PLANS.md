@@ -12,6 +12,12 @@ finished and moved to `docs/shipped/selection-policy-refactor.md`.
 
 # Active slice: toolbar, palette, and arrow bug fixes
 
+> **NOT ON `main`.** Everything in this section lives on `codex/toolbar-bug-fixes` and has not been
+> merged. On `main`, arrows are still semantic `reaction-arrow` objects and none of the palette or
+> popover fixes below are present. This file describes work *in flight* — that is its job — so read
+> it as "what is being built", not "what this checkout does". When the branch merges, delete this
+> banner and move the section to `docs/shipped/README.md`.
+
 Branch: `codex/toolbar-bug-fixes`, opened 2026-07-26, 26 commits as of 2026-07-30.
 
 Two independent threads share the branch. Thread A hardens the native toolbar/palette window

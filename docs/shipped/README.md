@@ -10,8 +10,10 @@ the superseding entry says so — read the newest entry that touches a subsystem
 **Superseded decisions, at a glance:**
 
 - *Toolbar Wiring and Honesty* decided that the four tool-drawn arrows would be semantic
-  `reaction-arrow` objects rather than art graphics. The `codex/toolbar-bug-fixes` slice reversed
-  this by agreement: all four families are now art arrows tagged for CDXML interop. See `PLANS.md`.
+  `reaction-arrow` objects rather than art graphics. That decision **still stands on `main`** and is
+  being reversed by agreement on `codex/toolbar-bug-fixes`, where all four families become art
+  arrows tagged for CDXML interop. Until that branch merges, `main`'s arrows are semantic objects;
+  see `PLANS.md` for the incoming design.
 
 **Slices with their own file:**
 
@@ -121,8 +123,9 @@ rendered UI (PLAN.md 6.15 sanctions it explicitly — "may exist only as disable
 
 ### Design decisions
 
-- **Arrows are semantic objects.** *(Superseded 2026-07-27 — see `PLANS.md`. The four families are
-  now art arrows tagged for CDXML interop.)* The four wired arrow tools create `reaction-arrow`
+- **Arrows are semantic objects.** *(Still true on `main`. Being superseded on
+  `codex/toolbar-bug-fixes`, where the four families become art arrows tagged for CDXML interop —
+  see `PLANS.md`.)* The four wired arrow tools create `reaction-arrow`
   document objects (`packages/chem-core`), not art graphics: the semantic type already has canvas
   rendering, selection/move/transform support, SVG export, and CDXML export+import. Art-route
   arrows would make tool-drawn and CDXML-imported arrows different object types. `arrowKind` gains
@@ -207,7 +210,7 @@ Definition of done, as met:
   action.
 - The Customize gallery cannot produce a decorative disabled button.
 - Reaction, resonance, equilibrium, and retrosynthesis arrows are semantic objects that round-trip
-  CDXML. *(Superseded: they are now art arrows that round-trip CDXML.)*
+  CDXML. *(Being superseded on `codex/toolbar-bug-fixes`: art arrows that round-trip CDXML.)*
 - Orbitals, brackets, symbols, chain, and formula text create real document objects with undo/redo,
   save/reopen, and SVG export parity.
 - AGENTS.md, PLAN.md, and the plans file describe the shipped state; build stamps updated.
