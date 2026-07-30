@@ -19,6 +19,7 @@ import {
 
 import { analyzeStructure } from "./analysis";
 import { resetRdkitForTesting } from "./conformer";
+import { PINNED_RDKIT_WASM_SHA256 } from "./methods";
 import { installRealRdkitModuleLoader } from "./testing";
 
 beforeAll(() => {
@@ -122,7 +123,7 @@ describe("aspirin", () => {
     expect(rows.find((r) => r.label === "Average mass")?.value).toBe("180.159 g/mol");
 
     expect(report.engineSummary).toMatch(/rdkit-minimallib-wasm 2026\.03\.3/);
-    expect(report.engineSummary).toMatch(/sha256:5b1bc11269/);
+    expect(report.engineSummary).toContain(`sha256:${PINNED_RDKIT_WASM_SHA256}`);
     expect(report.fingerprint).toMatch(/^fnv1a64:/);
   });
 

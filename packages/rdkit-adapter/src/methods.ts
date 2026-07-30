@@ -29,28 +29,34 @@ export const PINNED_RDKIT_VERSION = "2026.03.3";
 /**
  * SHA-256 of `vendor/RDKit_minimal.wasm`, recorded in `vendor/BUILD.md`. Carried into every
  * `AnalysisRun`'s engine environment so a rebuilt artifact changes the run fingerprint and invalidates
- * cached numbers. `methods.test.ts` pins it against BUILD.md so the two cannot drift.
+ * cached numbers. `methods.test.ts` pins it against BUILD.md *and* against the bytes on disk, so
+ * neither the prose nor this constant can drift from the artifact they describe.
  */
-export const PINNED_RDKIT_WASM_SHA256 = "5b1bc1126950a42056ce529cde32946491daa4a47889232e9aca506a9a50f7ed";
+export const PINNED_RDKIT_WASM_SHA256 = "48b725a2e80af7f9792cd56abf65f16cea402f1cfe4f3f6c32a71669f1d848aa";
 
 const ENGINE = "rdkit-minimallib-wasm";
 
 /**
  * What the *loaded* artifact can do, as opposed to what the patch set says it should.
  *
- * The committed `RDKit_minimal.wasm` predates vendor patch #6, so `get_descriptors` there takes no
- * arguments — and, measured against the real binary, an extra argument is **silently ignored rather
- * than rejected**: `CS(=O)(=O)C` returns tpsa 34.14 with or without `{"includeSandP":true}`. Arity
- * detection would therefore report the patch as present and label the old number with the new
- * convention, which is exactly the silent-wrong-provenance failure this whole design exists to
- * prevent. Detection has to compare the value (see `detectEngineCapabilities`).
+ * The committed `RDKit_minimal.wasm` now carries vendor patch #6, but detection still compares
+ * **values**, never arity, and the measurement that forced that is worth keeping: on the pre-rebuild
+ * binary, `get_descriptors('{"includeSandP":true}')` did not throw — the extra argument was silently
+ * ignored and `CS(=O)(=O)C` returned tpsa 34.14 either way. Arity detection would have reported the
+ * patch as present and labelled an S-excluded number with the S-included convention, which is exactly
+ * the silent-wrong-provenance failure this design exists to prevent. Any future artifact that lags the
+ * patch set — a stale checkout, a partial rebuild — fails the same way, so the value probe stays.
  */
 export interface RdkitEngineCapabilities {
   /** True when the loaded artifact honours the TPSA `includeSandP` details flag (vendor patch #6). */
   descriptorIncludeSandP: boolean;
 }
 
-/** What the committed artifact can do today. */
+/**
+ * The conservative floor: the least-capable binary this adapter supports. Used as the assumed set
+ * before `detectEngineCapabilities` has run, and as the fallback when the probe itself throws — never
+ * as a claim about what the currently committed artifact can do.
+ */
 export const UNPATCHED_CAPABILITIES: RdkitEngineCapabilities = { descriptorIncludeSandP: false };
 
 /** The details JSON patch #6 adds to `get_descriptors`. */

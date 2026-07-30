@@ -406,7 +406,7 @@ describe("AnalysisRun", () => {
         {
           name: "rdkit-minimallib-wasm",
           version: "2026.03.3",
-          artifactHashes: ["5b1bc1126950a42056ce529cde32946491daa4a47889232e9aca506a9a50f7ed"]
+          artifactHashes: ["48b725a2e80af7f9792cd56abf65f16cea402f1cfe4f3f6c32a71669f1d848aa"]
         }
       ],
       startedAt: "2026-07-30T12:00:00.000Z",

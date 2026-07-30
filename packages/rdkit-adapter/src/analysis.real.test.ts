@@ -19,8 +19,19 @@ import {
   type RepresentationVariant
 } from "@chemdraft/analysis-core";
 
-import { analyzeStructure, analyzeStructureDetailed, detectEngineCapabilities, sourceInterpretation } from "./analysis";
-import { DESCRIPTOR_DETAILS_INCLUDE_SANDP, INCLUDE_SANDP_PROBE_SMILES, PINNED_RDKIT_VERSION } from "./methods";
+import {
+  analyzeStructure,
+  analyzeStructureDetailed,
+  detectEngineCapabilities,
+  rdkitAnalysisContracts,
+  sourceInterpretation
+} from "./analysis";
+import {
+  DESCRIPTOR_DETAILS_INCLUDE_SANDP,
+  INCLUDE_SANDP_PROBE_SMILES,
+  PINNED_RDKIT_VERSION,
+  PINNED_RDKIT_WASM_SHA256
+} from "./methods";
 import { ensureRdkit, resetRdkitForTesting } from "./conformer";
 import { installRealRdkitModuleLoader } from "./testing";
 
@@ -95,10 +106,11 @@ describe("engine regression — aspirin, pinned to RDKit 2026.03.3", () => {
   });
 
   it("carries the vendored artifact hash so a rebuild changes the fingerprint", async () => {
+    // Against the constant, not a literal: methods.test.ts is what ties the constant to the actual
+    // bytes of vendor/RDKit_minimal.wasm. A literal here would only duplicate that check while
+    // needing a hand-edit on every rebuild — and a hand-edit is exactly how provenance goes stale.
     const run = await analyze("CC(=O)Oc1ccccc1C(=O)O");
-    expect(run.engines[0]?.artifactHashes[0]).toBe(
-      "sha256:5b1bc1126950a42056ce529cde32946491daa4a47889232e9aca506a9a50f7ed"
-    );
+    expect(run.engines[0]?.artifactHashes[0]).toBe(`sha256:${PINNED_RDKIT_WASM_SHA256}`);
   });
 
   it("reports every applicable descriptor as a finite number with a unit", async () => {
@@ -436,16 +448,17 @@ describe("method selection", () => {
 });
 
 describe("engine capability detection (vendor patch #6)", () => {
-  it("reports the committed artifact as unpatched, because it is", async () => {
+  it("reports the committed artifact as patched, because it is", async () => {
     const module = (await ensureRdkit()) as never as Parameters<typeof detectEngineCapabilities>[0];
-    expect(detectEngineCapabilities(module)).toEqual({ descriptorIncludeSandP: false });
+    expect(detectEngineCapabilities(module)).toEqual({ descriptorIncludeSandP: true });
   });
 
   it("detects by value, not by whether the call succeeded", async () => {
-    // The measurement that forces this: on the committed artifact,
-    // get_descriptors('{"includeSandP":true}') does NOT throw — it returns the same 34.14 for
-    // CS(=O)(=O)C. Arity detection would report the patch as present and the run would then label an
-    // S-excluded number with the S-included convention.
+    // The measurement that forced this, kept because it still governs the design: on the
+    // PRE-REBUILD artifact, get_descriptors('{"includeSandP":true}') did NOT throw — it returned the
+    // same 34.14 for CS(=O)(=O)C. Arity detection would have reported the patch as present and the
+    // run would have labelled an S-excluded number with the S-included convention. The assertion
+    // below is the positive half of that: the flag has to move the number, not merely be accepted.
     const module = (await ensureRdkit()) as never as {
       get_mol(smiles: string): { get_descriptors(details?: string): string; delete(): void } | null;
     };
@@ -455,14 +468,41 @@ describe("engine capability detection (vendor patch #6)", () => {
     probe.delete();
 
     expect(withoutFlag.tpsa).toBe(34.14);
-    expect(withFlag.tpsa).toBe(34.14);
+    expect(withFlag.tpsa).toBe(42.52);
   });
 
-  it("keeps TPSA on the unpatched convention, and says so in the run", async () => {
+  it("moves TPSA and nothing else — the patch recomputes one descriptor, not the set", async () => {
+    // Patch #6 reaches into a calculator that produces ~40 numbers at once. If it had perturbed any
+    // of the others, every one of those contracts would be describing the wrong convention.
+    const module = (await ensureRdkit()) as never as {
+      get_mol(smiles: string): { get_descriptors(details?: string): string; delete(): void } | null;
+    };
+    const probe = module.get_mol(INCLUDE_SANDP_PROBE_SMILES)!;
+    const withoutFlag = JSON.parse(probe.get_descriptors()) as Record<string, number>;
+    const withFlag = JSON.parse(probe.get_descriptors(DESCRIPTOR_DETAILS_INCLUDE_SANDP)) as Record<string, number>;
+    probe.delete();
+
+    const moved = Object.keys(withoutFlag).filter((key) => withoutFlag[key] !== withFlag[key]);
+    expect(moved).toEqual(["tpsa"]);
+  });
+
+  it("puts TPSA on the S-included convention, and says so in the run", async () => {
     const run = await analyze("Cc1onc(c1)NS(=O)(=O)c1ccc(N)cc1", { methodIds: ["rdkit.tpsa"] } as never);
-    // Sulfamethoxazole, the §7 case: 98.22 with S excluded. A rebuilt artifact makes this a visible
-    // failure here rather than a silent shift.
-    expect(scalar(run, "rdkit.tpsa")).toBe(98.22);
-    expect(result(run, "rdkit.tpsa").methodVersion).toBe("1.0.0");
+    // Sulfamethoxazole, the §7 case: 98.22 with S excluded, 106.60 with it included — and 106.60 is
+    // the number OpenChemLib independently reports (see propertyCorpus). The version bump is not
+    // decoration: methodKey carries it, so cached S-excluded numbers cannot be served under the new
+    // convention.
+    expect(scalar(run, "rdkit.tpsa")).toBe(106.60000000000001);
+    expect(result(run, "rdkit.tpsa").methodVersion).toBe("2.0.0");
+
+    // A result carries the method version, not the convention prose — so read the convention off the
+    // contract built from the capabilities actually detected on the loaded module. That is what ties
+    // the disclosed convention to the binary in hand rather than to the patch set on paper.
+    const module = (await ensureRdkit()) as never as Parameters<typeof detectEngineCapabilities>[0];
+    const tpsa = rdkitAnalysisContracts(PINNED_RDKIT_VERSION, detectEngineCapabilities(module)).find(
+      (contract) => contract.id === "rdkit.tpsa"
+    );
+    expect(tpsa?.version).toBe("2.0.0");
+    expect(tpsa?.conventions.some((convention) => convention.includes("INCLUDED"))).toBe(true);
   });
 });

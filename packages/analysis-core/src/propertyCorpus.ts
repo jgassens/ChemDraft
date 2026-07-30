@@ -131,8 +131,10 @@ export const propertyCorpus: readonly PropertyCorpusEntry[] = [
     smiles: "Cc1onc(c1)NS(=O)(=O)c1ccc(N)cc1",
     tags: ["sulfur-phosphorus", "charged-heterocycle"],
     rationale:
-      "The tPSA `includeSandP` case: RDKit returns 98.22 with sulfur excluded, OpenChemLib 106.60 with " +
-      "it included. Pinned so patch #6 is a visible change in the expected number rather than a silent one.",
+      "The tPSA `includeSandP` case: 98.22 with sulfur excluded, 106.60 with it included. Vendor patch " +
+      "#6 landed 2026-07-30, and RDKit now returns 106.60000000000001 under the flag — independently " +
+      "matching the OpenChemLib value this entry was written against. Two engines agreeing on the " +
+      "convention is the point: the disagreement was never chemistry, only which table was in use.",
     expectedComponentCount: 1
   },
   {

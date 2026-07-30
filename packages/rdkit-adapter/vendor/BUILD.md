@@ -36,57 +36,104 @@ pristine checkout of the pinned commit.
 a tenth is a maintenance smell. Record the count in
 `docs/architecture/dependency-inventory.md` whenever it changes.
 
-> ⚠️ **Two changes are pending a rebuild.** The committed `RDKit_minimal.{js,wasm}` below were
-> built from patches `0001–0005` as they stood in June 2026, so they carry **neither** of these:
+> ✅ **All six patches are in the committed artifact** as of the 2026-07-30 rebuild. The two that had
+> been pending — `0003`'s `useRandomCoords` and `0006`'s `includeSandP` — were verified live by
+> running one probe script against the old and new binaries with nothing else changed:
 >
-> 1. **`useRandomCoords`** (patch `0003`) — see the note below.
-> 2. **`includeSandP`** (patch `0006`) — `get_descriptors` in the committed artifact takes no
->    arguments. Measured against the real binary, passing one does **not** throw: it is silently
->    ignored, and `CS(=O)(=O)C` returns `tpsa` 34.14 either way. `detectEngineCapabilities` in
->    `src/analysis.ts` therefore probes by **value**, not by whether the call succeeded — arity
->    detection would report the patch as present and label an S-excluded number with the S-included
->    convention. Until a rebuild lands, `rdkit.tpsa` stays at version 1.0.0 and its contract says the
->    convention is not selectable.
+> | Probe | Pre-rebuild artifact | Committed artifact |
+> |---|---|---|
+> | `CS(=O)(=O)C` tpsa, no flag | 34.14 | 34.14 |
+> | `CS(=O)(=O)C` tpsa, `{"includeSandP":true}` | 34.14 (**argument ignored**) | **42.52** |
+> | sulfamethoxazole tpsa, `{"includeSandP":true}` | 98.22 (**ignored**) | **106.60000000000001** |
+> | every non-TPSA descriptor under the flag | unchanged | unchanged |
+> | `generate_3d_embed` coords, `useRandomCoords` false vs true | identical (**ignored**) | **differ** |
 >
-> ⚠️ **Rebuild detail for `useRandomCoords`.** The committed `RDKit_minimal.{js,wasm}`
-> below were built **before** `0003` gained the `useRandomCoords` parameter, so they
-> ignore it. ETKDG's default (eigenvalue-decomposition) start *fails* to embed large,
-> flexible molecules — e.g. a ~234-heavy-atom peptide returns no conformer (verified: native
-> RDKit 2026.03.3 `EmbedMolecule` returns -1 with `useRandomCoords=False`, succeeds with
-> `True`). `packages/rdkit-adapter/src/conformer.ts` already retries such embeds with
-> `useRandomCoords:true`, but that only takes effect once these artifacts are **rebuilt** from
-> the patched tree (and the SHA-256s below refreshed). Until then the conformer worker falls
-> back to the OpenChemLib engine for structures RDKit can't embed.
+> The S-included 106.60000000000001 independently matches the OpenChemLib value already recorded for
+> sulfamethoxazole in `packages/analysis-core/src/propertyCorpus.ts` — two engines agreeing on the
+> convention, not just a number that moved.
+>
+> **`detectEngineCapabilities` still probes by value, not arity, and must keep doing so.** The
+> pre-rebuild binary did not *reject* the extra argument, it silently ignored it, so "did the call
+> succeed" would have reported patch `0006` as present and labelled an S-excluded number with the
+> S-included convention. Any future artifact that lags the patch set fails identically.
+>
+> **Why `useRandomCoords` exists** (patch `0003`): ETKDG's default eigenvalue-decomposition start
+> *fails* to embed large, flexible molecules — a ~234-heavy-atom peptide returns no conformer
+> (verified: native RDKit 2026.03.3 `EmbedMolecule` returns -1 with `useRandomCoords=False`, succeeds
+> with `True`). `packages/rdkit-adapter/src/conformer.ts` retries failed embeds with
+> `useRandomCoords:true`, and that retry is now effective. Note that
+> `docs/benchmarks/offending-chemdraft.mol` is **not** that peptide — it is a 64-heavy-atom ladder
+> polyether that embeds either way, so it demonstrates the flag is *read* (coordinates differ) but
+> cannot demonstrate the rescue. The peptide is not in the repo.
 
 ## Build
+Colima with the default profile used for both builds so far: 6 CPU, 10 GiB RAM, 60 GiB disk
+(`colima start`). Stage 3 took ~14 minutes on that profile with the deps image already cached.
+
 ```bash
-# 1. Clone the pinned source and apply our patches.
-git clone https://github.com/rdkit/rdkit.git rdkit-src
-cd rdkit-src
-git checkout e74e7b0a5a2fc4e7f77c04ec26a61d4b8edbf22f
-for p in /path/to/packages/rdkit-adapter/vendor/patches/*.patch; do patch -p1 < "$p"; done
+# 1. Fetch the pinned commit and apply our patches. A depth-1 fetch of the exact SHA is enough
+#    (~300 MB) — a full clone is not needed, and a smaller context speeds up step 2.
+git init rdkit-src && cd rdkit-src
+git remote add origin https://github.com/rdkit/rdkit.git
+git fetch --depth 1 origin e74e7b0a5a2fc4e7f77c04ec26a61d4b8edbf22f
+git checkout FETCH_HEAD
+printf '.git\n' > .dockerignore
+for p in /path/to/packages/rdkit-adapter/vendor/patches/*.patch; do patch -p1 --forward < "$p"; done
+rm -f Code/MinimalLib/*.orig     # patch leaves these behind; keep them out of the build context
 
-# 2. Build MinimalLib from the local (patched) tree via the RDKit Docker flow.
+# 2. Build. `docker compose` and `docker build -o` both require buildx, which is NOT installed
+#    here — run the three stages as plain `docker build` calls against the classic builder instead.
 cd Code/MinimalLib/docker
-GET_SRC=copy_from_local docker compose -f docker_compose_build_minimallib.yml build \
-  --build-arg "EXCEPTION_HANDLING=-fwasm-exceptions" 2>&1 | tee docker-compose.log
 
-# 3. Export the artifacts (lands in Code/MinimalLib/demo/).
-DOCKER_BUILDKIT=1 docker build -f Dockerfile_4_rdkit_export -o ../demo .
+#    2a. deps (emsdk + boost + freetype + zlib). SKIP THIS if `rdkit-minimallib-deps:latest` already
+#        exists — it is the multi-hour stage, it is what patch 0005 fixes, and nothing in patches
+#        0001-0004/0006 touches it. Stage 2 only needs the tag to resolve.
+docker build --target deps-stage -t rdkit-minimallib-deps:latest -f Dockerfile_1_deps .
+
+#    2b. copy the patched source in (fast)
+docker build --target local-src-stage -t rdkit-minimallib-rdkit-src:latest \
+  -f Dockerfile_2_rdkit_copy_from_local ../../..
+
+#    2c. compile (the long one; upstream hard-codes `make -j2` — leave it, an OOM restarts the
+#        whole RUN layer from zero). Ends by running upstream's own tests.js as a gate.
+docker build -t rdkit-minimallib:latest \
+  --build-arg "EXCEPTION_HANDLING=-fwasm-exceptions" -f Dockerfile_3_rdkit_build .
+
+# 3. Export. `Dockerfile_4_rdkit_export`'s `-o` needs buildx; without it, copy out of a container.
+#    The final image is FROM scratch, so `docker create` needs a placeholder command even though the
+#    container is never started.
+docker create --name=rdkit-export rdkit-minimallib:latest /placeholder
+docker cp rdkit-export:/RDKit_minimal.js   ./out/
+docker cp rdkit-export:/RDKit_minimal.wasm ./out/
+docker rm rdkit-export
 ```
+> ⚠️ Do not pipe the build through `tee` and trust `$?` — you get **tee's** exit status, so a failed
+> stage looks like success. Check the log tail, or set `pipefail`.
 
 ## Vendor + pin the output
 ```bash
-cp Code/MinimalLib/demo/RDKit_minimal.js   packages/rdkit-adapter/vendor/RDKit_minimal.js
-cp Code/MinimalLib/demo/RDKit_minimal.wasm packages/rdkit-adapter/vendor/RDKit_minimal.wasm
-cp rdkit-src/license.txt                   packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
-# Record hashes in this file (replace the TODOs):
+cp out/RDKit_minimal.js   packages/rdkit-adapter/vendor/RDKit_minimal.js
+cp out/RDKit_minimal.wasm packages/rdkit-adapter/vendor/RDKit_minimal.wasm
+cp rdkit-src/license.txt  packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
 shasum -a 256 packages/rdkit-adapter/vendor/RDKit_minimal.{js,wasm}
 ```
+Record the `.wasm` hash **both** here and in `PINNED_RDKIT_WASM_SHA256`
+(`packages/rdkit-adapter/src/methods.ts`). `methods.test.ts` checks this file, the constant, and the
+bytes on disk against each other, so forgetting either one is a test failure rather than a silent
+provenance lie.
+
 - `RDKit_minimal.js`  (102 KB) SHA-256: `90d756278675169aaa8753b5475b61c2d3efa1efa6fb9c3aa83bec481687f0cf`
-- `RDKit_minimal.wasm` (7.5 MB) SHA-256: `5b1bc1126950a42056ce529cde32946491daa4a47889232e9aca506a9a50f7ed`
-- Built 2026-06-15 from `Release_2026_03_3` (+ patches 0001–0005) via Colima/Docker.
+- `RDKit_minimal.wasm` (7.5 MB) SHA-256: `48b725a2e80af7f9792cd56abf65f16cea402f1cfe4f3f6c32a71669f1d848aa`
+- Built 2026-07-30 from `Release_2026_03_3` (+ patches 0001–0006) via Colima/Docker.
 - The `.wasm` is committed directly (7.5 MB; no Git LFS in this repo).
+- **The `.js` is byte-identical to the 2026-06-15 build** and has not changed since. Embind registers
+  bindings at runtime from the wasm, so adding C++ methods does not alter the Emscripten glue. That
+  the hash reproduced exactly is a useful signal the build environment was unchanged — if it ever
+  *does* move, the emsdk in the deps image moved with it, and that is worth understanding before
+  vendoring.
+- Loading the vendored `.js` from Node with `require()` fails (`initRDKitModule is not a function`):
+  the package is `"type": "module"`, so a `.js` under it is treated as ESM and `module.exports` never
+  runs. Copy it somewhere neutral first, or import it as ESM.
 
 ## Smoke test (gate before integrating)
 With Node, load the artifact and embed the exact offending molfile and confirm it

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -18,6 +19,14 @@ describe("the vendored artifact pin", () => {
     // fingerprint and invalidates cached numbers. That only works if the constant and BUILD.md agree —
     // hence this test rather than a comment asking someone to remember.
     expect(buildDoc).toContain(PINNED_RDKIT_WASM_SHA256);
+  });
+
+  it("matches the bytes actually committed at vendor/RDKit_minimal.wasm", () => {
+    // The two tests either side of this one only prove the constant agrees with prose. Prose and
+    // constant can agree with each other and both be wrong about the file — which is exactly the
+    // failure a rebuild invites, since the artifact is the one thing that changes. Hash the bytes.
+    const wasm = readFileSync(new URL("../vendor/RDKit_minimal.wasm", import.meta.url));
+    expect(createHash("sha256").update(wasm).digest("hex")).toBe(PINNED_RDKIT_WASM_SHA256);
   });
 
   it("matches the RDKit release recorded in vendor/BUILD.md", () => {

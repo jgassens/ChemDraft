@@ -654,7 +654,7 @@ an Analyze item ships only when it computes something).
   precision (`144.01872368000002 Da`), now bound to the precision they are conventionally quoted to;
   and every row repeated the interpretation the header already stated, so the suffix is dropped when
   the whole report is about one interpretation and kept when a derived row sits beside a declined one.
-- **Phase 6 — MinimalLib patch #6. ✅ authored; ⏳ rebuild outstanding.**
+- **Phase 6 — MinimalLib patch #6. ✅ authored and shipped.**
   `vendor/patches/0006-minimallib-tpsa-includeSandP.patch` adds an optional details JSON to
   `get_descriptors` and honours `{"includeSandP":true}` by recomputing **only** `tpsa` through RDKit's
   own `calcTPSA(m, force, includeSandP)` — every other descriptor stays exactly as
@@ -662,19 +662,33 @@ an Analyze item ships only when it computes something).
   pristine checkout of the pinned commit. Patch count recorded as **six** in `vendor/BUILD.md` and the
   dependency inventory.
 
-  **The artifact is not rebuilt.** That needs Docker plus a multi-GB Emscripten build, which
-  `vendor/BUILD.md` has always called deferred — patch `0003`'s `useRandomCoords` has been in the same
-  state since June 2026. The repo now records two pending rebuild reasons instead of one.
+  **The artifact was rebuilt 2026-07-30**, clearing both pending reasons at once — `0006` and patch
+  `0003`'s `useRandomCoords`, which had been outstanding since June 2026. Colima's default profile
+  (6 CPU / 10 GiB) with the June deps image still cached made the compile ~14 minutes rather than the
+  overnight job it was feared to be. `RDKit_minimal.wasm` is now `48b725a2…`; the `.js` reproduced
+  **byte-identical**, because embind registers bindings at runtime from the wasm.
 
-  **So the runtime detects the capability by value, and that is not a stylistic choice.** Measured
-  against the committed binary, `get_descriptors('{"includeSandP":true}')` does **not** throw — it
-  silently ignores the argument and returns the same `tpsa` 34.14 for `CS(=O)(=O)C`. Detecting by "did
-  the call succeed" would report patch #6 as present and label an S-excluded number with the S-included
-  convention, which is the exact failure this branch exists to prevent. `detectEngineCapabilities`
-  compares the number on a sulfone probe instead, and `rdkit.tpsa`'s contract follows: version 1.0.0
-  with "not selectable — see BUILD.md" today, version 2.0.0 with the S-included convention once a
-  rebuilt artifact really honours it. Because the version is part of `methodKey`, the rebuild also
-  invalidates every cached TPSA rather than serving old numbers under the new convention.
+  Both patches were verified live by running one probe against the old and the new binary with nothing
+  else changed — `CS(=O)(=O)C` tpsa 34.14 → **42.52** under the flag (previously 34.14 either way),
+  sulfamethoxazole 98.22 → **106.60000000000001**, no other descriptor moved, and `generate_3d_embed`
+  now returns different coordinates for `useRandomCoords` false vs true where before they were
+  identical. The S-included 106.60 independently matches the OpenChemLib value the corpus was written
+  against: the two engines never disagreed about chemistry, only about which table was in use.
+
+  **The runtime still detects the capability by value, and that is not a stylistic choice.** Measured
+  against the pre-rebuild binary, `get_descriptors('{"includeSandP":true}')` did **not** throw — it
+  silently ignored the argument and returned the same `tpsa` 34.14 for `CS(=O)(=O)C`. Detecting by "did
+  the call succeed" would have reported patch #6 as present and labelled an S-excluded number with the
+  S-included convention, which is the exact failure this branch exists to prevent. Any future artifact
+  that lags the patch set fails identically, so the probe stays. `detectEngineCapabilities` compares the
+  number on a sulfone probe, and `rdkit.tpsa`'s contract follows it: version 2.0.0 with the S-included
+  convention now that the artifact really honours it, 1.0.0 with "not selectable — see BUILD.md" against
+  any binary that does not. Because the version is part of `methodKey`, the rebuild also invalidated
+  every cached TPSA rather than serving old numbers under the new convention.
+
+  **This is a visible change in shipped numbers.** Every sulfonamide, sulfone, and phosphate now reports
+  a higher TPSA than the same build did yesterday — correctly, and with the convention disclosed on the
+  contract, but users comparing against previously exported reports will see the shift.
 - **Phase 7 — Release 1 closeout. ✅ landed.** The corpus is green across every adversarial category it
   declares, method contracts are complete for every shipped capability, and AGENTS.md carries the rules
   (§6.17 `analysis-core`, §8b the property-suite scientific-claim rules). The build stamp is generated
@@ -772,11 +786,14 @@ build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 - ✅ `pnpm lint`, `pnpm test` (2139), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
   `cargo test` (47) are green.
 
-**Not done, and deliberately so.** The MinimalLib artifact is not rebuilt, so vendor patches `0003`
-(`useRandomCoords`) and `0006` (`includeSandP`) are authored and pinned but not in the shipped binary —
-the runtime detects that by value and reports the convention it actually used. And **releases stay
+**Not done, and deliberately so.** The isotope envelope still needs IsoSpec compiled to WASM — neither
+the vendored RDKit nor OpenChemLib 9.22.1 exposes per-isotope abundances, so the M/M+1/M+2
+approximation in `examples/plugins/mass-fragment-demo` stands until that lands. And **releases stay
 blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline, and the
 plugin-distribution rules are the project owner's calls, not engineering's.
+
+*(The MinimalLib rebuild that this section previously listed as outstanding landed 2026-07-30 — see
+Phase 6 above. Both `0003` and `0006` are in the shipped binary.)*
 
 ## Open items owned by the project owner
 

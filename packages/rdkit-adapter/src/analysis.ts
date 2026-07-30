@@ -168,10 +168,12 @@ function assertAnalysisSurface(module: RdkitMinimalModule, mol: RdkitJsMol): ass
  * Whether the loaded artifact honours the TPSA `includeSandP` details flag.
  *
  * Value-based, not arity-based, and that is not a stylistic preference. Measured against the
- * committed artifact, `get_descriptors('{"includeSandP":true}')` does not throw — it silently ignores
- * the argument and returns the same 34.14 for `CS(=O)(=O)C`. Detecting by "did the call succeed"
- * would report patch #6 as present, and the run would then label an S-excluded number with the
- * S-included convention. Comparing the number cannot produce that false positive.
+ * pre-rebuild artifact, `get_descriptors('{"includeSandP":true}')` did not throw — it silently ignored
+ * the argument and returned the same 34.14 for `CS(=O)(=O)C`. Detecting by "did the call succeed"
+ * would have reported patch #6 as present, and the run would then have labelled an S-excluded number
+ * with the S-included convention. Comparing the number cannot produce that false positive. The
+ * committed artifact now carries the patch, but any binary that lags the patch set fails the same
+ * way, so the probe stays.
  *
  * Memoised per loaded module, so the probe costs one extra parse per worker rather than one per
  * keystroke, and a reloaded module re-probes on its own.
