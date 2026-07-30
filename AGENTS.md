@@ -1171,6 +1171,40 @@ worktree.
 If a worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed on
 that branch yet — pick it up by merging from `main`, which carries all four files above.
 
+### 21.2 `/Applications/ChemDraft.app` is the stable build from `main` (do not remove)
+
+`/Applications/ChemDraft.app` is the installed **stable** app, built from `main`. A branch must never
+replace it, build over it, rename it, or unregister it. Branch bundles live in that worktree's own
+`app/` folder (gitignored) and are a **different application** to macOS:
+
+- **bundle id** — `org.chemdraft.desktop.dev.<worktree-slug>`, derived per worktree by `run-app`.
+  Never `org.chemdraft.desktop`; `run-app` refuses to launch if it ever resolves to the stable id.
+- **display name** — `ChemDraft (dev)`, so the Dock and ⌘-Tab never read as the stable app.
+- **location** — `<worktree>/app/ChemDraft (dev).app`. `tauri build` writes to
+  `target/release/bundle/macos/` with the *stable* id, so `run-app` **moves** (never copies) that
+  output into `app/` and rewrites its `Info.plist`; leaving a copy behind would shadow the stable app
+  in LaunchServices.
+
+Why this exists: every build used to be stamped `org.chemdraft.desktop` and force-registered with
+`lsregister -f`, so a branch build impersonated the stable app. `open`, the Dock, and
+`tell application id` resolved to whichever registered last, and all builds shared one
+`~/Library/Application Support/org.chemdraft.desktop` — so two running builds fought over
+`toolbar-state.json` and overwrote each other's palette positions. A whole debugging session was lost
+to "the toolbar won't open" that was really the July-26 `/Applications` build being launched.
+
+Consequences to expect, not to fix: a dev build has its **own** Application Support directory, so it
+starts with fresh settings, plugins, and session — it does not inherit the stable app's. `run-app`
+only ever clears saved window state and `defaults` for its own dev id.
+
+Corollaries:
+
+- A separate bundle id means the screenshot/automation tooling sees a distinct app. `./run-app --dev`
+  runs the bare `target/debug/chemdraft` binary, which has **no** `CFBundleIdentifier` at all — so
+  bundle-id-scoped tools (macOS screen-recording permissions, computer-use allowlists) cannot see it.
+  Verify `--dev` through the Vite page or the accessibility API, or use `./run-app` for a real bundle.
+- Never diagnose "which build am I looking at" from the window alone. Read the on-screen build stamp
+  (§21.1); it names the worktree, branch, and commit.
+
 ## 22. Closeout requirements
 
 At implementation closeout:

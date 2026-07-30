@@ -22,3 +22,7 @@ apps/desktop/src-tauri/sparkle-bin/
 # Dev-only native RDKit oracle (never shipped; recreate from tools/rdkit-oracle/requirements-rdkit-oracle.txt)
 .venv-rdkit-oracle/
 .venv-oracle/
+
+# This worktree's own app bundle, staged here by ./run-app. Never an install target:
+# /Applications/ChemDraft.app is the stable build from main. See AGENTS.md §21.2.
+/app/
