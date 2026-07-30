@@ -2500,6 +2500,10 @@ fn ensure_toolset_window<R: Runtime>(
     let label = toolset_window_label(toolset_id);
 
     if let Some(window) = app.get_webview_window(&label) {
+        // Already built — but it may have been created (or dragged) offscreen earlier, or the
+        // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
+        // so re-opening from View ▸ Toolbars is always enough to recover a lost palette.
+        recover_offscreen_toolset_window(app, &window);
         window.show().map_err(|error| error.to_string())?;
         configure_toolset_utility_window(&window, true)?;
         return Ok(());
@@ -2526,7 +2530,14 @@ fn ensure_toolset_window<R: Runtime>(
         ),
     };
     // A persisted position wins (the user moved it before); otherwise the JS-supplied default.
-    let position = persisted_toolset_position(app, toolset_id).unwrap_or(default_position);
+    // Either way it's clamped onto an attached monitor — a position saved on a display that's since
+    // been unplugged would otherwise open the palette offscreen with no way to get it back.
+    let position = clamp_toolset_position(
+        app,
+        persisted_toolset_position(app, toolset_id).unwrap_or(default_position),
+        width,
+        height,
+    );
 
     // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
     // without the manifest (the label itself is lossy).
@@ -2837,6 +2848,99 @@ fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id)
         || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
         || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
+}
+
+/// How much of a palette must land on a monitor for the user to be able to grab and move it.
+const TOOLSET_WINDOW_MIN_VISIBLE_PX: f64 = 48.0;
+
+/// A monitor's bounds in the same logical points palette positions are persisted in.
+fn monitor_logical_bounds(monitor: &tauri::Monitor) -> (f64, f64, f64, f64) {
+    let scale = monitor.scale_factor();
+    let origin = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    (
+        origin.x,
+        origin.y,
+        origin.x + size.width,
+        origin.y + size.height,
+    )
+}
+
+/// True when the rect overlaps some attached monitor enough to be seen and dragged.
+fn toolset_position_is_reachable(
+    monitors: &[tauri::Monitor],
+    position: &ToolsetWindowPosition,
+    width: f64,
+    height: f64,
+) -> bool {
+    monitors.iter().any(|monitor| {
+        let (left, top, right, bottom) = monitor_logical_bounds(monitor);
+        let overlap_w = (position.x + width).min(right) - position.x.max(left);
+        let overlap_h = (position.y + height).min(bottom) - position.y.max(top);
+        overlap_w >= TOOLSET_WINDOW_MIN_VISIBLE_PX && overlap_h >= TOOLSET_WINDOW_MIN_VISIBLE_PX
+    })
+}
+
+/// Pull a palette position back onto an attached monitor.
+///
+/// Positions are persisted in logical points, so a toolbar last parked on an external display comes
+/// back at coordinates that no longer exist once that display is unplugged. The window is then
+/// created successfully and painted into nowhere — which reads to the user as "the toolbar won't
+/// open" even though View ▸ Toolbars shows it checked, with no UI path to recover it. Clamp onto the
+/// primary monitor (the one that's certainly present) whenever the saved spot is unreachable.
+fn clamp_toolset_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    position: ToolsetWindowPosition,
+    width: f64,
+    height: f64,
+) -> ToolsetWindowPosition {
+    let monitors = match app.available_monitors() {
+        Ok(monitors) if !monitors.is_empty() => monitors,
+        // No monitor info (headless, or the platform refused): trust the saved position rather than
+        // moving a window the user may have deliberately placed.
+        _ => return position,
+    };
+
+    if toolset_position_is_reachable(&monitors, &position, width, height) {
+        return position;
+    }
+
+    let target = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| monitors[0].clone());
+    let (left, top, right, bottom) = monitor_logical_bounds(&target);
+    // max() before min() so a palette taller/wider than the monitor still pins to the top-left
+    // corner instead of inverting to a negative offset.
+    ToolsetWindowPosition {
+        x: position.x.min(right - width).max(left),
+        y: position.y.min(bottom - height).max(top),
+    }
+}
+
+/// Move an already-built palette back onscreen if its current spot is unreachable. Best-effort: a
+/// window we can't measure or move is left exactly as it is rather than teleported on a guess.
+fn recover_offscreen_toolset_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    window: &tauri::WebviewWindow<R>,
+) {
+    let Some(position) = current_toolset_window_position(window) else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let size = size.to_logical::<f64>(scale);
+    let clamped = clamp_toolset_position(app, position.clone(), size.width, size.height);
+    if (clamped.x - position.x).abs() < 0.5 && (clamped.y - position.y).abs() < 0.5 {
+        return;
+    }
+
+    let _ = window.set_position(tauri::LogicalPosition::new(clamped.x, clamped.y));
 }
 
 fn persisted_toolset_position<R: Runtime>(
