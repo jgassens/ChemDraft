@@ -171,6 +171,46 @@ describe("MainStyleWidget variants", () => {
     expect(onInvoke).toHaveBeenCalledWith("molecule.atomLabel.hideImplicitHydrogens:true");
   });
 
+  it("renders the shape layout for a plain graphic and targets fill or stroke", async () => {
+    const { createPhase4Document, insertNativeArtGraphicObject } = await import("../../documentWorkflow");
+    const { createArtInspectorModel, selectedGraphicObjectsForArtInspector } = await import("../../artInspectorModel");
+    const shapeDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Shape widget"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const selection = classifyToolbarSelection({ document: shapeDocument, moleculeContext: "none" });
+    expect(selection.kind).toBe("shape");
+    const artStyle = createArtInspectorModel({
+      document: shapeDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(shapeDocument),
+      requestedPaintTarget: "fill"
+    });
+    const { onInvoke } = renderWidget({
+      currentSelection: selection,
+      currentArtStyle: artStyle,
+      currentArtStyleTarget: "fill"
+    });
+
+    const widget = widgetRoot();
+    expect(widget.dataset.mainStyleVariant).toBe("shape");
+    expect(widget.querySelector("[aria-label=\"Fill color\"]")).not.toBeNull();
+    expect(widget.querySelector("[data-command-id=\"object.color.blue\"]")).not.toBeNull();
+    expect(widget.querySelector("[aria-label=\"Stroke width\"]")).not.toBeNull();
+    expect(widget.querySelector("[aria-label=\"Dash pattern\"]")).not.toBeNull();
+    expect(widget.querySelector("[data-command-id=\"object.style.swapFillStroke\"]")).not.toBeNull();
+
+    const strokeTarget = widget.querySelector<HTMLButtonElement>("[data-command-id=\"object.style.target.stroke\"]");
+    if (!strokeTarget) {
+      throw new Error("Expected the stroke target toggle.");
+    }
+    act(() => {
+      strokeTarget.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      strokeTarget.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.style.target.stroke");
+  });
+
   it("pins the text layout while customizing, whatever is selected", () => {
     const { selection } = moleculeSelection();
     renderWidget({ currentSelection: selection }, true);

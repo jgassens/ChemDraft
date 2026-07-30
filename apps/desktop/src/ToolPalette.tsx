@@ -31,9 +31,11 @@ import {
   ToolbarAlignButton,
   ToolbarColorSwatchButton,
   ToolbarTextButton,
+  closestObjectStrokeWidthCommandId,
   closestSizeCommandId,
   defaultFontFaces,
   fontFamilyLabel,
+  objectStrokeDashCommandId,
   usePaletteButtonInvoke
 } from "./toolbars/toolbarCells";
 import { MainStyleWidget } from "./toolbars/mainStyleWidget";
@@ -916,22 +918,6 @@ function TextToolbarStyleControls() {
       </div>
     </div>
   );
-}
-
-function closestObjectStrokeWidthCommandId(strokeWidth: number | undefined): string {
-  if (strokeWidth === undefined) {
-    return objectStrokeWidthCommands[1]?.id ?? objectStrokeWidthCommands[0].id;
-  }
-
-  return objectStrokeWidthCommands.reduce((best, command) => (
-    Math.abs(command.strokeWidth - strokeWidth) < Math.abs(best.strokeWidth - strokeWidth) ? command : best
-  ), objectStrokeWidthCommands[0]).id;
-}
-
-function objectStrokeDashCommandId(strokeDasharray: string | undefined): string {
-  const normalized = strokeDasharray === undefined || strokeDasharray === "solid" ? undefined : strokeDasharray;
-  return objectStrokeDashCommands.find((command) => command.strokeDasharray === normalized)?.id ??
-    objectStrokeDashCommands[0].id;
 }
 
 const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;

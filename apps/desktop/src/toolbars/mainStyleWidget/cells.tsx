@@ -32,6 +32,7 @@ export type StyleToggleSpec = {
   label: string;
   active: boolean;
   content: ReactNode;
+  disabled?: boolean;
 };
 
 export type StyleCell =
@@ -319,6 +320,7 @@ export function StyleCellView({
           commandId={cell.toggle.commandId}
           label={cell.toggle.label}
           active={cell.toggle.active}
+          disabled={cell.toggle.disabled}
           onInvoke={onInvoke}
         >
           {cell.toggle.content}
@@ -332,6 +334,7 @@ export function StyleCellView({
               commandId={toggle.commandId}
               label={toggle.label}
               active={toggle.active}
+              disabled={toggle.disabled}
               key={toggle.commandId}
               onInvoke={onInvoke}
             >

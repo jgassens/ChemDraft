@@ -8,7 +8,14 @@ import {
   type ReactNode
 } from "react";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
-import { textAlignmentCommands, textFontCommands, textFontFamilyCommandId, textSizeCommands } from "../commands";
+import {
+  objectStrokeDashCommands,
+  objectStrokeWidthCommands,
+  textAlignmentCommands,
+  textFontCommands,
+  textFontFamilyCommandId,
+  textSizeCommands
+} from "../commands";
 import { loadSystemFonts, type SystemFontFace, type SystemFontFamily } from "../systemFonts";
 
 /**
@@ -70,16 +77,18 @@ export function ToolbarTextButton({
   active,
   children,
   commandId,
+  disabled,
   label,
   onInvoke
 }: {
   active: boolean;
   children: ReactNode;
   commandId: string;
+  disabled?: boolean;
   label: string;
   onInvoke: (commandId: string) => void;
 }) {
-  const invokeHandlers = usePaletteButtonInvoke(commandId, onInvoke);
+  const invokeHandlers = usePaletteButtonInvoke(commandId, onInvoke, disabled);
 
   return (
     <button
@@ -88,6 +97,7 @@ export function ToolbarTextButton({
       title={label}
       aria-label={label}
       aria-pressed={active}
+      disabled={disabled}
       data-command-id={commandId}
       data-palette-control="true"
       {...invokeHandlers}
@@ -267,4 +277,20 @@ export function defaultFontFaces(): SystemFontFace[] {
 
 export function fontFamilyLabel(fontFamily: string): string {
   return fontFamily.split(",")[0]?.replace(/^["']|["']$/g, "") ?? fontFamily;
+}
+
+export function closestObjectStrokeWidthCommandId(strokeWidth: number | undefined): string {
+  if (strokeWidth === undefined) {
+    return objectStrokeWidthCommands[1]?.id ?? objectStrokeWidthCommands[0].id;
+  }
+
+  return objectStrokeWidthCommands.reduce((best, command) => (
+    Math.abs(command.strokeWidth - strokeWidth) < Math.abs(best.strokeWidth - strokeWidth) ? command : best
+  ), objectStrokeWidthCommands[0]).id;
+}
+
+export function objectStrokeDashCommandId(strokeDasharray: string | undefined): string {
+  const normalized = strokeDasharray === undefined || strokeDasharray === "solid" ? undefined : strokeDasharray;
+  return objectStrokeDashCommands.find((command) => command.strokeDasharray === normalized)?.id ??
+    objectStrokeDashCommands[0].id;
 }

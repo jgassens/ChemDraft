@@ -4,6 +4,7 @@ import { toolbarVariantForKind, type ToolbarStyleVariant } from "../toolbarSelec
 import { StyleCellView, type MainStyleRows, type StyleCell } from "./cells";
 import { textVariantRows } from "./TextVariant";
 import { moleculeVariantRows } from "./MoleculeVariant";
+import { shapeVariantRows } from "./ShapeVariant";
 
 type VariantRowsBuilder = (state: ToolbarWidgetState) => MainStyleRows;
 
@@ -11,7 +12,8 @@ type VariantRowsBuilder = (state: ToolbarWidgetState) => MainStyleRows;
  *  itself as text), so the widget stays shippable while variants land one at a time. */
 const VARIANT_ROW_BUILDERS: Partial<Record<ToolbarStyleVariant, VariantRowsBuilder>> = {
   text: textVariantRows,
-  molecule: moleculeVariantRows
+  molecule: moleculeVariantRows,
+  shape: shapeVariantRows
 };
 
 export function mainStyleRowsForVariant(

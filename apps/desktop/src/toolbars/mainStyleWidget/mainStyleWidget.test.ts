@@ -20,9 +20,10 @@ describe("mainStyleRowsForVariant", () => {
   });
 
   it("reports the variant it actually rendered when a builder is missing", () => {
-    // Arrow and shape builders land in later slices; until then they render the text layout and
-    // must say so, so the data-main-style-variant attribute never lies about the visible controls.
+    // A variant without a builder renders the text layout and must say so, so the
+    // data-main-style-variant attribute never lies about the visible controls.
     expect(mainStyleRowsForVariant("text", minimalState).effectiveVariant).toBe("text");
     expect(mainStyleRowsForVariant("molecule", minimalState).effectiveVariant).toBe("molecule");
+    expect(mainStyleRowsForVariant("shape", minimalState).effectiveVariant).toBe("shape");
   });
 });
