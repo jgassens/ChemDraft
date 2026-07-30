@@ -1,7 +1,8 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToolbarWidgetState, type ToolbarWidgetState } from "../toolbarWidgets";
 import { toolbarVariantForKind, type ToolbarStyleVariant } from "../toolbarSelectionKind";
-import { StyleCellView, type MainStyleRows, type StyleCell } from "./cells";
+import { usePaletteTooltipState } from "../toolbarTooltip";
+import { StyleCellView, WidgetTooltipContext, type MainStyleRows, type StyleCell } from "./cells";
 import { textVariantRows } from "./TextVariant";
 import { moleculeVariantRows } from "./MoleculeVariant";
 import { shapeVariantRows } from "./ShapeVariant";
@@ -75,21 +76,34 @@ export function MainStyleWidget() {
 
   const { effectiveVariant, rows } = mainStyleRowsForVariant(renderedVariant, widgetState);
 
-  const renderRow = (cells: readonly StyleCell[]) => cells.map((cell, index) => (
+  // One tooltip visible at a time across all cells, on the same delay as the grid icons.
+  const { visibleTooltipId, requestTooltip, clearTooltip } = usePaletteTooltipState();
+  const tooltipContext = useMemo(
+    () => ({ visibleTooltipId, requestTooltip, clearTooltip }),
+    [clearTooltip, requestTooltip, visibleTooltipId]
+  );
+
+  const renderRow = (cells: readonly StyleCell[], rowName: string) => cells.map((cell, index) => (
     <Fragment key={index}>
-      <StyleCellView cell={cell} onInvoke={widgetState.onInvoke} />
+      <StyleCellView
+        cell={cell}
+        onInvoke={widgetState.onInvoke}
+        tooltipScope={`main-style-${effectiveVariant}-${rowName}-${index}`}
+      />
     </Fragment>
   ));
 
   return (
-    <div
-      className="main-toolbar-style-controls"
-      data-toolbar-style-controls="main"
-      data-main-style-variant={effectiveVariant}
-      onPointerDownCapture={beginInteraction}
-    >
-      <div className="toolbar-style-row toolbar-style-row-primary">{renderRow(rows.primary)}</div>
-      <div className="toolbar-style-row toolbar-style-row-secondary">{renderRow(rows.secondary)}</div>
-    </div>
+    <WidgetTooltipContext.Provider value={tooltipContext}>
+      <div
+        className="main-toolbar-style-controls"
+        data-toolbar-style-controls="main"
+        data-main-style-variant={effectiveVariant}
+        onPointerDownCapture={beginInteraction}
+      >
+        <div className="toolbar-style-row toolbar-style-row-primary">{renderRow(rows.primary, "primary")}</div>
+        <div className="toolbar-style-row toolbar-style-row-secondary">{renderRow(rows.secondary, "secondary")}</div>
+      </div>
+    </WidgetTooltipContext.Provider>
   );
 }

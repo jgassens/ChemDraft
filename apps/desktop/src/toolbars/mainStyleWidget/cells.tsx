@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { textAlignmentCommands, textColorCommands } from "../../commands";
 import type { NativeTextStyle } from "@chemdraft/chem-core";
 import { loadSystemFonts, type SystemFontFamily } from "../../systemFonts";
@@ -12,6 +12,7 @@ import {
   usePaletteButtonInvoke,
   type ColorCommand
 } from "../toolbarCells";
+import { useNativeFloatingTooltip } from "../toolbarTooltip";
 
 /**
  * The Main Toolbar style widget's layout currency: every variant is two rows of cells on the
@@ -137,7 +138,61 @@ export function numericSelectValue(
 }
 
 function spanStyle(cells: number): CSSProperties {
-  return { "--toolbar-cell-span": cells } as CSSProperties;
+  // Literal multipliers only — WKWebView drops a calc() whose product mixes two var()-dependent
+  // operands (length-var × number-var), which left these labels at intrinsic width in the native
+  // app and overflowed the pinned row. Same shape as the long-proven .toolbar-font-control rule.
+  return { width: `calc(var(--cd-control-height) * ${cells} + var(--cd-space-2) * ${cells - 1})` };
+}
+
+/** Single-visible-tooltip state for the widget's cells, provided by MainStyleWidget from the shared
+ *  usePaletteTooltipState hook. The no-op default keeps bare renders (tests) working. */
+export const WidgetTooltipContext = createContext<{
+  visibleTooltipId: string | undefined;
+  requestTooltip: (tooltipId: string) => void;
+  clearTooltip: (tooltipId?: string) => void;
+}>({
+  visibleTooltipId: undefined,
+  requestTooltip: () => undefined,
+  clearTooltip: () => undefined
+});
+
+/**
+ * Hover-tooltip wrapper for one widget control, mirroring the grid icons' shell contract: the
+ * delayed `.tool-tooltip` span shows via `data-tooltip-visible` in browser/in-window palettes, and
+ * the native-palette relay announces the same text to the floating tooltip window. The shell is
+ * layout-transparent (it hugs whatever control it wraps).
+ */
+function CellShell({
+  tooltipId,
+  title,
+  children
+}: {
+  tooltipId: string;
+  title: string;
+  children: ReactNode;
+}) {
+  const { visibleTooltipId, requestTooltip, clearTooltip } = useContext(WidgetTooltipContext);
+  const visible = visibleTooltipId === tooltipId;
+  const shellRef = useRef<HTMLSpanElement | null>(null);
+  useNativeFloatingTooltip(shellRef, visible);
+
+  return (
+    <span
+      className="toolbar-cell-shell"
+      data-tooltip-owner-id={tooltipId}
+      data-tooltip-visible={visible ? "true" : undefined}
+      ref={shellRef}
+      onClickCapture={() => clearTooltip(tooltipId)}
+      onPointerDownCapture={() => clearTooltip(tooltipId)}
+      onPointerEnter={() => requestTooltip(tooltipId)}
+      onPointerLeave={() => clearTooltip(tooltipId)}
+    >
+      {children}
+      <span className="tool-tooltip" role="tooltip" aria-hidden="true">
+        <span>{title}</span>
+      </span>
+    </span>
+  );
 }
 
 function StyleActionButton({
@@ -159,7 +214,6 @@ function StyleActionButton({
     <button
       type="button"
       className="toolbar-text-button"
-      title={label}
       aria-label={label}
       disabled={disabled}
       data-command-id={commandId}
@@ -169,6 +223,13 @@ function StyleActionButton({
       {content}
     </button>
   );
+}
+
+/** "Text Color: Blue" → "Blue"; commands whose titles carry a category prefix keep just the value
+ *  so the tooltip can lead with the cell's own contextual label instead. */
+function commandValueLabel(title: string): string {
+  const separator = title.indexOf(": ");
+  return separator >= 0 ? title.slice(separator + 2) : title;
 }
 
 function StyleSelectCell({
@@ -181,7 +242,7 @@ function StyleSelectCell({
   const mixed = cell.value === MIXED_OPTION_VALUE;
 
   return (
-    <label className={cell.labelClassName ?? "toolbar-control-label toolbar-cell-span"} style={cell.labelClassName ? undefined : spanStyle(cell.cells)}>
+    <label className={cell.labelClassName ?? "toolbar-control-label"} style={cell.labelClassName ? undefined : spanStyle(cell.cells)}>
       <span className="visually-hidden">{cell.ariaLabel}</span>
       <select
         className={cell.selectClassName ?? "toolbar-select"}
@@ -243,7 +304,7 @@ function FontFamilySelectCell({
     : cell.commandIdForFamily(cell.family ?? cell.presetFamilies[0].family);
 
   return (
-    <label className="toolbar-control-label toolbar-cell-span" style={spanStyle(cell.cells)}>
+    <label className="toolbar-control-label" style={spanStyle(cell.cells)}>
       <span className="visually-hidden">{cell.ariaLabel}</span>
       <select
         className="toolbar-select toolbar-font-select"
@@ -282,22 +343,31 @@ function FontFamilySelectCell({
 
 export function StyleCellView({
   cell,
-  onInvoke
+  onInvoke,
+  tooltipScope
 }: {
   cell: StyleCell;
   onInvoke: (commandId: string) => void;
+  /** Unique prefix for this cell's tooltip ids (variant + row + index). */
+  tooltipScope: string;
 }) {
   switch (cell.kind) {
     case "swatches":
       return (
         <div className="toolbar-swatch-group" role="group" aria-label={cell.ariaLabel}>
           {cell.commands.map((command) => (
-            <ToolbarColorSwatchButton
-              active={command.color.toLowerCase() === cell.activeColor?.toLowerCase()}
-              command={command}
+            <CellShell
               key={command.id}
-              onInvoke={onInvoke}
-            />
+              tooltipId={`${tooltipScope}-${command.id}`}
+              title={`${cell.ariaLabel}: ${commandValueLabel(command.title)}`}
+            >
+              <ToolbarColorSwatchButton
+                active={command.color.toLowerCase() === cell.activeColor?.toLowerCase()}
+                command={command}
+                title={null}
+                onInvoke={onInvoke}
+              />
+            </CellShell>
           ))}
         </div>
       );
@@ -305,67 +375,86 @@ export function StyleCellView({
       return (
         <div className="toolbar-align-group" role="group" aria-label="Text alignment">
           {textAlignmentCommands.map((command) => (
-            <ToolbarAlignButton
-              active={cell.activeAlign === command.textAlign}
-              command={command}
-              key={command.id}
-              onInvoke={onInvoke}
-            />
+            <CellShell key={command.id} tooltipId={`${tooltipScope}-${command.id}`} title={command.title}>
+              <ToolbarAlignButton
+                active={cell.activeAlign === command.textAlign}
+                command={command}
+                title={null}
+                onInvoke={onInvoke}
+              />
+            </CellShell>
           ))}
         </div>
       );
     case "toggle":
       return (
-        <ToolbarTextButton
-          commandId={cell.toggle.commandId}
-          label={cell.toggle.label}
-          active={cell.toggle.active}
-          disabled={cell.toggle.disabled}
-          onInvoke={onInvoke}
-        >
-          {cell.toggle.content}
-        </ToolbarTextButton>
+        <CellShell tooltipId={`${tooltipScope}-${cell.toggle.commandId}`} title={cell.toggle.label}>
+          <ToolbarTextButton
+            commandId={cell.toggle.commandId}
+            label={cell.toggle.label}
+            active={cell.toggle.active}
+            disabled={cell.toggle.disabled}
+            title={null}
+            onInvoke={onInvoke}
+          >
+            {cell.toggle.content}
+          </ToolbarTextButton>
+        </CellShell>
       );
     case "toggleGroup":
       return (
         <div className="toolbar-type-group" role="group" aria-label={cell.ariaLabel}>
           {cell.toggles.map((toggle) => (
-            <ToolbarTextButton
-              commandId={toggle.commandId}
-              label={toggle.label}
-              active={toggle.active}
-              disabled={toggle.disabled}
-              key={toggle.commandId}
-              onInvoke={onInvoke}
-            >
-              {toggle.content}
-            </ToolbarTextButton>
+            <CellShell key={toggle.commandId} tooltipId={`${tooltipScope}-${toggle.commandId}`} title={toggle.label}>
+              <ToolbarTextButton
+                commandId={toggle.commandId}
+                label={toggle.label}
+                active={toggle.active}
+                disabled={toggle.disabled}
+                title={null}
+                onInvoke={onInvoke}
+              >
+                {toggle.content}
+              </ToolbarTextButton>
+            </CellShell>
           ))}
         </div>
       );
     case "action":
       return (
-        <StyleActionButton
-          commandId={cell.commandId}
-          label={cell.label}
-          content={cell.content}
-          disabled={cell.disabled}
-          onInvoke={onInvoke}
-        />
+        <CellShell tooltipId={`${tooltipScope}-${cell.commandId}`} title={cell.label}>
+          <StyleActionButton
+            commandId={cell.commandId}
+            label={cell.label}
+            content={cell.content}
+            disabled={cell.disabled}
+            onInvoke={onInvoke}
+          />
+        </CellShell>
       );
     case "select":
-      return <StyleSelectCell cell={cell} onInvoke={onInvoke} />;
+      return (
+        <CellShell tooltipId={`${tooltipScope}-select`} title={cell.ariaLabel}>
+          <StyleSelectCell cell={cell} onInvoke={onInvoke} />
+        </CellShell>
+      );
     case "fontFamilySelect":
-      return <FontFamilySelectCell cell={cell} onInvoke={onInvoke} />;
+      return (
+        <CellShell tooltipId={`${tooltipScope}-font-family`} title={cell.ariaLabel}>
+          <FontFamilySelectCell cell={cell} onInvoke={onInvoke} />
+        </CellShell>
+      );
     case "textFontSelect":
       return (
-        <TextFontSelect
-          currentTextStyle={cell.currentTextStyle}
-          labelClassName="toolbar-control-label toolbar-font-control"
-          onInvoke={onInvoke}
-        />
+        <CellShell tooltipId={`${tooltipScope}-text-font`} title="Text font">
+          <TextFontSelect
+            currentTextStyle={cell.currentTextStyle}
+            labelClassName="toolbar-control-label toolbar-font-control"
+            onInvoke={onInvoke}
+          />
+        </CellShell>
       );
     case "gap":
-      return <span className="toolbar-cell-gap toolbar-cell-span" style={spanStyle(cell.cells)} aria-hidden="true" />;
+      return <span className="toolbar-cell-gap" style={spanStyle(cell.cells)} aria-hidden="true" />;
   }
 }

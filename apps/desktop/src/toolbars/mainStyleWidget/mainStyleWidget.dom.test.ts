@@ -274,4 +274,79 @@ describe("MainStyleWidget variants", () => {
     expect(widget.dataset.mainStyleVariant).toBe("text");
     expect(widget.querySelector("[aria-label=\"Text font\"]")).not.toBeNull();
   });
+
+  function shellFor(selector: string): HTMLElement {
+    const control = widgetRoot().querySelector(selector);
+    const shell = control?.closest<HTMLElement>("[data-tooltip-owner-id]");
+    if (!shell) {
+      throw new Error(`Expected a tooltip shell around ${selector}.`);
+    }
+    return shell;
+  }
+
+  function hover(element: Element, type: "pointerover" | "pointerout") {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "relatedTarget", { value: type === "pointerout" ? document.body : null });
+    element.dispatchEvent(event);
+  }
+
+  it("shows the shared delayed tooltip on every cell and clears it on leave", async () => {
+    vi.useFakeTimers();
+    try {
+      renderWidget({});
+      const swatchShell = shellFor("[data-command-id=\"text.color.blue\"]");
+      await act(async () => {
+        hover(swatchShell, "pointerover");
+      });
+      expect(swatchShell.getAttribute("data-tooltip-visible")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(swatchShell.getAttribute("data-tooltip-visible")).toBe("true");
+      expect(swatchShell.querySelector(".tool-tooltip")?.textContent).toBe("Text color: Blue");
+      await act(async () => {
+        hover(swatchShell, "pointerout");
+      });
+      expect(swatchShell.getAttribute("data-tooltip-visible")).toBeNull();
+
+      // Selects get shells too — the whole reason the widget can't rely on button title attributes.
+      const sizeShell = shellFor("select[aria-label=\"Text size\"]");
+      await act(async () => {
+        hover(sizeShell, "pointerover");
+        vi.advanceTimersByTime(500);
+      });
+      expect(sizeShell.getAttribute("data-tooltip-visible")).toBe("true");
+      expect(sizeShell.querySelector(".tool-tooltip")?.textContent).toBe("Text size");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("relays cell tooltips to the native palette window's floating tooltip", async () => {
+    vi.useFakeTimers();
+    const relayed: Array<{ visible: boolean; title?: string }> = [];
+    const onRelay = (event: Event) => {
+      const detail = (event as CustomEvent<{ visible: boolean; title?: string }>).detail;
+      relayed.push({ visible: detail.visible, title: detail.title });
+    };
+    window.addEventListener("chemdraft:palette-tooltip", onRelay);
+    document.body.classList.add("palette-window-body");
+    try {
+      renderWidget({});
+      const boldShell = shellFor("[data-command-id=\"text.bold\"]");
+      await act(async () => {
+        hover(boldShell, "pointerover");
+        vi.advanceTimersByTime(500);
+      });
+      expect(relayed.some((entry) => entry.visible && entry.title === "Bold Text")).toBe(true);
+      await act(async () => {
+        hover(boldShell, "pointerout");
+      });
+      expect(relayed[relayed.length - 1]?.visible).toBe(false);
+    } finally {
+      document.body.classList.remove("palette-window-body");
+      window.removeEventListener("chemdraft:palette-tooltip", onRelay);
+      vi.useRealTimers();
+    }
+  });
 });

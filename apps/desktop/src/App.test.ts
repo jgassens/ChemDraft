@@ -232,6 +232,7 @@ function buttonMarkupForCommand(markup: string, commandId: string): string {
 
 const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
+const toolbarTooltipSource = readFileSync(new URL("./toolbars/toolbarTooltip.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
 const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
@@ -3207,8 +3208,8 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("white-space: normal;");
     expect(appCss).toContain("overflow-wrap: anywhere;");
     expect(appCss).toContain('.icon-button[data-command-id="structure.cleanup2d"] .tool-icon-image');
-    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 500");
-    expect(toolPaletteSource).toContain("pendingTooltipIdRef.current === tooltipId");
+    expect(toolbarTooltipSource).toContain("const TOOLTIP_DELAY_MS = 500");
+    expect(toolbarTooltipSource).toContain("pendingTooltipIdRef.current === tooltipId");
     expect(toolPaletteSource).toContain("onClickCapture={() => onTooltipLeave?.()}");
     expect(toolPaletteSource).not.toContain("onMouseEnter={() => onTooltipEnter?.()}");
     expect(toolPaletteSource).not.toContain("onMouseLeave={() => onTooltipLeave?.()}");

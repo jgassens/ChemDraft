@@ -1268,10 +1268,12 @@ textarea:focus-visible,
   justify-items: start;
   justify-content: start;
   /* The footprint is pinned by construction: every variant's rows budget exactly 11 cells
-     (11×24px + 10×4px gaps = 304px), so the widget can never resize or slide as the selection
-     changes variants. A row that overruns its budget clips visibly instead of drifting. */
-  width: calc(var(--cd-control-height) * 11 + var(--cd-space-2) * 10);
-  overflow: hidden;
+     (11×24px + 10×4px gaps = 304px), plus the 4px lead-in padding under the global border-box
+     sizing — so the widget can never resize or slide as the selection changes variants (the
+     11-cell budget itself is asserted in mainStyleWidget.test.ts). Overflow stays visible — like
+     every tooltip-bearing palette container — so the cells' .tool-tooltip spans can hang below
+     the toolbar. */
+  width: calc(var(--cd-control-height) * 11 + var(--cd-space-2) * 11);
   gap: var(--cd-space-2);
   padding-left: var(--cd-space-2);
 }
@@ -2606,14 +2608,9 @@ textarea:focus-visible,
   justify-items: start;
 }
 
-/* Generic n-cell width for widget selects/gaps on the 24px toolbar grid; n rides in a CSS var. */
-.toolbar-cell-span {
-  width: calc(
-    var(--cd-control-height) * var(--toolbar-cell-span, 1) +
-    var(--cd-space-2) * (var(--toolbar-cell-span, 1) - 1)
-  );
-}
-
+/* Widget cell widths are inline styles with literal calc multipliers (spanStyle in
+   mainStyleWidget/cells.tsx) — WKWebView drops calc() products whose operands are both
+   var()-dependent, so no shared n-in-a-var rule can carry them. */
 .toolbar-cell-gap {
   height: var(--cd-control-height);
 }
@@ -3033,6 +3030,21 @@ textarea:focus-visible,
 }
 
 .icon-button-shell[data-tooltip-visible="true"] .tool-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition: opacity 90ms ease, transform 90ms ease;
+  visibility: visible;
+}
+
+/* Style-widget cells reuse the icon shells' tooltip contract without their fixed 24px box: the
+   shell hugs whatever control it wraps (swatch, toggle, or a multi-cell select). */
+.toolbar-cell-shell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.toolbar-cell-shell[data-tooltip-visible="true"] .tool-tooltip {
   opacity: 1;
   transform: translate(-50%, 0);
   transition: opacity 90ms ease, transform 90ms ease;

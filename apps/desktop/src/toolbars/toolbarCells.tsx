@@ -79,7 +79,8 @@ export function ToolbarTextButton({
   commandId,
   disabled,
   label,
-  onInvoke
+  onInvoke,
+  title = label
 }: {
   active: boolean;
   children: ReactNode;
@@ -87,6 +88,8 @@ export function ToolbarTextButton({
   disabled?: boolean;
   label: string;
   onInvoke: (commandId: string) => void;
+  /** Native title attribute; pass null when a custom tooltip shell supplies the hover text. */
+  title?: string | null;
 }) {
   const invokeHandlers = usePaletteButtonInvoke(commandId, onInvoke, disabled);
 
@@ -94,7 +97,7 @@ export function ToolbarTextButton({
     <button
       type="button"
       className={["toolbar-text-button", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={label}
+      title={title ?? undefined}
       aria-label={label}
       aria-pressed={active}
       disabled={disabled}
@@ -110,11 +113,14 @@ export function ToolbarTextButton({
 export function ToolbarColorSwatchButton({
   active,
   command,
-  onInvoke
+  onInvoke,
+  title = command.title
 }: {
   active: boolean;
   command: ColorCommand;
   onInvoke: (commandId: string) => void;
+  /** Native title attribute; pass null when a custom tooltip shell supplies the hover text. */
+  title?: string | null;
 }) {
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
 
@@ -122,7 +128,7 @@ export function ToolbarColorSwatchButton({
     <button
       type="button"
       className={["toolbar-color-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
+      title={title ?? undefined}
       aria-label={command.title}
       aria-pressed={active}
       data-command-id={command.id}
@@ -136,11 +142,14 @@ export function ToolbarColorSwatchButton({
 export function ToolbarAlignButton({
   active,
   command,
-  onInvoke
+  onInvoke,
+  title = command.title
 }: {
   active: boolean;
   command: typeof textAlignmentCommands[number];
   onInvoke: (commandId: string) => void;
+  /** Native title attribute; pass null when a custom tooltip shell supplies the hover text. */
+  title?: string | null;
 }) {
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
 
@@ -148,7 +157,7 @@ export function ToolbarAlignButton({
     <button
       type="button"
       className={["toolbar-align-button", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
+      title={title ?? undefined}
       aria-label={command.title}
       aria-pressed={active}
       data-command-id={command.id}
