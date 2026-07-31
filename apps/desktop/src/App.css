@@ -6412,20 +6412,37 @@ textarea:focus-visible,
 }
 
 /* --- Molecular Inspector -------------------------------------------------------------------
-   A palette widget, so the window itself (native frame, drag, saved position) comes from the toolset
-   machinery exactly as it does for Main and Art. These rules style the CONTENTS only. */
-.molecular-inspector-palette .tool-palette-widget,
+   A palette widget, so the window frame, drag, and saved position come from the toolset machinery.
+
+   CRITICAL: a palette window SIZES ITSELF TO THIS CONTENT. `PaletteWindow` measures the shell (which
+   is `max-content` in both axes) and resizes the OS window to match. So this pane must declare a
+   definite size and must never let its contents dictate one:
+
+   - `height: 100%` here collapses to nothing against a max-content parent, which produced a
+     full-width, ~120px-tall window.
+   - an unconstrained viewport column takes the max-content width of an InChI string and a 63-row
+     Provenance table, which is wider than any screen.
+
+   Hence fixed dimensions below, `minmax(0, 1fr)` on the viewport column, and hard wrapping inside it. */
 .molecular-inspector-pane {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  height: 100%;
-}
-
-.molecular-inspector-pane {
-  min-width: 560px;
-  min-height: 320px;
+  /* `flex: none` is required, not cosmetic. The pane is a flex item inside the palette, and the
+     `overflow: hidden` below sets its automatic minimum size to 0 — so without this it shrinks to
+     0x0 and the palette, which measures its content, reports a 25px window. */
+  flex: none;
+  /* A DEFINITE size, and deliberately no `max-width: 100vw` / `max-height: 100vh`. Inside a palette
+     window `100vw` is that window's own width, which `PaletteWindow` derives FROM this content — so a
+     viewport-relative cap is circular, and it collapses the pane to 0x0 whenever the viewport reports
+     0 (a freshly created window, a hidden tab). That is exactly what produced the full-width,
+     ~120px-tall, transparent window. */
+  width: 820px;
+  height: 560px;
+  /* Opaque: without this the palette window is transparent and the canvas shows straight through. */
+  background: var(--cd-surface, #f7f6f2);
+  color: var(--cd-text, #1c1a17);
   font-size: 12px;
+  overflow: hidden;
 }
 
 .molecular-inspector-empty {
@@ -6440,18 +6457,21 @@ textarea:focus-visible,
   padding: 4px 8px;
   border-bottom: 1px solid var(--cd-border, #c8c4ba);
   font-size: 11px;
+  flex: none;
 }
 
 .molecular-inspector-spacer {
   flex: 1;
 }
 
-/* The two panes. `min-height: 0` on both so each scrolls internally instead of growing the window. */
+/* Two panes. `minmax(0, …)` on BOTH columns so neither can be widened by its content, and
+   `min-height: 0` so each scrolls internally instead of growing the window. */
 .molecular-inspector-body {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 208px) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .molecular-inspector-categories {
@@ -6461,7 +6481,9 @@ textarea:focus-visible,
   padding: 6px;
   border-right: 1px solid var(--cd-border, #c8c4ba);
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
 .molecular-inspector-categories button {
@@ -6475,6 +6497,7 @@ textarea:focus-visible,
   text-align: left;
   font-size: 12px;
   cursor: pointer;
+  color: inherit;
 }
 
 .molecular-inspector-categories button:hover {
@@ -6497,20 +6520,37 @@ textarea:focus-visible,
   font-weight: 400;
 }
 
-/* Detail and note are the computed count and the §2 disclosure. They wrap under the label rather
-   than truncating: a disclosure nobody can read has stopped disclosing. */
+/* The computed count and the §2 disclosure. They wrap under the label rather than truncating: a
+   disclosure nobody can read has stopped disclosing. */
 .molecular-inspector-category-detail,
 .molecular-inspector-category-note {
   grid-column: 1 / -1;
   color: var(--cd-text-muted, #6b665c);
   font-size: 10px;
   font-weight: 400;
+  overflow-wrap: anywhere;
 }
 
 .molecular-inspector-viewport {
   padding: 10px 14px;
-  overflow-y: auto;
+  overflow: auto;
   min-height: 0;
+  min-width: 0;
+}
+
+/* An InChI, a SMILES, and a 63-row Provenance table are all far wider than the pane. Wrap them
+   rather than letting them set the window's width. Tables get their own scroller. */
+.molecular-inspector-viewport,
+.molecular-inspector-viewport p,
+.molecular-inspector-viewport td,
+.molecular-inspector-viewport th {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.molecular-inspector-viewport table {
+  width: 100%;
+  table-layout: fixed;
 }
 
 .molecular-inspector-footer {
@@ -6519,6 +6559,7 @@ textarea:focus-visible,
   color: var(--cd-text-muted, #6b665c);
   font-size: 10px;
   overflow-wrap: anywhere;
+  flex: none;
 }
 
 /* The Conventions section arrives as a text section carrying its own line breaks. */

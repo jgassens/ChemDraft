@@ -4899,7 +4899,7 @@
       "defaultMode": "floating",
       "preferredWindowSize": {
         "width": 820,
-        "height": 600,
+        "height": 560,
         "minWidth": 620,
         "minHeight": 380
       },
