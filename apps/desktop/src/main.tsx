@@ -8,3 +8,8 @@ createRoot(document.getElementById("root") as HTMLElement).render(
     <App />
   </StrictMode>
 );
+
+// TEMPORARY DIAGNOSTIC (see ghostProbe.ts): inert unless ?ghostProbe=1 is in the URL.
+if (new URLSearchParams(window.location.search).get("ghostProbe") === "1") {
+  void import("./ghostProbe").then((probe) => probe.installGhostProbe());
+}
