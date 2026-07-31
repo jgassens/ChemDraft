@@ -1,0 +1,54 @@
+# Builds ChemDraft's IsoSpec WASM artifact.
+#
+# Reuses rdkit-minimallib-deps:latest purely as an Emscripten toolchain (emsdk 6.0.0) -- the same
+# compiler that produced the vendored RDKit_minimal.wasm. IsoSpec has no third-party dependencies, so
+# nothing else from that image is used; it is here to avoid a second multi-GB emsdk download and to
+# keep both WASM artifacts on one toolchain.
+FROM rdkit-minimallib-deps:latest AS build-stage
+
+ARG ISOSPEC_VERSION=2.3.5
+
+WORKDIR /src
+COPY isospec-src/src/IsoSpec++ /src/IsoSpec++
+COPY isospec-src/LICENCE /src/IsoSpec-LICENCE.txt
+COPY wrapper/chemdraft_isospec.cpp /src/chemdraft_isospec.cpp
+
+WORKDIR /src/out
+# unity-build.cpp #includes every other .cpp -- IsoSpec's own "poor man's LTO" -- so the whole library
+# plus our wrapper is a single translation unit.
+#
+# -fwasm-exceptions matches the vendored RDKit artifact: the wrapper catches std::invalid_argument
+# from formula parsing, and without real exception support that catch would not run.
+# MODULARIZE + EXPORT_NAME mirrors initRDKitModule so the loader shape is identical.
+RUN em++ -O3 -fwasm-exceptions -std=c++17 \
+      -DCHEMDRAFT_ISOSPEC_VERSION="\"${ISOSPEC_VERSION}\"" \
+      -DISOSPEC_BUILDING_R=0 \
+      -I/src/IsoSpec++ \
+      /src/IsoSpec++/unity-build.cpp \
+      /src/chemdraft_isospec.cpp \
+      --bind \
+      -s MODULARIZE=1 \
+      -s EXPORT_NAME="'initIsoSpecModule'" \
+      -s ALLOW_MEMORY_GROWTH=1 \
+      -s MAXIMUM_MEMORY=2GB \
+      -s USE_PTHREADS=0 \
+      -s STACK_OVERFLOW_CHECK=1 \
+      -s ENVIRONMENT=web,worker,node \
+      -o /src/out/IsoSpec.js
+
+# Prove the artifact runs before it can be exported: a formula whose envelope is known by hand.
+RUN /opt/emsdk/node/*/bin/node -e "\
+const init = require('/src/out/IsoSpec.js'); \
+init().then((M) => { \
+  const r = JSON.parse(M.envelope_from_threshold('H2O1', 0.01, false)); \
+  if (!r.ok || r.peakCount < 1) { console.error(r); process.exit(1); } \
+  const bad = JSON.parse(M.envelope_from_threshold('not-a-formula', 0.01, false)); \
+  if (bad.ok) { console.error('malformed formula was accepted'); process.exit(1); } \
+  console.log('smoke ok: H2O1 peaks=' + r.peakCount + ' covered=' + r.coveredProbability); \
+  console.log('smoke ok: malformed rejected -> ' + bad.error); \
+});"
+
+FROM scratch AS export-stage
+COPY --from=build-stage /src/out/IsoSpec.js /
+COPY --from=build-stage /src/out/IsoSpec.wasm /
+COPY --from=build-stage /src/IsoSpec-LICENCE.txt /

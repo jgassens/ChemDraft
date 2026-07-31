@@ -479,6 +479,33 @@ Not allowed:
 - Reading `classification.derivation` or `classification.claim` to decide behaviour — those two axes
   are for display and grouping; behaviour branches on `classification.flags` (see §8b)
 
+### 6.18 `isospec-adapter`
+
+The isotope-envelope engine (scoped by `PLANS.md`; §8 placed it, §8b's rules apply to anything it
+reports). Vendored IsoSpec WASM plus the thinnest surface that loads it.
+
+Allowed:
+
+- Loading `vendor/IsoSpec.{js,wasm}` and typing its Embind surface
+- The pins (`PINNED_ISOSPEC_VERSION`, `PINNED_ISOSPEC_COMMIT`, `PINNED_ISOSPEC_WASM_SHA256`)
+- `explicitFormulaCounts` — IsoSpec demands `H2O1`, never `H2O`, and RDKit's Hill formula is the
+  latter, so the expansion belongs at this boundary
+- Converting an envelope to `Float64Array` for the §5 worker transport
+
+Not allowed:
+
+- **Patching IsoSpec.** It is vendored unpatched and should stay that way; the patch budget §7 tracks
+  is a real maintenance cost and nothing here has needed one.
+- Re-declaring the abundance table in TypeScript. Read it from the binary with `isotope_table()` —
+  IsoSpec records no provenance for it upstream, so "what the shipped engine used" is the only claim
+  that can be defended, and a duplicated copy could disagree with the artifact.
+- Method contracts, classification, or building `DistributionResult` — those live with the analysis
+  wiring, exactly as they do for the RDKit adapter.
+
+Its abundance set is **convention-dependent** and must be disclosed wherever a number derived from it
+is shown: ¹³C is 0.82% above the commonly quoted CIAAW representative value. Treat it the way
+`includeSandP` is treated, not as an implementation detail.
+
 ## 7. Plugin API rules
 
 Plugins must declare a manifest.

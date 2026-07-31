@@ -728,12 +728,26 @@ an Analyze item ships only when it computes something).
   which the contract states plainly: it will offer a water loss from a molecule whose oxygens are all
   ketones, because that check is arithmetic, not chemistry.
 
-  **Blocked: the isotope envelope.** It needs per-isotope abundances, and neither the vendored RDKit
-  nor OpenChemLib exposes any — checked directly, not assumed (see the dependency inventory). So it
-  needs IsoSpec through the Emscripten lane, which is the same Docker requirement as the Phase 6
-  rebuild. The mass-fragment demo's M/M+1/M+2 approximation therefore stays; it is already correctly
-  labelled ("first-order approx.", "not a full isotopic convolution"), though the abundance table it
-  ships has no recorded provenance, which is now on the distribution track.
+  **The isotope envelope: engine landed 2026-07-30, wiring still to do.** It needs per-isotope
+  abundances, and neither the vendored RDKit nor OpenChemLib exposes any — checked directly, not
+  assumed (see the dependency inventory). IsoSpec `v2.3.5` is now vendored at
+  `packages/isospec-adapter/vendor/` (BSD-2-Clause, **unpatched**, 234 KB WASM), built through the same
+  Emscripten lane as the Phase 6 rebuild and reusing that image purely as a toolchain. Its two
+  truncation policies map straight onto `DistributionResult.truncation.policy`, and its monoisotopic
+  peak for sulfamethoxazole (253.052112) agrees with RDKit's 253.05211 — two independent engines with
+  different tables. What remains is the *analysis* wiring: method contracts, the `DistributionResult`
+  mapping, and panel rendering. Until that lands the mass-fragment demo's M/M+1/M+2 approximation
+  stays; it is already correctly labelled ("first-order approx.", "not a full isotopic convolution").
+
+  **The abundance set is a convention and must be disclosed like `includeSandP`.** IsoSpec's tables
+  carry no provenance in its own repository, so the defensible claim is "the values the shipped engine
+  used" — which is why the wrapper exposes `isotope_table()` and the tests read it from the binary.
+  Measured: 292 entries, every element normalised to 1, masses matching AME to ~1e-9, and ¹³C at
+  `0.010788` against CIAAW's representative `0.0107` — 0.82% relatively higher, moving C₂₀'s M+1 from
+  0.21400 to 0.21576. Not an error (CIAAW publishes carbon as an interval because it varies by source),
+  but a reader reproducing the number from a textbook table will not match, so the contract must say so.
+  The demo plugin's own eight-element table still has no recorded provenance; that stays on the
+  distribution track.
 
   One design flaw the new methods exposed and fixed: `aggregateStatus` let a single `not-applicable`
   result drag a whole run down, so aspirin reported `not-applicable` overall because it has no nitrogen
@@ -786,14 +800,15 @@ build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 - ✅ `pnpm lint`, `pnpm test` (2139), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
   `cargo test` (47) are green.
 
-**Not done, and deliberately so.** The isotope envelope still needs IsoSpec compiled to WASM — neither
-the vendored RDKit nor OpenChemLib 9.22.1 exposes per-isotope abundances, so the M/M+1/M+2
-approximation in `examples/plugins/mass-fragment-demo` stands until that lands. And **releases stay
-blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline, and the
+**Not done, and deliberately so.** The isotope envelope's *engine* is vendored and tested, but it is not
+yet wired into an analysis run — no method contract, no `DistributionResult` produced, no panel
+rendering, and `examples/plugins/mass-fragment-demo`'s M/M+1/M+2 approximation still stands. That is
+Release 2 feature work on top of a dependency that is now present rather than blocked. And **releases
+stay blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline, and the
 plugin-distribution rules are the project owner's calls, not engineering's.
 
-*(The MinimalLib rebuild that this section previously listed as outstanding landed 2026-07-30 — see
-Phase 6 above. Both `0003` and `0006` are in the shipped binary.)*
+*(Both items this section previously listed as build-blocked landed 2026-07-30: the MinimalLib rebuild
+carrying patches `0003` and `0006`, and the IsoSpec WASM build. Neither is waiting on Docker any more.)*
 
 ## Open items owned by the project owner
 

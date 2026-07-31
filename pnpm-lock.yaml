@@ -266,6 +266,12 @@ importers:
 
   packages/fixtures: {}
 
+  packages/isospec-adapter:
+    dependencies:
+      '@chemdraft/analysis-core':
+        specifier: workspace:*
+        version: link:../analysis-core
+
   packages/ketcher-adapter:
     dependencies:
       '@chemdraft/editor-adapter':
