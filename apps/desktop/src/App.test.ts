@@ -341,6 +341,11 @@ describe("ChemDraft desktop shell", () => {
     // stays scoped to live drags via [data-art-transform-preview].
     expect(appCssWithoutComments).not.toMatch(/\[data-art-z-rotation\]\s*{[^}]*will-change/s);
     expect(appCssWithoutComments).toMatch(/\.graphic-object\[data-art-transform-preview="true"\]\s*{[^}]*will-change:\s*transform/s);
+    // Chrome must composite while mounted (pixels stay out of the page layer), and the
+    // dismissal scrub must stay wired: together they prevent and erase chrome ghosts.
+    expect(appCssWithoutComments).toMatch(/\.object-transform-frame\s*{[^}]*will-change:\s*transform/s);
+    expect(appCssWithoutComments).toMatch(/\.graphic-object\[data-graphic-interaction-mode\]\s*{[^}]*will-change:\s*transform/s);
+    expect(mainWindowSource).toContain('page.style.setProperty("--cd-bg-page"');
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {

@@ -8448,6 +8448,39 @@ export function MainWindow({
     };
   }, []);
 
+  // Ghost-pixel scrub (WKWebView): unmounting or relocating object chrome — transform
+  // frames, rotate/tilt buttons, path-edit dots — can leave stale pixels on the canvas
+  // because WebKit under-invalidates the chrome's overhang in several compositing
+  // configurations. Whenever chrome-driving state changes, flip the page background var
+  // for one frame; the full-page repaint that forces erases anything stale regardless
+  // of which interaction dropped it. The one-frame color delta (#fff → #fffefe) is
+  // imperceptible, and the page repaints on these transitions anyway.
+  const chromeScrubSelectionKey = document.selection.objectIds.join("|");
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) {
+      return;
+    }
+    page.style.setProperty("--cd-bg-page", "#fffefe");
+    let scrubFrame: number | undefined = window.requestAnimationFrame(() => {
+      scrubFrame = undefined;
+      page.style.removeProperty("--cd-bg-page");
+    });
+    return () => {
+      if (scrubFrame !== undefined) {
+        window.cancelAnimationFrame(scrubFrame);
+      }
+      page.style.removeProperty("--cd-bg-page");
+    };
+  }, [
+    chromeScrubSelectionKey,
+    shiftHoveredArrowId,
+    transformRotationHandlesVisible,
+    arrowEditTargetId,
+    activeGraphicTransformObjectId,
+    selectedGraphicPathNode
+  ]);
+
   // Esc cancels an active 3D spin (transient; never touched the document) — or,
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
@@ -21438,7 +21471,7 @@ function DocumentObjectView({
         data-art-transform-preview={objectTransformPreview ? "true" : undefined}
         data-art-transform-preview-mode={objectTransformPreview?.mode}
         data-art-transform-preview-proxy={artTransformProxy?.kind}
-        data-graphic-interaction-mode={(selected || graphicPathFeedbackActive) && !inGroupSelection
+        data-graphic-interaction-mode={(selected || graphicPathFeedbackActive || graphicArrowEditActive || graphicShiftTransformActive) && !inGroupSelection
           ? pathGraphicInEditMode ? "path-edit"
             : showGraphicGradientHandles ? "gradient-edit"
               : showGraphicCornerRadiusHandle ? "corner-radius-edit"
