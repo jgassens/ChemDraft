@@ -324,6 +324,19 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.graphic-glyph-hit-target\[data-graphic-hit-fill="true"\]\s*{[^}]*pointer-events:\s*all;/s);
   });
 
+  it("keeps paint containment off the transformed document board (WKWebView ghost pixels)", () => {
+    // `contain: paint` on .document-board — an element that also carries the pan transform —
+    // makes WKWebView under-invalidate removals of chrome that overhangs an object's box
+    // (rotate/tilt handles, path edit dots), leaving partial ghost pixels on the canvas.
+    // Layout containment alone is fine, and .page still carries `contain: paint` safely
+    // because it has no transform. Verified by live bisect on macOS WKWebView (2026-07-31).
+    const appCssWithoutComments = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(appCssWithoutComments).toMatch(/\.document-board\s*{[^}]*transform:\s*translate\(/s);
+    expect(appCssWithoutComments).toMatch(/\.document-board\s*{[^}]*contain:\s*layout;/s);
+    expect(appCssWithoutComments).not.toMatch(/\.document-board\s*{[^}]*contain:[^;}]*paint/s);
+    expect(appCssWithoutComments).toMatch(/\.page\s*{[^}]*contain:\s*paint;/s);
+  });
+
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
     const implementationSource = [mainWindowSource, documentWorkflowSource].join("\n");
 

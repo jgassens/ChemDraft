@@ -3200,7 +3200,11 @@ textarea:focus-visible,
   grid-template-rows: var(--page-height);
   transform: translate(var(--page-translate-x, 0), var(--page-translate-y, 0));
   transform-origin: 0 0;
-  contain: layout paint;
+  /* No `paint` here: paint containment on this transformed element makes WKWebView
+     under-invalidate removals of overhanging descendants (rotate/tilt handles, path
+     dots), leaving partial ghost pixels on the canvas. `.page` keeps `contain: paint`
+     safely because it carries no transform. */
+  contain: layout;
   isolation: isolate;
 }
 
