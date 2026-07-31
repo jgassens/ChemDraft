@@ -849,6 +849,28 @@ textarea:focus-visible,
   grid-template-columns: 12px minmax(0, 1fr);
 }
 
+/* The Molecular Inspector is a two-pane window, not a toolbar strip, so it has to escape the 104px
+   `.tool-palette.horizontal` cap the same way the inspector palettes below do. Without this the shell
+   measures ~104px, PaletteWindow sizes the OS window to that, and the panel opens as a short strip the
+   user has to drag taller every time.
+
+   Beware the near-collision: `molecule-inspector-palette` (below) is Drawn Structure Settings;
+   this is `molecular-`. One letter apart, and the wrong one silently reinstates the cap. */
+.tool-palette.horizontal.molecular-inspector-palette,
+.tool-palette.floating.horizontal.molecular-inspector-palette {
+  /* max-content, not 100%: the pane declares 820x560 and the shell must hug it so the window is
+     sized to the whole panel rather than to a clipped slice of it. */
+  width: max-content;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  gap: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .tool-palette.horizontal.molecule-inspector-palette,
 .tool-palette.floating.horizontal.molecule-inspector-palette,
 .tool-palette.horizontal.ring-inspector-palette,
