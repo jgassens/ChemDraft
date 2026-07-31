@@ -2,6 +2,10 @@
 
 This file records dependencies added during the repository foundation and early implementation milestones.
 
+**The project is licensed Apache-2.0** (finalized 2026-07-31). Every component below that requires
+attribution is listed in the repository's `NOTICE`, which Apache-2.0 §4(d) obliges a redistributor to
+carry. Adding a vendored binary means adding its row here *and* to `NOTICE` in the same change.
+
 | Package | Purpose | License | Core or optional | Distribution impact |
 | --- | --- | --- | --- | --- |
 | `typescript` | Type checking for all workspace TypeScript code. | Apache-2.0 | Core development dependency | No runtime distribution impact. |

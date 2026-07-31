@@ -1,0 +1,45 @@
+ChemDraft
+Copyright 2026 Jeremiah J. Gassensmith
+
+This product includes software developed as part of the ChemDraft project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components requiring attribution
+--------------------------------------------------------------------------------
+
+The following components are redistributed with this software. Each is permissively
+licensed and each requires that its copyright notice, conditions, and disclaimer be
+reproduced in the materials accompanying a binary distribution. Full terms are
+vendored alongside each artifact; the complete inventory, including build provenance
+and artifact hashes, is in docs/architecture/dependency-inventory.md.
+
+RDKit MinimalLib (vendored WebAssembly build)
+  BSD-3-Clause. Copyright (c) 2006-2026 Rational Discovery LLC, Greg Landrum,
+  and other RDKit contributors.
+  Source: https://github.com/rdkit/rdkit, tag Release_2026_03_3.
+  Locally modified: 6 patches, recorded in
+  packages/rdkit-adapter/vendor/patches/ and vendor/BUILD.md.
+  Full licence text: packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
+
+IsoSpec (vendored WebAssembly build)
+  BSD-2-Clause. Copyright (c) 2015-2025 Michal Startek and Mateusz Lacki.
+  Source: https://github.com/MatteoLacki/IsoSpec, tag v2.3.5. Unmodified.
+  Full licence text: packages/isospec-adapter/vendor/IsoSpec-LICENCE.txt
+
+InChI (statically linked into the RDKit MinimalLib build above)
+  The binary self-identifies as "InChI version 1, Software 1.07.3 (API Library)".
+  The InChI Trust's terms changed across the 1.06 -> 1.07 series; the applicable
+  licence and notice obligations for 1.07.3 are RECORDED AS UNCONFIRMED in the
+  dependency inventory and must be resolved, with the notice archived here, before
+  any public redistribution.
+
+--------------------------------------------------------------------------------
+Data under separate terms
+--------------------------------------------------------------------------------
+
+Bundled datasets are NOT covered by the licence above. A component that ships data
+under different terms states them separately in its own package metadata — see
+AGENTS.md section 8c. Most notably, the NMR predictor plugin's shift database is
+derived from nmrshiftdb2 and carries that database's own attribution and share-alike
+obligations; describing such a package by its code licence alone is incorrect.

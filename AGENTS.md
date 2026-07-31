@@ -688,8 +688,36 @@ chosen because the nmrshiftdb2 Database License requires prediction software rel
 be OSI-approved. MIT does NOT cover the bundled reference database: it is a derivative database under
 the nmrshiftdb2 Database License (ODbL-derived) with share-alike and attribution obligations that
 travel with any redistribution, including a packaged plugin zip. Never describe a packaged plugin as
-"MIT" without that carve-out. The root repository `LICENSE` remains unfinalized (`UNLICENSED` in
-package.json) — the project owner's call; do not change it.
+"MIT" without that carve-out. The root repository is **Apache-2.0** (finalized 2026-07-31 by the
+project owner; see §8c). Changing it again is the owner's call — do not.
+
+## 8c. Licensing and redistribution rules
+
+**The core is Apache-2.0** (`LICENSE`, `package.json`, finalized 2026-07-31). Attribution plus an
+express patent grant. The example plugins and the two SDK packages stay MIT — a permissive core does
+not require a plugin to match it, and nothing here has ever said otherwise.
+
+**`NOTICE` is part of the distribution.** Apache-2.0 §4(d) obliges a redistributor to carry it. It
+records the project's own copyright and every vendored component whose licence requires attribution
+(RDKit BSD-3-Clause, IsoSpec BSD-2-Clause, and the statically linked InChI, whose 1.07.3 terms are
+still **unconfirmed** and must be resolved before any public redistribution). Adding a vendored binary
+means adding its row to `NOTICE` and to `docs/architecture/dependency-inventory.md` in the same change.
+
+**Code licence and data licence are separate claims, and a package must not merge them.** This is the
+rule the nmrshiftdb2 case exists to enforce: the NMR predictor's shift database is a derivative database
+under nmrshiftdb2's ODbL-derived terms, with share-alike and attribution obligations that travel with
+the zip, and no MIT grant on the surrounding code reaches it. So:
+
+- A plugin bundling data under terms different from its code **must** declare both — its `license`
+  field describes its *code*, and a `dataLicenses` entry names each dataset with its terms.
+- A package that ships a dataset while claiming only a code licence is refused at packaging time
+  (`tools/plugin-extract/gates.ts`). The gate is mechanical: it cannot judge whether stated terms are
+  *correct*, only that a bundled dataset is not silently covered by the code licence.
+- Never describe such a package by its code licence alone, in a manifest, a README, or a release note.
+
+**What this is not.** It is not a rule that plugins inherit the core's licence; permissive licences
+never require that. It is a labelling obligation, and it exists because the failure it prevents —
+shipping data under terms nobody recorded — is invisible until someone else discovers it.
 
 ## 8b. Property & prediction suite rules (branch `chemdraft-analyzers`)
 

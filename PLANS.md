@@ -833,12 +833,27 @@ waiting on Docker any more.)*
 
 ## Open items owned by the project owner
 
-These block release, not engineering (§4). This branch records them and proceeds.
+Two of the three were settled on 2026-07-31; one remains, and it is not an engineering task.
 
-1. **Core license choice.** `LICENSE`, `package.json` (`UNLICENSED`), and `AGENTS.md` disagree. AGENTS.md
-   §8a reserves this decision; no agent changes it.
-2. **nmrshiftdb2 decision deadline** and the authorized-licensor confirmation (§4).
-3. **Plugin-distribution rules** for first-party plugins that carry data under separate terms.
+1. ✅ **Core license — Apache-2.0**, chosen by the project owner. Applied to `LICENSE` (full text),
+   `package.json`, and AGENTS.md §8a/§8c, with a `NOTICE` file carrying the attributions Apache-2.0 §4(d)
+   obliges a redistributor to pass on: RDKit (BSD-3-Clause), IsoSpec (BSD-2-Clause), and the statically
+   linked InChI. The example plugins and the two SDK packages stay MIT — a permissive core never
+   required them to match.
+2. ✅ **Plugin-distribution rules — written** as AGENTS.md §8c, with a mechanical gate
+   (`assertBundledDataLicensed`) that refuses to build a distribution whose package ships a dataset while
+   declaring only a code licence. The rule is a *labelling* obligation, not the licence-inheritance rule
+   it is often mistaken for: permissive licences never require a plugin to adopt the host's terms.
+3. ⏳ **nmrshiftdb2** — the authorized-licensor confirmation and a decision deadline.
+
+   **The Apache-2.0 choice substantially changes this item and it should be re-read, not carried
+   forward as written.** The clause requires software relying on the database to be OSI-approved and to
+   constitute functional end-user software. The awkward reading was an MIT plugin that could only run
+   inside an **unlicensed** host — and that host no longer exists: the core is now OSI-approved,
+   functional, end-user software. What remains is a confirmation worth *having*, not a live exposure,
+   and the defensive design in §4 (the plugin owns its engine and data, is distributed independently,
+   runs in a documented generic host, and names the database under its own terms) is unchanged and
+   still holds. Whether to seek written confirmation, and by when, is the owner's call.
 
 ---
 
