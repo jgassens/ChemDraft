@@ -5,6 +5,8 @@ import {
   objectMarkerKindCommands,
   objectMarkerNumberRanges,
   objectMarkerSizeCommandId,
+  objectShaftMarkSizeAutoCommandId,
+  objectShaftMarkSizeCommandId,
   objectStrokeDashCommands,
   objectStrokeWidthCommands
 } from "../../commands";
@@ -13,10 +15,16 @@ import type { ToolbarWidgetState } from "../toolbarWidgets";
 import { closestPreset, type MainStyleRows } from "./cells";
 
 const arrowSwatchCommands = objectColorCommands.slice(0, 6);
+// A no-reaction selection trades the last two swatches (green, grey) for the ✗-size select,
+// keeping the row at its 11-cell budget.
+const noReactionSwatchCommands = objectColorCommands.slice(0, 4);
 const arrowheadKindCommands = objectMarkerKindCommands.filter((command) => command.markerId === "markerEnd");
 
 /** Head sizes a compact select can offer (the canvas handle drags the full 4–96px range). */
 const HEAD_SIZE_PRESETS = [8, 12, 16, 20, 24, 32] as const;
+
+/** ✗ sizes for the no-reaction mark select; "Auto" derives from stroke width. */
+const SHAFT_MARK_SIZE_PRESETS = [8, 12, 16, 20, 24, 32] as const;
 
 const MIXED = "mixed";
 
@@ -45,15 +53,38 @@ export function arrowVariantRows(state: ToolbarWidgetState): MainStyleRows {
   );
   const headSizePresets = HEAD_SIZE_PRESETS.filter((preset) => preset >= headSizeFloor);
   const effectiveHeadSizePresets = headSizePresets.length > 0 ? headSizePresets : [headSizeFloor];
+  // Every selected object draws the no-reaction ✗ → swap two swatches for its size select.
+  const noReactionSelection = art?.supportsShaftMarkAll ?? false;
+  const shaftMarkSize = art?.values.shaftMarkSizePx;
 
   return {
     primary: [
       {
         kind: "swatches",
         ariaLabel: "Arrow color",
-        commands: arrowSwatchCommands,
+        commands: noReactionSelection ? noReactionSwatchCommands : arrowSwatchCommands,
         activeColor: normalizeHexColor(art?.values.strokeColor.value ?? state.currentObjectColor ?? "") ?? undefined
       },
+      ...(noReactionSelection
+        ? [{
+            kind: "select" as const,
+            cells: 2,
+            ariaLabel: "No-reaction mark size",
+            disabled: !selected,
+            value: shaftMarkSize?.mixed
+              ? MIXED
+              : shaftMarkSize?.value === "auto" || shaftMarkSize?.value === undefined || shaftMarkSize?.value === null
+                ? objectShaftMarkSizeAutoCommandId
+                : objectShaftMarkSizeCommandId(closestPreset(shaftMarkSize.value, SHAFT_MARK_SIZE_PRESETS)),
+            options: [
+              { value: objectShaftMarkSizeAutoCommandId, label: "Auto" },
+              ...SHAFT_MARK_SIZE_PRESETS.map((preset) => ({
+                value: objectShaftMarkSizeCommandId(preset),
+                label: `${preset} px`
+              }))
+            ]
+          }]
+        : []),
       {
         kind: "select",
         cells: 3,

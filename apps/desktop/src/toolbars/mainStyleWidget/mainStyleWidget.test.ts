@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { mainStyleRowsForVariant } from "./MainStyleWidget";
 import { MAIN_STYLE_ROW_CELLS, rowCellCost } from "./cells";
+import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "../../artInspectorModel";
+import { createPhase4Document, insertNativeArtGraphicObject } from "../../documentWorkflow";
 import type { ToolbarStyleVariant } from "../toolbarSelectionKind";
 import type { ToolbarWidgetState } from "../toolbarWidgets";
 
@@ -17,6 +19,26 @@ describe("mainStyleRowsForVariant", () => {
       expect(rowCellCost(rows.primary), `${variant} primary row`).toBe(MAIN_STYLE_ROW_CELLS);
       expect(rowCellCost(rows.secondary), `${variant} secondary row`).toBe(MAIN_STYLE_ROW_CELLS);
     }
+  });
+
+  it("keeps the arrow rows on budget when the ✗-size select replaces two swatches", () => {
+    // A no-reaction selection trades the green and grey swatches (2 cells) for the mark-size
+    // select (2 cells); the row must still add up to exactly 11.
+    const noReactionDocument = insertNativeArtGraphicObject(
+      createPhase4Document("No-reaction budget"),
+      { x: 220, y: 180 },
+      "tool.art.noReactionArrow"
+    );
+    const artStyle = createArtInspectorModel({
+      document: noReactionDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(noReactionDocument),
+      requestedPaintTarget: "fill"
+    });
+    expect(artStyle.supportsShaftMarkAll).toBe(true);
+    const { rows } = mainStyleRowsForVariant("arrow", { onInvoke: () => undefined, currentArtStyle: artStyle });
+    expect(rows.primary.some((cell) => cell.kind === "select" && cell.ariaLabel === "No-reaction mark size")).toBe(true);
+    expect(rowCellCost(rows.primary)).toBe(MAIN_STYLE_ROW_CELLS);
+    expect(rowCellCost(rows.secondary)).toBe(MAIN_STYLE_ROW_CELLS);
   });
 
   it("renders every variant under its own name", () => {

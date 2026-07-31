@@ -843,6 +843,16 @@ export function snapGraphicMarkerSizePx(sizePx: number): number {
   return roundLayoutNumber(clamp(snapped, MARKER_SIZE_STEP_PX, MARKER_SIZE_MAX_PX));
 }
 
+/** Bounds for an explicit no-reaction cross size (data.shaftMarkSizePx). */
+export const SHAFT_MARK_SIZE_MIN_PX = 6;
+export const SHAFT_MARK_SIZE_MAX_PX = 64;
+
+/** Clamp an explicit shaft-mark size to its bounds — the single source of truth shared by the
+ *  toolbar command and the render plan, mirroring snapGraphicMarkerSizePx for arrowheads. */
+export function clampGraphicShaftMarkSizePx(sizePx: number): number {
+  return roundLayoutNumber(clamp(sizePx, SHAFT_MARK_SIZE_MIN_PX, SHAFT_MARK_SIZE_MAX_PX));
+}
+
 export function editGraphicMarkerSize(
   object: GraphicObject,
   markerId: NativeArtMarkerHandleId,
@@ -1113,11 +1123,16 @@ function nativeArtShaftMarkPlan(
   }
 
   const direction = normalizedVector({ x: after.x - before.x, y: after.y - before.y }) ?? { x: 1, y: 0 };
+  // An explicit size (data.shaftMarkSizePx) wins; otherwise derive from the stroke so the X
+  // keeps proportion with the shaft by default.
+  const explicitSize = typeof object.data.shaftMarkSizePx === "number" && Number.isFinite(object.data.shaftMarkSizePx)
+    ? clampGraphicShaftMarkSizePx(object.data.shaftMarkSizePx)
+    : undefined;
   return {
     kind: "cross",
     point,
     direction,
-    sizePx: Math.max(12, strokeWidth * 5)
+    sizePx: explicitSize ?? Math.max(12, strokeWidth * 5)
   };
 }
 

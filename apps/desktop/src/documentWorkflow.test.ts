@@ -201,6 +201,7 @@ import {
   rotateGraphicObjectGradientStopsForSelection,
   scaleDocumentObjectsAroundPoint,
   proportionalGraphicScale,
+  applyGraphicShaftMarkSizeToSelection,
   selectionBounds,
   selectAllDocumentObjects,
   selectedGraphicObjectIds,
@@ -6822,6 +6823,48 @@ describe("Phase 4 document workflow", () => {
     const meanScale = Math.sqrt(1.6);
     expect(stretched.data.markerEnd?.sizePx).toBeCloseTo(startHead * meanScale, 3);
     expect(stretched.style.strokeWidth).toBeCloseTo(startStroke * meanScale, 3);
+  });
+
+  it("sets, clamps, scales, and clears the no-reaction ✗ size", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("No-Reaction Mark Size"),
+      { x: 220, y: 180 },
+      "tool.art.noReactionArrow"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    expect(graphicById(inserted, objectId).data.shaftMark).toBe("cross");
+    // Fresh arrows have no explicit size — the render derives it from stroke width.
+    expect(graphicById(inserted, objectId).data.shaftMarkSizePx).toBeUndefined();
+
+    const sized = applyGraphicShaftMarkSizeToSelection(inserted, 20, [objectId]);
+    expect(graphicById(sized, objectId).data.shaftMarkSizePx).toBe(20);
+
+    // Out-of-range requests clamp to the engine bounds rather than storing nonsense.
+    const clamped = applyGraphicShaftMarkSizeToSelection(inserted, 500, [objectId]);
+    expect(graphicById(clamped, objectId).data.shaftMarkSizePx).toBe(64);
+
+    // A frame resize scales the explicit size with the arrow, like the heads.
+    const center = {
+      x: graphicById(sized, objectId).x + graphicById(sized, objectId).width / 2,
+      y: graphicById(sized, objectId).y + graphicById(sized, objectId).height / 2
+    };
+    const doubled = graphicById(scaleDocumentObjectsAroundPoint(sized, [objectId], center, 2, 2), objectId);
+    expect(doubled.data.shaftMarkSizePx).toBeCloseTo(40, 3);
+
+    // Auto (undefined) deletes the override entirely.
+    const cleared = applyGraphicShaftMarkSizeToSelection(sized, undefined, [objectId]);
+    expect(graphicById(cleared, objectId).data.shaftMarkSizePx).toBeUndefined();
+    expect("shaftMarkSizePx" in graphicById(cleared, objectId).data).toBe(false);
+
+    // A plain reaction arrow has no shaft mark, so the command leaves it untouched.
+    const plainArrow = insertNativeArtGraphicObject(
+      createPhase4Document("Plain Arrow Untouched"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const plainId = plainArrow.selection.objectIds[0] ?? "";
+    const afterPlain = applyGraphicShaftMarkSizeToSelection(plainArrow, 20, [plainId]);
+    expect(afterPlain).toBe(plainArrow);
   });
 
   it("computes the proportional graphic scale as the geometric mean of the two axes", () => {

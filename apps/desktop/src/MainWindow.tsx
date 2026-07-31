@@ -177,6 +177,8 @@ import {
   objectStyleActions,
   objectMarkerKindForCommand,
   objectMarkerSizeForCommand,
+  objectShaftMarkSizeAutoCommandId,
+  objectShaftMarkSizeForCommand,
   objectStrokeDashCommands,
   objectStrokeLineCapCommands,
   objectStrokeLineJoinCommands,
@@ -326,6 +328,8 @@ import {
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectMarkerKindToSelection,
   applyGraphicObjectMarkerSizeToSelection,
+  applyGraphicShaftMarkSizeToSelection,
+  graphicObjectHasShaftMark,
   applyGraphicObjectStrokeStyleToSelection,
   graphicObjectSupportsMarkers,
   applyMoleculeObjectColorToSelection,
@@ -5506,6 +5510,19 @@ export function MainWindow({
         handled: true,
         targeted: markerObjectIds.length > 0,
         message: "Updated selected arrowhead size"
+      };
+    }
+
+    const shaftMarkSize = objectShaftMarkSizeForCommand(commandId);
+    if (shaftMarkSize || commandId === objectShaftMarkSizeAutoCommandId) {
+      // Only no-reaction arrows draw the ✗, so anything else in the selection is untargeted.
+      const shaftMarkObjectIds = graphicObjectIds.filter((objectId) =>
+        graphicObjectHasShaftMark(findDocumentObject(currentDocument, objectId)));
+      return {
+        document: applyGraphicShaftMarkSizeToSelection(currentDocument, shaftMarkSize?.value, shaftMarkObjectIds),
+        handled: true,
+        targeted: shaftMarkObjectIds.length > 0,
+        message: shaftMarkSize ? "Updated no-reaction mark size" : "No-reaction mark size follows stroke width"
       };
     }
 

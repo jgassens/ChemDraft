@@ -313,6 +313,45 @@ describe("MainStyleWidget variants", () => {
     expect(widget.querySelector("[data-command-id=\"layout.flipHorizontal\"]")).not.toBeNull();
   });
 
+  it("swaps the green and grey swatches for the ✗-size select on a no-reaction arrow", async () => {
+    const { createPhase4Document, insertNativeArtGraphicObject } = await import("../../documentWorkflow");
+    const { createArtInspectorModel, selectedGraphicObjectsForArtInspector } = await import("../../artInspectorModel");
+    const noReactionDocument = insertNativeArtGraphicObject(
+      createPhase4Document("No-reaction widget"),
+      { x: 220, y: 180 },
+      "tool.art.noReactionArrow"
+    );
+    const selection = classifyToolbarSelection({ document: noReactionDocument, moleculeContext: "none" });
+    expect(selection.kind).toBe("arrow");
+    const artStyle = createArtInspectorModel({
+      document: noReactionDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(noReactionDocument),
+      requestedPaintTarget: "fill"
+    });
+    expect(artStyle.supportsShaftMarkAll).toBe(true);
+    const { onInvoke } = renderWidget({ currentSelection: selection, currentArtStyle: artStyle });
+
+    const widget = widgetRoot();
+    expect(widget.dataset.mainStyleVariant).toBe("arrow");
+    // The last two swatches make room for the size select.
+    expect(widget.querySelector("[data-command-id=\"object.color.green\"]")).toBeNull();
+    expect(widget.querySelector("[data-command-id=\"object.color.gray\"]")).toBeNull();
+    expect(widget.querySelector("[data-command-id=\"object.color.black\"]")).not.toBeNull();
+
+    const sizeSelect = widget.querySelector<HTMLSelectElement>("[aria-label=\"No-reaction mark size\"]");
+    if (!sizeSelect) {
+      throw new Error("Expected the no-reaction mark size select.");
+    }
+    // Fresh no-reaction arrows derive the ✗ from stroke width.
+    expect(sizeSelect.value).toBe("object.shaftMark.sizeAuto");
+    act(() => {
+      sizeSelect.value = "object.shaftMark.size:20";
+      sizeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.shaftMark.size:20");
+    expect(onInvoke).toHaveBeenCalledTimes(1);
+  });
+
   it("pins the text layout while customizing, whatever is selected", () => {
     const { selection } = moleculeSelection();
     renderWidget({ currentSelection: selection }, true);

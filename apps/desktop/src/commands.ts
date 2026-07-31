@@ -13,7 +13,12 @@ import {
   type NativeTextFontStyle,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { MARKER_SIZE_MAX_PX, MARKER_SIZE_STEP_PX } from "@chemdraft/art-engine";
+import {
+  MARKER_SIZE_MAX_PX,
+  MARKER_SIZE_STEP_PX,
+  SHAFT_MARK_SIZE_MAX_PX,
+  SHAFT_MARK_SIZE_MIN_PX
+} from "@chemdraft/art-engine";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
@@ -556,6 +561,16 @@ export const objectMarkerNumberRanges = {
   markerSizePx: { min: MARKER_SIZE_STEP_PX, max: MARKER_SIZE_MAX_PX, step: MARKER_SIZE_STEP_PX }
 } as const;
 
+// No-reaction cross size rides its own dynamic id. "Auto" (no stored size) derives from the
+// stroke width in the art engine, so it keeps proportion with the shaft; the explicit sizes
+// share the engine's clamp bounds.
+export const customObjectShaftMarkSizeCommandPrefix = "object.shaftMark.size:";
+export const objectShaftMarkSizeAutoCommandId = "object.shaftMark.sizeAuto";
+
+export const objectShaftMarkNumberRanges = {
+  sizePx: { min: SHAFT_MARK_SIZE_MIN_PX, max: SHAFT_MARK_SIZE_MAX_PX, step: 1 }
+} as const;
+
 export const moleculeStructureNumberRanges = {
   chainAngleDegrees: { min: 1, max: 179, step: 1 },
   bondLengthPx: { min: 8, max: 120, step: 0.5 },
@@ -905,6 +920,14 @@ export function objectMarkerSizeCommandId(value: number): string {
 
 export function objectMarkerSizeForCommand(commandId: string): { value: number } | undefined {
   return numberCommandValue(commandId, customObjectMarkerSizeCommandPrefix, objectMarkerNumberRanges.markerSizePx);
+}
+
+export function objectShaftMarkSizeCommandId(value: number): string {
+  return `${customObjectShaftMarkSizeCommandPrefix}${canonicalCommandNumber(value)}`;
+}
+
+export function objectShaftMarkSizeForCommand(commandId: string): { value: number } | undefined {
+  return numberCommandValue(commandId, customObjectShaftMarkSizeCommandPrefix, objectShaftMarkNumberRanges.sizePx);
 }
 
 export function moleculeStructureBondStrokeWidthForCommand(commandId: string): { value: number } | undefined {

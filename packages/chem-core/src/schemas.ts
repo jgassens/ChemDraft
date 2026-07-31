@@ -240,6 +240,8 @@ export const GraphicObjectDataSchema = z
     markerEnd: GraphicMarkerSchema.optional(),
     // Decoration drawn across the shaft midpoint ("cross" = X, the no-reaction mark).
     shaftMark: z.enum(["cross"]).optional(),
+    // Explicit size for the shaft mark; absent = derived from stroke width (max(12, stroke×5)).
+    shaftMarkSizePx: z.number().finite().optional(),
     // Equilibrium arrows: two parallel half-shafts pointing opposite ways along lineStart->lineEnd.
     // `markerEnd` heads the forward (offset +normal) shaft, `markerStart` the reverse one, so head
     // sizing rides the ordinary marker machinery. Each shaft's length is an independent fraction of

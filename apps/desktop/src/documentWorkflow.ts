@@ -1,6 +1,7 @@
 import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
+  clampGraphicShaftMarkSizePx,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
   deleteGraphicPathNode,
@@ -8139,6 +8140,35 @@ export function applyGraphicObjectMarkerSizeToSelection(
   }, graphicObjectSupportsMarkers);
 }
 
+/** Graphics that draw a shaft mark (the no-reaction ✗). */
+export function graphicObjectHasShaftMark(object: DocumentObject | undefined): boolean {
+  return object?.type === "graphic" && object.data.shaftMark === "cross";
+}
+
+/** Set (or, with undefined, return to stroke-derived "auto") the no-reaction cross size on
+ *  every shaft-marked graphic in the selection. Explicit sizes clamp to the engine's bounds. */
+export function applyGraphicShaftMarkSizeToSelection(
+  document: ChemDraftDocument,
+  sizePx: number | undefined,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const clamped = sizePx === undefined ? undefined : clampGraphicShaftMarkSizePx(sizePx);
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    if (clamped === undefined) {
+      if (object.data.shaftMarkSizePx === undefined) {
+        return object.data;
+      }
+      const nextData = { ...object.data };
+      delete nextData.shaftMarkSizePx;
+      return nextData;
+    }
+    if (object.data.shaftMarkSizePx === clamped) {
+      return object.data;
+    }
+    return { ...object.data, shaftMarkSizePx: clamped };
+  }, graphicObjectHasShaftMark);
+}
+
 function updateVisualEffectObjects(
   document: ChemDraftDocument,
   objectIds: readonly string[],
@@ -9714,6 +9744,11 @@ function resizeGraphicObjectDataForFrame(
     nextData.markerEnd = scaleGraphicMarker(data.markerEnd, headScale);
     if (typeof data.dualShaftGapPx === "number" && Number.isFinite(data.dualShaftGapPx)) {
       nextData.dualShaftGapPx = roundFreehandNumber(Math.max(0.5, data.dualShaftGapPx * headScale));
+    }
+    // An explicit no-reaction cross size scales with the arrow like the heads do; the derived
+    // "auto" size follows stroke width, which the same resize already scales.
+    if (typeof data.shaftMarkSizePx === "number" && Number.isFinite(data.shaftMarkSizePx)) {
+      nextData.shaftMarkSizePx = clampGraphicShaftMarkSizePx(data.shaftMarkSizePx * headScale);
     }
   }
 

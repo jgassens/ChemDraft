@@ -1,6 +1,6 @@
 import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
 import type { ChemDraftDocument, GraphicMarker, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
-import { graphicObjectSupportsMarkers, nativeArrowToolIdForGraphic } from "./documentWorkflow";
+import { graphicObjectHasShaftMark, graphicObjectSupportsMarkers, nativeArrowToolIdForGraphic } from "./documentWorkflow";
 import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
@@ -96,6 +96,9 @@ export interface ArtInspectorModel {
   /** Marker-capable = an open-stroke path whose ends can carry arrowhead markers. */
   supportsMarkersAny: boolean;
   supportsMarkersAll: boolean;
+  /** Shaft-marked = draws the no-reaction ✗ across its midpoint. */
+  supportsShaftMarkAny: boolean;
+  supportsShaftMarkAll: boolean;
   /** Arrow-family membership (drawn with one of the arrow tools), for the arrow style widget. */
   isArrowAny: boolean;
   isArrowAll: boolean;
@@ -127,6 +130,8 @@ export interface ArtInspectorModel {
     markerEndKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
     /** The STORED head size — the render floors it at strokeWidth×4, which the widget clamps for. */
     markerSizePx: ArtInspectorMixedValue<number>;
+    /** No-reaction ✗ size: an explicit px value, or "auto" when derived from stroke width. */
+    shaftMarkSizePx: ArtInspectorMixedValue<number | "auto">;
   };
   activeGradient: ArtInspectorGradientModel;
   effectControls: Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
@@ -172,6 +177,7 @@ export function createArtInspectorModel({
   const supportsLineEnds = planned.map((entry) => entry.plan?.capabilities.supportsLineCap === true);
   const supportsCorners = planned.map((entry) => entry.plan?.capabilities.supportsLineJoin === true);
   const supportsMarkers = planned.map((entry) => entry.object.type === "graphic" && graphicObjectSupportsMarkers(entry.object));
+  const supportsShaftMark = planned.map((entry) => entry.object.type === "graphic" && graphicObjectHasShaftMark(entry.object));
   const arrowToolIdByEntry = planned.map((entry) => entry.object.type === "graphic" ? nativeArrowToolIdForGraphic(entry.object) : undefined);
   const arrowCount = arrowToolIdByEntry.filter((toolId) => toolId !== undefined).length;
   const fillSupportedCount = countSupported(supportsFill);
@@ -180,6 +186,7 @@ export function createArtInspectorModel({
   const lineEndsSupportedCount = countSupported(supportsLineEnds);
   const cornersSupportedCount = countSupported(supportsCorners);
   const markersSupportedCount = countSupported(supportsMarkers);
+  const shaftMarkSupportedCount = countSupported(supportsShaftMark);
   const activePaintTarget = requestedPaintTarget === "fill" && fillSupportedCount === 0 && strokeSupportedCount > 0
     ? "stroke"
     : requestedPaintTarget === "stroke" && strokeSupportedCount === 0 && fillSupportedCount > 0
@@ -214,7 +221,13 @@ export function createArtInspectorModel({
       ({ object }) => object.type === "graphic"
         ? metadataNumberValue(object.data.markerEnd?.sizePx ?? object.data.markerStart?.sizePx, 16)
         : undefined
-    )
+    ),
+    shaftMarkSizePx: uniformSupportedValue(planned, supportsShaftMark, ({ object }) =>
+      object.type === "graphic"
+        ? typeof object.data.shaftMarkSizePx === "number" && Number.isFinite(object.data.shaftMarkSizePx)
+          ? object.data.shaftMarkSizePx
+          : "auto"
+        : undefined)
   };
   const effectControls = {
     shadow: effectModelForKind(planned, "shadow", selectedCount),
@@ -252,6 +265,8 @@ export function createArtInspectorModel({
     supportsStrokeOpacityAll: selectedCount > 0 && strokeSupportedCount === selectedCount,
     supportsMarkersAny: markersSupportedCount > 0,
     supportsMarkersAll: selectedCount > 0 && markersSupportedCount === selectedCount,
+    supportsShaftMarkAny: shaftMarkSupportedCount > 0,
+    supportsShaftMarkAll: selectedCount > 0 && shaftMarkSupportedCount === selectedCount,
     isArrowAny: arrowCount > 0,
     isArrowAll: selectedCount > 0 && arrowCount === selectedCount,
     arrowToolIds: [...new Set(arrowToolIdByEntry.flatMap((toolId) => (toolId === undefined ? [] : [toolId as string])))].sort(),
@@ -315,6 +330,8 @@ export function createMoleculeRingArtInspectorModel(
     supportsStrokeOpacityAll: false,
     supportsMarkersAny: false,
     supportsMarkersAll: false,
+    supportsShaftMarkAny: false,
+    supportsShaftMarkAll: false,
     isArrowAny: false,
     isArrowAll: false,
     arrowToolIds: [],
@@ -341,7 +358,8 @@ export function createMoleculeRingArtInspectorModel(
       corners: { value: null, mixed: false },
       markerStartKind: { value: null, mixed: false },
       markerEndKind: { value: null, mixed: false },
-      markerSizePx: { value: null, mixed: false }
+      markerSizePx: { value: null, mixed: false },
+      shaftMarkSizePx: { value: null, mixed: false }
     },
     activeGradient: {
       paintType: null,
