@@ -335,6 +335,12 @@ describe("ChemDraft desktop shell", () => {
     expect(appCssWithoutComments).toMatch(/\.document-board\s*{[^}]*contain:\s*layout;/s);
     expect(appCssWithoutComments).not.toMatch(/\.document-board\s*{[^}]*contain:[^;}]*paint/s);
     expect(appCssWithoutComments).toMatch(/\.page\s*{[^}]*contain:\s*paint;/s);
+    // A rotated graphic must not keep a standing compositing layer: `will-change`
+    // on [data-art-z-rotation] shells made chrome unmounting around any once-rotated
+    // arrow leave ghost pixels (same WKWebView under-invalidation family). The hint
+    // stays scoped to live drags via [data-art-transform-preview].
+    expect(appCssWithoutComments).not.toMatch(/\[data-art-z-rotation\]\s*{[^}]*will-change/s);
+    expect(appCssWithoutComments).toMatch(/\.graphic-object\[data-art-transform-preview="true"\]\s*{[^}]*will-change:\s*transform/s);
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {

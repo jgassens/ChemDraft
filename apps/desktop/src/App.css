@@ -3680,9 +3680,12 @@ textarea:focus-visible,
   transform-origin: 50% 50%;
 }
 
-.graphic-visual-shell[data-art-z-rotation] {
-  will-change: transform;
-}
+/* No standing `will-change: transform` on rotated shells: it pinned a permanent
+   compositing layer under every rotated graphic, and WKWebView under-invalidates
+   chrome unmounting around such layers — hover cages, size-box handles, and dots
+   ghosted over any arrow that had ever been rotated. The transform-preview rule
+   above already grants the hint for the duration of a live drag, which is the only
+   time it earns its keep. */
 
 .graphic-glyph-shell {
   width: 100%;
