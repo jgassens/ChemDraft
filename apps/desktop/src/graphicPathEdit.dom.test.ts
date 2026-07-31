@@ -318,42 +318,106 @@ describe("graphic path direct editing interactions", () => {
     });
   });
 
-  function rotateGrip(): HTMLButtonElement {
-    const button = container.querySelector<HTMLButtonElement>('[data-graphic-rotate-grip="true"]');
+  function transformResizeCorner(corner: "top-left" | "top-right" | "bottom-left" | "bottom-right"): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-object-resize-corner="${corner}"]`);
     if (!button) {
-      throw new Error("Expected the arrow rotate grip.");
+      throw new Error(`Expected ${corner} resize handle on the transform frame.`);
     }
     return button;
   }
 
-  it("rotates an arrow around its centre from the grip, as one undoable edit", async () => {
+  async function shiftHover(objectId: string) {
+    // buttons:0 marks a hover (no drag); shiftKey:true is what raises the size box on an arrow.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 260, y: 190 }, 31, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+  }
+
+  it("shift-hovering an arrow shows the size box and hides its dot handles", async () => {
     const document = insertNativeArtGraphicObject(
-      createPhase4Document("Arrow Rotate Grip"),
+      createPhase4Document("Arrow Shift Frame"),
       { x: 220, y: 180 },
       "tool.art.reactionArrow"
     );
     const objectId = document.selection.objectIds[0] ?? "";
-    await renderMainWindow(document);
-    const before = debugArtObject(objectId);
-    const center = {
-      x: before.object.x + Math.max(before.object.width, 1) / 2,
-      y: before.object.y + Math.max(before.object.height, 1) / 2
-    };
-    // Grab due east of the centre and drag to due south: a clean +90°, whatever the arrow's size.
-    const grabPoint = { x: center.x + 60, y: center.y };
-    const dragPoint = { x: center.x, y: center.y + 60 };
+    // Arrow tool active: the case where the floating grip failed, because reaching for it left the
+    // arrow. A held modifier can't be raced that way.
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
 
+    await shiftHover(objectId);
+    // Size box with resize corners appears; the small path/marker dot handles step aside.
+    expect(container.querySelector('[data-object-resize-corner]')).not.toBeNull();
+    expect(container.querySelector('[data-graphic-path-handle]')).toBeNull();
+
+    // Releasing Shift is the real dismissal (letting go of the modifier), and it puts a still-
+    // selected arrow back to its dot handles. (A synthetic React pointerleave is unreliable in jsdom.)
+    await releaseShiftForRotationHandles();
+    expect(container.querySelector('[data-object-resize-corner]')).toBeNull();
+    expect(container.querySelector('[data-graphic-path-handle]')).not.toBeNull();
+  });
+
+  it("raises the size box when Shift is pressed while already hovering an arrow", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Hover Then Shift"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    // Plain hover first (no Shift) — no box yet.
     await act(async () => {
-      dispatchPointer(rotateGrip(), "pointerdown", grabPoint, 21);
-      dispatchPointer(pageElement(), "pointermove", dragPoint, 21);
-      dispatchPointer(pageElement(), "pointerup", dragPoint, 21);
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 260, y: 190 }, 33, 1, { buttons: 0 });
+    });
+    expect(container.querySelector('[data-object-resize-corner]')).toBeNull();
+
+    // Now press Shift without moving the pointer: the box must appear immediately, not wait for a
+    // jiggle. This is the case the pointermove-only tracking missed.
+    await holdShiftForRotationHandles();
+    expect(container.querySelector('[data-object-resize-corner]')).not.toBeNull();
+  });
+
+  it("resizes a shift-hovered arrow proportionally, head and stroke together, as one undo", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Shift Resize"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    const before = debugArtObject(objectId);
+    const startHead = before.object.data.markerEnd?.sizePx ?? 0;
+    const startStroke = typeof before.object.style.strokeWidth === "number" ? before.object.style.strokeWidth : 0;
+    const center = {
+      x: before.object.x + before.object.width / 2,
+      y: before.object.y + before.object.height / 2
+    };
+
+    await shiftHover(objectId);
+    // Drag the bottom-right corner outward from the centre to roughly double the box on both axes.
+    const corner = {
+      x: before.object.x + before.object.width,
+      y: before.object.y + before.object.height
+    };
+    const target = {
+      x: center.x + (corner.x - center.x) * 2,
+      y: center.y + (corner.y - center.y) * 2
+    };
+    await act(async () => {
+      dispatchPointer(transformResizeCorner("bottom-right"), "pointerdown", corner, 32);
+      dispatchPointer(pageElement(), "pointermove", target, 32);
+      dispatchPointer(pageElement(), "pointerup", target, 32);
     });
 
-    const rotated = debugArtObject(objectId);
-    expect(rotated.object.rotation).toBeCloseTo(90, 3);
-    // Rotation is a field, not a geometry rewrite — the endpoints must be untouched.
-    expect(rotated.object.data.lineStart).toEqual(before.object.data.lineStart);
-    expect(rotated.object.data.lineEnd).toEqual(before.object.data.lineEnd);
+    const after = debugArtObject(objectId);
+    expect(after.object.width).toBeGreaterThan(before.object.width * 1.5);
+    // Head and stroke grew with the box, not left behind on a longer shaft.
+    expect(after.object.data.markerEnd?.sizePx).toBeGreaterThan(startHead * 1.5);
+    expect(typeof after.object.style.strokeWidth === "number" ? after.object.style.strokeWidth : 0)
+      .toBeGreaterThan(startStroke * 1.5);
     expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
 
     await act(async () => {
@@ -364,49 +428,23 @@ describe("graphic path direct editing interactions", () => {
         metaKey: true
       }));
     });
-    // One undo returns the whole drag, not just its last preview frame.
-    expect(debugArtObject(objectId).object.rotation).toBeCloseTo(before.object.rotation, 3);
+    // One undo returns the whole resize.
+    const undone = debugArtObject(objectId);
+    expect(undone.object.width).toBeCloseTo(before.object.width, 3);
+    expect(undone.object.data.markerEnd?.sizePx).toBeCloseTo(startHead, 3);
   });
 
-  it("snaps the rotate grip to 15° steps while Shift is held", async () => {
+  it("does not raise the size box for a plain line on shift-hover", async () => {
     const document = insertNativeArtGraphicObject(
-      createPhase4Document("Arrow Rotate Snap"),
-      { x: 220, y: 180 },
-      "tool.art.reactionArrow"
-    );
-    const objectId = document.selection.objectIds[0] ?? "";
-    await renderMainWindow(document);
-    const before = debugArtObject(objectId);
-    const center = {
-      x: before.object.x + Math.max(before.object.width, 1) / 2,
-      y: before.object.y + Math.max(before.object.height, 1) / 2
-    };
-    const grabPoint = { x: center.x + 60, y: center.y };
-    // ~52° round the circle; Shift must land it on 45, not 52.
-    const radians = (52 * Math.PI) / 180;
-    const dragPoint = {
-      x: center.x + Math.cos(radians) * 60,
-      y: center.y + Math.sin(radians) * 60
-    };
-
-    await act(async () => {
-      dispatchPointer(rotateGrip(), "pointerdown", grabPoint, 22);
-      dispatchPointer(pageElement(), "pointermove", dragPoint, 22, 1, { shiftKey: true });
-      dispatchPointer(pageElement(), "pointerup", dragPoint, 22, 1, { shiftKey: true });
-    });
-
-    expect(debugArtObject(objectId).object.rotation).toBeCloseTo(45, 3);
-  });
-
-  it("gives the rotate grip to arrows only, not to plain art", async () => {
-    const lineDocument = insertNativeArtGraphicObject(
-      createPhase4Document("Plain Line"),
+      createPhase4Document("Line No Frame"),
       { x: 220, y: 180 },
       "tool.art.line"
     );
-    await renderMainWindow(lineDocument);
-    // A plain line already has the transform frame's rotate handle; a second grip would be ambiguous.
-    expect(container.querySelector('[data-graphic-rotate-grip="true"]')).toBeNull();
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.line" });
+    await shiftHover(objectId);
+    // The size box is an arrow affordance; a plain line keeps its ordinary handles.
+    expect(container.querySelector('[data-object-resize-corner]')).toBeNull();
   });
 
   it("drags an arrowhead handle to resize the marker as one undoable edit", async () => {

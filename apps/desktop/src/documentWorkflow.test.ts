@@ -115,8 +115,6 @@ import {
   groupSelectedDocumentObjects,
   getSelectedMolecule,
   insertNativeArtGraphicObject,
-  normalizeNativeGraphicRotationDegrees,
-  rotateNativeGraphicObject,
   nativeArtToolIsLineDraw,
   nativeArtToolSupportsArrowHoverEdit,
   applyNativeArtLineToolAtPoint,
@@ -202,6 +200,7 @@ import {
   reverseGraphicObjectGradientStopsForSelection,
   rotateGraphicObjectGradientStopsForSelection,
   scaleDocumentObjectsAroundPoint,
+  proportionalGraphicScale,
   selectionBounds,
   selectAllDocumentObjects,
   selectedGraphicObjectIds,
@@ -4745,52 +4744,6 @@ describe("Phase 4 document workflow", () => {
     expect(noReaction.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
   });
 
-  it("rotates an arrow by writing rotation, leaving its geometry untouched", () => {
-    // Rotation must stay a single field: the art engine spins the stroke about the object centre at
-    // projection time, so rewriting lineStart/lineEnd would need a case per arrow geometry AND would
-    // desync the handles from the drawn stroke.
-    const inserted = insertNativeArtGraphicObject(
-      createPhase4Document("Rotate Arrow"),
-      { x: 220, y: 180 },
-      "tool.art.reactionArrow"
-    );
-    const objectId = inserted.selection.objectIds[0] ?? "";
-    const before = inserted.pages[0].objects.find((object) => object.id === objectId);
-    if (before?.type !== "graphic") {
-      throw new Error("Expected an inserted arrow.");
-    }
-
-    const rotated = rotateNativeGraphicObject(inserted, objectId, 42);
-    const after = rotated.pages[0].objects.find((object) => object.id === objectId);
-    if (after?.type !== "graphic") {
-      throw new Error("Expected the rotated arrow.");
-    }
-
-    expect(after.rotation).toBeCloseTo(42, 3);
-    expect(after.data.lineStart).toEqual(before.data.lineStart);
-    expect(after.data.lineEnd).toEqual(before.data.lineEnd);
-    expect(after.data.markerEnd).toEqual(before.data.markerEnd);
-    expect(after.x).toBe(before.x);
-    expect(after.y).toBe(before.y);
-  });
-
-  it("normalizes arrow rotation into [0, 360) and no-ops on an unchanged angle", () => {
-    expect(normalizeNativeGraphicRotationDegrees(-90)).toBeCloseTo(270, 3);
-    expect(normalizeNativeGraphicRotationDegrees(455)).toBeCloseTo(95, 3);
-    expect(normalizeNativeGraphicRotationDegrees(Number.NaN)).toBe(0);
-
-    const inserted = insertNativeArtGraphicObject(
-      createPhase4Document("Rotate No-op"),
-      { x: 220, y: 180 },
-      "tool.art.arrow"
-    );
-    const objectId = inserted.selection.objectIds[0] ?? "";
-    // A full turn lands back on 0, so the document is returned untouched rather than pushing an
-    // identical-value patch (which would otherwise become an empty undo step).
-    expect(rotateNativeGraphicObject(inserted, objectId, 360)).toBe(inserted);
-    expect(rotateNativeGraphicObject(inserted, "no-such-object", 42)).toBe(inserted);
-  });
-
   it("classifies arrow-family tools for arrow-mode hover editing", () => {
     // Line-family arrows and lines: hover-editable and drag-to-draw.
     expect(nativeArtToolSupportsArrowHoverEdit("tool.art.reactionArrowBold")).toBe(true);
@@ -6836,6 +6789,67 @@ describe("Phase 4 document workflow", () => {
     }
     expect(pointDistance(scaledPoints!.start, beforePoints.start)).toBeGreaterThan(0.5);
     expect(pointDistance(scaledPoints!.end, beforePoints.end)).toBeGreaterThan(0.5);
+  });
+
+  it("grows an arrow's head and stroke proportionally when the frame is resized", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Arrow Proportionally"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const graphic = graphicById(inserted, objectId);
+    const startHead = graphic.data.markerEnd?.sizePx ?? 0;
+    const startStroke = typeof graphic.style.strokeWidth === "number" ? graphic.style.strokeWidth : 0;
+    expect(startHead).toBeGreaterThan(0);
+    expect(startStroke).toBeGreaterThan(0);
+    const oldCenter = { x: graphic.x + graphic.width / 2, y: graphic.y + graphic.height / 2 };
+
+    // Uniform 2× → head and stroke both ~2×, not just the geometry.
+    const doubled = graphicById(
+      scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, 2, 2),
+      objectId
+    );
+    expect(doubled.data.markerEnd?.sizePx).toBeCloseTo(startHead * 2, 3);
+    expect(doubled.style.strokeWidth).toBeCloseTo(startStroke * 2, 3);
+
+    // A one-axis stretch still enlarges the head — by the geometric mean, √(1.6·1.0), so a long thin
+    // stretch keeps the arrow looking like an arrow rather than a fixed head on a stretched shaft.
+    const stretched = graphicById(
+      scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, 1.6, 1),
+      objectId
+    );
+    const meanScale = Math.sqrt(1.6);
+    expect(stretched.data.markerEnd?.sizePx).toBeCloseTo(startHead * meanScale, 3);
+    expect(stretched.style.strokeWidth).toBeCloseTo(startStroke * meanScale, 3);
+  });
+
+  it("computes the proportional graphic scale as the geometric mean of the two axes", () => {
+    expect(proportionalGraphicScale(2, 2)).toBeCloseTo(2, 6);
+    expect(proportionalGraphicScale(1.6, 1)).toBeCloseTo(Math.sqrt(1.6), 6);
+    expect(proportionalGraphicScale(4, 0.25)).toBeCloseTo(1, 6);
+    // Degenerate axes fall back to 1 rather than collapsing the size.
+    expect(proportionalGraphicScale(0, 3)).toBe(1);
+    expect(proportionalGraphicScale(Number.NaN, 2)).toBeCloseTo(Math.sqrt(2), 6);
+  });
+
+  it("leaves a plain rectangle's stroke width unchanged when resized", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Plain Rect"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const graphic = graphicById(inserted, objectId);
+    const startStroke = typeof graphic.style.strokeWidth === "number" ? graphic.style.strokeWidth : 0;
+    const oldCenter = { x: graphic.x + graphic.width / 2, y: graphic.y + graphic.height / 2 };
+
+    // Non-arrow art keeps its existing behaviour: a bigger rectangle keeps its line weight.
+    const scaled = graphicById(
+      scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, 2, 2),
+      objectId
+    );
+    expect(scaled.style.strokeWidth).toBe(startStroke);
   });
 
   it("scales native polyline path nodes with the frame", () => {

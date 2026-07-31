@@ -2395,51 +2395,6 @@ export function updateNativeGraphicCornerRadius(
   );
 }
 
-/** Snap step for a Shift-constrained arrow rotation, in degrees. */
-export const nativeGraphicRotationSnapDegrees = 15;
-
-/** Normalize to [0, 360) so a rotation reads the same however many turns the drag made. */
-export function normalizeNativeGraphicRotationDegrees(degrees: number): number {
-  if (!Number.isFinite(degrees)) {
-    return 0;
-  }
-  return ((degrees % 360) + 360) % 360;
-}
-
-/**
- * Spin a graphic about its own centre by writing `rotation`.
- *
- * Deliberately NOT a geometry rewrite: the art engine already applies `object.rotation` around
- * (x + width/2, y + height/2) when it projects and when it hit-tests, so one field rotates a straight
- * arrow, an arc, and a dual-shaft equilibrium alike. Editing lineStart/lineEnd instead would need a
- * separate case per arrow geometry and would silently desync the handles from the drawn stroke.
- */
-export function rotateNativeGraphicObject(
-  document: ChemDraftDocument,
-  objectId: string,
-  degrees: number
-): ChemDraftDocument {
-  const object = findDocumentObject(document, objectId);
-  if (!object || object.type !== "graphic") {
-    return document;
-  }
-
-  const rotation = roundFreehandNumber(normalizeNativeGraphicRotationDegrees(degrees));
-  if (Math.abs(rotation - object.rotation) < 0.001) {
-    return document;
-  }
-
-  return applyPatch(
-    document,
-    {
-      op: "updateObject",
-      objectId,
-      changes: { rotation }
-    },
-    { now: phase4Timestamp }
-  );
-}
-
 export function updateNativeGraphicLinearGradientHandle(
   document: ChemDraftDocument,
   objectId: string,
@@ -9749,7 +9704,47 @@ function resizeGraphicObjectDataForFrame(
     nextData.arcRadiusY = Math.max(1, data.arcRadiusY * Math.abs(scaleY));
   }
 
+  // Arrowheads are a size in px, not a pair of endpoints, so scaling the geometry alone would drag a
+  // fixed-size head along a longer shaft — the arrow would look progressively wrong as it grew.
+  // Scale by the OVERALL size change (see proportionalGraphicScale), not by one axis, so stretching
+  // an arrow mostly-horizontally still enlarges its head somewhat rather than not at all.
+  const headScale = proportionalGraphicScale(scaleX, scaleY);
+  if (Math.abs(headScale - 1) > 0.0001) {
+    nextData.markerStart = scaleGraphicMarker(data.markerStart, headScale);
+    nextData.markerEnd = scaleGraphicMarker(data.markerEnd, headScale);
+    if (typeof data.dualShaftGapPx === "number" && Number.isFinite(data.dualShaftGapPx)) {
+      nextData.dualShaftGapPx = roundFreehandNumber(Math.max(0.5, data.dualShaftGapPx * headScale));
+    }
+  }
+
   return nextData;
+}
+
+/**
+ * One scale factor for the parts of a graphic that have a thickness rather than a pair of endpoints
+ * — arrowhead size, stroke width, shaft gap.
+ *
+ * The geometric mean of the two axes: it is the factor that changes area by the same amount the
+ * resize did, so a uniform drag scales these exactly with the shape, and a one-axis stretch grows
+ * them by the square root rather than either ignoring the stretch or doubling it.
+ */
+export function proportionalGraphicScale(scaleX: number, scaleY: number): number {
+  const sx = Number.isFinite(scaleX) ? Math.abs(scaleX) : 1;
+  const sy = Number.isFinite(scaleY) ? Math.abs(scaleY) : 1;
+  if (sx <= 0 || sy <= 0) {
+    return 1;
+  }
+  return Math.sqrt(sx * sy);
+}
+
+function scaleGraphicMarker(
+  marker: GraphicObjectData["markerEnd"],
+  scale: number
+): GraphicObjectData["markerEnd"] {
+  if (!marker || typeof marker.sizePx !== "number" || !Number.isFinite(marker.sizePx)) {
+    return marker;
+  }
+  return { ...marker, sizePx: roundFreehandNumber(Math.max(2, marker.sizePx * scale)) };
 }
 
 function transformGraphicPathNodes(
@@ -11472,6 +11467,19 @@ function transformOtherObjectAroundPoint(
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
+    // Stroke width scales with the arrow too, so a resized arrow keeps its proportions instead of
+    // turning spindly as it grows. Arrow-family only: other art keeps its existing behaviour, where
+    // a resized rectangle deliberately holds its stroke weight.
+    const strokeScale = proportionalGraphicScale(scaleX, scaleY);
+    if (isNativeArrowGraphic(object) && Math.abs(strokeScale - 1) > 0.0001) {
+      const strokeWidth = object.style.strokeWidth;
+      if (typeof strokeWidth === "number" && Number.isFinite(strokeWidth) && strokeWidth > 0) {
+        changes.style = {
+          ...object.style,
+          strokeWidth: roundFreehandNumber(Math.max(0.1, strokeWidth * strokeScale))
+        };
+      }
+    }
   }
   // Arrow endpoints are absolute page points, so scaling only the frame would leave the drawn arrow
   // at its original size inside a resized box.
