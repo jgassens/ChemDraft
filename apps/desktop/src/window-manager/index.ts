@@ -595,13 +595,16 @@ export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosit
     return undefined;
   }
 
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const window = getCurrentWindow();
-  const [position, scaleFactor] = await Promise.all([window.outerPosition(), window.scaleFactor()]);
-  return {
-    x: position.x / scaleFactor,
-    y: position.y / scaleFactor
-  };
+  // Native read (window_logical_position): the JS route — outerPosition()/scaleFactor()
+  // and dividing — misreported on the FIRST call in a fresh palette webview, which sent
+  // the first popover open to a fabricated origin while every later call was fine. Rust
+  // asks the window server directly and has no warm-up.
+  const { invoke } = await import("@tauri-apps/api/core");
+  const position = await invoke<{ x: number; y: number }>("window_logical_position");
+  if (typeof position?.x !== "number" || typeof position?.y !== "number") {
+    return undefined;
+  }
+  return { x: position.x, y: position.y };
 }
 
 export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition): Promise<void> {

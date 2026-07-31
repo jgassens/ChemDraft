@@ -46,6 +46,7 @@
     "allow-toggle-spin3d-debugger-window",
     "allow-toggle-preferences-window",
     "allow-agent-bridge-status",
+    "allow-window-logical-position",
     "allow-engine3d-sidecar-status",
     "allow-engine3d-sidecar-start-session",
     "allow-engine3d-sidecar-send-session",

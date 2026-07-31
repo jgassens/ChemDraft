@@ -659,9 +659,18 @@ export function PaletteWindow({
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
     lastPopoverContentRef.current = content;
     void (async () => {
-      const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
-      const screenX = (windowPosition?.x ?? 0) + anchor.left;
-      const screenY = (windowPosition?.y ?? 0) + anchor.bottom + 4;
+      // No silent origin fallback: a failed position read once sent the first popover
+      // open to the anchor offset from (0,0) — inches from its button — while every
+      // later open worked. Retry once, then abort; a popout that doesn't appear (and
+      // works on the next press) beats one that appears in the wrong place.
+      const windowPosition =
+        (await currentWindowLogicalPosition().catch(() => undefined)) ??
+        (await currentWindowLogicalPosition().catch(() => undefined));
+      if (!windowPosition) {
+        return;
+      }
+      const screenX = windowPosition.x + anchor.left;
+      const screenY = windowPosition.y + anchor.bottom + 4;
       await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
       await setToolsetPopoverContent(toolset.id, content);
     })().catch(() => undefined);

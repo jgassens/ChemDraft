@@ -38,6 +38,7 @@ fn main() {
             "route_palette_command",
             "toggle_spin3d_debugger_window",
             "agent_bridge_status",
+            "window_logical_position",
         ]),
     ))
     .expect("failed to run Tauri build script");

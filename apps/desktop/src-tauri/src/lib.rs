@@ -461,6 +461,7 @@ pub fn run() {
             write_clipboard_text_items,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
+            window_logical_position,
             agent_bridge_status,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
@@ -1110,6 +1111,30 @@ fn set_toolset_window_focusable(
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+struct WindowLogicalPosition {
+    x: f64,
+    y: f64,
+}
+
+/// The calling window's outer position in global logical coordinates, read natively.
+/// The JS route (outerPosition()/scaleFactor(), divide) proved fragile on the FIRST
+/// call in a palette webview: the popover anchored through it landed at the raw
+/// palette-local offset, as if the palette sat at the origin — and every later call
+/// was fine. Native reads have no warm-up; the window server is the source of truth.
+#[tauri::command]
+fn window_logical_position(window: tauri::WebviewWindow) -> Result<WindowLogicalPosition, String> {
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let position = window
+        .outer_position()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale);
+    Ok(WindowLogicalPosition {
+        x: position.x,
+        y: position.y,
+    })
 }
 
 const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
