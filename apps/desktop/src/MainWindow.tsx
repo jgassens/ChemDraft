@@ -12983,7 +12983,10 @@ export function MainWindow({
   const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+    // Same bypass as the rotate/resize handles: a Shift-hovered arrow's box works under
+    // the arrow tools too, and grabbing a handle selects the arrow as a side effect.
+    const shiftArrowTarget = shiftHoveredArrowIdRef.current === objectId;
+    if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !shiftArrowTarget)) {
       return;
     }
 
@@ -13006,7 +13009,8 @@ export function MainWindow({
       : undefined;
     const canTiltObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object) &&
+          (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : isNativeMoleculeGraph(object) &&
           object.atoms.length > 0 &&
           (

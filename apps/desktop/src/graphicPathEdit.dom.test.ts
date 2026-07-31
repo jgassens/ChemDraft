@@ -509,6 +509,46 @@ describe("graphic path direct editing interactions", () => {
     await releaseShiftForRotationHandles();
   });
 
+  it("X/Y rotates a shift-hovered arrow from the tilt handle under the arrow tool", async () => {
+    // The tilt (3D rotate) button is part of the same Shift box as the rotate and resize
+    // handles, so it must honor the same shift-arrow bypass: under the arrow tools, on an
+    // unselected arrow, a tilt drag has to start — not bail at the selection-tool gate.
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Shift Tilt"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    const before = debugArtObject(objectId);
+    const startTilt = documentObjectProjectedPlaneTiltMagnitude(before.object);
+
+    // Shift is physically held in this flow: the rotate/tilt buttons are revealed by the
+    // key state, while the hover with shiftKey latches the box itself.
+    await holdShiftForRotationHandles();
+    await shiftHover(objectId);
+    const tiltHandle = container.querySelector<HTMLButtonElement>("[data-selection-tilt3d-handle]");
+    expect(tiltHandle).not.toBeNull();
+
+    await act(async () => {
+      dispatchPointer(tiltHandle as HTMLButtonElement, "pointerdown", { x: 270, y: 150 }, 37);
+      dispatchPointer(pageElement(), "pointermove", { x: 330, y: 165 }, 37);
+      dispatchPointer(pageElement(), "pointerup", { x: 330, y: 165 }, 37);
+    });
+
+    const after = debugArtObject(objectId);
+    expect(documentObjectProjectedPlaneTiltMagnitude(after.object)).toBeGreaterThan(startTilt);
+    await releaseShiftForRotationHandles();
+  });
+
+  function documentObjectProjectedPlaneTiltMagnitude(object: {
+    style: { tiltXDegrees?: unknown; tiltYDegrees?: unknown };
+  }): number {
+    const tiltX = typeof object.style.tiltXDegrees === "number" ? object.style.tiltXDegrees : 0;
+    const tiltY = typeof object.style.tiltYDegrees === "number" ? object.style.tiltYDegrees : 0;
+    return Math.abs(tiltX) + Math.abs(tiltY);
+  }
+
   it("does not raise the size box for a plain line on shift-hover", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Line No Frame"),
