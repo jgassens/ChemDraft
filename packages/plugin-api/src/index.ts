@@ -781,6 +781,57 @@ export interface PluginAnalysisAPI {
   getLatest<TPayload = unknown>(query: PluginAnalysisQuery): Promise<PluginAnalysisRecord<TPayload> | undefined>;
 }
 
+/**
+ * Chemistry the host computes on a plugin's behalf, gated by `chemistry.compute`.
+ *
+ * This exists so a plugin need not reimplement chemistry the application already owns. The
+ * mass-fragment demo shipped its own eight-element abundance table and a first-order M/M+1/M+2
+ * estimate precisely because the SDK boundary (ADR-0028 §1) stops a plugin reaching the core's
+ * engines — and the result was a second, worse, unsourced implementation of something the host does
+ * properly. Asking the host is the way out that leaves the boundary intact.
+ */
+export interface PluginIsotopeEnvelopeRequest {
+  format: "smiles" | "molfile-v2000" | "molfile-v3000";
+  structure: string;
+}
+
+export const PluginIsotopeEnvelopeRequestSchema = z
+  .object({
+    format: z.enum(["smiles", "molfile-v2000", "molfile-v3000"]),
+    structure: NonEmptyStringSchema
+  })
+  .strict();
+
+export interface PluginIsotopeEnvelopePeak {
+  /** Neutral-molecule mass in daltons — not m/z: no adduct, no charge. */
+  mass: number;
+  /** Normalised to the base peak at 100. */
+  relativeIntensity: number;
+}
+
+/**
+ * Either the envelope, or why there is not one.
+ *
+ * A discriminated result rather than a throw or an empty list, because the host declines for real
+ * chemical reasons a plugin has to be able to show a reader: a charged structure has no neutral mass
+ * to report, and an isotope-labelled one cannot be expressed to the engine at all.
+ */
+export type PluginIsotopeEnvelopeResult =
+  | {
+      available: true;
+      peaks: readonly PluginIsotopeEnvelopePeak[];
+      /** What the engine dropped, and how much of the distribution survived. */
+      truncation: { policy: string; threshold: number; coveredProbability?: number };
+      engine: { id: string; version: string };
+      /** The named choices behind these intensities — above all, which abundance table produced them. */
+      conventions: readonly string[];
+    }
+  | { available: false; reason: string };
+
+export interface PluginChemistryAPI {
+  isotopeEnvelope(request: PluginIsotopeEnvelopeRequest): Promise<PluginIsotopeEnvelopeResult>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -798,6 +849,8 @@ export interface PluginCommandContext {
   panels?: PluginPanelAPI;
   /** Present only when the plugin declares "analysis.write". */
   analysis?: PluginAnalysisAPI;
+  /** Present only when the plugin declares "chemistry.compute" and the host provides an engine. */
+  chemistry?: PluginChemistryAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

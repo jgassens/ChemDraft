@@ -105,9 +105,10 @@ differ from the commonly quoted CIAAW representative values — ¹³C is `0.0107
 `0.0107`, 0.82% relatively higher. CIAAW publishes carbon as an interval (0.9884–0.9904) because it
 varies by source, so this is a convention to disclose in the method contract, not a discrepancy to fix.
 
-**One table already ships without that record.** `examples/plugins/mass-fragment-demo` carries an
-eight-element abundance table (`ISOTOPE_ABUNDANCES` in `src/massAnalysis.ts`) with no source or terms
-recorded. The plugin is honest about the *method* — its panel says "first-order approx." and "not a
-full isotopic convolution" — but the data's provenance is unrecorded and should be resolved with the
-rest of the distribution track. The plugin is separately MIT-licensed; consolidating its adduct table
-with the core's is a product decision, not a compliance one.
+**A second unsourced table used to ship, and no longer does.** `examples/plugins/mass-fragment-demo`
+carried an eight-element abundance table (`ISOTOPE_ABUNDANCES` in `src/massAnalysis.ts`) with no source
+or terms recorded, feeding a first-order M/M+1/M+2 estimate. Both were **removed on 2026-07-30**: the
+plugin now asks the host for the real envelope through the `chemistry.compute` capability, so there is
+one abundance table in the repository rather than two, and it is the one whose provenance is documented
+above. The plugin is separately MIT-licensed; consolidating its adduct table with the core's remains a
+product decision, not a compliance one.

@@ -10,9 +10,12 @@ import type {
   PluginAnalysisQuery,
   PluginAnalysisRecord,
   PluginAnalyzerContribution,
+  PluginChemistryAPI,
   PluginCommandContext,
   PluginCommandContribution,
   PluginCommandHandler,
+  PluginIsotopeEnvelopeRequest,
+  PluginIsotopeEnvelopeResult,
   PluginMenuContribution,
   NormalizedProposedDocumentPatch,
   PluginManifest,
@@ -31,7 +34,12 @@ import { AnalysisStore } from "./analysisStore";
 
 export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
-import { PluginPanelReportSchema, ProposedDocumentPatchSchema, parsePluginManifest } from "@chemdraft/plugin-api";
+import {
+  PluginIsotopeEnvelopeRequestSchema,
+  PluginPanelReportSchema,
+  ProposedDocumentPatchSchema,
+  parsePluginManifest
+} from "@chemdraft/plugin-api";
 
 export interface CommandDefinition {
   id: string;
@@ -170,6 +178,12 @@ export interface PluginHostOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Renders a validated panel report; absent hosts simply expose no panels API. */
   showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
+  /**
+   * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
+   * why the capability is optional on the context rather than assumed. This package stays engine-free;
+   * the application supplies the engine it already owns.
+   */
+  computeIsotopeEnvelope?: (request: PluginIsotopeEnvelopeRequest) => Promise<PluginIsotopeEnvelopeResult>;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   now?: () => Date | string;
@@ -189,6 +203,7 @@ export class PluginHost {
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
+  private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
   private readonly now: () => Date | string;
   private readonly createId: () => string;
@@ -202,6 +217,7 @@ export class PluginHost {
     this.getSelectionSnapshot = options.getSelection;
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
+    this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? (() => globalThis.crypto.randomUUID());
@@ -380,6 +396,24 @@ export class PluginHost {
         }
       : undefined;
 
+    // Presence tracks the PERMISSION alone; whether the host can actually serve the call is carried in
+    // the answer. That split is deliberate: across the worker bridge the plugin's stub is built from
+    // its manifest permissions, with no way to know what the host wired up, so gating presence on the
+    // engine too would make the in-process and worker paths disagree for the same plugin on the same
+    // host — one seeing no capability, the other a rejected call. One code path, one shape of answer.
+    const chemistry: PluginChemistryAPI | undefined = this.hasPermission(pluginId, "chemistry.compute")
+      ? {
+          isotopeEnvelope: async (request) => {
+            this.requirePermission(pluginId, "chemistry.compute");
+            const parsed = PluginIsotopeEnvelopeRequestSchema.parse(request);
+            if (!this.computeIsotopeEnvelope) {
+              return { available: false, reason: "This host provides no isotope engine." };
+            }
+            return await this.computeIsotopeEnvelope(parsed);
+          }
+        }
+      : undefined;
+
     return {
       plugin: {
         id: plugin.manifest.id,
@@ -387,6 +421,7 @@ export class PluginHost {
         version: plugin.manifest.version,
         permissions: plugin.manifest.permissions
       },
+      ...(chemistry ? { chemistry } : {}),
       documents: {
         getActiveDocument: async () => {
           this.requirePermission(pluginId, "document.read");

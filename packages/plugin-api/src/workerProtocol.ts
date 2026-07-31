@@ -25,7 +25,13 @@ export const PLUGIN_WORKER_PROTOCOL_VERSION = 1 as const;
 /** The capability namespaces a plugin can reach across the boundary — one per capability object on
  *  {@link PluginCommandContext}. `documents` is always present on the context but its methods gate
  *  internally on `document.read` / `document.proposePatch`. */
-export type PluginWorkerCapabilityNamespace = "selection" | "analysis" | "storage" | "panels" | "documents";
+export type PluginWorkerCapabilityNamespace =
+  | "selection"
+  | "analysis"
+  | "storage"
+  | "panels"
+  | "documents"
+  | "chemistry";
 
 /** The methods each namespace exposes. The host bridge validates an incoming request against this map
  *  and rejects anything else, so a worker can never invoke an arbitrary property on a capability. */
@@ -34,7 +40,8 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS: Readonly<Record<PluginWorkerCapab
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
   panels: ["showReport"],
-  documents: ["getActiveDocument", "proposePatch"]
+  documents: ["getActiveDocument", "proposePatch"],
+  chemistry: ["isotopeEnvelope"]
 } as const;
 
 /** A serializable error crossing the boundary in either direction. Errors never travel as `Error`

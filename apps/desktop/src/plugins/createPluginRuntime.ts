@@ -1,5 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
+  PluginIsotopeEnvelopeRequest,
+  PluginIsotopeEnvelopeResult,
   PluginManifest,
   PluginPermission,
   PluginSelectionSnapshot,
@@ -15,6 +17,12 @@ import {
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
+import { computeIsotopeEnvelopeForPlugin } from "./pluginChemistry";
+
+/** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
+export type DesktopIsotopeEnvelopeProvider = (
+  request: PluginIsotopeEnvelopeRequest
+) => Promise<PluginIsotopeEnvelopeResult>;
 
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -32,6 +40,12 @@ export interface DesktopPluginRuntimeOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /**
+   * Serves `chemistry.compute`. Defaults to the real engine-backed implementation; injectable so tests
+   * can drive the capability without standing up an analysis worker. Passing `null` withholds it, which
+   * is how a host with no engines is modelled — the plugin then sees no `chemistry` API at all.
+   */
+  computeIsotopeEnvelope?: DesktopIsotopeEnvelopeProvider | null;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -96,6 +110,8 @@ export interface DesktopPluginRuntime {
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
   const now = options.now ?? (() => new Date());
+  const envelopeProvider =
+    options.computeIsotopeEnvelope === undefined ? computeIsotopeEnvelopeForPlugin : options.computeIsotopeEnvelope;
   const nowIso = (): string => {
     const value = now();
     return typeof value === "string" ? value : value.toISOString();
@@ -114,6 +130,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
     },
+    ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     now
   });
   controller = new PluginPanelController(host, nowIso);

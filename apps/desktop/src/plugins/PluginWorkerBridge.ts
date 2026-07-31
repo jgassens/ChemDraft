@@ -387,6 +387,8 @@ export class PluginWorkerBridge {
         return context.panels;
       case "documents":
         return context.documents; // always present; its methods gate on document.* internally
+      case "chemistry":
+        return context.chemistry;
     }
   }
 

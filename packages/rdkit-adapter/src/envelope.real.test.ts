@@ -88,6 +88,22 @@ describe("the envelope is part of the run", () => {
     expect(mPlus2?.intensity).toBeLessThan(100);
   });
 
+  it("gives chloroform the ~96% M+2 the demo plugin used to estimate", async () => {
+    // Inherited from `examples/plugins/mass-fragment-demo`, whose first-order approximation this
+    // replaces. Three chlorines put M+2 just under the base peak — the chemistry the plugin used to
+    // showcase, now computed against a real abundance table instead of an eight-element one.
+    const distribution = envelope(await analyze("ClC(Cl)Cl", ENVELOPE_ONLY));
+    const peaks = [...distribution.positions].map((position, index) => ({
+      position,
+      intensity: distribution.intensities[index]!
+    }));
+    const base = peaks.reduce((best, peak) => (peak.intensity > best.intensity ? peak : best));
+    const mPlus2 = peaks.find((peak) => Math.abs(peak.position - (base.position + 1.997)) < 0.01);
+
+    expect(mPlus2?.intensity).toBeGreaterThan(90);
+    expect(mPlus2?.intensity).toBeLessThan(100);
+  });
+
   it("records the truncation policy and what it retained", async () => {
     // A truncated distribution whose truncation is not stated reads exactly like a complete one.
     const distribution = envelope(await analyze("Cc1onc(c1)NS(=O)(=O)c1ccc(N)cc1", ENVELOPE_ONLY));

@@ -18,6 +18,7 @@
 
 import type {
   PluginAnalysisAPI,
+  PluginChemistryAPI,
   PluginCommandContext,
   PluginCommandHandler,
   PluginDocumentAPI,
@@ -168,6 +169,16 @@ export function runPluginWorker(
       ? { showReport: (panelId, report) => call("panels", "showReport", [panelId, report]) as ReturnType<PluginPanelAPI["showReport"]> }
       : undefined;
 
+    // Gated on the permission alone, exactly like the others. The host still decides whether it can
+    // actually serve the call: a host with no chemistry engine resolves the stub's request with
+    // `available: false` rather than the plugin having to guess from the capability's presence.
+    const chemistry: PluginChemistryAPI | undefined = has("chemistry.compute")
+      ? {
+          isotopeEnvelope: (request) =>
+            call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>
+        }
+      : undefined;
+
     const analysis: PluginAnalysisAPI | undefined = has("analysis.write")
       ? ({
           write: (input: unknown) => call("analysis", "write", [input]),
@@ -188,6 +199,7 @@ export function runPluginWorker(
       selection,
       panels,
       analysis,
+      chemistry,
       hasPermission: has,
       requirePermission: (permission) => {
         if (!has(permission)) {

@@ -1,5 +1,5 @@
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import type { PluginManifest, PluginPanelReport } from "@chemdraft/plugin-api";
+import type { PluginManifest, PluginPanelReport, PluginPermission } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import {
   CommandRegistry,
@@ -468,6 +468,75 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     });
     expect(host.listAnalyzerContributions()[0]?.contribution.id).toBe("analyzer.analyze.main");
     expect(host.listCommandContributions()[0]?.contribution.id).toBe("plugin.analyze.run");
+  });
+
+  it("serves chemistry.compute only when the plugin declares it AND the host provides an engine", async () => {
+    // Two independent conditions, and the failure mode differs: an undeclared permission is a plugin
+    // error, an absent engine is a host without that capability. Neither may look like the other, and
+    // neither may surface as a call that throws — the plugin has to be able to say which.
+    const computeIsotopeEnvelope = vi.fn(async () => ({
+      available: true as const,
+      peaks: [{ mass: 78.04695, relativeIntensity: 100 }],
+      truncation: { policy: "relative-intensity-threshold", threshold: 1e-4 },
+      engine: { id: "isospec-wasm", version: "2.3.5" },
+      conventions: ["natural abundances from IsoSpec's built-in tables"]
+    }));
+
+    const manifest = (id: string, permissions: PluginPermission[]) => ({
+      id,
+      name: "Chem Plugin",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions,
+      contributes: {
+        commands: [{ id: `plugin.${id.split(".").pop()}.probe`, title: "Probe" }]
+      }
+    });
+
+    // 1. Declared + provided → the capability is there and reaches the engine.
+    const granted = new PluginHost({ computeIsotopeEnvelope });
+    let seen: unknown;
+    granted.registerPlugin(manifest("org.test.chemyes", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.chemyes.probe": async (context) => {
+          seen = await context.chemistry?.isotopeEnvelope({ format: "smiles", structure: "c1ccccc1" });
+        }
+      }
+    });
+    await granted.invokeCommand("plugin.chemyes.probe");
+    expect(computeIsotopeEnvelope).toHaveBeenCalledWith({ format: "smiles", structure: "c1ccccc1" });
+    expect(seen).toMatchObject({ available: true });
+
+    // 2. Provided but not declared → no API at all, rather than a permission error at call time.
+    const undeclared = new PluginHost({ computeIsotopeEnvelope });
+    let undeclaredApi: unknown = "unset";
+    undeclared.registerPlugin(manifest("org.test.chemno", []), {
+      commandHandlers: {
+        "plugin.chemno.probe": (context) => {
+          undeclaredApi = context.chemistry;
+        }
+      }
+    });
+    await undeclared.invokeCommand("plugin.chemno.probe");
+    expect(undeclaredApi).toBeUndefined();
+
+    // 3. Declared but the host has no engine → the API is STILL there and answers `available: false`.
+    //    Presence tracks the permission, not the engine, because a worker-routed plugin builds its stub
+    //    from its own manifest and cannot see what the host wired up. Gating presence on the engine
+    //    would make the in-process and worker paths disagree on the same host.
+    const engineless = new PluginHost();
+    let englessAnswer: unknown;
+    engineless.registerPlugin(manifest("org.test.chemhostless", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.chemhostless.probe": async (context) => {
+          expect(context.chemistry).toBeDefined();
+          englessAnswer = await context.chemistry?.isotopeEnvelope({ format: "smiles", structure: "CCO" });
+        }
+      }
+    });
+    await engineless.invokeCommand("plugin.chemhostless.probe");
+    expect(englessAnswer).toEqual({ available: false, reason: "This host provides no isotope engine." });
   });
 
   it("routes a schema-validated panel report through showPanelReport for declared panels only", async () => {
