@@ -709,7 +709,7 @@ an Analyze item ships only when it computes something).
   have been an overstatement, so the inventory says so. Two packages whose licence pnpm could not parse
   (`eve-raphael` "Unknown", `font-face-observer` "BSD") were resolved from their own LICENSE files to
   Apache-2.0 and BSD-2-Clause.
-- **Phase 8 — Release 2, mass tooling. ◐ two of three clauses landed; the envelope is build-blocked.**
+- **Phase 8 — Release 2, mass tooling. ✅ all three clauses landed.**
 
   **Landed: m/z and adduct tooling, and fragment/exact-mass bookkeeping.** Nine electrospray adducts
   ([M+H]⁺ through [M−2H]²⁻) and seven neutral losses from the protonated ion, each with its own method
@@ -816,15 +816,14 @@ build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 - ✅ Engine-regression fixtures are pinned to RDKit 2026.03.3 and fail on a vendor bump.
 - ✅ The dependency inventory lists every chemistry engine, vendored binary, patch count, and bundled
   dataset, plus the closeout copyleft scan.
-- ✅ `pnpm lint`, `pnpm test` (2139), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
+- ✅ `pnpm lint`, `pnpm test` (2210), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
   `cargo test` (47) are green.
 
-**Not done, and deliberately so.** `examples/plugins/mass-fragment-demo` still ships its own first-order
-M/M+1/M+2 approximation and its own unsourced eight-element abundance table; the core now has a real
-envelope, so retiring the plugin's is plugin work worth doing, but it is not core wiring. The envelope
-also declines for charged and isotope-labelled structures — both are solvable (an electron-mass shift,
-and IsoSpec's non-formula `Iso` constructor which *can* take explicit isotope arrays), and both are
-follow-ups rather than gaps in what shipped. And **releases stay blocked on the distribution track**
+**Engineering scope is complete; two named follow-ups remain.** The envelope declines for charged and
+for isotope-labelled structures. Both are solvable — an electron-mass shift per charge, and IsoSpec's
+non-formula `Iso` constructor, which *can* take explicit isotope arrays where the formula parser cannot
+— and both are deliberate declines rather than gaps: each states its reason, and neither returns a
+number it cannot defend. And **releases stay blocked on the distribution track**
 (§4): the core licence, the nmrshiftdb2 deadline, and the plugin-distribution rules are the project
 owner's calls, not engineering's.
 
