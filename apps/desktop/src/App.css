@@ -3843,6 +3843,44 @@ textarea:focus-visible,
   border-color: var(--cd-accent-strong);
 }
 
+/* Rotate grip: sits off an arrow's centre and spins it. Deliberately NOT round-dot chrome like the
+   endpoint handles — it carries a rotate glyph so its job is readable without hovering, and it is
+   the one handle that moves the whole arrow rather than reshaping it. */
+.graphic-rotate-grip {
+  width: 18px;
+  height: 18px;
+  cursor: grab;
+  background: var(--cd-bg-control-opaque);
+  border-color: var(--cd-accent);
+  /* The grip orbits with the arrow; the glyph counter-rotates so it never reads upside down. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M13 8a5 5 0 1 1-1.9-3.9' fill='none' stroke='%23197a56' stroke-width='2' stroke-linecap='round'/%3E%3Cpath d='M12.6 1.6v3.2H9.4' fill='none' stroke='%23197a56' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 12px 12px;
+  transform: translate(-50%, -50%) rotate(var(--graphic-rotate-grip-counter-rotation, 0deg));
+}
+
+.graphic-rotate-grip:active {
+  cursor: grabbing;
+}
+
+/* Arrow-hover (dot) mode keeps the grip subtle like its sibling handles, but never shrinks it to a
+   9px dot — a rotate target that small is unhittable, and the glyph would be unreadable. */
+.graphic-rotate-grip.graphic-path-edit-handle-dot {
+  width: 18px;
+  height: 18px;
+  border-width: 1px;
+  background-color: color-mix(in srgb, var(--cd-bg-control-opaque) 82%, transparent);
+  opacity: 0.72;
+}
+
+.graphic-rotate-grip.graphic-path-edit-handle-dot:hover,
+.graphic-rotate-grip:hover {
+  background-color: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+  opacity: 1;
+}
+
 .graphic-path-segment-hit-layer {
   position: absolute;
   inset: 0;

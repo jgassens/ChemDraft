@@ -403,9 +403,12 @@ import {
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
   nativeGraphicPathNodeEditPoints,
+  nativeGraphicRotationSnapDegrees,
   nativeGraphicRadialGradientHandlePoints,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
+  isNativeArrowGraphic,
+  rotateNativeGraphicObject,
   nativeArtToolForCommand,
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
@@ -768,6 +771,21 @@ type GraphicPathEditDragState = {
   workingDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
+  dragging: boolean;
+};
+/** Spinning an arrow about its own centre from the rotate grip. `startRotation` + `startAngle` are
+ *  captured at press so the arrow turns by the pointer's DELTA — grabbing the grip never snaps the
+ *  arrow to the pointer. */
+type GraphicRotateDragState = {
+  pointerId: number;
+  objectId: string;
+  startDocument: ChemDraftDocument;
+  center: ClientPoint;
+  startRotation: number;
+  startAngle: number;
+  startPoint: ClientPoint;
+  latestPoint: ClientPoint;
+  shiftKey: boolean;
   dragging: boolean;
 };
 type GraphicMarkerDragState = {
@@ -1287,6 +1305,9 @@ const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
 const OBJECT_DRAG_THRESHOLD = 4;
 const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
+/** How far off an arrow's centre the rotate grip sits, in page units. Far enough to clear the
+ *  middle bend/resize knob, close enough to read as belonging to that arrow. */
+const GRAPHIC_ROTATE_GRIP_OFFSET_PX = 26;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
@@ -1532,6 +1553,7 @@ export function MainWindow({
   const objectDragRef = useRef<ObjectDragState | null>(null);
   const graphicCornerRadiusDragRef = useRef<GraphicCornerRadiusDragState | null>(null);
   const graphicPathEditDragRef = useRef<GraphicPathEditDragState | null>(null);
+  const graphicRotateDragRef = useRef<GraphicRotateDragState | null>(null);
   const graphicMarkerDragRef = useRef<GraphicMarkerDragState | null>(null);
   const graphicGradientDragRef = useRef<GraphicGradientDragState | null>(null);
   const freehandArtDragRef = useRef<FreehandArtDragState | null>(null);
@@ -9446,6 +9468,51 @@ export function MainWindow({
     replacePresentDocument(nextDocument);
   }, [graphicPathEditDocumentFromDrag, replacePresentDocument]);
 
+  const graphicRotateDocumentFromDrag = useCallback((
+    drag: GraphicRotateDragState,
+    point: ClientPoint
+  ): ChemDraftDocument => {
+    const angle = radiansToDegrees(Math.atan2(point.y - drag.center.y, point.x - drag.center.x));
+    const raw = drag.startRotation + (angle - drag.startAngle);
+    const degrees = drag.shiftKey
+      ? Math.round(raw / nativeGraphicRotationSnapDegrees) * nativeGraphicRotationSnapDegrees
+      : raw;
+    return rotateNativeGraphicObject(drag.startDocument, drag.objectId, degrees);
+  }, []);
+
+  const previewGraphicRotate = useCallback((drag: GraphicRotateDragState, point: ClientPoint) => {
+    drag.latestPoint = point;
+    replacePresentDocument(graphicRotateDocumentFromDrag(drag, point));
+  }, [graphicRotateDocumentFromDrag, replacePresentDocument]);
+
+  const commitGraphicRotate = useCallback((drag: GraphicRotateDragState, point: ClientPoint): boolean => {
+    const nextDocument = graphicRotateDocumentFromDrag(drag, point);
+    if (nextDocument === drag.startDocument) {
+      // No net turn: rewind the previews so the drag leaves no undo entry at all.
+      replacePresentDocument(drag.startDocument);
+      return false;
+    }
+
+    // Rewind to the pre-drag document first so the preview frames collapse into ONE undo step.
+    replacePresentDocument(drag.startDocument);
+    commitDocumentChange(nextDocument);
+    return true;
+  }, [commitDocumentChange, graphicRotateDocumentFromDrag, replacePresentDocument]);
+
+  const clearGraphicRotateDrag = useCallback((event: ObjectPointerEvent) => {
+    const drag = graphicRotateDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      graphicRotateDragRef.current = null;
+      const page = pageRef.current;
+      if (page?.hasPointerCapture(event.pointerId)) {
+        page.releasePointerCapture(event.pointerId);
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  }, []);
+
   const graphicMarkerDocumentFromDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint): ChemDraftDocument => {
     const editPoint = nativeGraphicPathEditPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
     // Two-headed arrows default to whichever behaviour is usually wanted, and Shift asks for the other:
@@ -11023,6 +11090,27 @@ export function MainWindow({
       return;
     }
 
+    const graphicRotateDrag = graphicRotateDragRef.current;
+    if (graphicRotateDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (!point) {
+        return;
+      }
+
+      graphicRotateDrag.shiftKey = event.shiftKey;
+      if (
+        !graphicRotateDrag.dragging &&
+        clientPointDistance(graphicRotateDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD
+      ) {
+        graphicRotateDrag.dragging = true;
+      }
+      if (graphicRotateDrag.dragging) {
+        previewGraphicRotate(graphicRotateDrag, point);
+      }
+      return;
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -11401,6 +11489,24 @@ export function MainWindow({
       return;
     }
 
+    const graphicRotateDrag = graphicRotateDragRef.current;
+    if (graphicRotateDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? graphicRotateDrag.latestPoint;
+      graphicRotateDrag.shiftKey = event.shiftKey;
+      if (graphicRotateDrag.dragging) {
+        const changed = commitGraphicRotate(graphicRotateDrag, point);
+        const rotated = findDocumentObject(documentRef.current, graphicRotateDrag.objectId);
+        setStatus(changed && rotated?.type === "graphic"
+          ? `Rotated arrow to ${Math.round(rotated.rotation)}°`
+          : "Arrow rotation unchanged");
+      } else {
+        setStatus("Selected arrow");
+      }
+      clearGraphicRotateDrag(event);
+      return;
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -11718,6 +11824,14 @@ export function MainWindow({
         replacePresentDocument(objectRotateDrag.startDocument);
       }
       clearObjectRotateDrag(event);
+    }
+
+    const graphicRotateCancelDrag = graphicRotateDragRef.current;
+    if (graphicRotateCancelDrag?.pointerId === event.pointerId) {
+      if (graphicRotateCancelDrag.dragging) {
+        replacePresentDocument(graphicRotateCancelDrag.startDocument);
+      }
+      clearGraphicRotateDrag(event);
     }
 
     const graphicPathEditDrag = graphicPathEditDragRef.current;
@@ -13292,6 +13406,67 @@ export function MainWindow({
     replacePresentDocument
   ]);
 
+  const handleGraphicRotatePointerDown = useCallback((
+    objectId: string,
+    event: PointerEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.button !== 0) {
+      return;
+    }
+    const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, objectId);
+    const point = pagePointFromPointerEvent(event);
+    if (!point || object?.type !== "graphic") {
+      return;
+    }
+
+    // Select on grab, exactly like the path handles, so the rotate drag and the toolbar agree about
+    // what is being edited.
+    const selectedDocument = currentDocument.selection.objectIds.includes(objectId)
+      ? currentDocument
+      : selectDocumentObject(currentDocument, objectId);
+    replacePresentDocument(selectedDocument);
+    handleRotationInputKeep();
+    handleObjectResizeInputKeep();
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+
+    // The art engine rotates about this exact point (see unrotateGraphicVisualPagePoint), so the
+    // grip pivots the arrow around the same centre the stroke visually turns about.
+    const center = {
+      x: object.x + Math.max(object.width, 1) / 2,
+      y: object.y + Math.max(object.height, 1) / 2
+    };
+    graphicRotateDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      startDocument: selectedDocument,
+      center,
+      startRotation: object.rotation,
+      startAngle: radiansToDegrees(Math.atan2(point.y - center.y, point.x - center.x)),
+      startPoint: point,
+      latestPoint: point,
+      shiftKey: event.shiftKey,
+      dragging: false
+    };
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus("Rotate arrow: drag around its centre; hold Shift for 15° steps");
+  }, [
+    assignHoveredNativeDeleteTarget,
+    handleObjectResizeInputKeep,
+    handleRotationInputKeep,
+    pagePointFromPointerEvent,
+    replacePresentDocument
+  ]);
+
   const handleGraphicMarkerPointerDown = useCallback((
     objectId: string,
     markerId: NativeGraphicMarkerHandleId,
@@ -14158,6 +14333,11 @@ export function MainWindow({
       replacePresentDocument(graphicCornerRadiusDrag.startDocument);
     }
 
+    const graphicRotateEscapeDrag = graphicRotateDragRef.current;
+    if (graphicRotateEscapeDrag?.pointerId === event.pointerId && graphicRotateEscapeDrag.dragging) {
+      replacePresentDocument(graphicRotateEscapeDrag.startDocument);
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId && graphicPathEditDrag.dragging) {
       replacePresentDocument(graphicPathEditDrag.startDocument);
@@ -14221,6 +14401,7 @@ export function MainWindow({
       objectDragRef.current?.objectId === objectId ||
       graphicCornerRadiusDragRef.current?.objectId === objectId ||
       graphicPathEditDragRef.current?.objectId === objectId ||
+      graphicRotateDragRef.current?.objectId === objectId ||
       graphicMarkerDragRef.current?.objectId === objectId ||
       graphicGradientDragRef.current?.objectId === objectId ||
       objectRotateDragRef.current?.objectId === objectId ||
@@ -14857,6 +15038,7 @@ export function MainWindow({
                       onGraphicCornerRadiusDoubleClick={handleGraphicCornerRadiusDoubleClick}
                       onGraphicPathEditPointerDown={handleGraphicPathEditPointerDown}
                       onGraphicMarkerPointerDown={handleGraphicMarkerPointerDown}
+                      onGraphicArrowRotatePointerDown={handleGraphicRotatePointerDown}
                       onGraphicGradientPointerDown={handleGraphicGradientPointerDown}
                       onRotationInputChange={handleRotationInputChange}
                       onRotationInputKeep={handleRotationInputKeep}
@@ -20344,6 +20526,7 @@ function DocumentObjectView({
   onGraphicCornerRadiusDoubleClick,
   onGraphicPathEditPointerDown,
   onGraphicMarkerPointerDown,
+  onGraphicArrowRotatePointerDown,
   onGraphicGradientPointerDown,
   onRotationInputChange,
   onRotationInputKeep,
@@ -20412,6 +20595,7 @@ function DocumentObjectView({
   onGraphicCornerRadiusDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<Element>): void;
   onGraphicMarkerPointerDown(objectId: string, markerId: NativeGraphicMarkerHandleId, event: PointerEvent<HTMLButtonElement>): void;
+  onGraphicArrowRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicGradientPointerDown(objectId: string, target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
   onRotationInputKeep(input: RotationInputState): void;
@@ -20496,6 +20680,9 @@ function DocumentObjectView({
   };
   const handleGraphicMarkerPointerDown = (markerId: NativeGraphicMarkerHandleId) => (event: PointerEvent<HTMLButtonElement>) => {
     onGraphicMarkerPointerDown(object.id, markerId, event);
+  };
+  const handleGraphicArrowRotatePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    onGraphicArrowRotatePointerDown(object.id, event);
   };
   const handleGraphicGradientPointerDown = (
     target: GraphicStylePaintTarget,
@@ -21337,6 +21524,9 @@ function DocumentObjectView({
         // and Select-tool editing alike); other art shapes keep the full opaque direct-edit handles.
         dotStyle={isNativeArtLineFamilyGraphic(object)}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
+        // Arrows alone get the rotate grip: other art already has the transform frame's rotate
+        // handle, and a second affordance on the same object would just be ambiguous.
+        onRotatePointerDown={isNativeArrowGraphic(object) ? handleGraphicArrowRotatePointerDown : undefined}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
     ) : null;
@@ -22629,6 +22819,7 @@ function GraphicPathEditHandles({
   counterRotationDegrees,
   dotStyle = false,
   onMarkerPointerDown,
+  onRotatePointerDown,
   onPointerDown
 }: {
   object: GraphicObject;
@@ -22641,6 +22832,8 @@ function GraphicPathEditHandles({
   // rather than burying it under handles.
   dotStyle?: boolean;
   onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
+  /** Absent for non-arrow art, which has no rotate grip. */
+  onRotatePointerDown?: (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<Element>) => void;
 }) {
   const points = nativeGraphicPathEditPoints(object);
@@ -22795,6 +22988,18 @@ function GraphicPathEditHandles({
     end: projectGraphicObjectPoint(object, points.end)
   };
   const arcRadianReadout = circularArc ? graphicArcSweepRadiansLabel(object) : undefined;
+  // The rotate grip sits off the arrow's centre — the point the art engine actually spins about —
+  // clear of the middle knob. Dual-shaft arrows park their resize knob below the axis, so the grip
+  // goes above on those to keep the two from stacking.
+  const rotateGripPoint = onRotatePointerDown
+    ? {
+        x: Math.max(object.width, 1) / 2,
+        y: Math.max(object.height, 1) / 2 +
+          (dualShaftScaleHandlePoint && dualShaftScaleHandlePoint.y > Math.max(object.height, 1) / 2
+            ? -GRAPHIC_ROTATE_GRIP_OFFSET_PX
+            : GRAPHIC_ROTATE_GRIP_OFFSET_PX)
+      }
+    : undefined;
   const allHandles: Array<{ handle: NativeGraphicPathEditHandle; point: NativeArtPoint; label: string }> = circularArc
     ? [
         { handle: "start", point: projectedPoints.start, label: "Adjust arc start" },
@@ -22893,6 +23098,27 @@ function GraphicPathEditHandles({
           onPointerDown={onMarkerPointerDown(handle.id)}
         />
       ))}
+      {rotateGripPoint && onRotatePointerDown ? (
+        <button
+          type="button"
+          className={[
+            "graphic-path-edit-handle",
+            "graphic-rotate-grip",
+            dotStyle ? "graphic-path-edit-handle-dot" : undefined
+          ].filter(Boolean).join(" ")}
+          aria-label="Rotate arrow"
+          data-graphic-rotate-grip="true"
+          style={{
+            left: pageScaledCssPx(rotateGripPoint.x),
+            top: pageScaledCssPx(rotateGripPoint.y),
+            // The grip orbits with the arrow, but its glyph stays upright so the icon is always
+            // legible — same trick the readouts use.
+            "--graphic-rotate-grip-counter-rotation": `${formatSvgNumber(-counterRotationDegrees)}deg`
+          } as CSSProperties}
+          title="Rotate arrow around its centre (hold Shift for 15° steps)"
+          onPointerDown={onRotatePointerDown}
+        />
+      ) : null}
       {arcRadianReadout ? (
         <div
           className="graphic-path-radian-readout"

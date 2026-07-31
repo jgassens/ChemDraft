@@ -2395,6 +2395,51 @@ export function updateNativeGraphicCornerRadius(
   );
 }
 
+/** Snap step for a Shift-constrained arrow rotation, in degrees. */
+export const nativeGraphicRotationSnapDegrees = 15;
+
+/** Normalize to [0, 360) so a rotation reads the same however many turns the drag made. */
+export function normalizeNativeGraphicRotationDegrees(degrees: number): number {
+  if (!Number.isFinite(degrees)) {
+    return 0;
+  }
+  return ((degrees % 360) + 360) % 360;
+}
+
+/**
+ * Spin a graphic about its own centre by writing `rotation`.
+ *
+ * Deliberately NOT a geometry rewrite: the art engine already applies `object.rotation` around
+ * (x + width/2, y + height/2) when it projects and when it hit-tests, so one field rotates a straight
+ * arrow, an arc, and a dual-shaft equilibrium alike. Editing lineStart/lineEnd instead would need a
+ * separate case per arrow geometry and would silently desync the handles from the drawn stroke.
+ */
+export function rotateNativeGraphicObject(
+  document: ChemDraftDocument,
+  objectId: string,
+  degrees: number
+): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  if (!object || object.type !== "graphic") {
+    return document;
+  }
+
+  const rotation = roundFreehandNumber(normalizeNativeGraphicRotationDegrees(degrees));
+  if (Math.abs(rotation - object.rotation) < 0.001) {
+    return document;
+  }
+
+  return applyPatch(
+    document,
+    {
+      op: "updateObject",
+      objectId,
+      changes: { rotation }
+    },
+    { now: phase4Timestamp }
+  );
+}
+
 export function updateNativeGraphicLinearGradientHandle(
   document: ChemDraftDocument,
   objectId: string,

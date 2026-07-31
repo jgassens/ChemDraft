@@ -318,6 +318,97 @@ describe("graphic path direct editing interactions", () => {
     });
   });
 
+  function rotateGrip(): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>('[data-graphic-rotate-grip="true"]');
+    if (!button) {
+      throw new Error("Expected the arrow rotate grip.");
+    }
+    return button;
+  }
+
+  it("rotates an arrow around its centre from the grip, as one undoable edit", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Rotate Grip"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const before = debugArtObject(objectId);
+    const center = {
+      x: before.object.x + Math.max(before.object.width, 1) / 2,
+      y: before.object.y + Math.max(before.object.height, 1) / 2
+    };
+    // Grab due east of the centre and drag to due south: a clean +90°, whatever the arrow's size.
+    const grabPoint = { x: center.x + 60, y: center.y };
+    const dragPoint = { x: center.x, y: center.y + 60 };
+
+    await act(async () => {
+      dispatchPointer(rotateGrip(), "pointerdown", grabPoint, 21);
+      dispatchPointer(pageElement(), "pointermove", dragPoint, 21);
+      dispatchPointer(pageElement(), "pointerup", dragPoint, 21);
+    });
+
+    const rotated = debugArtObject(objectId);
+    expect(rotated.object.rotation).toBeCloseTo(90, 3);
+    // Rotation is a field, not a geometry rewrite — the endpoints must be untouched.
+    expect(rotated.object.data.lineStart).toEqual(before.object.data.lineStart);
+    expect(rotated.object.data.lineEnd).toEqual(before.object.data.lineEnd);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+    // One undo returns the whole drag, not just its last preview frame.
+    expect(debugArtObject(objectId).object.rotation).toBeCloseTo(before.object.rotation, 3);
+  });
+
+  it("snaps the rotate grip to 15° steps while Shift is held", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Rotate Snap"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document);
+    const before = debugArtObject(objectId);
+    const center = {
+      x: before.object.x + Math.max(before.object.width, 1) / 2,
+      y: before.object.y + Math.max(before.object.height, 1) / 2
+    };
+    const grabPoint = { x: center.x + 60, y: center.y };
+    // ~52° round the circle; Shift must land it on 45, not 52.
+    const radians = (52 * Math.PI) / 180;
+    const dragPoint = {
+      x: center.x + Math.cos(radians) * 60,
+      y: center.y + Math.sin(radians) * 60
+    };
+
+    await act(async () => {
+      dispatchPointer(rotateGrip(), "pointerdown", grabPoint, 22);
+      dispatchPointer(pageElement(), "pointermove", dragPoint, 22, 1, { shiftKey: true });
+      dispatchPointer(pageElement(), "pointerup", dragPoint, 22, 1, { shiftKey: true });
+    });
+
+    expect(debugArtObject(objectId).object.rotation).toBeCloseTo(45, 3);
+  });
+
+  it("gives the rotate grip to arrows only, not to plain art", async () => {
+    const lineDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Plain Line"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    await renderMainWindow(lineDocument);
+    // A plain line already has the transform frame's rotate handle; a second grip would be ambiguous.
+    expect(container.querySelector('[data-graphic-rotate-grip="true"]')).toBeNull();
+  });
+
   it("drags an arrowhead handle to resize the marker as one undoable edit", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Arrowhead Marker Drag"),

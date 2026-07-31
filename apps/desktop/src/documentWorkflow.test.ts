@@ -115,6 +115,8 @@ import {
   groupSelectedDocumentObjects,
   getSelectedMolecule,
   insertNativeArtGraphicObject,
+  normalizeNativeGraphicRotationDegrees,
+  rotateNativeGraphicObject,
   nativeArtToolIsLineDraw,
   nativeArtToolSupportsArrowHoverEdit,
   applyNativeArtLineToolAtPoint,
@@ -4741,6 +4743,52 @@ describe("Phase 4 document workflow", () => {
     const noReaction = byTool("tool.art.noReactionArrow");
     expect(noReaction.data.shaftMark).toBe("cross");
     expect(noReaction.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+  });
+
+  it("rotates an arrow by writing rotation, leaving its geometry untouched", () => {
+    // Rotation must stay a single field: the art engine spins the stroke about the object centre at
+    // projection time, so rewriting lineStart/lineEnd would need a case per arrow geometry AND would
+    // desync the handles from the drawn stroke.
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotate Arrow"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const before = inserted.pages[0].objects.find((object) => object.id === objectId);
+    if (before?.type !== "graphic") {
+      throw new Error("Expected an inserted arrow.");
+    }
+
+    const rotated = rotateNativeGraphicObject(inserted, objectId, 42);
+    const after = rotated.pages[0].objects.find((object) => object.id === objectId);
+    if (after?.type !== "graphic") {
+      throw new Error("Expected the rotated arrow.");
+    }
+
+    expect(after.rotation).toBeCloseTo(42, 3);
+    expect(after.data.lineStart).toEqual(before.data.lineStart);
+    expect(after.data.lineEnd).toEqual(before.data.lineEnd);
+    expect(after.data.markerEnd).toEqual(before.data.markerEnd);
+    expect(after.x).toBe(before.x);
+    expect(after.y).toBe(before.y);
+  });
+
+  it("normalizes arrow rotation into [0, 360) and no-ops on an unchanged angle", () => {
+    expect(normalizeNativeGraphicRotationDegrees(-90)).toBeCloseTo(270, 3);
+    expect(normalizeNativeGraphicRotationDegrees(455)).toBeCloseTo(95, 3);
+    expect(normalizeNativeGraphicRotationDegrees(Number.NaN)).toBe(0);
+
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Rotate No-op"),
+      { x: 220, y: 180 },
+      "tool.art.arrow"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    // A full turn lands back on 0, so the document is returned untouched rather than pushing an
+    // identical-value patch (which would otherwise become an empty undo step).
+    expect(rotateNativeGraphicObject(inserted, objectId, 360)).toBe(inserted);
+    expect(rotateNativeGraphicObject(inserted, "no-such-object", 42)).toBe(inserted);
   });
 
   it("classifies arrow-family tools for arrow-mode hover editing", () => {
