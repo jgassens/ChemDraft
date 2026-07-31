@@ -194,6 +194,7 @@ describe("payload transport across the worker boundary", () => {
     },
     applicability: { status: "in-domain", reasons: [], unsupportedFeatures: [] },
     uncertainties: [],
+    conventions: ["truncated at a relative-intensity threshold of 0.001"],
     citations: [],
     datasets: [],
     warnings: [],

@@ -91,6 +91,16 @@ export interface AnalysisResultBase {
   classification: Classification;
   applicability: Applicability;
   uncertainties: Uncertainty[];
+  /**
+   * The named choices the method made, copied from its contract when the value was computed (§2).
+   *
+   * Carried on the result rather than looked up from a registry, for the same reason `methodVersion`
+   * is: a run is cached, serialised, and re-rendered later, and the convention that produced a number
+   * is the one that was in force *then*. Reading it back from a live contract would relabel a cached
+   * TPSA with whatever convention the current engine build happens to use — the silent-wrong-provenance
+   * failure §3 exists to prevent, and precisely what the `includeSandP` rebuild made possible.
+   */
+  conventions: string[];
   citations: CitationRef[];
   datasets: DatasetRef[];
   warnings: AnalysisWarning[];
@@ -109,6 +119,7 @@ const resultBaseShape = {
   classification: ClassificationSchema,
   applicability: ApplicabilitySchema,
   uncertainties: z.array(UncertaintySchema).default([]),
+  conventions: z.array(z.string().min(1)).default([]),
   citations: z.array(CitationRefSchema).default([]),
   datasets: z.array(DatasetRefSchema).default([]),
   warnings: z.array(AnalysisWarningSchema).default([]),

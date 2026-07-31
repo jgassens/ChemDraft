@@ -17,6 +17,18 @@ function toSection(section: AnalysisReportSection): PluginPanelSection {
   switch (section.kind) {
     case "text":
       return { kind: "text", title: section.title, body: section.body };
+    case "conventions":
+      // Flattened to `text` rather than adding a section kind to `PluginPanelSection`: that schema is
+      // the versioned plugin SDK surface, and this is a core-analysis presentation concern that no
+      // plugin has asked for. The body keeps its line breaks — `.analysis-panel` styles the renderer's
+      // text sections `white-space: pre-line` so they survive.
+      return {
+        kind: "text",
+        title: section.title,
+        body: section.groups
+          .map((group) => [group.appliesTo.join(", "), ...group.conventions.map((entry) => `  • ${entry}`)].join("\n"))
+          .join("\n\n")
+      };
     case "keyValue":
       return {
         kind: "keyValue",

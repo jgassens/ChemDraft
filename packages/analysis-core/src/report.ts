@@ -35,10 +35,25 @@ export interface ReportRow {
   note?: string;
 }
 
+/**
+ * One set of named choices, and every method that made the same ones.
+ *
+ * Grouped rather than listed per method because the sets are shared heavily — the nine adducts name
+ * one identical set, the seven neutral losses another — and a report that repeats a four-line
+ * disclosure nine times is the "disclosure nobody reads has stopped disclosing" failure that the
+ * note-hoisting in `keyValueSection` already exists to avoid.
+ */
+export interface ReportConventionGroup {
+  /** Display labels of the methods sharing this set, in the order the report shows them. */
+  appliesTo: string[];
+  conventions: string[];
+}
+
 export type AnalysisReportSection =
   | { kind: "keyValue"; title: string; rows: ReportRow[] }
   | { kind: "table"; title: string; columns: string[]; rows: string[][] }
-  | { kind: "text"; title: string; body: string };
+  | { kind: "text"; title: string; body: string }
+  | { kind: "conventions"; title: string; groups: ReportConventionGroup[] };
 
 export interface ReportInterpretation {
   id: string;
@@ -83,10 +98,17 @@ function unitSymbol(id: UnitId): string {
   }
 }
 
-/** The short marker that tells a reader the number is a choice, not a fact about the molecule. */
+/**
+ * The short marker that tells a reader the number is a choice, not a fact about the molecule.
+ *
+ * Each note names the section that actually answers it. "see Provenance" used to be the pointer for
+ * both, and for convention-dependent values it pointed at a table of method ids and versions that
+ * never said which convention was chosen — a disclosure that told the reader to look somewhere the
+ * answer was not.
+ */
 function conventionNote(classification: Classification): string | undefined {
   if (requiresEmpiricalProvenance(classification)) return "calibrated method — see Provenance";
-  if (requiresConventionDisclosure(classification)) return "convention-dependent — see Provenance";
+  if (requiresConventionDisclosure(classification)) return "convention-dependent — see Conventions";
   return undefined;
 }
 
@@ -299,6 +321,33 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
     ])
   });
 
+  // --- conventions ----------------------------------------------------------------------------
+  // What every "convention-dependent — see Conventions" note points at, and the section that makes
+  // that note true. Built from the conventions carried on the results, so a run rendered from cache
+  // shows the conventions it was computed under rather than whatever the current engine would choose.
+  //
+  // Sits after Provenance because it is prose: for a full 61-property run it is the longest section in
+  // the report, and putting it ahead of the compact tables would bury them.
+  //
+  // Only results that produced a value. A declined method's reason is its story and "Not computed"
+  // already tells it; listing conventions for numbers that were never shown would bury the ones that
+  // were.
+  const conventionGroups = new Map<string, ReportConventionGroup>();
+  for (const result of ok) {
+    if (result.conventions.length === 0) continue;
+    const key = JSON.stringify(result.conventions);
+    const group = conventionGroups.get(key);
+    const label = displayLabel(result);
+    if (!group) {
+      conventionGroups.set(key, { appliesTo: [label], conventions: [...result.conventions] });
+    } else if (!group.appliesTo.includes(label)) {
+      group.appliesTo.push(label);
+    }
+  }
+  if (conventionGroups.size > 0) {
+    sections.push({ kind: "conventions", title: "Conventions", groups: [...conventionGroups.values()] });
+  }
+
   const citations = new Map<string, string>();
   for (const result of run.results) {
     for (const citation of result.citations) {
@@ -363,6 +412,13 @@ export function renderReportText(report: AnalysisReport): string {
     lines.push(section.title, "-".repeat(section.title.length));
     if (section.kind === "text") {
       lines.push(section.body);
+    } else if (section.kind === "conventions") {
+      // Deliberately not a table: a convention is a sentence, and `padColumns` would size a column to
+      // the longest one and wreck every other row in the pasted report.
+      for (const group of section.groups) {
+        lines.push(group.appliesTo.join(", "));
+        for (const convention of group.conventions) lines.push(`  - ${convention}`);
+      }
     } else if (section.kind === "keyValue") {
       const width = Math.max(0, ...section.rows.map((entry) => entry.label.length));
       for (const entry of section.rows) {
@@ -403,6 +459,12 @@ export function renderReportMarkdown(report: AnalysisReport): string {
     lines.push(`## ${section.title}`, "");
     if (section.kind === "text") {
       lines.push(section.body, "");
+    } else if (section.kind === "conventions") {
+      for (const group of section.groups) {
+        lines.push(`**${escape(group.appliesTo.join(", "))}**`, "");
+        for (const convention of group.conventions) lines.push(`- ${escape(convention)}`);
+        lines.push("");
+      }
     } else if (section.kind === "keyValue") {
       lines.push("| Property | Value |", "| --- | --- |");
       for (const entry of section.rows) {

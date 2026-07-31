@@ -44,7 +44,7 @@ function analyze(value: string, options: Record<string, unknown> = {}): Promise<
 
 /**
  * Sections whose rows all share one note carry it in the title ("Descriptors — convention-dependent
- * — see Provenance"), so lookups match on the leading name rather than the whole string.
+ * — see Conventions"), so lookups match on the leading name rather than the whole string.
  */
 function section(report: AnalysisReport, title: string) {
   const found = report.sections.find((entry) => entry.title === title || entry.title.startsWith(`${title} — `));
@@ -93,6 +93,30 @@ describe("aspirin", () => {
     expect(sectionTitle(report, "Predicted properties")).toMatch(/calibrated method/);
     expect(sectionTitle(report, "Descriptors")).toMatch(/convention-dependent/);
     expect(sectionTitle(report, "Ions (m/z)")).toMatch(/convention-dependent/);
+  });
+
+  it("points every disclosure note at a section that actually exists", async () => {
+    // The structural invariant, and the one that was broken: every note ends "see X", and for a long
+    // time X was "Provenance" for convention-dependent values — a table of method ids and versions
+    // that never named a convention. A note pointing somewhere the answer is not is worse than no
+    // note, because it reads as though the disclosure happened.
+    const report = buildAnalysisReport(await analyze("Cc1onc(c1)NS(=O)(=O)c1ccc(N)cc1"));
+    const names = new Set(report.sections.map((entry) => entry.title.split(" — ")[0]!));
+
+    // A hoisted note is everything after the FIRST separator — the note itself contains one
+    // ("convention-dependent — see Conventions"), so splitting on every separator shreds it.
+    const hoisted = (title: string): string[] =>
+      title.includes(" — ") ? [title.slice(title.indexOf(" — ") + 3)] : [];
+    const notes = report.sections.flatMap((entry) => [
+      ...hoisted(entry.title),
+      ...(entry.kind === "keyValue" ? entry.rows.map((row) => row.note).filter((note): note is string => Boolean(note)) : [])
+    ]);
+    expect(notes.length).toBeGreaterThan(0);
+    for (const note of notes) {
+      const target = /see (.+)$/.exec(note)?.[1];
+      expect(target, `note ${JSON.stringify(note)} names no section`).toBeDefined();
+      expect(names, `note ${JSON.stringify(note)} points at a section that does not exist`).toContain(target!);
+    }
   });
 
   it("keeps the note per row where a section mixes noted and unnoted values", async () => {
@@ -217,6 +241,101 @@ describe("sodium benzoate — what the report exists for", () => {
       "largest-organic-fragment: removed Na; kept C7H5O2",
       "neutralize: kept C7H6O2; 1 charge removed; 1 hydrogen added"
     ]);
+  });
+});
+
+/**
+ * The conventions disclosure (§2).
+ *
+ * Every one of the 62 shipped contracts is convention-dependent and names its conventions, and the
+ * schema refuses a convention-dependent contract that does not. For a long time none of that reached
+ * a reader: the panel said "convention-dependent — see Provenance" and Provenance listed method ids
+ * and versions. The rebuild that put `includeSandP` in the binary is what made it urgent — TPSA moved
+ * from 98.22 to 106.60 Å² purely because the convention changed, with no way to find out which one.
+ */
+describe("conventions reach the reader", () => {
+  const SULFAMETHOXAZOLE = "Cc1onc(c1)NS(=O)(=O)c1ccc(N)cc1";
+
+  function conventionsSection(report: AnalysisReport) {
+    const found = report.sections.find((entry) => entry.kind === "conventions");
+    if (!found || found.kind !== "conventions") throw new Error("no Conventions section");
+    return found;
+  }
+
+  it("names the S-included convention that produced the number on screen", async () => {
+    const report = buildAnalysisReport(await analyze(SULFAMETHOXAZOLE));
+    const tpsa = conventionsSection(report).groups.find((group) =>
+      group.appliesTo.some((label) => label.includes("TPSA"))
+    );
+    expect(tpsa).toBeDefined();
+    expect(tpsa!.conventions.some((entry) => entry.includes("sulfur and phosphorus INCLUDED"))).toBe(true);
+    expect(tpsa!.conventions).toContain("Ertl 2000 fragment contributions");
+  });
+
+  it("carries the conventions on the result, so a cached run keeps the ones it was computed under", async () => {
+    // Not looked up from a live registry: the contract is rebuilt each run from the detected engine
+    // capabilities, so a registry lookup would relabel a cached S-excluded TPSA as S-included after a
+    // rebuild — the exact silent-wrong-provenance failure §3 exists to prevent.
+    const run = await analyze(SULFAMETHOXAZOLE, { methodIds: ["rdkit.tpsa"] });
+    const tpsa = run.results.find((result) => result.methodId === "rdkit.tpsa");
+    expect(tpsa?.methodVersion).toBe("2.0.0");
+    expect(tpsa?.conventions.some((entry) => entry.includes("INCLUDED"))).toBe(true);
+  });
+
+  it("states a shared convention set once instead of repeating it per method", async () => {
+    // The nine adducts name one identical set. Nine copies of a four-line disclosure is the failure
+    // mode the note-hoisting already guards against, arriving by another route.
+    const report = buildAnalysisReport(await analyze("CC(=O)Oc1ccccc1C(=O)O"));
+    const groups = conventionsSection(report).groups;
+    const adducts = groups.find((group) => group.appliesTo.includes("[M+H]⁺"));
+    expect(adducts).toBeDefined();
+    expect(adducts!.appliesTo.length).toBeGreaterThan(4);
+    expect(groups.length).toBeLessThan(report.sections.length + groups.reduce((n, g) => n + g.appliesTo.length, 0));
+  });
+
+  it("omits methods that produced no value — their reason is the story, not their conventions", async () => {
+    // Aspirin has no chlorine, so [M+H−HCl]⁺ is not-applicable and "Not computed" carries the reason.
+    // Aspirin rather than sodium benzoate: there, Crippen logP declines on the source interpretation
+    // but succeeds on the derived fragment, so a value IS shown and its conventions do belong.
+    const report = buildAnalysisReport(await analyze("CC(=O)Oc1ccccc1C(=O)O"));
+    const listed = conventionsSection(report).groups.flatMap((group) => group.appliesTo);
+    expect(listed.some((label) => label.includes("HCl"))).toBe(false);
+    expect(listed.some((label) => label.startsWith("Composition"))).toBe(true);
+
+    const declined = section(report, "Not computed");
+    expect(declined.kind === "table" && declined.rows.some((cells) => cells[0]?.includes("HCl"))).toBe(true);
+  });
+
+  it("still lists a method that declined on one interpretation but produced a value on another", async () => {
+    // Sodium benzoate: Crippen logP is unsupported as drawn and computed on the organic fragment. A
+    // number is on screen, so the convention behind it has to be too.
+    const report = buildAnalysisReport(await analyze("[Na+].[O-]C(=O)c1ccccc1"));
+    const listed = conventionsSection(report).groups.flatMap((group) => group.appliesTo);
+    expect(listed.some((label) => label.startsWith("Crippen logP"))).toBe(true);
+  });
+
+  it("reaches the plain text a chemist pastes into a notebook", async () => {
+    const text = renderReportText(buildAnalysisReport(await analyze(SULFAMETHOXAZOLE)));
+    expect(text).toContain("Conventions");
+    expect(text).toContain("sulfur and phosphorus INCLUDED");
+    // Rendered as an indented bullet under its method, not as a padded table column: a convention is a
+    // sentence, and padColumns would size a column to the longest one and wreck every other row.
+    expect(text).toMatch(/\n {2}- Ertl 2000 fragment contributions\n/);
+  });
+
+  it("reaches the exported markdown", async () => {
+    const markdown = renderReportMarkdown(buildAnalysisReport(await analyze(SULFAMETHOXAZOLE)));
+    expect(markdown).toContain("## Conventions");
+    expect(markdown).toContain("- Ertl 2000 fragment contributions");
+    expect(markdown).toMatch(/\*\*[^*]*TPSA[^*]*\*\*/);
+    expect(markdown).toContain("sulfur and phosphorus INCLUDED");
+  });
+
+  it("survives a run with no results at all", async () => {
+    const report = buildAnalysisReport(await analyze("C1CC"));
+    expect(report.sections.some((entry) => entry.kind === "conventions")).toBe(false);
+    expect(() => renderReportText(report)).not.toThrow();
+    expect(() => renderReportMarkdown(report)).not.toThrow();
   });
 });
 

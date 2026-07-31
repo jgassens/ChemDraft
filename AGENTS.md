@@ -729,6 +729,16 @@ tree, detect the capability **by value**: on the committed MinimalLib build, `ge
 ignores an unsupported details argument instead of rejecting it, so an arity check would report a
 capability that is not there and label an old number with a new convention.
 
+**A stated convention must reach the reader, and a disclosure must point where the answer is.**
+Recording conventions on the contract is necessary and not sufficient: for a while every one of the 62
+contracts named its conventions, the schema refused any that did not, and the panel said
+"convention-dependent — see Provenance" over a table of method ids and versions that never named a
+convention. A note pointing somewhere the answer is not is worse than no note, because it reads as
+though the disclosure happened. Conventions therefore travel **on the result**, not by registry lookup
+— a run is cached and re-rendered, and the convention that produced a number is the one in force then,
+not whatever the current engine build would choose — and `report.real.test.ts` asserts that every
+"see X" note names a section the report actually contains.
+
 **Never build a second molecular-interpretation engine.** Formula, charge, and composition come from
 the sanitised RDKit molecule via `get_json()`; masses come from RDKit's own `amw`/`exactmw`. Reading
 and selecting over the engine's own atom and bond lists is bookkeeping and is fine. Re-deciding

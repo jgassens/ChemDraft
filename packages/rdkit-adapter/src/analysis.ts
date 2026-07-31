@@ -332,6 +332,9 @@ function resultBase(context: ResultContext) {
     interpretationId: context.interpretation.id,
     classification: context.contract.classification,
     uncertainties: [],
+    // Copied, not referenced: the contract is rebuilt per run from the detected engine capabilities,
+    // so a cached result has to carry the convention it was actually computed under.
+    conventions: context.contract.conventions,
     citations: context.contract.citations,
     datasets: context.contract.datasets,
     rawArtifacts: []

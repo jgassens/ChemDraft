@@ -6403,3 +6403,10 @@ textarea:focus-visible,
   font-size: 10px;
   overflow-wrap: anywhere;
 }
+
+/* The Conventions section arrives as a `text` section whose body carries its own line breaks (one
+   method group per block, one bullet per named choice). Scoped to `.analysis-panel` so plugin text
+   sections elsewhere keep the renderer's default paragraph flow. */
+.analysis-panel .plugin-report-text p {
+  white-space: pre-line;
+}

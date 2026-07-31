@@ -43,6 +43,18 @@ const SALT_REPORT: AnalysisReport = {
   fingerprint: "fnv1a64:0123456789abcdef"
 };
 
+const CONVENTIONS_SECTION: AnalysisReport["sections"][number] = {
+  kind: "conventions",
+  title: "Conventions",
+  groups: [
+    {
+      appliesTo: ["Topological polar surface area (TPSA)"],
+      conventions: ["Ertl 2000 fragment contributions", "sulfur and phosphorus INCLUDED (vendor patch #6)"]
+    },
+    { appliesTo: ["[M+H]⁺", "[M+Na]⁺"], conventions: ["m/z divides the ion mass by the magnitude of its charge"] }
+  ]
+};
+
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
@@ -195,5 +207,36 @@ describe("toPanelReport", () => {
     const declined = panel.sections.find((section) => section.title === "Not computed")!;
     expect(declined.kind).toBe("table");
     expect(declined.kind === "table" && declined.columns).toEqual(["Property", "Status", "Reason"]);
+  });
+
+  it("flattens a conventions section to text the shared renderer can draw", () => {
+    // `PluginPanelSection` is the versioned plugin SDK surface and no plugin asked for this kind, so
+    // the flattening happens here rather than widening that schema. Line breaks survive because
+    // `.analysis-panel` styles the renderer's text sections `white-space: pre-line`.
+    const panel = toPanelReport({ ...SALT_REPORT, sections: [...SALT_REPORT.sections, CONVENTIONS_SECTION] });
+    const conventions = panel.sections.find((section) => section.title === "Conventions")!;
+
+    expect(conventions.kind).toBe("text");
+    const body = conventions.kind === "text" ? conventions.body : "";
+    expect(body).toContain("Topological polar surface area (TPSA)\n  • Ertl 2000 fragment contributions");
+    expect(body).toContain("sulfur and phosphorus INCLUDED (vendor patch #6)");
+    // A shared set names every method it applies to rather than being repeated once per method.
+    expect(body).toContain("[M+H]⁺, [M+Na]⁺");
+  });
+
+  it("puts the conventions in the DOM, which is where the disclosure was missing", () => {
+    // The end of the chain this whole change exists for: the panel said "convention-dependent — see
+    // Conventions", and until now there was nothing under that heading to see.
+    const view = render(
+      <AnalysisPanel
+        report={{ ...SALT_REPORT, sections: [...SALT_REPORT.sections, CONVENTIONS_SECTION] }}
+        onChangeInterpretation={() => {}}
+        onCopy={() => {}}
+        onClose={() => {}}
+      />
+    );
+
+    expect(view.textContent).toContain("Conventions");
+    expect(view.textContent).toContain("sulfur and phosphorus INCLUDED (vendor patch #6)");
   });
 });
