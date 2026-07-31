@@ -499,8 +499,10 @@ Not allowed:
 - Re-declaring the abundance table in TypeScript. Read it from the binary with `isotope_table()` —
   IsoSpec records no provenance for it upstream, so "what the shipped engine used" is the only claim
   that can be defended, and a duplicated copy could disagree with the artifact.
-- Method contracts, classification, or building `DistributionResult` — those live with the analysis
-  wiring, exactly as they do for the RDKit adapter.
+- Method contracts, classification, or building `DistributionResult`. Those live with the analysis
+  wiring, which is `packages/rdkit-adapter/src/envelope.ts` — and that placement is forced rather than
+  arbitrary: the envelope needs RDKit's composition *and* IsoSpec's distribution, so neither adapter
+  owns the method. `rdkit-adapter` depends on this package; the reverse must never happen.
 
 Its abundance set is **convention-dependent** and must be disclosed wherever a number derived from it
 is shown: ¹³C is 0.82% above the commonly quoted CIAAW representative value. Treat it the way

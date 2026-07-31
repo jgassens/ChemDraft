@@ -75,6 +75,15 @@ export interface AnalysisReport {
   fingerprint: string;
 }
 
+/**
+ * Most peaks any one distribution renders as table rows.
+ *
+ * A rendering budget, not a truncation of the data: the `DistributionResult` keeps every peak, and any
+ * report that hits this cap says so in the section title. Drug-like molecules produce 9–42 peaks at the
+ * engine's default threshold, so this only engages for the large end of what the app accepts.
+ */
+export const MAX_RENDERED_DISTRIBUTION_PEAKS = 40;
+
 // --- value formatting ----------------------------------------------------------------------------
 
 function formatNumber(value: number, decimalPlaces?: number): string {
@@ -276,6 +285,47 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   }
   if (descriptors.length > 0) {
     sections.push(keyValueSection("Descriptors", descriptors.map((result) => row(result, formatScalar(result), displayLabel(result)))));
+  }
+
+  // --- distributions --------------------------------------------------------------------------
+  // A table of peaks, not a plot: the report is a text artifact that has to survive the clipboard, and
+  // the panel renders the same model. The truncation goes in the title rather than a footnote — a
+  // truncated distribution whose truncation is not stated reads exactly like a complete one.
+  for (const distribution of ok.filter(isKind("distribution"))) {
+    if (distribution.positions.length === 0) continue;
+    const positionSymbol = unitSymbol(distribution.positionUnit);
+    const intensitySymbol = unitSymbol(distribution.intensityUnit);
+    const covered = distribution.truncation.coveredProbability;
+
+    // The engine's own truncation is one thing; this is a second, purely presentational one. A
+    // 400-heavy-atom structure is within the app's budget and can produce hundreds of peaks, and a
+    // table that long is not a report. Keep the most intense, order them by mass, and say so in the
+    // title — the result itself still carries every peak.
+    const peaks = [...distribution.positions].map((position, index) => ({
+      position,
+      intensity: distribution.intensities[index] ?? 0
+    }));
+    const shown =
+      peaks.length > MAX_RENDERED_DISTRIBUTION_PEAKS
+        ? [...peaks]
+            .sort((a, b) => b.intensity - a.intensity)
+            .slice(0, MAX_RENDERED_DISTRIBUTION_PEAKS)
+            .sort((a, b) => a.position - b.position)
+        : peaks;
+
+    const parts = [`${peaks.length} peaks`];
+    if (covered !== undefined) parts.push(`${(covered * 100).toFixed(4)}% of the distribution`);
+    if (shown.length < peaks.length) parts.push(`showing the ${shown.length} most intense`);
+
+    sections.push({
+      kind: "table",
+      title: `${displayLabel(distribution)} (${parts.join(", ")})`,
+      columns: [
+        `Mass${positionSymbol ? ` (${positionSymbol})` : ""}`,
+        `Intensity${intensitySymbol ? ` (${intensitySymbol})` : ""}`
+      ],
+      rows: shown.map((peak) => [peak.position.toFixed(5), peak.intensity.toFixed(2)])
+    });
   }
 
   // --- declined -------------------------------------------------------------------------------

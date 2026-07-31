@@ -728,16 +728,35 @@ an Analyze item ships only when it computes something).
   which the contract states plainly: it will offer a water loss from a molecule whose oxygens are all
   ketones, because that check is arithmetic, not chemistry.
 
-  **The isotope envelope: engine landed 2026-07-30, wiring still to do.** It needs per-isotope
+  **The isotope envelope: engine and wiring both landed 2026-07-30.** It needs per-isotope
   abundances, and neither the vendored RDKit nor OpenChemLib exposes any — checked directly, not
   assumed (see the dependency inventory). IsoSpec `v2.3.5` is now vendored at
   `packages/isospec-adapter/vendor/` (BSD-2-Clause, **unpatched**, 234 KB WASM), built through the same
   Emscripten lane as the Phase 6 rebuild and reusing that image purely as a toolchain. Its two
   truncation policies map straight onto `DistributionResult.truncation.policy`, and its monoisotopic
   peak for sulfamethoxazole (253.052112) agrees with RDKit's 253.05211 — two independent engines with
-  different tables. What remains is the *analysis* wiring: method contracts, the `DistributionResult`
-  mapping, and panel rendering. Until that lands the mass-fragment demo's M/M+1/M+2 approximation
-  stays; it is already correctly labelled ("first-order approx.", "not a full isotopic convolution").
+  different tables.
+
+  `isospec.isotope-envelope` is now a method of the run. The contract lives in
+  `packages/rdkit-adapter/src/envelope.ts` rather than in either adapter, and that placement is forced:
+  the envelope needs RDKit's composition *and* IsoSpec's distribution, so neither engine owns it. The
+  run names both engines and puts both artifact hashes in the fingerprint, so rebuilding either
+  invalidates the cache. IsoSpec loads lazily — a run that does not ask for the envelope pays nothing —
+  and if it cannot be loaded the method still appears and declines, because a capability that quietly
+  vanishes is worse than one that says it is missing.
+
+  **Two declines, both preferring silence to a confident wrong number.** A charged structure: the
+  envelope is computed from the formula, which carries no electron bookkeeping, so an ion's masses
+  would be wrong by one electron per charge. And an explicitly isotope-labelled structure — measured
+  against IsoSpec's parser rather than assumed, `parse_formula` throws on any non-alphanumeric
+  character and resolves elements by bare symbol, so RDKit's `[13C]CH4O2` cannot be expressed at all.
+  Stripping the label to make it parse would report the natural-abundance envelope of a *different
+  molecule*, which is exactly the failure this branch exists to prevent.
+
+  The report renders the peaks as a table with the truncation in its title, capped at 40 rendered rows
+  (the result keeps every peak, and a capped table says so). The mass-fragment demo's M/M+1/M+2
+  approximation still stands — replacing it is plugin work, not core wiring — and it remains correctly
+  labelled ("first-order approx.", "not a full isotopic convolution").
 
   **The abundance set is a convention and must be disclosed like `includeSandP`.** IsoSpec's tables
   carry no provenance in its own repository, so the defensible claim is "the values the shipped engine
@@ -800,15 +819,18 @@ build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 - ✅ `pnpm lint`, `pnpm test` (2139), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
   `cargo test` (47) are green.
 
-**Not done, and deliberately so.** The isotope envelope's *engine* is vendored and tested, but it is not
-yet wired into an analysis run — no method contract, no `DistributionResult` produced, no panel
-rendering, and `examples/plugins/mass-fragment-demo`'s M/M+1/M+2 approximation still stands. That is
-Release 2 feature work on top of a dependency that is now present rather than blocked. And **releases
-stay blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline, and the
-plugin-distribution rules are the project owner's calls, not engineering's.
+**Not done, and deliberately so.** `examples/plugins/mass-fragment-demo` still ships its own first-order
+M/M+1/M+2 approximation and its own unsourced eight-element abundance table; the core now has a real
+envelope, so retiring the plugin's is plugin work worth doing, but it is not core wiring. The envelope
+also declines for charged and isotope-labelled structures — both are solvable (an electron-mass shift,
+and IsoSpec's non-formula `Iso` constructor which *can* take explicit isotope arrays), and both are
+follow-ups rather than gaps in what shipped. And **releases stay blocked on the distribution track**
+(§4): the core licence, the nmrshiftdb2 deadline, and the plugin-distribution rules are the project
+owner's calls, not engineering's.
 
 *(Both items this section previously listed as build-blocked landed 2026-07-30: the MinimalLib rebuild
-carrying patches `0003` and `0006`, and the IsoSpec WASM build. Neither is waiting on Docker any more.)*
+carrying patches `0003` and `0006`, and the IsoSpec WASM build — now wired into the run. Neither is
+waiting on Docker any more.)*
 
 ## Open items owned by the project owner
 

@@ -22,6 +22,7 @@
 import { analyzeStructure, type AnalyzeStructureRequest } from "@chemdraft/rdkit-adapter";
 import type { AnalysisRun } from "@chemdraft/analysis-core";
 
+import { registerIsoSpecWasmLoader } from "./isospecWasmLoader";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 
 export interface AnalysisWorkRequest {
@@ -60,6 +61,9 @@ let loaderRegistered = false;
 function ensureLoader(): void {
   if (loaderRegistered) return;
   registerRdkitWasmLoader();
+  // Registering is not loading: the adapter instantiates IsoSpec only when a run asks for the isotope
+  // envelope. Without this the envelope declines with "engine not available" on every structure.
+  registerIsoSpecWasmLoader();
   loaderRegistered = true;
 }
 

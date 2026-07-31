@@ -5,7 +5,8 @@
   "type": "module",
   "dependencies": {
     "@chemdraft/analysis-core": "workspace:*",
-    "@chemdraft/chemistry-adapter": "workspace:*"
+    "@chemdraft/chemistry-adapter": "workspace:*",
+    "@chemdraft/isospec-adapter": "workspace:*"
   },
   "exports": {
     ".": {

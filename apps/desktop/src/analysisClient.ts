@@ -19,6 +19,7 @@ import {
   type AnalysisRun,
   type ScheduleOptions
 } from "@chemdraft/analysis-core";
+import { PINNED_ISOSPEC_WASM_SHA256 } from "@chemdraft/isospec-adapter";
 import { PINNED_RDKIT_WASM_SHA256, sourceInterpretation } from "@chemdraft/rdkit-adapter";
 
 import type { AnalysisWorkRequest, AnalysisWorkResponse } from "./analysisWorker";
@@ -96,7 +97,9 @@ export function createAnalysisClient(workerFactory?: () => Worker): AnalysisClie
     return created;
   };
 
-  const engineHashes = [`sha256:${PINNED_RDKIT_WASM_SHA256}`];
+  // Both engines: a run can carry an isotope envelope, so rebuilding IsoSpec has to invalidate the
+  // session cache exactly as rebuilding RDKit does.
+  const engineHashes = [`sha256:${PINNED_RDKIT_WASM_SHA256}`, `sha256:${PINNED_ISOSPEC_WASM_SHA256}`];
 
   const scheduler = new AnalysisScheduler({
     interpretationFor: (spec) => sourceInterpretation(spec.format, spec.value),

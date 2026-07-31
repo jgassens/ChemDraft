@@ -72,6 +72,19 @@ import {
   rdkitMethodContracts,
   type RdkitEngineCapabilities
 } from "./methods";
+import {
+  DEFAULT_ENVELOPE_RELATIVE_THRESHOLD,
+  ISOTOPE_ENVELOPE_METHOD_ID,
+  computeEnvelope,
+  envelopeResult,
+  isotopeEnvelopeContract
+} from "./envelope";
+import {
+  PINNED_ISOSPEC_VERSION,
+  PINNED_ISOSPEC_WASM_SHA256,
+  ensureIsoSpec,
+  type IsoSpecModule
+} from "@chemdraft/isospec-adapter";
 
 export type AnalysisInputFormat = "smiles" | "molfile-v2000" | "molfile-v3000";
 
@@ -214,15 +227,22 @@ export function detectEngineCapabilities(module: AnalysisModule): RdkitEngineCap
  * Single-sourced deliberately: the Release 2 adduct series was first added to the run without being
  * added to the canonical list, and `closeout.real.test.ts` caught it as "a result with no registered
  * contract". One function means the run and the closeout check cannot disagree again.
+ *
+ * The isotope envelope is in this list even though a second engine computes it. The list is the set of
+ * methods the run may report, not the set RDKit implements — and a contract that appeared only when
+ * IsoSpec happened to load is exactly the kind of conditional surface the closeout lock exists to
+ * catch. When IsoSpec cannot load, the method still appears and declines with a reason.
  */
 export function rdkitAnalysisContracts(
   engineVersion: string = PINNED_RDKIT_VERSION,
-  capabilities: RdkitEngineCapabilities = UNPATCHED_CAPABILITIES
+  capabilities: RdkitEngineCapabilities = UNPATCHED_CAPABILITIES,
+  isospecVersion: string = PINNED_ISOSPEC_VERSION
 ): MethodContract[] {
   return [
     ...rdkitMethodContracts(engineVersion, capabilities),
     ...adductContracts(engineVersion),
-    ...neutralLossContracts(engineVersion)
+    ...neutralLossContracts(engineVersion),
+    isotopeEnvelopeContract(isospecVersion)
   ];
 }
 
@@ -468,6 +488,17 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
    */
   const derivedInterpretations = new Map<DerivedInterpretationId, DerivedContext>();
 
+  /**
+   * The second engine, loaded only if a run actually asks for the envelope and left null when it
+   * cannot be loaded at all.
+   *
+   * Null is not a failure of the run: the method still appears and declines with a reason (§10 — a
+   * report must show what it could not compute). It is, however, a reason not to name IsoSpec in
+   * `engines` or its hash in the fingerprint, because neither would describe what produced these
+   * numbers.
+   */
+  let isospec: IsoSpecModule | null = null;
+
   const finish = (
     status: AnalysisStatus,
     results: AnalysisResult[],
@@ -493,7 +524,16 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
           name: "rdkit-minimallib-wasm",
           version: engineVersion,
           artifactHashes: [`sha256:${PINNED_RDKIT_WASM_SHA256}`]
-        }
+        },
+        ...(isospec
+          ? [
+              {
+                name: "isospec-wasm",
+                version: PINNED_ISOSPEC_VERSION,
+                artifactHashes: [`sha256:${PINNED_ISOSPEC_WASM_SHA256}`]
+              }
+            ]
+          : [])
       ],
       startedAt: request.startedAt,
       ...(request.finishedAt ? { finishedAt: request.finishedAt } : {}),
@@ -513,7 +553,8 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
           // salt and on its organic fragment are two different computations.
           return `${key}#${result.interpretationId}`;
         }),
-        engineHashes: [PINNED_RDKIT_WASM_SHA256]
+        // Both artifacts, so rebuilding either invalidates every cached number that depended on it.
+        engineHashes: isospec ? [PINNED_RDKIT_WASM_SHA256, PINNED_ISOSPEC_WASM_SHA256] : [PINNED_RDKIT_WASM_SHA256]
       })
     }
   });
@@ -575,6 +616,12 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     const wanted = request.methodIds ? new Set(request.methodIds) : undefined;
     const selected = contracts.filter((contract) => !wanted || wanted.has(contract.id));
     const fallbacks = request.fallbackInterpretations ?? DEFAULT_FALLBACK_INTERPRETATIONS;
+
+    // Loaded here rather than beside RDKit: a run that did not ask for the envelope should not pay for
+    // a second WASM instantiation. `ensureIsoSpec` memoises, so a session pays once.
+    if (selected.some((contract) => contract.id === ISOTOPE_ENVELOPE_METHOD_ID)) {
+      isospec = await loadIsoSpecOrNull();
+    }
     const results: AnalysisResult[] = [];
     const extraWarnings: AnalysisWarning[] = [];
 
@@ -599,6 +646,16 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     for (const contract of selected) {
       // Runs the §1 tautomer-policy check before anything touches the engine.
       registry.assertRunnable(contract.id, primary.interpretation);
+
+      // The envelope is the one method a second engine computes, and it is driven by the composition
+      // rather than by the molecule handle — so it does not go through the RDKit dispatch, and the
+      // element-parameterisation check below does not apply to it (IsoSpec's own tables decide, and
+      // it says so itself when an element is missing).
+      if (contract.id === ISOTOPE_ENVELOPE_METHOD_ID) {
+        results.push(envelopeResultFor(contract, primary, isospec));
+        continue;
+      }
+
       const outside = elementsOutsideParameterization(contract, primary.composition.presentElements);
 
       if (outside.length === 0) {
@@ -674,6 +731,51 @@ function resultFor(
     context.descriptors,
     context.composition,
     ionMasses
+  );
+}
+
+/**
+ * Load the isotope engine, or report that it is unavailable.
+ *
+ * Swallowing the error is deliberate and narrow: the only failure this hides is "no IsoSpec loader in
+ * this environment", and the run turns that into a decline carrying the message. A structure analysis
+ * should not fail wholesale because one of its ~62 methods could not reach its engine.
+ */
+async function loadIsoSpecOrNull(): Promise<IsoSpecModule | null> {
+  try {
+    return await ensureIsoSpec();
+  } catch {
+    return null;
+  }
+}
+
+/** The envelope's own dispatch: composition in, `DistributionResult` out. */
+function envelopeResultFor(
+  contract: MethodContract,
+  context: DerivedContext,
+  isospec: IsoSpecModule | null
+): AnalysisResult {
+  const base = resultBase({ contract, interpretation: context.interpretation, composition: context.composition });
+  if (!isospec) {
+    return {
+      ...envelopeResult(base, {
+        ok: false,
+        reason:
+          "The IsoSpec engine is not available in this environment, so no isotope envelope was computed.",
+        unsupportedFeature: "isospec engine unavailable"
+      }),
+      status: "unsupported"
+    };
+  }
+
+  return envelopeResult(
+    base,
+    computeEnvelope(isospec, {
+      formula: context.composition.formula,
+      formalCharge: context.composition.formalCharge,
+      hasExplicitIsotopes: context.composition.hasExplicitIsotopes
+    }),
+    DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
   );
 }
 

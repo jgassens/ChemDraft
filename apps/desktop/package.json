@@ -23,6 +23,7 @@
     "@chemdraft/editor-adapter": "workspace:*",
     "@chemdraft/engine3d-api": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
+    "@chemdraft/isospec-adapter": "workspace:*",
     "@chemdraft/ketcher-adapter": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
     "@chemdraft/molscribe-ocsr-plugin": "workspace:*",

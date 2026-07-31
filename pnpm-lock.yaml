@@ -65,6 +65,9 @@ importers:
       '@chemdraft/export-engine':
         specifier: workspace:*
         version: link:../../packages/export-engine
+      '@chemdraft/isospec-adapter':
+        specifier: workspace:*
+        version: link:../../packages/isospec-adapter
       '@chemdraft/ketcher-adapter':
         specifier: workspace:*
         version: link:../../packages/ketcher-adapter
@@ -325,6 +328,9 @@ importers:
       '@chemdraft/chemistry-adapter':
         specifier: workspace:*
         version: link:../chemistry-adapter
+      '@chemdraft/isospec-adapter':
+        specifier: workspace:*
+        version: link:../isospec-adapter
 
   packages/shortcut-engine: {}
 
