@@ -71,7 +71,7 @@ export function createQuickActions(
     { id: "export.open", title: "Export...", icon: "export", shortcut: "Shift+Cmd+E", source: "core" },
     {
       id: "analyze.molecularProperties",
-      title: "Molecular Properties…",
+      title: "Molecular Inspector…",
       icon: "atom",
       source: "core",
       enabled: selectedMolecule !== undefined

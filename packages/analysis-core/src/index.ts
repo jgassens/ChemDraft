@@ -20,6 +20,9 @@ export * from "./methodContract";
 export * from "./propertyCorpus";
 export * from "./provenance";
 export * from "./report";
+// The Molecular Inspector's content model: one report as an expandable category tree, with every
+// export narrowed through the same renderers so what is copied matches what is shown.
+export * from "./inspectorModel";
 export * from "./results";
 export * from "./scheduler";
 export * from "./session";

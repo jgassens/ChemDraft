@@ -145,7 +145,7 @@ import {
 } from "@chemdraft/layout-engine";
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
-import { AnalysisPanel } from "./analysis/AnalysisPanel";
+import { MolecularInspector } from "./analysis/MolecularInspector";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
@@ -14225,7 +14225,7 @@ export function MainWindow({
       ) : null}
 
       {analysisReport ? (
-        <AnalysisPanel
+        <MolecularInspector
           report={analysisReport}
           busy={analysisBusy}
           onChangeInterpretation={(interpretationId) => {
@@ -14235,7 +14235,7 @@ export function MainWindow({
           }}
           onCopy={(text) => {
             void navigator.clipboard?.writeText(text);
-            setStatus("Provenance report copied");
+            setStatus("Analysis copied");
           }}
           onClose={() => setAnalysisReport(undefined)}
         />
