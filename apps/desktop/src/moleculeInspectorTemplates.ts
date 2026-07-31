@@ -40,7 +40,7 @@ export function serializeMoleculeInspectorTemplate(
   const template: MoleculeInspectorTemplateFile = {
     format: moleculeInspectorTemplateFormat,
     version: 1,
-    name: name.trim() || "Molecule Inspector Template",
+    name: name.trim() || "Drawn Structure Settings Template",
     exportedAt: options.exportedAt ?? new Date().toISOString(),
     ...(options.sourceFormat ? { sourceFormat: options.sourceFormat } : {}),
     ...(options.sourceName ? { sourceName: options.sourceName } : {}),
@@ -52,7 +52,7 @@ export function serializeMoleculeInspectorTemplate(
 
 export function parseMoleculeInspectorTemplate(
   input: Uint8Array | ArrayBuffer | string,
-  sourceName = "Molecule Inspector Template"
+  sourceName = "Drawn Structure Settings Template"
 ): MoleculeInspectorTemplateImportResult {
   const bytes = bytesFromInput(input);
   if (hasChemDrawStyleHeader(bytes) || /\.cds$/i.test(sourceName)) {
@@ -72,7 +72,7 @@ export function parseMoleculeInspectorTemplate(
     parsed = JSON.parse(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : "invalid JSON";
-    throw new Error(`Unsupported Molecule Inspector template: ${message}`);
+    throw new Error(`Unsupported Drawn Structure Settings template: ${message}`);
   }
 
   return templateResultFromJson(parsed, sourceName);
@@ -96,7 +96,7 @@ export function moleculeInspectorTemplateFilename(name: string): string {
 
 function templateResultFromJson(value: unknown, sourceName: string): MoleculeInspectorTemplateImportResult {
   if (!isRecord(value)) {
-    throw new Error("Unsupported Molecule Inspector template: expected a JSON object.");
+    throw new Error("Unsupported Drawn Structure Settings template: expected a JSON object.");
   }
 
   const templateName = stringValue(value.name) ?? sourceName.replace(/\.(template|json)$/i, "");
@@ -133,7 +133,7 @@ function templateResultFromJson(value: unknown, sourceName: string): MoleculeIns
     };
   }
 
-  throw new Error("Unsupported Molecule Inspector template: missing drawing style.");
+  throw new Error("Unsupported Drawn Structure Settings template: missing drawing style.");
 }
 
 function normalizeDrawingStyle(value: unknown, stylePresetId: string): NativeDrawingStyle {

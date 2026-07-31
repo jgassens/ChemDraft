@@ -95,8 +95,8 @@ import {
   moleculeAtomLabelShowTerminalCarbonsCommandId,
 	  moleculeAtomLabelHideImplicitHydrogensCommandId,
 	  moleculeAtomLabelNumberRanges,
-	  moleculeInspectorTemplateExportCommandId,
-	  moleculeInspectorTemplateImportCommandId,
+	  drawnStructureSettingsTemplateExportCommandId,
+	  drawnStructureSettingsTemplateImportCommandId,
 	  structureCleanupCommandId,
 	  textCustomColorCommandId,
 	  textAlignmentCommands,
@@ -540,10 +540,10 @@ const TOOLBAR_WIDGET_REGISTRY: Record<
     title: "Ring Inspector",
     render: () => <MoleculeInspectorControls ringOnly />
   },
-  [TOOLBAR_WIDGET_IDS.moleculeInspector]: {
+  [TOOLBAR_WIDGET_IDS.drawnStructureSettings]: {
     gridMode: "hide-grid",
     className: "molecule-inspector-palette",
-    title: "Molecule Inspector",
+    title: "Drawn Structure Settings",
     render: () => <MoleculeInspectorControls />
   }
 };
@@ -1858,10 +1858,10 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
         <button
           type="button"
           className="toolbar-text-button molecule-inspector-template-button"
-          data-command-id={moleculeInspectorTemplateImportCommandId}
+          data-command-id={drawnStructureSettingsTemplateImportCommandId}
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onInvoke(moleculeInspectorTemplateImportCommandId)}
+          onClick={() => onInvoke(drawnStructureSettingsTemplateImportCommandId)}
         >
           Load
         </button>
@@ -1869,10 +1869,10 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
           type="button"
           className="toolbar-text-button molecule-inspector-template-button"
           disabled={templatesDisabled}
-          data-command-id={moleculeInspectorTemplateExportCommandId}
+          data-command-id={drawnStructureSettingsTemplateExportCommandId}
           data-palette-control="true"
           onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onInvoke(moleculeInspectorTemplateExportCommandId)}
+          onClick={() => onInvoke(drawnStructureSettingsTemplateExportCommandId)}
         >
           Export
         </button>
@@ -4387,7 +4387,7 @@ const TITLE_GLYPH_STOPWORDS = new Set([
 
 /** 1–2 char monogram from a title. A dimension token ("3D", "2D") reads far clearer as the whole
  *  glyph than its initial, so it wins ("Interactive 3D Workspace" → "3D"); otherwise the initials of
- *  the first two meaningful words ("Molecule Inspector" → "MI"), or the first two letters of a lone
+ *  the first two meaningful words ("Drawn Structure Settings" → "MI"), or the first two letters of a lone
  *  word ("Rings" → "Ri"). */
 export function titleMonogram(title: string): string {
   const words = title.split(/[^A-Za-z0-9]+/).filter((word) => word.length > 0 && !TITLE_GLYPH_STOPWORDS.has(word.toLowerCase()));

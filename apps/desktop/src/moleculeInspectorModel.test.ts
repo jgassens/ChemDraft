@@ -212,7 +212,7 @@ function documentWithObjects(objects: Array<MoleculeObject | GraphicObject>): Ch
   const document = createEmptyDocument({
     id: "doc_molecule_inspector",
     pageId: "page_molecule_inspector",
-    title: "Molecule Inspector"
+    title: "Drawn Structure Settings"
   });
   return {
     ...document,

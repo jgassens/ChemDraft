@@ -3,6 +3,7 @@ import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspector
 import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
+import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
@@ -391,7 +392,12 @@ export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<unknown | null>("load_toolset_customization_state").then((state) => state ?? undefined);
+  return invoke<unknown | null>("load_toolset_customization_state").then((state) =>
+    // Migrated on the way in, so a layout saved before the 2026-07-31 Molecule Inspector -> Drawn
+    // Structure Settings rename still resolves. Without this the user's customized toolbar silently
+    // reverts to default, which reads as data loss rather than a rename.
+    state === null || state === undefined ? undefined : migrateLegacyToolsetIds(state)
+  );
 }
 
 /**

@@ -14,8 +14,8 @@ import {
   objectEffectSizeCommandId,
   objectCustomColorCommandId,
   objectGradientStopOffsetCommandId,
-  moleculeInspectorTemplateExportCommandId,
-  moleculeInspectorTemplateImportCommandId,
+  drawnStructureSettingsTemplateExportCommandId,
+  drawnStructureSettingsTemplateImportCommandId,
   moleculeStructureBondLengthCommandId,
   type CommandSpec
 } from "./commands";
@@ -547,7 +547,7 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
+        itemGroups: widgetOnlyItemGroups("core.drawnStructureSettings"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -582,7 +582,7 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
+        itemGroups: widgetOnlyItemGroups("core.drawnStructureSettings"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -626,7 +626,7 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
+        itemGroups: widgetOnlyItemGroups("core.drawnStructureSettings"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -645,10 +645,10 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     expect(container.querySelector('[data-molecule-inspector-section="templates"]')?.textContent).toContain("1 molecule");
     const importButton = container.querySelector<HTMLButtonElement>(
-      `[data-command-id="${moleculeInspectorTemplateImportCommandId}"]`
+      `[data-command-id="${drawnStructureSettingsTemplateImportCommandId}"]`
     );
     const exportButton = container.querySelector<HTMLButtonElement>(
-      `[data-command-id="${moleculeInspectorTemplateExportCommandId}"]`
+      `[data-command-id="${drawnStructureSettingsTemplateExportCommandId}"]`
     );
     expect(importButton?.disabled).toBe(false);
     expect(exportButton?.disabled).toBe(false);
@@ -658,8 +658,8 @@ describe("ToolPalette molecule inspector font controls", () => {
       exportButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onInvoke).toHaveBeenCalledWith(moleculeInspectorTemplateImportCommandId);
-    expect(onInvoke).toHaveBeenCalledWith(moleculeInspectorTemplateExportCommandId);
+    expect(onInvoke).toHaveBeenCalledWith(drawnStructureSettingsTemplateImportCommandId);
+    expect(onInvoke).toHaveBeenCalledWith(drawnStructureSettingsTemplateExportCommandId);
   });
 
   it("keeps template loading available when no molecule is selected", async () => {
@@ -670,7 +670,7 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     await act(async () => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.moleculeInspector"),
+        itemGroups: widgetOnlyItemGroups("core.drawnStructureSettings"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -689,10 +689,10 @@ describe("ToolPalette molecule inspector font controls", () => {
 
     expect(container.querySelector('[data-molecule-inspector-section="templates"]')?.textContent).toContain("No molecule");
     const loadButton = container.querySelector<HTMLButtonElement>(
-      `[data-command-id="${moleculeInspectorTemplateImportCommandId}"]`
+      `[data-command-id="${drawnStructureSettingsTemplateImportCommandId}"]`
     );
     const exportButton = container.querySelector<HTMLButtonElement>(
-      `[data-command-id="${moleculeInspectorTemplateExportCommandId}"]`
+      `[data-command-id="${drawnStructureSettingsTemplateExportCommandId}"]`
     );
     expect(loadButton?.textContent).toBe("Load");
     expect(loadButton?.disabled).toBe(false);
@@ -702,7 +702,7 @@ describe("ToolPalette molecule inspector font controls", () => {
       loadButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onInvoke).toHaveBeenCalledWith(moleculeInspectorTemplateImportCommandId);
+    expect(onInvoke).toHaveBeenCalledWith(drawnStructureSettingsTemplateImportCommandId);
   });
 });
 
@@ -1038,7 +1038,7 @@ describe("ToolPalette spacer items", () => {
 describe("titleMonogram", () => {
   it("prefers a dimension token, else word initials, else lone-word prefix", () => {
     expect(titleMonogram("Interactive 3D Workspace")).toBe("3D");
-    expect(titleMonogram("Molecule Inspector")).toBe("MI");
+    expect(titleMonogram("Drawn Structure Settings")).toBe("DS");
     expect(titleMonogram("Toggle Art Toolbar")).toBe("Ar"); // stopwords Toggle/Toolbar skipped
     expect(titleMonogram("Rings")).toBe("Ri");
     expect(titleMonogram("2D Cleanup")).toBe("2D");

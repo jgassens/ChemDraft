@@ -193,12 +193,12 @@ import {
   objectStyleSwapCommand,
   objectStyleTargetCommands,
   ringInspectorToolsetId,
-  moleculeInspectorToolsetId,
+  drawnStructureSettingsToolsetId,
   artToolsetId,
   textToolsetId,
   toggleRingInspectorCommandId,
-  moleculeInspectorTemplateExportCommandId,
-  moleculeInspectorTemplateImportCommandId,
+  drawnStructureSettingsTemplateExportCommandId,
+  drawnStructureSettingsTemplateImportCommandId,
   moleculeRingEffectColorForCommand,
   moleculeRingEffectDisableForCommand,
   moleculeRingEffectForCommand,
@@ -252,7 +252,7 @@ import {
   pageCustomSizeAction,
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
-  toggleMoleculeInspectorCommandId,
+  toggleDrawnStructureSettingsCommandId,
   moleculeStructureNumberRanges,
   allShellCommands,
   type CommandSpec
@@ -6014,7 +6014,7 @@ export function MainWindow({
     }
 
     if (!result.targeted) {
-      setStatus("Select a molecule before changing Molecule Inspector style");
+      setStatus("Select a molecule before changing Drawn Structure Settings style");
       return true;
     }
 
@@ -6047,7 +6047,7 @@ export function MainWindow({
     moleculeInspectorPreviewRef.current = null;
     replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
-      setStatus("Select a molecule before changing Molecule Inspector style");
+      setStatus("Select a molecule before changing Drawn Structure Settings style");
       return;
     }
 
@@ -6103,7 +6103,7 @@ export function MainWindow({
     setStatus(
       changed
         ? `Imported ${imported.name} for ${moleculeObjectIds.length} molecule${moleculeObjectIds.length === 1 ? "" : "s"}${imported.warnings.length > 0 ? ` with ${imported.warnings.length} warning(s)` : ""}`
-        : `Molecule Inspector template already matches selected molecule${moleculeObjectIds.length === 1 ? "" : "s"}`
+        : `Drawn Structure Settings template already matches selected molecule${moleculeObjectIds.length === 1 ? "" : "s"}`
     );
   }, [
     cancelMoleculeInspectorPreview,
@@ -6148,7 +6148,7 @@ export function MainWindow({
       return;
     }
 
-    const templateName = `${currentDocument.title.replace(/\.(chemdraft|template)$/i, "") || "Molecule Inspector"} Style`;
+    const templateName = `${currentDocument.title.replace(/\.(chemdraft|template)$/i, "") || "Drawn Structure Settings"} Style`;
     const filename = moleculeInspectorTemplateFilename(templateName);
     const buildTemplateContents = () => {
       const drawing = {
@@ -6923,7 +6923,7 @@ export function MainWindow({
         isLayerCommandId(tool.id) ||
         objectStyleCommandIds.has(tool.id) ||
         tool.id === toggleRingInspectorCommandId ||
-        tool.id === toggleMoleculeInspectorCommandId ||
+        tool.id === toggleDrawnStructureSettingsCommandId ||
         // Plugin commands are owned by PluginHost, which registers them into the same
         // registry with their permission context. Registering a core binding here too
         // would collide (duplicate id) and strip the plugin's permission checks.
@@ -6968,11 +6968,11 @@ export function MainWindow({
         if (tool.id === "tool.settings" || tool.id === "style.color") {
           const types = selectedDocumentObjectTypes(documentRef.current);
           if (types.size === 0) {
-            void toggleToolset(tool.id === "tool.settings" ? moleculeInspectorToolsetId : artToolsetId);
+            void toggleToolset(tool.id === "tool.settings" ? drawnStructureSettingsToolsetId : artToolsetId);
             return;
           }
           if (tool.id === "tool.settings" && types.has("molecule")) {
-            void toggleToolset(moleculeInspectorToolsetId);
+            void toggleToolset(drawnStructureSettingsToolsetId);
             return;
           }
           if (types.has("graphic") || types.has("molecule")) {
@@ -7101,8 +7101,8 @@ export function MainWindow({
           return;
         }
 
-        if (action.id === toggleMoleculeInspectorCommandId) {
-          void toggleToolset(moleculeInspectorToolsetId);
+        if (action.id === toggleDrawnStructureSettingsCommandId) {
+          void toggleToolset(drawnStructureSettingsToolsetId);
           return;
         }
 
@@ -7428,12 +7428,12 @@ export function MainWindow({
       return;
     }
 
-    if (commandId === moleculeInspectorTemplateImportCommandId) {
+    if (commandId === drawnStructureSettingsTemplateImportCommandId) {
       await importMoleculeInspectorTemplate();
       return;
     }
 
-    if (commandId === moleculeInspectorTemplateExportCommandId) {
+    if (commandId === drawnStructureSettingsTemplateExportCommandId) {
       await exportMoleculeInspectorTemplate();
       return;
     }
@@ -24510,11 +24510,11 @@ async function pickNativeExportPath(
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
   const selected = await open({
-    title: "Import Molecule Inspector Template",
+    title: "Import Drawn Structure Settings Template",
     multiple: false,
     fileAccessMode: "scoped",
     filters: [
-      { name: "Molecule Inspector Templates", extensions: ["template", "cds"] },
+      { name: "Drawn Structure Settings Templates", extensions: ["template", "cds"] },
       { name: "ChemDraw Style Sheets", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
@@ -24525,9 +24525,9 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
 async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
   const selected = await save({
-    title: "Export Molecule Inspector Template",
+    title: "Export Drawn Structure Settings Template",
     defaultPath,
-    filters: [{ name: "Molecule Inspector Template", extensions: ["template"] }]
+    filters: [{ name: "Drawn Structure Settings Template", extensions: ["template"] }]
   });
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }

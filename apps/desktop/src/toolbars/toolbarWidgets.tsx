@@ -63,7 +63,7 @@ export const TOOLBAR_WIDGET_IDS = {
   textStyleControls: "widget.core.textStyleControls",
   artStyleControls: "widget.core.artStyleControls",
   ringInspector: "widget.core.ringInspector",
-  moleculeInspector: "widget.core.moleculeInspector"
+  drawnStructureSettings: "widget.core.drawnStructureSettings"
 } as const;
 
 export type ToolbarWidgetId = (typeof TOOLBAR_WIDGET_IDS)[keyof typeof TOOLBAR_WIDGET_IDS];

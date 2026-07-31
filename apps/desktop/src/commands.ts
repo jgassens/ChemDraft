@@ -100,12 +100,12 @@ export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
 export const ringInspectorToolsetId = "core.ringInspector";
 export const toggleRingInspectorCommandId = "view.toggleRingInspector";
-export const moleculeInspectorToolsetId = "core.moleculeInspector";
-export const toggleMoleculeInspectorCommandId = "view.toggleMoleculeInspector";
+export const drawnStructureSettingsToolsetId = "core.drawnStructureSettings";
+export const toggleDrawnStructureSettingsCommandId = "view.toggleDrawnStructureSettings";
 export const artToolsetId = "core.art";
 export const textToolsetId = "core.text";
-export const moleculeInspectorTemplateImportCommandId = "moleculeInspector.template.import";
-export const moleculeInspectorTemplateExportCommandId = "moleculeInspector.template.export";
+export const drawnStructureSettingsTemplateImportCommandId = "drawnStructureSettings.template.import";
+export const drawnStructureSettingsTemplateExportCommandId = "drawnStructureSettings.template.export";
 export const artBooleanOperationCommandIds = {
   union: "art.boolean.union",
   subtract: "art.boolean.subtract",
@@ -237,12 +237,12 @@ export const viewActions: CommandSpec[] = [
     description: "Open or close the Rings toolbar"
   },
   {
-    id: toggleMoleculeInspectorCommandId,
-    title: "Toggle Molecule Inspector",
+    id: toggleDrawnStructureSettingsCommandId,
+    title: "Toggle Drawn Structure Settings",
     icon: "inspector",
     source: "core",
     category: "view",
-    description: "Open or close the Molecule Inspector"
+    description: "Open or close Drawn Structure Settings"
   },
   {
     id: "view.toggleRulers",

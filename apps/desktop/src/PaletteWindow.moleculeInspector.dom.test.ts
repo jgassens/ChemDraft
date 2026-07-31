@@ -97,7 +97,7 @@ describe("PaletteWindow molecule inspector bridge", () => {
 
   it("renders the broadcast inspector model and commits an edit back to the main window", async () => {
     await act(async () => {
-      root.render(createElement(PaletteWindow, { toolsetId: "core.moleculeInspector" }));
+      root.render(createElement(PaletteWindow, { toolsetId: "core.drawnStructureSettings" }));
     });
     // Let the async listener-attachment effects settle before the main window "broadcasts".
     await act(async () => {
