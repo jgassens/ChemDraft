@@ -135,7 +135,7 @@ struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
 #[derive(Default)]
 struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)>);
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolsetWindowPosition {
     x: f64,
@@ -2483,7 +2483,14 @@ fn ensure_toolset_window<R: Runtime>(
         ),
     };
     // A persisted position wins (the user moved it before); otherwise the JS-supplied default.
-    let position = persisted_toolset_position(app, toolset_id).unwrap_or(default_position);
+    // Either way it is clamped onto a currently attached display: a position saved on a monitor that
+    // is no longer here would otherwise open the toolbar where the user cannot see or reach it.
+    let position = clamp_toolset_position_to_screens(
+        persisted_toolset_position(app, toolset_id).unwrap_or(default_position),
+        width,
+        height,
+        &logical_screen_rects(app),
+    );
 
     // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
     // without the manifest (the label itself is lossy).
@@ -2794,6 +2801,119 @@ fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id)
         || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
         || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
+}
+
+/// A display's bounds in logical points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LogicalScreenRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Room left for the macOS menu bar at the top of a screen.
+const SCREEN_TOP_INSET_PT: f64 = 28.0;
+/// Room left for the Dock at the bottom.
+///
+/// An allowance, not a measurement: Tauri exposes a monitor's full frame, not macOS's `visibleFrame`,
+/// so the Dock's real height is not available here. Erring large costs a little placement freedom and
+/// buys a toolbar that is never buried — which is the failure this exists to prevent.
+const SCREEN_BOTTOM_INSET_PT: f64 = 96.0;
+
+/// Attached displays in logical points, or empty when they cannot be enumerated.
+fn logical_screen_rects<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<LogicalScreenRect> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Vec::new();
+    };
+    let Ok(monitors) = window.available_monitors() else {
+        return Vec::new();
+    };
+    monitors
+        .iter()
+        .map(|monitor| {
+            let scale = monitor.scale_factor();
+            let scale = if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            };
+            let position = monitor.position();
+            let size = monitor.size();
+            LogicalScreenRect {
+                x: position.x as f64 / scale,
+                y: position.y as f64 / scale,
+                width: size.width as f64 / scale,
+                height: size.height as f64 / scale,
+            }
+        })
+        .collect()
+}
+
+/// How much of a window rect falls inside a screen, in square points.
+fn overlap_area(
+    position: &ToolsetWindowPosition,
+    width: f64,
+    height: f64,
+    screen: &LogicalScreenRect,
+) -> f64 {
+    let overlap_w = (position.x + width).min(screen.x + screen.width) - position.x.max(screen.x);
+    let overlap_h = (position.y + height).min(screen.y + screen.height) - position.y.max(screen.y);
+    if overlap_w <= 0.0 || overlap_h <= 0.0 {
+        0.0
+    } else {
+        overlap_w * overlap_h
+    }
+}
+
+/// Bring a saved toolbar position back onto a screen the user can actually see.
+///
+/// Saved positions outlive the display arrangement that produced them. A toolbar parked on a second,
+/// larger monitor restores to coordinates that no longer exist once that monitor is gone, and the
+/// window opens somewhere invisible — it is not "closed", it is placed where nothing can reach it.
+/// The main document window already guards against this (`main_window_geometry_reachable`); palettes
+/// did not, which is how the Main toolbar could vanish entirely while Art landed under the Dock.
+///
+/// Clamping rather than discarding: the user's chosen screen and rough placement are kept whenever
+/// they still exist, and only the part that no longer fits is corrected.
+fn clamp_toolset_position_to_screens(
+    position: ToolsetWindowPosition,
+    width: f64,
+    height: f64,
+    screens: &[LogicalScreenRect],
+) -> ToolsetWindowPosition {
+    if screens.is_empty() || !position.x.is_finite() || !position.y.is_finite() {
+        // Cannot enumerate displays: trust the saved layout rather than scatter the user's toolbars.
+        return position;
+    }
+
+    // The screen the window mostly sits on; failing any overlap, the primary one.
+    let screen = screens
+        .iter()
+        .max_by(|a, b| {
+            overlap_area(&position, width, height, a)
+                .partial_cmp(&overlap_area(&position, width, height, b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+        .unwrap_or(screens[0]);
+    let screen = if overlap_area(&position, width, height, &screen) > 0.0 {
+        screen
+    } else {
+        screens[0]
+    };
+
+    let usable_min_x = screen.x;
+    let usable_max_x = screen.x + screen.width;
+    let usable_min_y = screen.y + SCREEN_TOP_INSET_PT;
+    let usable_max_y = screen.y + screen.height - SCREEN_BOTTOM_INSET_PT;
+
+    // `max` after `min` so a window larger than the usable area pins to the top-left corner rather
+    // than being pushed off the opposite edge.
+    let x = position.x.min(usable_max_x - width).max(usable_min_x);
+    let y = position.y.min(usable_max_y - height).max(usable_min_y);
+
+    ToolsetWindowPosition { x, y }
 }
 
 fn persisted_toolset_position<R: Runtime>(
@@ -3112,6 +3232,143 @@ fn find_menu_item_by_id<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A 1512x982 laptop screen at the origin, the display the reported bug was seen on.
+    fn laptop() -> LogicalScreenRect {
+        LogicalScreenRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1512.0,
+            height: 982.0,
+        }
+    }
+
+    /// A large external display sitting to the right — the arrangement the bad positions were saved on.
+    fn wide_external() -> LogicalScreenRect {
+        LogicalScreenRect {
+            x: 1512.0,
+            y: 0.0,
+            width: 3840.0,
+            height: 2160.0,
+        }
+    }
+
+    #[test]
+    fn saved_position_on_a_detached_monitor_comes_back_onto_the_remaining_one() {
+        // The reported failure: a toolbar parked on the second monitor, opened after it is gone.
+        // Nothing about x=3200 exists on the laptop, so the window was placed where it could not be
+        // seen — and read as "the toolbar never opened".
+        let clamped = clamp_toolset_position_to_screens(
+            ToolsetWindowPosition {
+                x: 3200.0,
+                y: 1400.0,
+            },
+            820.0,
+            560.0,
+            &[laptop()],
+        );
+        assert!(
+            clamped.x >= 0.0 && clamped.x + 820.0 <= 1512.0,
+            "x is on the laptop screen: {clamped:?}"
+        );
+        assert!(
+            clamped.y >= SCREEN_TOP_INSET_PT,
+            "below the menu bar: {clamped:?}"
+        );
+        assert!(
+            clamped.y + 560.0 <= 982.0 - SCREEN_BOTTOM_INSET_PT,
+            "clear of the Dock: {clamped:?}"
+        );
+    }
+
+    #[test]
+    fn a_position_low_on_the_screen_is_lifted_clear_of_the_dock() {
+        // The Art toolbar's symptom: on screen horizontally, but its lower edge buried under the Dock.
+        let clamped = clamp_toolset_position_to_screens(
+            ToolsetWindowPosition { x: 100.0, y: 940.0 },
+            300.0,
+            200.0,
+            &[laptop()],
+        );
+        assert_eq!(
+            clamped.x, 100.0,
+            "x untouched — only the part that did not fit is corrected"
+        );
+        assert!(
+            clamped.y + 200.0 <= 982.0 - SCREEN_BOTTOM_INSET_PT,
+            "lifted above the Dock: {clamped:?}"
+        );
+    }
+
+    #[test]
+    fn a_position_that_still_fits_is_left_exactly_where_the_user_put_it() {
+        let position = ToolsetWindowPosition { x: 240.0, y: 180.0 };
+        let clamped = clamp_toolset_position_to_screens(position, 400.0, 300.0, &[laptop()]);
+        assert_eq!(clamped.x, 240.0);
+        assert_eq!(clamped.y, 180.0);
+    }
+
+    #[test]
+    fn a_second_monitor_that_is_still_attached_keeps_its_windows() {
+        // Clamping must not herd every toolbar onto the primary display: a position that is valid on
+        // an attached external monitor stays there.
+        let clamped = clamp_toolset_position_to_screens(
+            ToolsetWindowPosition {
+                x: 2400.0,
+                y: 500.0,
+            },
+            820.0,
+            560.0,
+            &[laptop(), wide_external()],
+        );
+        assert_eq!(clamped.x, 2400.0, "stays on the external display");
+        assert_eq!(clamped.y, 500.0);
+    }
+
+    #[test]
+    fn a_window_taller_than_the_usable_area_pins_to_the_top_rather_than_off_the_bottom() {
+        let clamped = clamp_toolset_position_to_screens(
+            ToolsetWindowPosition { x: 10.0, y: 400.0 },
+            300.0,
+            5000.0,
+            &[laptop()],
+        );
+        assert_eq!(
+            clamped.y, SCREEN_TOP_INSET_PT,
+            "pinned just below the menu bar"
+        );
+    }
+
+    #[test]
+    fn without_display_information_the_saved_layout_is_trusted() {
+        // Better a possibly-odd position than scattering every toolbar because monitors could not be
+        // enumerated.
+        let position = ToolsetWindowPosition {
+            x: 3200.0,
+            y: 1400.0,
+        };
+        let clamped = clamp_toolset_position_to_screens(position, 820.0, 560.0, &[]);
+        assert_eq!(clamped.x, 3200.0);
+        assert_eq!(clamped.y, 1400.0);
+    }
+
+    #[test]
+    fn a_non_finite_saved_position_is_passed_through_untouched() {
+        let clamped = clamp_toolset_position_to_screens(
+            ToolsetWindowPosition {
+                x: f64::NAN,
+                y: 10.0,
+            },
+            100.0,
+            100.0,
+            &[laptop()],
+        );
+        assert!(
+            clamped.x.is_nan(),
+            "NaN is not silently turned into a real coordinate"
+        );
+    }
+
     use super::*;
 
     #[test]
