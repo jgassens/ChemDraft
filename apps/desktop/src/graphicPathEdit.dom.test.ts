@@ -434,6 +434,37 @@ describe("graphic path direct editing interactions", () => {
     expect(undone.object.data.markerEnd?.sizePx).toBeCloseTo(startHead, 3);
   });
 
+  it("keeps an arrow's size box up while Shift is held and the pointer moves off it", async () => {
+    // Two objects: the arrow whose box we raise, and a rectangle the pointer then crosses onto.
+    let doc = insertNativeArtGraphicObject(
+      createPhase4Document("Persist While Shift"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const arrowId = doc.selection.objectIds[0] ?? "";
+    doc = insertNativeArtGraphicObject(doc, { x: 220, y: 320 }, "tool.art.rect");
+    const rectId = doc.selection.objectIds[0] ?? "";
+    await renderMainWindow(doc, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    const arrowCorners = () => container.querySelectorAll(`[data-object-id="${arrowId}"] [data-object-resize-corner]`).length;
+    await shiftHover(arrowId);
+    expect(arrowCorners()).toBe(4);
+
+    // Shift-held move onto the rectangle (a non-arrow). Reaching a rotate/resize handle takes the
+    // pointer off the stroke; the arrow's box must survive that, not vanish.
+    await act(async () => {
+      dispatchPointer(objectElement(rectId), "pointermove", { x: 260, y: 340 }, 34, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+    expect(arrowCorners()).toBe(4);
+
+    // Releasing Shift is what finally dismisses it.
+    await releaseShiftForRotationHandles();
+    expect(arrowCorners()).toBe(0);
+  });
+
   it("does not raise the size box for a plain line on shift-hover", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Line No Frame"),

@@ -13659,9 +13659,16 @@ export function MainWindow({
       const hovered = findDocumentObject(documentRef.current, objectId);
       const overArrow = hovered && isNativeArrowGraphic(hovered) ? objectId : undefined;
       hoveredArrowIdRef.current = overArrow;
-      const nextShiftTarget = event.shiftKey ? overArrow : undefined;
-      if (shiftHoveredArrowIdRef.current !== nextShiftTarget) {
-        setShiftHoveredArrowId(nextShiftTarget);
+      if (event.shiftKey) {
+        // Raise the box on the arrow under the pointer, and switch to a different arrow when the
+        // pointer crosses onto one — but do NOT clear it when the pointer is off any arrow. The box
+        // must persist while Shift is held so the pointer can travel off the stroke to reach a
+        // rotate/resize handle without the whole frame vanishing.
+        if (overArrow && shiftHoveredArrowIdRef.current !== overArrow) {
+          setShiftHoveredArrowId(overArrow);
+        }
+      } else if (shiftHoveredArrowIdRef.current !== undefined) {
+        setShiftHoveredArrowId(undefined);
       }
     }
     const bezierArtNodeDrag = bezierArtNodeDragRef.current;
@@ -14268,7 +14275,12 @@ export function MainWindow({
     if (hoveredArrowIdRef.current === objectId) {
       hoveredArrowIdRef.current = undefined;
     }
-    setShiftHoveredArrowId((current) => current === objectId ? undefined : current);
+    // The size box persists while Shift is held even as the pointer leaves the arrow — reaching for
+    // a rotate/resize handle passes off the stroke, and losing the frame there is the whole bug this
+    // fixes. Releasing Shift (or hovering a different arrow) is what dismisses or moves it.
+    if (!shiftKeyPressedRef.current) {
+      setShiftHoveredArrowId((current) => current === objectId ? undefined : current);
+    }
     setHoveredNativeAtom((current) => current?.objectId === objectId ? undefined : current);
     setNativeDoubleBondSidePreview((current) => current?.objectId === objectId ? undefined : current);
     assignHoveredNativeDeleteTarget(
