@@ -165,6 +165,15 @@ export function PalettePopoverWindow({
         () => undefined
       );
     }
+    // One-frame background scrub before the reveal: a reused hidden webview can come back
+    // with stale pixels of its previous content composited under the new (the same WKWebView
+    // under-invalidation family as the canvas chrome ghosts). Flipping the background forces
+    // a full repaint of this small window. setTimeout, not requestAnimationFrame — rAF is
+    // suspended while the window is hidden (see the reveal comment above).
+    document.body.style.backgroundColor = "#fffefe";
+    window.setTimeout(() => {
+      document.body.style.backgroundColor = "";
+    }, 30);
     void import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => getCurrentWindow().show())
       .catch(() => undefined);

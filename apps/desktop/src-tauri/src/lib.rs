@@ -986,10 +986,15 @@ fn open_toolset_popover(
         // painted at the right size (getCurrentWindow().show(), permitted by
         // core:window:allow-show). Showing here would flash whatever the webview painted last
         // (a stale flyout, or a prewarmed window's empty shell) before the swap landed.
+        //
+        // Configure FIRST, position LAST: panel configuration (level, collection behavior)
+        // can nudge an NSWindow's frame, and the first open after a prewarm used to land the
+        // popover away from its anchor. An explicit LogicalPosition set is the final word in
+        // both the warm and cold paths.
+        configure_toolset_popover_window(&window, false)?;
         window
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|error| error.to_string())?;
-        configure_toolset_popover_window(&window, false)?;
         return Ok(());
     }
 
@@ -1052,6 +1057,13 @@ fn build_toolset_popover_window(
     .map_err(|error| error.to_string())?;
 
     configure_toolset_popover_window(&window, false)?;
+    // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
+    // can nudge the frame, and builder-time positioning has proven less trustworthy than an
+    // explicit post-build LogicalPosition set (first opens landed away from the anchor).
+    // Prewarm builds pass (0, 0), where this is harmless — the warm open repositions.
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
