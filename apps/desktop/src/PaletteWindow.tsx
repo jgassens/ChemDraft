@@ -1,3 +1,4 @@
+import type { AnalysisReport } from "@chemdraft/analysis-core";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
 import {
@@ -122,6 +123,8 @@ export function PaletteWindow({
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
+  const [currentMolecularInspector, setCurrentMolecularInspector] = useState<AnalysisReport | undefined>();
+  const [molecularInspectorBusy, setMolecularInspectorBusy] = useState(false);
   const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
   const commandOverrides = useMemo(
     () => new Map(commandSpecs.map((command) => [command.id, command] as const)),
@@ -386,6 +389,8 @@ export function PaletteWindow({
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setCurrentMoleculeInspector(payload.currentMoleculeInspector);
+      setCurrentMolecularInspector(payload.currentMolecularInspector);
+      setMolecularInspectorBusy(payload.molecularInspectorBusy === true);
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -810,6 +815,8 @@ export function PaletteWindow({
           currentArtStyle,
           currentArtStyleTarget,
           currentMoleculeInspector,
+          currentMolecularInspector,
+          molecularInspectorBusy,
           currentTextStyle,
           currentTextScript,
           onColorPickerOpenChange: setColorPickerOpen,

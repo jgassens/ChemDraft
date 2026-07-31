@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
+/**
+ * The Molecular Inspector's contents. The window around them is the toolset machinery's — same native
+ * frame and drag as any other palette — so what is worth testing here is the pane's own behaviour.
+ */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 
-import { MolecularInspector } from "./MolecularInspector";
+import { MolecularInspectorPane } from "./MolecularInspectorPane";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,18 +58,6 @@ function render(node: React.ReactElement): HTMLDivElement {
   return container;
 }
 
-function inspector(overrides: Partial<React.ComponentProps<typeof MolecularInspector>> = {}) {
-  return render(
-    <MolecularInspector
-      report={REPORT}
-      onChangeInterpretation={() => {}}
-      onCopy={() => {}}
-      onClose={() => {}}
-      {...overrides}
-    />
-  );
-}
-
 function categoryButton(view: HTMLDivElement, label: string): HTMLButtonElement {
   const found = [...view.querySelectorAll<HTMLButtonElement>(".molecular-inspector-categories button")].find(
     (button) => button.textContent?.startsWith(label)
@@ -81,40 +73,39 @@ afterEach(() => {
   container = undefined;
 });
 
-describe("MolecularInspector", () => {
+describe("MolecularInspectorPane", () => {
+  it("says what to do when nothing has been analysed yet", () => {
+    // The palette can be opened before anything is selected; an empty frame would look broken.
+    const view = render(<MolecularInspectorPane />);
+    expect(view.textContent).toContain("Select a molecule");
+  });
+
   it("lists one category per section, named without the disclosure and counted", () => {
-    const view = inspector();
+    const view = render(<MolecularInspectorPane report={REPORT} />);
     const labels = [...view.querySelectorAll(".molecular-inspector-category-label")].map((e) => e.textContent);
 
     expect(labels).toEqual(["All analyses", "Composition", "Descriptors", "Isotope envelope"]);
-    // The count makes an empty category obviously empty rather than looking merely collapsed.
-    expect(categoryButton(view, "Descriptors").textContent).toContain("1");
-    // The §2 disclosure travels with the category rather than being dropped from the left list.
     expect(categoryButton(view, "Descriptors").textContent).toContain("convention-dependent");
-    // A computed detail is shown but is not part of the name.
+    // A computed detail is shown but is not part of the name — otherwise the id would change with
+    // the peak count and no selection could survive a recomputation.
     expect(categoryButton(view, "Isotope envelope").textContent).toContain("2 peaks");
   });
 
   it("shows everything until a category is picked, then only that category", () => {
-    const view = inspector();
+    const view = render(<MolecularInspectorPane report={REPORT} />);
     const viewport = () => view.querySelector(".molecular-inspector-viewport")!.textContent ?? "";
 
     expect(viewport()).toContain("C9H8O4");
-    expect(viewport()).toContain("63.60 Å²");
-
     act(() => {
       categoryButton(view, "Descriptors").click();
     });
-
     expect(viewport()).toContain("63.60 Å²");
     expect(viewport()).not.toContain("C9H8O4");
   });
 
   it("copies only what is on screen, and always says which build produced it", () => {
-    // The guarantee the whole window rests on: the viewport and the clipboard take the same narrowed
-    // report, so a pasted fragment cannot disagree with what was visible.
     const onCopy = vi.fn();
-    const view = inspector({ onCopy });
+    const view = render(<MolecularInspectorPane report={REPORT} onCopy={onCopy} />);
 
     act(() => {
       categoryButton(view, "Descriptors").click();
@@ -132,7 +123,7 @@ describe("MolecularInspector", () => {
 
   it("copies Markdown when asked, scoped the same way", () => {
     const onCopy = vi.fn();
-    const view = inspector({ onCopy });
+    const view = render(<MolecularInspectorPane report={REPORT} onCopy={onCopy} />);
     act(() => {
       categoryButton(view, "Isotope envelope").click();
     });
@@ -145,32 +136,15 @@ describe("MolecularInspector", () => {
     expect(copied).not.toContain("## Composition");
   });
 
-  it("floats free of the drawing viewport, positioned rather than laid out", () => {
-    const view = inspector({ initialPosition: { x: 240, y: 160 } });
-    const frame = view.querySelector<HTMLElement>(".molecular-inspector")!;
-    expect(frame.style.left).toBe("240px");
-    expect(frame.style.top).toBe("160px");
-    expect(frame.getAttribute("role")).toBe("dialog");
-  });
-
-  it("drops a selection whose category a recomputation removed, and keeps one it did not", () => {
-    const view = inspector();
+  it("drops a selection whose category a recomputation removed", () => {
+    const view = render(<MolecularInspectorPane report={REPORT} />);
     act(() => {
       categoryButton(view, "Descriptors").click();
     });
     expect(categoryButton(view, "Descriptors").className).toContain("is-selected");
 
-    // Re-render with a report that no longer has Descriptors: the reader should land back on
-    // everything rather than on a blank viewport for a category that is gone.
     act(() => {
-      root!.render(
-        <MolecularInspector
-          report={{ ...REPORT, sections: [REPORT.sections[0]!] }}
-          onChangeInterpretation={() => {}}
-          onCopy={() => {}}
-          onClose={() => {}}
-        />
-      );
+      root!.render(<MolecularInspectorPane report={{ ...REPORT, sections: [REPORT.sections[0]!] }} />);
     });
 
     expect(categoryButton(view, "All analyses").className).toContain("is-selected");

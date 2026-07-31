@@ -1,3 +1,4 @@
+import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
@@ -59,6 +60,15 @@ export interface ToolsetTextStylePayload {
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+  /**
+   * The latest analysis report, for the Molecular Inspector palette.
+   *
+   * Safe to send over Tauri's event channel, which is JSON: `buildAnalysisReport` has already rendered
+   * every distribution into a table of strings, so no typed array reaches this boundary. An
+   * `AnalysisRun` would NOT survive the trip — its positions and intensities are `Float64Array`.
+   */
+  currentMolecularInspector?: AnalysisReport;
+  molecularInspectorBusy?: boolean;
 }
 
 export interface ToolsetCommandSpecsPayload {
@@ -118,13 +128,17 @@ export function createToolsetTextStylePayload(
   currentTextScript: TextSpan["script"] = "normal",
   currentArtStyle?: ToolsetArtStylePayload,
   currentArtStyleTarget: ToolsetArtPaintTarget = "fill",
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload,
+  currentMolecularInspector?: AnalysisReport,
+  molecularInspectorBusy = false
 ): ToolsetTextStylePayload {
   return {
     currentTextStyle,
     currentTextScript,
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
-    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {})
+    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {}),
+    ...(currentMolecularInspector ? { currentMolecularInspector } : {}),
+    ...(molecularInspectorBusy ? { molecularInspectorBusy } : {})
   };
 }
 

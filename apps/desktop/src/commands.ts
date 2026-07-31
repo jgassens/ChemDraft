@@ -101,6 +101,8 @@ export const structureRotate3dCommandId = "structure.rotate3d";
 export const ringInspectorToolsetId = "core.ringInspector";
 export const toggleRingInspectorCommandId = "view.toggleRingInspector";
 export const drawnStructureSettingsToolsetId = "core.drawnStructureSettings";
+/** The analysis surface: one palette for every analysis of the selected structure. */
+export const molecularInspectorToolsetId = "core.molecularInspector";
 export const toggleDrawnStructureSettingsCommandId = "view.toggleDrawnStructureSettings";
 export const artToolsetId = "core.art";
 export const textToolsetId = "core.text";

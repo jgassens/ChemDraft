@@ -27,6 +27,7 @@ import {
   type ToolbarWidgetGridMode,
   type ToolbarWidgetState
 } from "./toolbars/toolbarWidgets";
+import { MolecularInspectorPane } from "./analysis/MolecularInspectorPane";
 import {
   normalizeHexColor,
   distributeModeCommandIds,
@@ -545,8 +546,37 @@ const TOOLBAR_WIDGET_REGISTRY: Record<
     className: "molecule-inspector-palette",
     title: "Drawn Structure Settings",
     render: () => <MoleculeInspectorControls />
+  },
+  [TOOLBAR_WIDGET_IDS.molecularInspector]: {
+    gridMode: "hide-grid",
+    className: "molecular-inspector-palette",
+    title: "Molecular Inspector",
+    render: () => <MolecularInspectorPaneWidget />
   }
 };
+
+/**
+ * The Molecular Inspector, fed from the broadcast analysis report.
+ *
+ * A palette widget so it is a real OS window on the desktop — same native frame, drag, and saved
+ * position as every other toolbar — and a floating web palette in the browser, from one implementation.
+ */
+function MolecularInspectorPaneWidget() {
+  const {
+    currentMolecularInspector,
+    molecularInspectorBusy,
+    onMolecularInspectorCopy,
+    onMolecularInspectorChangeInterpretation
+  } = useToolbarWidgetState();
+  return (
+    <MolecularInspectorPane
+      report={currentMolecularInspector}
+      busy={molecularInspectorBusy}
+      onCopy={onMolecularInspectorCopy}
+      onChangeInterpretation={onMolecularInspectorChangeInterpretation}
+    />
+  );
+}
 
 /** Public widget catalog (id + title) for the customize gallery's "Widgets" tiles. */
 export const TOOLBAR_WIDGET_TITLES: Readonly<Record<string, string>> = Object.fromEntries(

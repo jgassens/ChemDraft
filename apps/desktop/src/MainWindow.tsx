@@ -145,7 +145,6 @@ import {
 } from "@chemdraft/layout-engine";
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
-import { MolecularInspector } from "./analysis/MolecularInspector";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
@@ -194,6 +193,7 @@ import {
   objectStyleTargetCommands,
   ringInspectorToolsetId,
   drawnStructureSettingsToolsetId,
+  molecularInspectorToolsetId,
   artToolsetId,
   textToolsetId,
   toggleRingInspectorCommandId,
@@ -1584,6 +1584,12 @@ export function MainWindow({
    * it inline is what makes the canvas stutter. `slot: "selection"` means a second invocation while
    * one is in flight supersedes it rather than racing it.
    */
+  /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it. */
+  const copyAnalysisText = useCallback((text: string) => {
+    void navigator.clipboard?.writeText(text);
+    setStatus("Analysis copied");
+  }, []);
+
   const runMolecularProperties = useCallback(
     async (format: string, structure: string, interpretationOverride: string | undefined): Promise<void> => {
       const client = analysisClient();
@@ -1621,6 +1627,7 @@ export function MainWindow({
   const [analysisReport, setAnalysisReport] = useState<AnalysisReport | undefined>();
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
+
   const [documentHistory, setDocumentHistory] = useState(() =>
     createDocumentHistory(initialDocument ?? createPhase4Document())
   );
@@ -1944,6 +1951,19 @@ export function MainWindow({
     selectedToolbarObject,
     textStyleDefaults.color
   ]);
+  /**
+   * The §1 "— change" affordance, from the palette. Re-runs the current selection against another
+   * interpretation; a palette with no selection behind it simply does nothing.
+   */
+  const recomputeAnalysisFor = useCallback(
+    (interpretationId: string | undefined) => {
+      const molecule = getSelectedMolecule(document);
+      if (!molecule) return;
+      void runMolecularProperties(molecule.structureFormat, molecule.structure, interpretationId);
+    },
+    [document, runMolecularProperties]
+  );
+
   const currentMoleculeInspector = useMemo(
     () => createMoleculeInspectorModel(document, {
       selectedObjectIds: document.selection.objectIds,
@@ -1981,7 +2001,9 @@ export function MainWindow({
       currentToolbarTextScript,
       currentArtStyle,
       activeArtPaintTarget,
-      currentMoleculeInspector
+      currentMoleculeInspector,
+      analysisReport,
+      analysisBusy
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -1989,7 +2011,9 @@ export function MainWindow({
     currentToolbarTextScript,
     currentArtStyle,
     activeArtPaintTarget,
-    currentMoleculeInspector
+    currentMoleculeInspector,
+    analysisReport,
+    analysisBusy
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -2423,10 +2447,22 @@ export function MainWindow({
         currentToolbarTextScript,
         currentArtStyle,
         activeArtPaintTarget,
-        currentMoleculeInspector
+        currentMoleculeInspector,
+        analysisReport,
+        analysisBusy
       )
     ).catch(() => undefined);
-  }, [activeArtPaintTarget, currentArtStyle, currentMoleculeInspector, currentToolbarTextScript, currentToolbarTextStyle]);
+    // `analysisReport` is in the deps so a detached Molecular Inspector window refreshes when a new
+    // run lands — without it the palette would show the first report forever.
+  }, [
+    activeArtPaintTarget,
+    analysisBusy,
+    analysisReport,
+    currentArtStyle,
+    currentMoleculeInspector,
+    currentToolbarTextScript,
+    currentToolbarTextStyle
+  ]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -6742,6 +6778,12 @@ export function MainWindow({
           if (!molecule) {
             setStatus("No selected structure");
             return;
+          }
+          // Open the palette first so the window is up while the analysis runs — it shows its own
+          // empty state, then fills in. Waiting would make the command look unresponsive on a
+          // structure large enough to take a moment.
+          if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
+            await toggleToolset(molecularInspectorToolsetId);
           }
           await runMolecularProperties(molecule.structureFormat, molecule.structure, analysisInterpretation);
           return;
@@ -14224,23 +14266,6 @@ export function MainWindow({
         />
       ) : null}
 
-      {analysisReport ? (
-        <MolecularInspector
-          report={analysisReport}
-          busy={analysisBusy}
-          onChangeInterpretation={(interpretationId) => {
-            const molecule = getSelectedMolecule(document);
-            if (!molecule) return;
-            void runMolecularProperties(molecule.structureFormat, molecule.structure, interpretationId);
-          }}
-          onCopy={(text) => {
-            void navigator.clipboard?.writeText(text);
-            setStatus("Analysis copied");
-          }}
-          onClose={() => setAnalysisReport(undefined)}
-        />
-      ) : null}
-
       <PluginPanelSurface
         openPanel={pluginRuntime.openPanel}
         diagnosticsOpen={pluginDiagnosticsOpen}
@@ -14278,6 +14303,8 @@ export function MainWindow({
                   currentArtStyle,
                   currentArtStyleTarget: activeArtPaintTarget,
                   currentMoleculeInspector,
+                  currentMolecularInspector: analysisReport,
+                  molecularInspectorBusy: analysisBusy,
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
@@ -14286,6 +14313,8 @@ export function MainWindow({
                   onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
                   onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
                   onMoleculeInspectorCancel: cancelMoleculeInspectorPreview,
+                  onMolecularInspectorCopy: copyAnalysisText,
+                  onMolecularInspectorChangeInterpretation: recomputeAnalysisFor,
                   onInvoke: invoke
                 }}
               />
