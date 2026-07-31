@@ -8414,9 +8414,15 @@ export function MainWindow({
       setTransformRotationHandlesVisible(pressed);
       // Pressing Shift while already hovering an arrow raises the box at once; releasing puts it
       // back to dot handles. Neither is applied mid transform-drag, or letting go of Shift during a
-      // resize would yank the frame out from under it.
+      // resize would yank the frame out from under it. While a box is already latched, a repeat
+      // press signal (any keydown carries shiftKey while Shift is held) must not re-target it to
+      // whatever arrow happens to be under the pointer — the latch holds until Shift releases.
       if (!objectResizeDragRef.current && !objectRotateDragRef.current) {
-        setShiftHoveredArrowId(pressed ? hoveredArrowIdRef.current : undefined);
+        if (!pressed) {
+          setShiftHoveredArrowId(undefined);
+        } else if (shiftHoveredArrowIdRef.current === undefined) {
+          setShiftHoveredArrowId(hoveredArrowIdRef.current);
+        }
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -13693,11 +13699,12 @@ export function MainWindow({
       const overArrow = hovered && isNativeArrowGraphic(hovered) ? objectId : undefined;
       hoveredArrowIdRef.current = overArrow;
       if (event.shiftKey) {
-        // Raise the box on the arrow under the pointer, and switch to a different arrow when the
-        // pointer crosses onto one — but do NOT clear it when the pointer is off any arrow. The box
-        // must persist while Shift is held so the pointer can travel off the stroke to reach a
-        // rotate/resize handle without the whole frame vanishing.
-        if (overArrow && shiftHoveredArrowIdRef.current !== overArrow) {
+        // The FIRST arrow Shift-hovered latches the box for the whole Shift hold: crossing
+        // another arrow must not steal it, and leaving every arrow must not clear it. The
+        // pointer has to be able to travel across a crowded canvas — over other arrows
+        // included — to reach this box's rotate/resize handles. Only releasing Shift lets
+        // a different arrow take the box.
+        if (overArrow && shiftHoveredArrowIdRef.current === undefined) {
           setShiftHoveredArrowId(overArrow);
         }
       } else if (shiftHoveredArrowIdRef.current !== undefined) {

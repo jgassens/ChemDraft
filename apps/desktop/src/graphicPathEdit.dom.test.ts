@@ -465,6 +465,50 @@ describe("graphic path direct editing interactions", () => {
     expect(arrowCorners()).toBe(0);
   });
 
+  it("latches the size box to the first arrow while Shift is held, even across other arrows", async () => {
+    // Two arrows. The first one Shift-hovered owns the box; crossing the second must not
+    // steal it — the pointer has to be able to travel over a crowded canvas to reach the
+    // first box's handles. Only a Shift release frees the box for another arrow.
+    let doc = insertNativeArtGraphicObject(
+      createPhase4Document("Latch While Shift"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const firstArrowId = doc.selection.objectIds[0] ?? "";
+    doc = insertNativeArtGraphicObject(doc, { x: 220, y: 320 }, "tool.art.reactionArrow");
+    const secondArrowId = doc.selection.objectIds[0] ?? "";
+    await renderMainWindow(doc, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    const cornersOn = (objectId: string) =>
+      container.querySelectorAll(`[data-object-id="${objectId}"] [data-object-resize-corner]`).length;
+
+    await shiftHover(firstArrowId);
+    expect(cornersOn(firstArrowId)).toBe(4);
+
+    // Shift-held move onto the OTHER arrow: the box stays latched to the first.
+    await act(async () => {
+      dispatchPointer(objectElement(secondArrowId), "pointermove", { x: 260, y: 340 }, 35, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+    expect(cornersOn(firstArrowId)).toBe(4);
+    expect(cornersOn(secondArrowId)).toBe(0);
+
+    // After releasing Shift, a fresh Shift-hover on the second arrow gives IT the box.
+    await releaseShiftForRotationHandles();
+    expect(cornersOn(firstArrowId)).toBe(0);
+    await act(async () => {
+      dispatchPointer(objectElement(secondArrowId), "pointermove", { x: 260, y: 340 }, 36, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+    expect(cornersOn(secondArrowId)).toBe(4);
+    expect(cornersOn(firstArrowId)).toBe(0);
+    await releaseShiftForRotationHandles();
+  });
+
   it("does not raise the size box for a plain line on shift-hover", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Line No Frame"),
