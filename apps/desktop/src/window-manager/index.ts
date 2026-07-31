@@ -1037,6 +1037,43 @@ export async function showPaletteFloatingTooltip(payload: PaletteTooltipPayload)
   await emit(PALETTE_TOOLTIP_SHOW_EVENT, payload);
 }
 
+/** Global-logical bounds of one attached monitor. Mirrors the Rust side's
+ *  monitor_logical_bounds: physical position/size divided by that monitor's own
+ *  scale factor, in the shared global logical coordinate space. */
+export interface MonitorLogicalBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** The logical bounds of the attached monitor containing the given global-logical
+ *  point, or undefined when no monitor contains it (or outside the desktop runtime).
+ *  Used to clamp floating chrome (the palette tooltip window) to the monitor its
+ *  anchor lives on — clamping against `window.screen` pins it to whichever display
+ *  the floating window happened to be on, which is wrong on multi-display setups. */
+export async function monitorLogicalBoundsAt(
+  x: number,
+  y: number
+): Promise<MonitorLogicalBounds | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const { availableMonitors } = await import("@tauri-apps/api/window");
+  const monitors = await availableMonitors().catch(() => []);
+  for (const monitor of monitors) {
+    const scale = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+    const left = monitor.position.x / scale;
+    const top = monitor.position.y / scale;
+    const right = left + monitor.size.width / scale;
+    const bottom = top + monitor.size.height / scale;
+    if (x >= left && x < right && y >= top && y < bottom) {
+      return { left, top, right, bottom };
+    }
+  }
+  return undefined;
+}
+
 export async function hidePaletteFloatingTooltip(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
