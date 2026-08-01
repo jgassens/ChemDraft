@@ -1,6 +1,7 @@
 mod export;
 mod fonts;
 mod installed_plugins;
+mod opsin;
 
 use std::{
     collections::HashMap,
@@ -462,6 +463,8 @@ pub fn run() {
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
             agent_bridge_status,
+            opsin::opsin_status,
+            opsin::opsin_name_to_structure,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
             engine3d_sidecar_send_session,

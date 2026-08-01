@@ -36,6 +36,8 @@ fn main() {
             "tool_palette_state",
             "route_palette_command",
             "toggle_spin3d_debugger_window",
+            "opsin_status",
+            "opsin_name_to_structure",
         ]),
     ))
     .expect("failed to run Tauri build script");

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-opsin-name-to-structure"
+description = "Enables the opsin_name_to_structure command without any pre-configured scope."
+commands.allow = ["opsin_name_to_structure"]
+
+[[permission]]
+identifier = "deny-opsin-name-to-structure"
+description = "Denies the opsin_name_to_structure command without any pre-configured scope."
+commands.deny = ["opsin_name_to_structure"]
