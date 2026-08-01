@@ -745,16 +745,46 @@ an Analyze item ships only when it computes something).
   and if it cannot be loaded the method still appears and declines, because a capability that quietly
   vanishes is worse than one that says it is missing.
 
-  **Two declines, both preferring silence to a confident wrong number.** A charged structure: the
-  envelope is computed from the formula, which carries no electron bookkeeping, so an ion's masses
-  would be wrong by one electron per charge. And an explicitly isotope-labelled structure — measured
-  against IsoSpec's parser rather than assumed, `parse_formula` throws on any non-alphanumeric
-  character and resolves elements by bare symbol, so RDKit's `[13C]CH4O2` cannot be expressed at all.
-  Stripping the label to make it parse would report the natural-abundance envelope of a *different
-  molecule*, which is exactly the failure this branch exists to prevent.
+  **The envelope shipped with two declines; both were cleared on 2026-07-31 and neither by relaxing
+  the rule that produced them.** Each had been stated as a reason rather than a gap, which is what made
+  it possible to go back and answer them.
 
-  The report renders the peaks as a table with the truncation in its title, capped at 40 rendered rows
-  (the result keeps every peak, and a capped table says so). The mass-fragment demo's M/M+1/M+2
+  *Charged structures now compute, as m/z.* IsoSpec's tables carry explicit `electron` and
+  `missing electron` entries beside the 292 isotopic ones, so the correction is arithmetic on the
+  engine's own numbers — no second mass table and no constant in TypeScript, the same rule the adduct
+  masses follow. Each isotopologue loses z electron masses (gains them, for an anion) and is divided by
+  |z|. **Dividing by |z| is the part that is not cosmetic:** at 1+ it is invisible, at 2+ the isotope
+  spacing halves to ~0.4985, which is how a reader gets charge state off a pattern — reporting the
+  ion's mass instead would draw 1.0 spacing and misstate the charge, self-consistently. Verified
+  against RDKit, which does its own electron bookkeeping: acetate 59.013853, `[NH4+]` 18.0338255 — the
+  exact structure §8's mass work used to establish that RDKit's `[H+]` is the proton. The two engines
+  agree to ~1e-8, which is how differently they round AME rather than a disagreement about chemistry.
+  The unit travels on the result (`thomson` against `dalton`), so no renderer infers the axis.
+
+  *Labelled structures now compute too*, through IsoSpec's general `Iso` constructor, which takes
+  isotopes rather than a formula. A labelled atom becomes its own dimension holding one isotope at
+  probability 1; unlabelled atoms of the same element keep their natural-abundance dimension. **That
+  per-position split is the whole point and it is checkable:** acetic acid's M+1 is 2.18% from two
+  carbons, and 1-¹³C acetic acid's is 1.09% — the labelled carbon is ¹³C with certainty and contributes
+  no satellite, the other still does. Dropping the label would say 2.18%; treating the element as
+  labelled would say 0. The two follow-ups compose: a labelled anion computes on the m/z axis with no
+  special case on either side.
+
+  **The artifact was rebuilt for it** (2026-07-31, same `v2.3.5` commit, IsoSpec still unpatched), so
+  the hashes moved and every pin with them. The wrapper validates array lengths, per-dimension
+  normalisation, and probability range *before* constructing anything — IsoSpec walks the flattened
+  arrays by a running sum with no bounds checking, so a short array is an out-of-bounds read inside the
+  WASM heap that returns numbers rather than failing. The unlabelled formula path stays the default
+  because IsoSpec resolves those element names itself and so cannot be narrowed by the symbol table the
+  explicit path needs; a test pins the two routes together to 1e-12, and the in-image smoke test does
+  the same before the artifact can be exported.
+
+  **What still declines is a label naming an isotope the tables do not carry.** RDKit will report a
+  mass for `[99C]` because it just adds mass numbers; there is nothing to convolve, and the alternative
+  is a different molecule.
+
+  The report renders the peaks as a spectrum with the truncation in its title, capped at 40 rendered
+  rows (the result keeps every peak, and a capped table says so). The mass-fragment demo's M/M+1/M+2
   approximation still stands — replacing it is plugin work, not core wiring — and it remains correctly
   labelled ("first-order approx.", "not a full isotopic convolution").
 
@@ -816,20 +846,21 @@ build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 - ✅ Engine-regression fixtures are pinned to RDKit 2026.03.3 and fail on a vendor bump.
 - ✅ The dependency inventory lists every chemistry engine, vendored binary, patch count, and bundled
   dataset, plus the closeout copyleft scan.
-- ✅ `pnpm lint`, `pnpm test` (2210), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
+- ✅ `pnpm lint`, `pnpm test` (2269), `pnpm build`, the plugin boundary test, `cargo fmt --check`, and
   `cargo test` (47) are green.
 
-**Engineering scope is complete; two named follow-ups remain.** The envelope declines for charged and
-for isotope-labelled structures. Both are solvable — an electron-mass shift per charge, and IsoSpec's
-non-formula `Iso` constructor, which *can* take explicit isotope arrays where the formula parser cannot
-— and both are deliberate declines rather than gaps: each states its reason, and neither returns a
-number it cannot defend. And **releases stay blocked on the distribution track**
-(§4): the core licence, the nmrshiftdb2 deadline, and the plugin-distribution rules are the project
-owner's calls, not engineering's.
+**Engineering scope is complete, and the two named follow-ups are done** (2026-07-31). The envelope
+computes for charged structures, on the m/z axis with the electron bookkeeping taken from IsoSpec's own
+table, and for isotope-labelled ones, through the general `Iso` constructor the formula parser could
+not reach. Both are recorded in the Phase 8 entry above. What still declines there is a label naming an
+isotope the tables do not carry — a decline with a stated reason, like the two it replaces.
 
-*(Both items this section previously listed as build-blocked landed 2026-07-30: the MinimalLib rebuild
-carrying patches `0003` and `0006`, and the IsoSpec WASM build — now wired into the run. Neither is
-waiting on Docker any more.)*
+**Releases stay blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline,
+and the plugin-distribution rules are the project owner's calls, not engineering's.
+
+*(Every item this section once listed as build-blocked has landed: the MinimalLib rebuild carrying
+patches `0003` and `0006` and the first IsoSpec build on 2026-07-30, and the IsoSpec rebuild adding the
+explicit-isotope entry point on 2026-07-31. Nothing is waiting on Docker.)*
 
 ## Open items owned by the project owner
 

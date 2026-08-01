@@ -491,14 +491,25 @@ Allowed:
 - `explicitFormulaCounts` — IsoSpec demands `H2O1`, never `H2O`, and RDKit's Hill formula is the
   latter, so the expansion belongs at this boundary
 - Converting an envelope to `Float64Array` for the §5 worker transport
+- Flattening `IsoSpecDimension[]` for the explicit-isotope entry point, and the lookups that address
+  the shipped table by symbol (`isotopesOf`, `isotopeMass`, `electronMass`,
+  `ELEMENT_NAMES_BY_SYMBOL`). The map holds **names only** — no masses and no abundances — because the
+  table names elements in full and RDKit writes symbols; a test asserts every entry resolves against
+  the binary. Values still come from `isotope_table()`, which is what keeps this on the right side of
+  the rule below.
 
 Not allowed:
 
 - **Patching IsoSpec.** It is vendored unpatched and should stay that way; the patch budget §7 tracks
-  is a real maintenance cost and nothing here has needed one.
+  is a real maintenance cost and nothing here has needed one. Our own Embind wrapper is not a patch,
+  and may grow when IsoSpec exposes something its formula API cannot reach — as
+  `envelope_from_threshold_isotopes` does for site-specific labels. A wrapper addition that takes raw
+  arrays must validate lengths and normalisation itself: IsoSpec does no bounds checking, so a short
+  array reads past the end of the WASM heap and returns numbers instead of failing.
 - Re-declaring the abundance table in TypeScript. Read it from the binary with `isotope_table()` —
   IsoSpec records no provenance for it upstream, so "what the shipped engine used" is the only claim
-  that can be defended, and a duplicated copy could disagree with the artifact.
+  that can be defended, and a duplicated copy could disagree with the artifact. This covers the
+  electron mass too: it is a table entry, not a physical constant to type in.
 - Method contracts, classification, or building `DistributionResult`. Those live with the analysis
   wiring, which is `packages/rdkit-adapter/src/envelope.ts` — and that placement is forced rather than
   arbitrary: the envelope needs RDKit's composition *and* IsoSpec's distribution, so neither adapter
