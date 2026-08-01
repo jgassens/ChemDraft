@@ -110,6 +110,7 @@ import {
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
+  doubleBondRendersSymmetric,
   ringInteriorDoubleBondSides,
   type LayoutPoint
 } from "@chemdraft/layout-engine";
@@ -801,26 +802,6 @@ export function normalizeNativeAtomElementLabel(value: string): string {
 export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
   const normalized = normalizeNativeAtomElementLabel(value);
   return nativeElementSymbolSet.has(normalized) ? normalized as NativeElementSymbol : undefined;
-}
-
-export function nativeAtomDisplayLabel(
-  atom: MoleculeAtom,
-  bonds: readonly MoleculeBond[]
-): string | undefined {
-  const element = nativeElementFromAtomLabel(atom.element);
-  if (!element) {
-    const symbol = atom.element.trim() || "C";
-    return `${symbol}${atomChargeLabelSuffix(atom.formalCharge)}`;
-  }
-  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
-  const implicitHydrogenCount = nativeImplicitHydrogenCount(element, valenceUsed);
-  const formalCharge = atom.formalCharge;
-
-  if (element === "C" && valenceUsed > 0 && formalCharge === 0 && atom.labelVisible !== true) {
-    return undefined;
-  }
-
-  return `${element}${implicitHydrogenLabelSuffix(implicitHydrogenCount)}${atomChargeLabelSuffix(formalCharge)}`;
 }
 
 export function nativeAtomValidationState(
@@ -12885,10 +12866,23 @@ export function flattenSpunMolecule(
   // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
   // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
+  const ringInteriorSides = ringInteriorDoubleBondSides(sideMolecule);
   const nextBonds = projectedBonds.map((bond, bondIndex) => {
     const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
     if (bond.order === "double") {
-      display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+      // Baking a side unconditionally broke "releasing changes nothing visually": a bond that
+      // renders as the symmetric straddle has no side, and writing one turned it one-sided the
+      // instant the spin was committed. An explicit side is itself one of the conditions that
+      // suppresses the straddle, so only bonds that really draw with a side get one.
+      const fromAtom = nextAtoms.find((atom) => atom.id === bond.fromAtomId);
+      const toAtom = nextAtoms.find((atom) => atom.id === bond.toAtomId);
+      const symmetric = fromAtom !== undefined && toAtom !== undefined &&
+        doubleBondRendersSymmetric(fromAtom, toAtom, sideMolecule, bond, ringInteriorSides.get(bond.id));
+      if (symmetric) {
+        delete display.doubleBondSide;
+      } else {
+        display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+      }
     }
     const depthWeight = depthWeightFor(bondIndex);
     if (depthWeight !== undefined) display.depthWeight = depthWeight;
@@ -15501,14 +15495,6 @@ function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): 
   return nativeElementFromAtomLabel(atom.element) === undefined
     ? 0
     : Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
-}
-
-function implicitHydrogenLabelSuffix(count: number): string {
-  if (count <= 0) {
-    return "";
-  }
-
-  return count === 1 ? "H" : `H${count}`;
 }
 
 function atomChargeLabelSuffix(charge: number): string {

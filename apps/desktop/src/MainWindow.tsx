@@ -124,6 +124,9 @@ import {
   depthCuedBondStrokeWidth,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  doubleBondMinimumVisibleSegmentPx,
+  doubleBondRendersSymmetric,
+  ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
   nativeMoleculeRings,
@@ -395,7 +398,6 @@ import {
   nativePolylinePathDocument,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
-  nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
   nativeChargeAssociationsForMolecule,
   nativeChargeByAtomIdFromAssociations,
@@ -1270,7 +1272,6 @@ const INTERACTIVE_3D_POST_OPEN_POLL_COUNT = 8;
 const INTERACTIVE_3D_POST_OPEN_POLL_MS = 90;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
-const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
 const rasterExportFormatsByFormatId: Partial<Record<ExportFormatId, NativeRasterExportFormat>> = {
   png: "png",
@@ -1296,7 +1297,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "8.1.8.48-fable";
+const CURRENT_BUILD_STAMP = "8.1.8.49-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3445,6 +3446,9 @@ export function MainWindow({
     // to the PROJECTED ring interior each frame (matching the 2D drawing and the flatten),
     // instead of the substituent-count heuristic that flips outward on substituted rings.
     const ringAtomIdsByBond = smallestRingAtomIdsByBondId(molecule);
+    // Same per-molecule ring-interior map the committed drawing uses, so the symmetric decision
+    // below is answered from identical inputs.
+    const ringInteriorSides = ringInteriorDoubleBondSides(molecule);
     const bondPairs: [number, number][] = [];
     const bondRender: SpinBondRenderInfo[] = [];
     for (const bond of molecule.bonds) {
@@ -3468,8 +3472,11 @@ export function MainWindow({
         // keeps the spin overlay identical to the drawing it replaces (and to the flatten).
         order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
         bold: bond.display?.bondStyle === "bold",
+        // Ask the layout engine the same question the committed drawing asks. Testing only
+        // `isTerminalHeteroatomDoubleBond` used the last of four clauses, so an aldehyde or amide
+        // C=O with a derivable inner side drew one-sided on canvas but symmetric while spinning.
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
-          isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
+          doubleBondRendersSymmetric(fromAtom, toAtom, molecule, bond, ringInteriorSides.get(bond.id)),
         neighborIndices,
         ringAtomIndices
       });
@@ -18244,7 +18251,7 @@ function SpinOverlay({
             }
           }
           const dir = score >= 0 ? 1 : -1;
-          const minimumVisible = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, length);
+          const minimumVisible = Math.min(doubleBondMinimumVisibleSegmentPx, length);
           const inset = Math.min(drawingStyle.doubleBondInsetPx, Math.max(0, (length - minimumVisible) / 2));
           return [
             line(ax, ay, bx, by, "p"),

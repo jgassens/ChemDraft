@@ -141,6 +141,8 @@ interface CdxmlCrossingImportHint {
 }
 
 interface ImportPageContext {
+  /** Import warnings for this page, so object importers can report an approximation in place. */
+  warnings: CompatibilityConversionWarning[];
   bondRefsByCdxmlId: Map<string, BondRef>;
   zByRefKey: Map<string, number>;
   displayByRefKey: Map<string, string>;
@@ -1356,6 +1358,7 @@ function importPageObjects(
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
   const objects: DocumentObject[] = [];
   const context: ImportPageContext = {
+    warnings,
     bondRefsByCdxmlId: new Map(),
     zByRefKey: new Map(),
     displayByRefKey: new Map(),
@@ -2042,6 +2045,13 @@ function importGraphic(
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
+    // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it
+    // onto a full reaction arrow asserted different chemistry, and a re-export then laundered it to
+    // ArrowType="FullHead" with nothing said. Native fishhooks are one-sided but not
+    // left/right-handed, so this is an approximation and is reported as one.
+    if (normalizedCdxmlToken(element.attributes.ArrowType) === "halfhead") {
+      return importHalfHeadArrowAsFishhook(element, pageIndex, objectIndex, context);
+    }
     const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType);
     // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
     // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
@@ -2115,6 +2125,34 @@ function importReactionArrowAsArtArrow(
       ...(equilibrium ? { dualShaft: true, dualShaftGapPx: 7 } : {}),
       ...(retro ? { dualShaft: true, dualShaftParallel: true, dualShaftGapPx: 5 } : {}),
       artToolId
+    }
+  };
+}
+
+/** Import `ArrowType="HalfHead"` as a native fishhook: a `half-arrow` head on the fishhook tool,
+ *  which is the honest representation of a one-electron arrow. It is deliberately NOT tagged as a
+ *  semantic reaction arrow — that tagging is what made a re-export write `ArrowType="FullHead"`. */
+function importHalfHeadArrowAsFishhook(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext
+): GraphicObject {
+  const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
+  context.warnings.push(
+    warning(
+      "cdxml.half_head_arrow_import_approximation",
+      "A half-headed (fishhook) arrow was imported as ChemDraft's fishhook arrow. Its single-barb chemistry is preserved, but the barb's left/right handedness is not, and re-exporting writes it as a plain line rather than ArrowType=\"HalfHead\"."
+    )
+  );
+  return {
+    ...graphic,
+    graphicKind: "path",
+    data: {
+      ...graphic.data,
+      artPathKind: "line",
+      markerEnd: { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx },
+      artToolId: "fishhookArrow"
     }
   };
 }

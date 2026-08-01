@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
+import { atomDisplayLabel } from "@chemdraft/layout-engine";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   applyPatch,
@@ -147,7 +148,6 @@ import {
   insertNativeTemplateMolecule,
   getSelectedTextObject,
   nativeAtomHitRadiusPx,
-  nativeAtomDisplayLabel,
   nativeBondLengthPx,
   nativeChargeAssociationRadiusPx,
   nativeChargeAssociationsForMolecule,
@@ -4002,14 +4002,14 @@ describe("Phase 4 document workflow", () => {
     }
 
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
-    expect(nativeAtomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
+    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
   it("labels isolated neutral common atoms with implicit hydrogens", () => {
-    expect(nativeAtomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
-    expect(nativeAtomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
-    expect(nativeAtomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("OH2");
+    expect(atomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
+    expect(atomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
+    expect(atomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("OH2");
   });
 
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
@@ -4292,10 +4292,10 @@ describe("Phase 4 document workflow", () => {
     const yMolecule = selectedMolecule(yGeneric);
 
     expect(labeled.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Cl" });
-    expect(nativeAtomDisplayLabel(labeled.atoms[0], labeled.bonds)).toBe("Cl");
+    expect(atomDisplayLabel(labeled.atoms[0], labeled.bonds)).toBe("Cl");
     expect(nativeMoleculeInvalidAtomStates(labeled)).toEqual([]);
     expect(genericMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
-    expect(nativeAtomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds)).toBe("Xx");
+    expect(atomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds)).toBe("Xx");
     expect(nativeMoleculeInvalidAtomStates(genericMolecule)).toEqual([]);
     expect(yMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Y" });
     expect(nativeMoleculeInvalidAtomStates(yMolecule)).toEqual([]);
@@ -8319,7 +8319,7 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.bonds).toEqual([]);
     expect(molecule.structure).toBe("C.C.C.C");
     expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
-    expect(molecule.atoms.map((atom) => nativeAtomDisplayLabel(atom, molecule.bonds))).toEqual([
+    expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
       "CH4",
       "CH4",
       "CH4",
@@ -8348,7 +8348,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(hypervalentMolecule)).toMatchObject([
       { atomId: "atom_001", element: "N", valenceUsed: 4, formalCharge: 0, expectedFormalCharge: 1, valid: false }
     ]);
-    expect(nativeAtomDisplayLabel(nitrogen!, hypervalentMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(nitrogen!, hypervalentMolecule.bonds)).toBe("N");
 
     const neutralAmine = applyNativeMoleculeDeleteTarget(neutralHypervalent, {
       objectId: hypervalentMolecule.id,
@@ -8361,7 +8361,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(neutralNitrogen).toMatchObject({ element: "N", formalCharge: 0 });
     expect(neutralMolecule.chemistry).toMatchObject({ formula: "C3H9N", totalCharge: 0 });
-    expect(nativeAtomDisplayLabel(neutralNitrogen!, neutralMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(neutralNitrogen!, neutralMolecule.bonds)).toBe("N");
     expect(neutralMolecule.atoms.find((atom) => atom.id === "atom_002")).toBeUndefined();
   });
 

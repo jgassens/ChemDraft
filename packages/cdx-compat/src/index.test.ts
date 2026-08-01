@@ -1103,6 +1103,29 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     }
   });
 
+  it("imports a half-headed arrow as a fishhook, and says so", () => {
+    // A single-barbed arrow moves ONE electron; a full head moves two. Importing HalfHead as a
+    // reaction arrow asserted the wrong chemistry, and a re-export then wrote ArrowType="FullHead"
+    // — laundering it with nothing said. The native fishhook head is the honest mapping, and the
+    // handedness that native fishhooks do not carry is reported rather than silently dropped.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="Half Head Import Test">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <graphic id="a1" GraphicType="Line" ArrowType="HalfHead" BoundingBox="120 120 216 120" Start="120 120" End="216 120"/>
+  </page>
+</CDXML>`);
+    const arrow = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+
+    expect(arrow?.data.artToolId).toBe("fishhookArrow");
+    expect(arrow?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
+    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.half_head_arrow_import_approximation");
+
+    // And it must not be re-emitted as a full-headed reaction arrow.
+    const exported = exportDocumentToCdxml(opened.document!);
+    expect(exported.contents).not.toContain('ArrowType="FullHead"');
+  });
+
   it("reads a ChemDraw <arrow> frame consistently with its unambiguous 3D endpoints", () => {
     // Head3D/Tail3D are "x y z" in every CDX dialect, so they pin the arrow's true direction with
     // no convention to argue about. A real ChemDraw 26 document was inspected to settle this: its
@@ -1293,7 +1316,9 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     };
 
     expect(foreign("FullHead")).toBe("forward");
-    expect(foreign("HalfHead")).toBe("forward");
+    // HalfHead is a single-barbed fishhook — one electron, not two — so it deliberately does NOT
+    // land on "forward" any more. It has its own assertion below.
+    expect(foreign("HalfHead")).toBeUndefined();
     expect(foreign("Resonance")).toBe("resonance");
     expect(foreign("Equilibrium")).toBe("equilibrium");
     expect(foreign("RetroSynthetic")).toBe("retrosynthesis");

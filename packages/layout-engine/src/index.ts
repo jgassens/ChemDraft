@@ -886,7 +886,9 @@ interface BondCrossingGap {
   clearancePx: number;
 }
 
-const doubleBondMinimumVisibleSegmentPx = 13;
+/** Shortest secondary line a double bond may draw before the inset stops shrinking it. Exported
+ *  because the Spin-3D overlay applies the same inset and had its own copy of the number. */
+export const doubleBondMinimumVisibleSegmentPx = 13;
 const crossingIntersectionEpsilon = 0.000001;
 const crossingEndpointEpsilon = 0.0001;
 const crossingHitRadiusPx = 10;
@@ -5502,6 +5504,32 @@ function nativeSegmentVectorGeometry(
     unit,
     normal: { x: -unit.y, y: unit.x }
   };
+}
+
+/**
+ * Whether a double bond renders as the symmetric ±gap/2 straddle rather than a primary line with an
+ * offset secondary. This is the exact condition `bondLineSegments` applies, exported so the Spin-3D
+ * overlay can ask instead of approximating it — the overlay used `isTerminalHeteroatomDoubleBond`
+ * alone, which is only the LAST of four clauses, so every aldehyde, amide, and exocyclic C=O with a
+ * derivable inner side drew one-sided on canvas and symmetric in the live overlay (§5.26/§5.27).
+ *
+ * `ringInteriorSide` comes from {@link ringInteriorDoubleBondSides}, which is computed once per
+ * molecule; pass the entry for this bond.
+ */
+export function doubleBondRendersSymmetric(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond,
+  ringInteriorSide: DoubleBondSide | undefined
+): boolean {
+  return (
+    bond.order === "double" &&
+    bond.display?.doubleBondSide === undefined &&
+    ringInteriorSide === undefined &&
+    terminalHeteroatomDoubleBondInnerSide(fromAtom, toAtom, object, bond) === undefined &&
+    isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
+  );
 }
 
 export function isTerminalHeteroatomDoubleBond(
