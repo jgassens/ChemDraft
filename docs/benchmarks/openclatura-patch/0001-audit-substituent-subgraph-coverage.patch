@@ -1,0 +1,235 @@
+From 27806448880b5be80171fa35c431fb9e70b4897d Mon Sep 17 00:00:00 2001
+From: "Jeremiah J. Gassensmith" <jgassens@gmail.com>
+Date: Sat, 1 Aug 2026 16:18:23 -0500
+Subject: [PATCH] Audit substituent subgraph coverage so unnameable branches
+ decline
+
+A fragment the namer cannot express is currently dropped from the generated name
+while its atoms are still counted as named, producing a confident,
+OPSIN-parseable name for a smaller molecule:
+
+    NC(=O)CNc1ccc([As](=O)(O)O)cc1  ->  "2-(phenylamino)acetamide"
+
+The whole -As(=O)(O)O group is gone, and no error is reported. The same arsonic
+acid as a PARENT already declines correctly with
+
+    UnnamedAtomError: Generated name '<component>' left unnamed atoms: 6:As, ...
+
+so the engine already knows it cannot name it. The check simply never runs at the
+substituent level: assert_component_fully_named is called once, in
+component_namer, and name_subgraph never calls it. namer.py then records
+SubstituentItem(atom_ids=branch_atoms), claiming every atom in the branch
+regardless of what the branch name covered, so the component-level audit is
+satisfied by an over-claiming binding.
+
+This applies the existing rule one level deeper. The shortcut paths
+(heteroatom-subgraph renderer, direct functional prefix) need no check because
+each matches the complete component by construction.
+
+Coverage is computed from the atom_ids the parts already carry, mirroring
+name_assembly._consumed_bond_ids, rather than through refresh_name_atom_bindings.
+That matters: the audit runs on every branch of every molecule, and rebuilding
+bindings measured ~45% slower over 5k structures (101 -> 56 structures/s), while
+reading the existing sets costs nothing measurable (94.8 -> 95.3/s).
+
+Measured on 4,999 NCI structures (rdkit Data/NCI/first_5K.smi), scoring by
+round-tripping each generated name back through OPSIN 2.9.0:
+
+                     before   after
+    round-trip         4724    4724     <- unchanged, no correct name lost
+    declined            204     210
+    misnamed             36      30
+    name-unparseable     27      27
+    error                 8       8
+
+All six that moved are arsenic-as-substituent cases; nothing else changed. The
+remaining 30 misnamings are separate causes (mostly same-formula connectivity
+differences) and are untouched here.
+
+The same silent-omission shape also affects isotope labels ([13CH3]C(=O)O ->
+"acetic acid") and radicals (TEMPO -> "1-hydroxy-2,2,6,6-tetramethylpiperidine").
+Those are not fixed by this change, since they are dropped elsewhere, but they
+are the same class of failure and worth tracking.
+
+Tests: five related arsenic substituent cases from the same family, unit tests
+for the new audit in both directions, and a guard that ordinary names are
+unaffected.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/openclatura/namer.py               | 14 ++++++
+ src/openclatura/naming_audit.py        | 40 +++++++++++++++++
+ src/openclatura/tests/test_analysis.py | 60 +++++++++++++++++++++++++-
+ 3 files changed, 113 insertions(+), 1 deletion(-)
+
+diff --git a/src/openclatura/namer.py b/src/openclatura/namer.py
+index 1a6c604..61e915d 100644
+--- a/src/openclatura/namer.py
++++ b/src/openclatura/namer.py
+@@ -23,6 +23,7 @@ from .heteroatom_subgraphs import name_heteroatom_subgraph
+ from .ionic_naming import apply_anionic_parent_names, apply_cationic_imino_names, apply_cationic_imino_parent_prefixes
+ from .molecule import DecisionTrace, Molecule, NameAnalysis, TracePhase
+ from .name_assembly import NameAssemblyResult, token_span_trace_data
++from .naming_audit import assert_subgraph_fully_named
+ from .naming_context import NamingIntent
+ from .nomenclature import RULES
+ from .parent_pipeline import build_parent_assembly_plan, resolve_retained_parent
+@@ -1425,6 +1426,19 @@ def name_subgraph(
+         parent_selection.is_polycycle,
+     )
+ 
++    # A substituent must account for its whole subgraph, exactly as a component must.
++    #
++    # Without this, a branch containing a feature the namer cannot express is rendered without it,
++    # while `SubstituentItem.atom_ids` still claims every atom in the branch -- so the component-level
++    # `assert_component_fully_named` is satisfied by an over-claiming binding and the omission passes
++    # unnoticed. The result is a well-formed, OPSIN-parseable name for a smaller molecule, e.g.
++    # NC(=O)CNc1ccc([As](=O)(O)O)cc1 -> "2-(phenylamino)acetamide". The same arsonic acid as a PARENT
++    # already raises UnnamedAtomError, so this applies one existing rule one level deeper.
++    #
++    # The shortcut paths above (heteroatom-subgraph renderer, direct functional prefix) need no check:
++    # each matches the complete component by construction.
++    assert_subgraph_fully_named(mol, set(component), parts)
++
+     rendered_name = _assemble_parent_name(
+         mol,
+         parts,
+diff --git a/src/openclatura/naming_audit.py b/src/openclatura/naming_audit.py
+index 4215f4e..385b30a 100644
+--- a/src/openclatura/naming_audit.py
++++ b/src/openclatura/naming_audit.py
+@@ -50,6 +50,46 @@ def component_named_atom_coverage(mol: Molecule, component_atoms: set[int], part
+     )
+ 
+ 
++def consumed_atom_ids(parts: AssemblyParts) -> set[int]:
++    """Return the atoms the assembled parts account for, without rebuilding name bindings.
++
++    The mirror of ``name_assembly._consumed_bond_ids``. Reading the ``atom_ids`` already carried by
++    each part is enough to tell whether a fragment was left out, and costs nothing next to
++    ``refresh_name_atom_bindings`` -- which matters because the substituent audit runs on every branch
++    of every molecule, where rebuilding bindings measured ~45% slower over 5k structures.
++    """
++
++    atoms: set[int] = set(parts.parent_atom_ids)
++    atoms.update(parts.front_modifier_atom_ids)
++    for group in (
++        parts.principal_suffix_modifiers,
++        parts.a_prefixes,
++        parts.substituents,
++        parts.unsaturations,
++    ):
++        for item in group:
++            atoms.update(item.atom_ids)
++    if parts.principal_group is not None:
++        atoms.update(parts.principal_group.atom_ids)
++    return atoms
++
++
++def assert_subgraph_fully_named(mol: Molecule, component_atoms: set[int], parts: AssemblyParts) -> None:
++    """Raise if a substituent's assembled parts do not account for its whole subgraph.
++
++    A substituent must cover its own atoms for the same reason a component must: a branch containing a
++    feature the namer cannot express is otherwise rendered without it, while the ``SubstituentItem``
++    built from it still claims every atom in the branch -- which satisfies the component-level audit
++    with an over-claiming binding and lets the omission through silently.
++    """
++
++    explicit = {idx for idx in component_atoms if mol.atoms[idx].symbol != "H"}
++    unnamed = explicit - consumed_atom_ids(parts)
++    if unnamed:
++        details = ", ".join(f"{idx}:{mol.atoms[idx].symbol}" for idx in sorted(unnamed))
++        raise UnnamedAtomError(f"Generated substituent name left unnamed atoms: {details}")
++
++
+ def assert_component_fully_named(mol: Molecule, component_atoms: set[int], parts: AssemblyParts, name: str) -> None:
+     """Raise if a generated component name did not consume all graph atoms."""
+ 
+diff --git a/src/openclatura/tests/test_analysis.py b/src/openclatura/tests/test_analysis.py
+index 469a861..1da0c98 100644
+--- a/src/openclatura/tests/test_analysis.py
++++ b/src/openclatura/tests/test_analysis.py
+@@ -2,6 +2,7 @@ import pytest
+ 
+ import openclatura.rules.retained as retained_rules
+ from openclatura import (
++    DEFAULT_NAMING_ENGINE,
+     RULES,
+     NamingEngine,
+     NamingIntent,
+@@ -102,7 +103,12 @@ from openclatura.namer import (
+     name_component,
+     name_subgraph,
+ )
+-from openclatura.naming_audit import UnnamedAtomError, assert_component_fully_named, audit_charge_pair_templates
++from openclatura.naming_audit import (
++    UnnamedAtomError,
++    assert_component_fully_named,
++    assert_subgraph_fully_named,
++    audit_charge_pair_templates,
++)
+ from openclatura.naming_data import DATA_DIR, load_json_table, namer_rules
+ from openclatura.nitrogen_roles import (
+     acid_derived_hydrazone_roles,
+@@ -443,6 +449,58 @@ def test_component_coverage_audit_rejects_unnamed_atoms():
+         assert_component_fully_named(mol, {0, 1}, parts, "methane")
+ 
+ 
++@pytest.mark.parametrize(
++    "smiles",
++    [
++        # An arsonic acid group on a substituent ring. Before the subgraph audit these produced
++        # confident, OPSIN-parseable names for the molecule MINUS the arsenic, e.g.
++        # "2-(phenylamino)acetamide" for the first entry.
++        "NC(=O)CNc1ccc([As](=O)(O)O)cc1",
++        "CC(=O)Nc1cc([As](=O)(O)O)ccc1O",
++        "O=S(=O)(O)c1ccc(-c2ccc([As](=O)(O)O)cc2)cc1",
++        "CN(C)c1ccc(N=Nc2ccc([As](=O)(O)O)cc2)cc1",
++        "NC(=O)CNCc1ccc([As]=O)cc1",
++    ],
++)
++def test_unnameable_substituent_declines_instead_of_dropping_atoms(smiles):
++    """A fragment the namer cannot express must not be silently omitted from the name.
++
++    The same arsonic acid as a PARENT already declined; only the substituent path let it through,
++    because the SubstituentItem claimed every atom in the branch regardless of what its name covered.
++    """
++
++    result = DEFAULT_NAMING_ENGINE.run(NamingRequest(smiles=smiles))
++    assert result.name == ""
++    assert "UnnamedAtomError" in (result.error or "")
++
++
++def test_subgraph_coverage_audit_rejects_unnamed_branch_atoms():
++    mol = Molecule()
++    mol.add_atom("C", 0)
++    mol.add_atom("O", 1)
++    parts = AssemblyParts(parent_length=1, parent_atom_ids={0})
++
++    with pytest.raises(UnnamedAtomError):
++        assert_subgraph_fully_named(mol, {0, 1}, parts)
++
++
++def test_subgraph_coverage_audit_accepts_a_fully_named_branch():
++    mol = Molecule()
++    mol.add_atom("C", 0)
++    mol.add_atom("C", 1)
++    parts = AssemblyParts(parent_length=2, parent_atom_ids={0, 1})
++
++    assert_subgraph_fully_named(mol, {0, 1}, parts)
++
++
++def test_substituent_audit_leaves_ordinary_names_alone():
++    """The audit must not cost coverage: these all name normally and must keep doing so."""
++
++    assert name_smiles("CC(=O)Oc1ccccc1C(=O)O") == "2-(acetoxy)benzoic acid"
++    assert name_smiles("c1ccccc1") == "benzene"
++    assert name_smiles("CCO") == "ethanol"
++
++
+ def test_typed_shortcut_results_return_none_on_out_of_component_neighbors():
+     phosphinic = Molecule()
+     phosphinic.add_atom("P", 0, explicit_h_count=1)
+-- 
+2.50.1 (Apple Git-155)
+

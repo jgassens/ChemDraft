@@ -6,6 +6,28 @@ cause, OPSIN output, and several related examples from the same family.
 
 **Not yet submitted** — posting to a third-party repository needs the project owner's go-ahead.
 
+**A working patch exists**, written and validated against `origin/tests` (the branch CONTRIBUTING asks
+PRs to target): `openclatura-patch/0001-audit-substituent-subgraph-coverage.patch`. Measured on that
+base over 4,999 NCI structures:
+
+| | before | after |
+|---|---:|---:|
+| round-trip | 4724 | **4724** — no correct name lost |
+| declined | 204 | 210 |
+| misnamed | 36 | **30** |
+
+All six that moved are the arsenic-as-substituent cases; nothing else changed. Their own suite passes
+(2451 tests on the `tests` branch), `ruff check` and `ruff format --check` are clean, and there is no
+measurable speed cost (94.8 → 95.3 structures/s).
+
+Applying it:
+
+```bash
+git clone https://github.com/lamalab-org/openclatura.git && cd openclatura
+git checkout tests
+git am < .../openclatura-patch/0001-audit-substituent-subgraph-coverage.patch
+```
+
 ---
 
 ## Summary
