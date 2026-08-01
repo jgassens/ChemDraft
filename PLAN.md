@@ -474,9 +474,11 @@ chemdraft/
     plugins/
       mass-fragment-demo/     Real: mass analysis over the host's IsoSpec engine (chemistry.compute)
       molscribe-ocsr/         Real: image-to-structure runtime canary
-      opsin-name-to-structure/  PLACEHOLDER — README only, nothing implemented
       advanced-style-pack/      PLACEHOLDER — README only, nothing implemented
       journal-style-pack/       PLACEHOLDER — README only, nothing implemented
+
+  (name→structure and the NMR predictor are first-party plugins in their own
+   repositories, installed as packages rather than bundled — see PLANS.md §8)
 
   docs/
     architecture/

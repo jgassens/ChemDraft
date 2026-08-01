@@ -445,14 +445,27 @@ OPSIN round-trip is a **structural-equivalence test**, not evidence of preferred
 OpenClatura's own verification runs through `py2opsin`, which shells out to Java, so a ported path
 carries the JVM question separately. **Publication-grade preferred IUPAC naming stays a gap.**
 
-**And so does the opposite direction, which this file previously implied was covered.**
-`examples/plugins/opsin-name-to-structure` is a **placeholder — one README, whose own first line says
-OPSIN "is not installed or integrated"**. There is no package, no source, no manifest, and no command;
-nothing in the app can turn a name into a structure. The same is true of `advanced-style-pack` and
-`journal-style-pack`. Only `mass-fragment-demo` and `molscribe-ocsr` are real plugins, and only those
-two are registered in `registerBundledPlugins.ts`. A placeholder directory named after a capability
-reads exactly like that capability existing, which is the failure mode this branch's whole discipline
-is against — so it is named here rather than left to be discovered.
+**The opposite direction is now built** (2026-08-01), after this file spent some time implying it
+already was. `examples/plugins/opsin-name-to-structure` had been a **placeholder — one README, whose
+own first line said OPSIN "is not installed or integrated"** — and that directory is gone, because the
+plugin is real and lives in its own repository (`~/programming/chemdraft-opsin-plugin`), the same shape
+as the NMR predictor.
+
+**OPSIN 2.9.0 (MIT) is vendored by the host, not the plugin**, with a `jlink`ed Java runtime, because
+there is no JavaScript or WebAssembly port of OPSIN anywhere and macOS ships no JRE. The engine runs in
+Rust; the plugin reaches it through `chemistry.compute`, so there is one OPSIN in the product and no way
+for a plugin to ship a second, worse name parser beside it. Details in
+`apps/desktop/src-tauri/resources/opsin/BUILD.md`.
+
+**It reports a structure; it does not draw one.** `proposePatch` takes a fully-formed object with 2D
+coordinates, and laying a molecule out is the drawing application's job — so the plugin returns SMILES
+and says so plainly rather than half-inserting something. Insertion needs a host structure-from-SMILES
+capability, which is a host change and not this plugin's to make.
+
+`advanced-style-pack` and `journal-style-pack` are still placeholders, and only `mass-fragment-demo` and
+`molscribe-ocsr` are registered in `registerBundledPlugins.ts`. A directory named after a capability
+reads exactly like that capability existing, so `tools/plugin-extract/examplePlugins.test.ts` now
+requires every one to be either a real plugin or a self-declared placeholder.
 
 ### Other genuine gaps
 
