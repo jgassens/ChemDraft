@@ -9362,7 +9362,10 @@ export function MainWindow({
 
   const nativePlacementDocumentFromDrag = useCallback((
     drag: NativePlacementDragState,
-    point: ClientPoint
+    point: ClientPoint,
+    // Preview frames may skip derivation work; the COMMIT must not. This function serves both, so
+    // the distinction has to be passed in rather than hardcoded per branch.
+    options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
     if (drag.kind === "arrow") {
       // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
@@ -9377,8 +9380,13 @@ export function MainWindow({
       // Chains regenerate from the start document each move: the drag vector sets axis and
       // segment count, so the whole zig-zag is recomputed rather than transformed.
       // `preview`: the frames the user drags through are drawn from atoms and bonds, so the
-      // whole-molecule SMILES derivation is pure cost until the gesture commits.
-      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, { preview: true });
+      // whole-molecule SMILES derivation is pure cost until the gesture commits. The commit runs
+      // WITHOUT the flag so `structure`/`chemistry` are re-derived once — hardcoding it here meant a
+      // dragged chain committed with the pre-drag SMILES, and any later editor round-trip or SMILES
+      // export silently dropped the appended chain.
+      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
+        preview: options.preview
+      });
     }
     return rotateNativeMoleculeObjectAroundPoint(
       drag.placementDocument,
@@ -9395,7 +9403,7 @@ export function MainWindow({
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint): boolean => {
     const placed = drag.dragging
-      ? nativePlacementDocumentFromDrag(drag, point)
+      ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
     if (placed === drag.startDocument) {
       replacePresentDocument(drag.startDocument);

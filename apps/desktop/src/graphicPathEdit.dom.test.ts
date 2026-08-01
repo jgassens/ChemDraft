@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MainWindow, type MainWindowProps } from "./MainWindow";
 import {
   applyNativeArtLineToolAtPoint,
+  applyNativeTemplateToolAtPoint,
   createPhase4Document,
   insertNativeArtGraphicObject,
   nativeGraphicPathEditPoints,
@@ -2009,6 +2010,55 @@ describe("graphic path direct editing interactions", () => {
     expect(after.object.y - before.object.y).toBeCloseTo(40, 0);
     // Moved the existing arrow rather than drawing an extra one on top of it.
     expect(renderedArrowCount()).toBe(arrowsBefore);
+  });
+
+  it("commits a dragged chain with its structure re-derived, not the pre-drag SMILES", async () => {
+    // Preview frames deliberately skip the whole-molecule SMILES/chemistry derivation; the COMMIT
+    // must not. The chain branch hardcoded the preview flag for both, so a chain dragged off an
+    // existing atom committed with the pre-drag `structure` — invisible on canvas, but any editor
+    // round-trip or SMILES export afterwards silently dropped the appended chain.
+    const seeded = applyNativeTemplateToolAtPoint(
+      createPhase4Document("Chain Drag Commit"),
+      { x: 200, y: 260 },
+      "benzene"
+    );
+    const moleculeId = seeded.selection.objectIds[0] ?? "";
+    const molecule = seeded.pages[0].objects.find((object) => object.id === moleculeId);
+    if (!molecule || molecule.type !== "molecule") {
+      throw new Error("Expected a seeded molecule.");
+    }
+    const anchorAtom = molecule.atoms[0];
+    const structureBefore = molecule.structure;
+    const atomsBefore = molecule.atoms.length;
+
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.chain" });
+
+    // Press on the anchor atom and drag away to grow a chain.
+    await act(async () => {
+      dispatchPointer(objectElement(moleculeId), "pointerdown", { x: anchorAtom.x, y: anchorAtom.y }, 51);
+    });
+    for (let step = 1; step <= 4; step += 1) {
+      await act(async () => {
+        dispatchPointer(pageElement(), "pointermove", { x: anchorAtom.x + step * 26, y: anchorAtom.y - step * 12 }, 51);
+      });
+    }
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: anchorAtom.x + 104, y: anchorAtom.y - 48 }, 51);
+    });
+
+    const bridge = window.__CHEMDRAFT_AGENT__;
+    if (!bridge) {
+      throw new Error("Expected agent bridge.");
+    }
+    const committed = bridge.snapshot().document.pages[0].objects.find((object) => object.id === moleculeId);
+    if (!committed || committed.type !== "molecule") {
+      throw new Error("Expected the molecule after the drag.");
+    }
+
+    // The graph actually grew...
+    expect(committed.atoms.length).toBeGreaterThan(atomsBefore);
+    // ...and the derived structure grew with it, rather than staying at the pre-drag SMILES.
+    expect(committed.structure).not.toBe(structureBefore);
   });
 
   it("deletes the hovered arrow on Delete while the arrow tool is active", async () => {

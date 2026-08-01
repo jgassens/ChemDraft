@@ -152,6 +152,44 @@ describe("PluginHost", () => {
     expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(PluginHostError);
   });
 
+  // A hostile plugin can hand the host a self-referencing proposal: the patch interior is
+  // deliberately passthrough() and structuredClone/postMessage both preserve cycles. Freezing that
+  // graph without a visited set blew the stack, and the throw escaped through proposePatch /
+  // listProposedPatches / rejectProposedPatch — the review tray calls the second during render with
+  // no error boundary above it, so untrusted input crashed the whole app, repeatably after restart.
+  it("survives a cyclic proposed patch instead of blowing the stack", () => {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({
+      id: "org.chemdraft.patch.hostile",
+      name: "Hostile",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.proposePatch"]
+    });
+
+    const cyclic: Record<string, unknown> = { op: "updateObject", objectId: "obj_1" };
+    cyclic.self = cyclic;
+    cyclic.nested = { back: cyclic, list: [cyclic] };
+
+    const queued = host.proposePatch("org.chemdraft.patch.hostile", {
+      reason: "hostile-cycle",
+      patch: cyclic as never
+    });
+
+    // Every queue operation stays usable, so the user can still see and dismiss the proposal.
+    expect(() => host.listProposedPatches()).not.toThrow();
+    expect(host.listProposedPatches("pending")).toHaveLength(1);
+    expect(() => host.rejectProposedPatch(queued.id)).not.toThrow();
+    expect(host.listProposedPatches("rejected")).toHaveLength(1);
+
+    // And the snapshot is still frozen through the cycle.
+    const [rejected] = host.listProposedPatches("rejected");
+    expect(Object.isFrozen(rejected)).toBe(true);
+    expect(Object.isFrozen(rejected.proposal.patch)).toBe(true);
+  });
+
   // The proposal queue is the one place plugin-authored data is held pending a trusted `applyPatch`.
   // Handing out the stored object let a caller flip `status` behind the host's back, so that the
   // queue and `requirePendingProposal` disagreed about what was still pending.
