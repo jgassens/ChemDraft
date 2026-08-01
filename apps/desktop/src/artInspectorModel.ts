@@ -199,7 +199,7 @@ export function createArtInspectorModel({
 
   const values = {
     fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarPaintType(object) : moleculeFillToolbarPaintType(object)),
-    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : moleculeStrokeToolbarPaintType(object)),
+    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : moleculeStrokeToolbarPaintType()),
     fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarColor(object) : moleculeFillToolbarColor(object)),
     strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarColor(object) : moleculeStrokeToolbarColor(object)),
     objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
@@ -699,9 +699,11 @@ function moleculeFillToolbarPaintType(object: MoleculeObject): ArtInspectorPaint
     : "solid";
 }
 
-function moleculeStrokeToolbarPaintType(object: MoleculeObject): ArtInspectorPaintType {
-  const paint = graphicPaintFromMetadata(object.style.strokePaint);
-  return paint?.kind === "solid" ? "solid" : "solid";
+/** Molecule strokes are always solid — there is no gradient or gloss bond stroke to report. The
+ *  previous form read the stored paint and then returned "solid" from both arms of a ternary,
+ *  which looked like it was deciding something. */
+function moleculeStrokeToolbarPaintType(): ArtInspectorPaintType {
+  return "solid";
 }
 
 function objectPaintForTarget(
