@@ -2197,6 +2197,26 @@ function deleteSemanticArcData(data: GraphicObject["data"]): void {
   delete data.arcSweepRadians;
 }
 
+/**
+ * Drop everything that makes a graphic an *arrow* rather than a path.
+ *
+ * Splitting bends a two-point arrow into a three-node polyline, which no arrow mechanic can carry:
+ * the bow handle is gone, an equilibrium's two shafts have collapsed while `dualShaft` still claims
+ * them, "Set as Default Arrow Style" no longer recognises the shape, and CDXML export would still
+ * emit `ArrowType="FullHead"` — writing a straight arrow and losing the bend with no warning. This
+ * is the conversion PLANS.md Thread C promises when it keeps anchor editing on the Scissors tool.
+ */
+function deleteArrowIdentityData(data: GraphicObject["data"]): void {
+  delete data.artToolId;
+  delete data.markerStart;
+  delete data.markerEnd;
+  delete data.dualShaft;
+  delete data.dualShaftGapPx;
+  delete data.dualShaftParallel;
+  delete data.shaftMark;
+  delete data.shaftMarkSizePx;
+}
+
 function splitLinePathSegmentAtPoint(
   object: GraphicObject,
   point: NativeArtPoint,
@@ -2228,6 +2248,7 @@ function splitLinePathSegmentAtPoint(
   delete nextData.pathControlPoint;
   delete nextData.pathD;
   deleteSemanticArcData(nextData);
+  deleteArrowIdentityData(nextData);
 
   const edited = updateGraphicPathObject(object, nextData);
   if (!edited || edited === object) {
@@ -2722,7 +2743,7 @@ function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtB
     return defaultBounds;
   }
 
-  const points = graphicPathLocalSamplePoints(object);
+  const points = graphicPathLocalBoundsPoints(object);
   if (points.length === 0) {
     return defaultBounds;
   }
@@ -2756,7 +2777,7 @@ function nativeArtProjectedLocalBounds(
   }
 
   if (object.graphicKind === "path") {
-    const pathPoints = graphicPathLocalSamplePoints(object);
+    const pathPoints = graphicPathLocalBoundsPoints(object);
     if (pathPoints.length > 0) {
       return projectedPointsBounds(pathPoints, width, height, matrix);
     }
@@ -3188,6 +3209,29 @@ function graphicLineLocalPoints(object: GraphicObject): NativeArtPoint[] {
   ];
 }
 
+/**
+ * Sample points plus the corners of the path's own bounding box, for the two frame-bounds callers.
+ *
+ * Bounds genuinely need the box: a sampled curve under-covers its own extremes, so bounding the
+ * samples alone shrinks the frame. The ordered walk must never contain these corners — it is read
+ * as a path, and a corner in the middle of it is a phantom segment.
+ */
+function graphicPathLocalBoundsPoints(object: GraphicObject): NativeArtPoint[] {
+  const points = graphicPathLocalSamplePoints(object);
+  const pathD = graphicPathD(object, "local");
+  const bounds = pathD ? svgPathBounds(pathD) : undefined;
+  if (!bounds) {
+    return points;
+  }
+  return [
+    ...points,
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+    { x: bounds.x, y: bounds.y + bounds.height }
+  ];
+}
+
 function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
   const localPoints = object.graphicKind === "line"
     ? graphicLineLocalPoints(object)
@@ -3235,12 +3279,13 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   }
 
   if (pathKind === "wavy") {
-    const endpoints = graphicPathEndpoints(object, "local", inset);
-    return wavyLinePoints(
-      endpoints.start,
-      endpoints.end,
-      Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6))
-    );
+    // Sample the path the renderer actually draws. Re-deriving the wave here duplicated geometry
+    // that `graphicPathD` decides in two branches — a drawn wave between explicit endpoints, or a
+    // horizontal wave across the frame for a click-placed one — and this copy only ever knew the
+    // first. Since sampling starts the moment a marker exists, adding an arrowhead flipped a
+    // click-placed wave from horizontal to corner-to-corner diagonal (§5.26/§5.27).
+    const pathD = graphicPathD(object, "local");
+    return pathD ? svgPathSamplePoints(pathD) : [];
   }
 
   if (pathKind === "arc") {
@@ -3309,35 +3354,35 @@ function svgPathBounds(pathD: string): NativeArtBounds | undefined {
   }
 }
 
-function svgPathSamplePoints(
-  pathD: string,
-  options: { includeBounds?: boolean } = {}
-): NativeArtPoint[] {
+/**
+ * Points along a path, in path order.
+ *
+ * This used to append the four corners of the path's bounding box. Callers treat the list as an
+ * ordered walk — it drives the visible stroke, the marker terminals, and hit-testing — so those
+ * corners were phantom segments: a bent polyline drew its legs and then scribbled its own bounding
+ * rectangle, hit-testing reported hits along empty box edges, and the end terminal snapped to
+ * whichever corner came last, putting the arrowhead on the wrong end pointing the wrong way. No
+ * caller ever wanted them; the two that asked for bounds asked `getPathBBox` directly.
+ */
+function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
   try {
     if (!isValidPath(pathD)) {
       return [];
     }
     const length = getTotalLength(pathD);
-    const bounds = getPathBBox(pathD);
-    const boundsPoints = [
-      { x: bounds.x, y: bounds.y },
-      { x: bounds.x2, y: bounds.y },
-      { x: bounds.x2, y: bounds.y2 },
-      { x: bounds.x, y: bounds.y2 }
-    ];
     if (!Number.isFinite(length) || length <= 0) {
-      return boundsPoints;
+      // A zero-length path is a dot: its bounding box collapses to that point.
+      const bounds = getPathBBox(pathD);
+      return [{ x: bounds.x, y: bounds.y }].filter(
+        (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+      );
     }
 
     const steps = Math.max(8, Math.min(96, Math.ceil(length / 8)));
-    const pathPoints = Array.from({ length: steps + 1 }, (_, index) => {
+    return Array.from({ length: steps + 1 }, (_, index) => {
       const point = getPointAtLength(pathD, length * index / steps);
       return { x: point.x, y: point.y };
-    });
-    const samples = options.includeBounds === false ? pathPoints : [...pathPoints, ...boundsPoints];
-    return samples.filter((point) =>
-      Number.isFinite(point.x) && Number.isFinite(point.y)
-    );
+    }).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   } catch {
     return [];
   }
@@ -3410,13 +3455,13 @@ function graphicObjectBooleanLocalPoints(object: GraphicObject): {
       return { reason: "open-shape" };
     }
     const pathD = graphicNodePathD(object, pathKind, "local");
-    const points = pathD ? svgPathSamplePoints(pathD, { includeBounds: false }) : [];
+    const points = pathD ? svgPathSamplePoints(pathD) : [];
     return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
   }
 
   if (pathKind === "freehand") {
     const pathD = graphicFreehandPathD(object, "local");
-    const points = pathD ? svgPathSamplePoints(pathD, { includeBounds: false }) : [];
+    const points = pathD ? svgPathSamplePoints(pathD) : [];
     return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
   }
 
@@ -3432,7 +3477,7 @@ function graphicObjectBooleanLocalPoints(object: GraphicObject): {
     return { reason: "open-shape" };
   }
 
-  const points = svgPathSamplePoints(storedPath, { includeBounds: false });
+  const points = svgPathSamplePoints(storedPath);
   return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
 }
 

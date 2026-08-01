@@ -140,9 +140,17 @@ reaction-arrow object, so it missed everything arrow mode gained."
 
 Arrows are `GraphicObject`s tagged with `artToolId` (`packages/chem-core/src/schemas.ts:182`), which
 is the semantic marker the CDXML layer reads. `insertNativeReactionArrow` survives in
-`documentWorkflow.ts` but has **no live caller** — only `documentWorkflow.test.ts` references it.
-The `reaction-arrow` type remains in the schema (`schemas.ts:407`) for older documents and for
-arrows that import as `unknown`.
+`documentWorkflow.ts` for older documents and for arrows that import as `unknown`; the
+`reaction-arrow` type remains in the schema (`schemas.ts:407`) to carry them.
+
+This section previously claimed `insertNativeReactionArrow` had **no live caller**. That was wrong:
+`applyReactionArrowToolAtPoint` still reached it, and the four retired tool ids
+(`tool.reactionArrow`, `tool.resonanceArrow`, `tool.equilibriumArrow`, `tool.retroArrow`) still
+passed the Customize gallery's filter — so the tray offered two identically-titled "Reaction Arrow"
+tiles, and the legacy one built the retired object type with none of the mechanics above. Those ids
+are now aliases: `canonicalCommandId` (`apps/desktop/src/renamedCommands.ts`) redirects them to
+their `tool.art.*` replacements at activation, and the gallery does not offer a renamed id as its
+own tile.
 
 ### B3. CDXML interop contract
 

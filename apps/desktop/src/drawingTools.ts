@@ -1,4 +1,5 @@
 import type { CommandSpec } from "./commands";
+import { canonicalCommandId } from "./renamedCommands";
 
 export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "bracket" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
@@ -412,7 +413,13 @@ export function activateDrawingToolCommand(
   currentState: ActiveToolState,
   command: CommandSpec
 ): ToolActivationResult {
-  const definition = getDrawingToolDefinition(command.id);
+  // A renamed id activates whatever replaced it. The legacy semantic-arrow ids can still arrive
+  // from a menu, a shortcut, or persisted state that predates the rename, and following them
+  // reached the retired `reaction-arrow` builder — an object with none of the current arrow
+  // mechanics. Redirect once, here, so every downstream lookup sees the canonical tool.
+  const canonicalId = canonicalCommandId(command.id);
+  const resolvedCommand = canonicalId === command.id ? command : { ...command, id: canonicalId };
+  const definition = getDrawingToolDefinition(resolvedCommand.id);
   if (!definition) {
     return {
       state: {
@@ -425,7 +432,7 @@ export function activateDrawingToolCommand(
     };
   }
 
-  const normalizedCommand = mergeDrawingToolCommandSpec(command);
+  const normalizedCommand = mergeDrawingToolCommandSpec(resolvedCommand);
   const disabledReason = normalizedCommand.enabled === false
     ? normalizedCommand.disabledReason ?? "Tool unavailable"
     : undefined;

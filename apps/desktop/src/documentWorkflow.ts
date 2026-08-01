@@ -9743,6 +9743,26 @@ function resizeGraphicObjectDataForFrame(
     nextData.arcRadiusY = Math.max(1, data.arcRadiusY * Math.abs(scaleY));
   }
 
+  // A parametric arc traces (cx + rx*cos t, cy + ry*sin t). Mirroring the centre and radii alone
+  // left t untouched, so a flipped curved arrow kept its original sweep direction — and for the
+  // curved pushing arrows that direction IS the chemistry. Under a mirror cos t and/or sin t change
+  // sign, which is exactly atan2 of the signed components; the sweep reverses only when a single
+  // axis flipped (a negative determinant). Mapping the START angle rather than the end keeps
+  // markerStart/markerEnd on the ends they were already attached to.
+  const signX = scaleX < 0 ? -1 : 1;
+  const signY = scaleY < 0 ? -1 : 1;
+  if (signX < 0 || signY < 0) {
+    if (typeof data.arcStartRadians === "number" && Number.isFinite(data.arcStartRadians)) {
+      nextData.arcStartRadians = Math.atan2(
+        signY * Math.sin(data.arcStartRadians),
+        signX * Math.cos(data.arcStartRadians)
+      );
+    }
+    if (signX * signY < 0 && typeof data.arcSweepRadians === "number" && Number.isFinite(data.arcSweepRadians)) {
+      nextData.arcSweepRadians = -data.arcSweepRadians;
+    }
+  }
+
   // Arrowheads are a size in px, not a pair of endpoints, so scaling the geometry alone would drag a
   // fixed-size head along a longer shaft — the arrow would look progressively wrong as it grew.
   // Scale by the OVERALL size change (see proportionalGraphicScale), not by one axis, so stretching
@@ -11706,12 +11726,12 @@ function flipOtherObjectAroundPoint(
     height: object.height,
     // An object with no mirrorable interior can only fake a horizontal flip as "rotate 180 after a
     // vertical one". Objects that mirror their own geometry below need no such trick: negating the
-    // angle is the exact rotation of the mirrored shape, for either axis.
-    rotation: object.type === "graphic"
-      ? object.rotation
-      : mirrorsOwnGeometry
-        ? normalizeDegrees(-object.rotation)
-        : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
+    // angle is the exact rotation of the mirrored shape, for either axis. Graphics used to be
+    // carved out of that rule and kept their angle, so a rotated one flipped to 2*theta off the
+    // mirror — and this branch made every arrow a graphic, putting the two arrow kinds at odds.
+    rotation: mirrorsOwnGeometry
+      ? normalizeDegrees(-object.rotation)
+      : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
   };
 
   if (object.type === "electron-mark" && object.markKind === "charge") {

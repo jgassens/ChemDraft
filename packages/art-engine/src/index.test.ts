@@ -514,6 +514,144 @@ describe("art-engine native art planning", () => {
     expect(plan.visiblePathD).not.toContain("L 79 43");
   });
 
+  it("samples a click-placed wavy line along the wave it actually draws", () => {
+    // Two generators disagreed. The renderer drew a click-placed wavy line as a horizontal 3-hump
+    // wave across the frame; the sampler always walked `wavyLinePoints` between the frame's
+    // endpoints, i.e. corner to corner. Sampling only kicks in once a marker exists, so adding an
+    // arrowhead in the inspector visibly flipped the wave from horizontal to diagonal and aimed the
+    // head down-right. Hit-testing followed the sampler, so it missed the drawn stroke too.
+    const wavy = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 60,
+      data: { artPathKind: "wavy", markerEnd: { kind: "filled-arrow", sizePx: 12 } }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(wavy, { coordinateSpace: "local" });
+    if (!plan.visiblePathD || !plan.markerEndTerminal) {
+      throw new Error("Expected a visible wavy path and an end terminal.");
+    }
+
+    // The drawn wave oscillates about the vertical middle (y = 30) by at most the amplitude, so no
+    // point on it can reach the frame's corners.
+    const drawn = [...plan.visiblePathD.matchAll(/[ML] (-?[\d.]+) (-?[\d.]+)/g)].map((match) => ({
+      x: Number(match[1]),
+      y: Number(match[2])
+    }));
+    expect(drawn.length).toBeGreaterThan(4);
+    for (const point of drawn) {
+      expect({ y: point.y, withinWave: Math.abs(point.y - 30) <= 16 }).toEqual({
+        y: point.y,
+        withinWave: true
+      });
+    }
+
+    // And the head sits at the right-hand end travelling roughly horizontally, not into a corner.
+    expect(plan.markerEndTerminal.point.x).toBeGreaterThan(150);
+    expect(Math.abs(plan.markerEndTerminal.point.y - 30)).toBeLessThanOrEqual(16);
+    // It follows the wave's own tangent at the end of the last hump, so it is not perfectly
+    // horizontal — but it must travel more across than down, unlike the 0.58/0.81 diagonal before.
+    expect(plan.markerEndTerminal.direction.x).toBeGreaterThan(Math.abs(plan.markerEndTerminal.direction.y));
+  });
+
+  it("strips arrow identity when a line arrow is split into a polyline", () => {
+    // PLANS.md Thread C states that splitting "converts arrows to plain polylines and destroys
+    // their arrow identity", and anchor-point editing is kept out of the arrow toolbar on exactly
+    // that promise. Nothing implemented it: the split deleted only the line/arc fields, so the
+    // result stayed a tagged arrow — one that still exported as ArrowType="FullHead", silently
+    // dropping the bend, and whose dualShaft flags now described geometry it no longer had.
+    const arrow = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        artToolId: "tool.art.reactionArrow",
+        lineStart: { x: 10, y: 20 },
+        lineEnd: { x: 190, y: 20 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 },
+        markerStart: { kind: "filled-arrow", sizePx: 16 },
+        dualShaft: true,
+        dualShaftGapPx: 5,
+        shaftMark: "cross",
+        shaftMarkSizePx: 12
+      }
+    } satisfies GraphicObject;
+
+    const split = splitGraphicPathSegmentAtPoint(arrow, { x: 100, y: 20 }, { maxDistancePx: 12 });
+    if (!split) {
+      throw new Error("Expected the arrow to split at its midpoint.");
+    }
+
+    expect(split.object.data.artPathKind).toBe("polyline");
+    expect(split.object.data.pathNodes).toHaveLength(3);
+    expect(split.object.data.artToolId).toBeUndefined();
+    expect(split.object.data.markerStart).toBeUndefined();
+    expect(split.object.data.markerEnd).toBeUndefined();
+    expect(split.object.data.dualShaft).toBeUndefined();
+    expect(split.object.data.dualShaftGapPx).toBeUndefined();
+    expect(split.object.data.shaftMark).toBeUndefined();
+    expect(split.object.data.shaftMarkSizePx).toBeUndefined();
+  });
+
+  it("samples a polyline along its own path, not around its bounding box", () => {
+    // svgPathSamplePoints appended the four bbox corners to the ordered sample list, so a bent
+    // polyline's samples jumped off the stroke and back: the visible path scribbled a rectangle and
+    // the arrowhead landed on a bbox corner rather than the path end. Hit-testing walked the same
+    // phantom segments, reporting hits in empty regions along the box edges.
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 120,
+      data: {
+        artPathKind: "polyline",
+        pathNodes: [
+          { point: { x: 10, y: 10 } },
+          { point: { x: 10, y: 110 } },
+          { point: { x: 190, y: 110 } }
+        ],
+        markerEnd: { kind: "filled-arrow", sizePx: 12 }
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+    if (!plan.visiblePathD || !plan.markerEndTerminal) {
+      throw new Error("Expected a visible path and an end terminal.");
+    }
+
+    // The L goes down the left edge then along the bottom, so it never visits the top-right corner
+    // (190, 10). The appended bbox corners made the visible stroke jump back to the origin and
+    // trace the box: "... L 190 110 L 10 10 L 190 10 L 190 110 ...".
+    expect(plan.visiblePathD).not.toContain("L 190 10 ");
+
+    // Every point on the visible stroke must sit on one of the two legs.
+    const drawn = [...plan.visiblePathD.matchAll(/[ML] (-?[\d.]+) (-?[\d.]+)/g)].map((match) => ({
+      x: Number(match[1]),
+      y: Number(match[2])
+    }));
+    expect(drawn.length).toBeGreaterThan(4);
+    for (const point of drawn) {
+      const onLeftLeg = Math.abs(point.x - 10) < 1.5 && point.y >= 9 && point.y <= 111;
+      const onBottomLeg = Math.abs(point.y - 110) < 1.5 && point.x >= 9 && point.x <= 191;
+      expect({ point, onPath: onLeftLeg || onBottomLeg }).toEqual({ point, onPath: true });
+    }
+
+    // The head belongs at the far end of the path pointing along it — the phantom segments put it
+    // at the bottom-LEFT corner aiming left, i.e. the wrong end of the arrow entirely.
+    expect(plan.markerEndTerminal.point.x).toBeCloseTo(190, 0);
+    expect(plan.markerEndTerminal.point.y).toBeCloseTo(110, 0);
+    expect(plan.markerEndTerminal.direction.x).toBeGreaterThan(0.9);
+  });
+
   it("keeps resized curved arrow shafts inside filled heads without adding connector strokes", () => {
     const graphic = {
       ...baseGraphic,

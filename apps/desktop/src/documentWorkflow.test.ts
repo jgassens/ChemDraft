@@ -9407,6 +9407,131 @@ describe("Phase 4 document workflow", () => {
     expect(getSelectedMolecule(withOtherObject)?.structure).toBe("CC");
   });
 
+  it("mirrors a parametric arc's sweep when it is flipped", () => {
+    // Flipping mirrored arcCenter and scaled the radii but left arcStartRadians/arcSweepRadians
+    // alone, so a curved pushing arrow kept curving the same way after a mirror — and for those
+    // arrows the sweep direction IS the chemistry being asserted.
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Arc Flip Sweep"),
+      { x: 200, y: 200 },
+      "tool.art.curvedArrow90"
+    );
+    const objectId = inserted.selection.objectIds[0]!;
+    // A click-placed arc derives its geometry from the frame; store the parametric form explicitly
+    // so the angles under test are the ones actually being carried through the flip.
+    const parametric = applyPatches(inserted, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        data: {
+          ...graphicById(inserted, objectId).data,
+          arcCenter: { x: 240, y: 230 },
+          arcRadiusX: 40,
+          arcRadiusY: 25,
+          arcStartRadians: 0.6,
+          arcSweepRadians: 1.9
+        }
+      }
+    }]);
+    const before = graphicById(parametric, objectId);
+    expect(before.data.artPathKind).toBe("arc");
+
+    const pivot = { x: before.x + before.width / 2, y: before.y + before.height / 2 };
+    const flipped = graphicById(
+      flipDocumentObjectsAroundPoint(parametric, [objectId], pivot, "horizontal"),
+      objectId
+    );
+
+    // One axis flipped, so the traversal direction reverses.
+    expect(flipped.data.arcSweepRadians).toBeCloseTo(-(before.data.arcSweepRadians ?? 0), 9);
+
+    // Both parametric endpoints must land on the mirror of where they were. This is what catches a
+    // sweep remap that traces the right curve but swaps which end is "start" — that would silently
+    // move the arrowhead to the other end of the arc.
+    const arcPoint = (object: typeof before, t: number): PagePoint => ({
+      x: (object.data.arcCenter?.x ?? 0) + (object.data.arcRadiusX ?? 0) * Math.cos(t),
+      y: (object.data.arcCenter?.y ?? 0) + (object.data.arcRadiusY ?? 0) * Math.sin(t)
+    });
+    const startOf = (object: typeof before): number => object.data.arcStartRadians ?? 0;
+    const endOf = (object: typeof before): number => startOf(object) + (object.data.arcSweepRadians ?? 0);
+
+    const mirroredStart = arcPoint(before, startOf(before));
+    const mirroredEnd = arcPoint(before, endOf(before));
+    expectPointToBeClose(arcPoint(flipped, startOf(flipped)), {
+      x: 2 * pivot.x - mirroredStart.x,
+      y: mirroredStart.y
+    });
+    expectPointToBeClose(arcPoint(flipped, endOf(flipped)), {
+      x: 2 * pivot.x - mirroredEnd.x,
+      y: mirroredEnd.y
+    });
+
+    // Flipping both axes is a 180-degree rotation, not a mirror: the sweep must survive intact.
+    const bothAxes = graphicById(
+      flipDocumentObjectsAroundPoint(
+        flipDocumentObjectsAroundPoint(parametric, [objectId], pivot, "horizontal"),
+        [objectId],
+        pivot,
+        "vertical"
+      ),
+      objectId
+    );
+    expect(bothAxes.data.arcSweepRadians).toBeCloseTo(before.data.arcSweepRadians ?? 0, 9);
+  });
+
+  it("mirrors a rotated graphic's rendered geometry when it is flipped", () => {
+    // `rotation` is a render transform about the object's centre, so a true mirror is R(-theta)
+    // over the mirrored interior. Graphics were carved out of that rule and kept R(theta) -- the
+    // exact case this branch created by turning every arrow into a graphic -- so a 30-degree arrow
+    // flipped horizontally rendered at 210 degrees instead of 150. The interior mirrored and the
+    // frame moved, so the bug reads as "the arrow flipped, but at the wrong angle".
+    const angle = 30;
+    const placed = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Rotated Graphic Flip"),
+      { x: 200, y: 300 },
+      { x: 320, y: 300 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = placed.selection.objectIds[0]!;
+    const graphic = graphicById(placed, objectId);
+    const pivot = { x: graphic.x + graphic.width / 2, y: graphic.y + graphic.height / 2 };
+    const rotated = rotateDocumentObjectsAroundPoint(placed, [objectId], pivot, angle);
+    const before = graphicById(rotated, objectId);
+
+    const flipped = graphicById(
+      flipDocumentObjectsAroundPoint(rotated, [objectId], pivot, "horizontal"),
+      objectId
+    );
+
+    // Negating is the exact rotation of the mirrored shape: 30 degrees mirrors to 330, not 30.
+    expect(flipped.rotation).toBeCloseTo(330, 6);
+
+    // The claim that matters is what the user sees: apply each object's own rotation to its
+    // endpoints and the resulting world points must be mirrored about the pivot.
+    const worldEnds = (object: typeof before): { start: PagePoint; end: PagePoint } => {
+      const centre = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+      const radians = (object.rotation * Math.PI) / 180;
+      const place = (point: PagePoint): PagePoint => {
+        const dx = point.x - centre.x;
+        const dy = point.y - centre.y;
+        return {
+          x: centre.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+          y: centre.y + dx * Math.sin(radians) + dy * Math.cos(radians)
+        };
+      };
+      return { start: place(object.data.lineStart!), end: place(object.data.lineEnd!) };
+    };
+
+    const beforeEnds = worldEnds(before);
+    const flippedEnds = worldEnds(flipped);
+    expect(flippedEnds.start.x).toBeCloseTo(2 * pivot.x - beforeEnds.start.x, 6);
+    expect(flippedEnds.start.y).toBeCloseTo(beforeEnds.start.y, 6);
+    expect(flippedEnds.end.x).toBeCloseTo(2 * pivot.x - beforeEnds.end.x, 6);
+    expect(flippedEnds.end.y).toBeCloseTo(beforeEnds.end.y, 6);
+    // The head pointed right-and-down of the tail; mirrored it must point left-and-down.
+    expect(flippedEnds.end.x).toBeLessThan(flippedEnds.start.x);
+  });
+
   it("syncs Ketcher V3000 saves into the selected molecule preview graph", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Ketcher Sync"), { x: 200, y: 220 });
     const selected = getSelectedMolecule(document);

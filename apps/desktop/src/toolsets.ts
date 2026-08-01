@@ -18,6 +18,7 @@ import {
 import manifest from "./toolsets/desktop-toolsets.json";
 import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
+import { renamedCommandId } from "./renamedCommands";
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 
@@ -246,24 +247,6 @@ export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
     return next;
   });
   return changed ? { ...record, toolsetOverrides } : state;
-}
-
-/**
- * Command ids this app has renamed, old → new. Persisted layout state is id-based, so without a
- * remap a user's saved hides and reordering silently stop applying after an upgrade (and the stale
- * ids are then pruned as unknown, making the loss permanent on the next save).
- *
- * The semantic arrow buttons moved into the art-arrow family when they gained real art geometry.
- */
-const RENAMED_COMMAND_IDS: Readonly<Record<string, string>> = {
-  "tool.reactionArrow": "tool.art.reactionArrow",
-  "tool.resonanceArrow": "tool.art.resonanceArrow",
-  "tool.equilibriumArrow": "tool.art.equilibriumArrow",
-  "tool.retroArrow": "tool.art.retroArrow"
-};
-
-function renamedCommandId(id: unknown): string | undefined {
-  return typeof id === "string" ? RENAMED_COMMAND_IDS[id] : undefined;
 }
 
 /**
