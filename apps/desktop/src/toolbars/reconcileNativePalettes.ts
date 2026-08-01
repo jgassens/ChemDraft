@@ -113,11 +113,20 @@ export async function reconcileNativePaletteWindows(
         if (opened.has(toolsetId)) {
           continue;
         }
-        const state = await openToolsetWindow(toolsetId);
+        // A rejection is just this palette failing to open — the same outcome as `open: false`, and
+        // it must be scoped the same way. Letting it reach the attempt catch discarded the palettes
+        // that HAD opened, so one failure dropped the whole session to web palettes and the
+        // fallback handler then overwrote the user's saved visibility with the defaults.
+        let state: ToolsetWindowState | undefined;
+        try {
+          state = await openToolsetWindow(toolsetId);
+        } catch {
+          state = undefined;
+        }
         if (isCancelled()) {
           return { outcome: "cancelled" };
         }
-        if (state.open) {
+        if (state?.open) {
           opened.add(toolsetId);
         }
       }

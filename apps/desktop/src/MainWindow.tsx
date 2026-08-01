@@ -2843,7 +2843,11 @@ export function MainWindow({
     // pressing Delete would remove only B. Ring parts aren't deletable (excluded here). A lasso
     // "parts" fragment or a genuine multi-molecule selection takes precedence over a hovered
     // atom/bond; a lone atom/bond part still defers to the hovered target (single-select feel).
-    const selectedDeleteTargets = selectedNativeMoleculeParts
+    // Read through the ref, not the captured array. The deps below track only the LAST part's
+    // identity, so the array could shrink — part pruning, a double-click dropping back to one
+    // part — while that element stayed the same, leaving this callback holding the pre-shrink
+    // array. Delete then destroyed a bond the user had just deselected.
+    const selectedDeleteTargets = selectedNativeMoleculePartsRef.current
       .map((part) => nativeTransformableSelectionPart(part))
       .filter((part): part is NativeMoleculeTransformableSelectionPart => part !== undefined);
     const selectionTakesPrecedence = selectedDeleteTargets.length > 1
@@ -11844,6 +11848,26 @@ export function MainWindow({
       clearObjectRotateDrag(event);
     }
 
+    // Resize and corner-radius capture on the page like every drag family around them, but had no
+    // cancel branch: a pointer cancel mid-drag left the preview document standing, un-restored and
+    // with no undo entry to get back from — breaking the cancel-restores-start invariant its
+    // siblings all keep.
+    const objectResizeDrag = objectResizeDragRef.current;
+    if (objectResizeDrag?.pointerId === event.pointerId) {
+      if (objectResizeDrag.dragging) {
+        replacePresentDocument(objectResizeDrag.startDocument);
+      }
+      clearObjectResizeDrag(event);
+    }
+
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId) {
+      if (graphicCornerRadiusDrag.dragging) {
+        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
+      }
+      clearGraphicCornerRadiusDrag(event);
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId) {
       if (graphicPathEditDrag.dragging) {
@@ -11907,7 +11931,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {

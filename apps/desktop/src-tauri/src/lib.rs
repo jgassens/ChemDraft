@@ -3175,20 +3175,41 @@ fn update_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut ToolsetLayoutState),
 ) -> Result<(), String> {
-    let mut layout_state = load_toolset_layout_state(app);
+    // Read-then-write, so a read failure must NOT become a write. This used to swallow every read
+    // error as `default()`, and a transient failure during a window `Moved` event then wrote those
+    // defaults over toolbar-state.json -- losing every saved position and visibility. Same trap the
+    // write side was rewired to avoid; propagate instead, and the mutation is simply skipped.
+    let mut layout_state = read_toolset_layout_state(app)?;
     update(&mut layout_state);
     save_toolset_layout_state(app, &layout_state)
 }
 
-fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLayoutState {
-    let Ok(path) = toolset_layout_state_path(app) else {
-        return ToolsetLayoutState::default();
+/// What a layout-state read means, separated from where it came from so it can be tested directly.
+///
+/// Absent is not a failure: there is no file until the first save, and defaults are correct. Present
+/// but unparseable falls back to defaults too -- writes are atomic, so this is not a half-written
+/// file but genuinely unusable content, and returning defaults lets the next save repair it. An IO
+/// error is the case that must NOT turn into a value: the file may be perfectly good and merely
+/// unreadable right now, so it is returned as an error for a caller about to write to refuse on.
+fn toolset_layout_state_from_read(
+    read: Result<Option<String>, String>,
+) -> Result<ToolsetLayoutState, String> {
+    let Some(contents) = read? else {
+        return Ok(ToolsetLayoutState::default());
     };
-    let Ok(contents) = fs::read_to_string(path) else {
-        return ToolsetLayoutState::default();
-    };
+    Ok(serde_json::from_str(&contents).unwrap_or_default())
+}
 
-    serde_json::from_str(&contents).unwrap_or_default()
+fn read_toolset_layout_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<ToolsetLayoutState, String> {
+    let path = toolset_layout_state_path(app)?;
+    toolset_layout_state_from_read(read_optional_file(&path))
+}
+
+/// Best-effort read for callers that only inspect the state and never write it back.
+fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLayoutState {
+    read_toolset_layout_state(app).unwrap_or_default()
 }
 
 fn save_toolset_layout_state<R: Runtime>(
@@ -3298,6 +3319,40 @@ fn find_menu_item_by_id<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_state_read_error_never_becomes_defaults() {
+        // An absent file is not a failure: defaults are correct until the first save.
+        let absent = toolset_layout_state_from_read(Ok(None)).expect("absent is not an error");
+        assert_eq!(absent.toolsets.len(), 0);
+        assert!(absent.main_window.is_none());
+
+        // Unparseable content falls back to defaults so the next save can repair the file. Writes
+        // are atomic, so this is genuinely bad content rather than a half-written one.
+        let corrupt = toolset_layout_state_from_read(Ok(Some("{not json".to_string())))
+            .expect("corrupt content falls back to defaults");
+        assert_eq!(corrupt.toolsets.len(), 0);
+
+        // An IO error must stay an error. Turning it into defaults is what let a transient read
+        // failure during a window Moved event overwrite every saved position and visibility.
+        let failed = toolset_layout_state_from_read(Err("permission denied".to_string()));
+        assert!(failed.is_err(), "an IO error must not be reported as a usable state");
+
+        // And a good file still round-trips.
+        let saved = ToolsetLayoutState {
+            version: 1,
+            toolsets: HashMap::new(),
+            main_window: Some(MainWindowGeometry {
+                x: 12.0,
+                y: 34.0,
+                width: 800.0,
+                height: 600.0,
+            }),
+        };
+        let json = serde_json::to_string(&saved).expect("serialize");
+        let loaded = toolset_layout_state_from_read(Ok(Some(json))).expect("valid state parses");
+        assert_eq!(loaded.main_window.map(|frame| frame.x), Some(12.0));
+    }
 
     #[test]
     fn read_optional_file_distinguishes_absent_from_present() {

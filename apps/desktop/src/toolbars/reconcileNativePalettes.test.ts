@@ -29,6 +29,39 @@ describe("reconcileNativePaletteWindows", () => {
     expect(openToolsetWindow).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the palettes that opened when another one's open REJECTS", async () => {
+    // The leniency below ("as long as SOMETHING opened, stay native") only covered a resolve with
+    // open:false. A rejection threw straight past it into the attempt catch, discarding an already
+    // non-empty opened set — so one failing palette dropped the whole session to web palettes, and
+    // MainWindow's fallback handler then wrote the default visible set over the user's saved one.
+    const openToolsetWindow = vi.fn(async (id: string) => {
+      if (id === "core.broken") {
+        throw new Error("window creation failed");
+      }
+      return state(id, true);
+    });
+
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        openToolsetWindow,
+        desiredVisibleToolsetIds: () => ["core.main", "core.broken", "core.art"]
+      })
+    );
+
+    expect(result.outcome).toBe("native");
+    expect(result.outcome === "native" && result.openedToolsetIds.sort()).toEqual(["core.art", "core.main"]);
+  });
+
+  it("still falls back when every open rejects", async () => {
+    const openToolsetWindow = vi.fn(async () => {
+      throw new Error("window creation failed");
+    });
+
+    const result = await reconcileNativePaletteWindows(baseDeps({ openToolsetWindow }));
+
+    expect(result.outcome).toBe("fallback");
+  });
+
   // The regression guard for "toolboxes stuck in the viewport": open_toolset_window reports the
   // window via is_visible(), which can be briefly false on the frame the window is created. A
   // one-shot reconciler saw zero open windows and permanently fell back to in-window palettes.
