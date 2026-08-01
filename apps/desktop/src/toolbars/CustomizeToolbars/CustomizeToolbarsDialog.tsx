@@ -370,10 +370,19 @@ export function CustomizeToolbarsDialog({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        cancelAndClose();
+      if (event.key !== "Escape") {
+        return;
       }
+      // Escape inside a text field means "abandon this edit", not "throw away the whole session".
+      // Without this check, pressing it while renaming a toolbar rolled every live-applied edit —
+      // reorderings, hides, deletions — back to the state the dialog opened with.
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        target.blur();
+        return;
+      }
+      event.preventDefault();
+      cancelAndClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

@@ -352,6 +352,30 @@ describe("MainStyleWidget variants", () => {
     expect(onInvoke).toHaveBeenCalledTimes(1);
   });
 
+  it("unfreezes the variant when a gesture is cancelled instead of released", () => {
+    // The widget latches its layout during a press so the pressed control isn't unmounted mid-commit.
+    // Only pointerup released that latch, so a pointercancel (OS gesture takeover, a native select
+    // menu swallowing the release) froze the widget on a stale variant for good.
+    const { selection: moleculeSel } = moleculeSelection();
+    renderWidget({ currentSelection: moleculeSel });
+    expect(widgetRoot().dataset.mainStyleVariant).toBe("molecule");
+
+    // Begin a gesture on a widget control, then have it cancelled rather than released.
+    const control = widgetRoot().querySelector("button, select");
+    act(() => {
+      control?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      window.dispatchEvent(new Event("pointercancel"));
+    });
+
+    // A later selection change must still swap the layout (re-render with an empty selection).
+    const textSelection = classifyToolbarSelection({
+      document: createEmptyDocument({ id: "doc_empty", pageId: "page_empty", title: "Empty" }),
+      moleculeContext: "none"
+    });
+    renderWidget({ currentSelection: textSelection });
+    expect(widgetRoot().dataset.mainStyleVariant).toBe("text");
+  });
+
   it("pins the text layout while customizing, whatever is selected", () => {
     const { selection } = moleculeSelection();
     renderWidget({ currentSelection: selection }, true);

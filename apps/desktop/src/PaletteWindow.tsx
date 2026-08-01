@@ -68,6 +68,7 @@ import {
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetMoleculeInspectorPayload,
+  type ToolsetPopoverAnchor,
   type ToolsetPopoverContent,
   type ToolsetWindowPosition
 } from "./window-manager";
@@ -581,8 +582,15 @@ export function PaletteWindow({
   // to global screen coordinates the same way popovers are anchored. The in-DOM tooltip span is
   // hidden in palette windows: this content-fit window would clip it.
   useEffect(() => {
+    // Showing awaits the window position; hiding is immediate. Without a generation token a hide
+    // that lands during that await is overtaken by the stale show that resolves after it, and the
+    // tooltip reappears for a button the pointer already left (likewise for a fast A→B hover, where
+    // A's slower resolve could win). Every show candidate, hide, and teardown invalidates the
+    // previous request; the token is re-checked after the await, immediately before emitting.
+    let tooltipRequest = 0;
     const handleTooltip = (event: Event) => {
       if (customizeThisPaletteRef.current) {
+        tooltipRequest += 1;
         void hidePaletteFloatingTooltip().catch(() => undefined);
         return;
       }
@@ -591,13 +599,16 @@ export function PaletteWindow({
         return;
       }
       if (!detail.visible || !detail.anchor || !(detail.title || detail.description)) {
+        tooltipRequest += 1;
         void hidePaletteFloatingTooltip().catch(() => undefined);
         return;
       }
       const { title, description, shortcut, anchor } = detail;
+      tooltipRequest += 1;
+      const request = tooltipRequest;
       void (async () => {
         const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
-        if (!windowPosition) {
+        if (!windowPosition || request !== tooltipRequest) {
           return;
         }
         await showPaletteFloatingTooltip({
@@ -612,6 +623,7 @@ export function PaletteWindow({
     };
     window.addEventListener(PALETTE_TOOLTIP_DOM_EVENT, handleTooltip);
     return () => {
+      tooltipRequest += 1;
       window.removeEventListener(PALETTE_TOOLTIP_DOM_EVENT, handleTooltip);
       void hidePaletteFloatingTooltip().catch(() => undefined);
     };
@@ -654,10 +666,14 @@ export function PaletteWindow({
   // the last content so the window can re-request it after it mounts (the create-vs-emit race);
   // `undefined` until the first real open, so a prewarmed popover's mount request — which fires with
   // no open in flight — gets no answer and the hidden window stays hidden.
-  const lastPopoverContentRef = useRef<ToolsetPopoverContent | undefined>(undefined);
+  // Content AND anchor: the replay below must be able to answer with everything the direct push
+  // carries, or a popover that learns its content from the replay (the create-vs-emit race this ref
+  // exists for) never learns where it belongs and lands displaced after its content-fit resize.
+  const lastPopoverPayloadRef = useRef<{ content: ToolsetPopoverContent; anchor: ToolsetPopoverAnchor } | undefined>(
+    undefined
+  );
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
-    lastPopoverContentRef.current = content;
     void (async () => {
       // No silent origin fallback: a failed position read once sent the first popover
       // open to the anchor offset from (0,0) — inches from its button — while every
@@ -671,6 +687,10 @@ export function PaletteWindow({
       }
       const screenX = windowPosition.x + anchor.left;
       const screenY = windowPosition.y + anchor.bottom + 4;
+      // Armed only once the open is actually going through. Priming it before the abortable read
+      // above meant a press that never opened anything still armed the replay, so the prewarmed
+      // window's mount request got answered and revealed a popover nobody asked for at (0, 0).
+      lastPopoverPayloadRef.current = { content, anchor: { x: screenX, y: screenY } };
       await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
       // The anchor rides along so the popover can re-assert its position AFTER sizing to
       // content — a bottom-anchored macOS resize otherwise shifts the first open down by
@@ -721,11 +741,14 @@ export function PaletteWindow({
       }
       // No open has happened yet (a prewarmed popover requesting on mount): stay silent — an answer
       // would masquerade as an open and reveal a popover nobody asked for.
-      const lastContent = lastPopoverContentRef.current;
-      if (!lastContent) {
+      const lastPayload = lastPopoverPayloadRef.current;
+      if (!lastPayload) {
         return;
       }
-      void setToolsetPopoverContent(toolset.id, lastContent).catch(() => undefined);
+      // Replay the anchor too. This path IS the cold-open path (the first emit raced the webview's
+      // subscription), so dropping the anchor here left exactly the opens that needed the
+      // post-resize reposition without it.
+      void setToolsetPopoverContent(toolset.id, lastPayload.content, lastPayload.anchor).catch(() => undefined);
     })
       .then((cleanup) => {
         unlisten = cleanup;

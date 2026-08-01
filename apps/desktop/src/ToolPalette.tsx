@@ -3397,13 +3397,15 @@ function ToolbarPaletteItem({
       return;
     }
 
-    holdOpenedRef.current = true;
     onTooltipLeave?.();
     if (onRequestFlyout) {
       const rect = shellRef.current?.getBoundingClientRect();
       if (!rect || !submenu) {
+        // Nothing opened, so the release must still invoke the primary command. Marking the hold as
+        // opened before this bail made such a press dead: no menu AND no tool.
         return;
       }
+      holdOpenedRef.current = true;
       onRequestFlyout({
         anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
         flyout: {
@@ -3426,6 +3428,7 @@ function ToolbarPaletteItem({
       });
       return;
     }
+    holdOpenedRef.current = true;
     setMenuOpen(true);
   }, [activeTool, hasSubmenu, item.label, onRequestFlyout, onTooltipLeave, submenu]);
 
@@ -4095,14 +4098,15 @@ function DistributeCommandIconButton({
   }, []);
 
   const openMenu = useCallback(() => {
-    holdOpenedRef.current = true;
     onTooltipLeave?.();
     // Native palettes open the mode chooser in its own floating window (overflows the palette).
     if (onRequestFlyout) {
       const rect = shellRef.current?.getBoundingClientRect();
       if (!rect) {
+        // Nothing opened — leave the release free to invoke, or the press does nothing at all.
         return;
       }
+      holdOpenedRef.current = true;
       onRequestFlyout({
         anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
         flyout: {
@@ -4127,6 +4131,7 @@ function DistributeCommandIconButton({
       });
       return;
     }
+    holdOpenedRef.current = true;
     setMenuOpen(true);
   }, [onRequestFlyout, onTooltipLeave, command.id, command.title, distributeMode]);
 

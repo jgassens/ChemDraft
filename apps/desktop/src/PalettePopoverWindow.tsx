@@ -54,6 +54,9 @@ export function PalettePopoverWindow({
   // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
+  // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
+  // in-flight reveal chain cannot show it again after the user has closed it.
+  const dismissedRef = useRef(false);
   // Where this open's top-left belongs (global logical). Re-asserted after every content-fit
   // resize: macOS resizes are bottom-anchored, so a height change after Rust's set_position
   // would otherwise shove the window down by the delta — the first-open misposition.
@@ -95,6 +98,8 @@ export function PalettePopoverWindow({
         return;
       }
       contentPushedRef.current = true;
+      // A fresh push is a fresh open — it may follow a dismissal.
+      dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
       }
@@ -180,27 +185,42 @@ export function PalettePopoverWindow({
     // a full repaint of this small window. setTimeout, not requestAnimationFrame — rAF is
     // suspended while the window is hidden (see the reveal comment above).
     document.body.style.backgroundColor = "#fffefe";
-    window.setTimeout(() => {
+    const scrubTimer = window.setTimeout(() => {
       document.body.style.backgroundColor = "";
     }, 30);
     // Size, THEN position, THEN show — the tooltip window's proven order. Positioning before
     // the content-fit resize let the bottom-anchored resize drag the top edge down by the
     // height delta, which is exactly where the first open used to land.
     const rect = shellRef.current?.getBoundingClientRect();
+    // A dismissal (or a newer content push) during this awaited chain must stop it: the trailing
+    // show() would otherwise resurrect a popover the user just clicked away from, and a superseded
+    // chain's position write would move the visible window back to the old anchor.
+    let cancelled = false;
     void (async () => {
       if (rect && rect.width > 0 && rect.height > 0) {
         await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
           () => undefined
         );
       }
+      if (cancelled) {
+        return;
+      }
       const anchor = anchorRef.current;
       if (anchor) {
         await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
+      }
+      if (cancelled || dismissedRef.current) {
+        return;
       }
       await import("@tauri-apps/api/window")
         .then(({ getCurrentWindow }) => getCurrentWindow().show())
         .catch(() => undefined);
     })();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(scrubTimer);
+      document.body.style.backgroundColor = "";
+    };
   }, [content, prewarm]);
 
   // Safety net for a cold user-initiated open: if content never arrives (e.g. the owning palette went
@@ -228,6 +248,7 @@ export function PalettePopoverWindow({
         return;
       }
       event.preventDefault();
+      dismissedRef.current = true;
       void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
       hidePopoverWindow();
     };
@@ -239,7 +260,10 @@ export function PalettePopoverWindow({
   // that isn't this popover. Hide on that signal, so a popover persists only while you use it.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listenForToolsetPopoverDismiss(() => hidePopoverWindow())
+    void listenForToolsetPopoverDismiss(() => {
+      dismissedRef.current = true;
+      hidePopoverWindow();
+    })
       .then((cleanup) => {
         unlisten = cleanup;
       })
@@ -270,6 +294,7 @@ export function PalettePopoverWindow({
       return;
     }
     void sendPaletteCommand(command.id).catch(() => undefined);
+    dismissedRef.current = true;
     hidePopoverWindow();
   };
 

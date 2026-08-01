@@ -119,6 +119,12 @@ export function PaletteTooltipWindow() {
       // whichever display this floating window is currently on — see placePaletteTooltip.
       const anchorProbeY = (payload.aboveY + payload.belowY) / 2;
       const bounds = await monitorLogicalBoundsAt(payload.anchorCenterX, anchorProbeY);
+      // Superseded while awaiting the monitor query: writing this placement now would drag the
+      // (already re-placed, visible) window back to the previous button's anchor while it shows the
+      // new button's text. Every write below is guarded, not just the reveal.
+      if (cancelled) {
+        return;
+      }
       const { x, y } = placePaletteTooltip({
         anchorCenterX: payload.anchorCenterX,
         belowY: payload.belowY,
@@ -128,6 +134,9 @@ export function PaletteTooltipWindow() {
         bounds
       });
       await setCurrentWindowLogicalSize({ width, height });
+      if (cancelled) {
+        return;
+      }
       await setCurrentWindowLogicalPosition({ x, y });
       if (!cancelled) {
         showTooltipWindow();

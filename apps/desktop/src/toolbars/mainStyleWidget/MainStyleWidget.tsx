@@ -12,6 +12,10 @@ type VariantRowsBuilder = (state: ToolbarWidgetState) => MainStyleRows;
 
 /** Layout builders by variant. A variant without a builder yet renders the text layout (and reports
  *  itself as text), so the widget stays shippable while variants land one at a time. */
+/** Every terminal signal for a pointer gesture. `pointerup` alone misses a cancelled gesture or a
+ *  release the window never sees, and the variant latch must not outlive the press. */
+const INTERACTION_END_EVENTS = ["pointerup", "pointercancel", "blur"] as const;
+
 const VARIANT_ROW_BUILDERS: Partial<Record<ToolbarStyleVariant, VariantRowsBuilder>> = {
   text: textVariantRows,
   molecule: moleculeVariantRows,
@@ -56,8 +60,15 @@ export function MainStyleWidget() {
     }
   }, [targetVariant]);
 
+  // Every way a gesture can END must release the latch, not just pointerup: a pointercancel (OS
+  // gesture takeover, a native <select> menu taking over the tracking loop) or the window losing
+  // focus mid-press otherwise left `interactingRef` true forever, freezing the widget on a stale
+  // variant — it would keep showing arrow controls after the user selected a text box.
   const endInteraction = useCallback(() => {
     interactingRef.current = false;
+    for (const type of INTERACTION_END_EVENTS) {
+      window.removeEventListener(type, endInteraction, { capture: true });
+    }
     setRenderedVariant((previous) => (
       previous === targetVariantRef.current ? previous : targetVariantRef.current
     ));
@@ -66,12 +77,16 @@ export function MainStyleWidget() {
   const beginInteraction = useCallback(() => {
     if (!interactingRef.current) {
       interactingRef.current = true;
-      window.addEventListener("pointerup", endInteraction, { capture: true, once: true });
+      for (const type of INTERACTION_END_EVENTS) {
+        window.addEventListener(type, endInteraction, { capture: true });
+      }
     }
   }, [endInteraction]);
 
   useEffect(() => () => {
-    window.removeEventListener("pointerup", endInteraction, { capture: true });
+    for (const type of INTERACTION_END_EVENTS) {
+      window.removeEventListener(type, endInteraction, { capture: true });
+    }
   }, [endInteraction]);
 
   const { effectiveVariant, rows } = mainStyleRowsForVariant(renderedVariant, widgetState);
