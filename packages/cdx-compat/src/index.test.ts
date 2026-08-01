@@ -13,6 +13,7 @@ import {
 import { cdxmlFixtures } from "@chemdraft/fixtures";
 import {
   CdxmlEnvelopeCodecVersion,
+  CdxmlEnvelopeCodecVersionV1,
   ChemDraftObjectTags,
   canonicalVisibleCdxml,
   decodeBase64UrlUtf8,
@@ -77,11 +78,11 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(visibleHash).toBe(visibleHashForCdxml(result.contents));
     expect(canonicalVisibleCdxml(result.contents)).toContain("<fragment");
-    expect(result.contents).toContain('p="75 111"');
+    expect(result.contents).toContain('p="111 75"');
     expect(canonicalVisibleCdxml(result.contents)).not.toContain("org.chemdraft/native-document");
   });
 
-  it("exports visible CDXML page and atom coordinates as vertical-then-horizontal", () => {
+  it("exports visible CDXML page and atom coordinates in spec order (x then y)", () => {
     const document = documentWithObjects([
       {
         ...singleBondMolecule(),
@@ -103,11 +104,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
     const result = exportDocumentToCdxml(document, { creationProgram: "Coordinate Order Test" });
 
-    expect(result.contents).toContain('<page id="page_001" BoundingBox="0 0 792 612">');
-    expect(result.contents).toContain('p="157.6553 130.875"');
-    expect(result.contents).toContain('p="157.6553 147.375"');
-    expect(result.contents).toContain('p="173.2089 152.8828"');
-    expect(result.contents).not.toContain('p="130.875 157.6553"');
+    // A portrait Letter page is 612 wide x 792 tall; "left top right bottom" must say so, or every
+    // spec-conforming reader (ChemDraw, RDKit, ChemAxon) sees the page as landscape.
+    expect(result.contents).toContain('<page id="page_001" BoundingBox="0 0 612 792">');
+    expect(result.contents).toContain('p="130.875 157.6553"');
+    expect(result.contents).toContain('p="147.375 157.6553"');
+    expect(result.contents).toContain('p="152.8828 173.2089"');
+    // The y-first order ChemDraft wrote through codec v1 must not come back.
+    expect(result.contents).not.toContain('p="157.6553 130.875"');
   });
 
   it("canonicalizes equivalent visible XML despite comments, whitespace, CDATA, and attribute ordering", () => {
@@ -326,8 +330,10 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(result.contents).toContain('GraphicType="Arc"');
     expect(result.contents).toContain('AngularSize="270"');
-    expect(result.contents).toContain('Start="66.75 70.5"');
-    expect(result.contents).toContain('End="48 51.75"');
+    // Centre (51.75, 66.75), r 18.75: angle 0 leaves the centre's y untouched, and a 270-degree
+    // sweep lands straight above it — both only true when the pair reads "x y".
+    expect(result.contents).toContain('Start="70.5 66.75"');
+    expect(result.contents).toContain('End="51.75 48"');
     expect(result.warnings).toEqual([]);
   });
 
@@ -336,7 +342,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
 <CDXML CreationProgram="Arc Import Test">
   <page id="20" BoundingBox="0 0 540 720">
-    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="66.75 70.5" End="48 51.75"/>
+    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="70.5 66.75" End="51.75 48"/>
   </page>
 </CDXML>`);
     const graphic = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
@@ -533,6 +539,50 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.visible_layer_modified");
   });
 
+  it("still opens codec-v1 envelopes ChemDraft already wrote", () => {
+    // v1 is every .cdxml this app shipped before the coordinate order was corrected. Its embedded
+    // payload is native JSON and was always right, so accepting the version is the whole migration:
+    // drop v1 from the supported set and every existing document fails to open.
+    const document = createEmptyDocument({ now: "2026-06-06T00:00:00.000Z" });
+    const molecule = singleBondMolecule();
+    const withMolecule: ChemDraftDocument = {
+      ...document,
+      pages: [{ ...document.pages[0], objects: [molecule] }]
+    };
+    const exported = exportDocumentToCdxml(withMolecule, { creationProgram: "V1 Compatibility" });
+    const asV1 = replaceObjectTag(exported.contents, ChemDraftObjectTags.codecVersion, CdxmlEnvelopeCodecVersionV1);
+    const opened = openChemDraftPayload(asV1);
+
+    expect(opened.source).toBe("native-payload");
+    expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.codec_version_unsupported");
+    expect(opened.document?.pages[0].objects[0]).toEqual(molecule);
+  });
+
+  it("transposes the visible layer of a codec-v1 envelope whose payload is gone", () => {
+    // A v1 file stripped of its payload leaves only a visible layer ChemDraft wrote y-first.
+    // Reading it with the corrected parsers yields the exact transpose, so swapping back recovers
+    // the true geometry: p="75 111" was authored as (x 111, y 75) — a horizontal bond.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft 0.1.0">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <objecttag Name="${ChemDraftObjectTags.codecVersion}" Persistent="yes" TagType="String" Value="${CdxmlEnvelopeCodecVersionV1}"/>
+    <fragment id="f1">
+      <n id="a1" p="75 75"/>
+      <n id="a2" p="75 111"/>
+      <b id="b1" B="a1" E="a2" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    expect(molecule?.atoms).toHaveLength(2);
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(100);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(100);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(148);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(100);
+  });
+
   it("returns a friendly unsupported-version warning for forward codec versions", () => {
     const document = createEmptyDocument({ now: "2026-06-06T00:00:00.000Z" });
     const result = exportDocumentToCdxml(document, { creationProgram: "Future Test" });
@@ -586,22 +636,24 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.structure_string_not_derived");
   });
 
-  it("imports CDXML p and BoundingBox coordinates as vertical-then-horizontal", () => {
+  it("imports CDXML p and BoundingBox coordinates in spec order (x then y)", () => {
+    // Two fragments stacked vertically at the same x, with a label below both. Written in spec
+    // order — "x y" points, "left top right bottom" boxes — so the imported layout must agree.
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
-  <page id="p1" BoundingBox="0 0 720 540">
+  <page id="p1" BoundingBox="0 0 540 720">
     <fragment id="top" BoundingBox="100 120 100 156">
       <n id="a1" p="100 120"/>
       <n id="a2" p="100 156"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
-    <fragment id="bottom" BoundingBox="220 120 220 156">
-      <n id="a3" p="220 120"/>
-      <n id="a4" p="220 156"/>
+    <fragment id="bottom" BoundingBox="100 320 100 356">
+      <n id="a3" p="100 320"/>
+      <n id="a4" p="100 356"/>
       <b id="b2" B="a3" E="a4" Order="1"/>
     </fragment>
-    <t id="label" p="300 120">vertical stack</t>
+    <t id="label" p="100 520">vertical stack</t>
   </page>
 </CDXML>`);
 
@@ -615,7 +667,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(label?.y ?? 0).toBeGreaterThan((bottom?.y ?? 0) + 100);
   });
 
-  it("rotates ChemDraw 26 visible CDXML into the displayed page orientation", () => {
+  it("imports ChemDraw CDXML faithfully — no rotation, no mirror", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
 <CDXML CreationProgram="ChemDraw 26.0.0.6599">
@@ -630,11 +682,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
-    expect(molecule?.atoms[0]?.x).toBeCloseTo(184);
-    expect(molecule?.atoms[0]?.y).toBeCloseTo(109.33333333333334);
-    expect(molecule?.atoms[1]?.x).toBeCloseTo(184);
-    expect(molecule?.atoms[1]?.y).toBeCloseTo(157.33333333333334);
-    expect(molecule?.atoms[0]?.labelOffset?.x).toBeCloseTo(2.666666666666657);
+    // p="100 120" and p="100 156" are (x, y): a vertical bond at x=100, imported at the 4/3 scale.
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(133.33333333333334);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(160);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(133.33333333333334);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(208);
+    // The Cl label box "94 112 102 124" centres at (98, 118), up-and-LEFT of its atom at (100, 120).
+    // The old CCW-90 compensation turned that into +x — the mirror, baked into the expectation.
+    expect(molecule?.atoms[0]?.labelOffset?.x).toBeCloseTo(-2.666666666666657);
     expect(molecule?.atoms[0]?.labelOffset?.y).toBeCloseTo(-2.666666666666657);
     expect((molecule?.height ?? 0)).toBeGreaterThan(molecule?.width ?? 0);
   });
@@ -666,12 +721,15 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.source).toBe("external-cdxml");
     expect(molecule?.atoms).toHaveLength(7);
     expect(molecule?.bonds).toHaveLength(6);
+    // A real ChemDraw file: p="157.6553 130.875" is already (x, y), so the import is a plain 4/3
+    // scale with no swap. The three round-trip assertions at the end of this test are the proof
+    // that the reader and the writer agree on that order.
     expect(molecule?.atoms[0]?.element).toBe("C");
-    expect(molecule?.atoms[0]?.x).toBeCloseTo(174.5);
-    expect(molecule?.atoms[0]?.y).toBeCloseTo(210.20706666666667);
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(210.20706666666667);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(174.5);
     expect(molecule?.atoms[5]?.element).toBe("C");
-    expect(molecule?.atoms[5]?.x).toBeCloseTo(216.0896);
-    expect(molecule?.atoms[5]?.y).toBeCloseTo(265.52826666666665);
+    expect(molecule?.atoms[5]?.x).toBeCloseTo(265.52826666666665);
+    expect(molecule?.atoms[5]?.y).toBeCloseTo(216.0896);
     expect(molecule?.bonds[5]).toMatchObject({
       fromAtomId: "atom_005",
       toAtomId: "atom_007",
@@ -709,14 +767,13 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
-    expect(molecule?.bonds[0]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
-    expect(molecule?.bonds[2]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
+    // Orientation pin: a1 p="100 100" and a2 p="136 100" share a y and run left-to-right. The
+    // inward check below is mirror-invariant on its own, so the hexagon's pose is asserted here.
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(molecule?.atoms[1]?.y ?? Number.NaN);
+    expect(molecule?.atoms[1]?.x).toBeGreaterThan(molecule?.atoms[0]?.x ?? Number.NaN);
+    expect(molecule?.bonds[0].order).toBe("double");
+    expect(molecule?.bonds[2].order).toBe("double");
+    expectRingDoubleBondsPointInward(molecule);
   });
 
   it("keeps imported cyclic double-bond secondary lines inside the ring", () => {
@@ -743,14 +800,9 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
-    expect(molecule?.bonds[0]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
-    expect(molecule?.bonds[2]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
+    expect(molecule?.bonds[0].order).toBe("double");
+    expect(molecule?.bonds[2].order).toBe("double");
+    expectRingDoubleBondsPointInward(molecule);
   });
 
   it("imports synthetic single and triple bond fixtures", () => {
@@ -1024,14 +1076,13 @@ describe("CDXML-compatible ChemDraft envelope", () => {
   });
 
   it("imports semantic reaction arrows with a frame that matches their endpoints", () => {
-    // The BoundingBox beside Start/End is written "vertical horizontal"; reading it as XY
-    // transposed the frame, so a horizontal arrow imported as a 1px-wide, arrow-length-tall object
-    // whose line still drew horizontally — selection and transform geometry described a different
-    // shape than the visible arrow.
+    // CDXRectangle is "left top right bottom" and CDXPoint2D is "x y". Reading either transposed
+    // detaches the frame from the line: the arrow still draws between its endpoints, but selection
+    // and transform geometry describe the mirrored shape. Assert the frame spans the endpoints.
     const arrowCdxml = (arrowType: string, horizontal: boolean) => {
-      const box = horizontal ? "120 120 120 216" : "120 120 216 120";
+      const box = horizontal ? "120 120 216 120" : "120 120 120 216";
       const start = "120 120";
-      const end = horizontal ? "120 216" : "216 120";
+      const end = horizontal ? "216 120" : "120 216";
       return `<?xml version="1.0" encoding="UTF-8"?>
 <CDXML CreationProgram="Arrow Frame Test">
   <page id="1" BoundingBox="0 0 540 720">
@@ -1050,6 +1101,39 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       expect(vertical.height, `${arrowType} vertical height`).toBeGreaterThan(vertical.width);
       expect(vertical.height).toBeCloseTo(Math.abs((vertical.data.lineEnd?.y ?? 0) - (vertical.data.lineStart?.y ?? 0)), 6);
     }
+  });
+
+  it("reads a ChemDraw <arrow> frame consistently with its unambiguous 3D endpoints", () => {
+    // Head3D/Tail3D are "x y z" in every CDX dialect, so they pin the arrow's true direction with
+    // no convention to argue about. A real ChemDraw 26 document was inspected to settle this: its
+    // arrow's BoundingBox agreed with its Head3D/Tail3D only when read left-top-right-bottom, and
+    // its page box read portrait only when read x-first. This fixture is hand-authored to carry
+    // the same discriminating shape — a horizontal arrow inside a thin band centred on its axis.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraw Shaped Fixture">
+  <page id="33" BoundingBox="0 0 540 720">
+    <arrow id="34" BoundingBox="200 296 320 304" ArrowheadHead="Full" ArrowheadType="Solid" Head3D="320 300 0" Tail3D="200 300 0"/>
+    <graphic id="35" GraphicType="Rectangle" BoundingBox="200 296 320 304"/>
+  </page>
+</CDXML>`);
+    const arrow = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+    const rectangle = opened.document?.pages[0].objects[1] as GraphicObject | undefined;
+
+    // The arrow's frame is derived from Head3D/Tail3D: tail (200, 300) -> head (320, 300), so it
+    // must import horizontal and 120 units long at the 4/3 scale.
+    expect(arrow).toBeDefined();
+    expect(arrow!.data.lineStart?.y).toBeCloseTo(arrow!.data.lineEnd?.y ?? Number.NaN, 6);
+    expect((arrow!.data.lineEnd?.x ?? 0) - (arrow!.data.lineStart?.x ?? 0)).toBeCloseTo(120 * (4 / 3), 6);
+    expect(arrow!.width).toBeGreaterThan(arrow!.height);
+
+    // The rectangle's frame comes only from the BoundingBox, so it is what pins the box order:
+    // "200 296 320 304" is a 120x8 band read left-top-right-bottom, and a 8x120 one transposed.
+    expect(rectangle).toBeDefined();
+    expect(rectangle!.width).toBeCloseTo(120 * (4 / 3), 6);
+    expect(rectangle!.height).toBeCloseTo(8 * (4 / 3), 6);
+    expect(rectangle!.x).toBeCloseTo(200 * (4 / 3), 6);
+    expect(rectangle!.y).toBeCloseTo(296 * (4 / 3), 6);
   });
 
   it("keeps colour, dash, and head-loss warnings on semantic arrow export", () => {
@@ -1280,6 +1364,39 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
   });
 });
+
+/**
+ * Asserts every double bond in a single-ring molecule carries its secondary line toward the ring
+ * interior, derived from the imported coordinates rather than a hard-coded "left"/"right". The
+ * normal and the sign convention mirror `doubleBondSideTowardRingInterior` in the layout engine:
+ * normal = (-dy, dx)/len, and "left" offsets toward +normal.
+ */
+function expectRingDoubleBondsPointInward(molecule: MoleculeObject | undefined): void {
+  expect(molecule).toBeDefined();
+  const atoms = molecule!.atoms;
+  const centroidX = atoms.reduce((sum, atom) => sum + atom.x, 0) / atoms.length;
+  const centroidY = atoms.reduce((sum, atom) => sum + atom.y, 0) / atoms.length;
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const doubleBonds = molecule!.bonds.filter((bond) => bond.order === "double");
+  expect(doubleBonds.length).toBeGreaterThan(0);
+  for (const bond of doubleBonds) {
+    const from = atomById.get(bond.fromAtomId);
+    const to = atomById.get(bond.toAtomId);
+    expect(from).toBeDefined();
+    expect(to).toBeDefined();
+    const dx = to!.x - from!.x;
+    const dy = to!.y - from!.y;
+    const length = Math.hypot(dx, dy);
+    const dot =
+      (centroidX - (from!.x + to!.x) / 2) * (-dy / length) +
+      (centroidY - (from!.y + to!.y) / 2) * (dx / length);
+    expect(Math.abs(dot)).toBeGreaterThan(1e-9);
+    expect({ bond: bond.id, side: bond.display?.doubleBondSide }).toEqual({
+      bond: bond.id,
+      side: dot > 0 ? "left" : "right"
+    });
+  }
+}
 
 function documentWithObjects(objects: ChemDraftDocument["pages"][number]["objects"]): ChemDraftDocument {
   const base = createEmptyDocument({ title: "Round Trip", now: "2026-06-06T00:00:00.000Z" });

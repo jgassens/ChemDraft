@@ -4987,12 +4987,22 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-atom-count="7"');
     expect(markup).toContain('data-bond-count="6"');
     expect((markup.match(/native-bond-line/g) ?? []).length).toBe(6);
-    expect(svgLineNumberAttribute(firstBondMarkup, "x1")).toBeCloseTo(174.5);
-    expect(svgLineNumberAttribute(firstBondMarkup, "y1")).toBeCloseTo(210.20706666666667);
-    expect(svgLineNumberAttribute(firstBondMarkup, "x2")).toBeCloseTo(196.5);
-    expect(svgLineNumberAttribute(firstBondMarkup, "y2")).toBeCloseTo(210.20706666666667);
-    expect(svgLineNumberAttribute(branchBondMarkup, "x2")).toBeLessThan(svgLineNumberAttribute(branchBondMarkup, "x1"));
-    expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
+    // The chain spans x 157.66..212.62 and y 130.88..162.07 in the file, so it renders wider than
+    // tall — the "horizontal" this test is named for. Reading the points y-first transposed that
+    // into a vertical stack while these assertions described the transpose as if it were the truth.
+    const chainXs = [...markup.matchAll(/native-bond-line[^>]*?\bx1="([-0-9.]+)"/g)].map((m) => Number(m[1]));
+    const chainYs = [...markup.matchAll(/native-bond-line[^>]*?\by1="([-0-9.]+)"/g)].map((m) => Number(m[1]));
+    expect(Math.max(...chainXs) - Math.min(...chainXs)).toBeGreaterThan(Math.max(...chainYs) - Math.min(...chainYs));
+
+    // bond_001 joins p="157.6553 130.875" to p="157.6553 147.375": same x, so it hangs vertically
+    // off the left end of that horizontal chain.
+    expect(svgLineNumberAttribute(firstBondMarkup, "x1")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y1")).toBeCloseTo(174.5);
+    expect(svgLineNumberAttribute(firstBondMarkup, "x2")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y2")).toBeCloseTo(196.5);
+    // bond_006 branches up and to the right, from p="199.1462 145.5677" to p="212.6208 136.0448".
+    expect(svgLineNumberAttribute(branchBondMarkup, "x2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "x1"));
+    expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeLessThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
   });
 
   it("renders the BactVue visible CDXML subset with text, molecules, and explicit compatibility fallbacks", () => {

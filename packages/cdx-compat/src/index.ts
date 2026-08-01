@@ -53,7 +53,18 @@ export interface ChemDraftOpenResult {
   conflict?: ChemDraftOpenConflict;
 }
 
-export const CdxmlEnvelopeCodecVersion = "chemdraft.cdxml.v1";
+/** The codec version ChemDraft wrote while its 2D CDXML attributes were y-first. Still READ (the
+ *  embedded native payload is JSON and unaffected by the visible layer's coordinate order); its
+ *  visible layer is transposed back on import. Never written again. */
+export const CdxmlEnvelopeCodecVersionV1 = "chemdraft.cdxml.v1";
+
+/** Current codec: spec-order visible layer ("x y" points, "left top right bottom" rectangles). */
+export const CdxmlEnvelopeCodecVersion = "chemdraft.cdxml.v2";
+
+const SupportedCdxmlEnvelopeCodecVersions: ReadonlySet<string> = new Set([
+  CdxmlEnvelopeCodecVersionV1,
+  CdxmlEnvelopeCodecVersion
+]);
 export const ChemDraftObjectTagPrefix = "org.chemdraft/";
 export const ChemDraftObjectTags = {
   codecVersion: "org.chemdraft/codec-version",
@@ -133,7 +144,7 @@ interface ImportPageContext {
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
 type BondDisplayStyle = NonNullable<MoleculeBond["display"]>["bondStyle"];
-type CdxmlImportTransform = "none" | "rotate-counterclockwise-90";
+type CdxmlImportTransform = "none" | "transpose-legacy-v1";
 
 export function exportDocumentToCdxml(
   document: ChemDraftDocument,
@@ -227,7 +238,11 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   }
 
   const codecVersion = tags[ChemDraftObjectTags.codecVersion];
-  if (codecVersion !== CdxmlEnvelopeCodecVersion) {
+  // Accept every codec this build understands, not just the current one: v1 files keep opening
+  // exactly as they always did (their payload is the authority, and their visible layer is
+  // transposed back when it has to be imported). Read-only migration — nothing is rewritten until
+  // the user saves.
+  if (codecVersion === undefined || !SupportedCdxmlEnvelopeCodecVersions.has(codecVersion)) {
     return {
       source: "native-payload",
       warnings: [
@@ -394,7 +409,9 @@ function buildStandardColorTableXml(): string {
 function buildPageXml(page: DocumentPage, children: string): string {
   const attributes = [
     `id="${escapeXmlAttribute(page.id)}"`,
-    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.height))} ${formatNumber(cssPxToCdxml(page.width))}"`
+    // "left top right bottom": a portrait page must export as width-then-height, or every
+    // spec-conforming reader sees it as landscape.
+    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.width))} ${formatNumber(cssPxToCdxml(page.height))}"`
   ];
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
@@ -1338,90 +1355,77 @@ function applyImportTransformToPageObjects(
     return page;
   }
 
-  const bounds = boundsForDocumentObjects(page.objects);
-  const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
   return {
     ...page,
-    objects: page.objects.map((object) => rotateImportedObjectCounterclockwise90(object, center))
+    objects: page.objects.map((object) => transposeImportedObject(object))
   };
 }
 
-function rotateImportedObjectCounterclockwise90(object: DocumentObject, center: Point): DocumentObject {
-  if (object.compatibility?.unknown.cdxmlCoordinateSpace === "xy") {
-    return object;
-  }
-
+/**
+ * Undo a codec-v1 misread. ChemDraft wrote every 2D CDXML attribute y-first through v1; reading such
+ * a file with the (correct) x-first parsers yields the exact TRANSPOSE of the true geometry, so
+ * swapping x/y back recovers it — no rotation, no reflection, and it is its own inverse.
+ *
+ * This replaced a CCW-90 rotation applied to any file whose CreationProgram said "ChemDraw". That
+ * rotation existed to paper over the same y-first misread, but transpose ∘ rotation has determinant
+ * −1: the net import of a real ChemDraw file was a MIRROR. Wedge/hash geometry flipped while `AS`
+ * R/S strings imported verbatim, so the document claimed R over a depiction showing S.
+ */
+function transposeImportedObject(object: DocumentObject): DocumentObject {
   if (object.type === "molecule") {
     const atoms = object.atoms.map((atom) => {
-      const point = rotatePointCounterclockwise90(atom, center);
+      const point = transposePoint(atom);
       if (!atom.labelOffset) {
-        return {
-          ...atom,
-          ...point
-        };
+        return { ...atom, ...point };
       }
-      const labelPoint = rotatePointCounterclockwise90({
-        x: atom.x + atom.labelOffset.x,
-        y: atom.y + atom.labelOffset.y
-      }, center);
       return {
         ...atom,
         ...point,
-        labelOffset: {
-          x: labelPoint.x - point.x,
-          y: labelPoint.y - point.y
-        }
+        labelOffset: { x: atom.labelOffset.y, y: atom.labelOffset.x }
       };
     });
-    const bounds = boundsForAtoms(atoms);
     return {
       ...object,
-      ...bounds,
+      ...boundsForAtoms(atoms),
       atoms
     };
   }
 
   if (object.type === "reaction-arrow") {
     const start = object.start.kind === "point" && object.start.point
-      ? { ...object.start, point: rotatePointCounterclockwise90(object.start.point, center) }
+      ? { ...object.start, point: transposePoint(object.start.point) }
       : object.start;
     const end = object.end.kind === "point" && object.end.point
-      ? { ...object.end, point: rotatePointCounterclockwise90(object.end.point, center) }
+      ? { ...object.end, point: transposePoint(object.end.point) }
       : object.end;
     const pointBounds = start.kind === "point" && start.point && end.kind === "point" && end.point
       ? boundsForPoints([start.point, end.point])
-      : rotateBoxCounterclockwise90(object, center);
-    return {
-      ...object,
-      ...pointBounds,
-      start,
-      end
-    };
+      : transposeBox(object);
+    return { ...object, ...pointBounds, start, end };
   }
 
-  return {
-    ...object,
-    ...rotateBoxCounterclockwise90(object, center)
-  } as DocumentObject;
+  if (object.type === "graphic") {
+    const data = { ...object.data };
+    for (const key of ["lineStart", "lineEnd", "pathControlPoint", "arcCenter"] as const) {
+      const point = data[key];
+      if (point && typeof point === "object" && typeof point.x === "number" && typeof point.y === "number") {
+        data[key] = transposePoint(point);
+      }
+    }
+    return { ...object, ...transposeBox(object), data };
+  }
+
+  return { ...object, ...transposeBox(object) } as DocumentObject;
 }
 
-function rotateBoxCounterclockwise90(
-  box: { x: number; y: number; width: number; height: number },
-  center: Point
+function transposeBox(
+  box: { x: number; y: number; width: number; height: number }
 ): { x: number; y: number; width: number; height: number } {
-  return boundsForPoints([
-    rotatePointCounterclockwise90({ x: box.x, y: box.y }, center),
-    rotatePointCounterclockwise90({ x: box.x + box.width, y: box.y }, center),
-    rotatePointCounterclockwise90({ x: box.x, y: box.y + box.height }, center),
-    rotatePointCounterclockwise90({ x: box.x + box.width, y: box.y + box.height }, center)
-  ]);
+  return { x: box.y, y: box.x, width: box.height, height: box.width };
 }
 
-function rotatePointCounterclockwise90(point: Point, center: Point): Point {
-  return {
-    x: center.x - (point.y - center.y),
-    y: center.y + (point.x - center.x)
-  };
+function transposePoint(point: Point): Point {
+  return { x: point.y, y: point.x };
 }
 
 function importFragment(
@@ -2115,29 +2119,13 @@ function graphicTypeForCdxmlArrow(element: XmlElementView): string {
   return element.attributes.AngularSize ? "Arc" : "Line";
 }
 
-/** CDXML writes 2D position attributes (`Start`/`End`, and the `BoundingBox` beside them) in
- *  "vertical horizontal" (y x) order, while the 3D ones (`Head3D`/`Tail3D`) are "x y z". An
- *  element's BoundingBox follows whichever family it carries — both real fixtures agree: a
- *  ChemDraw `<arrow Head3D=… Tail3D=…>` has an XY box, while a `<graphic ArrowType=… Start=… End=…>`
- *  reaction arrow (the form `formatLineBoundingBox` also writes) has a YX one. */
-function cdxmlShapeBoundingBoxIsYx(element: XmlElementView): boolean {
-  // Scoped to semantic reaction arrows: they are the form proven to be YX (the `ArrowType` fixture
-  // and ChemDraft's own export), while a ChemDraw `<arrow>` carrying 3D endpoints is XY, and
-  // generic graphics keep whatever convention they already round-tripped with.
-  if (element.attributes.ArrowType === undefined) {
-    return false;
-  }
-  if (element.attributes.Head3D !== undefined || element.attributes.Tail3D !== undefined) {
-    return false;
-  }
-  return element.attributes.Start !== undefined || element.attributes.End !== undefined;
-}
-
 function cdxmlLinePointsForShape(element: XmlElementView): { start: Point; end: Point } | undefined {
-  // Tail3D/Head3D are 3D "x y z" attributes; Start/End are 2D "y x" position attributes (see
-  // formatPoint). They must be parsed with matching coordinate order or the endpoints transpose.
-  const tail = parseCdxmlXyPoint(element.attributes.Tail3D) ?? parseCdxmlYxPoint(element.attributes.Start);
-  const head = parseCdxmlXyPoint(element.attributes.Head3D) ?? parseCdxmlYxPoint(element.attributes.End);
+  // Tail3D/Head3D are 3D "x y z"; Start/End are 2D "x y". Both are x-first, so one parser order
+  // serves all four — the real ChemDraw file that settled this carries an <arrow> with Head3D
+  // "341 232 0" / Tail3D "260 232 0" and a BoundingBox "260 227.62 341 235.38" that only agrees
+  // with those endpoints read left-top-right-bottom.
+  const tail = parseCdxmlXyPoint(element.attributes.Tail3D) ?? parseCdxmlXyPoint(element.attributes.Start);
+  const head = parseCdxmlXyPoint(element.attributes.Head3D) ?? parseCdxmlXyPoint(element.attributes.End);
   return tail && head ? { start: tail, end: head } : undefined;
 }
 
@@ -2147,15 +2135,6 @@ function graphicBoundsForCdxmlShape(
   linePoints: { start: Point; end: Point } | undefined
 ): { x: number; y: number; width: number; height: number } {
   if (type === "Line" || type === "Arc") {
-    // Reading a YX box as XY transposes the frame: a horizontal reaction arrow imported as a
-    // 1px-wide, arrow-length-tall object whose line still drew horizontally, wrecking selection and
-    // transform geometry (and ChemDraft's own semantic-arrow export writes exactly that YX form).
-    // Parse it in its own order; the matching endpoints stay the fallback.
-    if (cdxmlShapeBoundingBoxIsYx(element)) {
-      return parseCdxmlYxBoundingBox(element.attributes.BoundingBox)
-        ?? (linePoints ? paddedBoundsForPoints([linePoints.start, linePoints.end], type === "Arc" ? 12 : 1) : undefined)
-        ?? parseBoundingBox(element.attributes.BoundingBox);
-    }
     return parseCdxmlXyBoundingBox(element.attributes.BoundingBox)
       ?? (linePoints ? paddedBoundsForPoints([linePoints.start, linePoints.end], type === "Arc" ? 12 : 1) : undefined)
       ?? parseBoundingBox(element.attributes.BoundingBox);
@@ -2703,11 +2682,13 @@ function elementFromCdxmlAtom(element: string | undefined): string {
   return element;
 }
 
+/** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our
+ *  own v2 output) writes spec order and needs no correction. Keyed off the codec tag rather than
+ *  CreationProgram so a foreign file can never be transposed by accident. */
 function importTransformForTree(tree: OrderedXmlTree): CdxmlImportTransform {
-  const root = findElements(tree, "CDXML")[0];
-  const creationProgram = root?.attributes.CreationProgram ?? "";
-  return /\bChemDraw\b/i.test(creationProgram)
-    ? "rotate-counterclockwise-90"
+  const tags = findChemDraftObjectTags(tree);
+  return tags[ChemDraftObjectTags.codecVersion] === CdxmlEnvelopeCodecVersionV1
+    ? "transpose-legacy-v1"
     : "none";
 }
 
@@ -2761,8 +2742,11 @@ function formatColorComponent(value: number): string {
   return formatNumber(Math.max(0, Math.min(255, value)) / 255);
 }
 
+/** CDXML 2D positions are "x y" — see the CDXCoordinates note that the y-first order belongs to
+ *  BINARY CDX, not CDXML. ChemDraft wrote y-first through codec v1; v2 writes spec order, and a v1
+ *  file's visible layer is transposed on import (see {@link transposeImportedObject}). */
 function formatPoint(point: Point): string {
-  return `${formatNumber(cssPxToCdxml(point.y))} ${formatNumber(cssPxToCdxml(point.x))}`;
+  return `${formatNumber(cssPxToCdxml(point.x))} ${formatNumber(cssPxToCdxml(point.y))}`;
 }
 
 function formatXyPoint(point: Point): string {
@@ -2783,32 +2767,11 @@ function parseCdxmlXyPoint(point: string | undefined): Point | undefined {
   };
 }
 
+/** Spec-order 2D position: "x y", falling back to the origin when absent or malformed. */
 function parseCdxmlPoint(point: string | undefined): Point {
-  if (!point) {
-    return { x: 0, y: 0 };
-  }
-  const [vertical, horizontal] = point.trim().split(/\s+/).map(Number);
-  return {
-    x: cdxmlToCssPx(Number.isFinite(horizontal) ? horizontal : 0),
-    y: cdxmlToCssPx(Number.isFinite(vertical) ? vertical : 0)
-  };
+  return parseCdxmlXyPoint(point) ?? { x: 0, y: 0 };
 }
 
-// Parse a 2D CDXML position attribute written in "vertical horizontal" (y x) order, returning
-// undefined when absent or malformed so callers can fall back to other attributes.
-function parseCdxmlYxPoint(point: string | undefined): Point | undefined {
-  if (!point) {
-    return undefined;
-  }
-  const [vertical, horizontal] = point.trim().split(/\s+/).map(Number);
-  if (!Number.isFinite(horizontal) || !Number.isFinite(vertical)) {
-    return undefined;
-  }
-  return {
-    x: cdxmlToCssPx(horizontal),
-    y: cdxmlToCssPx(vertical)
-  };
-}
 
 function formatXyBoundingBox(points: readonly Point[]): string {
   const bounds = boundsForPoints(points);
@@ -2820,49 +2783,20 @@ function formatXyBoundingBox(points: readonly Point[]): string {
   ].join(" ");
 }
 
+/** CDXRectangle is "left top right bottom". */
 function formatBoundingBox(object: { x: number; y: number; width: number; height: number }): string {
-  return `${formatNumber(cssPxToCdxml(object.y))} ${formatNumber(cssPxToCdxml(object.x))} ${formatNumber(cssPxToCdxml(object.y + object.height))} ${formatNumber(cssPxToCdxml(object.x + object.width))}`;
+  return `${formatNumber(cssPxToCdxml(object.x))} ${formatNumber(cssPxToCdxml(object.y))} ${formatNumber(cssPxToCdxml(object.x + object.width))} ${formatNumber(cssPxToCdxml(object.y + object.height))}`;
 }
 
 function formatLineBoundingBox(start: Point, end: Point): string {
-  return `${formatNumber(cssPxToCdxml(Math.min(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.min(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.max(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.max(start.x, end.x)))}`;
+  return `${formatNumber(cssPxToCdxml(Math.min(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.min(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.max(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.max(start.y, end.y)))}`;
 }
 
+/** Spec-order rectangle: "left top right bottom", falling back to a 1x1 frame at the origin when
+ *  the attribute is absent or malformed. One reader, so a corner-reversed box normalizes the same
+ *  way everywhere. */
 function parseBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } {
-  if (!box) {
-    return { x: 0, y: 0, width: 1, height: 1 };
-  }
-  const [top, left, bottom, right] = box.trim().split(/\s+/).map(Number);
-  const x = cdxmlToCssPx(Number.isFinite(left) ? left : 0);
-  const y = cdxmlToCssPx(Number.isFinite(top) ? top : 0);
-  return {
-    x,
-    y,
-    width: Math.max(1, cdxmlToCssPx(Number.isFinite(right) ? right : left) - x),
-    height: Math.max(1, cdxmlToCssPx(Number.isFinite(bottom) ? bottom : top) - y)
-  };
-}
-
-/** The YX twin of {@link parseCdxmlXyBoundingBox}: "vertical horizontal vertical horizontal", the
- *  order CDXML uses beside `Start`/`End` (and the one `formatLineBoundingBox` writes). */
-function parseCdxmlYxBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } | undefined {
-  if (!box) {
-    return undefined;
-  }
-  const [y1, x1, y2, x2] = box.trim().split(/\s+/).map(Number);
-  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
-    return undefined;
-  }
-  const left = Math.min(x1, x2);
-  const top = Math.min(y1, y2);
-  const right = Math.max(x1, x2);
-  const bottom = Math.max(y1, y2);
-  return {
-    x: cdxmlToCssPx(left),
-    y: cdxmlToCssPx(top),
-    width: Math.max(1, cdxmlToCssPx(right - left)),
-    height: Math.max(1, cdxmlToCssPx(bottom - top))
-  };
+  return parseCdxmlXyBoundingBox(box) ?? { x: 0, y: 0, width: 1, height: 1 };
 }
 
 function parseCdxmlXyBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } | undefined {

@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
-  <page id="p1" BoundingBox="0 0 792 612">
+  <page id="p1" BoundingBox="0 0 612 792">
     <fragment id="f_back">
       <n id="a1" p="144 144"/>
       <n id="a2" p="216 216"/>
       <b id="b_back" B="a1" E="a2" Order="1" Z="1" CrossingBonds="b_front"/>
     </fragment>
     <fragment id="f_front">
-      <n id="a3" p="144 216"/>
-      <n id="a4" p="216 144"/>
+      <n id="a3" p="216 144"/>
+      <n id="a4" p="144 216"/>
       <b id="b_front" B="a3" E="a4" Order="1" Z="2" Display="Bold" CrossingBonds="b_back"/>
     </fragment>
     <graphic id="g_crossing" BoundingBox="174 174 186 186" GraphicType="Bracket" BracketType="Round" LipSize="60"/>

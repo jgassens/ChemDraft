@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
-  <page id="p1" BoundingBox="0 0 792 612"/>
+  <page id="p1" BoundingBox="0 0 612 792"/>
 </CDXML>

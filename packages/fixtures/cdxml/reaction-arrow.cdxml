@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
-  <page id="p1" BoundingBox="0 0 792 612">
-    <graphic id="arrow1" GraphicType="Line" ArrowType="forward" BoundingBox="120 120 120 216" Start="120 120" End="120 216"/>
+  <page id="p1" BoundingBox="0 0 612 792">
+    <graphic id="arrow1" GraphicType="Line" ArrowType="forward" BoundingBox="120 120 216 120" Start="120 120" End="216 120"/>
   </page>
 </CDXML>
