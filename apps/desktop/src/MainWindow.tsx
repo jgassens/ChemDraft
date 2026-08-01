@@ -2816,7 +2816,11 @@ export function MainWindow({
     // Arrow mode: Delete removes the arrow under the pointer. Arrow mode is the arrow-editing mode,
     // so clearing one shouldn't mean switching to Select and selecting it first.
     const hoveredArrowId = arrowEditTargetIdRef.current;
-    if (hoveredArrowId && nativeArtToolIsLineDraw(activeToolCommandIdRef.current)) {
+    // Gate on the SAME predicate that populated the hover target. Gating on the narrower line-draw
+    // set meant that under the curved/fishhook arc tools — whose arrows do get hover targets and dot
+    // handles — Delete fell through to the generic selected-object delete and destroyed a different
+    // arrow (the one still selected from being drawn) while leaving the hovered one alone.
+    if (hoveredArrowId && nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current)) {
       const nextDocument = deleteSelectedDocumentObjects(
         selectDocumentObject(currentDocument, hoveredArrowId)
       );
@@ -8445,11 +8449,13 @@ export function MainWindow({
       shiftKeyPressedRef.current = pressed;
       setTransformRotationHandlesVisible(pressed);
       // Pressing Shift while already hovering an arrow raises the box at once; releasing puts it
-      // back to dot handles. Neither is applied mid transform-drag, or letting go of Shift during a
-      // resize would yank the frame out from under it. While a box is already latched, a repeat
-      // press signal (any keydown carries shiftKey while Shift is held) must not re-target it to
-      // whatever arrow happens to be under the pointer — the latch holds until Shift releases.
-      if (!objectResizeDragRef.current && !objectRotateDragRef.current) {
+      // back to dot handles. Neither is applied mid-drag, or letting go of Shift during a resize
+      // would yank the frame out from under it — and an arrowhead-size drag reads Shift as its own
+      // modifier (resize one head instead of both), so raising the box there would unmount the very
+      // handle being dragged. While a box is already latched, a repeat press signal (any keydown
+      // carries shiftKey while Shift is held) must not re-target it to whatever arrow happens to be
+      // under the pointer — the latch holds until Shift releases.
+      if (!objectResizeDragRef.current && !objectRotateDragRef.current && !graphicMarkerDragRef.current) {
         if (!pressed) {
           setShiftHoveredArrowId(undefined);
         } else if (shiftHoveredArrowIdRef.current === undefined) {

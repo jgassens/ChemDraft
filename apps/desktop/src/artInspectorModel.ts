@@ -1,4 +1,4 @@
-import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
+import { graphicMarkerRenderedSizeFloorPx, planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
 import type { ChemDraftDocument, GraphicMarker, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
 import { graphicObjectHasShaftMark, graphicObjectSupportsMarkers, nativeArrowToolIdForGraphic } from "./documentWorkflow";
 import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
@@ -99,6 +99,10 @@ export interface ArtInspectorModel {
   /** Shaft-marked = draws the no-reaction ✗ across its midpoint. */
   supportsShaftMarkAny: boolean;
   supportsShaftMarkAll: boolean;
+  /** The largest rendered head size the selection's renderer will floor to, across every marker-
+   *  capable object and both its ends. A head-size control must not offer sizes below this or the
+   *  canvas silently overrides the choice; undefined when nothing in the selection has a head. */
+  markerRenderedSizeFloorPx?: number;
   /** Arrow-family membership (drawn with one of the arrow tools), for the arrow style widget. */
   isArrowAny: boolean;
   isArrowAll: boolean;
@@ -210,18 +214,7 @@ export function createArtInspectorModel({
       object.type === "graphic" ? object.data.markerStart?.kind ?? "none" : undefined),
     markerEndKind: uniformSupportedValue(planned, supportsMarkers, ({ object }) =>
       object.type === "graphic" ? object.data.markerEnd?.kind ?? "none" : undefined),
-    markerSizePx: uniformSupportedValue(
-      planned,
-      // Narrow further to objects with at least one real head — a bare line has no size to report.
-      planned.map((entry, index) =>
-        supportsMarkers[index] &&
-        entry.object.type === "graphic" &&
-        ((entry.object.data.markerStart !== undefined && entry.object.data.markerStart.kind !== "none") ||
-          (entry.object.data.markerEnd !== undefined && entry.object.data.markerEnd.kind !== "none"))),
-      ({ object }) => object.type === "graphic"
-        ? metadataNumberValue(object.data.markerEnd?.sizePx ?? object.data.markerStart?.sizePx, 16)
-        : undefined
-    ),
+    markerSizePx: renderedMarkerSizeValue(planned, supportsMarkers),
     shaftMarkSizePx: uniformSupportedValue(planned, supportsShaftMark, ({ object }) =>
       object.type === "graphic"
         ? typeof object.data.shaftMarkSizePx === "number" && Number.isFinite(object.data.shaftMarkSizePx)
@@ -267,6 +260,7 @@ export function createArtInspectorModel({
     supportsMarkersAll: selectedCount > 0 && markersSupportedCount === selectedCount,
     supportsShaftMarkAny: shaftMarkSupportedCount > 0,
     supportsShaftMarkAll: selectedCount > 0 && shaftMarkSupportedCount === selectedCount,
+    markerRenderedSizeFloorPx: markerRenderedSizeFloorForSelection(planned, supportsMarkers),
     isArrowAny: arrowCount > 0,
     isArrowAll: selectedCount > 0 && arrowCount === selectedCount,
     arrowToolIds: [...new Set(arrowToolIdByEntry.flatMap((toolId) => (toolId === undefined ? [] : [toolId as string])))].sort(),
@@ -421,6 +415,71 @@ function moleculeHasRingStyles(object: MoleculeObject): boolean {
 
 function uniqueGraphicKinds(objects: readonly GraphicObject[]): GraphicObject["graphicKind"][] {
   return [...new Set(objects.map((object) => object.graphicKind))];
+}
+
+/**
+ * The largest size the renderer will floor a head to anywhere in the selection. Derived from the
+ * engine's own rule (per marker kind × that object's stroke width) rather than a hand-copy, and
+ * taken over the MAXIMUM rather than a fallback stroke width: on a mixed-width selection the widget
+ * used to assume 2px, offering sizes the thickest arrow silently rendered larger.
+ */
+function markerRenderedSizeFloorForSelection(
+  planned: readonly ArtInspectorPlannedEntry[],
+  supportsMarkers: readonly boolean[]
+): number | undefined {
+  let floor: number | undefined;
+  planned.forEach((entry, index) => {
+    if (!supportsMarkers[index] || entry.object.type !== "graphic") {
+      return;
+    }
+    const strokeWidth = metadataNumberValue(entry.object.style.strokeWidth, 1.5) ?? 1.5;
+    for (const markerId of ["markerStart", "markerEnd"] as const) {
+      const marker = entry.object.data[markerId];
+      if (!marker || marker.kind === "none") {
+        continue;
+      }
+      const kindFloor = graphicMarkerRenderedSizeFloorPx(marker.kind, strokeWidth);
+      floor = floor === undefined ? kindFloor : Math.max(floor, kindFloor);
+    }
+  });
+  return floor;
+}
+
+/**
+ * What a control that edits every head at once should report. Aggregates the size of every RENDERED
+ * head across the selection — both ends of every marker-capable object — so two heads that disagree
+ * read as mixed whether they sit on one arrow or two. Shift-dragging legitimately produces a 12px
+ * start with a 24px end, and reading only `markerEnd?.sizePx ?? markerStart?.sizePx` reported that
+ * as a uniform 24 (a state the arrow was not in, which the size command then made true for both).
+ * A marker present as `{kind: "none"}` is not a rendered head and is skipped.
+ */
+function renderedMarkerSizeValue(
+  planned: readonly ArtInspectorPlannedEntry[],
+  supportsMarkers: readonly boolean[]
+): ArtInspectorMixedValue<number> {
+  const sizes: number[] = [];
+  planned.forEach((entry, index) => {
+    if (!supportsMarkers[index] || entry.object.type !== "graphic") {
+      return;
+    }
+    for (const markerId of ["markerStart", "markerEnd"] as const) {
+      const marker = entry.object.data[markerId];
+      if (!marker || marker.kind === "none") {
+        continue;
+      }
+      const size = metadataNumberValue(marker.sizePx, 16);
+      if (size !== undefined && size !== null) {
+        sizes.push(size);
+      }
+    }
+  });
+  if (sizes.length === 0) {
+    return { value: null, mixed: false };
+  }
+
+  const [first, ...rest] = sizes;
+  const uniform = rest.every((size) => size === first);
+  return { value: uniform ? first : null, mixed: !uniform };
 }
 
 function uniformSupportedValue<TEntry, T>(

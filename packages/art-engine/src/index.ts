@@ -874,7 +874,14 @@ export function editGraphicMarkerSize(
   }
   // Arrowhead size snaps to discrete steps (4, 8, 12, 16, … px = levels 1, 2, 3, 4, …) so dragging
   // steps cleanly between sizes instead of sliding continuously. The default 16 px lands on a step.
-  const nextSize = snapGraphicMarkerSizePx(distance);
+  //
+  // The measured distance is to the DISPLAYED handle, and a dual-shaft arrow displays its heads
+  // scaled by the arrow's heft (dualShaftScale, see dualShaftScaledMarker) — so the displayed
+  // distance must be divided back out before it is stored as the raw size, or the scale is applied
+  // twice and the head lands at scale² of the pointer (a 2× equilibrium jumped 14 → 40 stored,
+  // rendering at 80).
+  const displayScale = dualShaftArrowScale(object);
+  const nextSize = snapGraphicMarkerSizePx(displayScale > 0 ? distance / displayScale : distance);
 
   // Symmetric resize (double-headed arrows, default): the opposite arrowhead tracks this one so both
   // heads stay the same size. Holding Shift (symmetric === false) resizes only the dragged head.
@@ -1519,7 +1526,7 @@ function editEquilibriumShaftLength(
   const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
   const sign = forward ? 1 : -1;
   const fromCentre = ((point.x - mid.x) * axis.x + (point.y - mid.y) * axis.y) * sign;
-  const shaftLength = 2 * (fromCentre + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object));
+  const shaftLength = equilibriumShaftLengthForSeat(object, fromCentre);
   const frac = clamp(shaftLength / length, EQUILIBRIUM_MIN_FRAC, 1);
   const key = forward ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
   if (Math.abs(equilibriumShaftFraction(object.data[key]) - frac) < 0.001) {
@@ -3058,6 +3065,18 @@ function graphicPaintMetadata(value: unknown): GraphicPaint | undefined {
   return typeof paint.kind === "string" ? paint : undefined;
 }
 
+/** The smallest size a marker of this kind can RENDER at for a given stroke width — the renderer
+ *  floors head size so a head can never vanish inside its own shaft. Exported so UI that offers head
+ *  sizes can hide the ones this would silently override, instead of hand-copying the rule (which
+ *  drifted: the widget assumed ×4 for every kind). */
+export function graphicMarkerRenderedSizeFloorPx(kind: GraphicMarker["kind"], strokeWidth: number): number {
+  return kind === "bar"
+    ? strokeWidth * 2.4
+    : kind === "dot"
+      ? strokeWidth * 2.8
+      : strokeWidth * 4;
+}
+
 function nativeArtMarkerPlan(value: unknown, strokeWidth: number): NativeArtMarkerPlan | undefined {
   const marker = graphicMarkerMetadata(value);
   if (!marker || marker.kind === "none") {
@@ -3065,11 +3084,7 @@ function nativeArtMarkerPlan(value: unknown, strokeWidth: number): NativeArtMark
   }
 
   const metadataSize = metadataNumber(marker.sizePx);
-  const strokeAwareSize = marker.kind === "bar"
-    ? strokeWidth * 2.4
-    : marker.kind === "dot"
-      ? strokeWidth * 2.8
-      : strokeWidth * 4;
+  const strokeAwareSize = graphicMarkerRenderedSizeFloorPx(marker.kind, strokeWidth);
   return {
     kind: marker.kind,
     sizePx: Math.max(2, metadataSize ?? 10, strokeAwareSize),
@@ -3876,6 +3891,38 @@ const RETRO_SCALE_HANDLE_OFFSET_PX = 12;
 const RETRO_MIN_SCALE = 0.4;
 const RETRO_MAX_SCALE = 6;
 
+/** The seat may take at most this fraction of a shaft. Strictly below 0.5 on purpose: at exactly a
+ *  half the handle lands on the arrow's centre for EVERY short shaft, so the placement stops being
+ *  one-to-one and the length cannot be recovered from the handle. */
+const EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION = 0.4;
+
+/**
+ * How far an equilibrium shaft's length handle is seated back from its tip, for a shaft of the given
+ * length. The seat scales with the arrow's heft so the handle stays at the base of the (scaled)
+ * harpoon head instead of disappearing inside a grown one, and it is capped at a QUARTER of the
+ * shaft so the placement stays invertible: capping at half collapsed every short shaft's handle onto
+ * the arrow's centre, so many lengths shared one handle position and the inverse drag could not
+ * recover the length — feeding an unchanged handle back in moved the shaft (0.2 → 0.32), making it
+ * jump the moment it was grabbed. One helper, used by both placement and the inverse.
+ */
+function equilibriumShaftSeatInset(object: GraphicObject, shaftLength: number): number {
+  const seatInset = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object);
+  return Math.min(seatInset, Math.max(0, shaftLength * EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION));
+}
+
+/** The inverse of {@link equilibriumShaftSeatInset}: the shaft length whose handle seats at
+ *  `fromCentre` along the axis (shafts are centred, so a handle sits at length/2 − inset). */
+function equilibriumShaftLengthForSeat(object: GraphicObject, fromCentre: number): number {
+  const seatInset = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object);
+  // Above the cap the inset is the constant seat (so ordinary shafts keep their exact placement);
+  // below it the inset is a fixed fraction of the shaft. The branches meet where the two rules
+  // agree, so the whole mapping is continuous, strictly increasing, and one-to-one.
+  const knee = seatInset * (0.5 - EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION) / EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION;
+  return fromCentre >= knee
+    ? 2 * (fromCentre + seatInset)
+    : Math.max(0, fromCentre / (0.5 - EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION));
+}
+
 /** Overall heft of a dual-shaft arrow: scales its shaft gap and head(s) together. */
 export function dualShaftArrowScale(object: GraphicObject): number {
   const scale = metadataNumber(object.data.dualShaftScale);
@@ -4015,12 +4062,9 @@ export function graphicEquilibriumHandlePoints(
     return undefined;
   }
 
-  // The seat scales with the arrow's heft so the handle stays at the base of the (scaled) harpoon
-  // head instead of disappearing inside a grown one.
-  const seatInset = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object);
   const seat = (shaft: NativeArtEquilibriumShaft): NativeArtPoint => {
     const length = Math.hypot(shaft.end.x - shaft.start.x, shaft.end.y - shaft.start.y);
-    const inset = Math.min(seatInset, Math.max(0, length * 0.5));
+    const inset = equilibriumShaftSeatInset(object, length);
     return {
       x: shaft.end.x - shaft.direction.x * inset,
       y: shaft.end.y - shaft.direction.y * inset

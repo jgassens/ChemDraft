@@ -2045,4 +2045,69 @@ describe("graphic path direct editing interactions", () => {
     expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).toBeNull();
     expect(container.querySelector(`[data-object-id="${selectedId}"]`)).not.toBeNull();
   });
+
+  it("deletes the hovered arrow under the curved arrow tools too, not a different one", async () => {
+    // Curved/fishhook arrows are arc-kind: they get hover targets and dot handles like straight
+    // arrows, but the Delete branch gated on the narrower line-draw predicate, so it fell through to
+    // the selected-object delete and destroyed the wrong arrow.
+    const hoveredDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Arc Arrow Delete On Hover"),
+      { x: 220, y: 300 },
+      "tool.art.curvedArrow180"
+    );
+    const hoveredId = hoveredDocument.selection.objectIds[0] ?? "";
+    const document = insertNativeArtGraphicObject(
+      hoveredDocument,
+      { x: 220, y: 520 },
+      "tool.art.curvedArrow180"
+    );
+    const selectedId = document.selection.objectIds[0] ?? "";
+    expect(selectedId).not.toBe(hoveredId);
+
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.curvedArrow180" });
+
+    await act(async () => {
+      dispatchPointer(objectElement(hoveredId), "pointermove", { x: 260, y: 320 }, 41, 1, { buttons: 0 });
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Delete" }));
+    });
+
+    expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).toBeNull();
+    expect(container.querySelector(`[data-object-id="${selectedId}"]`)).not.toBeNull();
+  });
+
+  it("keeps the arrowhead handles mounted when Shift is pressed mid marker drag", async () => {
+    // Shift is the marker drag's own modifier (resize one head instead of both), so pressing it must
+    // not raise the Shift transform box — that unmounted the handle under the cursor mid-drag.
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Marker Drag Shift"),
+      { x: 220, y: 180 },
+      "tool.art.resonanceArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.resonanceArrow" });
+
+    // Hover so the arrow opens for editing and its marker handles mount.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 260, y: 190 }, 42, 1, { buttons: 0 });
+    });
+    const markerHandle = container.querySelector<HTMLElement>("[data-graphic-marker-handle]");
+    if (!markerHandle) {
+      throw new Error("Expected an arrowhead size handle.");
+    }
+
+    await act(async () => {
+      dispatchPointer(markerHandle, "pointerdown", { x: 300, y: 190 }, 43);
+    });
+    // Shift down mid-drag: the handles must survive it.
+    await holdShiftForRotationHandles();
+    expect(container.querySelector("[data-graphic-marker-handle]")).not.toBeNull();
+    expect(container.querySelector("[data-object-resize-corner]")).toBeNull();
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: 320, y: 190 }, 43);
+    });
+    await releaseShiftForRotationHandles();
+  });
 });

@@ -45,11 +45,17 @@ export function arrowVariantRows(state: ToolbarWidgetState): MainStyleRows {
   const tailPresent = tailKind?.value !== undefined && tailKind.value !== null && tailKind.value !== "none";
   // Adding a tail head mirrors the end head's kind (resonance-style), falling back to filled.
   const tailKindToAdd = headKind?.value && headKind.value !== "none" ? headKind.value : "filled-arrow";
-  // The renderer floors head size at strokeWidth×4; hiding smaller presets keeps the select honest.
-  const headSizeFloor = Math.max(
-    objectMarkerNumberRanges.markerSizePx.min,
-    Math.ceil(((art?.values.strokeWidth.value ?? 2) * 4) / objectMarkerNumberRanges.markerSizePx.step)
-      * objectMarkerNumberRanges.markerSizePx.step
+  // The renderer floors head size (per marker kind × stroke width), so hide presets it would
+  // silently override. The floor comes from the model, which derives it from the engine's own rule
+  // across the whole selection — guessing here got both the kind and mixed selections wrong. Clamped
+  // to the command range so a very thick arrow can't synthesize a preset the command layer rejects.
+  const headSizeFloor = Math.min(
+    objectMarkerNumberRanges.markerSizePx.max,
+    Math.max(
+      objectMarkerNumberRanges.markerSizePx.min,
+      Math.ceil((art?.markerRenderedSizeFloorPx ?? 0) / objectMarkerNumberRanges.markerSizePx.step)
+        * objectMarkerNumberRanges.markerSizePx.step
+    )
   );
   const headSizePresets = HEAD_SIZE_PRESETS.filter((preset) => preset >= headSizeFloor);
   const effectiveHeadSizePresets = headSizePresets.length > 0 ? headSizePresets : [headSizeFloor];

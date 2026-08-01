@@ -793,6 +793,94 @@ describe("art-engine native art planning", () => {
     expect(bigger.data.artPathKind).toBe("line");
   });
 
+  it("stores a dual-shaft head size at the pointer, not the scale applied twice", () => {
+    // A dual-shaft arrow DISPLAYS its heads scaled by dualShaftScale, so a drag measured against the
+    // displayed handle must divide that scale back out before storing. It did not, so the stored
+    // size was the displayed distance and the head rendered at scale² of the pointer (14 -> 40
+    // stored, rendering at 80 for a 2x arrow).
+    const equilibrium = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftScale: 2,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    } as GraphicObject;
+
+    const plan = planNativeArtVisual(equilibrium, { coordinateSpace: "page" });
+    const tip = plan.markerEndTerminal?.point;
+    if (!tip) {
+      throw new Error("Expected an end terminal.");
+    }
+    // Drag the head handle to 40px from the tip: the head should RENDER at ~40, so the stored raw
+    // size must be ~20 (40 / scale 2).
+    const dragged = editGraphicMarkerSize(equilibrium, "markerEnd", { x: tip.x - 40, y: tip.y }, { symmetric: true });
+    if (!dragged) {
+      throw new Error("Expected a resized marker.");
+    }
+    expect(dragged.data.markerEnd?.sizePx).toBeCloseTo(20, 3);
+    const draggedPlan = planNativeArtVisual(dragged, { coordinateSpace: "page" });
+    expect(draggedPlan.markerEnd?.sizePx).toBeCloseTo(40, 3);
+
+    // An unscaled arrow is unaffected by the division.
+    const plainScale = { ...equilibrium, data: { ...equilibrium.data, dualShaftScale: 1 } } as GraphicObject;
+    const plainTip = planNativeArtVisual(plainScale, { coordinateSpace: "page" }).markerEndTerminal!.point;
+    const plainDragged = editGraphicMarkerSize(plainScale, "markerEnd", { x: plainTip.x - 24, y: plainTip.y }, { symmetric: true });
+    expect(plainDragged?.data.markerEnd?.sizePx).toBeCloseTo(24, 3);
+  });
+
+  it("keeps equilibrium shaft handles invertible: an unchanged handle never moves the shaft", () => {
+    // The handle seat is capped so it can never land on the arrow's centre; at a half-shaft cap it
+    // did, so every short shaft shared one handle position and feeding that position back changed
+    // the length (0.2 -> 0.32) — the shaft jumped the instant it was grabbed.
+    const equilibriumAt = (frac: number, scale?: number) => ({
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 },
+        dualShaftForwardFrac: frac,
+        dualShaftReverseFrac: frac,
+        ...(scale === undefined ? {} : { dualShaftScale: scale })
+      }
+    } as GraphicObject);
+
+    for (const scale of [undefined, 0.5, 1.5, 2.5]) {
+      for (const frac of [0.08, 0.2, 0.35, 0.5, 0.75, 1]) {
+        const object = equilibriumAt(frac, scale);
+        const handles = graphicEquilibriumHandlePoints(object);
+        if (!handles) {
+          throw new Error("Expected equilibrium handles.");
+        }
+        for (const handle of ["shaft:forward", "shaft:reverse"] as const) {
+          const seat = handle === "shaft:forward" ? handles.forward : handles.reverse;
+          // Re-feeding the handle's own position is a no-op: editGraphicPathGeometry returns the
+          // same object when nothing changed.
+          const edited = editGraphicPathGeometry(object, handle, seat);
+          const key = handle === "shaft:forward" ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
+          const nextFrac = (edited ?? object).data[key];
+          expect(
+            Math.abs(Number(nextFrac) - frac),
+            `${handle} frac ${frac} at scale ${String(scale)}`
+          ).toBeLessThan(0.01);
+        }
+      }
+    }
+  });
+
   it("drags an equilibrium half-shaft to set only that direction's length", () => {
     const graphic = {
       ...baseGraphic,
