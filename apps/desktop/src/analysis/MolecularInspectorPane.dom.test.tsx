@@ -75,9 +75,10 @@ afterEach(() => {
 
 describe("MolecularInspectorPane", () => {
   it("says what to do when nothing has been analysed yet", () => {
-    // The palette can be opened before anything is selected; an empty frame would look broken.
+    // The window opens from Analyze or View with nothing selected — that is deliberate, so an empty
+    // frame would look broken. It has to say what the reader should do next.
     const view = render(<MolecularInspectorPane />);
-    expect(view.textContent).toContain("Select a molecule");
+    expect(view.textContent).toContain("Select a structure");
   });
 
   it("lists one category per section, named without the disclosure and counted", () => {

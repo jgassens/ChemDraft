@@ -6774,16 +6774,17 @@ export function MainWindow({
           openExportDialog();
         }
         if (action.id === "analyze.molecularProperties") {
-          const molecule = getSelectedMolecule(document);
-          if (!molecule) {
-            setStatus("No selected structure");
-            return;
-          }
-          // Open the palette first so the window is up while the analysis runs — it shows its own
-          // empty state, then fills in. Waiting would make the command look unresponsive on a
-          // structure large enough to take a moment.
+          // Open the window BEFORE looking at the selection, and regardless of it. Two reasons: the
+          // window is up while a slow analysis runs (it shows its own empty state, then fills in),
+          // and with nothing selected the command still does something visible instead of appearing
+          // to do nothing at all.
           if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
             await toggleToolset(molecularInspectorToolsetId);
+          }
+          const molecule = getSelectedMolecule(document);
+          if (!molecule) {
+            setStatus("Molecular Inspector opened — select a structure to analyse it");
+            return;
           }
           await runMolecularProperties(molecule.structureFormat, molecule.structure, analysisInterpretation);
           return;

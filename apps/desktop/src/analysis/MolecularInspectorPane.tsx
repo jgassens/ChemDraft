@@ -68,7 +68,7 @@ export function MolecularInspectorPane({
   if (!report || !model) {
     return (
       <div className="molecular-inspector-pane molecular-inspector-empty">
-        <p>Select a molecule and run Analyze ▸ Molecular Inspector to see its analyses here.</p>
+        <p>Select a structure to see its analyses here.</p>
       </div>
     );
   }

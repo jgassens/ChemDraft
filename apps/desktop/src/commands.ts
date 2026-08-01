@@ -73,8 +73,10 @@ export function createQuickActions(
       id: "analyze.molecularProperties",
       title: "Molecular Inspector…",
       icon: "atom",
-      source: "core",
-      enabled: selectedMolecule !== undefined
+      source: "core"
+      // Deliberately NOT gated on a selection. The window has its own empty state, and a menu item
+      // that is greyed out reads as "this feature is broken" rather than "select something first".
+      // With a structure selected it also runs the analysis; without one it just opens.
     },
     {
       id: "chemistry.validateSelection",
