@@ -7,7 +7,16 @@ import { z } from "zod";
 // chem-core directly (see docs/plugin-architecture and the M33 boundary guard).
 export type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 
-export const PluginApiVersion = "0.1.0" as const;
+/**
+ * 0.1.1 adds `PluginChemistryAPI.nameToStructure`.
+ *
+ * The MINOR is deliberately unchanged. For a 0.x release `isPluginApiVersionCompatible` treats the
+ * minor as the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` —
+ * the NMR predictor among them — refuse to install against this host, for a purely additive method.
+ * A plugin that needs the new capability declares `^0.1.1`, which this host satisfies and an older
+ * one correctly does not.
+ */
+export const PluginApiVersion = "0.1.1" as const;
 
 export const pluginPermissions = [
   "document.read",

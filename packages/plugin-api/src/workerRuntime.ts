@@ -175,7 +175,13 @@ export function runPluginWorker(
     const chemistry: PluginChemistryAPI | undefined = has("chemistry.compute")
       ? {
           isotopeEnvelope: (request) =>
-            call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>
+            call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>,
+          // Present in the stub for the same reason: a worker-routed plugin must see the same shape
+          // an in-process one does, or the two paths disagree about what this host can do.
+          nameToStructure: (request) =>
+            call("chemistry", "nameToStructure", [request]) as ReturnType<
+              NonNullable<PluginChemistryAPI["nameToStructure"]>
+            >
         }
       : undefined;
 

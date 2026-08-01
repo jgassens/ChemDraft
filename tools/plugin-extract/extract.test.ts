@@ -85,7 +85,12 @@ describe("plugin extraction integrity", () => {
     const result = extractPlugin({ pluginRoot: fixture.pluginRoot, outDir, repoRoot: repositoryRoot });
 
     expect(result.sourceCommit).toBe(fixture.sourceCommit);
-    expect(result.sdkVersion).toBe("0.1.0");
+    // Read from the SDK package rather than written as a literal: what this asserts is that the
+    // extractor stamps the version it actually built against, and a literal turns every SDK release
+    // into a failure here that says nothing about the extractor.
+    expect(result.sdkVersion).toBe(
+      JSON.parse(readFileSync(join(repositoryRoot, "packages/plugin-api/package.json"), "utf8")).version
+    );
     expect(result.sha256).toBe(createHash("sha256").update(readFileSync(result.zipPath)).digest("hex"));
     expect(readFileSync(result.checksumPath, "utf8")).toBe(
       `${result.sha256}  plugin-fixture-1.2.3.zip\n`
@@ -101,9 +106,11 @@ describe("plugin extraction integrity", () => {
     };
     expect(extractedPackage.dependencies).toEqual({ zod: "^3.25.76" });
     expect(extractedPackage.optionalDependencies).toEqual({ "fixture-optional": "^1.0.0" });
+    // Same reason as the sdkVersion assertion: the claim is that the extractor pins the SDK it built
+    // against as a caret peer range, not that the SDK is at any particular version today.
     expect(extractedPackage.peerDependencies).toEqual({
       "fixture-peer": "^2.0.0",
-      "@chemdraft/plugin-api": "^0.1.0"
+      "@chemdraft/plugin-api": `^${result.sdkVersion}`
     });
     expect(extractedPackage.chemdraftPlugin).toMatchObject({
       sourceCommit: fixture.sourceCommit,

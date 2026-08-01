@@ -1,6 +1,6 @@
 {
   "name": "@chemdraft/plugin-api",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The ChemDraft plugin SDK: manifest schema/validation, permission model, panel-report and worker-protocol contracts a plugin compiles against.",
   "license": "MIT",
   "type": "module",

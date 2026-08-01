@@ -1,6 +1,6 @@
 {
   "name": "@chemdraft/plugin-host",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The ChemDraft plugin host: command registry, permission-gated capability context, proposed-patch queue, and analysis store that run a plugin against the SDK.",
   "license": "MIT",
   "type": "module",
