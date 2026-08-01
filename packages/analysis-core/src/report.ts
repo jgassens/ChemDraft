@@ -49,11 +49,41 @@ export interface ReportConventionGroup {
   conventions: string[];
 }
 
+/**
+ * A stick spectrum: positions along an axis, each with an intensity.
+ *
+ * Carried as numbers rather than as a pre-rendered table because the surfaces want different things
+ * from it — a reader wants the shape of the isotope pattern, and the clipboard wants the values, since
+ * a chart does not paste into a notebook. Both come from this one section.
+ */
+export interface ReportSpectrumSection {
+  kind: "spectrum";
+  title: string;
+  positions: number[];
+  intensities: number[];
+  positionUnit: UnitId;
+  intensityUnit: UnitId;
+  /** What the numbers are and are not — rendered under the plot, not left to the reader to infer. */
+  caption?: string;
+  /** Decimals the positions can defend; the axis and the table both honour it. */
+  positionDecimals?: number;
+  /**
+   * What the axes are called, e.g. "Mass" / "Intensity".
+   *
+   * Carried so the pasted table keeps saying "Mass (Da)" rather than degrading to a generic
+   * "Position (Da)" just because the screen now draws a plot. The clipboard output is unchanged by
+   * this section existing.
+   */
+  positionLabel?: string;
+  intensityLabel?: string;
+}
+
 export type AnalysisReportSection =
   | { kind: "keyValue"; title: string; rows: ReportRow[] }
   | { kind: "table"; title: string; columns: string[]; rows: string[][] }
   | { kind: "text"; title: string; body: string }
-  | { kind: "conventions"; title: string; groups: ReportConventionGroup[] };
+  | { kind: "conventions"; title: string; groups: ReportConventionGroup[] }
+  | ReportSpectrumSection;
 
 export interface ReportInterpretation {
   id: string;
@@ -318,13 +348,20 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
     if (shown.length < peaks.length) parts.push(`showing the ${shown.length} most intense`);
 
     sections.push({
-      kind: "table",
+      kind: "spectrum",
       title: `${displayLabel(distribution)} (${parts.join(", ")})`,
-      columns: [
-        `Mass${positionSymbol ? ` (${positionSymbol})` : ""}`,
-        `Intensity${intensitySymbol ? ` (${intensitySymbol})` : ""}`
-      ],
-      rows: shown.map((peak) => [peak.position.toFixed(5), peak.intensity.toFixed(2)])
+      positions: shown.map((peak) => peak.position),
+      intensities: shown.map((peak) => peak.intensity),
+      positionUnit: distribution.positionUnit,
+      intensityUnit: distribution.intensityUnit,
+      positionDecimals: 5,
+      positionLabel: "Mass",
+      intensityLabel: "Intensity",
+      // The disclosure belongs on the picture. A stick spectrum looks exactly like a measured one,
+      // and nothing else on screen would tell a reader that it is not.
+      caption:
+        "Theoretical isotope distribution — not a predicted mass spectrum. No instrument response, " +
+        "no adduct, no fragmentation."
     });
   }
 
@@ -462,6 +499,20 @@ export function renderReportText(report: AnalysisReport): string {
     lines.push(section.title, "-".repeat(section.title.length));
     if (section.kind === "text") {
       lines.push(section.body);
+    } else if (section.kind === "spectrum") {
+      // A plot does not paste. The clipboard gets the values it was drawn from, at the same
+      // precision, so a pasted spectrum is still checkable.
+      const decimals = section.positionDecimals ?? 5;
+      const positionHeader = `${section.positionLabel ?? "Position"}${unitSymbol(section.positionUnit) ? ` (${unitSymbol(section.positionUnit)})` : ""}`;
+      const intensityHeader = `${section.intensityLabel ?? "Intensity"}${unitSymbol(section.intensityUnit) ? ` (${unitSymbol(section.intensityUnit)})` : ""}`;
+      const rows = section.positions.map((position, index) => [
+        position.toFixed(decimals),
+        (section.intensities[index] ?? 0).toFixed(2)
+      ]);
+      const widths = padColumns([positionHeader, intensityHeader], rows);
+      lines.push([positionHeader, intensityHeader].map((column, index) => column.padEnd(widths[index]!)).join("  "));
+      for (const cells of rows) lines.push(cells.map((cell, index) => cell.padEnd(widths[index]!)).join("  "));
+      if (section.caption) lines.push("", section.caption);
     } else if (section.kind === "conventions") {
       // Deliberately not a table: a convention is a sentence, and `padColumns` would size a column to
       // the longest one and wreck every other row in the pasted report.
@@ -509,6 +560,16 @@ export function renderReportMarkdown(report: AnalysisReport): string {
     lines.push(`## ${section.title}`, "");
     if (section.kind === "text") {
       lines.push(section.body, "");
+    } else if (section.kind === "spectrum") {
+      const decimals = section.positionDecimals ?? 5;
+      const positionHeader = `${section.positionLabel ?? "Position"}${unitSymbol(section.positionUnit) ? ` (${unitSymbol(section.positionUnit)})` : ""}`;
+      const intensityHeader = `${section.intensityLabel ?? "Intensity"}${unitSymbol(section.intensityUnit) ? ` (${unitSymbol(section.intensityUnit)})` : ""}`;
+      lines.push(`| ${escape(positionHeader)} | ${escape(intensityHeader)} |`, "| --- | --- |");
+      for (const [index, position] of section.positions.entries()) {
+        lines.push(`| ${position.toFixed(decimals)} | ${(section.intensities[index] ?? 0).toFixed(2)} |`);
+      }
+      lines.push("");
+      if (section.caption) lines.push(`_${escape(section.caption)}_`, "");
     } else if (section.kind === "conventions") {
       for (const group of section.groups) {
         lines.push(`**${escape(group.appliesTo.join(", "))}**`, "");

@@ -157,14 +157,24 @@ describe("declining beats a confident wrong number", () => {
 });
 
 describe("the report shows it", () => {
-  it("renders the peaks as a table with the truncation in the title", async () => {
+  it("renders the peaks as a plottable spectrum with the truncation in the title", async () => {
+    // A spectrum section rather than a table: an isotope pattern is a shape, and a column of numbers
+    // does not show it. The section carries the values so each surface renders what suits it — the
+    // panel draws sticks, the clipboard still gets the table (see the text/Markdown tests below).
     const report = buildAnalysisReport(await analyze("Brc1ccccc1"));
     const section = report.sections.find((entry) => entry.title.startsWith("Isotope envelope"));
     expect(section).toBeDefined();
-    expect(section!.kind).toBe("table");
+    expect(section!.kind).toBe("spectrum");
     expect(section!.title).toMatch(/\d+ peaks/);
     expect(section!.title).toMatch(/% of the distribution/);
-    expect(section!.kind === "table" && section!.columns).toEqual(["Mass (Da)", "Intensity (%)"]);
+    if (section!.kind !== "spectrum") return;
+
+    expect(section!.positions).toHaveLength(section!.intensities.length);
+    expect(Math.max(...section!.intensities)).toBe(100);
+    expect(section!.positionUnit).toBe("dalton");
+    expect(section!.intensityUnit).toBe("relative-abundance");
+    // A stick plot is indistinguishable from a measured spectrum, so the disclosure ships with it.
+    expect(section!.caption).toMatch(/not a predicted mass spectrum/i);
   });
 
   it("reaches the pasted text with its masses", async () => {

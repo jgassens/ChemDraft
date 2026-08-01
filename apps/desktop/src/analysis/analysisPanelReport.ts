@@ -40,6 +40,18 @@ function toSection(section: AnalysisReportSection): PluginPanelSection {
       };
     case "table":
       return { kind: "table", title: section.title, columns: [...section.columns], rows: section.rows.map((row) => [...row]) };
+    case "spectrum":
+      // A fallback only. The Molecular Inspector draws spectra itself and never routes them here; any
+      // other surface using this mapper gets the values as a table rather than nothing at all.
+      return {
+        kind: "table",
+        title: section.title,
+        columns: ["Position", "Intensity"],
+        rows: section.positions.map((position, index) => [
+          position.toFixed(section.positionDecimals ?? 5),
+          (section.intensities[index] ?? 0).toFixed(2)
+        ])
+      };
   }
 }
 

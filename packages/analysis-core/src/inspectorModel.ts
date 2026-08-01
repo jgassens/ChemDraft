@@ -110,6 +110,12 @@ function entriesOf(section: AnalysisReportSection): InspectorEntry[] {
       }));
     case "text":
       return [{ id: section.title, label: section.title, value: section.body }];
+    case "spectrum":
+      // One entry per peak, so the left list still counts them and the category is not opaque.
+      return section.positions.map((position, index) => {
+        const label = position.toFixed(section.positionDecimals ?? 5);
+        return { id: label, label, value: (section.intensities[index] ?? 0).toFixed(2) };
+      });
   }
 }
 

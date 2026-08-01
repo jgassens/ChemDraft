@@ -6588,3 +6588,68 @@ textarea:focus-visible,
 .molecular-inspector-pane .plugin-report-text p {
   white-space: pre-line;
 }
+
+/* --- Isotope spectrum ----------------------------------------------------------------------
+   A stick plot inside the Molecular Inspector's viewport. Sized by its viewBox so it scales with
+   the pane rather than fighting it for width. */
+.molecular-inspector-spectrum-section {
+  margin: 0 0 12px;
+}
+
+.molecular-inspector-spectrum-section h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cd-text-muted, #6b665c);
+}
+
+.isotope-spectrum {
+  margin: 0;
+}
+
+.isotope-spectrum svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 560px;
+}
+
+.isotope-spectrum-grid {
+  stroke: var(--cd-border, #c8c4ba);
+  stroke-width: 0.5;
+  opacity: 0.5;
+}
+
+.isotope-spectrum-axis {
+  stroke: var(--cd-border, #c8c4ba);
+  stroke-width: 1;
+}
+
+/* Round caps so a 100%-tall stick and a 0.06%-tall one are both visible; without them the smallest
+   isotopologues vanish entirely and the pattern reads as having fewer peaks than it has. */
+.isotope-spectrum-peak {
+  stroke: var(--cd-accent, #2f6d4f);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+}
+
+.isotope-spectrum-tick,
+.isotope-spectrum-axis-label {
+  fill: var(--cd-text-muted, #6b665c);
+  font-size: 8px;
+}
+
+.isotope-spectrum-peak-label {
+  fill: var(--cd-text, #1c1a17);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.isotope-spectrum figcaption {
+  margin-top: 4px;
+  color: var(--cd-text-muted, #6b665c);
+  font-size: 10px;
+  line-height: 1.35;
+}

@@ -27,6 +27,7 @@ import {
 
 import { PluginReportRenderer } from "../plugins/PluginReportRenderer";
 import { toPanelReport } from "./analysisPanelReport";
+import { IsotopeSpectrum } from "./IsotopeSpectrum";
 
 export interface MolecularInspectorPaneProps {
   /** Absent until an analysis has run — the palette can be open before anything is selected. */
@@ -63,7 +64,39 @@ export function MolecularInspectorPane({
     () => (report ? reportForSelection(report, selection) : undefined),
     [report, selection]
   );
-  const panelReport = useMemo(() => (visible ? toPanelReport(visible) : undefined), [visible]);
+
+  /**
+   * Sections in document order, with spectra drawn here and everything else handed to the shared
+   * renderer in contiguous runs.
+   *
+   * Splitting into runs rather than hoisting the plots keeps the report's own order intact — under
+   * "All analyses" the isotope envelope belongs where the report put it, not floated to the top.
+   */
+  const body = useMemo(() => {
+    if (!visible) return null;
+    const nodes: React.ReactNode[] = [];
+    let run: typeof visible.sections = [];
+    const flushRun = (key: string) => {
+      if (run.length === 0) return;
+      nodes.push(<PluginReportRenderer key={key} report={toPanelReport({ ...visible, sections: run })} />);
+      run = [];
+    };
+    for (const [index, section] of visible.sections.entries()) {
+      if (section.kind === "spectrum") {
+        flushRun(`run-${index}`);
+        nodes.push(
+          <section key={`spectrum-${index}`} className="molecular-inspector-spectrum-section">
+            <h4>{section.title}</h4>
+            <IsotopeSpectrum section={section} />
+          </section>
+        );
+      } else {
+        run.push(section);
+      }
+    }
+    flushRun("run-tail");
+    return nodes;
+  }, [visible]);
 
   if (!report || !model) {
     return (
@@ -151,7 +184,7 @@ export function MolecularInspectorPane({
 
         <section className="molecular-inspector-viewport" aria-label={selectedLabel}>
           {busy ? <p className="analysis-panel-busy">Recomputing…</p> : null}
-          {panelReport ? <PluginReportRenderer report={panelReport} /> : null}
+          {body}
         </section>
       </div>
 
