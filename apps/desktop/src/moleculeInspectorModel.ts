@@ -839,12 +839,12 @@ function implicitHydrogensAffectLabels(
   atomLabelTargets: readonly MoleculeInspectorAtomLabelTarget[]
 ): boolean {
   const scopedAtomKeys = atomLabelTargets.length > 0
-    ? new Set(atomLabelTargets.map((target) => `${target.objectId} ${target.atomId}`))
+    ? new Set(atomLabelTargets.map((target) => `${target.objectId}\0${target.atomId}`))
     : undefined;
 
   return targetObjects.some((object) =>
     object.atoms.some((atom) => {
-      if (scopedAtomKeys && !scopedAtomKeys.has(`${object.id} ${atom.id}`)) {
+      if (scopedAtomKeys && !scopedAtomKeys.has(`${object.id}\0${atom.id}`)) {
         return false;
       }
       const style = nativeMoleculeAtomLabelStyle(object, atom.id);

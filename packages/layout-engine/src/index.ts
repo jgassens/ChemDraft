@@ -4699,7 +4699,7 @@ export function atomDisplayLabel(
   const formalCharge = atom.formalCharge;
   const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens
     ? ""
-    : implicitHydrogenLabel(Math.max(0, (nativeAtomValence[element] ?? 0) - valenceUsed));
+    : implicitHydrogenLabel(Math.max(0, nativeAtomValenceForCharge(element, formalCharge) - valenceUsed));
 
   if (element === "C" && formalCharge === 0) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
@@ -4739,20 +4739,51 @@ const nativeElementSymbols = [
 ] as const;
 type NativeElementSymbol = typeof nativeElementSymbols[number];
 const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
-const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
+/** Main-group valence electrons. One table, because the bond count follows from it. */
+const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
   B: 3,
   C: 4,
-  N: 3,
-  O: 2,
-  F: 1,
+  N: 5,
+  O: 6,
+  F: 7,
   Si: 4,
-  P: 3,
-  S: 2,
-  Cl: 1,
-  Br: 1,
-  I: 1
+  P: 5,
+  S: 6,
+  Cl: 7,
+  Br: 7,
+  I: 7
 };
+
+/**
+ * How many bonds an atom of this element and formal charge wants — and so, after its real bonds are
+ * counted, how many implicit hydrogens it carries.
+ *
+ * Derived rather than looked up, because a formal charge changes the answer and a stored NEUTRAL
+ * valence cannot express that. Counting against the neutral value invented hydrogens that are not
+ * there: an alkoxide drew as "OH-" and a trisubstituted carbocation as "CH+" — different molecules
+ * from the ones on the page.
+ *
+ * The octet rule states it exactly. An atom with n valence electrons shares its unpaired ones, so
+ * it forms `8 - n` bonds once n reaches 4 and `n` below that; a charge simply moves n. That
+ * reproduces every neutral value this table used to hold, and gets O- (1 bond), O+ (3), N+ (4),
+ * N- (2), C+ (3), C- (3) and B- (4) right on the way. Hydrogen follows the duet rule instead, so
+ * it is handled on its own: H+ and H- both take no bonds.
+ */
+function nativeAtomValenceForCharge(element: NativeElementSymbol, formalCharge: number): number {
+  const electrons = nativeAtomValenceElectrons[element];
+  if (electrons === undefined) {
+    return 0;
+  }
+  if (element === "H") {
+    return Math.max(0, 1 - Math.abs(formalCharge));
+  }
+  const adjusted = electrons - formalCharge;
+  if (adjusted < 0 || adjusted > 8) {
+    return 0;
+  }
+  return adjusted >= 4 ? 8 - adjusted : adjusted;
+}
 const nativeBondOrderValue: Record<string, number> = {
   single: 1,
   double: 2,

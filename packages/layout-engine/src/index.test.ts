@@ -3606,3 +3606,46 @@ describe("shared SVG export of arrow marker and shaft-mark visuals", () => {
     expect(armLength(large)).toBeCloseTo(32, 1);
   });
 });
+
+describe("implicit hydrogens and formal charge", () => {
+  const atom = (element: string, formalCharge: number, id = "a1") => ({
+    id, element, x: 0, y: 0, formalCharge
+  });
+  const bondTo = (id: string) => ({
+    id: `b_${id}`, fromAtomId: "a1", toAtomId: id, order: "single" as const
+  });
+
+  it("counts implicit hydrogens against the CHARGED valence, not the neutral one", () => {
+    // A charge changes how many bonds an atom wants, so counting against the neutral valence
+    // invented hydrogens that are not there: an alkoxide drew as "OH-" and a trisubstituted
+    // carbocation as "CH+". Both are different molecules from the ones the user drew.
+
+    // Alkoxide: one bond, no hydrogen.
+    expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")])).toBe("O-");
+    // Neutral alcohol oxygen with one bond keeps its hydrogen.
+    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("OH");
+
+    // Carbocation with three bonds: no hydrogen.
+    expect(atomDisplayLabel(atom("C", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C+");
+    // Carbanion also takes three bonds.
+    expect(atomDisplayLabel(atom("C", -1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C-");
+
+    // Ammonium takes four bonds, so a fully substituted one has no hydrogen and is not
+    // over-counted as hypervalent either.
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3"), bondTo("c4")])).toBe("N+");
+    // Protonated amine: three bonds on N+ leaves one hydrogen.
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("NH+");
+
+    // A halide anion takes no bonds and no hydrogen.
+    expect(atomDisplayLabel(atom("Cl", -1), [])).toBe("Cl-");
+    // Neutral HCl keeps its hydrogen.
+    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("ClH");
+  });
+
+  it("still labels neutral atoms exactly as before", () => {
+    expect(atomDisplayLabel(atom("O", 0), [])).toBe("OH2");
+    expect(atomDisplayLabel(atom("N", 0), [])).toBe("NH3");
+    expect(atomDisplayLabel(atom("C", 0), [])).toBe("CH4");
+    expect(atomDisplayLabel(atom("S", 0), [bondTo("c1")])).toBe("SH");
+  });
+});
