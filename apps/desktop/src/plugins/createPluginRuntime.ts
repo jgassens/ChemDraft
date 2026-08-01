@@ -4,6 +4,8 @@ import type {
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
   PluginNameToStructureResult,
+  PluginStructureFromSmilesRequest,
+  PluginStructureFromSmilesResult,
   PluginManifest,
   PluginPermission,
   PluginSelectionSnapshot,
@@ -19,7 +21,11 @@ import {
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
-import { computeIsotopeEnvelopeForPlugin, nameToStructureForPlugin } from "./pluginChemistry";
+import {
+  computeIsotopeEnvelopeForPlugin,
+  nameToStructureForPlugin,
+  structureFromSmilesForPlugin
+} from "./pluginChemistry";
 
 /** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
 export type DesktopIsotopeEnvelopeProvider = (
@@ -30,6 +36,11 @@ export type DesktopIsotopeEnvelopeProvider = (
 export type DesktopNameToStructureProvider = (
   request: PluginNameToStructureRequest
 ) => Promise<PluginNameToStructureResult>;
+
+/** Lays a SMILES out as a document object for a plugin holding `chemistry.compute`. */
+export type DesktopStructureFromSmilesProvider = (
+  request: PluginStructureFromSmilesRequest
+) => Promise<PluginStructureFromSmilesResult>;
 
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -55,6 +66,8 @@ export interface DesktopPluginRuntimeOptions {
   computeIsotopeEnvelope?: DesktopIsotopeEnvelopeProvider | null;
   /** Serves name → structure under the same permission and the same null-withholds rule. */
   convertNameToStructure?: DesktopNameToStructureProvider | null;
+  /** Serves 2D layout under the same permission and the same null-withholds rule. */
+  buildStructureFromSmiles?: DesktopStructureFromSmilesProvider | null;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -123,6 +136,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     options.computeIsotopeEnvelope === undefined ? computeIsotopeEnvelopeForPlugin : options.computeIsotopeEnvelope;
   const nameProvider =
     options.convertNameToStructure === undefined ? nameToStructureForPlugin : options.convertNameToStructure;
+  // Bound to the runtime's own document getter: layout needs the page it is being placed on, and a
+  // plugin must not be able to name a different document than the one the host is showing.
+  const structureProvider =
+    options.buildStructureFromSmiles === undefined
+      ? (request: PluginStructureFromSmilesRequest) =>
+          structureFromSmilesForPlugin(request, options.getActiveDocument)
+      : options.buildStructureFromSmiles;
   const nowIso = (): string => {
     const value = now();
     return typeof value === "string" ? value : value.toISOString();
@@ -143,6 +163,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     },
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
+    ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
     now
   });
   controller = new PluginPanelController(host, nowIso);

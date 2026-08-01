@@ -4015,14 +4015,42 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
  * wedges; proven by the Phase 6 oracle round-trip). Double-bond sides are recomputed
  * from the placed geometry so ring double bonds draw toward the ring interior.
  */
-export function insertSmilesMolecule(
+/** Where a SMILES-derived molecule came from, so the object records it honestly. */
+export interface SmilesMoleculeSource {
+  objectIdPrefix: string;
+  styleSource: string;
+  warningCode: string;
+  warningMessage: string;
+}
+
+export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
+  objectIdPrefix: "mol_clipboard",
+  styleSource: "clipboard-smiles",
+  warningCode: "clipboard.smiles_imported",
+  warningMessage: "Generated an editable 2D structure from pasted SMILES."
+};
+
+/**
+ * Build the molecule object a SMILES depiction becomes, without touching the document.
+ *
+ * Split out of {@link insertSmilesMolecule} so the plugin boundary can reach it: a plugin proposes a
+ * patch carrying an object, and has no business applying one. Both callers therefore produce the same
+ * object — same scaling, same double-bond side recomputation, same compatibility record — which is
+ * what stops "insert from name" and "paste a SMILES" drifting into two different structures for the
+ * same input.
+ *
+ * `source` distinguishes them where it matters: the style and the compatibility warning record where
+ * the structure came from, and "pasted" would be a false provenance claim for a converted name.
+ */
+export function createSmilesMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
   depiction: PastedStructureDepiction,
-  smilesText: string
-): ChemDraftDocument {
+  smilesText: string,
+  source: SmilesMoleculeSource = SMILES_PASTE_SOURCE
+): DocumentObject {
   if (depiction.atoms.length === 0) {
-    throw new Error("Cannot paste SMILES: no atoms were generated.");
+    throw new Error("Cannot build a molecule: no atoms were generated.");
   }
   const page = firstPage(document);
 
@@ -4092,8 +4120,8 @@ export function insertSmilesMolecule(
 
   const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
 
-  const object = normalizeNativeMoleculeGeometry({
-    id: nextObjectId(document, "mol_clipboard"),
+  return normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, source.objectIdPrefix),
     type: "molecule",
     x: 0,
     y: 0,
@@ -4104,16 +4132,11 @@ export function insertSmilesMolecule(
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
       bondLengthPx: smilesPasteBondLengthPx,
-      source: "clipboard-smiles"
+      source: source.styleSource
     },
     compatibility: {
       sourceFormat: "smiles",
-      warnings: [
-        {
-          code: "clipboard.smiles_imported",
-          message: "Generated an editable 2D structure from pasted SMILES."
-        }
-      ],
+      warnings: [{ code: source.warningCode, message: source.warningMessage }],
       unknown: { smiles: smilesText }
     },
     structureFormat: "molfile-v2000",
@@ -4124,6 +4147,16 @@ export function insertSmilesMolecule(
     superatoms: [],
     rGroups: []
   });
+}
+
+export function insertSmilesMolecule(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  depiction: PastedStructureDepiction,
+  smilesText: string
+): ChemDraftDocument {
+  const object = createSmilesMolecule(document, point, depiction, smilesText);
+  const page = firstPage(document);
 
   return applyPatches(
     document,

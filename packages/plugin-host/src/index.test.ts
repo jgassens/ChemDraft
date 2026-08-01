@@ -591,6 +591,69 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     });
   });
 
+  it("hands a plugin a laid-out object but never inserts it", async () => {
+    // The division that makes this capability safe: the host does the 2D layout a plugin cannot do,
+    // and the plugin still has to go through proposePatch to get it into the document. If this method
+    // inserted, it would be a write path that bypasses the review queue.
+    const object = { id: "mol_plugin_1", type: "molecule", x: 0, y: 0 };
+    const buildStructureFromSmiles = vi.fn(async () => ({
+      available: true as const,
+      built: true as const,
+      object: object as never
+    }));
+    const host = new PluginHost({ buildStructureFromSmiles });
+    let seen: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.layout",
+        name: "Layout Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.2",
+        entry: "dist/plugin.js",
+        permissions: ["chemistry.compute"],
+        contributes: { commands: [{ id: "plugin.layout.probe", title: "Probe" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.layout.probe": async (context) => {
+            seen = await context.chemistry?.structureFromSmiles?.({ smiles: "c1ccccc1", origin: "Test" });
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.layout.probe");
+
+    expect(buildStructureFromSmiles).toHaveBeenCalledWith({ smiles: "c1ccccc1", origin: "Test" });
+    expect(seen).toMatchObject({ available: true, built: true, object });
+    // Nothing reached the patch queue: building is not proposing.
+    expect(host.listProposedPatches()).toHaveLength(0);
+  });
+
+  it("says the host has no layout engine rather than throwing", async () => {
+    const host = new PluginHost();
+    let answer: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.nolayout",
+        name: "Layout Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.2",
+        entry: "dist/plugin.js",
+        permissions: ["chemistry.compute"],
+        contributes: { commands: [{ id: "plugin.nolayout.probe", title: "Probe" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.nolayout.probe": async (context) => {
+            answer = await context.chemistry?.structureFromSmiles?.({ smiles: "c1ccccc1" });
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.nolayout.probe");
+    expect(answer).toEqual({ available: false, reason: "This host provides no 2D layout engine." });
+  });
+
   it("rejects an empty name at the boundary rather than passing it to an engine", async () => {
     // The schema is the gate, as it is for the envelope request. An engine asked to parse "" answers
     // something unhelpful; refusing here keeps the failure at the boundary that can explain it.

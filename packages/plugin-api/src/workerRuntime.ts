@@ -181,6 +181,10 @@ export function runPluginWorker(
           nameToStructure: (request) =>
             call("chemistry", "nameToStructure", [request]) as ReturnType<
               NonNullable<PluginChemistryAPI["nameToStructure"]>
+            >,
+          structureFromSmiles: (request) =>
+            call("chemistry", "structureFromSmiles", [request]) as ReturnType<
+              NonNullable<PluginChemistryAPI["structureFromSmiles"]>
             >
         }
       : undefined;

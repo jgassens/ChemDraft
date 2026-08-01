@@ -5,18 +5,19 @@ import { z } from "zod";
 // a `ChemDraftDocument`, `proposePatch()` takes a `DocumentPatch`). Surfacing them here keeps the plugin
 // boundary a single package: a plugin — and a host merging only the SDK — names these without importing
 // chem-core directly (see docs/plugin-architecture and the M33 boundary guard).
-export type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
+export type { ChemDraftDocument, DocumentObject, DocumentPatch } from "@chemdraft/chem-core";
+import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
- * 0.1.1 adds `PluginChemistryAPI.nameToStructure`.
+ * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`.
  *
- * The MINOR is deliberately unchanged. For a 0.x release `isPluginApiVersionCompatible` treats the
- * minor as the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` —
- * the NMR predictor among them — refuse to install against this host, for a purely additive method.
- * A plugin that needs the new capability declares `^0.1.1`, which this host satisfies and an older
- * one correctly does not.
+ * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
+ * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
+ * predictor among them — refuse to install against this host, for purely additive methods. A plugin
+ * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` to also insert), which this host
+ * satisfies and an older one correctly does not.
  */
-export const PluginApiVersion = "0.1.1" as const;
+export const PluginApiVersion = "0.1.2" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -871,8 +872,41 @@ export type PluginNameToStructureResult =
     }
   | { available: false; reason: string };
 
+export interface PluginStructureFromSmilesRequest {
+  smiles: string;
+  /** Recorded on the object so a reader can tell what produced it. Free text, e.g. a plugin name. */
+  origin?: string;
+}
+
+export const PluginStructureFromSmilesRequestSchema = z
+  .object({ smiles: NonEmptyStringSchema, origin: z.string().max(200).optional() })
+  .strict();
+
+/**
+ * A drawable object, or why there is not one.
+ *
+ * The object is returned rather than inserted, because inserting is `proposePatch`'s job and that
+ * queue is what gives the user a review step. A plugin gets the thing it could not build for itself —
+ * atoms, bonds, and **2D coordinates** — and still has to propose it like any other change.
+ */
+export type PluginStructureFromSmilesResult =
+  | { available: true; built: true; object: DocumentObject }
+  | { available: true; built: false; reason: string }
+  | { available: false; reason: string };
+
 export interface PluginChemistryAPI {
   isotopeEnvelope(request: PluginIsotopeEnvelopeRequest): Promise<PluginIsotopeEnvelopeResult>;
+  /**
+   * Lay a SMILES out as a document object a plugin can propose.
+   *
+   * This exists because 2D layout is the drawing application's work, not a plugin's: a plugin that
+   * invented coordinates would produce a molecule with unusable geometry, and one that shipped its own
+   * layout engine would be the mass-fragment demo's abundance table all over again. Optional for the
+   * same version-skew reason as `nameToStructure`.
+   */
+  structureFromSmiles?(
+    request: PluginStructureFromSmilesRequest
+  ): Promise<PluginStructureFromSmilesResult>;
   /**
    * Name → structure. Optional on purpose: a host that cannot offer it simply omits it, and a plugin
    * that finds it missing reports the capability as absent rather than failing. Making it required

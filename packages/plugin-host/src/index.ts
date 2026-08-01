@@ -18,6 +18,8 @@ import type {
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
   PluginNameToStructureResult,
+  PluginStructureFromSmilesRequest,
+  PluginStructureFromSmilesResult,
   PluginMenuContribution,
   NormalizedProposedDocumentPatch,
   PluginManifest,
@@ -40,6 +42,7 @@ import {
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
+  PluginStructureFromSmilesRequestSchema,
   ProposedDocumentPatchSchema,
   parsePluginManifest
 } from "@chemdraft/plugin-api";
@@ -189,6 +192,10 @@ export interface PluginHostOptions {
   computeIsotopeEnvelope?: (request: PluginIsotopeEnvelopeRequest) => Promise<PluginIsotopeEnvelopeResult>;
   /** Converts a systematic name to a structure. Same rule: absent hosts answer `available: false`. */
   convertNameToStructure?: (request: PluginNameToStructureRequest) => Promise<PluginNameToStructureResult>;
+  /** Lays a SMILES out as a document object. Same rule: absent hosts answer `available: false`. */
+  buildStructureFromSmiles?: (
+    request: PluginStructureFromSmilesRequest
+  ) => Promise<PluginStructureFromSmilesResult>;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   now?: () => Date | string;
@@ -210,6 +217,7 @@ export class PluginHost {
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
+  private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
   private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
   private readonly now: () => Date | string;
   private readonly createId: () => string;
@@ -225,6 +233,7 @@ export class PluginHost {
     this.showPanelReport = options.showPanelReport;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
+    this.buildStructureFromSmiles = options.buildStructureFromSmiles;
     this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? (() => globalThis.crypto.randomUUID());
@@ -429,6 +438,14 @@ export class PluginHost {
               return { available: false, reason: "This host provides no name-to-structure engine." };
             }
             return await this.convertNameToStructure(parsed);
+          },
+          structureFromSmiles: async (request) => {
+            this.requirePermission(pluginId, "chemistry.compute");
+            const parsed = PluginStructureFromSmilesRequestSchema.parse(request);
+            if (!this.buildStructureFromSmiles) {
+              return { available: false, reason: "This host provides no 2D layout engine." };
+            }
+            return await this.buildStructureFromSmiles(parsed);
           }
         }
       : undefined;

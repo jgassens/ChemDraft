@@ -11,15 +11,23 @@
  * panel's envelope are therefore the same computation, and cannot drift.
  */
 import { invoke } from "@tauri-apps/api/core";
+import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
-  PluginNameToStructureResult
+  PluginNameToStructureResult,
+  PluginStructureFromSmilesRequest,
+  PluginStructureFromSmilesResult
 } from "@chemdraft/plugin-api";
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter";
 
 import { analysisClient } from "../analysisClient";
+import {
+  createSmilesMolecule,
+  pastedStructureDepictionFromMolfile,
+  type PastedStructureDepiction
+} from "../documentWorkflow";
 
 /** Its own slot, so a plugin's request never supersedes the Analyze panel's in-flight run. */
 const PLUGIN_ENVELOPE_SLOT = "plugin.chemistry.isotope-envelope";
@@ -74,6 +82,76 @@ export async function computeIsotopeEnvelopeForPlugin(
     // produced these numbers is not an implementation detail the plugin may drop.
     conventions: [...result.conventions]
   };
+}
+
+/**
+ * Lay a SMILES out as a document object, through the same engine chain a pasted SMILES takes.
+ *
+ * RDKit first because it is the readability-first depiction for fused and bridged systems, with
+ * OpenChemLib as the complete local fallback — and `createSmilesMolecule` for the object itself, so a
+ * structure inserted from a name and the same structure pasted as SMILES are the same object rather
+ * than two implementations that drift.
+ *
+ * The object is returned, not inserted. Insertion goes through `proposePatch` like every other plugin
+ * change, which is what keeps the user's review step in the path.
+ */
+export async function structureFromSmilesForPlugin(
+  request: PluginStructureFromSmilesRequest,
+  getActiveDocument: () => ChemDraftDocument | undefined
+): Promise<PluginStructureFromSmilesResult> {
+  const document = getActiveDocument();
+  if (!document) {
+    return { available: false, reason: "There is no open document to build a structure for." };
+  }
+
+  const ocl = await import("@chemdraft/ocl-adapter");
+  let depiction: PastedStructureDepiction;
+  try {
+    const [{ registerRdkitWasmLoader }, rdkit] = await Promise.all([
+      import("../rdkitWasmLoader"),
+      import("@chemdraft/rdkit-adapter")
+    ]);
+    registerRdkitWasmLoader();
+    depiction = pastedStructureDepictionFromMolfile(await rdkit.generateSmiles2DMolfile(request.smiles));
+  } catch {
+    try {
+      depiction = pastedStructureDepictionFromMolfile(ocl.depictSmiles2D(request.smiles).molfile);
+    } catch {
+      return {
+        available: true,
+        built: false,
+        reason: `No 2D structure could be generated for "${request.smiles}".`
+      };
+    }
+  }
+
+  if (depiction.atoms.length === 0) {
+    return { available: true, built: false, reason: "The structure came back with no atoms." };
+  }
+
+  const origin = request.origin?.trim();
+  const object = createSmilesMolecule(document, pluginInsertPoint(document), depiction, request.smiles, {
+    objectIdPrefix: "mol_plugin",
+    styleSource: "plugin-smiles",
+    warningCode: "plugin.smiles_imported",
+    // Names the plugin, because "pasted" would be a false account of where this came from.
+    warningMessage: origin
+      ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
+      : "Generated an editable 2D structure from SMILES supplied by a plugin."
+  });
+
+  return { available: true, built: true, object };
+}
+
+/**
+ * Where a plugin's structure lands.
+ *
+ * The page's centre rather than the caret or the viewport: a plugin has no pointer and no scroll
+ * position, and dropping every structure at the origin would stack them on top of each other.
+ */
+function pluginInsertPoint(document: ChemDraftDocument): { x: number; y: number } {
+  const page = document.pages[0];
+  return page ? { x: page.width / 2, y: page.height / 2 } : { x: 0, y: 0 };
 }
 
 /** What the Rust side returns; see `src-tauri/src/opsin.rs`. */
