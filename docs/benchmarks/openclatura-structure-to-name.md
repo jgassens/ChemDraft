@@ -129,6 +129,18 @@ radicals — that falls through to omission instead of refusal. A change that ma
 decline rather than drop would move this from unusable to shippable-with-a-documented-gap, and it is a
 change upstream would plausibly welcome.
 
+**Root cause found, and it is narrower than the symptom** — see
+`openclatura-upstream-report.md` for the filed-shaped write-up. In short: OpenClatura *already has* the
+right check. `assert_component_fully_named` raises `UnnamedAtomError` when a name leaves atoms unnamed,
+which is why phenylarsonic acid **as a parent** correctly declines. But it is called once, at component
+level, and the recursive substituent namer (`name_subgraph`) never calls it — while `namer.py:919`
+records `atom_ids=branch_atoms`, claiming the entire branch regardless of what its name covered. So an
+unnameable feature inside a *substituent* is dropped and its atoms are still counted as named, which
+satisfies the component-level audit.
+
+That means the fix is applying an existing rule one level deeper, not writing new nomenclature — the
+best possible shape for an outside contribution.
+
 **Re-run before any adoption decision.** Upstream pushed the day this ran; these numbers describe
 0.2.0 and nothing else.
 
