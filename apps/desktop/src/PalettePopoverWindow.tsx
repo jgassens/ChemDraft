@@ -13,10 +13,12 @@ import {
   sendPaletteCommandCancel,
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
+  setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetFlyoutCommandSnapshot,
+  type ToolsetPopoverAnchor,
   type ToolsetPopoverContent
 } from "./window-manager";
 
@@ -52,6 +54,10 @@ export function PalettePopoverWindow({
   // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
+  // Where this open's top-left belongs (global logical). Re-asserted after every content-fit
+  // resize: macOS resizes are bottom-anchored, so a height change after Rust's set_position
+  // would otherwise shove the window down by the delta — the first-open misposition.
+  const anchorRef = useRef<ToolsetPopoverAnchor | undefined>(undefined);
   const [content, setContent] = useState<ToolsetPopoverContent>(() =>
     kind === "flyout"
       ? { kind: "flyout", flyout: { flyoutId: "", title: "", commands: [] } }
@@ -89,6 +95,9 @@ export function PalettePopoverWindow({
         return;
       }
       contentPushedRef.current = true;
+      if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
+        anchorRef.current = payload.anchor;
+      }
       setContent(payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" });
     })
       .then((cleanup) => {
@@ -121,7 +130,9 @@ export function PalettePopoverWindow({
     setDraft(undefined);
   }, [currentColor]);
 
-  // Fit the window to whatever content it's showing, in both dimensions.
+  // Fit the window to whatever content it's showing, in both dimensions. Every resize
+  // re-asserts the anchored position: a bottom-anchored macOS resize moves the top-left,
+  // so size and position travel as a pair.
   useEffect(() => {
     const shell = shellRef.current;
     const applySize = () => {
@@ -129,9 +140,13 @@ export function PalettePopoverWindow({
       if (!rect || rect.width === 0 || rect.height === 0) {
         return;
       }
-      void setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
-        () => undefined
-      );
+      void (async () => {
+        await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) });
+        const anchor = anchorRef.current;
+        if (anchor) {
+          await setCurrentWindowLogicalPosition(anchor);
+        }
+      })().catch(() => undefined);
     };
 
     applySize();
@@ -159,12 +174,6 @@ export function PalettePopoverWindow({
     if (!ready || (prewarm && !contentPushedRef.current)) {
       return;
     }
-    const rect = shellRef.current?.getBoundingClientRect();
-    if (rect && rect.width > 0 && rect.height > 0) {
-      void setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
-        () => undefined
-      );
-    }
     // One-frame background scrub before the reveal: a reused hidden webview can come back
     // with stale pixels of its previous content composited under the new (the same WKWebView
     // under-invalidation family as the canvas chrome ghosts). Flipping the background forces
@@ -174,9 +183,24 @@ export function PalettePopoverWindow({
     window.setTimeout(() => {
       document.body.style.backgroundColor = "";
     }, 30);
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => getCurrentWindow().show())
-      .catch(() => undefined);
+    // Size, THEN position, THEN show — the tooltip window's proven order. Positioning before
+    // the content-fit resize let the bottom-anchored resize drag the top edge down by the
+    // height delta, which is exactly where the first open used to land.
+    const rect = shellRef.current?.getBoundingClientRect();
+    void (async () => {
+      if (rect && rect.width > 0 && rect.height > 0) {
+        await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
+          () => undefined
+        );
+      }
+      const anchor = anchorRef.current;
+      if (anchor) {
+        await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
+      }
+      await import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().show())
+        .catch(() => undefined);
+    })();
   }, [content, prewarm]);
 
   // Safety net for a cold user-initiated open: if content never arrives (e.g. the owning palette went

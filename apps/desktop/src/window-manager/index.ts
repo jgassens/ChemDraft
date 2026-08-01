@@ -299,19 +299,34 @@ export type ToolsetPopoverContent =
   | { kind: "artColor" }
   | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot };
 
-export type ToolsetPopoverContentPayload = { toolsetId: string } & ToolsetPopoverContent;
+/** Where the popover's top-left belongs, in global logical coordinates. Rides the content
+ *  push so the popover can re-assert it AFTER sizing itself: macOS anchors window resizes
+ *  at the bottom-left, so a content-fit height change after Rust's set_position shoved the
+ *  first open down by exactly the height delta. Size first, then position, then show —
+ *  the order the tooltip window has always used. */
+export interface ToolsetPopoverAnchor {
+  x: number;
+  y: number;
+}
+
+export type ToolsetPopoverContentPayload = { toolsetId: string; anchor?: ToolsetPopoverAnchor } & ToolsetPopoverContent;
 
 const TOOLSET_POPOVER_CONTENT_EVENT = "chemdraft://toolset-popover-content";
 const TOOLSET_POPOVER_CONTENT_REQUEST_EVENT = "chemdraft://toolset-popover-content-request";
 
-/** Palette → popover: set what the popover window renders (its owner sends this on every open). */
-export async function setToolsetPopoverContent(toolsetId: string, content: ToolsetPopoverContent): Promise<void> {
+/** Palette → popover: set what the popover window renders (its owner sends this on every open).
+ *  The anchor lets the popover re-assert its position after content-fit resizing. */
+export async function setToolsetPopoverContent(
+  toolsetId: string,
+  content: ToolsetPopoverContent,
+  anchor?: ToolsetPopoverAnchor
+): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, ...content }).catch(
+  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }).catch(
     () => undefined
   );
 }

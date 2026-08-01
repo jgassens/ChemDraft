@@ -78,9 +78,11 @@ export function arrowVariantRows(state: ToolbarWidgetState): MainStyleRows {
                 : objectShaftMarkSizeCommandId(closestPreset(shaftMarkSize.value, SHAFT_MARK_SIZE_PRESETS)),
             options: [
               { value: objectShaftMarkSizeAutoCommandId, label: "Auto" },
+              // Bare numbers: the two-cell select has no room for a unit suffix next to the
+              // chevron, and "32 px" clipped to "32 p". The aria-label carries the meaning.
               ...SHAFT_MARK_SIZE_PRESETS.map((preset) => ({
                 value: objectShaftMarkSizeCommandId(preset),
-                label: `${preset} px`
+                label: `${preset}`
               }))
             ]
           }]

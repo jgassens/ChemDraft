@@ -672,7 +672,10 @@ export function PaletteWindow({
       const screenX = windowPosition.x + anchor.left;
       const screenY = windowPosition.y + anchor.bottom + 4;
       await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
-      await setToolsetPopoverContent(toolset.id, content);
+      // The anchor rides along so the popover can re-assert its position AFTER sizing to
+      // content — a bottom-anchored macOS resize otherwise shifts the first open down by
+      // the height delta (Rust positions the old-size window; the resize moves its top).
+      await setToolsetPopoverContent(toolset.id, content, { x: screenX, y: screenY });
     })().catch(() => undefined);
   };
 
