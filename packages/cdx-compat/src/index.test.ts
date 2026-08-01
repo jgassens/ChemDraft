@@ -1156,6 +1156,48 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(arrow?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
   });
 
+  it("imports a ChemDraw <arrow> element as a real native arrow, not a bare shape", () => {
+    // ChemDraw writes reaction arrows as standalone <arrow> elements; ChemDraft writes them as
+    // <graphic GraphicType="Line" ArrowType=...>. Only the second path tagged the result, so an
+    // imported ChemDraw arrow arrived as an untagged graphicKind:"line" — a generic shape to the
+    // rest of the app. The Main toolbar offered it the SHAPE layout (fill colour, on a line),
+    // `graphicObjectSupportsMarkers` returned false so its own head could not be edited, "Set as
+    // Default Arrow Style" did not recognise it, and it re-exported as a decorative stroke.
+    const importArrow = (attributes: string) => {
+      const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="Arrow Element Test">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <arrow id="a1" BoundingBox="200 296 320 304" Head3D="320 300 0" Tail3D="200 300 0" ${attributes}/>
+  </page>
+</CDXML>`);
+      return opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+    };
+
+    // A plain forward arrow: head at one end only.
+    const forward = importArrow('ArrowheadHead="Full" ArrowheadType="Solid"');
+    expect(forward?.graphicKind).toBe("path");
+    expect(forward?.data.artPathKind).toBe("line");
+    expect(forward?.data.artToolId).toBe("reactionArrow");
+    expect(forward?.data.markerEnd).toMatchObject({ kind: "filled-arrow" });
+
+    // Heads at BOTH ends is a resonance arrow.
+    const resonance = importArrow('ArrowheadHead="Full" ArrowheadTail="Full" ArrowheadType="Solid"');
+    expect(resonance?.data.artToolId).toBe("resonanceArrow");
+    expect(resonance?.data.markerStart).toMatchObject({ kind: "filled-arrow" });
+
+    // A single barb is one-electron chemistry, same as ArrowType="HalfHead".
+    const fishhook = importArrow('ArrowheadHead="HalfRight" ArrowheadType="Solid"');
+    expect(fishhook?.data.artToolId).toBe("fishhookArrow");
+    expect(fishhook?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
+
+    // A headless <arrow> is just a line: still a path so a head CAN be added, but not tagged as a
+    // chemical arrow, because it does not claim to be one.
+    const headless = importArrow("");
+    expect(headless?.graphicKind).toBe("path");
+    expect(headless?.data.artToolId).toBeUndefined();
+  });
+
   it("reads a ChemDraw <arrow> frame consistently with its unambiguous 3D endpoints", () => {
     // Head3D/Tail3D are "x y z" in every CDX dialect, so they pin the arrow's true direction with
     // no convention to argue about. A real ChemDraw 26 document was inspected to settle this: its

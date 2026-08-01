@@ -695,11 +695,15 @@ function exportGraphicObject(
 ): string {
   const graphicId = idFor(ids, graphic.id, allocator);
   warnForGraphicCdxmlLimitations(graphic, warnings);
-  if (isSemanticReactionArrowGraphic(graphic)) {
-    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
-  }
+  // An object that came in as an <arrow> goes back out as one, even now that it is tagged as a
+  // native arrow. The element's ArrowheadHead/ArrowheadTail/ArrowheadType triple is RICHER than the
+  // closed ArrowType enum — it can say hollow, angled, or half-headed per end — so round-tripping
+  // the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
+  }
+  if (isSemanticReactionArrowGraphic(graphic)) {
+    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
   }
   return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
 }
@@ -2171,6 +2175,22 @@ function importHalfHeadArrowAsFishhook(
   };
 }
 
+/**
+ * Import a standalone `<arrow>` as a native art arrow, the same shape the
+ * `<graphic GraphicType="Line" ArrowType=…>` path produces.
+ *
+ * ChemDraw writes reaction arrows as `<arrow>` elements; ChemDraft writes them as tagged
+ * `<graphic>` lines. Only the second path produced a real arrow, so an imported ChemDraw arrow
+ * arrived as an untagged `graphicKind: "line"` — a generic shape to everything downstream. The Main
+ * toolbar offered it the shape layout (a fill colour, for a line), `graphicObjectSupportsMarkers`
+ * requires `graphicKind === "path"` so its own head could not be edited, "Set as Default Arrow
+ * Style" did not recognise it, and it re-exported as a decorative stroke.
+ *
+ * The tool is read from the heads, which is the only chemistry an `<arrow>` states: one head is a
+ * reaction arrow, heads at both ends a resonance arrow, a single barb a fishhook. A headless
+ * `<arrow>` is left untagged — it is a line, and should not claim to be a chemical arrow — but it
+ * still becomes a path so a head can be added to it later.
+ */
 function importArrowGraphic(
   element: XmlElementView,
   pageIndex: number,
@@ -2178,7 +2198,36 @@ function importArrowGraphic(
   context: ImportPageContext
 ): GraphicObject {
   const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "arrow");
-  return { ...graphic, data: { ...graphic.data, ...cdxmlArrowMarkers(element) } };
+  const markers = cdxmlArrowMarkers(element);
+  const artToolId = artToolIdForImportedArrowMarkers(markers);
+  return {
+    ...graphic,
+    graphicKind: "path",
+    data: {
+      ...graphic.data,
+      // Only default the path kind — an <arrow> can carry real geometry of its own (a wavy shaft,
+      // for one), and overwriting that would straighten it on import.
+      artPathKind: graphic.data.artPathKind ?? "line",
+      ...markers,
+      ...(artToolId === undefined ? {} : { artToolId })
+    }
+  };
+}
+
+/** The native arrow tool an imported `<arrow>` stands for, judged by which ends carry heads. */
+function artToolIdForImportedArrowMarkers(
+  markers: Pick<GraphicObject["data"], "markerStart" | "markerEnd">
+): string | undefined {
+  const head = markers.markerEnd?.kind;
+  const tail = markers.markerStart?.kind;
+  if (head === undefined && tail === undefined) {
+    return undefined;
+  }
+  // A single barb is one electron, not two — the same distinction ArrowType="HalfHead" carries.
+  if (head === "half-arrow" || tail === "half-arrow") {
+    return "fishhookArrow";
+  }
+  return head !== undefined && tail !== undefined ? "resonanceArrow" : "reactionArrow";
 }
 
 /** A standalone `<arrow>` carries its heads in three attributes rather than the closed `ArrowType`
