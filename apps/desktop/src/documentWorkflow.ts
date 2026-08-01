@@ -1747,7 +1747,11 @@ export interface NativeArrowStyleDefault {
   bowFrac?: number;
   strokeColor?: string;
   strokeWidth?: number;
-  strokeDasharray?: string;
+  /** Three states, because a tool can ship a dashed base style: absent = "not captured, keep the
+   *  tool's own dash", a string = that dash, and `null` = explicitly solid, which must CLEAR the
+   *  tool's base dash. Without the null case, making a dashed arrow solid and saving it as the
+   *  default was unrepresentable and the next arrow came back dashed. */
+  strokeDasharray?: string | null;
 }
 
 /** Per-tool "draw new arrows like this" defaults. Session state seeded from persistence by the main
@@ -1866,9 +1870,11 @@ export function nativeArrowStyleDefaultFromGraphic(
   if (typeof object.style.strokeWidth === "number") {
     style.strokeWidth = object.style.strokeWidth;
   }
-  if (typeof object.style.strokeDasharray === "string") {
-    style.strokeDasharray = object.style.strokeDasharray;
-  }
+  // Capture solid explicitly (null) rather than omitting it, so "make this dashed tool draw solid
+  // arrows from now on" is expressible; omission still means "keep whatever the tool draws".
+  style.strokeDasharray = typeof object.style.strokeDasharray === "string"
+    ? object.style.strokeDasharray
+    : null;
 
   return { toolId, title: tool.title, style };
 }
@@ -1940,6 +1946,9 @@ function nativeArrowStyleDefaultOverlay(
   }
   if (typeof stored.strokeDasharray === "string") {
     nextStyle.strokeDasharray = stored.strokeDasharray;
+  } else if (stored.strokeDasharray === null) {
+    // Explicitly solid: clear the tool's base dash instead of leaving it in place.
+    delete nextStyle.strokeDasharray;
   }
 
   return { data: nextData, style: nextStyle };

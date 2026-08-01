@@ -4541,6 +4541,68 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
+  it("lets a dashed arrow tool remember an explicitly solid default", () => {
+    try {
+      // The dashed reaction-arrow tool ships strokeDasharray "6 6". Making one solid and saving it
+      // as the default must clear that base dash — capturing only present strings left the saved
+      // style with no instruction to clear it, so the next arrow came back dashed.
+      const dashedDoc = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Dashed Default Solid"),
+        { x: 100, y: 300 },
+        { x: 220, y: 300 },
+        "tool.art.reactionArrowDashed"
+      );
+      const dashedId = dashedDoc.selection.objectIds[0]!;
+      expect(graphicById(dashedDoc, dashedId).style.strokeDasharray).toBe("6 6");
+
+      const solidDoc = applyPatches(dashedDoc, [{
+        op: "updateObject",
+        objectId: dashedId,
+        changes: { style: { ...graphicById(dashedDoc, dashedId).style, strokeDasharray: undefined } }
+      }]);
+      const captured = nativeArrowStyleDefaultFromGraphic(graphicById(solidDoc, dashedId));
+      if (!captured) {
+        throw new Error("Expected the dashed arrow to yield a default style.");
+      }
+      // Explicitly solid is recorded, not merely omitted.
+      expect(captured.style.strokeDasharray).toBeNull();
+      setNativeArrowStyleDefault(captured.toolId, captured.style);
+
+      const nextDashed = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Dashed Default Applied"),
+        { x: 100, y: 340 },
+        { x: 220, y: 340 },
+        "tool.art.reactionArrowDashed"
+      );
+      expect(graphicById(nextDashed, nextDashed.selection.objectIds[0]!).style.strokeDasharray).toBeUndefined();
+
+      // And the reverse still works: a dash captured from a solid tool applies to new arrows.
+      const solidToolDoc = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Solid Default Dashed"),
+        { x: 100, y: 380 },
+        { x: 220, y: 380 },
+        "tool.art.reactionArrow"
+      );
+      const solidToolId = solidToolDoc.selection.objectIds[0]!;
+      const nowDashed = applyPatches(solidToolDoc, [{
+        op: "updateObject",
+        objectId: solidToolId,
+        changes: { style: { ...graphicById(solidToolDoc, solidToolId).style, strokeDasharray: "4 3" } }
+      }]);
+      const dashCapture = nativeArrowStyleDefaultFromGraphic(graphicById(nowDashed, solidToolId));
+      setNativeArrowStyleDefault(dashCapture!.toolId, dashCapture!.style);
+      const nextSolidTool = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Solid Default Dashed Applied"),
+        { x: 100, y: 420 },
+        { x: 220, y: 420 },
+        "tool.art.reactionArrow"
+      );
+      expect(graphicById(nextSolidTool, nextSolidTool.selection.objectIds[0]!).style.strokeDasharray).toBe("4 3");
+    } finally {
+      clearNativeArrowStyleDefaults();
+    }
+  });
+
   it("captures a right-clicked arrow's style as the tool default and applies it to new arrows", () => {
     try {
       // A resized retro arrow becomes the default: subsequent retros draw at that heft.

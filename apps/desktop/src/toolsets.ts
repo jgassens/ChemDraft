@@ -79,10 +79,14 @@ export function createDesktopToolsetRegistry(
     // Prune (not throw) so persisted customization referencing a since-removed command degrades
     // gracefully instead of discarding the whole layout; `additionalCommandIds` lets in-place-added
     // shell commands (e.g. edit.undo) count as valid targets so they aren't pruned as "unknown".
-    : applyToolsetLayoutState<IconName, ToolbarAssetName>(base, migrateLegacyMainToolbarLayoutState(layoutState), {
-        additionalCommandIds,
-        onUnknownCommand: "prune"
-      });
+    : applyToolsetLayoutState<IconName, ToolbarAssetName>(
+        base,
+        migrateLegacyMainToolbarLayoutState(migrateRenamedCommandIdsInLayoutState(layoutState)),
+        {
+          additionalCommandIds,
+          onUnknownCommand: "prune"
+        }
+      );
 
   return new ToolsetRegistry<IconName, ToolbarAssetName>(toolsets);
 }
@@ -241,6 +245,105 @@ export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
     delete next.groupOrder;
     return next;
   });
+  return changed ? { ...record, toolsetOverrides } : state;
+}
+
+/**
+ * Command ids this app has renamed, old → new. Persisted layout state is id-based, so without a
+ * remap a user's saved hides and reordering silently stop applying after an upgrade (and the stale
+ * ids are then pruned as unknown, making the loss permanent on the next save).
+ *
+ * The semantic arrow buttons moved into the art-arrow family when they gained real art geometry.
+ */
+const RENAMED_COMMAND_IDS: Readonly<Record<string, string>> = {
+  "tool.reactionArrow": "tool.art.reactionArrow",
+  "tool.resonanceArrow": "tool.art.resonanceArrow",
+  "tool.equilibriumArrow": "tool.art.equilibriumArrow",
+  "tool.retroArrow": "tool.art.retroArrow"
+};
+
+function renamedCommandId(id: unknown): string | undefined {
+  return typeof id === "string" ? RENAMED_COMMAND_IDS[id] : undefined;
+}
+
+/**
+ * Rewrite renamed command ids everywhere a persisted layout can address one: item order, hides,
+ * per-item overrides, and additions (whose `item` carries its own command id). Pure and idempotent
+ * — a state already using new ids is returned unchanged, and unknown ids pass through so the
+ * existing prune-on-unknown behaviour still applies to genuinely removed commands.
+ */
+export function migrateRenamedCommandIdsInLayoutState(state: unknown): unknown {
+  if (typeof state !== "object" || state === null) {
+    return state;
+  }
+  const record = state as { toolsetOverrides?: unknown };
+  if (!Array.isArray(record.toolsetOverrides)) {
+    return state;
+  }
+
+  let changed = false;
+  const remapId = (id: unknown): unknown => {
+    const next = renamedCommandId(id);
+    if (next === undefined) {
+      return id;
+    }
+    changed = true;
+    return next;
+  };
+  const remapIdList = (ids: unknown): unknown =>
+    Array.isArray(ids) ? ids.map(remapId) : ids;
+
+  const toolsetOverrides = record.toolsetOverrides.map((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return entry;
+    }
+    const override = entry as Record<string, unknown>;
+    const next: Record<string, unknown> = { ...override };
+
+    if (typeof override.itemOrder === "object" && override.itemOrder !== null && !Array.isArray(override.itemOrder)) {
+      next.itemOrder = Object.fromEntries(
+        Object.entries(override.itemOrder as Record<string, unknown>).map(([groupId, ids]) => [groupId, remapIdList(ids)])
+      );
+    }
+    next.hiddenCommandIds = remapIdList(override.hiddenCommandIds);
+    if (Array.isArray(override.itemOverrides)) {
+      next.itemOverrides = override.itemOverrides.map((itemOverride) => {
+        if (typeof itemOverride !== "object" || itemOverride === null) {
+          return itemOverride;
+        }
+        const record = itemOverride as Record<string, unknown>;
+        return { ...record, commandId: remapId(record.commandId) };
+      });
+    }
+    if (Array.isArray(override.itemAdditions)) {
+      next.itemAdditions = override.itemAdditions.map((addition) => {
+        if (typeof addition !== "object" || addition === null) {
+          return addition;
+        }
+        const record = addition as Record<string, unknown>;
+        const item = record.item;
+        if (typeof item !== "object" || item === null) {
+          return addition;
+        }
+        const itemRecord = item as Record<string, unknown>;
+        const nextItem: Record<string, unknown> = { ...itemRecord };
+        // A toolset item can name its command directly and/or through its primary action.
+        if (itemRecord.commandId !== undefined) {
+          nextItem.commandId = remapId(itemRecord.commandId);
+        }
+        const primary = itemRecord.primary;
+        if (typeof primary === "object" && primary !== null) {
+          const primaryRecord = primary as Record<string, unknown>;
+          if (primaryRecord.commandId !== undefined) {
+            nextItem.primary = { ...primaryRecord, commandId: remapId(primaryRecord.commandId) };
+          }
+        }
+        return { ...record, item: nextItem };
+      });
+    }
+    return next;
+  });
+
   return changed ? { ...record, toolsetOverrides } : state;
 }
 

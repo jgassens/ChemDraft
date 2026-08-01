@@ -348,6 +348,21 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('page.style.setProperty("--cd-bg-page"');
   });
 
+  it("only autosaves the document session after a clean read of it", () => {
+    // Rust distinguishes "no session yet" from a failed read so a failure cannot be answered by
+    // writing the blank startup document over a session we merely failed to decode. The gate is
+    // what honours that: it must be set in the success path and checked before every save.
+    expect(mainWindowSource).toContain("documentSessionSaveEnabledRef");
+    expect(mainWindowSource).toMatch(/if \(!documentSessionHydratedRef\.current \|\| !documentSessionSaveEnabledRef\.current\)/);
+    // The enabling assignment must not live in `.finally` (which also runs after a rejection).
+    const enablingLine = mainWindowSource
+      .split("\n")
+      .findIndex((line) => line.includes("documentSessionSaveEnabledRef.current = true"));
+    expect(enablingLine).toBeGreaterThan(-1);
+    const following = mainWindowSource.split("\n").slice(enablingLine, enablingLine + 8).join("\n");
+    expect(following).toContain(".catch(");
+  });
+
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
     const implementationSource = [mainWindowSource, documentWorkflowSource].join("\n");
 

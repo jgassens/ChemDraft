@@ -1760,6 +1760,9 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
+  // Autosave writes the session file only after a clean read of it. A failed read leaves this false
+  // so the blank startup document can never replace a session we merely failed to decode.
+  const documentSessionSaveEnabledRef = useRef(false);
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
@@ -6614,8 +6617,20 @@ export function MainWindow({
         } catch {
           // Never block startup on a bad autosave; the next edit overwrites it.
         }
+        if (active) {
+          // Only a clean read un-gates autosave. Rust distinguishes "no session yet" (null) from a
+          // real read/parse failure (rejects) precisely so a failure cannot be answered by writing
+          // defaults over the file — see read_optional_file, and the layout-state loader that
+          // leaves its own save gate closed on failure.
+          documentSessionSaveEnabledRef.current = true;
+        }
       })
-      .catch(() => undefined)
+      .catch(() => {
+        // Read or parse failed: the file may hold a real session we simply could not decode, so
+        // autosave stays disabled for this run rather than overwriting it with the blank startup
+        // document. Editing is unaffected; only the session file is left alone.
+        setStatus("Could not read the last session; this session will not be autosaved");
+      })
       .finally(() => {
         if (active) {
           documentSessionHydratedRef.current = true;
@@ -6635,7 +6650,7 @@ export function MainWindow({
       return undefined;
     }
     const handle = window.setTimeout(() => {
-      if (!documentSessionHydratedRef.current) {
+      if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
         return;
       }
       try {

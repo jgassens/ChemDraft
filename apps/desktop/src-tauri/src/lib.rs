@@ -718,14 +718,19 @@ fn read_optional_file(path: &Path) -> Result<Option<String>, String> {
 /// power loss mid-write can leave a partial, unparseable file. Instead write a complete sibling temp
 /// in the SAME directory (so the rename stays on one filesystem) and `rename` it over the target:
 /// `rename(2)` atomically replaces the destination, leaving either the old complete file or the new
-/// complete one, never a torn one. The temp name carries this process's pid so two ChemDraft
-/// instances writing the same file can't clobber each other's temp.
+/// complete one, never a torn one. The temp name carries this process's pid AND a per-write counter:
+/// the pid separates ChemDraft instances, and the counter separates concurrent writes *within* one
+/// instance — Tauri runs commands on a thread pool, so a fire-and-forget autosave that outlives its
+/// debounce can overlap the next one, and a shared temp name would let writer A's rename publish
+/// writer B's half-written bytes, which is exactly the torn file this helper exists to prevent.
 fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    static WRITE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}.tmp", std::process::id()));
+    tmp.push(format!(".{}.{}.tmp", std::process::id(), sequence));
     let tmp = PathBuf::from(tmp);
     fs::write(&tmp, contents).map_err(|error| error.to_string())?;
     fs::rename(&tmp, path).map_err(|error| {
@@ -3332,6 +3337,50 @@ mod tests {
         );
 
         // No sibling temp file lingers after a successful commit.
+        let leftover_temps = fs::read_dir(path.parent().expect("parent"))
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        expect_eq(&0usize.to_string(), &leftover_temps.to_string());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_to_one_path_never_publish_a_torn_file() {
+        // Tauri runs commands on a thread pool, so two writes to the same path can overlap inside
+        // one process. With a pid-only temp name they shared a temp file and one rename could
+        // publish the other's half-written bytes; the per-write counter keeps them separate.
+        let dir = std::env::temp_dir().join(format!("chemdraft-write-concurrent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("state.json");
+        let short = "s".repeat(64);
+        let long = "L".repeat(64_000);
+
+        let mut handles = Vec::new();
+        for index in 0..8 {
+            let path = path.clone();
+            let payload = if index % 2 == 0 { short.clone() } else { long.clone() };
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..12 {
+                    write_file_atomic(&path, &payload).expect("concurrent write");
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("writer thread");
+        }
+
+        // Whatever landed last, it must be exactly one of the complete payloads — never a splice.
+        let final_contents = fs::read_to_string(&path).expect("read final");
+        if final_contents != short && final_contents != long {
+            panic!(
+                "torn write: {} bytes matching neither payload",
+                final_contents.len()
+            );
+        }
+
         let leftover_temps = fs::read_dir(path.parent().expect("parent"))
             .expect("read dir")
             .filter_map(|entry| entry.ok())
