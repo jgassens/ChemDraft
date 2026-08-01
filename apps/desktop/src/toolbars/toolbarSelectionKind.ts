@@ -32,6 +32,12 @@ export interface ToolbarSelectionModel {
 
 export interface ClassifyToolbarSelectionInput {
   document: ChemDraftDocument;
+  /**
+   * How many of the selected graphics can carry an arrowhead, from the memoized art inspector
+   * model (`markersSupportedCount`). Passed in rather than derived here because answering it means
+   * running `planNativeArtVisual` per object, which the art model has already done.
+   */
+  markerCapableGraphicCount?: number;
   /** From the memoized molecule inspector model (`targets.context`) — passing the resolved context
    *  instead of re-running target resolution avoids repeating ring perception per render. */
   moleculeContext: MoleculeInspectorContext;
@@ -41,17 +47,20 @@ export interface ClassifyToolbarSelectionInput {
 export function classifyToolbarSelection({
   document,
   moleculeContext,
-  activeTextEditObjectId
+  activeTextEditObjectId,
+  markerCapableGraphicCount
 }: ClassifyToolbarSelectionInput): ToolbarSelectionModel {
   const objectTypes = [...selectedDocumentObjectTypes(document)].sort();
   const selectedIds = new Set(document.selection.objectIds);
   const arrowToolIds = new Set<string>();
   let allGraphicsAreArrows = true;
+  let graphicCount = 0;
   for (const page of document.pages) {
     for (const object of page.objects) {
       if (!selectedIds.has(object.id) || object.type !== "graphic") {
         continue;
       }
+      graphicCount += 1;
       const toolId = nativeArrowToolIdForGraphic(object);
       if (toolId) {
         arrowToolIds.add(toolId);
@@ -60,6 +69,14 @@ export function classifyToolbarSelection({
       }
     }
   }
+  // The arrow layout is built around `supportsMarkers`, not around "is an arrow": head style, tail
+  // toggle and head size all gate on it, and Set as Default Arrow Style gates separately on a
+  // single ARROW. So any open stroke that can carry a head belongs there — a wavy line, a polyline,
+  // a freehand stroke. Keying this on the tool id was the last thing insisting otherwise, and it
+  // left those strokes on the shape layout (fill, paint type, corners) with no way to add a head at
+  // all, even though the commands accept them. Every selected graphic must qualify: showing head
+  // controls for a selection that includes a rectangle would lie about the rectangle.
+  const everyGraphicCanCarryAHead = graphicCount > 0 && markerCapableGraphicCount === graphicCount;
   const textEditing = activeTextEditObjectId !== undefined;
 
   return {
@@ -68,7 +85,8 @@ export function classifyToolbarSelection({
       moleculeContext,
       textEditing,
       selectedCount: document.selection.objectIds.length,
-      allGraphicsAreArrows: allGraphicsAreArrows && arrowToolIds.size > 0
+      allGraphicsAreArrows: allGraphicsAreArrows && arrowToolIds.size > 0,
+      everyGraphicCanCarryAHead
     }),
     objectTypes,
     moleculeContext,
@@ -83,13 +101,15 @@ function classifyKind({
   moleculeContext,
   textEditing,
   selectedCount,
-  allGraphicsAreArrows
+  allGraphicsAreArrows,
+  everyGraphicCanCarryAHead
 }: {
   objectTypes: readonly string[];
   moleculeContext: MoleculeInspectorContext;
   textEditing: boolean;
   selectedCount: number;
   allGraphicsAreArrows: boolean;
+  everyGraphicCanCarryAHead: boolean;
 }): ToolbarSelectionKind {
   // A caret beats everything: typing means text styling, whatever else is selected.
   if (textEditing) {
@@ -114,7 +134,7 @@ function classifyKind({
       return "molecule";
     }
     if (only === "graphic") {
-      return allGraphicsAreArrows ? "arrow" : "shape";
+      return allGraphicsAreArrows || everyGraphicCanCarryAHead ? "arrow" : "shape";
     }
     // Legacy imported arrows (CDXML round-trips) keep their dedicated object types.
     if (only === "reaction-arrow" || only === "mechanism-arrow") {

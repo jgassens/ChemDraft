@@ -17,11 +17,13 @@ import {
 function classify(document: ChemDraftDocument, overrides: {
   moleculeContext?: "none" | "molecule" | "ring" | "bond" | "atom";
   activeTextEditObjectId?: string;
+  markerCapableGraphicCount?: number;
 } = {}) {
   return classifyToolbarSelection({
     document,
     moleculeContext: overrides.moleculeContext ?? "none",
-    activeTextEditObjectId: overrides.activeTextEditObjectId
+    activeTextEditObjectId: overrides.activeTextEditObjectId,
+    markerCapableGraphicCount: overrides.markerCapableGraphicCount
   });
 }
 
@@ -117,6 +119,45 @@ describe("classifyToolbarSelection", () => {
     expect(model.kind).toBe("shape");
     expect(model.objectTypes).toEqual(["graphic"]);
     expect(model.arrowToolIds).toEqual([]);
+  });
+
+  it("gives the arrow layout to any open stroke that can carry a head", () => {
+    // The arrow layout is written against `supportsMarkers`, not against "is an arrow": its head
+    // style, tail toggle, and head size all gate on that, and Set as Default Arrow Style gates
+    // separately on a single ARROW being selected. The classifier was the only thing still keying
+    // on the tool id, so a wavy line or polyline — which the data model happily lets carry a head —
+    // got the shape layout, whose cells are fill, paint type and corners. There was no control
+    // anywhere in the app for putting a head on one.
+    const document = insertNativeArtGraphicObject(createPhase4Document("Wavy"), { x: 220, y: 180 }, "tool.art.lineWavy");
+    const model = classify(document, { markerCapableGraphicCount: 1 });
+
+    expect(model.kind).toBe("arrow");
+    // It is not an arrow TOOL, so nothing claims it is one — Set as Default stays disabled.
+    expect(model.arrowToolIds).toEqual([]);
+  });
+
+  it("keeps closed shapes on the shape layout", () => {
+    // A rect cannot carry a head, so it keeps fill, paint type and corners.
+    const document = insertNativeArtGraphicObject(createPhase4Document("Rect"), { x: 220, y: 180 }, "tool.art.rect");
+    expect(classify(document, { markerCapableGraphicCount: 0 }).kind).toBe("shape");
+  });
+
+  it("keeps a mixed selection on the shape layout unless every graphic can carry a head", () => {
+    const withWavy = insertNativeArtGraphicObject(
+      createPhase4Document("Wavy and rect"),
+      { x: 220, y: 180 },
+      "tool.art.lineWavy"
+    );
+    const wavyId = withWavy.selection.objectIds[0];
+    const withRect = insertNativeArtGraphicObject(withWavy, { x: 340, y: 180 }, "tool.art.rect");
+    const rectId = withRect.selection.objectIds[0];
+    const document = applyPatches(withRect, [
+      { op: "setSelection", pageId: withRect.pages[0].id, objectIds: [wavyId, rectId] }
+    ]);
+
+    // One of the two can hold a head; showing head controls would lie about the other.
+    expect(classify(document, { markerCapableGraphicCount: 1 }).kind).toBe("shape");
+    expect(classify(document, { markerCapableGraphicCount: 2 }).kind).toBe("arrow");
   });
 
   it("classifies an arrow mixed with a plain graphic as shape, not arrow", () => {

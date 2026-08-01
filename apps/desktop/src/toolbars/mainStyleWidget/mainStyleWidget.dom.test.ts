@@ -458,4 +458,85 @@ describe("MainStyleWidget variants", () => {
       vi.useRealTimers();
     }
   });
+
+  it("offers arrowhead controls on a wavy line, which can carry a head but is not an arrow", async () => {
+    const { createPhase4Document, insertNativeArtGraphicObject } = await import("../../documentWorkflow");
+    const { createArtInspectorModel, selectedGraphicObjectsForArtInspector } = await import("../../artInspectorModel");
+    // The data model has always allowed a head here — `graphicObjectSupportsMarkers` accepts any
+    // open stroke, deliberately, so an end that has no head yet can still grow one. Only the
+    // classifier disagreed, sending non-arrow strokes to the shape layout (fill, paint type,
+    // corners), which left no control anywhere in the app for adding one.
+    const wavyDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Wavy"),
+      { x: 220, y: 180 },
+      "tool.art.lineWavy"
+    );
+    const artStyle = createArtInspectorModel({
+      document: wavyDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(wavyDocument),
+      requestedPaintTarget: "fill"
+    });
+    // The premise: it can hold a head, and it is not an arrow.
+    expect(artStyle.supportsMarkersAll).toBe(true);
+    expect(artStyle.isArrowAny).toBe(false);
+
+    const selection = classifyToolbarSelection({
+      document: wavyDocument,
+      moleculeContext: "none",
+      markerCapableGraphicCount: artStyle.markersSupportedCount
+    });
+    expect(selection.kind).toBe("arrow");
+
+    const { onInvoke } = renderWidget({ currentSelection: selection, currentArtStyle: artStyle });
+    const widget = widgetRoot();
+    expect(widget.dataset.mainStyleVariant).toBe("arrow");
+
+    // The head control is present and live.
+    const headKindSelect = widget.querySelector<HTMLSelectElement>("[aria-label=\"Arrowhead style\"]");
+    if (!headKindSelect) {
+      throw new Error("Expected the arrowhead style select on a marker-capable stroke.");
+    }
+    expect(headKindSelect.disabled).toBe(false);
+    act(() => {
+      headKindSelect.value = "object.marker.end.kind.filledArrow";
+      headKindSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledWith("object.marker.end.kind.filledArrow");
+
+    // But nothing claims it IS an arrow: Set as Default Arrow Style stays disabled, because that
+    // command captures an arrow tool's style and a wavy line has none to capture.
+    const setDefault = widget.querySelector<HTMLButtonElement>("[aria-label=\"Set as Default Arrow Style\"]");
+    if (!setDefault) {
+      throw new Error("Expected the set-as-default action.");
+    }
+    expect(setDefault.disabled).toBe(true);
+  });
+
+  it("keeps a closed shape on the shape layout", async () => {
+    const { createPhase4Document, insertNativeArtGraphicObject } = await import("../../documentWorkflow");
+    const { createArtInspectorModel, selectedGraphicObjectsForArtInspector } = await import("../../artInspectorModel");
+    // The complement: a rect cannot carry a head, so it keeps fill, paint type and corners.
+    const rectDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Rect"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const artStyle = createArtInspectorModel({
+      document: rectDocument,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(rectDocument),
+      requestedPaintTarget: "fill"
+    });
+    expect(artStyle.supportsMarkersAny).toBe(false);
+
+    const selection = classifyToolbarSelection({
+      document: rectDocument,
+      moleculeContext: "none",
+      markerCapableGraphicCount: artStyle.markersSupportedCount
+    });
+    expect(selection.kind).toBe("shape");
+
+    renderWidget({ currentSelection: selection, currentArtStyle: artStyle });
+    expect(widgetRoot().dataset.mainStyleVariant).toBe("shape");
+    expect(widgetRoot().querySelector("[aria-label=\"Arrowhead style\"]")).toBeNull();
+  });
 });
