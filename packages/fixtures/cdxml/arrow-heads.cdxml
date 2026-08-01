@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 612 792">
+    <arrow id="a1" BoundingBox="120 116 216 124" ArrowheadHead="Full" ArrowheadType="Solid" Head3D="216 120 0" Tail3D="120 120 0"/>
+    <arrow id="a2" BoundingBox="120 156 216 164" ArrowheadHead="Full" ArrowheadType="Angle" Head3D="216 160 0" Tail3D="120 160 0"/>
+    <arrow id="a3" BoundingBox="120 196 216 204" ArrowheadHead="HalfLeft" ArrowheadType="Solid" Head3D="216 200 0" Tail3D="120 200 0"/>
+    <arrow id="a4" BoundingBox="120 236 216 244" ArrowheadHead="Full" ArrowheadTail="Full" ArrowheadType="Solid" Head3D="216 240 0" Tail3D="120 240 0"/>
+    <arrow id="a5" BoundingBox="120 276 216 284" ArrowheadType="Solid" Head3D="216 280 0" Tail3D="120 280 0"/>
+  </page>
+</CDXML>

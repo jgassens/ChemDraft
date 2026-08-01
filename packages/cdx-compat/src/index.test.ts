@@ -1136,6 +1136,75 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(rectangle!.y).toBeCloseTo(296 * (4 / 3), 6);
   });
 
+  it("reads a standalone <arrow>'s heads from ArrowheadHead/ArrowheadTail and writes them back", () => {
+    // A standalone <arrow> carries neither GraphicType nor ArrowType, so keying the arrowhead off
+    // those — the reaction-arrow spelling — dropped the head from every arrow ChemDraw writes: a
+    // solid-headed arrow imported as a bare line. An <arrow>'s heads live in ArrowheadHead and
+    // ArrowheadTail (which ends are headed) crossed with ArrowheadType (how they are drawn).
+    const opened = openChemDraftPayload(cdxmlFixture("arrow-heads.cdxml"));
+    const [solid, angle, half, doubleEnded, headless] = (opened.document?.pages[0].objects ?? []) as GraphicObject[];
+
+    expect(solid.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(solid.data.markerStart).toBeUndefined();
+    expect(angle.data.markerEnd).toEqual({ kind: "open-arrow", sizePx: 16 });
+    expect(half.data.markerEnd).toEqual({ kind: "half-arrow", sizePx: 14 });
+    expect(doubleEnded.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(doubleEnded.data.markerStart).toEqual({ kind: "filled-arrow", sizePx: 16 });
+
+    // ArrowheadType with no ArrowheadHead is how ChemDraw writes a plain line arrow, so the type
+    // alone must not conjure a head.
+    expect(headless.data.markerEnd).toBeUndefined();
+    expect(headless.data.markerStart).toBeUndefined();
+
+    const exported = exportDocumentToCdxml(opened.document ?? documentWithObjects([]), {
+      creationProgram: "Arrowhead Round Trip Test"
+    });
+    expect(exported.warnings).toEqual([]);
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadType="Solid"');
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadType="Angle"');
+    expect(exported.contents).toContain('ArrowheadHead="HalfLeft" ArrowheadType="Solid"');
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadTail="Full" ArrowheadType="Solid"');
+
+    // Close the loop through the reader — the writer's own arrows, read back as a foreign document,
+    // must carry the same heads. Reopening the exported envelope would only prove the embedded
+    // native payload survived, which says nothing about the visible layer other programs see.
+    const arrows = exported.contents.match(/<arrow [^>]*\/>/g) ?? [];
+    expect(arrows).toHaveLength(5);
+    const reopened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="Arrowhead Round Trip Test">
+  <page id="p1" BoundingBox="0 0 612 792">
+    ${arrows.join("\n    ")}
+  </page>
+</CDXML>`);
+    const reopenedHeads = (reopened.document?.pages[0].objects ?? [])
+      .map((object) => (object as GraphicObject).data.markerEnd?.kind);
+    expect(reopenedHeads).toEqual(["filled-arrow", "open-arrow", "half-arrow", "filled-arrow", undefined]);
+  });
+
+  it("warns instead of inventing a CDXML spelling for decorative arrowheads", () => {
+    // CDXML's arrowhead enum is full/half/unfilled and nothing else, so a dot or diamond head has no
+    // spelling. Exporting it as a full head would claim the user drew something they didn't.
+    const decorated = (kind: GraphicObject["data"]["markerEnd"]): ChemDraftDocument => documentWithObjects([
+      {
+        id: "art_decorated",
+        type: "graphic",
+        x: 100, y: 158, width: 120, height: 4, rotation: 0,
+        style: { strokeColor: "#000000", strokeWidth: 2 },
+        graphicKind: "line",
+        data: { artPathKind: "line", lineStart: { x: 100, y: 160 }, lineEnd: { x: 220, y: 160 }, markerEnd: kind },
+        compatibility: { sourceFormat: "cdxml", warnings: [], unknown: { cdxmlElementName: "arrow" } }
+      } satisfies GraphicObject
+    ]);
+
+    const diamond = exportDocumentToCdxml(decorated({ kind: "diamond", sizePx: 16 }), { creationProgram: "T" });
+    expect(diamond.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_marker_payload_only");
+    expect(diamond.contents).not.toContain("ArrowheadHead=");
+
+    // An explicitly removed head is a faithful export, not a loss.
+    const bare = exportDocumentToCdxml(decorated({ kind: "none" }), { creationProgram: "T" });
+    expect(bare.warnings).toEqual([]);
+  });
+
   it("keeps colour, dash, and head-loss warnings on semantic arrow export", () => {
     const arrow = (style: GraphicObject["style"], data: GraphicObject["data"]): ChemDraftDocument =>
       documentWithObjects([

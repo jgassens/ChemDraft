@@ -14,6 +14,7 @@ import {
   type CrossingOverride,
   type DocumentObject,
   type DocumentPage,
+  type GraphicMarker,
   type GraphicObject,
   type MoleculeAtom,
   type MoleculeBond,
@@ -94,6 +95,11 @@ const defaultCdxmlFillColor = "none";
 const defaultCdxmlLineWidthPx = 0.8;
 const defaultCdxmlBoldWidthPx = 2.68;
 const defaultCdxmlCornerRadiusFactor = 100;
+// Arrowhead sizes for imported arrows. CDXML's arrowhead attributes name a head's shape but not its
+// size, so an imported head takes the native arrow tools' default (documentWorkflow's artShapeTool
+// defaults) and is indistinguishable from a drawn one.
+const defaultCdxmlArrowheadSizePx = 16;
+const defaultCdxmlHalfArrowheadSizePx = 14;
 const standardCdxmlColorTable = [
   "#ffffff",
   "#000000",
@@ -890,13 +896,69 @@ function exportGraphicAsCdxmlArrow(
     ...cdxmlGraphicColorAttribute(graphic, warnings),
     ...cdxmlLineTypeAttributes(graphic),
     'FillType="None"',
-    'ArrowheadType="Solid"',
+    ...cdxmlArrowheadAttributes(graphic, warnings),
     ...(isArc ? [`AngularSize="${escapeXmlAttribute(cdxmlAngularSizeForGraphic(graphic))}"`] : []),
     `Head3D="${formatXyPoint(line.end)}"`,
     `Tail3D="${formatXyPoint(line.start)}"`,
     ...cdxmlLineAxisAttributes(line.start, line.end)
   ];
   return `<arrow ${attrs.join(" ")}/>`;
+}
+
+/** The write side of {@link cdxmlArrowMarkers}: name which ends are headed and how, so an arrow
+ *  keeps its head across a round trip. Every exported `<arrow>` used to claim `ArrowheadType="Solid"`
+ *  with no `ArrowheadHead`, which reads back — correctly — as a headless line.
+ *
+ *  `ArrowheadType` is written even when neither end is headed, matching what ChemDraw itself writes
+ *  for a plain line arrow. */
+function cdxmlArrowheadAttributes(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): string[] {
+  const head = cdxmlArrowheadForMarker(graphic.data.markerEnd);
+  const tail = cdxmlArrowheadForMarker(graphic.data.markerStart);
+  warnForUnrepresentableArrowheads(graphic, warnings);
+  return [
+    ...(head ? [`ArrowheadHead="${head.head}"`] : []),
+    ...(tail ? [`ArrowheadTail="${tail.head}"`] : []),
+    `ArrowheadType="${head?.type ?? tail?.type ?? "Solid"}"`
+  ];
+}
+
+function cdxmlArrowheadForMarker(marker: GraphicMarker | undefined): { head: string; type: string } | undefined {
+  switch (marker?.kind) {
+    case "filled-arrow":
+      return { head: "Full", type: "Solid" };
+    case "open-arrow":
+      return { head: "Full", type: "Angle" };
+    // CDXML's half heads are handed and the native one is not, so this picks a side rather than
+    // inventing one from geometry; the native payload carries the exact head for ChemDraft readers.
+    case "half-arrow":
+      return { head: "HalfLeft", type: "Solid" };
+    default:
+      return undefined;
+  }
+}
+
+/** CDXML's arrowhead enum covers full, half, and unfilled heads and nothing else, so the decorative
+ *  native heads have no spelling. Drop them with a warning rather than exporting a full head that
+ *  claims the user drew something they didn't. */
+function warnForUnrepresentableArrowheads(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const dropped = [graphic.data.markerEnd, graphic.data.markerStart].filter(
+    (marker): marker is GraphicMarker =>
+      marker !== undefined && marker.kind !== "none" && cdxmlArrowheadForMarker(marker) === undefined
+  );
+  if (dropped.length === 0) {
+    return;
+  }
+  warnings.push({
+    code: "cdxml.arrow_marker_payload_only",
+    message: `Native ${[...new Set(dropped.map((marker) => marker.kind))].join(" and ")} arrowheads have no CDXML spelling; the exported arrow has no head there, and they are preserved exactly only in the embedded ChemDraft payload.`,
+    sourceObjectId: graphic.id
+  });
 }
 
 function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line" | "Oval" | "Rectangle" | "Unknown" {
@@ -2034,8 +2096,8 @@ function importReactionArrowAsArtArrow(
   // imported arrow is indistinguishable from a drawn one — an imported retro arrow used to carry an
   // 80%-wider shaft gap, and imported heads were 10px against the tools' 16px.
   const marker = equilibrium
-    ? { kind: "half-arrow" as const, sizePx: 14 }
-    : { kind: "filled-arrow" as const, sizePx: 16 };
+    ? { kind: "half-arrow" as const, sizePx: defaultCdxmlHalfArrowheadSizePx }
+    : { kind: "filled-arrow" as const, sizePx: defaultCdxmlArrowheadSizePx };
   const artToolId = equilibrium
     ? "equilibriumArrow"
     : retro
@@ -2063,7 +2125,43 @@ function importArrowGraphic(
   objectIndex: number,
   context: ImportPageContext
 ): GraphicObject {
-  return importShapeGraphic(element, pageIndex, objectIndex, context, "arrow");
+  const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "arrow");
+  return { ...graphic, data: { ...graphic.data, ...cdxmlArrowMarkers(element) } };
+}
+
+/** A standalone `<arrow>` carries its heads in three attributes rather than the closed `ArrowType`
+ *  enum a `<graphic GraphicType="Line">` reaction arrow uses: `ArrowheadHead`/`ArrowheadTail` say
+ *  which ends are headed, and `ArrowheadType` says how they are drawn. Keying only off `ArrowType`
+ *  — which an `<arrow>` element never carries — imported every ChemDraw arrow as a bare line. */
+function cdxmlArrowMarkers(element: XmlElementView): Pick<GraphicObject["data"], "markerStart" | "markerEnd"> {
+  const arrowheadType = normalizedCdxmlToken(element.attributes.ArrowheadType);
+  const markerEnd = cdxmlArrowMarker(element.attributes.ArrowheadHead, arrowheadType);
+  const markerStart = cdxmlArrowMarker(element.attributes.ArrowheadTail, arrowheadType);
+  return {
+    ...(markerEnd ? { markerEnd } : {}),
+    ...(markerStart ? { markerStart } : {})
+  };
+}
+
+function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string): GraphicMarker | undefined {
+  const head = normalizedCdxmlToken(arrowhead);
+  // An absent attribute and "Unspecified" both mean the end is unheaded — which is why ChemDraw
+  // writes a plain line arrow as `ArrowheadType="Solid"` with no `ArrowheadHead` at all.
+  if (head === "" || head === "none" || head === "unspecified") {
+    return undefined;
+  }
+  if (head === "halfleft" || head === "halfright") {
+    // Native fishhook heads are one-sided but not left/right-handed, so both spellings land on the
+    // same marker; a ChemDraft-authored arrow keeps its exact head in the embedded payload.
+    return { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx };
+  }
+  // "Full" (and any head spelling this build doesn't know) draws a head; `ArrowheadType` picks which
+  // one. "Hollow" and "Angle" are both unfilled, and `open-arrow` is the nearest native head to
+  // either; an unstated type means ChemDraw's default solid head.
+  return {
+    kind: arrowheadType === "hollow" || arrowheadType === "angle" ? "open-arrow" : "filled-arrow",
+    sizePx: defaultCdxmlArrowheadSizePx
+  };
 }
 
 function importShapeGraphic(
