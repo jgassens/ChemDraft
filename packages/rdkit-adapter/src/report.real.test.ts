@@ -302,7 +302,9 @@ describe("conventions reach the reader", () => {
     expect(listed.some((label) => label.includes("HCl"))).toBe(false);
     expect(listed.some((label) => label.startsWith("Composition"))).toBe(true);
 
-    const declined = section(report, "Not computed");
+    // Aspirin's only decline is the HCl loss, which is a mass method — so it lands in the Mass Spec
+    // category's own "Not computed (mass spec)" and there is no general one to find.
+    const declined = section(report, "Not computed (mass spec)");
     expect(declined.kind === "table" && declined.rows.some((cells) => cells[0]?.includes("HCl"))).toBe(true);
   });
 

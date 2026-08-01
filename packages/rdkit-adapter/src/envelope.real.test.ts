@@ -186,7 +186,9 @@ describe("the report shows it", () => {
   it("says so when a declined envelope produced nothing", async () => {
     const report = buildAnalysisReport(await analyze("CC(=O)[O-]"));
     expect(report.sections.some((entry) => entry.title.startsWith("Isotope envelope"))).toBe(false);
-    const declined = report.sections.find((entry) => entry.title === "Not computed");
+    // A declined envelope is a mass-spec fact, so it lands in that category's own declines table
+    // rather than the general one.
+    const declined = report.sections.find((entry) => entry.title === "Not computed (mass spec)");
     expect(declined?.kind === "table" && declined.rows.some((cells) => cells[0] === "Isotope envelope")).toBe(true);
   });
 });

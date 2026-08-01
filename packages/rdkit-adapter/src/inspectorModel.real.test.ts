@@ -71,21 +71,17 @@ describe("splitSectionTitle", () => {
 });
 
 describe("the category list", () => {
-  it("offers one category per report section, named without the disclosure noise", async () => {
+  it("groups the mass-spectrometry sections under one category and leaves the rest alone", async () => {
     const model = buildInspectorModel(await report(SULFAMETHOXAZOLE));
     const labels = model.categories.map((category) => category.label);
 
     expect(labels).toEqual(
-      expect.arrayContaining([
-        "Identity",
-        "Composition",
-        "Ions (m/z)",
-        "Descriptors",
-        "Isotope envelope",
-        "Provenance",
-        "Conventions"
-      ])
+      expect.arrayContaining(["Identity", "Composition", "Mass Spec", "Descriptors", "Provenance", "Conventions"])
     );
+    // The ion series, the isotope envelope, and the mass methods that declined render three different
+    // ways but are one subject; a reader should not have to visit three categories to find them.
+    expect(labels).not.toContain("Ions (m/z)");
+    expect(labels).not.toContain("Isotope envelope");
     // The note is kept as a subtitle rather than dropped: it is the §2 disclosure.
     const descriptors = model.categories.find((category) => category.label === "Descriptors");
     expect(descriptors?.note).toMatch(/convention-dependent/);
@@ -106,11 +102,16 @@ describe("the category list", () => {
     expect(tpsa?.value).toBe("106.60 Å²");
   });
 
-  it("flattens a table category to one entry per row, keyed by its first column", async () => {
-    const model = buildInspectorModel(await report("Brc1ccccc1"));
-    const envelope = model.categories.find((category) => category.label === "Isotope envelope");
-    expect(envelope?.entries[0]?.label).toBe("155.95746");
-    expect(envelope?.entries[0]?.value).toBe("100.00");
+  it("counts a grouped category across every section it spans", async () => {
+    const built = await report("Brc1ccccc1");
+    const model = buildInspectorModel(built);
+    const massSpec = model.categories.find((category) => category.label === "Mass Spec");
+    expect(massSpec).toBeDefined();
+
+    // Entries from all three of its sections, in report order: ions first, then the envelope's peaks.
+    expect(massSpec!.entries.some((entry) => entry.label === "[M+H]⁺")).toBe(true);
+    expect(massSpec!.entries.some((entry) => entry.label === "155.95746" && entry.value === "100.00")).toBe(true);
+    expect(massSpec!.entryCount).toBe(massSpec!.entries.length);
   });
 });
 
@@ -156,12 +157,16 @@ describe("export matches what is on screen", () => {
     expect(text).toMatch(/Run fingerprint: fnv1a64:/);
   });
 
-  it("exports the same selection as Markdown", async () => {
+  it("exports a grouped category as every section it spans", async () => {
+    // Selecting Mass Spec copies the ions, the envelope, and the mass declines together — the whole
+    // subject — while still excluding everything that is not part of it.
     const built = await report(SULFAMETHOXAZOLE);
-    const markdown = renderSelectionMarkdown(built, { categoryId: "Isotope envelope" });
-    expect(markdown).toMatch(/^# Molecular properties — Isotope envelope/m);
+    const markdown = renderSelectionMarkdown(built, { categoryId: "Mass Spec" });
+    expect(markdown).toMatch(/^# Molecular properties — Mass Spec/m);
+    expect(markdown).toContain("[M+H]⁺");
     expect(markdown).toContain("| Mass (Da) |");
     expect(markdown).not.toContain("## Identity");
+    expect(markdown).not.toContain("## Descriptors");
   });
 
   it("exports everything when nothing is narrowed", async () => {

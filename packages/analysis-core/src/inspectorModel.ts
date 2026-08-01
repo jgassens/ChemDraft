@@ -119,19 +119,44 @@ function entriesOf(section: AnalysisReportSection): InspectorEntry[] {
   }
 }
 
+/**
+ * The category a section belongs to: the one it names, or its own title.
+ *
+ * Sections are the report's rendering unit; categories are the reader's navigation unit, and they are
+ * not the same thing. The ion series, the isotope envelope, and the mass methods that declined render
+ * three different ways but are one subject, so they share a category.
+ */
+export function categoryOf(section: AnalysisReportSection): string {
+  return section.category ?? splitSectionTitle(section.title).label;
+}
+
 export function buildInspectorModel(report: AnalysisReport): InspectorModel {
-  const categories = report.sections.map((section) => {
-    const { label, note, detail } = splitSectionTitle(section.title);
+  // Insertion-ordered, so the left list follows the report rather than an arbitrary sort.
+  const byCategory = new Map<string, InspectorCategory>();
+  for (const section of report.sections) {
+    const id = categoryOf(section);
+    const { note, detail } = splitSectionTitle(section.title);
     const entries = entriesOf(section);
-    return {
-      id: label,
-      label,
+    const existing = byCategory.get(id);
+    if (existing) {
+      existing.entries.push(...entries);
+      existing.entryCount = existing.entries.length;
+      // First non-empty wins: a grouped category takes its disclosure and count from whichever of its
+      // sections carries one, rather than losing them because another section came first.
+      if (!existing.note && note) existing.note = note;
+      if (!existing.detail && detail) existing.detail = detail;
+      continue;
+    }
+    byCategory.set(id, {
+      id,
+      label: id,
       ...(note ? { note } : {}),
       ...(detail ? { detail } : {}),
       entryCount: entries.length,
       entries
-    };
-  });
+    });
+  }
+  const categories = [...byCategory.values()];
 
   return {
     title: report.title,
@@ -148,7 +173,7 @@ export function selectedSections(
   selection: InspectorSelection
 ): AnalysisReportSection[] {
   if (selection.categoryId === undefined) return report.sections;
-  return report.sections.filter((section) => splitSectionTitle(section.title).label === selection.categoryId);
+  return report.sections.filter((section) => categoryOf(section) === selection.categoryId);
 }
 
 /**

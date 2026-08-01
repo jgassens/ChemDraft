@@ -28,6 +28,17 @@ import { interpretationChangesIdentity, type MolecularInterpretation } from "./i
 import type { AnalysisResult, AnalysisRun } from "./results";
 import { unit as unitDefinition, type UnitId } from "./units";
 
+/**
+ * The category a section belongs to in a grouped view, when that is not simply its own title.
+ *
+ * The mass-spectrometry sections — the ion series, the isotope envelope, and the mass methods that
+ * declined — are three sections because they render differently, but one subject. A reader looking for
+ * "the mass spec stuff" should find it in one place rather than in three scattered categories.
+ *
+ * Sections without one stand alone, which is the common case.
+ */
+export const MASS_SPEC_CATEGORY = "Mass Spec";
+
 export interface ReportRow {
   label: string;
   value: string;
@@ -59,6 +70,7 @@ export interface ReportConventionGroup {
 export interface ReportSpectrumSection {
   kind: "spectrum";
   title: string;
+  category?: string;
   positions: number[];
   intensities: number[];
   positionUnit: UnitId;
@@ -79,10 +91,10 @@ export interface ReportSpectrumSection {
 }
 
 export type AnalysisReportSection =
-  | { kind: "keyValue"; title: string; rows: ReportRow[] }
-  | { kind: "table"; title: string; columns: string[]; rows: string[][] }
-  | { kind: "text"; title: string; body: string }
-  | { kind: "conventions"; title: string; groups: ReportConventionGroup[] }
+  | { kind: "keyValue"; title: string; category?: string; rows: ReportRow[] }
+  | { kind: "table"; title: string; category?: string; columns: string[]; rows: string[][] }
+  | { kind: "text"; title: string; category?: string; body: string }
+  | { kind: "conventions"; title: string; category?: string; groups: ReportConventionGroup[] }
   | ReportSpectrumSection;
 
 export interface ReportInterpretation {
@@ -164,13 +176,14 @@ function row(result: AnalysisResult, value: string, label = result.label): Repor
  * disclosing. Hoisting only when the note is *unanimous* keeps it per-row wherever a section mixes
  * calibrated and uncalibrated values — Composition, where the masses are noted and the formula is not.
  */
-function keyValueSection(title: string, rows: ReportRow[]): AnalysisReportSection {
+function keyValueSection(title: string, rows: ReportRow[], category?: string): AnalysisReportSection {
   const notes = new Set(rows.map((entry) => entry.note ?? ""));
   const shared = notes.size === 1 ? [...notes][0] : "";
-  if (!shared) return { kind: "keyValue", title, rows };
+  if (!shared) return { kind: "keyValue", title, ...(category ? { category } : {}), rows };
   return {
     kind: "keyValue",
     title: `${title} — ${shared}`,
+    ...(category ? { category } : {}),
     rows: rows.map(({ label, value }) => ({ label, value }))
   };
 }
@@ -299,7 +312,13 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   const scalars = ok.filter(isKind("scalar"));
   const ions = scalars.filter((result) => result.unit === "thomson");
   if (ions.length > 0) {
-    sections.push(keyValueSection("Ions (m/z)", ions.map((result) => row(result, formatScalar(result), displayLabel(result)))));
+    sections.push(
+      keyValueSection(
+        "Ions (m/z)",
+        ions.map((result) => row(result, formatScalar(result), displayLabel(result))),
+        MASS_SPEC_CATEGORY
+      )
+    );
   }
 
   // --- descriptors and predictions ------------------------------------------------------------
@@ -350,6 +369,7 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
     sections.push({
       kind: "spectrum",
       title: `${displayLabel(distribution)} (${parts.join(", ")})`,
+      category: MASS_SPEC_CATEGORY,
       positions: shown.map((peak) => peak.position),
       intensities: shown.map((peak) => peak.intensity),
       positionUnit: distribution.positionUnit,
@@ -366,16 +386,39 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   }
 
   // --- declined -------------------------------------------------------------------------------
-  if (declined.length > 0) {
+  // Split by subject, not moved wholesale. Most declines a reader sees ARE mass methods — an adduct on
+  // a charged structure, a loss the composition cannot supply — and they belong with the ions they
+  // qualify. But a declined Crippen logP is not a mass-spec fact, and filing it under Mass Spec would
+  // be worse than leaving it where it was.
+  const declineRow = (result: AnalysisResult): string[] => [
+    displayLabel(result),
+    result.status,
+    result.applicability.reasons[0] ?? result.warnings[0]?.message ?? "no reason recorded"
+  ];
+  const isMassMethod = (result: AnalysisResult): boolean =>
+    result.methodId.startsWith("rdkit.mz.") || result.methodId === "isospec.isotope-envelope";
+  const massDeclines = declined.filter(isMassMethod);
+  const otherDeclines = declined.filter((result) => !isMassMethod(result));
+
+  if (massDeclines.length > 0) {
+    sections.push({
+      kind: "table",
+      // Distinct from the general "Not computed" below. Two sections sharing a title reads as a
+      // duplicated heading in the flat text and Markdown exports, and breaks lookup by title.
+      // Parenthesised without a digit on purpose, so `splitSectionTitle` keeps it as part of the name
+      // rather than peeling it off as a computed detail.
+      title: "Not computed (mass spec)",
+      category: MASS_SPEC_CATEGORY,
+      columns: ["Property", "Status", "Reason"],
+      rows: massDeclines.map(declineRow)
+    });
+  }
+  if (otherDeclines.length > 0) {
     sections.push({
       kind: "table",
       title: "Not computed",
       columns: ["Property", "Status", "Reason"],
-      rows: declined.map((result) => [
-        displayLabel(result),
-        result.status,
-        result.applicability.reasons[0] ?? result.warnings[0]?.message ?? "no reason recorded"
-      ])
+      rows: otherDeclines.map(declineRow)
     });
   }
 
