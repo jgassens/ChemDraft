@@ -472,11 +472,11 @@ chemdraft/
 
   examples/
     plugins/
-      mass-fragment-demo/     Lightweight fixture-backed analysis plugin
-      molscribe-ocsr/         Optional image-to-structure plugin scaffold
-      opsin-name-to-structure/
-      advanced-style-pack/
-      journal-style-pack/
+      mass-fragment-demo/     Real: mass analysis over the host's IsoSpec engine (chemistry.compute)
+      molscribe-ocsr/         Real: image-to-structure runtime canary
+      opsin-name-to-structure/  PLACEHOLDER — README only, nothing implemented
+      advanced-style-pack/      PLACEHOLDER — README only, nothing implemented
+      journal-style-pack/       PLACEHOLDER — README only, nothing implemented
 
   docs/
     architecture/

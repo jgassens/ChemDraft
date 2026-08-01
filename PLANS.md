@@ -367,10 +367,16 @@ work.
 
 ### First-party plugins — for product reasons, not licensing
 
-¹H/¹³C NMR predictor (already shipping — **§4 exposure applies**) · Joback/Stein-Brown thermophysical
-(large method surface, applicability limits, parameter provenance) · isotope-envelope and mass-analysis
-suite · protonation-state enumeration (**not** labeled pKa) · candidate HSQC/HMBC/COSY maps ·
-OpenClatura structure→name.
+¹H/¹³C NMR predictor (shipping, from its own repository — **§4 exposure applies**) · Joback/Stein-Brown
+thermophysical (large method surface, applicability limits, parameter provenance) ·
+protonation-state enumeration (**not** labeled pKa) · candidate HSQC/HMBC/COSY maps ·
+OpenClatura structure→name · OPSIN name→structure.
+
+**This list is a plan, not an inventory** — of the six, one ships and the rest are unbuilt. It is also
+now one item shorter than it was: the **isotope-envelope and mass-analysis suite landed in core**, not
+as a plugin, and Phase 5 argued the case deliberately (§8a's one-renderer rule is about the renderer,
+not about pretending core analysis is a plugin). Plugins still reach that engine — `chemistry.compute`
+serves it across the boundary — so the placement cost nothing.
 
 ### Sidecars and externally installed engines
 
@@ -437,8 +443,16 @@ Sequence, deliberately conservative:
 
 OPSIN round-trip is a **structural-equivalence test**, not evidence of preferred-name correctness. Note
 OpenClatura's own verification runs through `py2opsin`, which shells out to Java, so a ported path
-carries the JVM question separately. **Publication-grade preferred IUPAC naming stays a gap.** The
-existing `examples/plugins/opsin-name-to-structure` covers the opposite direction only.
+carries the JVM question separately. **Publication-grade preferred IUPAC naming stays a gap.**
+
+**And so does the opposite direction, which this file previously implied was covered.**
+`examples/plugins/opsin-name-to-structure` is a **placeholder — one README, whose own first line says
+OPSIN "is not installed or integrated"**. There is no package, no source, no manifest, and no command;
+nothing in the app can turn a name into a structure. The same is true of `advanced-style-pack` and
+`journal-style-pack`. Only `mass-fragment-demo` and `molscribe-ocsr` are real plugins, and only those
+two are registered in `registerBundledPlugins.ts`. A placeholder directory named after a capability
+reads exactly like that capability existing, which is the failure mode this branch's whole discipline
+is against — so it is named here rather than left to be discovered.
 
 ### Other genuine gaps
 
@@ -784,9 +798,17 @@ an Analyze item ships only when it computes something).
   is a different molecule.
 
   The report renders the peaks as a spectrum with the truncation in its title, capped at 40 rendered
-  rows (the result keeps every peak, and a capped table says so). The mass-fragment demo's M/M+1/M+2
-  approximation still stands — replacing it is plugin work, not core wiring — and it remains correctly
-  labelled ("first-order approx.", "not a full isotopic convolution").
+  rows (the result keeps every peak, and a capped table says so).
+
+  **The mass-fragment demo's M/M+1/M+2 approximation is gone** (`a9892e1a`, 2026-07-31), and with it
+  the repo's second abundance table. It could not simply import the engine — ADR-0028 §1 limits a
+  plugin's runtime source to `@chemdraft/plugin-api`, which is *why* the approximation existed — so the
+  fix was to fill in `chemistry.compute`, a permission declared since the API was written with nothing
+  behind it. The host serves it through the ordinary analysis client, so a plugin's envelope and the
+  Analyze panel's envelope are one computation and cannot drift. Chloroform is the case that shows why
+  this was more than provenance: the real envelope is 100.00 : 95.99 : 30.71 : 3.28, and an
+  approximation that stops at M+2 by construction silently omitted a **30.71% M+4 peak** — on the
+  molecule the demo existed to showcase.
 
   **The abundance set is a convention and must be disclosed like `includeSandP`.** IsoSpec's tables
   carry no provenance in its own repository, so the defensible claim is "the values the shipped engine
@@ -795,8 +817,8 @@ an Analyze item ships only when it computes something).
   `0.010788` against CIAAW's representative `0.0107` — 0.82% relatively higher, moving C₂₀'s M+1 from
   0.21400 to 0.21576. Not an error (CIAAW publishes carbon as an interval because it varies by source),
   but a reader reproducing the number from a textbook table will not match, so the contract must say so.
-  The demo plugin's own eight-element table still has no recorded provenance; that stays on the
-  distribution track.
+  There is now exactly one abundance table in the repository — this one, whose provenance is documented.
+  The demo plugin's undocumented eight-element table was retired with the approximation it fed.
 
   One design flaw the new methods exposed and fixed: `aggregateStatus` let a single `not-applicable`
   result drag a whole run down, so aspirin reported `not-applicable` overall because it has no nitrogen
