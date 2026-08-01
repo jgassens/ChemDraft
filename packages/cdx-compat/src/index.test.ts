@@ -1023,6 +1023,71 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(oval.warnings.map((warning) => warning.code)).not.toContain("cdxml.graphic_shape_payload_only");
   });
 
+  it("imports semantic reaction arrows with a frame that matches their endpoints", () => {
+    // The BoundingBox beside Start/End is written "vertical horizontal"; reading it as XY
+    // transposed the frame, so a horizontal arrow imported as a 1px-wide, arrow-length-tall object
+    // whose line still drew horizontally — selection and transform geometry described a different
+    // shape than the visible arrow.
+    const arrowCdxml = (arrowType: string, horizontal: boolean) => {
+      const box = horizontal ? "120 120 120 216" : "120 120 216 120";
+      const start = "120 120";
+      const end = horizontal ? "120 216" : "216 120";
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="Arrow Frame Test">
+  <page id="1" BoundingBox="0 0 540 720">
+    <graphic id="a1" GraphicType="Line" ArrowType="${arrowType}" BoundingBox="${box}" Start="${start}" End="${end}"/>
+  </page>
+</CDXML>`;
+    };
+
+    for (const arrowType of ["FullHead", "Resonance", "Equilibrium", "RetroSynthetic"]) {
+      const horizontal = openChemDraftPayload(arrowCdxml(arrowType, true)).document?.pages[0].objects[0] as GraphicObject;
+      expect(horizontal.width, `${arrowType} horizontal width`).toBeGreaterThan(horizontal.height);
+      // The frame must span the endpoints it drew between, not their transpose.
+      expect(horizontal.width).toBeCloseTo(Math.abs((horizontal.data.lineEnd?.x ?? 0) - (horizontal.data.lineStart?.x ?? 0)), 6);
+
+      const vertical = openChemDraftPayload(arrowCdxml(arrowType, false)).document?.pages[0].objects[0] as GraphicObject;
+      expect(vertical.height, `${arrowType} vertical height`).toBeGreaterThan(vertical.width);
+      expect(vertical.height).toBeCloseTo(Math.abs((vertical.data.lineEnd?.y ?? 0) - (vertical.data.lineStart?.y ?? 0)), 6);
+    }
+  });
+
+  it("keeps colour, dash, and head-loss warnings on semantic arrow export", () => {
+    const arrow = (style: GraphicObject["style"], data: GraphicObject["data"]): ChemDraftDocument =>
+      documentWithObjects([
+        {
+          id: "art_semantic",
+          type: "graphic",
+          x: 100, y: 88, width: 120, height: 24, rotation: 0,
+          style,
+          graphicKind: "path",
+          data: { artPathKind: "line", artToolId: "reactionArrow", ...data }
+        } satisfies GraphicObject
+      ]);
+
+    // Dash and colour reach standard CDXML instead of silently reopening as default solid black.
+    const dashed = exportDocumentToCdxml(
+      arrow({ strokeColor: "#ff0000", strokeWidth: 2, strokeDasharray: "6 6" }, { markerEnd: { kind: "filled-arrow", sizePx: 16 } }),
+      { creationProgram: "T" }
+    );
+    expect(dashed.contents).toContain('LineType="Dashed"');
+    expect(dashed.contents).toMatch(/<graphic[^>]*ArrowType="FullHead"[^>]*color="/);
+
+    // A removed head cannot be said in standard CDXML — that must warn rather than export a lie.
+    const headless = exportDocumentToCdxml(
+      arrow({ strokeColor: "#000000", strokeWidth: 2 }, {}),
+      { creationProgram: "T" }
+    );
+    expect(headless.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_head_payload_only");
+
+    // The ordinary case still exports clean.
+    const plain = exportDocumentToCdxml(
+      arrow({ strokeColor: "#000000", strokeWidth: 2 }, { markerEnd: { kind: "filled-arrow", sizePx: 16 } }),
+      { creationProgram: "T" }
+    );
+    expect(plain.warnings.map((warning) => warning.code)).not.toContain("cdxml.arrow_head_payload_only");
+  });
+
   it("writes real CDXML ArrowType spellings and reads foreign and legacy ones", () => {
     // The previous test asserted our own lowercase output against our own reader, so it passed
     // while real CDXML imported as "unknown". Assert the wire spellings directly.

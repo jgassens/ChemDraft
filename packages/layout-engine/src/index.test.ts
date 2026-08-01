@@ -3504,3 +3504,105 @@ describe("atom-label depth cueing", () => {
     expect(atomLabelHaloWidthPx({ atomLabelFontSizePx: 15 } as never)).toBeCloseTo(4.5);
   });
 });
+
+describe("shared SVG export of arrow marker and shaft-mark visuals", () => {
+  // These two visuals are planned by the art engine and drawn by the desktop canvas; the shared
+  // export renderer must agree, or a scientific figure leaving the app disagrees with the drawing
+  // the user reviewed on screen (AGENTS.md: exported arrows must match the canvas).
+  function arrowGraphic(overrides: Partial<GraphicObject> = {}): GraphicObject {
+    return {
+      id: "art_arrow_export",
+      type: "graphic",
+      x: 120,
+      y: 84,
+      width: 132,
+      height: 24,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 2
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line"
+      },
+      ...overrides
+    } satisfies GraphicObject;
+  }
+
+  function exportedElements(object: GraphicObject) {
+    return planPageSvgRender(pageWithObjects([object])).fragments.flatMap(elementFragments);
+  }
+
+  it("exports a fishhook half-arrow as a single-sided barb, not the bar fallback", () => {
+    const elements = exportedElements(arrowGraphic({
+      data: {
+        artPathKind: "line",
+        artToolId: "fishhookArrow",
+        markerEnd: { kind: "half-arrow", sizePx: 16 }
+      }
+    }));
+    const marker = elements.find((fragment) => fragment.attrs["data-graphic-marker"] === "end");
+
+    expect(marker).toBeDefined();
+    // A bar fallback is a two-point open path with fill:none; the barb is a filled closed triangle.
+    expect(marker?.attrs.fill).not.toBe("none");
+    expect(String(marker?.attrs.d)).toContain("Z");
+    expect(String(marker?.attrs.d).match(/L /g) ?? []).toHaveLength(2);
+  });
+
+  it("exports both equilibrium half-arrow heads as barbs", () => {
+    const elements = exportedElements(arrowGraphic({
+      data: {
+        artPathKind: "line",
+        artToolId: "equilibriumArrow",
+        dualShaft: true,
+        dualShaftGapPx: 7,
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    }));
+    const markers = elements.filter((fragment) => fragment.attrs["data-graphic-marker"] !== undefined);
+
+    expect(markers).toHaveLength(2);
+    for (const marker of markers) {
+      expect(marker.attrs.fill).not.toBe("none");
+      expect(String(marker.attrs.d)).toContain("Z");
+    }
+  });
+
+  it("exports the no-reaction cross across the shaft", () => {
+    const elements = exportedElements(arrowGraphic({
+      data: {
+        artPathKind: "line",
+        artToolId: "noReactionArrow",
+        shaftMark: "cross",
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    }));
+    const cross = elements.find((fragment) => fragment.attrs["data-graphic-shaft-mark"] === "cross");
+
+    expect(cross).toBeDefined();
+    // Two independent strokes (the ✗), stroked not filled.
+    expect(String(cross?.attrs.d).match(/M /g) ?? []).toHaveLength(2);
+    expect(cross?.attrs.fill).toBe("none");
+    expect(cross?.attrs.stroke).toBe("#111111");
+  });
+
+  it("honours an explicit no-reaction cross size in the export", () => {
+    const small = exportedElements(arrowGraphic({
+      data: { artPathKind: "line", artToolId: "noReactionArrow", shaftMark: "cross", shaftMarkSizePx: 8 }
+    })).find((fragment) => fragment.attrs["data-graphic-shaft-mark"] === "cross");
+    const large = exportedElements(arrowGraphic({
+      data: { artPathKind: "line", artToolId: "noReactionArrow", shaftMark: "cross", shaftMarkSizePx: 32 }
+    })).find((fragment) => fragment.attrs["data-graphic-shaft-mark"] === "cross");
+
+    const armLength = (fragment: typeof small) => {
+      const numbers = String(fragment?.attrs.d).match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
+      return Math.hypot(numbers[2] - numbers[0], numbers[3] - numbers[1]);
+    };
+
+    expect(armLength(small)).toBeCloseTo(8, 1);
+    expect(armLength(large)).toBeCloseTo(32, 1);
+  });
+});

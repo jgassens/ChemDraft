@@ -671,7 +671,7 @@ function exportGraphicObject(
   const graphicId = idFor(ids, graphic.id, allocator);
   warnForGraphicCdxmlLimitations(graphic, warnings);
   if (isSemanticReactionArrowGraphic(graphic)) {
-    return exportSemanticReactionArrowGraphic(graphic, graphicId);
+    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
   }
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
@@ -713,11 +713,56 @@ function isSemanticReactionArrowGraphic(graphic: GraphicObject): boolean {
  *  (`<graphic GraphicType="Line" ArrowType=…>`) so other programs read it as a reaction arrow. The
  *  exact art geometry (arc, arrowhead size, style) still round-trips within ChemDraft via the
  *  embedded native payload; this is purely the interop representation. */
-function exportSemanticReactionArrowGraphic(graphic: GraphicObject, graphicId: string): string {
+function exportSemanticReactionArrowGraphic(
+  graphic: GraphicObject,
+  graphicId: string,
+  warnings: CompatibilityConversionWarning[]
+): string {
   const line = graphicLineEndpointsForCdxml(graphic);
   const arrowKind = semanticReactionArrowKind(graphic) ?? "forward";
   const arrowType = cdxmlArrowTypeByKind[arrowKind];
-  return `<graphic id="${graphicId}" GraphicType="Line" ArrowType="${escapeXmlAttribute(arrowType)}" BoundingBox="${formatLineBoundingBox(line.start, line.end)}" Start="${formatPoint(line.start)}" End="${formatPoint(line.end)}"/>`;
+  // Appearance rides the same helpers every other graphic export uses; without them a dashed or
+  // coloured reaction arrow reopened elsewhere as a default solid black one, silently and with no
+  // warning. The colour helper also raises the out-of-table warning, so this path stops reporting
+  // clean on a lossy export.
+  const attributes = [
+    `id="${graphicId}"`,
+    `GraphicType="Line"`,
+    `ArrowType="${escapeXmlAttribute(arrowType)}"`,
+    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlLineTypeAttributes(graphic),
+    `BoundingBox="${formatLineBoundingBox(line.start, line.end)}"`,
+    `Start="${formatPoint(line.start)}"`,
+    `End="${formatPoint(line.end)}"`
+  ];
+  warnForSemanticArrowHeadLoss(graphic, arrowKind, warnings);
+  return `<graphic ${attributes.join(" ")}/>`;
+}
+
+/** Standard CDXML carries an arrow's heads in the closed `ArrowType` enum, so a head the user
+ *  removed or swapped (a bare tail, a bar head) cannot be represented — it reopens elsewhere as the
+ *  kind's default. Say so rather than exporting a silent lie. */
+function warnForSemanticArrowHeadLoss(
+  graphic: GraphicObject,
+  arrowKind: "forward" | "resonance" | "equilibrium" | "retrosynthesis",
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const headKind = graphic.data.markerEnd?.kind;
+  const tailKind = graphic.data.markerStart?.kind;
+  const expectsTail = arrowKind === "resonance" || arrowKind === "equilibrium";
+  const headMissing = arrowKind !== "retrosynthesis" && (headKind === undefined || headKind === "none");
+  const tailMismatch = expectsTail
+    ? tailKind === undefined || tailKind === "none"
+    : tailKind !== undefined && tailKind !== "none";
+  if (!headMissing && !tailMismatch) {
+    return;
+  }
+
+  warnings.push({
+    code: "cdxml.arrow_head_payload_only",
+    message: `Arrowhead changes on this ${arrowKind} arrow are preserved exactly only in the embedded ChemDraft payload; standard CDXML reopens it with the default heads for ArrowType.`,
+    sourceObjectId: graphic.id
+  });
 }
 
 function warnForGraphicCdxmlLimitations(
@@ -1981,9 +2026,12 @@ function importReactionArrowAsArtArrow(
   // both shafts the same way under a single open head.
   const equilibrium = arrowKind === "equilibrium";
   const retro = arrowKind === "retrosynthesis";
+  // Sizes and gaps mirror the native arrow tools (documentWorkflow's artShapeTool defaults) so an
+  // imported arrow is indistinguishable from a drawn one — an imported retro arrow used to carry an
+  // 80%-wider shaft gap, and imported heads were 10px against the tools' 16px.
   const marker = equilibrium
     ? { kind: "half-arrow" as const, sizePx: 14 }
-    : { kind: "filled-arrow" as const, sizePx: 10 };
+    : { kind: "filled-arrow" as const, sizePx: 16 };
   const artToolId = equilibrium
     ? "equilibriumArrow"
     : retro
@@ -1999,7 +2047,7 @@ function importReactionArrowAsArtArrow(
       ...(retro ? {} : { markerEnd: marker }),
       ...(arrowKind === "resonance" || equilibrium ? { markerStart: marker } : {}),
       ...(equilibrium ? { dualShaft: true, dualShaftGapPx: 7 } : {}),
-      ...(retro ? { dualShaft: true, dualShaftParallel: true, dualShaftGapPx: 9 } : {}),
+      ...(retro ? { dualShaft: true, dualShaftParallel: true, dualShaftGapPx: 5 } : {}),
       artToolId
     }
   };
@@ -2067,6 +2115,24 @@ function graphicTypeForCdxmlArrow(element: XmlElementView): string {
   return element.attributes.AngularSize ? "Arc" : "Line";
 }
 
+/** CDXML writes 2D position attributes (`Start`/`End`, and the `BoundingBox` beside them) in
+ *  "vertical horizontal" (y x) order, while the 3D ones (`Head3D`/`Tail3D`) are "x y z". An
+ *  element's BoundingBox follows whichever family it carries — both real fixtures agree: a
+ *  ChemDraw `<arrow Head3D=… Tail3D=…>` has an XY box, while a `<graphic ArrowType=… Start=… End=…>`
+ *  reaction arrow (the form `formatLineBoundingBox` also writes) has a YX one. */
+function cdxmlShapeBoundingBoxIsYx(element: XmlElementView): boolean {
+  // Scoped to semantic reaction arrows: they are the form proven to be YX (the `ArrowType` fixture
+  // and ChemDraft's own export), while a ChemDraw `<arrow>` carrying 3D endpoints is XY, and
+  // generic graphics keep whatever convention they already round-tripped with.
+  if (element.attributes.ArrowType === undefined) {
+    return false;
+  }
+  if (element.attributes.Head3D !== undefined || element.attributes.Tail3D !== undefined) {
+    return false;
+  }
+  return element.attributes.Start !== undefined || element.attributes.End !== undefined;
+}
+
 function cdxmlLinePointsForShape(element: XmlElementView): { start: Point; end: Point } | undefined {
   // Tail3D/Head3D are 3D "x y z" attributes; Start/End are 2D "y x" position attributes (see
   // formatPoint). They must be parsed with matching coordinate order or the endpoints transpose.
@@ -2081,6 +2147,15 @@ function graphicBoundsForCdxmlShape(
   linePoints: { start: Point; end: Point } | undefined
 ): { x: number; y: number; width: number; height: number } {
   if (type === "Line" || type === "Arc") {
+    // Reading a YX box as XY transposes the frame: a horizontal reaction arrow imported as a
+    // 1px-wide, arrow-length-tall object whose line still drew horizontally, wrecking selection and
+    // transform geometry (and ChemDraft's own semantic-arrow export writes exactly that YX form).
+    // Parse it in its own order; the matching endpoints stay the fallback.
+    if (cdxmlShapeBoundingBoxIsYx(element)) {
+      return parseCdxmlYxBoundingBox(element.attributes.BoundingBox)
+        ?? (linePoints ? paddedBoundsForPoints([linePoints.start, linePoints.end], type === "Arc" ? 12 : 1) : undefined)
+        ?? parseBoundingBox(element.attributes.BoundingBox);
+    }
     return parseCdxmlXyBoundingBox(element.attributes.BoundingBox)
       ?? (linePoints ? paddedBoundsForPoints([linePoints.start, linePoints.end], type === "Arc" ? 12 : 1) : undefined)
       ?? parseBoundingBox(element.attributes.BoundingBox);
@@ -2765,6 +2840,28 @@ function parseBoundingBox(box: string | undefined): { x: number; y: number; widt
     y,
     width: Math.max(1, cdxmlToCssPx(Number.isFinite(right) ? right : left) - x),
     height: Math.max(1, cdxmlToCssPx(Number.isFinite(bottom) ? bottom : top) - y)
+  };
+}
+
+/** The YX twin of {@link parseCdxmlXyBoundingBox}: "vertical horizontal vertical horizontal", the
+ *  order CDXML uses beside `Start`/`End` (and the one `formatLineBoundingBox` writes). */
+function parseCdxmlYxBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } | undefined {
+  if (!box) {
+    return undefined;
+  }
+  const [y1, x1, y2, x2] = box.trim().split(/\s+/).map(Number);
+  if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) {
+    return undefined;
+  }
+  const left = Math.min(x1, x2);
+  const top = Math.min(y1, y2);
+  const right = Math.max(x1, x2);
+  const bottom = Math.max(y1, y2);
+  return {
+    x: cdxmlToCssPx(left),
+    y: cdxmlToCssPx(top),
+    width: Math.max(1, cdxmlToCssPx(right - left)),
+    height: Math.max(1, cdxmlToCssPx(bottom - top))
   };
 }
 

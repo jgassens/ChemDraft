@@ -3621,8 +3621,48 @@ function svgSketchEffectFragmentsForEffects(
   }));
 }
 
+/** The no-reaction ✗ drawn across a shaft midpoint. Mirrors the canvas renderer's geometry (two
+ *  strokes at ±45° to the local tangent, each `sizePx` long, centred on the mark point) — without
+ *  this the mark was planned but never exported, so a no-reaction arrow left the app as an ordinary
+ *  forward arrow. */
+function svgFlattenedShaftMarkFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
+  const mark = plan.shaftMark;
+  if (!mark) {
+    return [];
+  }
+
+  const normal = { x: -mark.direction.y, y: mark.direction.x };
+  const arm = mark.sizePx / 2;
+  const invSqrt2 = Math.SQRT1_2;
+  const armA = {
+    x: (mark.direction.x + normal.x) * invSqrt2,
+    y: (mark.direction.y + normal.y) * invSqrt2
+  };
+  const armB = {
+    x: (mark.direction.x - normal.x) * invSqrt2,
+    y: (mark.direction.y - normal.y) * invSqrt2
+  };
+  const d = [
+    `M ${formatNumber(mark.point.x - armA.x * arm)} ${formatNumber(mark.point.y - armA.y * arm)}`,
+    `L ${formatNumber(mark.point.x + armA.x * arm)} ${formatNumber(mark.point.y + armA.y * arm)}`,
+    `M ${formatNumber(mark.point.x - armB.x * arm)} ${formatNumber(mark.point.y - armB.y * arm)}`,
+    `L ${formatNumber(mark.point.x + armB.x * arm)} ${formatNumber(mark.point.y + armB.y * arm)}`
+  ].join(" ");
+  return [elementFragment("path", `graphic-shaft-mark-${objectId}`, {
+    "data-graphic-shaft-mark": mark.kind,
+    d,
+    fill: "none",
+    stroke: plan.stroke.color,
+    "stroke-opacity": plan.stroke.opacity === 1 ? undefined : plan.stroke.opacity,
+    "stroke-width": Math.max(1.6, plan.stroke.width),
+    "stroke-linecap": "round",
+    transform: plan.projectionTransform
+  })];
+}
+
 function svgFlattenedGraphicMarkerFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
   return [
+    ...svgFlattenedShaftMarkFragments(plan, objectId),
     ...(plan.markerStart && plan.markerStartTerminal
       ? svgFlattenedMarkerFragments(
           plan.markerStart,
@@ -3696,6 +3736,18 @@ function svgFlattenedMarkerFragments(
     return [elementFragment("path", id, {
       ...attrs,
       d: markerPath([tip, markerPoint(size, -half), markerPoint(size, half)]),
+      ...fillAttrs,
+      stroke: "none"
+    })];
+  }
+
+  if (marker.kind === "half-arrow") {
+    // Fishhook: a single-sided barb whose inner point sits back along the shaft. Same geometry the
+    // canvas draws (MainWindow's marker renderer) — without this branch it fell through to the bar
+    // fallback below and every fishhook/equilibrium head exported as a perpendicular crossbar.
+    return [elementFragment("path", id, {
+      ...attrs,
+      d: markerPath([tip, markerPoint(size, -half), markerPoint(size * 0.4, 0)]),
       ...fillAttrs,
       stroke: "none"
     })];
