@@ -433,13 +433,43 @@ Sequence, deliberately conservative:
    separately: structural round-trip · correct stereodescriptors and locants · acceptable systematic
    name · preferred IUPAC name where known · unsupported structures **rejected** rather than misnamed ·
    salts, isotopes, fused/bridged rings, organometallics, zwitterions, multicomponent inputs.
-2. Analyze failures and upstream velocity.
-3. Contribute fixes upstream.
+   **✅ Done 2026-08-01 — `docs/benchmarks/openclatura-structure-to-name.md`.** 4,999 NCI structures
+   plus a 26-entry adversarial set, round-tripped through the vendored OPSIN.
+2. Analyze failures and upstream velocity. **✅ In the same report.**
+3. Contribute fixes upstream. **← the recommended next step.**
 4. Consider a Python sidecar.
 5. **Port to TypeScript only if** the benchmark establishes enough product value to justify maintaining a
    second implementation of a still-developing nomenclature engine. Before any port, **inventory which
    RDKit APIs the rule engine touches against MinimalLib's surface** — every gap is another vendored
    patch, against the budget noted in §7.
+
+**The benchmark's verdict: do not port, and do not ship it as a naming feature yet — but the gap is
+narrow enough that step 3 is worth doing.** The engine is better than feared and fails in a worse
+shape than feared, and both halves matter.
+
+**Better than feared:** 98.7% of the names it produced round-trip exactly, stereochemistry is a genuine
+strength (R/S, E/Z, meso, and ring stereo all exact), and it declines *every* metal — 38/38 Cu, 31/31
+Co, 23/23 Hg, plus ferrocene, cisplatin, SeO₂. That is correct behaviour and deserves crediting.
+
+**Worse in shape:** 36 structures (0.72%) got a confident, well-formed, OPSIN-parseable name for a
+*different molecule*, and **14 of those name a smaller one** — seven arsenic compounds have the whole
+arsonic acid group silently deleted, so `NC(=O)CNc1ccc([As](=O)(O)O)cc1` names as
+"2-(phenylamino)acetamide". The adversarial set fails the same way: `[13CH3]C(=O)O` and
+`[2H]C([2H])([2H])C(=O)O` both name as "acetic acid", and TEMPO names as its closed-shell
+hydroxylamine. **The isotope case is the one this branch should recognise on sight** — it is exactly
+what §8's envelope refused to do, committed in the naming direction.
+
+**The specific defect is not inaccuracy, it is a misplaced boundary.** Arsenic never round-trips once
+in 20 structures, so it is plainly unsupported — yet 14 decline and 6 are silently stripped. A tool
+that declined all 20 would be usable with a documented gap. This one cannot tell you which case you are
+in, and AGENTS.md §8a is explicit that a confident wrong answer is the more dangerous failure. That is
+also why step 3 is attractive: the fix is "make unnameable features decline instead of dropping", not
+"improve the nomenclature", and upstream is active (last push the day the benchmark ran).
+
+Two provenance notes. **Pin by commit, not version** — pip installs `0.2.0` while
+`openclatura.__version__` reports `0.1.5`, the same trap as IsoSpec's tag-vs-CMakeLists mismatch. And
+*preferred IUPAC name where known* remains **unassessed**: a round-trip cannot establish it, and doing
+so needs a reference set of preferred names this benchmark does not have.
 
 OPSIN round-trip is a **structural-equivalence test**, not evidence of preferred-name correctness. Note
 OpenClatura's own verification runs through `py2opsin`, which shells out to Java, so a ported path
