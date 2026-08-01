@@ -1126,6 +1126,36 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(exported.contents).not.toContain('ArrowType="FullHead"');
   });
 
+  it("round-trips a half-headed arrow back out as ArrowType=\"HalfHead\"", () => {
+    // Importing honestly is only half the job: exporting the fishhook as a plain line still loses
+    // the arrow's chemical identity, so a ChemDraw file opened and re-saved came back as a
+    // decorative stroke. HalfHead is a real CDXML spelling and the fishhook is exactly what it
+    // means, so the pair must survive a full lap.
+    const source = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="Half Head Round Trip">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <graphic id="a1" GraphicType="Line" ArrowType="HalfHead" BoundingBox="120 120 216 120" Start="120 120" End="216 120"/>
+  </page>
+</CDXML>`;
+    const opened = openChemDraftPayload(source);
+    const exported = exportDocumentToCdxml(opened.document!);
+
+    // The visible layer must say HalfHead — not FullHead (wrong chemistry) and not a bare line
+    // (no chemistry). Check the visible <graphic>, since the embedded payload is JSON.
+    const visibleGraphic = exported.contents
+      .split("\n")
+      .find((line) => line.includes("<graphic ") && line.includes("GraphicType=\"Line\""));
+    expect(visibleGraphic).toBeDefined();
+    expect(visibleGraphic).toContain('ArrowType="HalfHead"');
+
+    // Reopening the export must land on the same fishhook, not drift a second time.
+    const reopened = openChemDraftPayload(exported.contents);
+    const arrow = reopened.document?.pages[0].objects[0] as GraphicObject | undefined;
+    expect(arrow?.data.artToolId).toBe("fishhookArrow");
+    expect(arrow?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
+  });
+
   it("reads a ChemDraw <arrow> frame consistently with its unambiguous 3D endpoints", () => {
     // Head3D/Tail3D are "x y z" in every CDX dialect, so they pin the arrow's true direction with
     // no convention to argue about. A real ChemDraw 26 document was inspected to settle this: its
@@ -1403,8 +1433,8 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       expect(cdxml).toContain('ArrowType="FullHead"');
     }
 
-    // Fishhook and no-reaction arrows have no standard CDXML reaction-arrow equivalent: they stay
-    // generic graphics (exact round-trip rides the native payload).
+    // A fishhook DOES have a standard spelling — HalfHead — and it is different chemistry from
+    // FullHead, so it must be named rather than flattened to a generic graphic.
     const fishhookCdxml = exportDocumentToCdxml(
       documentWithObjects([{
         ...variantArrow("fishhookArrow", 16),
@@ -1415,7 +1445,24 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       }]),
       { creationProgram: "T" }
     ).contents;
-    expect(fishhookCdxml).not.toContain("ArrowType=");
+    expect(fishhookCdxml).toContain('ArrowType="HalfHead"');
+    expect(fishhookCdxml).not.toContain('ArrowType="FullHead"');
+
+    // A no-reaction arrow really has no CDXML equivalent — its crossed shaft is not in the
+    // ArrowType enum at all — so it stays a generic graphic and round-trips via the payload.
+    const noReactionCdxml = exportDocumentToCdxml(
+      documentWithObjects([variantArrow("noReactionArrow", 16)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(noReactionCdxml).not.toContain("ArrowType=");
+
+    // Curved fishhooks stay graphics too: this exporter writes a Start/End pair, so naming one
+    // would trade its curvature — the point of a curved pushing arrow — for a label.
+    const curvedFishhookCdxml = exportDocumentToCdxml(
+      documentWithObjects([variantArrow("fishhookCurved", 16)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(curvedFishhookCdxml).not.toContain("ArrowType=");
   });
 
   it("round-trips a resonance reaction arrow through CDXML", () => {

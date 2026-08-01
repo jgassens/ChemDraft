@@ -704,13 +704,21 @@ function exportGraphicObject(
   return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
 }
 
-/** The chemical arrow kind an art arrow stands in for, or undefined for a plain (decorative) art
- *  arrow. Reaction/resonance arrows are drawn with the art-arrow tools for their rich editing but
- *  carry their chemistry in `artToolId`, which is how the CDXML layer knows to write/read them as
- *  reaction arrows rather than generic graphics. */
-function semanticReactionArrowKind(
-  graphic: GraphicObject
-): "forward" | "resonance" | "equilibrium" | "retrosynthesis" | undefined {
+/**
+ * The chemistry an art arrow carries that standard CDXML can name, or undefined for a plain
+ * (decorative) art arrow. Arrows are drawn with the art-arrow tools for their rich editing but
+ * carry their meaning in `artToolId`, which is how the CDXML layer knows to write/read them as
+ * chemical arrows rather than generic graphics.
+ *
+ * `fishhook` is deliberately NOT a member of `ArrowObject["arrowKind"]`. That enum describes the
+ * legacy `reaction-arrow` OBJECT, and a half-headed arrow imports as a graphic (see
+ * {@link importHalfHeadArrowAsFishhook}) — so adding a member there would invent a state no
+ * reaction-arrow object can ever hold and force a dead case into every switch over it. The question
+ * being answered here is a CDXML one, so it is keyed on the tool rather than on that enum.
+ */
+type SemanticArrowExportKind = Exclude<ArrowObject["arrowKind"], "unknown"> | "fishhook";
+
+function semanticArrowExportKind(graphic: GraphicObject): SemanticArrowExportKind | undefined {
   if (
     graphic.data.artToolId === "reactionArrow" ||
     graphic.data.artToolId === "reactionArrowBold" ||
@@ -727,11 +735,17 @@ function semanticReactionArrowKind(
   if (graphic.data.artToolId === "retroArrow") {
     return "retrosynthesis";
   }
+  // Only the straight fishhook. `fishhookCurved` is one-electron too, but this exporter writes a
+  // Start/End pair, so naming it would trade a curved pushing arrow's curvature — the whole point
+  // of it — for a label. It stays a graphic, where its arc survives.
+  if (graphic.data.artToolId === "fishhookArrow") {
+    return "fishhook";
+  }
   return undefined;
 }
 
 function isSemanticReactionArrowGraphic(graphic: GraphicObject): boolean {
-  return semanticReactionArrowKind(graphic) !== undefined;
+  return semanticArrowExportKind(graphic) !== undefined;
 }
 
 /** Export a reaction/resonance-tagged art arrow as the standard CDXML reaction arrow
@@ -744,8 +758,8 @@ function exportSemanticReactionArrowGraphic(
   warnings: CompatibilityConversionWarning[]
 ): string {
   const line = graphicLineEndpointsForCdxml(graphic);
-  const arrowKind = semanticReactionArrowKind(graphic) ?? "forward";
-  const arrowType = cdxmlArrowTypeByKind[arrowKind];
+  const arrowKind = semanticArrowExportKind(graphic) ?? "forward";
+  const arrowType = cdxmlArrowTypeByExportKind[arrowKind];
   // Appearance rides the same helpers every other graphic export uses; without them a dashed or
   // coloured reaction arrow reopened elsewhere as a default solid black one, silently and with no
   // warning. The colour helper also raises the out-of-table warning, so this path stops reporting
@@ -769,7 +783,7 @@ function exportSemanticReactionArrowGraphic(
  *  kind's default. Say so rather than exporting a silent lie. */
 function warnForSemanticArrowHeadLoss(
   graphic: GraphicObject,
-  arrowKind: "forward" | "resonance" | "equilibrium" | "retrosynthesis",
+  arrowKind: SemanticArrowExportKind,
   warnings: CompatibilityConversionWarning[]
 ): void {
   const headKind = graphic.data.markerEnd?.kind;
@@ -2142,7 +2156,7 @@ function importHalfHeadArrowAsFishhook(
   context.warnings.push(
     warning(
       "cdxml.half_head_arrow_import_approximation",
-      "A half-headed (fishhook) arrow was imported as ChemDraft's fishhook arrow. Its single-barb chemistry is preserved, but the barb's left/right handedness is not, and re-exporting writes it as a plain line rather than ArrowType=\"HalfHead\"."
+      "A half-headed (fishhook) arrow was imported as ChemDraft's fishhook arrow, and exports again as ArrowType=\"HalfHead\". Its single-barb chemistry round-trips; the barb's left/right handedness does not, because native fishhook heads are one-sided but not handed."
     )
   );
   return {
@@ -3031,10 +3045,18 @@ const cdxmlArrowTypeByKind: Readonly<Record<Exclude<ArrowObject["arrowKind"], "u
   retrosynthesis: "RetroSynthetic"
 };
 
+/** The same spellings plus the one an art arrow can carry that no `reaction-arrow` object can. */
+const cdxmlArrowTypeByExportKind: Readonly<Record<SemanticArrowExportKind, string>> = {
+  ...cdxmlArrowTypeByKind,
+  fishhook: "HalfHead"
+};
+
 const arrowKindByCdxmlArrowType: ReadonlyMap<string, ArrowObject["arrowKind"]> = new Map([
   // Real CDXML spellings.
   ["fullhead", "forward"],
-  ["halfhead", "forward"],
+  // "halfhead" is absent on purpose: a half-headed arrow is one-electron chemistry and is
+  // intercepted before this lookup (see importHalfHeadArrowAsFishhook). Mapping it to "forward"
+  // here is what used to launder it into a two-electron reaction arrow.
   ["resonance", "resonance"],
   ["equilibrium", "equilibrium"],
   ["retrosynthetic", "retrosynthesis"],
