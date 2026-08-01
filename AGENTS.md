@@ -1113,6 +1113,18 @@ chains dragged off an existing atom and off empty canvas including against a pag
 applied to a typed formula, one undo entry per gesture, and SVG export parity with the canvas for
 arrows, brackets, and orbitals.
 
+Toolbar and arrow surfaces added since: the curated arrow flyout (bold, dashed, curved 90/180, both
+fishhooks, no-reaction) opened cold, warm, and after a long idle — the first press of a session must
+place the popout under its button, not offset from the screen origin; the selection-aware Main style
+widget in all four variants (text, molecule, arrow, shape) including its no-reaction ✗-size select,
+with a gesture cancelled mid-press (the layout must not freeze on the previous selection); Shift-hover
+transform boxes on arrows — the box latches to the first arrow for the whole hold, its rotate, 3D
+rotate, and resize handles all work under the arrow tools, and dismissal leaves no ghost pixels;
+arrowhead resizing on a scaled equilibrium (the head must land at the pointer, and an untouched shaft
+handle must not move the shaft); "Set as Default Arrow Style" captured from a dashed arrow made solid;
+tooltips on a palette dragged to a second monitor; and toolbars restored after being left off-screen
+or on a since-detached display.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

@@ -16,8 +16,6 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
-    "core:window:allow-set-always-on-top",
-    "core:window:allow-set-visible-on-all-workspaces",
     "core:webview:allow-set-webview-focus",
     "allow-open-toolset-window",
     "allow-close-toolset-window",

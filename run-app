@@ -375,6 +375,16 @@ set_bundle_display_name() {
   plist_set_or_add_string "$plist" CFBundleIdentifier "$RUN_APP_BUNDLE_ID"
   /usr/libexec/PlistBuddy -c "Delete :LSRequiresCarbon" "$plist" >/dev/null 2>&1 || true
   plist_set_or_add_string "$plist" NSPrincipalClass NSApplication
+
+  # A branch build must never follow the PRODUCTION update feed. That appcast ships
+  # org.chemdraft.desktop builds; once it advances past this branch's version, Sparkle would offer
+  # this dev app an update whose bundle identity differs — the install fails validation, or worse
+  # replaces the branch build and defeats the whole identity split. Strip the feed and disable
+  # scheduled checks; a dev feed would be safe only if it published this exact dev bundle id.
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$plist" >/dev/null 2>&1 || true
+  if ! /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$plist" >/dev/null 2>&1 || true
+  fi
 }
 
 plist_set_or_add_string() {

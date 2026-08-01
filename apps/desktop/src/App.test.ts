@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { createElement } from "react";
@@ -234,6 +234,10 @@ const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
 const toolbarTooltipSource = readFileSync(new URL("./toolbars/toolbarTooltip.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const desktopCapabilitiesSource = readFileSync(
+  new URL("../src-tauri/capabilities/default.json", import.meta.url),
+  "utf8"
+);
 const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
@@ -346,6 +350,17 @@ describe("ChemDraft desktop shell", () => {
     expect(appCssWithoutComments).toMatch(/\.object-transform-frame\s*{[^}]*will-change:\s*transform/s);
     expect(appCssWithoutComments).toMatch(/\.graphic-object\[data-graphic-interaction-mode\]\s*{[^}]*will-change:\s*transform/s);
     expect(mainWindowSource).toContain('page.style.setProperty("--cd-bg-page"');
+  });
+
+  it("ships no self-driving diagnostic in the app entry point", () => {
+    // A document-mutating probe (synthetic drags + edit.undo, window pinning) must not be reachable
+    // from a shipped build: a URL-parameter gate around a dynamic import still emits the chunk.
+    const mainSource = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+    expect(mainSource).not.toContain("ghostProbe");
+    expect(existsSync(new URL("./ghostProbe.ts", import.meta.url))).toBe(false);
+    // And the capabilities it alone needed are gone with it.
+    expect(desktopCapabilitiesSource).not.toContain("allow-set-always-on-top");
+    expect(desktopCapabilitiesSource).not.toContain("allow-set-visible-on-all-workspaces");
   });
 
   it("only autosaves the document session after a clean read of it", () => {
