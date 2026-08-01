@@ -291,7 +291,11 @@ export function detectMolfileFormat(text: string): ClipboardMolfileFormat | unde
     return undefined;
   }
 
-  if (/\bV3000\b/.test(normalized) || normalized.includes("M  V30 ")) {
+  // "V3000" alone is not evidence: it appears in ordinary prose (a spectrometer model, a filename),
+  // and classifying prose as a molfile sent it to a parser that throws. Require the structural
+  // marker a real V3000 molfile always carries — its "M  V30 " block lines, or at minimum the
+  // "M  END" terminator the V2000 branch below already insists on.
+  if (normalized.includes("M  V30 ") || (/\bV3000\b/.test(normalized) && normalized.includes("M  END"))) {
     return "molfile-v3000";
   }
   if (/\bV2000\b/.test(normalized) && normalized.includes("M  END")) {

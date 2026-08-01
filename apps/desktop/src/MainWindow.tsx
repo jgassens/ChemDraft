@@ -4967,7 +4967,9 @@ export function MainWindow({
             bonds: fallback.bonds.map((bond) => ({
               from: bond.from,
               to: bond.to,
-              order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+              // Same contract as `pastedStructureDepictionFromMolfile`: orders are carried, not
+              // flattened. Collapsing aromatic/unknown to single silently rewrites the chemistry.
+              order: bond.order,
               wedge: bond.wedge
             }))
           };

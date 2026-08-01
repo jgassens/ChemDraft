@@ -4466,7 +4466,11 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
       return [{
         from,
         to,
-        order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+        // Carried through, not collapsed. `MoleculeBond["order"]` — which this interface already
+        // declares — accepts both, the insert path stores whatever arrives, and the OCL adapter
+        // explicitly refuses this same collapse citing AGENTS.md section 5.7. Flattening an
+        // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
+        order: bond.order,
         wedge: bond.bondStyle ?? null
       }];
     })
@@ -4640,18 +4644,37 @@ export function applyClipboardPastePayload(
   }
 
   if (payload.kind === "molfile") {
-    const nextDocument = insertNativeMolfileMolecule(document, point, payload.text, payload.format);
-    const selected = getSelectedMolecule(nextDocument);
-    const parsedWarnings = selected?.compatibility?.warnings
-      .filter((warning) => warning.code.startsWith("clipboard."))
-      .map((warning) => ({ code: warning.code, message: warning.message })) ?? [];
-    return {
-      document: nextDocument,
-      status: `Pasted editable ${payload.format === "molfile-v3000" ? "MOL V3000" : "MOL V2000"} structure`,
-      kind: payload.kind,
-      selectedObjectId: selected?.id,
-      warnings: [...payload.warnings, ...parsedWarnings]
-    };
+    // Detection is a heuristic over clipboard text, so it can hand this branch something that is
+    // not a molfile at all. `parseMolfileGraph` throws on malformed input, and an exception here
+    // escapes the whole paste handler — paste then does nothing at all, with no message. Fail the
+    // same way the RXN branch below does: keep the document, report why (§16).
+    try {
+      const nextDocument = insertNativeMolfileMolecule(document, point, payload.text, payload.format);
+      const selected = getSelectedMolecule(nextDocument);
+      const parsedWarnings = selected?.compatibility?.warnings
+        .filter((warning) => warning.code.startsWith("clipboard."))
+        .map((warning) => ({ code: warning.code, message: warning.message })) ?? [];
+      return {
+        document: nextDocument,
+        status: `Pasted editable ${payload.format === "molfile-v3000" ? "MOL V3000" : "MOL V2000"} structure`,
+        kind: payload.kind,
+        selectedObjectId: selected?.id,
+        warnings: [...payload.warnings, ...parsedWarnings]
+      };
+    } catch (error) {
+      const warning = {
+        code: "clipboard.molfile_parse_failed",
+        message: error instanceof Error
+          ? `ChemDraft detected a MOL structure on the clipboard, but could not parse it: ${error.message}`
+          : "ChemDraft detected a MOL structure on the clipboard, but could not parse it."
+      };
+      return {
+        document,
+        status: warning.message,
+        kind: payload.kind,
+        warnings: [...payload.warnings, warning]
+      };
+    }
   }
 
   if (payload.kind === "rxnfile") {

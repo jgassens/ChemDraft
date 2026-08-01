@@ -31,6 +31,7 @@ import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
+  pastedStructureDepictionFromMolfile,
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
@@ -1167,6 +1168,45 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("carries aromatic and unknown bond orders through a pasted depiction", () => {
+    // The depiction interface declares MoleculeBond["order"] and the insert path stores whatever
+    // arrives, but the conversion collapsed aromatic/unknown to single — silently kekulizing an
+    // un-kekulized ring into all-single bonds. The OCL adapter refuses this exact collapse citing
+    // AGENTS.md section 5.7.
+    const aromaticPair = [
+      "aromatic-fragment",
+      "",
+      "",
+      "  2  1  0  0  0  0  0  0  0  0999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.4000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  4  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    expect(pastedStructureDepictionFromMolfile(aromaticPair).bonds.map((bond) => bond.order)).toEqual([
+      "aromatic"
+    ]);
+  });
+
+  it("reports a malformed MOL paste instead of throwing out of the paste handler", () => {
+    // Clipboard classification is a heuristic over text, so this branch can receive something that
+    // is not a molfile. parseMolfileGraph throws on malformed input, and the exception escaped the
+    // whole handler: paste did nothing at all, with no message. The RXN branch beside it already
+    // caught and reported; this one now matches (AGENTS.md section 16).
+    const document = createPhase4Document("Malformed MOL Paste");
+    const result = applyClipboardPastePayload(document, {
+      kind: "molfile",
+      format: "molfile-v3000",
+      text: "Bruker V3000 spectrometer manual\nM  END",
+      warnings: []
+    }, { x: 200, y: 200 });
+
+    expect(result.document).toBe(document);
+    expect(result.warnings.map((warning) => warning.code)).toContain("clipboard.molfile_parse_failed");
+    expect(result.status).toContain("could not parse");
   });
 
   it("retells the structure format when native editing rewrites an imported molfile as SMILES", () => {

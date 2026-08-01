@@ -346,6 +346,22 @@ describe("looksLikeSmiles (pre-filter only — never asserts validity)", () => {
   });
 });
 
+describe("molfile detection is structural, not keyword-matching", () => {
+  it("does not classify ordinary prose that happens to contain V3000 or V2000", () => {
+    // A bare version keyword is not evidence of a molfile. Classifying prose as one sent it to a
+    // parser that throws, and the exception escaped the whole paste handler — so pasting a line of
+    // text into the canvas did nothing at all, with no message.
+    expect(detectMolfileFormat("Bruker V3000 spectrometer manual")).toBeUndefined();
+    expect(detectMolfileFormat("see appendix V2000 for the calibration table")).toBeUndefined();
+    expect(detectMolfileFormat("Exported from V3000-series software on Tuesday")).toBeUndefined();
+  });
+
+  it("still recognises real molfiles", () => {
+    expect(detectMolfileFormat(etheneV3000)).toBe("molfile-v3000");
+    expect(detectMolfileFormat(cyclopropaneV2000)).toBe("molfile-v2000");
+  });
+});
+
 function lengthPrefixedClipboardMolfile(lines: readonly string[]): string {
   return lines.map((line) => `\0${String.fromCharCode(line.length)}${line}`).join("");
 }
