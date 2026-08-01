@@ -10,7 +10,13 @@
  * same session cache, same engine hashes in the fingerprint. A plugin's envelope and the core Analyze
  * panel's envelope are therefore the same computation, and cannot drift.
  */
-import type { PluginIsotopeEnvelopeRequest, PluginIsotopeEnvelopeResult } from "@chemdraft/plugin-api";
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  PluginIsotopeEnvelopeRequest,
+  PluginIsotopeEnvelopeResult,
+  PluginNameToStructureRequest,
+  PluginNameToStructureResult
+} from "@chemdraft/plugin-api";
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter";
 
 import { analysisClient } from "../analysisClient";
@@ -68,4 +74,70 @@ export async function computeIsotopeEnvelopeForPlugin(
     // produced these numbers is not an implementation detail the plugin may drop.
     conventions: [...result.conventions]
   };
+}
+
+/** What the Rust side returns; see `src-tauri/src/opsin.rs`. */
+interface OpsinStatusReply {
+  available: boolean;
+  reason?: string | null;
+  version: string;
+}
+interface OpsinConversionReply {
+  smiles?: string | null;
+  failureReason?: string | null;
+}
+
+const OPSIN_ENGINE_ID = "opsin";
+
+/**
+ * Name → structure, through the vendored OPSIN engine the host bundles.
+ *
+ * Unlike the envelope this does not go through the analysis worker: the engine is a Java process the
+ * Rust side owns, not a WASM module in the worker, so the Tauri command *is* the boundary.
+ *
+ * "The engine is missing" and "the engine could not read that name" are kept apart all the way
+ * across. They mean different things to a reader — one is a build that cannot do this at all, the
+ * other is a name that needs rewriting — and collapsing them into one error string would leave the
+ * plugin unable to say which.
+ */
+export async function nameToStructureForPlugin(
+  request: PluginNameToStructureRequest
+): Promise<PluginNameToStructureResult> {
+  let status: OpsinStatusReply;
+  try {
+    status = await invoke<OpsinStatusReply>("opsin_status");
+  } catch {
+    // No Tauri backend at all — a browser preview, or a test harness.
+    return { available: false, reason: "The name-to-structure engine is unavailable in this environment." };
+  }
+
+  if (!status.available) {
+    return {
+      available: false,
+      reason: status.reason ?? "The name-to-structure engine is not available in this build."
+    };
+  }
+
+  const engine = { id: OPSIN_ENGINE_ID, version: status.version };
+  try {
+    const reply = await invoke<OpsinConversionReply>("opsin_name_to_structure", { name: request.name });
+    if (reply.smiles) {
+      return { available: true, parsed: true, smiles: reply.smiles, engine };
+    }
+    return {
+      available: true,
+      parsed: false,
+      reason: reply.failureReason ?? `"${request.name}" could not be interpreted as a chemical name.`,
+      engine
+    };
+  } catch (error) {
+    // The command itself rejected — a name carrying a control character, or the process failing to
+    // start. That is still "the engine ran and said no", so it stays a parse failure with its reason.
+    return {
+      available: true,
+      parsed: false,
+      reason: error instanceof Error ? error.message : String(error),
+      engine
+    };
+  }
 }

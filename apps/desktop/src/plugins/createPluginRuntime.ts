@@ -2,6 +2,8 @@ import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
+  PluginNameToStructureRequest,
+  PluginNameToStructureResult,
   PluginManifest,
   PluginPermission,
   PluginSelectionSnapshot,
@@ -17,12 +19,17 @@ import {
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
-import { computeIsotopeEnvelopeForPlugin } from "./pluginChemistry";
+import { computeIsotopeEnvelopeForPlugin, nameToStructureForPlugin } from "./pluginChemistry";
 
 /** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
 export type DesktopIsotopeEnvelopeProvider = (
   request: PluginIsotopeEnvelopeRequest
 ) => Promise<PluginIsotopeEnvelopeResult>;
+
+/** Serves name → structure to a plugin holding `chemistry.compute`. */
+export type DesktopNameToStructureProvider = (
+  request: PluginNameToStructureRequest
+) => Promise<PluginNameToStructureResult>;
 
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -46,6 +53,8 @@ export interface DesktopPluginRuntimeOptions {
    * is how a host with no engines is modelled — the plugin then sees no `chemistry` API at all.
    */
   computeIsotopeEnvelope?: DesktopIsotopeEnvelopeProvider | null;
+  /** Serves name → structure under the same permission and the same null-withholds rule. */
+  convertNameToStructure?: DesktopNameToStructureProvider | null;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -112,6 +121,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const now = options.now ?? (() => new Date());
   const envelopeProvider =
     options.computeIsotopeEnvelope === undefined ? computeIsotopeEnvelopeForPlugin : options.computeIsotopeEnvelope;
+  const nameProvider =
+    options.convertNameToStructure === undefined ? nameToStructureForPlugin : options.convertNameToStructure;
   const nowIso = (): string => {
     const value = now();
     return typeof value === "string" ? value : value.toISOString();
@@ -131,6 +142,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       controller?.showReport(pluginId, panelId, report);
     },
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
+    ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     now
   });
   controller = new PluginPanelController(host, nowIso);

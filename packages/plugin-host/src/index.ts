@@ -16,6 +16,8 @@ import type {
   PluginCommandHandler,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
+  PluginNameToStructureRequest,
+  PluginNameToStructureResult,
   PluginMenuContribution,
   NormalizedProposedDocumentPatch,
   PluginManifest,
@@ -36,6 +38,7 @@ export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
 import {
   PluginIsotopeEnvelopeRequestSchema,
+  PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
   ProposedDocumentPatchSchema,
   parsePluginManifest
@@ -184,6 +187,8 @@ export interface PluginHostOptions {
    * the application supplies the engine it already owns.
    */
   computeIsotopeEnvelope?: (request: PluginIsotopeEnvelopeRequest) => Promise<PluginIsotopeEnvelopeResult>;
+  /** Converts a systematic name to a structure. Same rule: absent hosts answer `available: false`. */
+  convertNameToStructure?: (request: PluginNameToStructureRequest) => Promise<PluginNameToStructureResult>;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   now?: () => Date | string;
@@ -204,6 +209,7 @@ export class PluginHost {
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
+  private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
   private readonly now: () => Date | string;
   private readonly createId: () => string;
@@ -218,6 +224,7 @@ export class PluginHost {
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
+    this.convertNameToStructure = options.convertNameToStructure;
     this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? (() => globalThis.crypto.randomUUID());
@@ -410,6 +417,18 @@ export class PluginHost {
               return { available: false, reason: "This host provides no isotope engine." };
             }
             return await this.computeIsotopeEnvelope(parsed);
+          },
+          // Always supplied here, for the reason above — even though the interface declares it
+          // optional. That optionality is about *version skew*, not about this host: plugins are
+          // distributed independently and may meet a host older than the method, so a plugin has to
+          // be able to check. Within one host the presence rule stays uniform.
+          nameToStructure: async (request) => {
+            this.requirePermission(pluginId, "chemistry.compute");
+            const parsed = PluginNameToStructureRequestSchema.parse(request);
+            if (!this.convertNameToStructure) {
+              return { available: false, reason: "This host provides no name-to-structure engine." };
+            }
+            return await this.convertNameToStructure(parsed);
           }
         }
       : undefined;

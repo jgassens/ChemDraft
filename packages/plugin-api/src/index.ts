@@ -828,8 +828,49 @@ export type PluginIsotopeEnvelopeResult =
     }
   | { available: false; reason: string };
 
+export interface PluginNameToStructureRequest {
+  /** A systematic chemical name, e.g. "2-acetyloxybenzoic acid". */
+  name: string;
+}
+
+export const PluginNameToStructureRequestSchema = z
+  .object({ name: NonEmptyStringSchema })
+  .strict();
+
+/**
+ * Either a structure, or why the name did not become one.
+ *
+ * The two failure modes are deliberately distinct, because a plugin should tell a reader different
+ * things about them. `available: false` means the engine is not there to ask — a build without the
+ * bundled runtime — and nothing about the name. A `parsed: false` result means the engine ran and
+ * could not interpret the name, and carries the engine's own words for why.
+ */
+export type PluginNameToStructureResult =
+  | {
+      available: true;
+      parsed: true;
+      /** SMILES for the named compound, from the engine. Stereodescriptors are preserved. */
+      smiles: string;
+      engine: { id: string; version: string };
+    }
+  | {
+      available: true;
+      parsed: false;
+      /** The engine's own diagnostic, never a synthesised one. */
+      reason: string;
+      engine: { id: string; version: string };
+    }
+  | { available: false; reason: string };
+
 export interface PluginChemistryAPI {
   isotopeEnvelope(request: PluginIsotopeEnvelopeRequest): Promise<PluginIsotopeEnvelopeResult>;
+  /**
+   * Name → structure. Optional on purpose: a host that cannot offer it simply omits it, and a plugin
+   * that finds it missing reports the capability as absent rather than failing. Making it required
+   * would break every existing host implementation of this interface for a capability that is, by
+   * design, allowed not to be there.
+   */
+  nameToStructure?(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
 }
 
 export interface PluginRuntimeIdentity {

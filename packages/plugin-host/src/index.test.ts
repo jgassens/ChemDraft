@@ -539,6 +539,91 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     expect(englessAnswer).toEqual({ available: false, reason: "This host provides no isotope engine." });
   });
 
+  it("serves name-to-structure under the same permission and the same presence rule", async () => {
+    // A second capability on `chemistry.compute`, wired the same way on purpose: one permission, one
+    // presence rule, and the engine's availability carried in the answer rather than in whether the
+    // method exists. Anything else and a plugin would have to probe differently per capability.
+    const convertNameToStructure = vi.fn(async () => ({
+      available: true as const,
+      parsed: true as const,
+      smiles: "C1=CC=CC=C1",
+      engine: { id: "opsin", version: "2.9.0" }
+    }));
+
+    const manifest = (id: string, permissions: PluginPermission[]) => ({
+      id,
+      name: "Name Plugin",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions,
+      contributes: { commands: [{ id: `plugin.${id.split(".").pop()}.probe`, title: "Probe" }] }
+    });
+
+    const granted = new PluginHost({ convertNameToStructure });
+    let seen: unknown;
+    granted.registerPlugin(manifest("org.test.nameyes", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.nameyes.probe": async (context) => {
+          seen = await context.chemistry?.nameToStructure?.({ name: "benzene" });
+        }
+      }
+    });
+    await granted.invokeCommand("plugin.nameyes.probe");
+    expect(convertNameToStructure).toHaveBeenCalledWith({ name: "benzene" });
+    expect(seen).toMatchObject({ available: true, parsed: true, smiles: "C1=CC=CC=C1" });
+
+    // No engine → still present, still answers, and says the host has none rather than throwing.
+    const engineless = new PluginHost();
+    let englessAnswer: unknown;
+    engineless.registerPlugin(manifest("org.test.namehostless", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.namehostless.probe": async (context) => {
+          expect(context.chemistry?.nameToStructure).toBeDefined();
+          englessAnswer = await context.chemistry?.nameToStructure?.({ name: "benzene" });
+        }
+      }
+    });
+    await engineless.invokeCommand("plugin.namehostless.probe");
+    expect(englessAnswer).toEqual({
+      available: false,
+      reason: "This host provides no name-to-structure engine."
+    });
+  });
+
+  it("rejects an empty name at the boundary rather than passing it to an engine", async () => {
+    // The schema is the gate, as it is for the envelope request. An engine asked to parse "" answers
+    // something unhelpful; refusing here keeps the failure at the boundary that can explain it.
+    const convertNameToStructure = vi.fn();
+    const host = new PluginHost({ convertNameToStructure });
+    let thrown: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.nameempty",
+        name: "Name Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: ["chemistry.compute"],
+        contributes: { commands: [{ id: "plugin.nameempty.probe", title: "Probe" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.nameempty.probe": async (context) => {
+            try {
+              await context.chemistry?.nameToStructure?.({ name: "" });
+            } catch (error) {
+              thrown = error;
+            }
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.nameempty.probe");
+    expect(thrown).toBeDefined();
+    expect(convertNameToStructure).not.toHaveBeenCalled();
+  });
+
   it("routes a schema-validated panel report through showPanelReport for declared panels only", async () => {
     const showPanelReport = vi.fn();
     const host = new PluginHost({ showPanelReport });
