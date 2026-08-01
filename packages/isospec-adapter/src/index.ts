@@ -26,7 +26,7 @@ export const PINNED_ISOSPEC_COMMIT = "e6b1ef7cc146632cdaaf887dcff8c73949167835";
  * rebuilt artifact changes the run fingerprint. `isospec.real.test.ts` checks it against the bytes on
  * disk and against `vendor/BUILD.md`, so prose, constant, and artifact cannot drift apart.
  */
-export const PINNED_ISOSPEC_WASM_SHA256 = "6cff998904cd567eba2e010d6d0fd384e346e21689c66dbef583997a13c37b66";
+export const PINNED_ISOSPEC_WASM_SHA256 = "2199faaddd03df4c6d9bca79a2b1ec673608e90b8ba58940bf67d9e6b79a954a";
 
 /** Number of isotopic entries compiled into the artifact. Asserted against the loaded binary. */
 export const ISOSPEC_ISOTOPIC_ENTRY_COUNT = 292;
@@ -76,6 +76,19 @@ export interface IsoSpecIsotope {
 export interface IsoSpecModule {
   version(): string;
   envelope_from_threshold(formula: string, threshold: number, absolute: boolean): string;
+  /**
+   * The same policy over isotopes supplied directly, for compositions the formula parser cannot spell.
+   * `masses` and `probabilities` are flattened: one run of `sum(isotopeCounts)` entries in dimension
+   * order. The wrapper validates the lengths, because IsoSpec itself would read past the end.
+   */
+  envelope_from_threshold_isotopes(
+    isotopeCounts: number[],
+    atomCounts: number[],
+    masses: number[],
+    probabilities: number[],
+    threshold: number,
+    absolute: boolean
+  ): string;
   envelope_from_total_prob(formula: string, targetProb: number, optimize: boolean): string;
   isotope_table(): string;
 }
@@ -116,6 +129,48 @@ export function envelopeFromThreshold(
   absolute = false
 ): IsoSpecEnvelope | IsoSpecFailure {
   return parseEnvelope(module.envelope_from_threshold(formula, threshold, absolute));
+}
+
+/** One element of the molecule, or one isotope-labelled position, as a dimension of the convolution. */
+export interface IsoSpecDimension {
+  /** How many atoms of this kind the molecule has. */
+  atomCount: number;
+  /**
+   * The isotopes those atoms may be. The natural-abundance set for an ordinary element; a single
+   * entry at abundance 1 for an atom the drawing labelled, which is what makes `[13C]` expressible.
+   */
+  isotopes: readonly { mass: number; abundance: number }[];
+}
+
+/**
+ * The threshold policy over explicitly supplied isotopes rather than a formula.
+ *
+ * The flattening happens here so no caller has to know the layout, and the engine's own length checks
+ * stay the backstop rather than the only guard.
+ */
+export function envelopeFromThresholdIsotopes(
+  module: IsoSpecModule,
+  dimensions: readonly IsoSpecDimension[],
+  threshold: number,
+  absolute = false
+): IsoSpecEnvelope | IsoSpecFailure {
+  const isotopeCounts: number[] = [];
+  const atomCounts: number[] = [];
+  const masses: number[] = [];
+  const probabilities: number[] = [];
+
+  for (const dimension of dimensions) {
+    isotopeCounts.push(dimension.isotopes.length);
+    atomCounts.push(dimension.atomCount);
+    for (const isotope of dimension.isotopes) {
+      masses.push(isotope.mass);
+      probabilities.push(isotope.abundance);
+    }
+  }
+
+  return parseEnvelope(
+    module.envelope_from_threshold_isotopes(isotopeCounts, atomCounts, masses, probabilities, threshold, absolute)
+  );
 }
 
 /** Smallest peak set covering `targetProb` of the distribution. */
@@ -171,6 +226,55 @@ export function electronMass(module: IsoSpecModule): number {
   }
   return electron.mass;
 }
+
+/**
+ * One element's natural-abundance isotopes, in the shipped table's own order.
+ *
+ * `undefined` when the element is not one IsoSpec covers — a decline the caller renders, not an error.
+ * This is the same coverage the formula parser has, reached by symbol instead of by name.
+ */
+export function isotopesOf(
+  module: IsoSpecModule,
+  symbol: string
+): { mass: number; abundance: number }[] | undefined {
+  const name = ELEMENT_NAMES_BY_SYMBOL[symbol];
+  if (!name) return undefined;
+  const entries = cachedTable(module)
+    .filter((entry) => entry.element === name)
+    .map((entry) => ({ mass: entry.mass, abundance: entry.abundance }));
+  return entries.length > 0 ? entries : undefined;
+}
+
+/** One specific isotope's mass, for an atom the drawing labelled. `undefined` if the table lacks it. */
+export function isotopeMass(module: IsoSpecModule, symbol: string, massNumber: number): number | undefined {
+  const name = ELEMENT_NAMES_BY_SYMBOL[symbol];
+  if (!name) return undefined;
+  return cachedTable(module).find((entry) => entry.element === name && entry.massNumber === massNumber)?.mass;
+}
+
+/**
+ * Every element IsoSpec's table covers, keyed by the symbol RDKit writes.
+ *
+ * The table names elements in full (`"carbon"`), so reaching it from a periodic-table symbol needs
+ * this mapping. It exists purely to address that table, which is why it lives beside it — and a test
+ * asserts every name here resolves against the shipped binary, so the two cannot drift.
+ */
+export const ELEMENT_NAMES_BY_SYMBOL: Readonly<Record<string, string>> = {
+  H: "hydrogen", He: "helium", Li: "lithium", Be: "beryllium", B: "boron", C: "carbon",
+  N: "nitrogen", O: "oxygen", F: "fluorine", Ne: "neon", Na: "sodium", Mg: "magnesium",
+  Al: "aluminium", Si: "silicon", P: "phosphorus", S: "sulfur", Cl: "chlorine", Ar: "argon",
+  K: "potassium", Ca: "calcium", Sc: "scandium", Ti: "titanium", V: "vanadium", Cr: "chromium",
+  Mn: "manganese", Fe: "iron", Co: "cobalt", Ni: "nickel", Cu: "copper", Zn: "zinc",
+  Ga: "gallium", Ge: "germanium", As: "arsenic", Se: "selenium", Br: "bromine", Kr: "krypton",
+  Rb: "rubidium", Sr: "strontium", Y: "yttrium", Zr: "zirconium", Nb: "niobium", Mo: "molybdenum",
+  Ru: "ruthenium", Rh: "rhodium", Pd: "palladium", Ag: "silver", Cd: "cadmium", In: "indium",
+  Sn: "tin", Sb: "antimony", Te: "tellurium", I: "iodine", Xe: "xenon", Cs: "caesium",
+  Ba: "barium", La: "lanthanum", Ce: "cerium", Pr: "praseodymium", Nd: "neodymium", Sm: "samarium",
+  Eu: "europium", Gd: "gadolinium", Tb: "terbium", Dy: "dysprosium", Ho: "holmium", Er: "erbium",
+  Tm: "thulium", Yb: "ytterbium", Lu: "lutetium", Hf: "hafnium", Ta: "tantalum", W: "tungsten",
+  Re: "rhenium", Os: "osmium", Ir: "iridium", Pt: "platinum", Au: "gold", Hg: "mercury",
+  Tl: "thallium", Pb: "lead", Bi: "bismuth", U: "uranium", Th: "thorium", Pa: "protactinium"
+};
 
 
 /**

@@ -22,17 +22,37 @@ it that way — the patch budget PLANS.md §7 tracks is a real cost, and nothing
 > `PINNED_ISOSPEC_COMMIT` in `src/index.ts` records the SHA.
 
 ## Our wrapper (`src/chemdraft_isospec.cpp`)
-Exposes four functions, each returning JSON — the same idiom as MinimalLib's `generate_3d_embed`:
+Exposes five functions, each returning JSON — the same idiom as MinimalLib's `generate_3d_embed`:
 
 | Function | Purpose |
 |---|---|
 | `envelope_from_threshold(formula, threshold, absolute)` | `FixedEnvelope::FromThreshold` → `DistributionResult.truncation.policy` `"relative-intensity-threshold"` (or `"absolute-probability-threshold"`) |
+| `envelope_from_threshold_isotopes(isotopeCounts, atomCounts, masses, probabilities, threshold, absolute)` | The same policy over **explicitly supplied isotopes**, via `Iso`'s general constructor. The only way to express a site-specific label — see below |
 | `envelope_from_total_prob(formula, targetProb, optimize)` | `FixedEnvelope::FromTotalProb` → policy `"cumulative-probability"` |
 | `isotope_table()` | The abundance set **compiled into this binary**, so provenance can be read from the artifact rather than trusted from source |
 | `version()` | The pinned tag, injected at compile time |
 
 A malformed formula returns `{"ok":false,"error":…}`. It must not throw across the Embind boundary:
 an uncaught C++ exception aborts the whole WASM instance and would take the worker with it.
+
+### The explicit-isotope entry point, and why it validates so much
+
+`Iso`'s general constructor takes the isotopes themselves rather than a formula, which is what makes
+`[13C]` expressible: a labelled atom becomes its own dimension holding one isotope at probability 1,
+while unlabelled atoms of the same element keep their natural-abundance dimension.
+
+`masses` and `probabilities` are **flattened** — one run of `sum(isotopeCounts)` entries in dimension
+order, which is the layout `Iso`'s flat overload documents and `setupMarginals` indexes by a running
+sum. The wrapper checks the lengths, the per-dimension normalisation, and the probability range
+**before** constructing anything, because IsoSpec does none of that itself: it walks the flattened
+arrays by that running sum, so a short array is an out-of-bounds read inside the WASM heap rather
+than an exception the wrapper could catch. An unnormalised dimension is just as quiet — it rescales
+that element's whole contribution with no error anywhere.
+
+The in-image smoke test checks the new path against the formula path (`C1H4` spelled out as carbon
+and hydrogen marginals must agree to <1e-12) and checks that a short array is rejected. Agreement
+with the formula path is the only check that catches a transposed or truncated array, since a wrong
+layout still returns peaks — just the wrong ones.
 
 ## Build
 Requires Docker (Colima). Reuses `rdkit-minimallib-deps:latest` **purely as an Emscripten toolchain**
@@ -75,9 +95,13 @@ shasum -a 256 packages/isospec-adapter/vendor/IsoSpec.{js,wasm}
 Record the `.wasm` hash **both** here and in `PINNED_ISOSPEC_WASM_SHA256` (`src/index.ts`).
 `isospec.real.test.ts` checks this file, the constant, and the bytes on disk against each other.
 
-- `IsoSpec.js`   (30 KB)  SHA-256: `52d17eb836f8e75abcede03439f404f666bcdd825b2e7faddaa029bc408840f8`
-- `IsoSpec.wasm` (234 KB) SHA-256: `6cff998904cd567eba2e010d6d0fd384e346e21689c66dbef583997a13c37b66`
-- Built 2026-07-30 from `v2.3.5` (unpatched) via Colima/Docker with emsdk 6.0.0.
+- `IsoSpec.js`   (33 KB)  SHA-256: `d7cf0bf7018221080c12864bab3abc46020f14386a13168bf7b99a83d988342a`
+- `IsoSpec.wasm` (234 KB) SHA-256: `2199faaddd03df4c6d9bca79a2b1ec673608e90b8ba58940bf67d9e6b79a954a`
+- Rebuilt 2026-07-31 from the same `v2.3.5` commit (still unpatched) to add
+  `envelope_from_threshold_isotopes`. IsoSpec itself did not change; the artifact did, so the hashes
+  moved and every pin with them. The previous artifact was
+  `6cff998904cd567eba2e010d6d0fd384e346e21689c66dbef583997a13c37b66`.
+- First built 2026-07-30 from `v2.3.5` (unpatched) via Colima/Docker with emsdk 6.0.0.
 - Loading the vendored `.js` with `require()` fails (`initIsoSpecModule is not a function`): the
   package is `"type": "module"`, so a `.js` under it is treated as ESM and `module.exports` never
   runs. `src/testing.ts` evaluates the glue in a fresh function scope instead.

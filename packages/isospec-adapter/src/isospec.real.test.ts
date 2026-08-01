@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  ELEMENT_NAMES_BY_SYMBOL,
   ISOSPEC_ISOTOPIC_ENTRY_COUNT,
   PINNED_ISOSPEC_COMMIT,
   PINNED_ISOSPEC_VERSION,
@@ -17,11 +18,15 @@ import {
   electronMass,
   ensureIsoSpec,
   envelopeFromThreshold,
+  envelopeFromThresholdIsotopes,
   envelopeFromTotalProb,
   envelopeToTypedArrays,
   explicitFormulaCounts,
+  isotopeMass,
   isotopeTable,
+  isotopesOf,
   resetIsoSpecForTesting,
+  type IsoSpecDimension,
   type IsoSpecEnvelope,
   type IsoSpecModule
 } from "./index";
@@ -164,6 +169,91 @@ describe("envelopes against patterns that can be checked by hand", () => {
     // worth more than either matching a number typed into a test.
     const smx = envelope(explicitFormulaCounts("C10H11N3O3S"), 1e-6);
     expect(Math.min(...smx.masses)).toBeCloseTo(253.05211, 5);
+  });
+});
+
+describe("the explicit-isotope entry point", () => {
+  const dimensionsFor = (spec: [string, number][]): IsoSpecDimension[] =>
+    spec.map(([symbol, atomCount]) => ({ atomCount, isotopes: isotopesOf(module, symbol)! }));
+
+  it("reproduces the formula path exactly when nothing is labelled", () => {
+    // The check that the flattened array layout was read the way Iso documents it. A transposed or
+    // truncated array still returns peaks — just the wrong ones — so agreement with the path that
+    // resolves elements itself is the only thing that catches it. Also the guard against the two
+    // routes drifting: `computeEnvelope` picks between them by whether a label is present.
+    const viaFormula = envelope(explicitFormulaCounts("C10H11N3O3S"), 1e-6);
+    const viaIsotopes = envelopeFromThresholdIsotopes(
+      module,
+      dimensionsFor([
+        ["C", 10],
+        ["H", 11],
+        ["N", 3],
+        ["O", 3],
+        ["S", 1]
+      ]),
+      1e-6
+    );
+
+    expect(viaIsotopes.ok).toBe(true);
+    if (!viaIsotopes.ok) return;
+    expect(viaIsotopes.peakCount).toBe(viaFormula.peakCount);
+    for (const [index, mass] of viaFormula.masses.entries()) {
+      expect(viaIsotopes.masses[index]).toBeCloseTo(mass, 12);
+      expect(viaIsotopes.probabilities[index]).toBeCloseTo(viaFormula.probabilities[index]!, 12);
+    }
+  });
+
+  it("expresses a label the formula parser cannot spell", () => {
+    // One carbon pinned to ¹³C, one left natural — the composition `[13CH3]C(=O)O` has. The formula
+    // API has no syntax for this at all: `[13C]1C1H4O2` is rejected as a non-alphanumeric character.
+    const c13 = isotopeMass(module, "C", 13)!;
+    const result = envelopeFromThresholdIsotopes(
+      module,
+      [
+        { atomCount: 1, isotopes: [{ mass: c13, abundance: 1 }] },
+        ...dimensionsFor([
+          ["C", 1],
+          ["H", 4],
+          ["O", 2]
+        ])
+      ],
+      1e-6
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Math.min(...result.masses)).toBeCloseTo(61.024484, 6);
+    expect(envelopeFromThreshold(module, "[13C]1C1H4O2", 1e-6).ok).toBe(false);
+  });
+
+  it("rejects arrays that do not match the dimensions, rather than reading past them", () => {
+    // Not a style check. IsoSpec walks the flattened arrays by a running sum of isotopeCounts and does
+    // no bounds checking, so a short array is an out-of-bounds read inside the WASM heap — which would
+    // return numbers rather than fail. The wrapper checks the lengths before constructing anything.
+    const short = module.envelope_from_threshold_isotopes([2], [1], [12.0], [1.0], 0.01, false);
+    expect(JSON.parse(short)).toMatchObject({ ok: false });
+    expect(JSON.parse(short).error).toContain("sum(isotopeCounts)");
+
+    const mismatched = module.envelope_from_threshold_isotopes([1, 1], [1], [12.0, 1.0], [1.0, 1.0], 0.01, false);
+    expect(JSON.parse(mismatched)).toMatchObject({ ok: false });
+  });
+
+  it("rejects a dimension whose probabilities do not sum to 1", () => {
+    // An unnormalised dimension fails silently downstream: it rescales that element's whole
+    // contribution with no error anywhere, which is the same class of defect as a mis-parsed formula.
+    const result = module.envelope_from_threshold_isotopes([2], [1], [12.0, 13.0], [0.5, 0.2], 0.01, false);
+    expect(JSON.parse(result)).toMatchObject({ ok: false });
+    expect(JSON.parse(result).error).toContain("sum to 1");
+  });
+
+  it("resolves every symbol in the element map against the shipped table", () => {
+    // The map exists only to address this binary's table, so a name that does not resolve is a typo
+    // that would silently decline a supported element.
+    for (const symbol of Object.keys(ELEMENT_NAMES_BY_SYMBOL)) {
+      expect(isotopesOf(module, symbol), `${symbol} does not resolve`).toBeDefined();
+    }
+    expect(isotopesOf(module, "Xx")).toBeUndefined();
+    expect(isotopeMass(module, "C", 99)).toBeUndefined();
   });
 });
 

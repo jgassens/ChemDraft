@@ -26,7 +26,13 @@ import {
   PINNED_ISOSPEC_VERSION,
   electronMass,
   envelopeFromThreshold,
+  envelopeFromThresholdIsotopes,
   explicitFormulaCounts,
+  isotopeMass,
+  isotopesOf,
+  type IsoSpecDimension,
+  type IsoSpecEnvelope,
+  type IsoSpecFailure,
   type IsoSpecModule
 } from "@chemdraft/isospec-adapter";
 
@@ -92,7 +98,10 @@ export function isotopeEnvelopeContract(
     // An ion now computes and reports m/z, so the same method id can return a number on a different
     // axis than it did at 1.0.0 — a major change by any reading, and one that has to invalidate the
     // cache rather than serve a dalton position under a thomson unit (the version is part of methodKey).
-    version: "2.0.0",
+    //
+    // 2.1.0 adds the labelled structures that used to decline. Additive: no number a 2.0.0 build
+    // produced moves, because the explicit-isotope path only runs where the old one refused to answer.
+    version: "2.1.0",
     implementation: {
       engine: ISOSPEC_ENGINE,
       engineVersion: isospecVersion,
@@ -118,22 +127,26 @@ export function isotopeEnvelopeContract(
         "adducts of a neutral molecule live.",
       "A THEORETICAL DISTRIBUTION, NOT A PREDICTED SPECTRUM — no instrument response, no fragmentation, " +
         "and no claim that any of these peaks would be observed at these ratios",
-      "every element is taken at natural abundance: IsoSpec's formula API accepts bare element symbols " +
-        "only and has no syntax for a site-specific isotope label, so a labelled structure is declined " +
-        "rather than computed as though the label were not there"
+      "an atom the drawing labels is taken as that isotope with certainty, not as an enrichment: " +
+        "[13C] contributes one isotope at probability 1. Unlabelled atoms of the same element keep " +
+        "their natural abundances, so a partially labelled molecule still shows the satellites of the " +
+        "positions that were left alone. Isotopic purity is not modelled — a 99% ¹³C reagent is " +
+        "reported as if it were 100%."
     ],
     classification,
     supportedChemistry: [
       "any composition whose elements IsoSpec's tables cover",
-      "structures carrying a formal charge, reported as m/z with the electron bookkeeping done"
+      "structures carrying a formal charge, reported as m/z with the electron bookkeeping done",
+      "site-specific isotope labels, computed through IsoSpec's explicit-isotope constructor"
     ],
-    knownUnsupportedChemistry: ["elements absent from IsoSpec's isotope tables"],
+    knownUnsupportedChemistry: [
+      "elements absent from IsoSpec's isotope tables",
+      "isotopes absent from those tables, including any the drawing invents"
+    ],
     declinesWhen: [
-      "the structure carries an explicit isotope label: IsoSpec's formula parser rejects any " +
-        "non-alphanumeric character and resolves elements by bare symbol, so there is no way to express " +
-        "[13C] to it. Passing the unlabelled formula would silently return the natural-abundance " +
-        "envelope of a different molecule.",
-      "IsoSpec does not recognise an element in the formula"
+      "IsoSpec does not recognise an element in the formula",
+      "a labelled atom names an isotope IsoSpec's tables do not carry: it cannot be given a mass, and " +
+        "reporting the unlabelled envelope instead would describe a different molecule"
     ],
     accuracyClaims: [],
     citations: [
@@ -170,6 +183,63 @@ export interface EnvelopeInput {
   formalCharge: number;
   /** RDKit writes a labelled atom as `[13C]`, which IsoSpec's formula parser cannot express. */
   hasExplicitIsotopes: boolean;
+  /**
+   * The composition's per-element tallies, already split so a labelled atom counts apart from its
+   * unlabelled neighbours. Only read when a label is present — the formula path handles the rest.
+   */
+  elements: readonly { symbol: string; count: number; isotope?: number }[];
+}
+
+/**
+ * Turn the composition's tallies into IsoSpec dimensions, or name what stopped it.
+ *
+ * The mapping is the whole trick, and it is a small one: an unlabelled element becomes a dimension
+ * over its natural isotopes, and a labelled tally becomes a dimension holding exactly one isotope at
+ * probability 1. Convolving those gives the labelled molecule's real envelope — ¹³C-acetic acid keeps
+ * its remaining carbon's natural ¹³C satellite rather than losing it.
+ *
+ * RDKit has already done the hard part by tallying `[13C]` separately from `C` (see `composition.ts`),
+ * so nothing here re-decides chemistry.
+ */
+export function dimensionsForComposition(
+  module: IsoSpecModule,
+  elements: readonly { symbol: string; count: number; isotope?: number }[]
+): { ok: true; dimensions: IsoSpecDimension[] } | { ok: false; reason: string; unsupportedFeature?: string } {
+  const dimensions: IsoSpecDimension[] = [];
+
+  for (const element of elements) {
+    if (element.count <= 0) continue;
+
+    if (element.isotope) {
+      const mass = isotopeMass(module, element.symbol, element.isotope);
+      if (mass === undefined) {
+        return {
+          ok: false,
+          reason:
+            `IsoSpec's tables carry no ${element.isotope}${element.symbol}, so the labelled atoms cannot ` +
+            "be given a mass. Reporting the unlabelled envelope instead would describe a different molecule.",
+          unsupportedFeature: `unknown isotope ${element.isotope}${element.symbol}`
+        };
+      }
+      // Probability 1: the drawing asserts *this* isotope at *this* position. That is the difference
+      // between a labelled compound and an unlabelled one, and it is not a natural abundance.
+      dimensions.push({ atomCount: element.count, isotopes: [{ mass, abundance: 1 }] });
+      continue;
+    }
+
+    const isotopes = isotopesOf(module, element.symbol);
+    if (!isotopes) {
+      return {
+        ok: false,
+        reason: `IsoSpec's tables do not cover ${element.symbol}.`,
+        unsupportedFeature: `unsupported element ${element.symbol}`
+      };
+    }
+    dimensions.push({ atomCount: element.count, isotopes });
+  }
+
+  if (dimensions.length === 0) return { ok: false, reason: "The structure carries no atoms to distribute." };
+  return { ok: true, dimensions };
 }
 
 export type EnvelopeOutcome =
@@ -195,23 +265,24 @@ export function computeEnvelope(
   input: EnvelopeInput,
   threshold: number = DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
 ): EnvelopeOutcome {
+  // Two routes to the same distribution, and which one runs is decided by the drawing.
+  //
+  // The formula path stays the default because it is the one IsoSpec resolves itself, by its own
+  // element names — it needs no symbol table of ours and so cannot be narrowed by one. The explicit
+  // path exists only because the formula parser rejects every non-alphanumeric character and matches
+  // elements by bare symbol, so `[13C]` cannot be spelled to it at all. A test pins the two together
+  // on an unlabelled molecule, because two routes that could disagree eventually would.
+  let envelope: IsoSpecEnvelope | IsoSpecFailure;
   if (input.hasExplicitIsotopes) {
-    // Measured against the parser, not assumed: `parse_formula` throws on any non-alphanumeric
-    // character and matches elements by bare symbol, so `[13C]` cannot be expressed. Stripping the
-    // label to make it parse would return the natural-abundance envelope of a different molecule —
-    // a confident wrong number, which is the one outcome this suite exists to prevent.
-    return {
-      ok: false,
-      reason:
-        `${input.formula} carries an explicit isotope label. IsoSpec's formula API has no syntax for ` +
-        "one, and computing without it would report the natural-abundance envelope of a different molecule.",
-      unsupportedFeature: "explicit isotope label"
-    };
+    const built = dimensionsForComposition(module, input.elements);
+    if (!built.ok) return built;
+    envelope = envelopeFromThresholdIsotopes(module, built.dimensions, threshold);
+  } else {
+    // IsoSpec requires an explicit count on every element: `H2O1`, never `H2O`. RDKit's Hill formula is
+    // the latter, and IsoSpec rejects it rather than mis-parsing — but only the expansion makes it run.
+    envelope = envelopeFromThreshold(module, explicitFormulaCounts(input.formula), threshold);
   }
 
-  // IsoSpec requires an explicit count on every element: `H2O1`, never `H2O`. RDKit's Hill formula is
-  // the latter, and IsoSpec rejects it rather than mis-parsing — but only the expansion makes it run.
-  const envelope = envelopeFromThreshold(module, explicitFormulaCounts(input.formula), threshold);
   if (!envelope.ok) {
     return { ok: false, reason: `IsoSpec could not compute an envelope for ${input.formula}: ${envelope.error}` };
   }

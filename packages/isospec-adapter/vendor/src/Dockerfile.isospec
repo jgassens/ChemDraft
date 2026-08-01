@@ -37,6 +37,11 @@ RUN em++ -O3 -fwasm-exceptions -std=c++17 \
       -o /src/out/IsoSpec.js
 
 # Prove the artifact runs before it can be exported: a formula whose envelope is known by hand.
+#
+# The explicit-isotope entry point is smoke-tested against the formula one rather than against a typed
+# constant: CH4 spelled out as carbon and hydrogen marginals must give exactly what 'C1H4' gives, which
+# is the only check that the flattened array layout was read the way Iso documents it. A transposed or
+# short array would still return peaks, just the wrong ones.
 RUN /opt/emsdk/node/*/bin/node -e "\
 const init = require('/src/out/IsoSpec.js'); \
 init().then((M) => { \
@@ -44,8 +49,23 @@ init().then((M) => { \
   if (!r.ok || r.peakCount < 1) { console.error(r); process.exit(1); } \
   const bad = JSON.parse(M.envelope_from_threshold('not-a-formula', 0.01, false)); \
   if (bad.ok) { console.error('malformed formula was accepted'); process.exit(1); } \
+  const t = JSON.parse(M.isotope_table()); \
+  const of = (el) => t.entries.filter((e) => e.element === el); \
+  const c = of('carbon'), h = of('hydrogen'); \
+  const iso = JSON.parse(M.envelope_from_threshold_isotopes( \
+    [c.length, h.length], [1, 4], \
+    c.map((e) => e.mass).concat(h.map((e) => e.mass)), \
+    c.map((e) => e.abundance).concat(h.map((e) => e.abundance)), 1e-6, false)); \
+  const ref = JSON.parse(M.envelope_from_threshold('C1H4', 1e-6, false)); \
+  if (!iso.ok || iso.peakCount !== ref.peakCount) { console.error(iso, ref); process.exit(1); } \
+  const dm = Math.max.apply(null, iso.masses.map((m, i) => Math.abs(m - ref.masses[i]))); \
+  if (!(dm < 1e-12)) { console.error('explicit isotopes disagree with the formula path', dm); process.exit(1); } \
+  const short_ = JSON.parse(M.envelope_from_threshold_isotopes([2], [1], [12.0], [1.0], 0.01, false)); \
+  if (short_.ok) { console.error('a short mass array was accepted'); process.exit(1); } \
   console.log('smoke ok: H2O1 peaks=' + r.peakCount + ' covered=' + r.coveredProbability); \
   console.log('smoke ok: malformed rejected -> ' + bad.error); \
+  console.log('smoke ok: explicit isotopes match the formula path, peaks=' + iso.peakCount); \
+  console.log('smoke ok: short array rejected -> ' + short_.error); \
 });"
 
 FROM scratch AS export-stage

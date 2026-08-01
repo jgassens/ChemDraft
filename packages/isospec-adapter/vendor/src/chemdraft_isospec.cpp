@@ -12,7 +12,10 @@
  * would abort the whole WASM instance and take the worker with it.
  */
 #include <emscripten/bind.h>
+#include <emscripten/val.h>
 
+#include <cmath>
+#include <cstddef>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -91,6 +94,70 @@ std::string envelope_from_threshold(const std::string& formula, double threshold
   }
 }
 
+// The same relative-intensity policy, but over explicitly supplied isotopes rather than a formula.
+//
+// This exists because IsoSpec's formula parser resolves elements by bare symbol and rejects every
+// non-alphanumeric character, so there is no way to spell a site-specific label like [13C] to it. The
+// general Iso constructor has no such limit: it takes the isotopes themselves, which lets a labelled
+// atom be its own dimension with a single isotope at probability 1.
+//
+// Arrays are flattened -- `masses` and `probabilities` are read as one run of sum(isotopeCounts)
+// entries, in dimension order, which is the layout Iso's flat overload documents and setupMarginals
+// indexes by a running sum.
+std::string envelope_from_threshold_isotopes(emscripten::val isotopeCounts,
+                                             emscripten::val atomCounts,
+                                             emscripten::val masses,
+                                             emscripten::val probabilities,
+                                             double threshold,
+                                             bool absolute) {
+  try {
+    const std::vector<int> counts = emscripten::vecFromJSArray<int>(isotopeCounts);
+    const std::vector<int> atoms = emscripten::vecFromJSArray<int>(atomCounts);
+    const std::vector<double> ms = emscripten::vecFromJSArray<double>(masses);
+    const std::vector<double> ps = emscripten::vecFromJSArray<double>(probabilities);
+
+    if (counts.empty()) return failure("no dimensions supplied");
+    if (counts.size() != atoms.size()) return failure("isotopeCounts and atomCounts differ in length");
+
+    size_t total = 0;
+    for (size_t i = 0; i < counts.size(); ++i) {
+      if (counts[i] < 1) return failure("every dimension needs at least one isotope");
+      if (atoms[i] < 0) return failure("an atom count cannot be negative");
+      total += static_cast<size_t>(counts[i]);
+    }
+
+    // Validated here rather than trusted, because IsoSpec does no bounds checking of its own: it walks
+    // the flattened arrays by a running sum of isotopeCounts, so a short array is an out-of-bounds read
+    // inside the WASM heap, not an exception this function could catch.
+    if (ms.size() != total || ps.size() != total) {
+      return failure("masses and probabilities must each hold exactly sum(isotopeCounts) entries");
+    }
+
+    size_t at = 0;
+    for (size_t i = 0; i < counts.size(); ++i) {
+      double sum = 0.0;
+      for (int j = 0; j < counts[i]; ++j, ++at) {
+        if (!(ps[at] >= 0.0) || ps[at] > 1.0) return failure("an isotope probability is outside [0, 1]");
+        sum += ps[at];
+      }
+      // An unnormalised dimension does not fail loudly downstream -- it silently rescales that
+      // element's whole contribution to the envelope, which is exactly the kind of quiet wrong number
+      // this wrapper exists to prevent.
+      if (std::fabs(sum - 1.0) > 1e-9) return failure("each dimension's probabilities must sum to 1");
+    }
+
+    FixedEnvelope env = FixedEnvelope::FromThreshold(
+        Iso(static_cast<int>(counts.size()), counts.data(), atoms.data(), ms.data(), ps.data()),
+        threshold,
+        absolute);
+    return serialize(env, absolute ? "absolute-probability-threshold" : "relative-intensity-threshold", threshold);
+  } catch (const std::exception& e) {
+    return failure(e.what());
+  } catch (...) {
+    return failure("IsoSpec threw a non-standard exception");
+  }
+}
+
 // Cumulative probability: smallest peak set covering `targetProb` of the distribution.
 std::string envelope_from_total_prob(const std::string& formula, double targetProb, bool optimize) {
   try {
@@ -125,6 +192,7 @@ std::string version() { return CHEMDRAFT_ISOSPEC_VERSION; }
 
 EMSCRIPTEN_BINDINGS(chemdraft_isospec) {
   emscripten::function("envelope_from_threshold", &envelope_from_threshold);
+  emscripten::function("envelope_from_threshold_isotopes", &envelope_from_threshold_isotopes);
   emscripten::function("envelope_from_total_prob", &envelope_from_total_prob);
   emscripten::function("isotope_table", &isotope_table);
   emscripten::function("version", &version);

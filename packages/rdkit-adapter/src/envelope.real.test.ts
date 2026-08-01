@@ -202,21 +202,92 @@ describe("an ion gets an envelope, on the m/z axis", () => {
   });
 });
 
-describe("declining beats a confident wrong number", () => {
-  it("declines an isotope-labelled structure instead of silently using natural abundances", async () => {
-    // Measured against IsoSpec's parser, not assumed: `parse_formula` throws on any non-alphanumeric
-    // character and resolves elements by bare symbol, so RDKit's `[13C]CH4O2` cannot be expressed.
-    // Stripping the label to make it parse would return a different molecule's envelope.
-    const distribution = envelope(await analyze("[13CH3]C(=O)O", ENVELOPE_ONLY));
-    expect(distribution.status).toBe("not-applicable");
-    expect(distribution.applicability.reasons[0]).toMatch(/isotope label/);
-    expect(distribution.applicability.unsupportedFeatures).toContain("explicit isotope label");
+describe("a labelled structure keeps its label", () => {
+  const intensityAt = (
+    distribution: Extract<AnalysisResult, { kind: "distribution" }>,
+    mass: number
+  ): number => {
+    const index = [...distribution.positions].findIndex((position) => Math.abs(position - mass) < 0.002);
+    return index < 0 ? 0 : distribution.intensities[index]!;
+  };
+
+  it("computes 1-¹³C acetic acid at the labelled mass", async () => {
+    // The formula parser cannot spell `[13C]` at all, so this goes through IsoSpec's explicit-isotope
+    // constructor. RDKit, which tracks the label in its own mass, is the check.
+    const run = await analyze("[13CH3]C(=O)O");
+    const distribution = envelope(run);
+    const monoisotopic = run.results.find((result) => result.methodId === "rdkit.monoisotopic-mass");
+
+    expect(distribution.status).toBe("ok");
+    expect(distribution.positions[distribution.intensities.indexOf(100)]).toBeCloseTo(
+      (monoisotopic as Extract<AnalysisResult, { kind: "scalar" }>).value!,
+      7
+    );
+    expect(distribution.positions[distribution.intensities.indexOf(100)]).toBeCloseTo(61.024484, 6);
   });
 
-  it("still names IsoSpec on a decline — the module loaded even though the tables were never read", async () => {
-    // The labelled case never reaches IsoSpec's tables, but the module did load, so naming it is
+  it("halves the ¹³C satellite, because only one carbon is still free to be one", async () => {
+    // The whole reason a label cannot be dropped, and the reason it cannot be applied to the element
+    // as a whole either. Acetic acid has two carbons, each carrying a ~1.09% ¹³C satellite, so M+1 is
+    // ~2.18%. Label one of them and that carbon is ¹³C with certainty — it contributes no satellite —
+    // while the other still does. Reporting the unlabelled envelope would say 2.18%; treating the whole
+    // element as labelled would say 0.
+    const labelled = envelope(await analyze("[13CH3]C(=O)O", ENVELOPE_ONLY));
+    const plain = envelope(await analyze("CC(=O)O", ENVELOPE_ONLY));
+
+    expect(intensityAt(plain, 61.024484)).toBeCloseTo(2.181, 2);
+    expect(intensityAt(labelled, 62.027839)).toBeCloseTo(1.091, 2);
+    expect(intensityAt(labelled, 62.027839)).toBeCloseTo(intensityAt(plain, 61.024484) / 2, 2);
+  });
+
+  it("leaves no carbon satellite when every carbon is labelled", async () => {
+    // Both carbons fixed, so the only isotopologues left come from hydrogen. Two peaks, not four.
+    const distribution = envelope(await analyze("[13CH3][13CH3]", ENVELOPE_ONLY));
+    expect(distribution.positions[distribution.intensities.indexOf(100)]).toBeCloseTo(32.05366, 5);
+    expect(distribution.positions).toHaveLength(2);
+  });
+
+  it("handles a deuterium label the same way", async () => {
+    // Not carbon-specific: d₃-acetic acid, where the labelled atoms are the ones RDKit tallies apart
+    // from the acid proton it left implicit.
+    const distribution = envelope(await analyze("[2H]C([2H])([2H])C(=O)O", ENVELOPE_ONLY));
+    expect(distribution.status).toBe("ok");
+    expect(distribution.positions[distribution.intensities.indexOf(100)]).toBeCloseTo(63.03996, 5);
+  });
+
+  it("composes with the charge correction", async () => {
+    // Labelled *and* drawn as an ion: the explicit-isotope path produces the distribution and the
+    // electron bookkeeping still applies to it. Neither follow-up special-cases the other.
+    const run = await analyze("[13CH3]C(=O)[O-]");
+    const distribution = envelope(run);
+    const monoisotopic = run.results.find((result) => result.methodId === "rdkit.monoisotopic-mass");
+
+    expect(distribution.status).toBe("ok");
+    expect(distribution.positionUnit).toBe("thomson");
+    expect(distribution.positions[distribution.intensities.indexOf(100)]).toBeCloseTo(
+      (monoisotopic as Extract<AnalysisResult, { kind: "scalar" }>).value!,
+      7
+    );
+  });
+});
+
+describe("declining beats a confident wrong number", () => {
+  it("declines an isotope the tables do not carry, rather than dropping the label", async () => {
+    // RDKit will happily report a mass for ⁹⁹C — it just adds mass numbers. IsoSpec has no such
+    // isotope, and the two safe answers are "decline" and "compute the unlabelled molecule". The
+    // second is a different molecule, so it declines and names what it could not find.
+    const distribution = envelope(await analyze("[99CH3]C(=O)O", ENVELOPE_ONLY));
+    expect(distribution.status).toBe("not-applicable");
+    expect(distribution.positions).toHaveLength(0);
+    expect(distribution.applicability.reasons[0]).toMatch(/no 99C/);
+    expect(distribution.applicability.unsupportedFeatures).toContain("unknown isotope 99C");
+    expect(distribution.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("still names IsoSpec on a decline — the module loaded even though no envelope came back", async () => {
+    // The decline happens while reading IsoSpec's tables, so the module did load and naming it is
     // honest. What must not happen is the reverse: naming IsoSpec when it could not be loaded at all.
-    const run = await analyze("[13CH3]C(=O)O", ENVELOPE_ONLY);
+    const run = await analyze("[99CH3]C(=O)O", ENVELOPE_ONLY);
     expect(run.engines.some((engine) => engine.name === "isospec-wasm")).toBe(true);
   });
 });
@@ -268,7 +339,7 @@ describe("the report shows it", () => {
   });
 
   it("says so when a declined envelope produced nothing", async () => {
-    const report = buildAnalysisReport(await analyze("[13CH3]C(=O)O"));
+    const report = buildAnalysisReport(await analyze("[99CH3]C(=O)O"));
     expect(report.sections.some((entry) => entry.title.startsWith("Isotope envelope"))).toBe(false);
     // A declined envelope is a mass-spec fact, so it lands in that category's own declines table
     // rather than the general one.

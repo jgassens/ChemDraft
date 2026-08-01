@@ -773,7 +773,10 @@ function envelopeResultFor(
     computeEnvelope(isospec, {
       formula: context.composition.formula,
       formalCharge: context.composition.formalCharge,
-      hasExplicitIsotopes: context.composition.hasExplicitIsotopes
+      hasExplicitIsotopes: context.composition.hasExplicitIsotopes,
+      // Already split so `[13C]` tallies apart from `C`, which is exactly the shape the explicit-isotope
+      // path needs — the envelope does not re-derive it.
+      elements: context.composition.elements
     }),
     DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
   );
