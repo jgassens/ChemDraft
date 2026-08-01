@@ -369,13 +369,34 @@ describe("ChemDraft desktop shell", () => {
     // what honours that: it must be set in the success path and checked before every save.
     expect(mainWindowSource).toContain("documentSessionSaveEnabledRef");
     expect(mainWindowSource).toMatch(/if \(!documentSessionHydratedRef\.current \|\| !documentSessionSaveEnabledRef\.current\)/);
-    // The enabling assignment must not live in `.finally` (which also runs after a rejection).
-    const enablingLine = mainWindowSource
-      .split("\n")
-      .findIndex((line) => line.includes("documentSessionSaveEnabledRef.current = true"));
+
+    const lines = mainWindowSource.split("\n");
+    const enablingLine = lines.findIndex((line) => line.includes("documentSessionSaveEnabledRef.current = true"));
     expect(enablingLine).toBeGreaterThan(-1);
-    const following = mainWindowSource.split("\n").slice(enablingLine, enablingLine + 8).join("\n");
-    expect(following).toContain(".catch(");
+    // Exactly one place may open the gate, so the checks below describe the whole rule.
+    expect(lines.filter((line) => line.includes("documentSessionSaveEnabledRef.current = true"))).toHaveLength(1);
+    // It must sit inside the `.then(...)` — before the `.catch(`/`.finally(` that also run after a
+    // rejection — so a failed read leaves the gate closed.
+    const thenLine = lines.findIndex((line) => line.includes("void loadDocumentSession()"));
+    const catchLine = lines.findIndex((line, index) => index > thenLine && line.includes(".catch("));
+    expect(thenLine).toBeGreaterThan(-1);
+    expect(catchLine).toBeGreaterThan(thenLine);
+    expect(enablingLine).toBeGreaterThan(thenLine);
+    expect(enablingLine).toBeLessThan(catchLine);
+
+    // PLACEMENT, not just presence: a resolved read — including a resolve of "no session yet" — has
+    // to open the gate, so the assignment must come BEFORE the restore path's early returns. Gating
+    // it behind them left first-run users (nothing to restore) with autosave permanently off, and a
+    // presence-only assertion could not see that the line had become unreachable.
+    const restoreEarlyReturns = [
+      "const envelope = parseDocumentSessionEnvelope(raw);",
+      "if (!pristine) {"
+    ];
+    for (const marker of restoreEarlyReturns) {
+      const markerLine = lines.findIndex((line) => line.includes(marker));
+      expect(markerLine, `expected to find ${marker}`).toBeGreaterThan(-1);
+      expect(enablingLine, `gate must be set before: ${marker}`).toBeLessThan(markerLine);
+    }
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {

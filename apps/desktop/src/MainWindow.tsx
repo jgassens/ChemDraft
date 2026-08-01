@@ -6603,6 +6603,13 @@ export function MainWindow({
         if (!active) {
           return;
         }
+        // The promise RESOLVING is the clean read — including a resolve of "no session yet", which
+        // is exactly what a first run sees. Un-gate here, before any of the early returns below:
+        // gating after them left a brand-new user (no session file), a don't-restore envelope, or a
+        // launch where "Open With" beat the restore with autosave permanently, silently disabled.
+        // Only a REJECTION (a read or parse we could not decode) must keep it closed, so that a
+        // session we failed to decode is never overwritten with the blank startup document.
+        documentSessionSaveEnabledRef.current = true;
         const envelope = parseDocumentSessionEnvelope(raw);
         if (!envelope || !shouldRestoreDocumentSession(envelope)) {
           return;
@@ -6620,13 +6627,6 @@ export function MainWindow({
           });
         } catch {
           // Never block startup on a bad autosave; the next edit overwrites it.
-        }
-        if (active) {
-          // Only a clean read un-gates autosave. Rust distinguishes "no session yet" (null) from a
-          // real read/parse failure (rejects) precisely so a failure cannot be answered by writing
-          // defaults over the file — see read_optional_file, and the layout-state loader that
-          // leaves its own save gate closed on failure.
-          documentSessionSaveEnabledRef.current = true;
         }
       })
       .catch(() => {
