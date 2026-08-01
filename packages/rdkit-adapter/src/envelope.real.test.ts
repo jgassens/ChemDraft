@@ -129,15 +129,80 @@ describe("the envelope is part of the run", () => {
   });
 });
 
-describe("declining beats a confident wrong number", () => {
-  it("declines a charged structure rather than dropping the electron bookkeeping", async () => {
-    const distribution = envelope(await analyze("CC(=O)[O-]", ENVELOPE_ONLY));
-    expect(distribution.status).toBe("not-applicable");
-    expect(distribution.positions).toHaveLength(0);
-    expect(distribution.applicability.reasons[0]).toMatch(/formal charge/);
-    expect(distribution.warnings.length).toBeGreaterThan(0);
+describe("an ion gets an envelope, on the m/z axis", () => {
+  const monoisotopic = (run: AnalysisRun): number => {
+    const found = run.results.find((result) => result.methodId === "rdkit.monoisotopic-mass");
+    if (!found || found.kind !== "scalar" || found.value == null) throw new Error("no monoisotopic mass");
+    return found.value;
+  };
+
+  it("computes an anion, and agrees with RDKit's own electron bookkeeping", async () => {
+    // The cross-engine check that makes the charge correction trustworthy. RDKit's exactmw already
+    // accounts for charge — it is why `[H+]` is the proton and not hydrogen — so its monoisotopic mass
+    // for the acetate anion is an independent answer to the question IsoSpec's table just answered.
+    //
+    // Compared at 1e-7 rather than tighter because that is what the two tables actually deliver: they
+    // round AME differently in the last digits, so agreement runs to ~1e-8 across these structures.
+    // That is table rounding, not a disagreement about chemistry, and pretending to 1e-9 would make
+    // the suite fail on a molecule with more atoms rather than on a real defect.
+    const run = await analyze("CC(=O)[O-]");
+    const distribution = envelope(run);
+
+    expect(distribution.status).toBe("ok");
+    expect(distribution.positionUnit).toBe("thomson");
+    const base = distribution.positions[distribution.intensities.indexOf(100)]!;
+    expect(base).toBeCloseTo(monoisotopic(run), 7);
+    expect(base).toBeCloseTo(59.013853, 6);
   });
 
+  it("puts [NH4+] where the mass module measured it", async () => {
+    // The exact structure `mass.ts` used to establish that RDKit's `[H+]` is the proton: 18.03382554809,
+    // one electron below NH₃ + H. The envelope has to land on the same number by a different route —
+    // IsoSpec's neutral-atom sum, less one electron from IsoSpec's own table.
+    const run = await analyze("[NH4+]");
+    const distribution = envelope(run);
+    const base = distribution.positions[distribution.intensities.indexOf(100)]!;
+
+    expect(distribution.positionUnit).toBe("thomson");
+    expect(base).toBeCloseTo(18.03382554809, 7);
+    expect(base).toBeCloseTo(monoisotopic(run), 7);
+  });
+
+  it("halves the peak spacing at 2+, which is how a reader gets charge state off a pattern", async () => {
+    // The case that makes dividing by |z| more than cosmetic. Reporting the ion's mass instead would
+    // draw 1.0 spacing for a doubly charged species and quietly misstate its charge — the pattern
+    // would be self-consistent and wrong.
+    const run = await analyze("C[N+](C)(C)CCCC[N+](C)(C)C");
+    const distribution = envelope(run);
+    const positions = [...distribution.positions];
+    const base = positions[distribution.intensities.indexOf(100)]!;
+
+    expect(distribution.positionUnit).toBe("thomson");
+    expect(base).toBeCloseTo(monoisotopic(run) / 2, 7);
+    expect(base).toBeCloseTo(87.104251, 6);
+    // ¹³C sits half a unit above the base peak, not a whole one.
+    expect(positions[1]! - positions[0]!).toBeCloseTo(0.4985, 3);
+  });
+
+  it("leaves a neutral structure on the mass axis, unchanged", async () => {
+    // The charge work must not move a neutral molecule's numbers. Same value the pre-charge build
+    // produced, and still daltons.
+    const distribution = envelope(await analyze("Brc1ccccc1", ENVELOPE_ONLY));
+    expect(distribution.positionUnit).toBe("dalton");
+    expect(distribution.positions[distribution.intensities.indexOf(100)]).toBeCloseTo(155.95746326, 8);
+  });
+
+  it("computes a salt whose charges cancel as the neutral it is", async () => {
+    // Sodium benzoate's net formal charge is zero, so there is no electron correction to make and no
+    // |z| to divide by — the whole formula is a neutral species. A per-atom charge count rather than a
+    // net one would have divided this by two.
+    const distribution = envelope(await analyze("[Na+].[O-]C(=O)c1ccccc1", ENVELOPE_ONLY));
+    expect(distribution.status).toBe("ok");
+    expect(distribution.positionUnit).toBe("dalton");
+  });
+});
+
+describe("declining beats a confident wrong number", () => {
   it("declines an isotope-labelled structure instead of silently using natural abundances", async () => {
     // Measured against IsoSpec's parser, not assumed: `parse_formula` throws on any non-alphanumeric
     // character and resolves elements by bare symbol, so RDKit's `[13C]CH4O2` cannot be expressed.
@@ -148,10 +213,10 @@ describe("declining beats a confident wrong number", () => {
     expect(distribution.applicability.unsupportedFeatures).toContain("explicit isotope label");
   });
 
-  it("keeps a decline out of the engine list — an engine that did not run is not provenance", async () => {
-    // The charged case never reaches IsoSpec's tables, but the module did load, so naming it is honest.
-    // What must not happen is the reverse: naming IsoSpec when it could not be loaded at all.
-    const run = await analyze("CC(=O)[O-]", ENVELOPE_ONLY);
+  it("still names IsoSpec on a decline — the module loaded even though the tables were never read", async () => {
+    // The labelled case never reaches IsoSpec's tables, but the module did load, so naming it is
+    // honest. What must not happen is the reverse: naming IsoSpec when it could not be loaded at all.
+    const run = await analyze("[13CH3]C(=O)O", ENVELOPE_ONLY);
     expect(run.engines.some((engine) => engine.name === "isospec-wasm")).toBe(true);
   });
 });
@@ -183,8 +248,27 @@ describe("the report shows it", () => {
     expect(text).toMatch(/155\.95746\s+100\.00/);
   });
 
-  it("says so when a declined envelope produced nothing", async () => {
+  it("labels an ion's axis m/z rather than Mass", async () => {
+    // The axis has to follow the unit. "Mass (Da)" over m/z values is a mislabelled plot in exactly the
+    // case where the distinction carries the charge state.
     const report = buildAnalysisReport(await analyze("CC(=O)[O-]"));
+    const section = report.sections.find((entry) => entry.title.startsWith("Isotope envelope"));
+    expect(section?.kind).toBe("spectrum");
+    if (section?.kind !== "spectrum") return;
+    expect(section.positionUnit).toBe("thomson");
+    expect(section.positionLabel).toBe("m/z");
+  });
+
+  it("does not stutter the unit in the pasted header", async () => {
+    // m/z is both the label and the symbol, so the usual "Label (Symbol)" would render "m/z (m/z)".
+    const text = renderReportText(buildAnalysisReport(await analyze("CC(=O)[O-]")));
+    expect(text).toContain("m/z");
+    expect(text).not.toContain("m/z (m/z)");
+    expect(text).toMatch(/59\.01385\s+100\.00/);
+  });
+
+  it("says so when a declined envelope produced nothing", async () => {
+    const report = buildAnalysisReport(await analyze("[13CH3]C(=O)O"));
     expect(report.sections.some((entry) => entry.title.startsWith("Isotope envelope"))).toBe(false);
     // A declined envelope is a mass-spec fact, so it lands in that category's own declines table
     // rather than the general one.

@@ -150,6 +150,17 @@ function unitSymbol(id: UnitId): string {
 }
 
 /**
+ * A spectrum's column heading: "Mass (Da)", but plain "m/z" rather than "m/z (m/z)".
+ *
+ * An axis whose label already *is* its unit stutters when the symbol is appended anyway, and the
+ * isotope envelope hits exactly that case as soon as it reports an ion.
+ */
+function axisHeader(label: string, id: UnitId): string {
+  const symbol = unitSymbol(id);
+  return !symbol || symbol === label ? label : `${label} (${symbol})`;
+}
+
+/**
  * The short marker that tells a reader the number is a choice, not a fact about the molecule.
  *
  * Each note names the section that actually answers it. "see Provenance" used to be the pointer for
@@ -342,8 +353,6 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   // truncated distribution whose truncation is not stated reads exactly like a complete one.
   for (const distribution of ok.filter(isKind("distribution"))) {
     if (distribution.positions.length === 0) continue;
-    const positionSymbol = unitSymbol(distribution.positionUnit);
-    const intensitySymbol = unitSymbol(distribution.intensityUnit);
     const covered = distribution.truncation.coveredProbability;
 
     // The engine's own truncation is one thing; this is a second, purely presentational one. A
@@ -375,7 +384,10 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
       positionUnit: distribution.positionUnit,
       intensityUnit: distribution.intensityUnit,
       positionDecimals: 5,
-      positionLabel: "Mass",
+      // Read off the unit rather than fixed: an ion's envelope is reported as m/z, and an axis headed
+      // "Mass" over m/z values is a mislabelled plot in the one case where the distinction is the
+      // whole point (at 2+ the peak spacing halves, which is how charge state is read).
+      positionLabel: distribution.positionUnit === "thomson" ? "m/z" : "Mass",
       intensityLabel: "Intensity",
       // The disclosure belongs on the picture. A stick spectrum looks exactly like a measured one,
       // and nothing else on screen would tell a reader that it is not.
@@ -546,8 +558,8 @@ export function renderReportText(report: AnalysisReport): string {
       // A plot does not paste. The clipboard gets the values it was drawn from, at the same
       // precision, so a pasted spectrum is still checkable.
       const decimals = section.positionDecimals ?? 5;
-      const positionHeader = `${section.positionLabel ?? "Position"}${unitSymbol(section.positionUnit) ? ` (${unitSymbol(section.positionUnit)})` : ""}`;
-      const intensityHeader = `${section.intensityLabel ?? "Intensity"}${unitSymbol(section.intensityUnit) ? ` (${unitSymbol(section.intensityUnit)})` : ""}`;
+      const positionHeader = axisHeader(section.positionLabel ?? "Position", section.positionUnit);
+      const intensityHeader = axisHeader(section.intensityLabel ?? "Intensity", section.intensityUnit);
       const rows = section.positions.map((position, index) => [
         position.toFixed(decimals),
         (section.intensities[index] ?? 0).toFixed(2)
@@ -605,8 +617,8 @@ export function renderReportMarkdown(report: AnalysisReport): string {
       lines.push(section.body, "");
     } else if (section.kind === "spectrum") {
       const decimals = section.positionDecimals ?? 5;
-      const positionHeader = `${section.positionLabel ?? "Position"}${unitSymbol(section.positionUnit) ? ` (${unitSymbol(section.positionUnit)})` : ""}`;
-      const intensityHeader = `${section.intensityLabel ?? "Intensity"}${unitSymbol(section.intensityUnit) ? ` (${unitSymbol(section.intensityUnit)})` : ""}`;
+      const positionHeader = axisHeader(section.positionLabel ?? "Position", section.positionUnit);
+      const intensityHeader = axisHeader(section.intensityLabel ?? "Intensity", section.intensityUnit);
       lines.push(`| ${escape(positionHeader)} | ${escape(intensityHeader)} |`, "| --- | --- |");
       for (const [index, position] of section.positions.entries()) {
         lines.push(`| ${position.toFixed(decimals)} | ${(section.intensities[index] ?? 0).toFixed(2)} |`);

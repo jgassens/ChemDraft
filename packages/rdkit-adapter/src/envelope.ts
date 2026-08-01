@@ -19,11 +19,12 @@
  * explicit that the mass tooling makes no intensity claims about observed spectra, and the same rule
  * applies to a distribution that happens to have intensities in it.
  */
-import type { Classification, DistributionResult, MethodContract } from "@chemdraft/analysis-core";
+import type { Classification, DistributionResult, MethodContract, UnitId } from "@chemdraft/analysis-core";
 import {
   ISOSPEC_ISOTOPIC_ENTRY_COUNT,
   PINNED_ISOSPEC_COMMIT,
   PINNED_ISOSPEC_VERSION,
+  electronMass,
   envelopeFromThreshold,
   explicitFormulaCounts,
   type IsoSpecModule
@@ -57,6 +58,22 @@ export const ISOSPEC_ABUNDANCE_CONVENTION =
   "against CIAAW's 0.0107, 0.82% relatively higher, which raises M+1 by the same fraction. IsoSpec " +
   "records no provenance for these tables upstream; the values are read back from the shipped binary.";
 
+/**
+ * What an ion's envelope is reported in, and why it is not the same axis a neutral gets.
+ *
+ * A drawn ion already *is* the species a spectrometer would see, so the useful positions are m/z —
+ * and at charge 2+ that is not cosmetic: the isotope spacing halves to ~0.5, which is how a reader
+ * reads charge state off a pattern. Reporting the ion's mass instead would draw 1.0 spacing and
+ * quietly misstate the charge. The unit on the result (`thomson` vs `dalton`) is what says which axis
+ * is in play, so the two can never be confused by a renderer that only reads numbers.
+ */
+export const ION_ENVELOPE_CONVENTION =
+  "for a structure drawn as an ion the positions are m/z, not mass: each isotopologue's neutral-atom " +
+  "mass has z electron masses subtracted (added, for an anion) and is then divided by |z|. The " +
+  "electron mass is IsoSpec's own table entry, 0.000548579909065 Da, which agrees with the value " +
+  "RDKit's [H+] implies. A neutral structure's positions stay masses in daltons — the result's " +
+  "positionUnit says which.";
+
 export function isotopeEnvelopeContract(
   isospecVersion: string = PINNED_ISOSPEC_VERSION,
   threshold: number = DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
@@ -71,7 +88,11 @@ export function isotopeEnvelopeContract(
   return {
     id: ISOTOPE_ENVELOPE_METHOD_ID,
     publicName: "Isotope envelope",
-    version: "1.0.0",
+    // 2.0.0: positions used to be daltons unconditionally, and a charged structure declined outright.
+    // An ion now computes and reports m/z, so the same method id can return a number on a different
+    // axis than it did at 1.0.0 — a major change by any reading, and one that has to invalidate the
+    // cache rather than serve a dalton position under a thomson unit (the version is part of methodKey).
+    version: "2.0.0",
     implementation: {
       engine: ISOSPEC_ENGINE,
       engineVersion: isospecVersion,
@@ -91,8 +112,10 @@ export function isotopeEnvelopeContract(
         "base peak are dropped, and the probability the retained peaks account for is reported alongside them",
       "intensities are normalised to the base peak at 100%, not absolute probabilities — the covered " +
         "probability is what carries the absolute scale",
-      "positions are neutral-molecule masses in daltons, NOT m/z: no adduct, no charge, no electron " +
-        "bookkeeping. The Ions (m/z) section is where charged species live.",
+      ION_ENVELOPE_CONVENTION,
+      "no adduct and no fragmentation. An ion's envelope is the drawn ion's own isotope pattern; it is " +
+        "not a prediction of what ionising the neutral would produce. The Ions (m/z) section is where " +
+        "adducts of a neutral molecule live.",
       "A THEORETICAL DISTRIBUTION, NOT A PREDICTED SPECTRUM — no instrument response, no fragmentation, " +
         "and no claim that any of these peaks would be observed at these ratios",
       "every element is taken at natural abundance: IsoSpec's formula API accepts bare element symbols " +
@@ -100,14 +123,12 @@ export function isotopeEnvelopeContract(
         "rather than computed as though the label were not there"
     ],
     classification,
-    supportedChemistry: ["any composition whose elements IsoSpec's tables cover"],
-    knownUnsupportedChemistry: [
-      "structures carrying a formal charge — see declinesWhen",
-      "elements absent from IsoSpec's isotope tables"
+    supportedChemistry: [
+      "any composition whose elements IsoSpec's tables cover",
+      "structures carrying a formal charge, reported as m/z with the electron bookkeeping done"
     ],
+    knownUnsupportedChemistry: ["elements absent from IsoSpec's isotope tables"],
     declinesWhen: [
-      "the structure carries a formal charge: the envelope is computed from the formula alone, which " +
-        "has no electron bookkeeping, so an ion's masses would be wrong by one electron per charge",
       "the structure carries an explicit isotope label: IsoSpec's formula parser rejects any " +
         "non-alphanumeric character and resolves elements by bare symbol, so there is no way to express " +
         "[13C] to it. Passing the unlabelled formula would silently return the natural-abundance " +
@@ -136,7 +157,8 @@ export function isotopeEnvelopeContract(
     versionIncrementTriggers: [
       "any change to the relative-intensity threshold",
       "an IsoSpec release that revises the isotope tables",
-      "a change in how intensities are normalised"
+      "a change in how intensities are normalised",
+      "a change in what the positions mean — mass against m/z, or the electron bookkeeping behind either"
     ],
     tautomerSensitive: false
   };
@@ -151,7 +173,15 @@ export interface EnvelopeInput {
 }
 
 export type EnvelopeOutcome =
-  | { ok: true; positions: Float64Array; intensities: Float64Array; coveredProbability: number; peakCount: number }
+  | {
+      ok: true;
+      positions: Float64Array;
+      intensities: Float64Array;
+      coveredProbability: number;
+      peakCount: number;
+      /** `dalton` for a neutral structure, `thomson` for an ion — see `ION_ENVELOPE_CONVENTION`. */
+      positionUnit: UnitId;
+    }
   | { ok: false; reason: string; unsupportedFeature?: string };
 
 /**
@@ -165,17 +195,6 @@ export function computeEnvelope(
   input: EnvelopeInput,
   threshold: number = DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
 ): EnvelopeOutcome {
-  if (input.formalCharge !== 0) {
-    return {
-      ok: false,
-      reason:
-        `${input.formula} carries a formal charge of ${input.formalCharge}. The envelope is computed from ` +
-        "the formula alone, which carries no electron bookkeeping, so the masses would be wrong by one " +
-        "electron per charge.",
-      unsupportedFeature: "charged structure"
-    };
-  }
-
   if (input.hasExplicitIsotopes) {
     // Measured against the parser, not assumed: `parse_formula` throws on any non-alphanumeric
     // character and matches elements by bare symbol, so `[13C]` cannot be expressed. Stripping the
@@ -207,12 +226,21 @@ export function computeEnvelope(
     .sort((a, b) => a.mass - b.mass);
   const base = Math.max(...order.map((peak) => peak.probability));
 
+  // Charge bookkeeping. IsoSpec computed over neutral atoms, so an ion is that sum less one electron
+  // per unit of positive charge (plus one per unit of negative), and what a spectrometer places it at
+  // is that mass over |z|. Both steps are arithmetic on IsoSpec's own numbers — no second mass table
+  // and no constant of ours, which is the same rule the adduct masses follow.
+  const charge = input.formalCharge;
+  const shift = charge === 0 ? 0 : charge * electronMass(module);
+  const divisor = charge === 0 ? 1 : Math.abs(charge);
+
   return {
     ok: true,
-    positions: Float64Array.from(order.map((peak) => peak.mass)),
+    positions: Float64Array.from(order.map((peak) => (peak.mass - shift) / divisor)),
     intensities: Float64Array.from(order.map((peak) => (peak.probability / base) * 100)),
     coveredProbability: envelope.coveredProbability,
-    peakCount: envelope.peakCount
+    peakCount: envelope.peakCount,
+    positionUnit: charge === 0 ? "dalton" : "thomson"
   };
 }
 
@@ -271,7 +299,9 @@ export function envelopeResult(
     status: "ok",
     positions: outcome.positions,
     intensities: outcome.intensities,
-    positionUnit: "dalton",
+    // `dalton` or `thomson` depending on whether the structure was drawn as an ion. Carried on the
+    // result rather than assumed by the renderer, so an axis can never be labelled from the wrong one.
+    positionUnit: outcome.positionUnit,
     intensityUnit: "relative-abundance",
     truncation: {
       policy: "relative-intensity-threshold",

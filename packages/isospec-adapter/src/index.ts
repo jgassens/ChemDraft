@@ -139,6 +139,40 @@ export function isotopeTable(module: IsoSpecModule): IsoSpecIsotope[] {
   return (JSON.parse(module.isotope_table()) as { entries: IsoSpecIsotope[] }).entries;
 }
 
+/** Parsed tables, per module. 292 entries is a small parse, but the envelope path hits it per run. */
+const tableCache = new WeakMap<IsoSpecModule, IsoSpecIsotope[]>();
+
+function cachedTable(module: IsoSpecModule): IsoSpecIsotope[] {
+  let entries = tableCache.get(module);
+  if (!entries) {
+    entries = isotopeTable(module);
+    tableCache.set(module, entries);
+  }
+  return entries;
+}
+
+/**
+ * The electron mass **this binary** carries, in daltons.
+ *
+ * IsoSpec's tables include explicit `electron` and `missing electron` entries alongside the 292
+ * isotopic ones. Reading the constant from there rather than writing `0.000548579909065` into the
+ * source keeps the same rule the masses follow: the number in a result came from the shipped engine,
+ * and a rebuilt artifact that revised it would move the result rather than silently disagree with a
+ * constant frozen in TypeScript.
+ *
+ * It also agrees with RDKit's, which is a genuine cross-engine check rather than a tautology — the
+ * mass module derives the same quantity as hydrogen minus the proton, and the two tables were compiled
+ * independently.
+ */
+export function electronMass(module: IsoSpecModule): number {
+  const electron = cachedTable(module).find((entry) => entry.element === "electron");
+  if (!electron) {
+    throw new Error("IsoSpec's isotope table carries no `electron` entry — cannot do charge bookkeeping.");
+  }
+  return electron.mass;
+}
+
+
 /**
  * §5 transport: envelopes cross the worker boundary as typed arrays, not arrays of objects.
  * Structured-clone-safe and compact — an insulin envelope is ~1300 peaks.

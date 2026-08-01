@@ -14,6 +14,7 @@ import {
   PINNED_ISOSPEC_COMMIT,
   PINNED_ISOSPEC_VERSION,
   PINNED_ISOSPEC_WASM_SHA256,
+  electronMass,
   ensureIsoSpec,
   envelopeFromThreshold,
   envelopeFromTotalProb,
@@ -87,6 +88,18 @@ describe("the abundance set inside the artifact", () => {
     const c13 = isotopeTable(module).find((entry) => entry.element === "carbon" && entry.massNumber === 13);
     expect(c13?.abundance).toBe(0.010788058149533084);
     expect(Math.abs((c13!.abundance - 0.0107) / 0.0107)).toBeGreaterThan(0.008);
+  });
+
+  it("carries the electron mass an ion's envelope is corrected by", () => {
+    // The table ships explicit `electron` / `missing electron` entries beside the isotopic ones, which
+    // is why charge bookkeeping needs no constant written into TypeScript. Pinned to the binary, and
+    // matching CODATA's 0.000548579909 u — an independent check on the table, since IsoSpec publishes
+    // no provenance for it.
+    expect(electronMass(module)).toBe(0.000548579909065);
+    expect(electronMass(module)).toBeCloseTo(0.000548579909, 12);
+
+    const missing = isotopeTable(module).find((entry) => entry.element === "missing electron");
+    expect(missing?.mass).toBe(-electronMass(module));
   });
 });
 
