@@ -7475,8 +7475,24 @@ export function MainWindow({
       pluginId: panel.pluginId,
       panelId: panel.panelId,
       title: panel.report.title || panel.title
-    })
-      .catch(() => undefined);
+    }).catch((error: unknown) => {
+      // The panel was detached before the window existed. Swallowing this stranded it: off the
+      // in-app surface, with no window to render it, recoverable only by disabling the plugin.
+      pluginPanelReportsRef.current.delete(key);
+      const reattached = pluginRuntime.runtime.panels.reattachPanel(panel.pluginId, panel.panelId);
+      if (!reattached) {
+        // Another panel claimed the in-app slot meanwhile, so there is nowhere to put this one
+        // back. Close it properly instead — the plugin gets its ADR-0012 cancellation signal
+        // rather than waiting on a panel that no surface will ever show.
+        pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
+      }
+      pluginRuntime.runtime.panels.reportDiagnostic(
+        "panel.window_open_failed",
+        `Could not open "${panel.report.title || panel.title}" in a window; ${
+          reattached ? "it stayed in the app" : "it was closed"
+        }. (${error instanceof Error ? error.message : String(error)})`
+      );
+    });
     void broadcastPluginPanelReport(payload).catch(() => undefined);
   }, [pluginRuntime.runtime]);
 

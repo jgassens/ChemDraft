@@ -124,6 +124,41 @@ describe("PluginPanelController", () => {
     expect(notifyPanelClosed).not.toHaveBeenCalled();
   });
 
+  it("re-attaches a detached panel when its window never opened, without a close notification", () => {
+    // "Open as window" detaches BEFORE the native open resolves, so a rejected open used to strand
+    // the panel: off the in-app surface, no window rendering it, clearable only by disabling the
+    // plugin. Re-attaching is a surface change back, so the plugin still gets no cancellation.
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
+    controller.detachPanel("plugin.a", "panel.a");
+    expect(controller.reattachPanel("plugin.a", "panel.a")).toBe(true);
+
+    expect(notifyPanelClosed).not.toHaveBeenCalled();
+    expect(controller.getOpenPanel()?.panelId).toBe("panel.a");
+    expect(controller.getDetachedPanels()).toHaveLength(0);
+  });
+
+  it("refuses to re-attach when another panel already took the in-app slot", () => {
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
+    controller.detachPanel("plugin.a", "panel.a");
+    controller.showReport("plugin.b", "panel.b", { title: "B", sections: [] });
+
+    // Re-attaching would evict the panel the user is now looking at, so the caller is told no and
+    // closes this one properly instead of leaving an entry no surface can display.
+    expect(controller.reattachPanel("plugin.a", "panel.a")).toBe(false);
+    expect(controller.getOpenPanel()?.panelId).toBe("panel.b");
+    expect(controller.getDetachedPanels()).toHaveLength(1);
+    expect(notifyPanelClosed).not.toHaveBeenCalled();
+
+    // Unknown ids are a no-op, matching closeDetachedPanel.
+    expect(controller.reattachPanel("plugin.z", "panel.z")).toBe(false);
+  });
+
   it("treats closing a detached panel as a real ADR-0012 close", () => {
     const { host, notifyPanelClosed } = hostWithPanels();
     const controller = new PluginPanelController(host, () => "t");

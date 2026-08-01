@@ -593,3 +593,37 @@ describe("PluginHost onPanelClosed hook", () => {
     expect(closed).toEqual(["panel.test.review"]);
   });
 });
+
+describe("PluginHost document boundary", () => {
+  it("hands in-process plugins a frozen copy of the active document, never the live one", async () => {
+    // The selection API deep-copies and freezes with the comment "never a live document reference".
+    // getActiveDocument returned the provider's value untouched ten lines later, so an in-process
+    // plugin -- a supported path; the MolScribe canary deliberately stays in-process -- could mutate
+    // the host's own document object directly, bypassing the propose/review channel entirely.
+    const live = createEmptyDocument({ now: timestamp });
+    live.pages[0].objects.push(moleculeObject());
+
+    const host = new PluginHost({ now: () => timestamp, getActiveDocument: () => live });
+    host.registerPlugin({
+      id: "org.test.docread",
+      name: "Doc Reader",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.read"],
+      contributes: { commands: [] }
+    });
+
+    const context = host.createCommandContext("org.test.docread");
+    const handed = await context.documents.getActiveDocument();
+
+    expect(handed).not.toBe(live);
+    expect(handed).toEqual(live);
+    expect(Object.isFrozen(handed)).toBe(true);
+    expect(Object.isFrozen(handed?.pages[0].objects[0])).toBe(true);
+    expect(() => {
+      (handed as { title: string }).title = "hijacked";
+    }).toThrow();
+    expect(live.title).not.toBe("hijacked");
+  });
+});

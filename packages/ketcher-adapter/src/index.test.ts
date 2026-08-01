@@ -64,6 +64,44 @@ function createObservableFixtureEngine(): KetcherEngineHost & {
 }
 
 describe("KetcherAdapter", () => {
+  it("does not attribute the previous molecule's structure to an object whose load failed", async () => {
+    // `loadedObject` was assigned before awaiting the engine load. On rejection the adapter then
+    // claimed the NEW object was loaded while the engine still held the PREVIOUS one, so the next
+    // save wrote the old structure under the new object's id and metadata — a silent swap that
+    // looks like a successful edit. Reachable from the editor host's Apply after a failed load.
+    let failNextLoad = false;
+    const engine: KetcherEngineHost & { loaded?: KetcherStructurePayload } = {
+      version: "fixture-1",
+      clear() {
+        this.loaded = undefined;
+      },
+      loadMolecule(payload) {
+        if (failNextLoad) {
+          throw new Error("ketcher refused the structure");
+        }
+        this.loaded = payload;
+      },
+      saveMolecule(format) {
+        return { format, value: this.loaded?.value ?? "" };
+      },
+      exportSvg() {
+        return "<svg />";
+      }
+    };
+
+    const adapter = createKetcherAdapter({ engine });
+    await adapter.loadObject({ object: { ...molecule, id: "mol_first", structure: "CCO" } });
+
+    failNextLoad = true;
+    await expect(
+      adapter.loadObject({ object: { ...molecule, id: "mol_second", structure: "c1ccccc1" } })
+    ).rejects.toThrow();
+
+    // The engine still holds the first molecule, so the save must still describe the first object.
+    const saved = await adapter.saveObject();
+    expect(saved.object).toMatchObject({ id: "mol_first", structure: "CCO" });
+  });
+
   it("wraps the real Ketcher runtime shape behind the engine host contract", async () => {
     const calls: string[] = [];
     const runtime: KetcherRuntimeApi = {

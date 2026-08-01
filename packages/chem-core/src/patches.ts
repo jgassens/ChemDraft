@@ -195,7 +195,7 @@ function updateObject(
     throw new DocumentPatchError("Cannot update object type through an updateObject patch.");
   }
 
-  const updated = DocumentObjectSchema.parse({ ...location.object, ...changes, id: objectId });
+  const updated = mergeObjectChanges(location.object, changes, objectId);
   location.page.objects[location.objectIndex] = updated;
   pruneCrossingsAfterObjectUpdate(location.page, location.object, updated);
 }
@@ -341,6 +341,45 @@ function sameBondIdentity(previous: MoleculeBond, updated: MoleculeBond): boolea
   return previous.fromAtomId === updated.fromAtomId &&
     previous.toAtomId === updated.toAtomId &&
     previous.order === updated.order;
+}
+
+/**
+ * Merge `changes` onto an object, treating an explicit `undefined` by what the schema does with it.
+ *
+ * A plain spread let `undefined` overwrite a real value; where the schema supplies a default
+ * (`atoms` and `bonds` are `.default([])`) that hole was then filled with the default, so
+ * `{ atoms: undefined }` erased a molecule's graph and reported success — reachable from a plugin,
+ * whose proposal schema is `{ op: string }.passthrough()` and whose review tray shows only a name
+ * and a reason. Those keys keep their existing value instead.
+ *
+ * Keys the schema leaves genuinely optional (`chemistry`, `transform`, …) are a different case:
+ * there `undefined` means "clear this field", which callers rely on — dropping stale derived
+ * chemistry after an editor save, for one — so it is honoured.
+ */
+function mergeObjectChanges(
+  object: DocumentObject,
+  changes: Partial<DocumentObject>,
+  objectId: string
+): DocumentObject {
+  const undefinedKeys = Object.keys(changes).filter(
+    (key) => (changes as Record<string, unknown>)[key] === undefined
+  );
+  if (undefinedKeys.length === 0) {
+    return DocumentObjectSchema.parse({ ...object, ...changes, id: objectId });
+  }
+
+  // What the schema makes of each explicit undefined: still undefined means a real clear; anything
+  // else means a default was substituted for data that was there.
+  const withUndefined = DocumentObjectSchema.parse({ ...object, ...changes, id: objectId }) as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...object, id: objectId };
+  for (const [key, value] of Object.entries(changes)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    } else if (withUndefined[key] === undefined) {
+      delete merged[key];
+    }
+  }
+  return DocumentObjectSchema.parse(merged);
 }
 
 function findObject(

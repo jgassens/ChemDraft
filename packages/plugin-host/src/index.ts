@@ -390,7 +390,11 @@ export class PluginHost {
       documents: {
         getActiveDocument: async () => {
           this.requirePermission(pluginId, "document.read");
-          return await this.getActiveDocument?.();
+          const document = await this.getActiveDocument?.();
+          // Same boundary as the selection API above: an independent, immutable copy. In-process
+          // plugins share the host's heap, so returning the provider's value handed them the live
+          // document — edits would land without ever passing through propose/review.
+          return document === undefined ? undefined : deepFreeze(structuredClone(document));
         },
         proposePatch: async (proposal) => this.proposePatch(pluginId, proposal)
       },
