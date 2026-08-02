@@ -205,3 +205,47 @@ describe("in the run", () => {
     expect(boron.results.find((result) => result.methodId === JOBACK_TB_METHOD_ID)?.status).toBe("unsupported");
   });
 });
+
+describe("the report", () => {
+  it("renders an estimate with its spread, not as a bare number", async () => {
+    // The point of the whole `prediction` classification: "382.6 K" is indistinguishable from a
+    // measurement, and a reader has no way to know the method is good to about ±13 K.
+    const { analyzeStructure } = await import("./analysis");
+    const { buildAnalysisReport, renderReportText } = await import("@chemdraft/analysis-core");
+
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "CCCCCCCC",
+      runId: "joback-report",
+      startedAt: "2026-08-02T00:00:00.000Z"
+    } as never);
+    const report = buildAnalysisReport(run);
+    const text = renderReportText(report);
+
+    expect(text).toContain("382.6 ± 12.9 K");
+
+    // And what the ± means is stated once, as a convention, rather than repeated on every row.
+    expect(text).toMatch(/average absolute error over Joback's development set/);
+    expect(text).toMatch(/not a confidence interval for this molecule/);
+  });
+
+  it("leaves a measured-style descriptor without a spurious spread", async () => {
+    // Only methods that actually carry an uncertainty get a `±`. A descriptor gaining one would be
+    // the same overstatement in the opposite direction.
+    const { analyzeStructure } = await import("./analysis");
+    const { buildAnalysisReport } = await import("@chemdraft/analysis-core");
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "CC(=O)Oc1ccccc1C(=O)O",
+      runId: "joback-report-2",
+      startedAt: "2026-08-02T00:00:00.000Z"
+    } as never);
+    const tpsa = run.results.find((result) => result.methodId === "rdkit.tpsa");
+    expect(tpsa?.uncertainties).toEqual([]);
+    const section = buildAnalysisReport(run).sections.find(
+      (entry) => entry.kind === "keyValue" && entry.title.startsWith("Descriptors")
+    );
+    const row = section?.kind === "keyValue" ? section.rows.find((r) => r.label.includes("TPSA")) : undefined;
+    expect(row?.value).not.toContain("±");
+  });
+});

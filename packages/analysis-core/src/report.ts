@@ -138,8 +138,30 @@ function formatScalar(result: Extract<AnalysisResult, { kind: "scalar" }>): stri
   if (result.value === null) return "—";
   const symbol = unitSymbol(result.unit);
   const number = formatNumber(result.value, result.decimalPlaces);
-  return symbol ? `${number} ${symbol}` : number;
+  const spread = scalarSpread(result);
+  const value = spread ? `${number} ${spread}` : number;
+  return symbol ? `${value} ${symbol}` : value;
 }
+
+/**
+ * The `± 12.9` on an estimate, or nothing.
+ *
+ * A predicted boiling point printed as a bare "382.6 K" is indistinguishable from a measured one, and
+ * §8a's whole separation of `prediction` from `descriptor` is about not letting that happen. So the
+ * spread travels with the number rather than living in provenance a reader may never open.
+ *
+ * Only for an uncertainty carrying a magnitude **in the result's own unit**: a percentage or a
+ * differently-dimensioned figure would be arithmetic nonsense rendered as `± n`, and an interval
+ * without a central magnitude has nothing to append. Those still reach the reader through the
+ * conventions and the method contract; they just do not get to masquerade as a symmetric error bar.
+ */
+function scalarSpread(result: Extract<AnalysisResult, { kind: "scalar" }>): string {
+  const usable = result.uncertainties.find(
+    (entry) => entry.value !== undefined && entry.unit === result.unit
+  );
+  return usable ? `± ${formatNumber(usable.value!, result.decimalPlaces)}` : "";
+}
+
 
 function unitSymbol(id: UnitId): string {
   try {
@@ -175,6 +197,10 @@ function conventionNote(classification: Classification): string | undefined {
 }
 
 function row(result: AnalysisResult, value: string, label = result.label): ReportRow {
+  // Deliberately NOT also explaining what the `±` measures here. That is a stated convention on the
+  // method's contract, so the Conventions section already says it once — and putting it on every row
+  // would break the note-hoisting below for any section mixing methods that carry an uncertainty with
+  // methods that do not, turning one hoisted line into a column of repeated text.
   const note = conventionNote(result.classification);
   return { label, value, ...(note ? { note } : {}) };
 }
