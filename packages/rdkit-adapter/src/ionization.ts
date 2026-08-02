@@ -33,6 +33,13 @@
 import type { Classification, IonizationSite, MethodContract } from "@chemdraft/analysis-core";
 
 import { IONIZATION_SITE_TYPES, SENTINEL_PKA_MAGNITUDE } from "./ionizationSites";
+import {
+  PKA_MODEL_TRAINING,
+  predictSitePka,
+  ringMembership,
+  siteFeatures,
+  type PkaMolecularGraph
+} from "./pkaModel";
 
 export const IONIZATION_SITES_METHOD_ID = "dimorphite.ionizable-sites";
 
@@ -218,6 +225,37 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
   return merged;
 }
 
+/**
+ * Score each located site with the trained model.
+ *
+ * Independent of the table by construction: the features use no Dimorphite data, so when the two
+ * methods are compared their agreement carries information rather than being circular. The model is
+ * the only one of the pair that offers a pKa — see the header for why the table does not.
+ *
+ * A site the model cannot feature-ise is left as the table found it rather than dropped: knowing
+ * there is an ionizable position is worth more than a silent omission.
+ */
+export function scoreSitesWithModel(scan: IonizationScan, graph: PkaMolecularGraph): IonizationScan {
+  const ring = ringMembership(graph);
+  const sites = scan.sites.map((site) => {
+    if (site.ionizableAtomIndex >= graph.atoms.length) return site;
+    try {
+      const value = predictSitePka(siteFeatures(graph, site.ionizableAtomIndex, ring));
+      return {
+        ...site,
+        pKa: value,
+        // The model's cross-validated error, not a per-site confidence. It is a statement about the
+        // method over held-out scaffolds; this molecule may be easier or much harder.
+        spread: PKA_MODEL_TRAINING.cvMae,
+        basis: "experimentally-trained-model" as const
+      };
+    } catch {
+      return site;
+    }
+  });
+  return { sites, unassessed: scan.unassessed };
+}
+
 const CLASSIFICATION: Classification = {
   derivation: "database-lookup",
   claim: "prediction",
@@ -239,7 +277,20 @@ export function ionizationContract(): MethodContract {
     defaultInterpretationId: "source",
     resultKind: "ionization",
     conventions: [
-      "THIS METHOD LOCATES IONIZABLE SITES. IT REPORTS NO pKa VALUE, by design and on evidence: " +
+      "EACH VALUE IS THE ACIDITY OF THAT SITE AS DRAWN — the pKa of it losing a proton. A microscopic " +
+        "pKa for one transition, not a molecule-wide figure.",
+      "IT DOES NOT REPORT BASICITY, and for amines that is the number most people want. The site " +
+        "patterns locate an amine on its NEUTRAL nitrogen, so what gets scored is that N-H losing a " +
+        "proton — very weakly acidic, hence a high value — and not the ~10 of the corresponding " +
+        "ammonium. Redrawing the amine protonated does not help: the pattern requires a neutral " +
+        "nitrogen and finds no site at all. Treat a high value on a basic nitrogen as 'not acidic' " +
+        "rather than as that centre's pKa.",
+      "trained on 3,031 sites from the open Dwar-iBond experimental set, cross-validated by scaffold " +
+        "at a mean absolute error of 1.18 log units against 2.94 for predicting the dataset mean. That " +
+        "error is a property of the method over held-out scaffolds, not a confidence for this site.",
+      "aqueous, room temperature, and drug-like organic chemistry. The training set contains no metals " +
+        "at all, which is why a metal-adjacent site is reported without a value.",
+      "THE SITE TABLE ITSELF REPORTS NO pKa, by design and on evidence: " +
         "scored against 1,750 experimentally labelled sites, the tabulated averages give a mean " +
         "absolute error of 2.8 log units where exactly one site type matches, against 2.3 for simply " +
         "predicting the dataset mean. They are not fit to estimate a molecule's pKa.",
@@ -273,10 +324,26 @@ export function ionizationContract(): MethodContract {
       "no tabulated site substructure matches the structure",
       "a matching site is adjacent to a metal centre — reported as unassessed, with the reason"
     ],
-    // No accuracy claim, because this method makes no numeric claim to be accurate about. What was
-    // measured is recorded in the conventions above, as the reason it reports no value.
-    accuracyClaims: [],
+    accuracyClaims: [
+      {
+        metric: "mae",
+        value: PKA_MODEL_TRAINING.cvMae,
+        unit: "log10-unit",
+        basis:
+          `Scaffold-grouped 5-fold cross-validation over ${PKA_MODEL_TRAINING.samples} sites from the ` +
+          "Dwar-iBond experimental set. Grouped by canonical skeleton so no scaffold appears in both " +
+          "train and test; an ungrouped split scores better and means less. Predicting the dataset " +
+          "mean scores 2.94 for comparison.",
+        citationId: "dwar-ibond"
+      }
+    ],
     citations: [
+      {
+        id: "dwar-ibond",
+        kind: "dataset",
+        title: "Dwar-iBond pKa dataset (DataWarrior + iBond), as distributed with Uni-pKa",
+        url: "https://github.com/dptech-corp/Uni-pKa"
+      },
       {
         id: "dimorphite-2019",
         kind: "journal",
@@ -287,6 +354,20 @@ export function ionizationContract(): MethodContract {
       }
     ],
     datasets: [
+      {
+        id: "dwar-ibond",
+        title: "Dwar-iBond experimental pKa set",
+        version: "as distributed with Uni-pKa",
+        source: "https://github.com/dptech-corp/Uni-pKa",
+        license: "Apache-2.0",
+        redistributable: true,
+        recordCount: PKA_MODEL_TRAINING.samples,
+        obligations: [
+          "Measured values, attributed per row in the source (predominantly DataWarrior, with " +
+            "literature DOIs for the remainder). The shipped model's weights are trained on these " +
+            "and on nothing derived from another predictor."
+        ]
+      },
       {
         id: "dimorphite-site-substructures",
         title: "Dimorphite-DL site_substructures.smarts",

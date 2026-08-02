@@ -46,13 +46,37 @@ describe("finding the ionizable atom", () => {
     expect(site!.ionizableAtomIndex).toBe(3);
   });
 
-  it("reports no pKa value, because the table is not fit to give one", async () => {
-    // Measured, not cautious: on 1,750 labelled sites the tabulated averages score MAE 2.8 where one
-    // type matches, against 2.3 for predicting the dataset mean. A value here would be a confident
-    // number that is worse than a constant.
+  it("scores each site with the trained model, not with the table", async () => {
+    // The table locates; the model values. Acetic acid's carboxyl measures 4.76.
     const { result } = await ionization("CC(=O)O");
-    expect(result.sites.length).toBeGreaterThan(0);
-    for (const site of result.sites) expect(site.pKa).toBeNull();
+    const site = result.sites.find((entry) => entry.ionizableAtomIndex === 3);
+    expect(site?.basis).toBe("experimentally-trained-model");
+    expect(site?.pKa).toBeGreaterThan(3);
+    expect(site?.pKa).toBeLessThan(7);
+  });
+
+  it("gets phenol close to its measured value", async () => {
+    // Phenol is 9.95. A useful end-to-end check that features, forest, and wiring all line up — a
+    // feature-order slip would still produce a number, just not this one.
+    const { result } = await ionization("Oc1ccccc1");
+    const site = result.sites.find((entry) => entry.ionizableAtomIndex === 0);
+    expect(site?.pKa).toBeGreaterThan(8.5);
+    expect(site?.pKa).toBeLessThan(11.5);
+  });
+
+  it("reports acidity, not basicity — the amine limitation, pinned", async () => {
+    // The disclosure the contract makes, held to. The site pattern is `[C]-[NX3+0]`, a NEUTRAL
+    // nitrogen, so what is scored is that N-H losing a proton: weakly acidic, hence a high value.
+    // It is NOT ethylamine's familiar ~10.7, which belongs to the ammonium.
+    const neutral = await ionization("CCN");
+    const site = neutral.result.sites.find((entry) => entry.ionizableAtomIndex === 2);
+    expect(site?.pKa).toBeGreaterThan(12);
+
+    // And redrawing it protonated does not get you the other number: the pattern requires a neutral
+    // nitrogen, so no site is located at all. Documented because it is the obvious thing to try.
+    const protonated = await ionization("CC[NH3+]");
+    expect(protonated.result.sites).toHaveLength(0);
+    expect(protonated.result.status).toBe("not-applicable");
   });
 
   it("lists every candidate class when several claim the same atom", async () => {
@@ -75,9 +99,12 @@ describe("finding the ionizable atom", () => {
     expect(atoms.size).toBeGreaterThanOrEqual(3);
   });
 
-  it("labels the basis so a later method can be told apart from this one", async () => {
+  it("labels the basis so the source of each number is legible", async () => {
     const { result } = await ionization("CC(=O)O");
-    for (const site of result.sites) expect(site.basis).toBe("site-type-average");
+    for (const site of result.sites) {
+      // Never "inherited-from-another-predictor": this model's supervised signal is measured pKa.
+      expect(site.basis).toBe("experimentally-trained-model");
+    }
   });
 });
 
@@ -166,7 +193,11 @@ describe("the contract", () => {
   it("states the limits a reader would otherwise have to guess", async () => {
     const contract = ionizationContract();
     const conventions = contract.conventions.join(" ");
-    expect(conventions).toMatch(/REPORTS NO pKa VALUE/);
+    expect(conventions).toMatch(/ACIDITY OF THAT SITE AS DRAWN/);
+    expect(conventions).toMatch(/IT DOES NOT REPORT BASICITY/);
+    expect(conventions).toMatch(/THE SITE TABLE ITSELF REPORTS NO pKa/);
+    expect(contract.accuracyClaims[0]!.metric).toBe("mae");
+    expect(contract.datasets.some((entry) => entry.id === "dwar-ibond")).toBe(true);
     expect(conventions).toMatch(/aqueous only/i);
     // The one most likely to mislead: a missing site is not evidence of absence.
     expect(conventions).toMatch(/Absence of a site is not evidence that there is none/);

@@ -97,8 +97,10 @@ import {
 import {
   IONIZATION_SITES_METHOD_ID,
   ionizationContract,
-  scanIonizableSites
+  scanIonizableSites,
+  scoreSitesWithModel
 } from "./ionization";
+import type { PkaMolecularGraph } from "./pkaModel";
 import {
   PINNED_ISOSPEC_VERSION,
   PINNED_ISOSPEC_WASM_SHA256,
@@ -877,6 +879,35 @@ const JOBACK_ESTIMATORS: Record<string, (fragmentation: JobackFragmentation) => 
   [JOBACK_VC_METHOD_ID]: jobackCriticalVolume
 };
 
+/**
+ * The molecule as the pKa model expects it: implicit hydrogens, Kekulé bond orders, and the same
+ * descriptor names `get_descriptors()` uses. Built here rather than in the model module so the model
+ * stays free of any RDKit JSON detail.
+ */
+function modelGraph(
+  context: DerivedContext,
+  json: { molecules: { atoms: { z?: number; chg?: number; impHs?: number }[]; bonds: { atoms: number[]; bo?: number }[] }[];
+          defaults?: { atom?: { chg?: number; impHs?: number }; bond?: { bo?: number } } },
+  defaultZ: number
+): PkaMolecularGraph {
+  const molecule = json.molecules[0];
+  const defaultCharge = json.defaults?.atom?.chg ?? 0;
+  const defaultHydrogens = json.defaults?.atom?.impHs ?? 0;
+  const defaultOrder = json.defaults?.bond?.bo ?? 1;
+  return {
+    atoms: (molecule?.atoms ?? []).map((atom) => ({
+      element: elementSymbol(atom.z ?? defaultZ),
+      charge: atom.chg ?? defaultCharge,
+      hydrogens: atom.impHs ?? defaultHydrogens
+    })),
+    bonds: (molecule?.bonds ?? []).map((bond) => ({
+      atoms: [bond.atoms[0]!, bond.atoms[1]!] as [number, number],
+      order: bond.bo ?? defaultOrder
+    })),
+    descriptors: context.descriptors
+  };
+}
+
 /** Ionizable sites: scan in, `IonizationResult` out. */
 function ionizationResultFor(
   contract: MethodContract,
@@ -885,8 +916,11 @@ function ionizationResultFor(
 ): AnalysisResult {
   const base = resultBase({ contract, interpretation: context.interpretation, composition: context.composition });
   const json = JSON.parse(context.mol.get_json()) as {
-    molecules: { atoms: { z?: number }[] }[];
-    defaults?: { atom?: { z?: number } };
+    molecules: {
+      atoms: { z?: number; chg?: number; impHs?: number }[];
+      bonds: { atoms: number[]; bo?: number }[];
+    }[];
+    defaults?: { atom?: { z?: number; chg?: number; impHs?: number }; bond?: { bo?: number } };
   };
   const defaultZ = json.defaults?.atom?.z ?? 6;
   const elements = (json.molecules[0]?.atoms ?? []).map((atom) => elementSymbol(atom.z ?? defaultZ));
@@ -920,6 +954,10 @@ function ionizationResultFor(
   } finally {
     withHydrogens.delete();
   }
+
+  // Score with the trained model, on the IMPLICIT-hydrogen graph the model was trained against.
+  // Feature-ising the hydrogen-explicit copy would change degree and neighbour counts for every site.
+  scan = scoreSitesWithModel(scan, modelGraph(context, json, defaultZ));
 
   // Nothing ionizable is the method not applying, not failing — the same shape as a neutral loss a
   // composition cannot supply. It must not drag the run's status down.
