@@ -4218,9 +4218,9 @@ function bondLineSegments(
       drawingStyle.doubleBondInsetPx,
       Math.max(0, (trimmedLength - minimumSecondaryLength) / 2)
     );
-    const methyleneEnds = terminalMethyleneCarbons(fromAtom, toAtom, object, bond);
-    const secondaryFromInset = methyleneEnds.some((atom) => atom.id === fromAtom.id) ? 0 : inset;
-    const secondaryToInset = methyleneEnds.some((atom) => atom.id === toAtom.id) ? 0 : inset;
+    const flushEnds = doubleBondSecondaryFlushEnds(fromAtom, toAtom, object, bond);
+    const secondaryFromInset = flushEnds.from ? 0 : inset;
+    const secondaryToInset = flushEnds.to ? 0 : inset;
     return [
       { x1, y1, x2, y2, segment: "primary", doubleBondSide },
       {
@@ -5624,6 +5624,28 @@ function terminalHeteroatomDoubleBondInnerSide(
   }
 
   return adjacentSide > 0 ? "left" : "right";
+}
+
+/**
+ * Which ends of a double bond draw their secondary line FLUSH with the primary instead of inset.
+ *
+ * A terminal methylene (=CH2) has no backbone junction to tuck the short line away from, so insetting
+ * it just makes the bond look truncated. Exported because the 3D spin overlay draws the same bond and
+ * must reach the same answer: it copied the inset formula but not this exception, so ethylene and
+ * every terminal alkene drew shortened while spinning and flush once committed — the divergence
+ * AGENTS.md 5.26 exists to prevent.
+ */
+export function doubleBondSecondaryFlushEnds(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond
+): { from: boolean; to: boolean } {
+  const methyleneEnds = terminalMethyleneCarbons(fromAtom, toAtom, object, bond);
+  return {
+    from: methyleneEnds.some((atom) => atom.id === fromAtom.id),
+    to: methyleneEnds.some((atom) => atom.id === toAtom.id)
+  };
 }
 
 function terminalMethyleneCarbons(

@@ -126,6 +126,7 @@ import {
   depthCuedLabelScale,
   doubleBondMinimumVisibleSegmentPx,
   doubleBondRendersSymmetric,
+  doubleBondSecondaryFlushEnds,
   ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
@@ -600,7 +601,7 @@ import {
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
@@ -3485,6 +3486,12 @@ export function MainWindow({
         // C=O with a derivable inner side drew one-sided on canvas but symmetric while spinning.
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
           doubleBondRendersSymmetric(fromAtom, toAtom, molecule, bond, ringInteriorSides.get(bond.id)),
+        // Likewise for the secondary line's end insets. A terminal methylene (=CH2) draws flush,
+        // and copying only the inset formula shortened ethylene and every terminal alkene here
+        // while the committed drawing left it flush.
+        secondaryFlush: fromAtom !== undefined && toAtom !== undefined
+          ? doubleBondSecondaryFlushEnds(fromAtom, toAtom, molecule, bond)
+          : { from: false, to: false },
         neighborIndices,
         ringAtomIndices
       });
@@ -18062,6 +18069,11 @@ interface SpinBondRenderInfo {
   /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
    *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
   symmetric: boolean;
+  /** Which ends draw the secondary line flush rather than inset, from layout-engine's
+   *  `doubleBondSecondaryFlushEnds` — a terminal methylene (=CH2) has no junction to tuck away
+   *  from. Copying the inset formula without this exception shortened ethylene and every terminal
+   *  alkene while spinning, then drew it flush on commit. */
+  secondaryFlush: { from: boolean; to: boolean };
   /** Atom indices bonded to either endpoint (excluding the endpoints): the fallback
    *  substituent-rich side for NON-ring double bonds, matching `defaultDoubleBondSide`. */
   neighborIndices: number[];
@@ -18220,7 +18232,8 @@ function SpinOverlay({
         // (flatten bakes the identical weight into display.depthWeight) — releasing changes
         // nothing visually. undefined ⇒ no cue, exactly as the commit leaves a planar view.
         const weight = depthWeights[bond.index];
-        const render = state.bondRender[bond.index] ?? { order: 1, bold: false, symmetric: false, neighborIndices: [] };
+        const render = state.bondRender[bond.index]
+          ?? { order: 1, bold: false, symmetric: false, secondaryFlush: { from: false, to: false }, neighborIndices: [] };
         const stroke = depthCuedBondColor(drawingStyle.bondColor, weight);
         const baseWidth = render.bold ? drawingStyle.bondBoldWidthPx : drawingStyle.bondStrokeWidthPx;
         const width = depthCuedBondStrokeWidth(baseWidth, weight);
@@ -18284,15 +18297,20 @@ function SpinOverlay({
             }
           }
           const dir = score >= 0 ? 1 : -1;
-          const minimumVisible = Math.min(doubleBondMinimumVisibleSegmentPx, length);
-          const inset = Math.min(drawingStyle.doubleBondInsetPx, Math.max(0, (length - minimumVisible) / 2));
+          const secondary = spinDoubleBondSecondaryLine({
+            from: { x: ax, y: ay },
+            to: { x: bx, y: by },
+            unit: { x: ux, y: uy },
+            normal: { x: nx, y: ny },
+            gap,
+            side: dir,
+            insetPx: drawingStyle.doubleBondInsetPx,
+            minimumVisiblePx: doubleBondMinimumVisibleSegmentPx,
+            flush: render.secondaryFlush
+          });
           return [
             line(ax, ay, bx, by, "p"),
-            line(
-              ax + ux * inset + nx * gap * dir, ay + uy * inset + ny * gap * dir,
-              bx - ux * inset + nx * gap * dir, by - uy * inset + ny * gap * dir,
-              "s"
-            )
+            line(secondary.x1, secondary.y1, secondary.x2, secondary.y2, "s")
           ];
         }
         if (render.order === 3) {

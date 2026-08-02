@@ -17,6 +17,7 @@ import {
   averageDefinedDepthWeights,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  doubleBondSecondaryFlushEnds,
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
@@ -2323,6 +2324,68 @@ describe("layout-engine page SVG planner", () => {
     expect(Number(secondary.attrs.y1)).toBeGreaterThan(Number(primary.attrs.y1));
     // ...but reaches the same terminal-carbon plane as the primary line.
     expect(Number(secondary.attrs.y2)).toBe(Number(primary.attrs.y2));
+  });
+
+  // The 3D spin overlay draws the same double bond and copied the inset formula but not this
+  // exception, so ethylene and every terminal alkene drew shortened while spinning and flush once
+  // committed. Exported so both callers ask the one question instead of each keeping an answer
+  // (AGENTS.md 5.26); pinned here because it is now a contract between two renderers, not a detail.
+  it("names the double-bond ends whose secondary line draws flush", () => {
+    const atom = (id: string, element: string, x: number, y: number, formalCharge = 0) =>
+      ({ id, element, x, y, formalCharge });
+
+    // Ethylene: both ends are terminal CH2, so both draw flush and the molecule stays symmetric.
+    const ethylene = moleculeObject({
+      id: "mol_flush_ethylene",
+      atoms: [atom("a", "C", 120, 160), atom("b", "C", 148, 160)],
+      bonds: [{ id: "bond_1", fromAtomId: "a", toAtomId: "b", order: "double" }]
+    });
+    expect(
+      doubleBondSecondaryFlushEnds(ethylene.atoms[0], ethylene.atoms[1], ethylene, ethylene.bonds[0])
+    ).toEqual({ from: true, to: true });
+
+    // Propene: only the terminal end is flush, and it is identified as the RIGHT end — swapping
+    // from/to would inset the methylene and tuck the substituted junction instead.
+    const propene = moleculeObject({
+      id: "mol_flush_propene",
+      atoms: [atom("j", "C", 142, 140), atom("t", "C", 142, 170), atom("m", "C", 120, 132)],
+      bonds: [
+        { id: "bond_d", fromAtomId: "j", toAtomId: "t", order: "double" },
+        { id: "bond_s", fromAtomId: "j", toAtomId: "m", order: "single" }
+      ]
+    });
+    const [junction, terminal] = propene.atoms;
+    expect(doubleBondSecondaryFlushEnds(junction, terminal, propene, propene.bonds[0]))
+      .toEqual({ from: false, to: true });
+    // …and it follows the atoms, not the argument order.
+    expect(doubleBondSecondaryFlushEnds(terminal, junction, propene, propene.bonds[0]))
+      .toEqual({ from: true, to: false });
+
+    // A charged terminal carbon is not a methylene, and neither is a heteroatom end (C=O).
+    const charged = moleculeObject({
+      id: "mol_flush_charged",
+      atoms: [atom("a", "C", 120, 160), atom("b", "C", 148, 160, 1)],
+      bonds: [{ id: "bond_1", fromAtomId: "a", toAtomId: "b", order: "double" }]
+    });
+    expect(doubleBondSecondaryFlushEnds(charged.atoms[0], charged.atoms[1], charged, charged.bonds[0]))
+      .toEqual({ from: true, to: false });
+
+    const carbonyl = moleculeObject({
+      id: "mol_flush_carbonyl",
+      atoms: [atom("c", "C", 120, 160), atom("o", "O", 148, 160)],
+      bonds: [{ id: "bond_1", fromAtomId: "c", toAtomId: "o", order: "double" }]
+    });
+    expect(doubleBondSecondaryFlushEnds(carbonyl.atoms[0], carbonyl.atoms[1], carbonyl, carbonyl.bonds[0]))
+      .toEqual({ from: false, to: false });
+
+    // Single bonds have no secondary line at all.
+    const single = moleculeObject({
+      id: "mol_flush_single",
+      atoms: [atom("a", "C", 120, 160), atom("b", "C", 148, 160)],
+      bonds: [{ id: "bond_1", fromAtomId: "a", toAtomId: "b", order: "single" }]
+    });
+    expect(doubleBondSecondaryFlushEnds(single.atoms[0], single.atoms[1], single, single.bonds[0]))
+      .toEqual({ from: false, to: false });
   });
 
   it("renders ethylene's double bond symmetrically with both lines full length", () => {
