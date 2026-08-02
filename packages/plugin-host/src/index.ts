@@ -686,6 +686,15 @@ function deepFreeze<T>(value: T, seen: Set<object> = new Set()): T {
   if (seen.has(object)) {
     return value;
   }
+  // An ArrayBuffer view is a leaf, because the language gives us no lock to put on it: `Object.freeze`
+  // THROWS on a view that has elements ("Cannot freeze array buffer views with elements") and so does
+  // `Object.seal`. `structuredClone`/`postMessage` preserve typed arrays faithfully, so a proposal
+  // carrying image bytes or any binary blob reached here and threw out of the same three entry points
+  // the cycle guard above was added for. Returning early also skips `Object.keys`, which lists every
+  // index on a typed array — descending would otherwise recurse once per byte.
+  if (ArrayBuffer.isView(object)) {
+    return value;
+  }
   seen.add(object);
   // Freeze before descending: a cycle that reaches this node again is then already frozen and the
   // `seen` check short-circuits it either way.
