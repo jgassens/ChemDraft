@@ -11927,6 +11927,18 @@ export function MainWindow({
       setStatus(freehandArtStatusLabel(freehandArtDrag.commandId));
     }
 
+    // A path draw is click-to-place: there is no preview document to restore, but the state is live
+    // geometry all the same. `pathArtDrawRef.current` gates two pointer-move paths with no pointerId
+    // check and an early `return`, so a stranded draw swallows every later move on the page and on
+    // every object, leaves the preview overlay on screen with no gesture behind it, and keeps a
+    // `startDocument` snapshot that goes stale as the commit base. Escape already abandons a draw
+    // exactly this way; a pointer cancel is the same abandonment arriving from the other direction.
+    const pathArtDraw = pathArtDrawRef.current;
+    if (pathArtDraw) {
+      clearNativePathArtDraw();
+      setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind));
+    }
+
     const lasso = selectionLassoRef.current;
     if (lasso?.pointerId === event.pointerId) {
       lassoMachineRef.current = initialInteractionState();
@@ -11946,7 +11958,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -14368,6 +14380,14 @@ export function MainWindow({
       clearBezierArtNodeDrag(event);
     }
 
+    // As in `handlePagePointerCancel`. A path draw takes no capture of its own (polyline) or captures
+    // whichever element got the click (pen), so the cancel can arrive at either handler.
+    const pathArtDraw = pathArtDrawRef.current;
+    if (pathArtDraw) {
+      clearNativePathArtDraw();
+      setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind));
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
@@ -14391,6 +14411,7 @@ export function MainWindow({
     clearNativeBondDrag,
     clearNativeBondEditDrag,
     clearNativePartDrag,
+    clearNativePathArtDraw,
     clearGraphicCornerRadiusDrag,
     clearGraphicGradientDrag,
     clearGraphicPathEditDrag,

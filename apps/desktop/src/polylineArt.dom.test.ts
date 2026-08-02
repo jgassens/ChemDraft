@@ -145,6 +145,30 @@ describe("polyline native art interactions", () => {
     pageElement().dispatchEvent(event);
   }
 
+  function dispatchPointerCancel() {
+    const event = new MouseEvent("pointercancel", {
+      bubbles: true,
+      button: 0,
+      buttons: 0,
+      cancelable: true,
+      clientX: 220,
+      clientY: 168
+    });
+    Object.defineProperties(event, {
+      isPrimary: { value: true },
+      pointerId: { value: 37 },
+      pointerType: { value: "mouse" },
+      pressure: { value: 0 }
+    });
+    pageElement().dispatchEvent(event);
+  }
+
+  function previewPathD(): string | null | undefined {
+    return container
+      .querySelector("[data-polyline-art-preview-path=\"true\"]")
+      ?.getAttribute("d");
+  }
+
   function dispatchKey(key: string, metaKey = false) {
     window.dispatchEvent(new KeyboardEvent("keydown", {
       bubbles: true,
@@ -153,6 +177,51 @@ describe("polyline native art interactions", () => {
       metaKey
     }));
   }
+
+  it("abandons an in-progress draw on pointer cancel", async () => {
+    // A path draw is click-to-place, so a cancel has no preview document to restore — but the state
+    // is live geometry and neither cancel handler cleared it. `pathArtDrawRef.current` gates two
+    // pointer-move paths with no pointerId check and an early `return`, so a stranded draw swallowed
+    // every later move on the page and on every object, left the preview overlay on screen with no
+    // gesture behind it, and kept a `startDocument` snapshot that went stale as the commit base.
+    await renderMainWindow();
+
+    await act(async () => {
+      dispatchPointerDown({ x: 160, y: 140 });
+      dispatchPointerMove({ x: 220, y: 168 });
+    });
+    expect(previewPathD()).toBe("M 160 140 L 220 168");
+
+    await act(async () => {
+      dispatchPointerCancel();
+    });
+    expect(container.querySelector("[data-polyline-art-preview-layer=\"true\"]")).toBeNull();
+
+    // The ref is gone, not just the React state: a live draw would repaint the preview on the next
+    // move, since that move path only checks `pathArtDrawRef.current`.
+    await act(async () => {
+      dispatchPointerMove({ x: 300, y: 240 });
+    });
+    expect(container.querySelector("[data-polyline-art-preview-layer=\"true\"]")).toBeNull();
+
+    // And the next click starts a fresh path rather than appending to the abandoned one.
+    await act(async () => {
+      dispatchPointerDown({ x: 320, y: 260 });
+      dispatchPointerMove({ x: 360, y: 300 });
+    });
+    expect(previewPathD()).toBe("M 320 260 L 360 300");
+
+    await act(async () => {
+      dispatchPointerDown({ x: 360, y: 300 });
+      dispatchKey("Enter");
+    });
+    // Only the fresh two-node path was committed; the abandoned nodes are absent.
+    expect(snapshotObjectCount()).toBe(1);
+    expect(debugArtObject(selectedArtObjectId()).object.data.pathNodes).toEqual([
+      { point: { x: 320, y: 260 } },
+      { point: { x: 360, y: 300 } }
+    ]);
+  });
 
   it("clicks polyline nodes and commits the path with Enter", async () => {
     await renderMainWindow();
