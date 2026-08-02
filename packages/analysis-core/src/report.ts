@@ -402,7 +402,8 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
           text: site.spread === undefined
             ? formatNumber(site.pKa!, 2)
             : `${formatNumber(site.pKa!, 2)} ± ${formatNumber(site.spread, 2)}`,
-          band: bands ? ionizationBand(site.spread, bands) : ("unknown" as const)
+          band: bands ? ionizationBand(site.spread, bands) : ("unknown" as const),
+          transition: site.transition
         }));
       const svg = ionizationFigureSvg({
         structure: ionization.depiction,
@@ -417,10 +418,11 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
           // The caption carries what the colours mean and what the drawn hydrogen is, because the
           // figure is the first thing read and the contract is the last.
           caption:
-            "Each value is the pKa of the drawn hydrogen leaving that atom — check the drawn form is " +
-            "the transition you meant" +
+            "Red is an acidic pKa (that atom losing its drawn proton); blue is a basic pKa (the pKa of " +
+            "its conjugate acid, the number usually meant by an amine's pKa). The ring around each atom " +
+            "is confidence" +
             (bands
-              ? `. Colour is the method's measured accuracy at that interval: green within ±${formatNumber(
+              ? `, from the method's measured accuracy at that interval: green within ±${formatNumber(
                   bands.good,
                   1
                 )} (MAE 0.5), amber to ±${formatNumber(bands.poor, 1)}, red beyond (MAE 2.2)`
@@ -436,10 +438,12 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
         title: `${displayLabel(ionization)} (${ionization.sites.length} site${
           ionization.sites.length === 1 ? "" : "s"
         })`,
-        columns: ["Atom", "Site", "pKa", "Basis"],
+        columns: ["Atom", "Site", "Transition", "pKa", "Basis"],
         rows: ionization.sites.map((site) => [
           String(site.ionizableAtomIndex),
           site.siteType,
+          // Spelled out, never left to be inferred from the value's size.
+          site.transition === "acidic" ? "loses H⁺" : "gains H⁺",
           // The interval is not decoration and never gets dropped: a bare pKa reads as a measurement.
           site.pKa === null
             ? "not titratable"

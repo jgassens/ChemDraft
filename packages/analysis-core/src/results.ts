@@ -204,6 +204,18 @@ export interface IonizationSite {
   /** Human-readable site class, e.g. "Carboxylic acid". */
   siteType: string;
   /**
+   * Which equilibrium this number describes. Never inferred by a reader from the value's size.
+   *
+   * `acidic` — this atom losing the proton it is drawn with. `basic` — this atom GAINING one, so the
+   * value is the pKa of its conjugate acid, which is the convention every pKa tool uses and the number
+   * a chemist means by "the amine's pKa". The same atom can carry both.
+   *
+   * Conflating the two is the failure this field exists to prevent: histidine's amine reported 9.03
+   * under an acidity label, which is nearly its ammonium's measured 9.25 and so read as correct while
+   * describing a different reaction.
+   */
+  transition: "acidic" | "basic";
+  /**
    * The estimate, or `null` for a site recognised but not titratable in any accessible range.
    *
    * Null rather than a sentinel number: Dimorphite encodes that case as -1000, and passing it through
@@ -435,6 +447,7 @@ const IonizationSiteSchema = z
     atomIndices: z.array(z.number().int().nonnegative()).min(1),
     ionizableAtomIndex: z.number().int().nonnegative(),
     siteType: z.string().min(1),
+    transition: z.enum(["acidic", "basic"]),
     pKa: z.number().finite().nullable(),
     spread: z.number().finite().nonnegative().optional(),
     basis: z.enum([

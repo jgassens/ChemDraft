@@ -71,20 +71,20 @@ describe("finding the ionizable atom", () => {
     expect(site?.pKa).toBeLessThan(11.5);
   });
 
-  it("declines a plain amine rather than reporting a number for it", async () => {
-    // This test used to assert that ethylamine's neutral N scored ABOVE 12 — the reasoning being that
-    // the N-H is weakly acidic, so a high value was the honest answer. It was not: the real value is
-    // near 35, the model's ceiling is its training range, and zero of its 3,031 labels is an
-    // unactivated amine. There is no number to give, so none is given.
-    const neutral = await ionization("CCN");
-    expect(neutral.result.sites.filter((site) => site.pKa !== null)).toEqual([]);
-    expect(neutral.result.unassessed.some((entry) => /neutral amine/.test(entry.reason))).toBe(true);
+  it("gives an amine its BASIC pKa, not an acidity", async () => {
+    // This test has now said three different things, and the history is the point. It first asserted
+    // ethylamine's N scored ABOVE 12, reasoning that a weakly acidic N-H deserved a high number. Then
+    // that it was declined outright, since the real N-H acidity is near 35 and unmeasurable. Both
+    // missed what a chemist actually means by an amine's pKa: the AMMONIUM's, ~10.7 — a basicity.
+    const { result } = await ionization("CCN");
+    const site = result.sites.find((entry) => entry.ionizableAtomIndex === 2);
+    expect(site?.transition).toBe("basic");
+    expect(site!.pKa!).toBeGreaterThan(8);
+    expect(site!.pKa!).toBeLessThan(12);
 
-    // Redrawing it protonated does not get the ammonium's ~10.7 either: the site pattern requires a
-    // neutral nitrogen, so nothing is located at all. Documented because it is the obvious thing to try.
-    const protonated = await ionization("CC[NH3+]");
-    expect(protonated.result.sites).toHaveLength(0);
-    expect(protonated.result.status).toBe("not-applicable");
+    // The acidic half is still absent: it is near 35, and zero of the 3,031 training labels is an
+    // unactivated amine.
+    expect(result.sites.filter((entry) => entry.transition === "acidic")).toEqual([]);
   });
 
   it("lists every candidate class when several claim the same atom", async () => {
@@ -198,15 +198,17 @@ describe("the second method, end to end", () => {
   });
 });
 
-describe("confidence from agreement", () => {
-  const site = (atom: number, pKa: number, spread: number): IonizationSite => ({
+const site = (atom: number, pKa: number, spread: number): IonizationSite => ({
     atomIndices: [atom],
     ionizableAtomIndex: atom,
     siteType: "Carboxyl",
+    transition: "acidic",
     pKa,
     spread,
     basis: "site-type-average"
-  });
+});
+
+describe("confidence from agreement", () => {
 
   it("narrows nothing when two methods disagree", async () => {
     // The point of the span. Two routes three log units apart must not produce a confident consensus:
@@ -275,7 +277,7 @@ describe("the contract", () => {
     const contract = ionizationContract();
     const conventions = contract.conventions.join(" ");
     expect(conventions).toMatch(/ACIDITY OF THAT SITE AS DRAWN/);
-    expect(conventions).toMatch(/IT DOES NOT REPORT BASICITY/);
+    expect(conventions).toMatch(/EVERY VALUE SAYS WHICH DIRECTION IT DESCRIBES/);
     expect(conventions).toMatch(/THE SITE TABLE ITSELF REPORTS NO pKa/);
     expect(contract.accuracyClaims[0]!.metric).toBe("mae");
     expect(contract.datasets.some((entry) => entry.id === "dwar-ibond")).toBe(true);
@@ -300,13 +302,14 @@ describe("what a reader actually sees", () => {
     expect(table, "no ionizable-site section in the report").toBeDefined();
     if (table?.kind !== "table") return;
 
-    expect(table.columns).toEqual(["Atom", "Site", "pKa", "Basis"]);
-    const consensus = table.rows.find((row) => row[3]!.startsWith("consensus"));
+    expect(table.columns).toEqual(["Atom", "Site", "Transition", "pKa", "Basis"]);
+    const consensus = table.rows.find((row) => row[4]!.startsWith("consensus"));
     expect(consensus, "the consensus row is missing").toBeDefined();
     // The number is never bare: a pKa without its interval reads as a measurement.
-    expect(consensus![2]).toMatch(/^\d+\.\d+ ± \d+\.\d+$/);
-    expect(consensus![3]).toMatch(/model \+ hammett/);
-    expect(consensus![3]).toMatch(/differing by/);
+    expect(consensus![2]).toBe("loses H⁺");
+    expect(consensus![3]).toMatch(/^\d+\.\d+ ± \d+\.\d+$/);
+    expect(consensus![4]).toMatch(/model \+ hammett/);
+    expect(consensus![4]).toMatch(/differing by/);
   });
 
   it("shows the Hammett working when it is the only method that fired", async () => {
@@ -316,6 +319,7 @@ describe("what a reader actually sees", () => {
       atomIndices: [0],
       ionizableAtomIndex: 0,
       siteType: "Phenol",
+      transition: "acidic",
       pKa: 7.12,
       spread: 0.16,
       basis: "linear-free-energy-relationship",
@@ -339,71 +343,32 @@ describe("what a reader actually sees", () => {
   });
 });
 
-describe("a site with no proton has no acidity", () => {
-  it("refuses to score histidine's protonless ring nitrogen", async () => {
-    // The contradiction this guards. Histidine's imidazole has two nitrogens: one carries a hydrogen
-    // and can lose it, the other carries none. The second was being given a confident 5.83 — a pKa for
-    // a transition that does not exist, on a method whose one claim is "the pKa of the drawn hydrogen
-    // leaving that atom".
-    const { result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
-    for (const site of result.sites) {
-      const atom = result.depiction?.atoms[site.ionizableAtomIndex];
-      if (site.pKa === null || !atom) continue;
-      expect(atom.hydrogens, `atom ${site.ionizableAtomIndex} was scored with no proton`).toBeGreaterThan(0);
-    }
-    // Reported, not dropped — a silent omission reads as "there is nothing here".
-    expect(result.unassessed.some((entry) => /no hydrogen as drawn/.test(entry.reason))).toBe(true);
-    expect(result.status).toBe("partial");
-  });
-
-  it("scores nothing at all on pyridine, whose only site is basic", async () => {
-    // Dimorphite is a protonation-state enumerator: `Aromatic_nitrogen_unprotonated` is a site it
-    // locates in order to ADD a proton. Every such match was being scored as an acid.
-    const { result } = await ionization("c1ccncc1");
-    expect(result.sites.filter((site) => site.pKa !== null)).toEqual([]);
-    expect(result.unassessed).toHaveLength(1);
-  });
-
-  it("withholds all four of caffeine's ring nitrogens rather than inventing four values", async () => {
-    const { result } = await ionization("CN1C=NC2=C1C(=O)N(C)C(=O)N2C");
-    expect(result.sites.filter((site) => site.pKa !== null)).toEqual([]);
-    expect(result.unassessed).toHaveLength(4);
-  });
-
-  it("gives the value the decline message promises, once the form is redrawn", async () => {
-    // The reason tells the reader to draw the conjugate acid. That has to actually work, or the
-    // message is worse than no message. Pyridinium measures 5.2.
-    const { result } = await ionization("c1cc[nH+]cc1");
-    const site = result.sites.find((entry) => entry.pKa !== null);
-    expect(site, "the protonated form scores nothing — the decline message is wrong").toBeDefined();
-    expect(site!.pKa!).toBeGreaterThan(3);
-    expect(site!.pKa!).toBeLessThan(7);
-  });
-
-  it("leaves an ordinary acid untouched", async () => {
-    // The filter must not cost anything where the chemistry is fine.
-    const { result } = await ionization("Oc1ccccc1");
-    expect(result.unassessed).toEqual([]);
-    expect(result.sites[0]!.pKa).toBeGreaterThan(8.5);
-  });
-});
 
 describe("a partial result still shows what it computed", () => {
-  it("renders histidine's scored sites even though two were withheld", async () => {
+  it("renders a partial result's values instead of dropping the whole category", async () => {
     // The regression this guards is severe and quiet. Withholding the protonless nitrogen turned the
     // result's status from "ok" to "partial", and the report filtered on `status === "ok"` — so the
     // whole category vanished from the panel and the three perfectly good values went with it. A
     // report that drops what it DID compute is worse than the bug it was fixing.
-    const { run, result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
-    expect(result.status).toBe("partial");
+    // Driven through the status rather than through a molecule, because no structure currently
+    // produces `partial` — and that is exactly why this needs pinning rather than relying on one. The
+    // property under test is the report's split, not the chemistry that reaches it.
+    const { run } = await ionization("Oc1ccccc1");
+    const partial = {
+      ...run,
+      results: run.results.map((entry) =>
+        entry.methodId === IONIZATION_SITES_METHOD_ID
+          ? { ...entry, status: "partial" as const, unassessed: [{ atomIndices: [1], reason: "withheld" }] }
+          : entry
+      )
+    };
 
-    const report = buildAnalysisReport(run);
+    const report = buildAnalysisReport(partial as typeof run);
     const table = report.sections.find(
       (section) => section.kind === "table" && section.title.startsWith("Ionizable sites (")
     );
     expect(table, "the sites table is missing from a partial result").toBeDefined();
-    if (table?.kind === "table") expect(table.rows).toHaveLength(2);
-
+    if (table?.kind === "table") expect(table.rows.length).toBeGreaterThan(0);
     expect(report.sections.some((section) => section.kind === "svg")).toBe(true);
     // And the shortfall is still disclosed, in its own section rather than by omission.
     expect(
@@ -413,64 +378,92 @@ describe("a partial result still shows what it computed", () => {
     ).toBe(true);
   });
 
-  it("does not draw a value on an atom that has no proton", async () => {
+  it("draws one value per scored transition, and no more", async () => {
     // The figure must agree with the table. A coloured halo with no number would still read as "this
     // atom was assessed".
-    const { run } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
+    const { run, result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
     const figure = buildAnalysisReport(run).sections.find((section) => section.kind === "svg");
     if (figure?.kind !== "svg") throw new Error("no figure");
-    // One value per remaining site — the protonless nitrogen and the amine terminus carry none.
-    expect(figure.svg.match(/±/g) ?? []).toHaveLength(2);
+    expect(figure.svg.match(/±/g) ?? []).toHaveLength(result.sites.filter((s) => s.pKa !== null).length);
   });
 });
 
-describe("an acidity water cannot hold is not reported", () => {
-  it("declines histidine's amine terminus, whose 9.03 was the ammonium's number", async () => {
-    // The value looked right and was not. Histidine's alpha-ammonium measures 9.2, so 9.03 on the
-    // neutral -NH2 reads as correct — but the transition being reported is that N-H losing a proton,
-    // pKa near 35. Nothing in an aqueous dataset can teach it, and a forest bounded by its leaves
-    // (training range -9.02 to 30.90) could not return it even if it knew.
+
+describe("acidic and basic are reported separately", () => {
+  /**
+   * Reference values are ChemAxon's for the same four transitions on histidine. They are a second
+   * implementation's answers, not ground truth — but a method that disagrees with the field's standard
+   * tool by more than its own stated error has something to explain.
+   */
+  it("gives histidine all four transitions, each labelled", async () => {
     const { result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
-    for (const site of result.sites) {
-      expect(site.ionizableAtomIndex, "the amine terminus is still being scored").not.toBe(0);
-    }
-    expect(result.unassessed.some((entry) => /neutral amine/.test(entry.reason))).toBe(true);
+    const at = (atom: number) => result.sites.find((site) => site.ionizableAtomIndex === atom);
+
+    // The amine terminus: BASIC. Its 9.03 under an acidity label was the bug — nearly the ammonium's
+    // measured 9.25, and so read as correct while describing a different reaction.
+    expect(at(0)?.transition).toBe("basic");
+    // Within a log unit of ChemAxon's 9.25. Not tighter: the tolerance is the method's own measured
+    // error, and pinning it harder would be pinning noise.
+    expect(Math.abs(at(0)!.pKa! - 9.25)).toBeLessThan(1);
+
+    // The ring nitrogen with no hydrogen: BASIC, and it has a real value rather than being withheld.
+    expect(at(7)?.transition).toBe("basic");
+    expect(Math.abs(at(7)!.pKa! - 6.14)).toBeLessThan(1);
+
+    // The ring N-H and the carboxyl: ACIDIC, the protons they are drawn with.
+    expect(at(5)?.transition).toBe("acidic");
+    expect(at(10)?.transition).toBe("acidic");
+  });
+
+  it("computes a basic value on the protonated microstate, not the neutral form", async () => {
+    // The distinction the whole redesign rests on. Pyridine's nitrogen has no proton at all, so any
+    // value for it must come from a structure where it does.
+    const { result } = await ionization("c1ccncc1");
+    const site = result.sites[0]!;
+    expect(site.transition).toBe("basic");
+    expect(site.pKa!).toBeGreaterThan(3);
+    expect(site.pKa!).toBeLessThan(7);
   });
 
   it.each([
-    ["ethylamine", "CCN"],
-    ["methylamine", "CN"],
-    ["piperidine", "C1CCNCC1"],
-    ["glycine", "NCC(=O)O"]
-  ])("declines %s's amine", async (_name, smiles) => {
+    ["glycine", "NCC(=O)O", 0, 9.6],
+    ["ethylamine", "CCN", 2, 10.7],
+    ["pyridine", "c1ccncc1", 3, 5.2]
+  ])("puts %s's basic pKa within reach of the measured value", async (_name, smiles, atom, expected) => {
     const { result } = await ionization(smiles as string);
-    const scoredNitrogen = result.sites.filter(
-      (site) => site.pKa !== null && result.depiction?.atoms[site.ionizableAtomIndex]?.element === "N"
+    const site = result.sites.find(
+      (entry) => entry.ionizableAtomIndex === atom && entry.transition === "basic"
     );
-    expect(scoredNitrogen).toEqual([]);
+    expect(site, "no basic value for this site").toBeDefined();
+    expect(Math.abs(site!.pKa! - (expected as number))).toBeLessThan(2);
   });
 
-  it.each([
-    ["aniline", "Nc1ccccc1"],
-    ["acetamide", "CC(N)=O"],
-    ["benzenesulfonamide", "NS(=O)(=O)c1ccccc1"],
-    ["thioacetamide", "CC(N)=S"]
-  ])("keeps %s, whose N-H the training data does cover", async (_name, smiles) => {
-    // The rule must cost nothing the model learned. Checked the other way round too: applied to the
-    // training set it rejects 0 of 3,031 rows, so it can only exclude chemistry that was never there.
-    const { result } = await ionization(smiles as string);
-    const scoredNitrogen = result.sites.filter(
-      (site) => site.pKa !== null && result.depiction?.atoms[site.ionizableAtomIndex]?.element === "N"
-    );
-    expect(scoredNitrogen.length, "an N-H with real training support was declined").toBeGreaterThan(0);
+  it("never merges an acidic and a basic value for the same atom", async () => {
+    // They describe opposite reactions. Averaging them would be arithmetic on two different questions.
+    const merged = combineSiteEstimates({
+      model: [
+        { ...site(3, 4.0, 0.5), transition: "acidic" },
+        { ...site(3, 9.0, 0.5), transition: "basic" }
+      ]
+    });
+    expect(merged).toHaveLength(2);
+    expect(merged.map((entry) => entry.transition).sort()).toEqual(["acidic", "basic"]);
+    for (const entry of merged) expect(entry.basis).not.toBe("consensus");
   });
 
-  it("still scores histidine's imidazole N-H, which its class does cover", async () => {
-    // Not everything imprecise is out of domain. Neutral aromatic N-H has 165 training rows spanning
-    // 1.47 to 16.50, and imidazole's 14.4 is inside that — so the value stays, and its width is the
-    // disclosure. Declining it would be as wrong as inventing one.
-    const { result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
-    const site = result.sites.find((entry) => entry.ionizableAtomIndex === 5);
-    expect(site?.pKa).not.toBeNull();
+  it("does not offer a basic value on a pyrrole-type ring nitrogen", async () => {
+    // Imidazole's N-H has its lone pair in the aromatic sextet — it is not available, and protonating
+    // it would describe a species that does not form. Piperidine, which looks similar to a naive test
+    // (ring, N-H, all single bonds), IS basic and must keep its value.
+    const imidazole = await ionization("c1c[nH]cn1");
+    const pyrroleType = imidazole.result.sites.filter(
+      (entry) =>
+        entry.transition === "basic" &&
+        imidazole.result.depiction?.atoms[entry.ionizableAtomIndex]?.hydrogens === 1
+    );
+    expect(pyrroleType).toEqual([]);
+
+    const piperidine = await ionization("C1CCNCC1");
+    expect(piperidine.result.sites.some((entry) => entry.transition === "basic")).toBe(true);
   });
 });

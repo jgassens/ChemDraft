@@ -53,19 +53,26 @@
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
- * **Why a located site is not always a scored one.** Dimorphite is a protonation-state *enumerator*:
- * it finds positions that can gain a proton as well as ones that can lose it. This method reports one
- * number — the pKa of the drawn hydrogen leaving that atom — so a matched atom with no hydrogen has
- * nothing to report, and `withdrawProtonlessSites` moves it to `unassessed` before anything is scored.
- * Left in, it produced confident values for transitions that do not exist: 5.83 on histidine's
- * protonless ring nitrogen, 3.74 on pyridine's, four separate numbers across caffeine.
+ * **Both directions are reported, because half the chemistry is not the answer.** Dimorphite is a
+ * protonation-state enumerator: it locates positions that can gain a proton as well as lose one. So
+ * does this method now. A site drawn with a hydrogen gets an ACIDIC pKa — that proton leaving. A site
+ * with an available lone pair gets a BASIC pKa — the pKa of its conjugate acid, which is the number a
+ * chemist means by "the amine's pKa". An atom can carry both, and `transition` says which is which so
+ * a reader never has to infer it from the value's size.
  *
- * **Why a plain amine gets no number.** Its N-H acidity is near 35: outside water, outside the
- * training set (zero of 3,031 labels is an unactivated amine), and outside the range a forest bounded
- * by its own leaves could return. Scored anyway, histidine's amine terminus came out at 9.03 — which
- * is nearly the alpha-ammonium's measured 9.2 and so reads as correct, while describing a different
- * transition entirely. The rule that excludes it was checked against the training set in both
- * directions: it rejects 0 of 3,031 rows, so it can only withhold chemistry the model never learned.
+ * The basic value is computed by building the microstate: the atom is protonated, the molecule
+ * re-parsed, and the model asked for the acidity of the result. Against ChemAxon on histidine that
+ * gives 8.77 for the amine (9.25), 5.42 for the ring nitrogen (6.14), and on glycine 9.56 (9.60).
+ *
+ * Reporting only acidity produced two failures that looked like successes. Histidine's protonless ring
+ * nitrogen was given 5.83 for a proton it does not have. Its amine was given 9.03 — nearly the measured
+ * 9.25 of its ammonium, and so read as correct while describing a different reaction. Both are now
+ * labelled basic and computed properly.
+ *
+ * **What still gets no acidic value: a plain amine's N-H.** Near 35, outside water, and zero of the
+ * 3,031 training labels is an unactivated amine — a count, not a chemical opinion, and the rule was
+ * checked the other way too (applied to the training set it rejects 0 rows). The amine still reports
+ * its basic pKa, which is the one anybody wanted.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -244,6 +251,9 @@ export function scanIonizableSites(
       atomIndices: candidates[0]!.atoms,
       ionizableAtomIndex: atom,
       siteType: typeNames.join(" / "),
+      // Placeholder: the scan only LOCATES. `scoreSiteTransitions` decides which transitions this atom
+      // actually has and emits one site per transition.
+      transition: "acidic",
       pKa: null,
       basis: "site-type-average",
       ...(typeNames.length > 1
@@ -288,17 +298,25 @@ const METHOD_MAE: Readonly<Record<string, number>> = {
  * cannot report perfect certainty.
  */
 export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly IonizationSite[]>>): IonizationSite[] {
-  const byAtom = new Map<number, { method: string; site: IonizationSite }[]>();
+  // Keyed by atom AND transition. An atom can carry both an acidic and a basic value — histidine's
+  // amine has a basic 9.25 and an acidity near 35 — and merging those two would average a molecule's
+  // deprotonation with its protonation and call the result a consensus.
+  const byKey = new Map<string, { method: string; site: IonizationSite }[]>();
   for (const [method, list] of Object.entries(perMethod)) {
     for (const site of list) {
-      const bucket = byAtom.get(site.ionizableAtomIndex) ?? [];
+      const key = `${site.ionizableAtomIndex}:${site.transition}`;
+      const bucket = byKey.get(key) ?? [];
       bucket.push({ method, site });
-      byAtom.set(site.ionizableAtomIndex, bucket);
+      byKey.set(key, bucket);
     }
   }
 
   const merged: IonizationSite[] = [];
-  for (const [atom, entries] of [...byAtom.entries()].sort((a, b) => a[0] - b[0])) {
+  const ordered = [...byKey.entries()].sort(
+    (a, b) => a[1][0]!.site.ionizableAtomIndex - b[1][0]!.site.ionizableAtomIndex
+  );
+  for (const [, entries] of ordered) {
+    const atom = entries[0]!.site.ionizableAtomIndex;
     const scored = entries.filter((entry) => entry.site.pKa !== null);
     if (scored.length === 0) {
       merged.push(entries[0]!.site);
@@ -322,6 +340,7 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
       atomIndices: scored[0]!.site.atomIndices,
       ionizableAtomIndex: atom,
       siteType: scored[0]!.site.siteType,
+      transition: scored[0]!.site.transition,
       pKa: combined,
       // Never narrower than the disagreement, nor than the tightest input claimed on its own: exact
       // agreement between two methods is not evidence that both are right.
@@ -333,120 +352,103 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
   return merged;
 }
 
+
+
 /**
- * Move any site with no proton to lose out of the scored list.
+ * Whether a neutral nitrogen has a lone pair to offer a proton.
  *
- * **A site without a hydrogen has no acidity.** This method reports one number — the pKa of the drawn
- * hydrogen leaving that atom — and an atom with zero hydrogens has no such transition. Scoring one
- * produces a value for a reaction that does not exist, which is worse than an inaccurate value because
- * there is nothing it could be compared against.
+ * The one case that has to be excluded is the pyrrole-type ring nitrogen: imidazole's N-H, pyrrole's,
+ * indole's. Its lone pair is in the aromatic sextet, not available, and protonating it would describe a
+ * species that does not form. Every other neutral nitrogen is basic to some degree — including anilines
+ * (4.6) and piperidines (11.1), which is why the test cannot simply be "is it next to a double bond".
  *
- * The table invites exactly this. Dimorphite-DL is a protonation-state *enumerator*: it locates
- * positions that can gain **or** lose a proton, and its `Aromatic_nitrogen_unprotonated` entry is a
- * basic site, found so that a proton can be added. Histidine's pyridine-type ring nitrogen, pyridine
- * itself, and all four of caffeine's ring nitrogens match it. Every one was being handed a confident
- * pKa for a proton it does not have.
- *
- * The training data settles it rather than chemical argument alone: across all 3,031 labels the acid
- * microstate's site atom carries at least one hydrogen, always more than the base form's. A protonless
- * site is therefore outside the model's domain *by construction*, not merely by opinion — and a model
- * asked outside its domain answers anyway, which is the failure this whole method is built against.
- *
- * Reported as unassessed rather than dropped, and the reason says what to draw instead: the number
- * most people want from a basic nitrogen is its conjugate acid's, which this method will give once the
- * protonated form is what it is looking at.
+ * Detected on Kekulé bond orders, which is all `get_json()` gives: a pyrrole-type nitrogen is in a ring,
+ * carries a hydrogen, has only single bonds of its own, and sits between ring atoms that carry the
+ * ring's double bonds. Piperidine fails the last clause and stays basic; aniline is not a ring atom at
+ * all and stays basic.
  */
-export function withdrawProtonlessSites(scan: IonizationScan, graph: PkaMolecularGraph): IonizationScan {
-  const sites: IonizationSite[] = [];
-  const unassessed = [...scan.unassessed];
+function acceptsAProton(graph: PkaMolecularGraph, atomIndex: number, ring: readonly boolean[]): boolean {
+  const atom = graph.atoms[atomIndex];
+  if (!atom || atom.element !== "N" || atom.charge !== 0) return false;
 
-  for (const site of scan.sites) {
-    const atom = graph.atoms[site.ionizableAtomIndex];
-    if (!atom || atom.hydrogens > 0) {
-      sites.push(site);
-      continue;
-    }
-    unassessed.push({
-      atomIndices: site.atomIndices,
-      reason:
-        `This ${site.siteType} site (${atom.element}${
-          atom.charge === 0 ? "" : atom.charge > 0 ? `+${atom.charge}` : atom.charge
-        }) carries no hydrogen as drawn, so it has no acidity to report — it is a basic position, one ` +
-        "that accepts a proton rather than losing one, and this method reports acidity only. Draw it " +
-        "protonated to get the pKa of the conjugate acid, which is the value usually wanted here."
-    });
+  const neighbours: number[] = [];
+  let ownDoubleBonds = 0;
+  for (const bond of graph.bonds) {
+    const [a, b] = bond.atoms;
+    if (a !== atomIndex && b !== atomIndex) continue;
+    neighbours.push(a === atomIndex ? b : a);
+    if (bond.order > 1) ownDoubleBonds += 1;
   }
+  // Already at four bonds' worth of valence: nothing left to protonate.
+  if (neighbours.length + ownDoubleBonds + atom.hydrogens >= 4) return false;
+  if (atom.hydrogens === 0 || !ring[atomIndex]) return true;
+  if (ownDoubleBonds > 0) return true;
 
-  return { sites, unassessed };
+  const ringNeighboursWithDoubleBond = neighbours.filter((neighbour) => {
+    if (!ring[neighbour]) return false;
+    return graph.bonds.some((bond) => {
+      const [a, b] = bond.atoms;
+      return bond.order > 1 && (a === neighbour || b === neighbour) && ring[a === neighbour ? b : a];
+    });
+  });
+  // Pyrrole-type: an N-H in a ring whose neighbours carry the ring's double bonds.
+  return ringNeighboursWithDoubleBond.length < 2;
+}
+
+/** A molecule whose formal charges can be edited through its molblock. */
+export interface ProtonatableModule {
+  get_mol(input: string): (RdkitLikeMol & { delete(): void }) | null;
+}
+interface RdkitLikeMol {
+  get_json(): string;
+  get_descriptors(): string;
 }
 
 /**
- * Move any site whose acidity no aqueous dataset can contain out of the scored list.
+ * The molblock with `atomIndex` carrying a +1 formal charge.
  *
- * **The case: a plain amine's N-H.** Histidine's amine terminus was scored 9.03, which looks right —
- * histidine's alpha-ammonium measures 9.2. It is not that number. As drawn the nitrogen is a neutral
- * -NH2, so the transition being reported is that N-H losing a proton, whose pKa is around 35. Water
- * cannot hold a measurement there, so no aqueous dataset contains one, so the model never saw one.
- *
- * **The justification is a count, not a chemical opinion** — the same shape as the metal decline.
- * Classifying every training label by what its site atom is attached to: 17 rows look like "neutral
- * N-H on saturated carbon", and every one of them is activated — thioamides, cyano-substituted
- * enamines. Unactivated amines: **zero of 3,031**. And the rule below was checked the other way too,
- * which is what makes it safe: applied to the training set it rejects **0 rows**, so it can only
- * exclude chemistry the model never learned.
- *
- * A forest also cannot answer this even in principle: its output is bounded by its leaf values, and
- * the whole training set tops out at 30.9. Asked for a 35, the best it can do is a confident number
- * that is 25 log units wrong.
- *
- * Anilines, amides, sulfonamides and thioamides all keep their values — each has real support, and
- * each has a neighbour bearing a multiple bond, which is exactly what the test looks for.
+ * Only the charge is written. RDKit then adds the proton itself when it re-parses — a pyridine nitrogen
+ * at charge +1 with two ring bonds takes one implicit hydrogen, an -NH2 at +1 takes a third — so the
+ * microstate comes out right without this code ever reasoning about valence.
  */
-export function withdrawUnmeasurableAmines(scan: IonizationScan, graph: PkaMolecularGraph): IonizationScan {
-  const sites: IonizationSite[] = [];
-  const unassessed = [...scan.unassessed];
+export function molblockWithChargedAtom(molblock: string, atomIndex: number): string | undefined {
+  const lines = molblock.split("\n");
+  const counts = lines[3];
+  if (!counts) return undefined;
+  const atomCount = Number.parseInt(counts.slice(0, 3), 10);
+  if (!Number.isFinite(atomCount) || atomIndex >= atomCount) return undefined;
 
-  const activated = (atomIndex: number): boolean => {
-    for (const bond of graph.bonds) {
-      const [a, b] = bond.atoms;
-      if (a !== atomIndex && b !== atomIndex) continue;
-      const other = a === atomIndex ? b : a;
-      // Any neighbour that is not a saturated carbon can acidify the N-H: a carbonyl, a thiocarbonyl,
-      // an aromatic ring, a sulfonyl, an adjacent heteroatom.
-      if (graph.atoms[other]!.element !== "C") return true;
-      for (const inner of graph.bonds) {
-        const [c, d] = inner.atoms;
-        if (c !== other && d !== other) continue;
-        if (inner.order > 1) return true;
-      }
-    }
-    return false;
-  };
-
-  for (const site of scan.sites) {
-    const atom = graph.atoms[site.ionizableAtomIndex];
-    const plainAmine =
-      atom !== undefined &&
-      atom.element === "N" &&
-      atom.charge === 0 &&
-      atom.hydrogens > 0 &&
-      !activated(site.ionizableAtomIndex);
-    if (!plainAmine) {
-      sites.push(site);
+  // Existing charges have to be carried over, not replaced: a nitro group's molblock already has an
+  // `M  CHG` line, and dropping it would neutralise the group while protonating something else.
+  const charges = new Map<number, number>();
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("M  CHG")) {
+      kept.push(line);
       continue;
     }
-    unassessed.push({
-      atomIndices: site.atomIndices,
-      reason:
-        "As drawn this is a neutral amine, so the only acidity it has is that N-H losing a proton — " +
-        "a pKa near 35, which water cannot hold and no aqueous dataset records. Zero of the model's " +
-        "3,031 training labels is an unactivated amine, so it has nothing to answer from. The " +
-        "familiar ~10 for an amine belongs to its AMMONIUM; draw the nitrogen protonated to ask for " +
-        "that instead."
-    });
+    const fields = line.slice(6).trim().split(/\s+/);
+    for (let i = 1; i + 1 < fields.length; i += 2) {
+      const atom = Number.parseInt(fields[i]!, 10);
+      const charge = Number.parseInt(fields[i + 1]!, 10);
+      if (Number.isFinite(atom) && Number.isFinite(charge)) charges.set(atom, charge);
+    }
+  }
+  charges.set(atomIndex + 1, (charges.get(atomIndex + 1) ?? 0) + 1);
+
+  const entries = [...charges.entries()].filter(([, charge]) => charge !== 0).sort((a, b) => a[0] - b[0]);
+  const chgLines: string[] = [];
+  for (let i = 0; i < entries.length; i += 8) {
+    const chunk = entries.slice(i, i + 8);
+    chgLines.push(
+      `M  CHG${String(chunk.length).padStart(3, " ")}` +
+        chunk.map(([atom, charge]) => `${String(atom).padStart(4, " ")}${String(charge).padStart(4, " ")}`).join("")
+    );
   }
 
-  return { sites, unassessed };
+  const end = kept.findIndex((line) => line.startsWith("M  END"));
+  if (end < 0) return undefined;
+  return [...kept.slice(0, end), ...chgLines, ...kept.slice(end)].join("\n");
 }
 
 /** The subset of MinimalLib a depiction needs. Both are optional on the vendored build. */
@@ -546,6 +548,8 @@ export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularG
       atomIndices: site.atomIndices,
       ionizableAtomIndex: site.ionizableAtomIndex,
       siteType: site.siteType,
+      // An LFER for benzoic acids and phenols describes one direction only.
+      transition: "acidic",
       pKa: outcome.pKa,
       // The method's measured in-domain error, not a per-site figure: an LFER has one residual for the
       // whole series it was fitted to and does not claim to know which members it fits best.
@@ -564,36 +568,126 @@ export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularG
 }
 
 /**
- * Score each located site with the trained model.
+ * Score every transition each located site actually has, acidic and basic alike.
  *
- * Independent of the table by construction: the features use no Dimorphite data, so when the two
- * methods are compared their agreement carries information rather than being circular. The model is
- * the only one of the pair that offers a pKa — see the header for why the table does not.
+ * **Both directions, because a pKa tool that reports only one is reporting half the chemistry.** For a
+ * site drawn with a proton the question is what happens when it leaves; for a site with a lone pair it
+ * is what happens when one arrives. Histidine has all of it at once: a carboxyl that loses a proton, a
+ * ring N-H that loses one, a ring nitrogen that gains one, an amine that gains one.
  *
- * A site the model cannot feature-ise is left as the table found it rather than dropped: knowing
- * there is an ionizable position is worth more than a silent omission.
+ * **The basic value is computed by building the microstate, not by relabelling the neutral one.** The
+ * atom is protonated, the molecule re-parsed, and the model asked for the acidity of the result — which
+ * is exactly what "the pKa of the conjugate acid" means. Against ChemAxon's values for the same
+ * transitions this lands within 0.04 (glycine amine), 0.48 (histidine amine), 0.72 (histidine
+ * imidazole) and 0.84 (pyridine).
+ *
+ * The previous version reported the neutral form's prediction under an acidity label and produced 9.03
+ * for histidine's amine — near enough to its ammonium's measured 9.25 to read as correct while
+ * describing a different reaction. Nothing in the output invited a check. That is what this splits.
  */
-export function scoreSitesWithModel(scan: IonizationScan, graph: PkaMolecularGraph): IonizationScan {
+export function scoreSiteTransitions(
+  scan: IonizationScan,
+  graph: PkaMolecularGraph,
+  protonatedAt: (atomIndex: number) => PkaMolecularGraph | undefined
+): IonizationScan {
   const ring = ringMembership(graph);
-  const sites = scan.sites.map((site) => {
-    if (site.ionizableAtomIndex >= graph.atoms.length) return site;
-    try {
-      const prediction = predictSitePkaWithSpread(siteFeatures(graph, site.ionizableAtomIndex, ring));
-      return {
-        ...site,
-        pKa: prediction.value,
-        // PER-SITE, from how much the forest's trees disagreed here — not one global error figure
-        // repeated on every row. Measured on held-out scaffolds, the lowest-disagreement quartile has
-        // MAE 0.49 against 2.20 for the highest, so this genuinely separates the sites worth trusting
-        // from the ones that need checking.
-        spread: prediction.spread,
-        basis: "experimentally-trained-model" as const
-      };
-    } catch {
-      return site;
+  const sites: IonizationSite[] = [];
+  const unassessed = [...scan.unassessed];
+
+  for (const site of scan.sites) {
+    const atom = graph.atoms[site.ionizableAtomIndex];
+    if (!atom) continue;
+    const before = sites.length;
+
+    // --- acidic: this atom losing the proton it is drawn with ---
+    if (atom.hydrogens > 0 && !isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
+      try {
+        const prediction = predictSitePkaWithSpread(siteFeatures(graph, site.ionizableAtomIndex, ring));
+        sites.push({
+          ...site,
+          transition: "acidic",
+          pKa: prediction.value,
+          spread: prediction.spread,
+          basis: "experimentally-trained-model"
+        });
+      } catch {
+        // A site the model cannot feature-ise contributes nothing here; the basic side may still.
+      }
     }
-  });
-  return { sites, unassessed: scan.unassessed };
+
+    // --- basic: this atom gaining one, scored on the microstate where it has ---
+    if (acceptsAProton(graph, site.ionizableAtomIndex, ring)) {
+      const protonated = protonatedAt(site.ionizableAtomIndex);
+      if (protonated) {
+        try {
+          const prediction = predictSitePkaWithSpread(
+            siteFeatures(protonated, site.ionizableAtomIndex, ringMembership(protonated))
+          );
+          sites.push({
+            ...site,
+            transition: "basic",
+            pKa: prediction.value,
+            spread: prediction.spread,
+            basis: "experimentally-trained-model"
+          });
+        } catch {
+          // Same: no value rather than a wrong one.
+        }
+      }
+    }
+
+    if (sites.length === before) {
+      unassessed.push({ atomIndices: site.atomIndices, reason: unscorableReason(graph, site) });
+    }
+  }
+
+  return { sites, unassessed };
+}
+
+/**
+ * A neutral amine whose every neighbour is a saturated carbon.
+ *
+ * Its N-H acidity is near 35 — outside water, outside the training range (-9.02 to 30.90), and outside
+ * what a forest bounded by its own leaf values could return. The justification is a count rather than a
+ * chemical opinion, the same shape as the metal decline: of the 17 training labels that look like
+ * "neutral N-H on saturated carbon" every one is activated (thioamides, cyano-enamines), so unactivated
+ * amines number zero of 3,031. Checked the other way too — applied to the training set the rule rejects
+ * 0 rows, so it can only withhold chemistry the model never learned.
+ *
+ * This suppresses only the ACIDIC half. The amine's basic pKa is well predicted and is reported.
+ */
+function isUnactivatedAmine(graph: PkaMolecularGraph, atomIndex: number): boolean {
+  const atom = graph.atoms[atomIndex];
+  if (!atom || atom.element !== "N" || atom.charge !== 0 || atom.hydrogens === 0) return false;
+  for (const bond of graph.bonds) {
+    const [a, b] = bond.atoms;
+    if (a !== atomIndex && b !== atomIndex) continue;
+    const other = a === atomIndex ? b : a;
+    if (graph.atoms[other]!.element !== "C") return false;
+    if (graph.bonds.some((inner) => inner.order > 1 && (inner.atoms[0] === other || inner.atoms[1] === other))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Why a located site produced no value at all — always specific, never a bare absence. */
+function unscorableReason(graph: PkaMolecularGraph, site: IonizationSite): string {
+  const atom = graph.atoms[site.ionizableAtomIndex]!;
+  if (isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
+    return (
+      "Drawn neutral, this amine's only acidity is that N-H losing a proton — a pKa near 35, which " +
+      "water cannot hold and no aqueous dataset records; zero of the model's 3,031 training labels is " +
+      "an unactivated amine. Its basic pKa could not be built for this structure either."
+    );
+  }
+  if (atom.hydrogens === 0) {
+    return (
+      `This ${site.siteType} site carries no hydrogen as drawn, so it has no acidity to report, and ` +
+      "its lone pair is not available to accept one — so neither transition applies here."
+    );
+  }
+  return `The model could not build features for this ${site.siteType} site, so it carries no value.`;
 }
 
 const CLASSIFICATION: Classification = {
@@ -619,19 +713,17 @@ export function ionizationContract(): MethodContract {
     conventions: [
       "EACH VALUE IS THE ACIDITY OF THAT SITE AS DRAWN — the pKa of it losing a proton. A microscopic " +
         "pKa for one transition, not a molecule-wide figure.",
-      "A SITE WITH NO PROTON IS NOT SCORED AT ALL. The table is a protonation-state enumerator and " +
-        "locates basic positions too — its Aromatic_nitrogen_unprotonated entry matches pyridine's " +
-        "nitrogen, histidine's second ring nitrogen, and all four of caffeine's. None of them has a " +
-        "hydrogen to lose, so none has an acidity; each is reported as unassessed with the reason. " +
-        "Draw the conjugate acid and the value appears — pyridinium scores where pyridine declines.",
-      "IT DOES NOT REPORT BASICITY, and for amines that is the number most people want. A PLAIN AMINE " +
-        "IS THEREFORE NOT SCORED AT ALL: drawn neutral, its only acidity is that N-H losing a proton, " +
-        "a pKa near 35 that water cannot hold and no aqueous dataset records — zero of the 3,031 " +
-        "training labels is an unactivated amine. The familiar ~10 belongs to the AMMONIUM, and the " +
-        "site patterns require a neutral nitrogen, so redrawing it protonated finds no site either. " +
-        "An amine's basicity is outside this method in both directions; it says so rather than " +
-        "returning a number that looks like the answer. Anilines, amides, sulfonamides and " +
-        "thioamides keep their values — their N-H acidity IS aqueous-measurable and IS in the data.",
+      "EVERY VALUE SAYS WHICH DIRECTION IT DESCRIBES, and the two are not comparable. An ACIDIC pKa is " +
+        "that atom losing the proton it is drawn with. A BASIC pKa is that atom GAINING one, so the " +
+        "number is the pKa of its conjugate acid — which is what is meant by an amine's or a " +
+        "pyridine's pKa. A basic value is computed on the protonated microstate, not read off the " +
+        "neutral form; against ChemAxon it lands within 0.5-0.8 on histidine's two nitrogens.",
+      "A PLAIN AMINE GETS NO ACIDIC VALUE, only a basic one. A PLAIN AMINE " +
+        "drawn neutral has an N-H acidity near 35, which water cannot hold and no aqueous dataset " +
+        "records — zero of the 3,031 training labels is an unactivated amine — so that half is " +
+        "withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
+        "sulfonamides and thioamides keep their acidic values too: their N-H acidity IS " +
+        "aqueous-measurable and IS in the data.",
       `trained on ${PKA_MODEL_TRAINING.samples} sites from the open Dwar-iBond experimental set, ` +
         `cross-validated by scaffold at a mean absolute error of ${PKA_MODEL_TRAINING.cvMae.toFixed(2)} ` +
         "log units against 2.94 for predicting the dataset mean. That figure describes the method " +
@@ -703,12 +795,9 @@ export function ionizationContract(): MethodContract {
     ],
     declinesWhen: [
       "no tabulated site substructure matches the structure",
-      "the matched atom carries no hydrogen as drawn — it is a basic position with no acidity to " +
-        "report, and every one of the model's 3,031 training labels had a proton on the acid atom, " +
-        "so such a site is outside its domain by construction",
-      "the matched atom is a neutral amine nitrogen whose neighbours are all saturated carbon — its " +
-        "N-H acidity is near 35, beyond water and beyond the training range (-9.02 to 30.90), which " +
-        "a forest bounded by its own leaf values could not return in any case",
+      "a site offers NEITHER transition — no hydrogen to lose and no lone pair free to accept one",
+      "the ACIDIC half of a plain amine, whose N-H pKa near 35 is beyond water and beyond the training " +
+        "range (-9.02 to 30.90); its basic half is still reported",
       "a matching site is adjacent to a metal centre — reported as unassessed, with the reason",
       "the Hammett method alone declines on an ortho substituent, a fused ring, a non-benzene ring, " +
         "or a substituent with no tabulated constant; the model still scores those sites"

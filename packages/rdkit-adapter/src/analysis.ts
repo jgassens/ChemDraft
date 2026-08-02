@@ -102,9 +102,8 @@ import {
   ionizationContract,
   scanIonizableSites,
   scoreSitesWithHammett,
-  scoreSitesWithModel,
-  withdrawProtonlessSites,
-  withdrawUnmeasurableAmines
+  molblockWithChargedAtom,
+  scoreSiteTransitions
 } from "./ionization";
 import type { PkaMolecularGraph } from "./pkaModel";
 import {
@@ -965,14 +964,58 @@ function ionizationResultFor(
   // Feature-ising the hydrogen-explicit copy would change degree and neighbour counts for every site.
   const graph = modelGraph(context, json, defaultZ);
 
-  // Before anything is scored: a site with no proton has no acidity, and the table locates basic
-  // positions as well as acidic ones. Scoring one invents a number for a transition that does not
-  // exist.
-  scan = withdrawProtonlessSites(scan, graph);
-  // And a neutral amine's N-H, whose real pKa is around 35 — outside water, outside the training set,
-  // and outside what a forest bounded by its leaf values could return even if it knew.
-  scan = withdrawUnmeasurableAmines(scan, graph);
-  scan = scoreSitesWithModel(scan, graph);
+  /**
+   * The same molecule with one atom protonated, for scoring a BASIC site.
+   *
+   * Only the formal charge is written into the molblock; RDKit adds the proton itself on re-parse, so a
+   * pyridine nitrogen at +1 picks up one hydrogen and an -NH2 picks up a third. Descriptors are
+   * recomputed from that microstate rather than adjusted by hand — net charge, TPSA and HBD all move,
+   * and the model was trained on the real values.
+   *
+   * The element sequence is checked before the graph is used: a re-parse that reordered atoms would
+   * score the wrong site, silently.
+   */
+  const protonatedAt = (atomIndex: number): PkaMolecularGraph | undefined => {
+    const source = copy ? copy.call(module, context.mol) : undefined;
+    if (!source) return undefined;
+    let molblock: string | undefined;
+    try {
+      const withCoords = source as unknown as { get_molblock?(): string };
+      molblock = withCoords.get_molblock?.();
+    } finally {
+      source.delete();
+    }
+    if (!molblock) return undefined;
+
+    const edited = molblockWithChargedAtom(molblock, atomIndex);
+    if (!edited) return undefined;
+    const protonated = module.get_mol(edited) as AnalysisMol | null;
+    if (!protonated) return undefined;
+    try {
+      const protonatedJson = JSON.parse(protonated.get_json()) as typeof json;
+      const built = modelGraph(
+        { ...context, descriptors: JSON.parse(protonated.get_descriptors()) as Record<string, number> },
+        protonatedJson,
+        protonatedJson.defaults?.atom?.z ?? 6
+      );
+      if (built.atoms.length !== graph.atoms.length) return undefined;
+      for (let i = 0; i < built.atoms.length; i += 1) {
+        if (built.atoms[i]!.element !== graph.atoms[i]!.element) return undefined;
+      }
+      // The protonation has to have actually happened, or the "basic" value would describe the neutral
+      // form under a basic label — the exact confusion this whole path exists to remove.
+      const target = built.atoms[atomIndex];
+      if (!target || target.charge !== graph.atoms[atomIndex]!.charge + 1) return undefined;
+      if (target.hydrogens !== graph.atoms[atomIndex]!.hydrogens + 1) return undefined;
+      return built;
+    } catch {
+      return undefined;
+    } finally {
+      protonated.delete();
+    }
+  };
+
+  scan = scoreSiteTransitions(scan, graph, protonatedAt);
 
   // Then a second, independent opinion wherever the Hammett relationship reaches, and let the two
   // methods' disagreement set the confidence. It reaches few sites and says so on the rest; where it

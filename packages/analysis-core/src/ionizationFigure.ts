@@ -26,6 +26,12 @@ export interface IonizationFigureAnnotation {
   text: string;
   /** Measured confidence band. `unknown` draws neutral rather than guessing at a colour. */
   band: "good" | "fair" | "poor" | "unknown";
+  /**
+   * Which equilibrium the number describes. Carries the figure's most important distinction, so it is
+   * encoded in the colour every pKa tool uses for it: red for an acid losing a proton, blue for a base
+   * gaining one.
+   */
+  transition: "acidic" | "basic";
 }
 
 export interface IonizationFigureStructure {
@@ -39,7 +45,18 @@ export interface IonizationFigureThresholds {
   poor: number;
 }
 
+/**
+ * Two encodings that must not collide.
+ *
+ * The value's colour says WHICH EQUILIBRIUM — red acidic, blue basic — because that is the convention
+ * every pKa tool uses and the distinction a reader must not have to infer from the number's size. The
+ * ring around the atom says how far the method can be trusted there, on the measured green/amber/red
+ * quartiles. Putting confidence on the text instead would have left the acid/base distinction with
+ * nowhere to live.
+ */
 const COLOURS = {
+  acidic: "#cf222e",
+  basic: "#1f4fd8",
   good: "#1a7f37",
   fair: "#bf8700",
   poor: "#cf222e",
@@ -214,11 +231,12 @@ export function ionizationFigureSvg(options: {
     // Carbons stay implicit vertices unless they carry a value, which is how a structure is read.
     if (atom.element === "C" && atom.charge === 0 && !isSite) continue;
 
-    const colour = isSite ? COLOURS[annotation.band] : COLOURS.atom;
+    const colour = isSite ? COLOURS[annotation.transition] : COLOURS.atom;
     if (isSite) {
+      const confidence = COLOURS[annotation.band];
       parts.push(
         `<circle cx="${atom.sx.toFixed(2)}" cy="${atom.sy.toFixed(2)}" r="15" ` +
-          `fill="${colour}" fill-opacity="0.13" stroke="${colour}" stroke-width="1.4"/>`
+          `fill="${confidence}" fill-opacity="0.12" stroke="${confidence}" stroke-width="1.8"/>`
       );
     }
     parts.push(

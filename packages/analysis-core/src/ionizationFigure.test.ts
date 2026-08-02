@@ -39,7 +39,7 @@ describe("what the figure draws", () => {
   it("puts the value on the structure, next to its own atom", () => {
     const svg = ionizationFigureSvg({
       structure: PHENOL,
-      annotations: [{ atomIndex: 0, text: "9.95 ± 0.44", band: "good" }],
+      annotations: [{ atomIndex: 0, text: "9.95 ± 0.44", band: "good", transition: "acidic" }],
       title: "phenol"
     })!;
     const label = textPositions(svg).find((entry) => entry.text.includes("9.95"));
@@ -55,7 +55,7 @@ describe("what the figure draws", () => {
     // which transition was scored — exactly the amine confusion the contract has to shout about.
     const svg = ionizationFigureSvg({
       structure: PHENOL,
-      annotations: [{ atomIndex: 0, text: "9.95", band: "good" }],
+      annotations: [{ atomIndex: 0, text: "9.95", band: "good", transition: "acidic" }],
       title: "phenol"
     })!;
     expect(svg).toContain(">OH<");
@@ -71,7 +71,7 @@ describe("what the figure draws", () => {
     };
     const svg = ionizationFigureSvg({
       structure: amine,
-      annotations: [{ atomIndex: 0, text: "9.03 ± 4.76", band: "poor" }],
+      annotations: [{ atomIndex: 0, text: "9.03 ± 4.76", band: "poor", transition: "acidic" }],
       title: "amine"
     })!;
     expect(svg).toContain(">NH₂<");
@@ -88,7 +88,7 @@ describe("what the figure draws", () => {
     };
     const svg = ionizationFigureSvg({
       structure: nitro,
-      annotations: [{ atomIndex: 0, text: "7.17", band: "good" }],
+      annotations: [{ atomIndex: 0, text: "7.17", band: "good", transition: "acidic" }],
       title: "nitro"
     })!;
     expect(svg).toContain(">N⁺<");
@@ -103,7 +103,7 @@ describe("nothing drawn is cut off", () => {
     // has to be sized from the text, not from the structure.
     const svg = ionizationFigureSvg({
       structure: PHENOL,
-      annotations: [{ atomIndex: 0, text: "12.34 ± 56.78", band: "poor" }],
+      annotations: [{ atomIndex: 0, text: "12.34 ± 56.78", band: "poor", transition: "acidic" }],
       title: "phenol"
     })!;
     const { width, height } = viewBox(svg);
@@ -119,7 +119,7 @@ describe("nothing drawn is cut off", () => {
   it("keeps an intrinsic size so it can be scaled down rather than cropped", () => {
     const svg = ionizationFigureSvg({
       structure: PHENOL,
-      annotations: [{ atomIndex: 0, text: "9.95", band: "good" }],
+      annotations: [{ atomIndex: 0, text: "9.95", band: "good", transition: "acidic" }],
       title: "phenol"
     })!;
     const { width, height } = viewBox(svg);
@@ -150,7 +150,7 @@ describe("colour is the measured band", () => {
   it("colours the site and its value the same, so the pair reads as one statement", () => {
     const svg = ionizationFigureSvg({
       structure: PHENOL,
-      annotations: [{ atomIndex: 0, text: "9.03 ± 4.76", band: "poor" }],
+      annotations: [{ atomIndex: 0, text: "9.03 ± 4.76", band: "poor", transition: "acidic" }],
       title: "phenol"
     })!;
     // Red on both the atom and the number; a coloured number beside a black atom would read as two
