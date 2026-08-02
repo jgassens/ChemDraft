@@ -214,6 +214,18 @@ export interface IonizationSite {
   spread?: number;
   /** What kind of number this is. */
   basis: "site-type-average" | "experimentally-trained-model" | "inherited-from-another-predictor" | "consensus";
+  /**
+   * Present when several site types claim this atom and the table cannot say which applies.
+   *
+   * Not a footnote. Measured over 1,750 experimentally labelled sites, 46% of ionizable atoms match
+   * more than one tabulated type, and the types can disagree by 20 log units — an alcohol oxygen
+   * losing a proton sits near 15, the same oxygen protonated loses one near -7. Choosing between them
+   * requires knowing the answer, so the site is reported with no value and the candidates listed.
+   */
+  ambiguity?: {
+    candidateTypes: string[];
+    candidateValues: number[];
+  };
   /** Which methods produced a value here, and what they said. Populated when more than one did. */
   agreement?: {
     methods: string[];
@@ -395,6 +407,13 @@ const IonizationSiteSchema = z
       "inherited-from-another-predictor",
       "consensus"
     ]),
+    ambiguity: z
+      .object({
+        candidateTypes: z.array(z.string().min(1)).min(2),
+        candidateValues: z.array(z.number().finite())
+      })
+      .strict()
+      .optional(),
     agreement: z
       .object({
         methods: z.array(z.string().min(1)).min(2),

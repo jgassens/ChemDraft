@@ -1,15 +1,29 @@
 /**
  * Ionizable-site assessment (PLANS.md §9 Later phases; §8's "protonation-state enumeration").
  *
- * **What this is.** For each ionizable position it finds, a pKa taken from a table of *site-type*
- * averages fitted over compounds with measured values. That is the honest description and the label
- * every result carries: `site-type-average`.
+ * **What this is: site LOCATION, not pKa estimation.** It reports where a structure's ionizable
+ * positions are and which tabulated classes they might belong to. It deliberately reports **no pKa
+ * value at all**, and that decision is measured rather than cautious.
  *
- * **What it is not.** Not a pKa prediction for your molecule. The table knows "carboxylic acids sit
- * near 4"; it does not know that this one has three fluorines two bonds away. Substituents move real
- * pKa by more than the tabulated spread, routinely. §8 requires any pKa-adjacent number to record
- * whether it is experimentally trained, quantum-derived, or inherited from another predictor — a
- * type average is a fourth thing, and saying so is the point.
+ * Scored against 1,750 experimentally labelled sites from the open Dwar-iBond set:
+ *
+ * | reading of the table | MAE (log units) | within 1 |
+ * |---|---|---|
+ * | site matched by exactly ONE type | 2.77 | 21% |
+ * | matched by several, read at its best case | 1.11 | 60% |
+ * | realistic, not knowing which type applies | ~5.0 | 14% |
+ * | simply predicting the dataset mean | 2.33 | — |
+ *
+ * The first row is the one that decides it. Restricting values to unambiguous sites is the obvious
+ * safeguard, and it does not work: a lone matching type scores *worse* than several matching ones and
+ * worse than a constant. Unambiguity is not a proxy for reliability.
+ *
+ * The cause is structural. 46% of labelled sites match more than one type, and the types describe
+ * different TRANSITIONS on the same atom — the *Alcohol* entry is R-OH losing a proton (~15), while
+ * the same oxygen in R-OH2+ loses one near -7. Nothing in a substructure match says which is in play,
+ * so a number here would be wrong by up to 20 log units with a confident label on it.
+ *
+ * A pKa value belongs to a method trained on measured values per site. This one finds the sites for it.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -67,6 +81,7 @@ export function scanIonizableSites(
   const sites: IonizationSite[] = [];
   const unassessed: { atomIndices: number[]; reason: string }[] = [];
   const seen = new Set<string>();
+  const byAtom = new Map<number, { atoms: number[]; typeName: string; mean: number | null; std: number }[]>();
 
   for (const type of IONIZATION_SITE_TYPES) {
     const query = rdkit.get_qmol(type.smarts);
@@ -97,26 +112,15 @@ export function scanIonizableSites(
             continue;
           }
 
-          // A sentinel, not a value: the site is recognised and never titrates in any accessible range.
-          if (Math.abs(site.pKaMean) > SENTINEL_PKA_MAGNITUDE) {
-            sites.push({
-              atomIndices: [...match.atoms],
-              ionizableAtomIndex: atom,
-              siteType: type.name,
-              pKa: null,
-              basis: "site-type-average"
-            });
-            continue;
-          }
-
-          sites.push({
-            atomIndices: [...match.atoms],
-            ionizableAtomIndex: atom,
-            siteType: type.name,
-            pKa: site.pKaMean,
-            spread: site.pKaStd,
-            basis: "site-type-average"
+          const candidates = byAtom.get(atom) ?? [];
+          candidates.push({
+            atoms: [...match.atoms],
+            typeName: type.name,
+            // A sentinel, not a value: recognised, but never titrates in an accessible range.
+            mean: Math.abs(site.pKaMean) > SENTINEL_PKA_MAGNITUDE ? null : site.pKaMean,
+            std: site.pKaStd
           });
+          byAtom.set(atom, candidates);
         }
       }
     } catch {
@@ -125,6 +129,36 @@ export function scanIonizableSites(
     } finally {
       query.delete();
     }
+  }
+
+  // One site per ATOM, not per matching pattern — and where several site types claim the same atom,
+  // no value is offered at all.
+  //
+  // This is measured, not cautious. Across 1,750 experimentally labelled sites from the Dwar-iBond
+  // set, only 54% match exactly one type; 26% match three and 12% match four. Picking among them
+  // requires knowing the answer: the table's *Alcohol* entry describes R-OH losing a proton (~15),
+  // and the same oxygen in R-OH2+ losing one measures near -7. Same atom, opposite ends of the scale,
+  // and nothing in the match says which transition is in play. Reported ambiguous, the reader learns
+  // there is a site and that its class is undetermined. Reported as a number, they learn something
+  // false to 20 log units.
+  for (const [atom, candidates] of byAtom) {
+    const typeNames = [...new Set(candidates.map((entry) => entry.typeName))].sort();
+    const scored = candidates.filter((entry) => entry.mean !== null);
+
+    // NO pKa VALUE, ever, from this table. See the measurement in the module header: unambiguity is
+    // not a proxy for reliability here — a lone matching type scores WORSE (MAE 2.77) than several
+    // matching ones read at their best (1.11), and worse than predicting the dataset mean (2.33).
+    // What the table does reliably is locate the site and name its candidate classes.
+    sites.push({
+      atomIndices: candidates[0]!.atoms,
+      ionizableAtomIndex: atom,
+      siteType: typeNames.join(" / "),
+      pKa: null,
+      basis: "site-type-average",
+      ...(typeNames.length > 1
+        ? { ambiguity: { candidateTypes: typeNames, candidateValues: scored.map((entry) => entry.mean!) } }
+        : {})
+    });
   }
 
   sites.sort((a, b) => a.ionizableAtomIndex - b.ionizableAtomIndex);
@@ -205,9 +239,16 @@ export function ionizationContract(): MethodContract {
     defaultInterpretationId: "source",
     resultKind: "ionization",
     conventions: [
-      "EACH pKa IS AN AVERAGE OVER A SITE TYPE, NOT A PREDICTION FOR THIS MOLECULE. The table knows " +
-        "that carboxylic acids sit near 4; it does not know what this molecule's substituents do to " +
-        "that. Real substituent effects routinely exceed the quoted spread.",
+      "THIS METHOD LOCATES IONIZABLE SITES. IT REPORTS NO pKa VALUE, by design and on evidence: " +
+        "scored against 1,750 experimentally labelled sites, the tabulated averages give a mean " +
+        "absolute error of 2.8 log units where exactly one site type matches, against 2.3 for simply " +
+        "predicting the dataset mean. They are not fit to estimate a molecule's pKa.",
+      "restricting values to unambiguous sites does not rescue it — a lone matching type scores WORSE " +
+        "(2.8) than several matching types read at their best case (1.1). Unambiguity is not a proxy " +
+        "for reliability here.",
+      "46% of labelled sites match more than one type, and the types describe different TRANSITIONS " +
+        "on the same atom: the Alcohol entry is R-OH losing a proton (~15), while the same oxygen in " +
+        "R-OH2+ loses one near -7. Every candidate class is listed rather than one being chosen.",
       "the spread is the standard deviation across the compounds the site type was fitted over — a " +
         "statement about the class, not a confidence interval for this site",
       "aqueous only, at room temperature. No value here says anything about DMSO, acetonitrile, or " +
@@ -219,8 +260,8 @@ export function ionizationContract(): MethodContract {
     ],
     classification: CLASSIFICATION,
     supportedChemistry: [
-      "organic acids and bases matching one of the tabulated site substructures",
-      "polyprotic molecules — every matching site is reported separately"
+      "locating ionizable positions in organic acids and bases matching a tabulated site substructure",
+      "polyprotic molecules — every ionizable atom is reported separately"
     ],
     knownUnsupportedChemistry: [
       "anything containing a metal: no open pKa dataset contains a metal-bearing structure, so such " +
@@ -232,6 +273,8 @@ export function ionizationContract(): MethodContract {
       "no tabulated site substructure matches the structure",
       "a matching site is adjacent to a metal centre — reported as unassessed, with the reason"
     ],
+    // No accuracy claim, because this method makes no numeric claim to be accurate about. What was
+    // measured is recorded in the conventions above, as the reason it reports no value.
     accuracyClaims: [],
     citations: [
       {

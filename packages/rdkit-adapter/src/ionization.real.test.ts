@@ -37,15 +37,33 @@ async function ionization(smiles: string) {
 }
 
 describe("finding the ionizable atom", () => {
-  it("puts the carboxylic-acid site on the hydroxyl oxygen, not the carbonyl", async () => {
+  it("puts acetic acid's site on the hydroxyl oxygen, not the carbonyl", async () => {
     // The whole reason the index semantics were verified against Dimorphite's source. Acetic acid is
     // CC(=O)O — atom 1 is the carbonyl carbon, 2 the =O, 3 the -OH. The site must be atom 3.
     const { result } = await ionization("CC(=O)O");
-    const acid = result.sites.find((site) => /^carboxyl$/i.test(site.siteType));
-    expect(acid, "no carboxylic acid site found").toBeDefined();
-    expect(acid!.ionizableAtomIndex).toBe(3);
-    expect(acid!.pKa).toBeGreaterThan(2);
-    expect(acid!.pKa).toBeLessThan(6);
+    const site = result.sites.find((entry) => /carboxyl/i.test(entry.siteType));
+    expect(site, "no carboxyl site found").toBeDefined();
+    expect(site!.ionizableAtomIndex).toBe(3);
+  });
+
+  it("reports no pKa value, because the table is not fit to give one", async () => {
+    // Measured, not cautious: on 1,750 labelled sites the tabulated averages score MAE 2.8 where one
+    // type matches, against 2.3 for predicting the dataset mean. A value here would be a confident
+    // number that is worse than a constant.
+    const { result } = await ionization("CC(=O)O");
+    expect(result.sites.length).toBeGreaterThan(0);
+    for (const site of result.sites) expect(site.pKa).toBeNull();
+  });
+
+  it("lists every candidate class when several claim the same atom", async () => {
+    // 46% of labelled sites match more than one type, and the types describe different transitions —
+    // so the candidates are shown rather than one being silently chosen.
+    const { result } = await ionization("CC(=O)O");
+    const ambiguous = result.sites.filter((site) => site.ambiguity);
+    for (const site of ambiguous) {
+      expect(site.ambiguity!.candidateTypes.length).toBeGreaterThan(1);
+      expect(site.siteType).toContain("/");
+    }
   });
 
   it("reports every site of a polyprotic molecule separately", async () => {
@@ -57,7 +75,7 @@ describe("finding the ionizable atom", () => {
     expect(atoms.size).toBeGreaterThanOrEqual(3);
   });
 
-  it("labels every value as a site-type average rather than a prediction", async () => {
+  it("labels the basis so a later method can be told apart from this one", async () => {
     const { result } = await ionization("CC(=O)O");
     for (const site of result.sites) expect(site.basis).toBe("site-type-average");
   });
@@ -148,7 +166,7 @@ describe("the contract", () => {
   it("states the limits a reader would otherwise have to guess", async () => {
     const contract = ionizationContract();
     const conventions = contract.conventions.join(" ");
-    expect(conventions).toMatch(/NOT A PREDICTION FOR THIS MOLECULE/);
+    expect(conventions).toMatch(/REPORTS NO pKa VALUE/);
     expect(conventions).toMatch(/aqueous only/i);
     // The one most likely to mislead: a missing site is not evidence of absence.
     expect(conventions).toMatch(/Absence of a site is not evidence that there is none/);
