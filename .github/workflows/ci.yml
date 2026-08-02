@@ -46,7 +46,7 @@ jobs:
       - run: pnpm --filter @chemdraft/desktop build:web
 
   rust:
-    name: Rust tests
+    name: Rust fmt, clippy, tests
     # macOS-only by necessity, not preference: the crate depends on objc2-app-kit / objc2-web-kit
     # and the Sparkle updater plugin, none of which build elsewhere.
     runs-on: macos-latest
@@ -70,11 +70,21 @@ jobs:
       # framework is absent, which leaves the test executables unable to link against it.
       - run: pnpm --filter @chemdraft/desktop prepare:sparkle
 
-      - uses: dtolnay/rust-toolchain@stable
+      # No toolchain action on purpose: rust-toolchain.toml is the single source of truth, so the
+      # runner and a developer machine cannot disagree about which lints exist. `@stable` did
+      # disagree — the runner had moved to 1.97 while this was written against 1.96, and clippy
+      # failed here on code that was clean locally.
+      - run: rustup show
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
+
+      # Formatting first: it needs no build, so a formatting-only failure reports in seconds instead
+      # of after a full compile.
+      - run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - run: cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
 
       # 52 tests that no automated gate has ever run. `--locked` fails on a stale Cargo.lock rather
       # than silently resolving new versions.
