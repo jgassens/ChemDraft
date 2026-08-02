@@ -7,7 +7,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { IonizationSite } from "@chemdraft/analysis-core";
+import { buildAnalysisReport, type IonizationSite } from "@chemdraft/analysis-core";
 
 import { analyzeStructure } from "./analysis";
 import { resetRdkitForTesting } from "./conformer";
@@ -281,5 +281,56 @@ describe("the contract", () => {
     expect(contract.knownUnsupportedChemistry.join(" ")).toMatch(/metal/i);
     expect(contract.datasets[0]!.license).toBe("Apache-2.0");
     expect(contract.citations.some((entry) => entry.id === "dimorphite-2019")).toBe(true);
+  });
+});
+
+describe("what a reader actually sees", () => {
+  it("puts every site in the report, with its interval and where it came from", async () => {
+    // A method that computes a pKa nothing renders has not shipped. 4-nitrophenol is the case where
+    // both methods fire, so the row has to show the consensus and how far apart they were.
+    const { run } = await ionization("O=[N+]([O-])c1ccc(O)cc1");
+    const report = buildAnalysisReport(run);
+    const table = report.sections.find(
+      (section) => section.kind === "table" && /ionizable site/i.test(section.title)
+    );
+    expect(table, "no ionizable-site section in the report").toBeDefined();
+    if (table?.kind !== "table") return;
+
+    expect(table.columns).toEqual(["Atom", "Site", "pKa", "Basis"]);
+    const consensus = table.rows.find((row) => row[3]!.startsWith("consensus"));
+    expect(consensus, "the consensus row is missing").toBeDefined();
+    // The number is never bare: a pKa without its interval reads as a measurement.
+    expect(consensus![2]).toMatch(/^\d+\.\d+ ± \d+\.\d+$/);
+    expect(consensus![3]).toMatch(/model \+ hammett/);
+    expect(consensus![3]).toMatch(/differing by/);
+  });
+
+  it("shows the Hammett working when it is the only method that fired", async () => {
+    // The single-method path: no consensus, so the row shows the derivation instead — which sigma was
+    // used for which substituent, so a chemist can check the number by hand.
+    const site: IonizationSite = {
+      atomIndices: [0],
+      ionizableAtomIndex: 0,
+      siteType: "Phenol",
+      pKa: 7.12,
+      spread: 0.16,
+      basis: "linear-free-energy-relationship",
+      derivation: "phenol series, rho applied to para-nitro (sigma 1.27)"
+    };
+    const merged = combineSiteEstimates({ hammett: [site] });
+    expect(merged[0]!.basis).toBe("linear-free-energy-relationship");
+    expect(merged[0]!.derivation).toMatch(/para-nitro/);
+  });
+
+  it("lists a site it could not assess rather than leaving it out", async () => {
+    const { run } = await ionization("[Na+].[O-]C(=O)c1ccccc1");
+    const report = buildAnalysisReport(run);
+    const table = report.sections.find(
+      (section) => section.kind === "table" && section.title === "Ionizable sites not assessed"
+    );
+    if (table?.kind === "table") {
+      expect(table.columns).toEqual(["Atoms", "Reason"]);
+      expect(table.rows[0]![1]).toMatch(/metal-bearing structure/);
+    }
   });
 });

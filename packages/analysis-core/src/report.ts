@@ -373,6 +373,51 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
     sections.push(keyValueSection("Descriptors", descriptors.map((result) => row(result, formatScalar(result), displayLabel(result)))));
   }
 
+  // --- ionizable sites ------------------------------------------------------------------------
+  // A table with one row per SITE, never a single "the pKa" for the molecule. Collapsing a polyprotic
+  // structure to one number is the first thing that makes a pKa wrong, and the result is a list
+  // precisely so the report cannot do it.
+  //
+  // Every row carries where its number came from, because they do not all come from the same place:
+  // one method, two methods weighted by their measured accuracy, or no value at all for a site that is
+  // recognised but never titrates.
+  for (const ionization of ok.filter(isKind("ionization"))) {
+    if (ionization.sites.length > 0) {
+      sections.push({
+        kind: "table",
+        title: `${displayLabel(ionization)} (${ionization.sites.length} site${
+          ionization.sites.length === 1 ? "" : "s"
+        })`,
+        columns: ["Atom", "Site", "pKa", "Basis"],
+        rows: ionization.sites.map((site) => [
+          String(site.ionizableAtomIndex),
+          site.siteType,
+          // The interval is not decoration and never gets dropped: a bare pKa reads as a measurement.
+          site.pKa === null
+            ? "not titratable"
+            : site.spread === undefined
+              ? formatNumber(site.pKa, 2)
+              : `${formatNumber(site.pKa, 2)} ± ${formatNumber(site.spread, 2)}`,
+          site.agreement
+            ? `${site.basis} of ${site.agreement.methods.join(" + ")}, ` +
+              `differing by ${formatNumber(site.agreement.span, 2)}`
+            : (site.derivation ?? site.basis)
+        ])
+      });
+    }
+
+    // Sites the method knows are there and cannot score. Reported as their own rows rather than
+    // omitted: a site missing from the table above reads as "there is nothing here".
+    if (ionization.unassessed.length > 0) {
+      sections.push({
+        kind: "table",
+        title: "Ionizable sites not assessed",
+        columns: ["Atoms", "Reason"],
+        rows: ionization.unassessed.map((entry) => [entry.atomIndices.join(", "), entry.reason])
+      });
+    }
+  }
+
   // --- distributions --------------------------------------------------------------------------
   // A table of peaks, not a plot: the report is a text artifact that has to survive the clipboard, and
   // the panel renders the same model. The truncation goes in the title rather than a footnote — a
