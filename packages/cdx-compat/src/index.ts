@@ -2172,12 +2172,29 @@ function importReactionArrowAsArtArrow(
     : retro
       ? "retroArrow"
       : arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow";
+  // `LineType="Wavy"` survives only on the single-shaft arrows. The wavy generator emits ONE shaft
+  // and ignores `dualShaft`, so keeping the kind here would collapse an equilibrium's two opposed
+  // shafts — and a retrosynthetic arrow's parallel pair plus its "=>" head — into a single wavy line
+  // while `dualShaft` still claimed otherwise, trading a small loss for the arrow's whole identity.
+  const dualShaft = equilibrium || retro;
+  if (dualShaft && graphic.data.artPathKind === "wavy") {
+    context.warnings.push(
+      warning(
+        "cdxml.wavy_dual_shaft_arrow_straightened",
+        `A wavy ${arrowKind} arrow was imported with a straight shaft: its two shafts are drawn geometry, which ChemDraft cannot currently draw as a wave. The arrow's chemistry is unchanged.`
+      )
+    );
+  }
   return {
     ...graphic,
     graphicKind: "path",
     data: {
       ...graphic.data,
-      artPathKind: "line",
+      // Only DEFAULT the path kind, as the `<arrow>` importer does. `graphicDataFromCdxmlShape` has
+      // already read `LineType="Wavy"` off this element, and `exportSemanticReactionArrowGraphic`
+      // writes that same attribute back out — so overwriting it here straightened a wavy shaft on
+      // the way in, including on files this codec had just written itself.
+      artPathKind: dualShaft ? "line" : graphic.data.artPathKind ?? "line",
       // A retrosynthetic arrow has no marker: its "=>" head is part of the path geometry.
       ...(retro ? {} : { markerEnd: marker }),
       ...(arrowKind === "resonance" || equilibrium ? { markerStart: marker } : {}),
@@ -2209,7 +2226,8 @@ function importHalfHeadArrowAsFishhook(
     graphicKind: "path",
     data: {
       ...graphic.data,
-      artPathKind: "line",
+      // Defaulted, not overwritten — as above, and for the same reason.
+      artPathKind: graphic.data.artPathKind ?? "line",
       markerEnd: { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx },
       artToolId: "fishhookArrow"
     }

@@ -422,6 +422,108 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(reopened?.style.fillColor?.toLowerCase()).toBe("#00ff00");
   });
 
+  // `graphicDataFromCdxmlShape` already reads `LineType="Wavy"` into `artPathKind` for every line
+  // graphic, and `exportSemanticReactionArrowGraphic` already WRITES `LineType` on reaction arrows —
+  // so a wavy reaction arrow is representable at both ends of this codec. The two semantic-arrow
+  // importers threw it away with a hard `artPathKind: "line"`, straightening the shaft on the way in.
+  // The `<arrow>` importer beside them defaults the kind (`?? "line"`) for exactly this reason.
+  it("keeps a wavy shaft on an imported reaction arrow instead of straightening it", () => {
+    const cdxml = (extra: string) => `<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="9" BoundingBox="120 200 260 200" Z="1" GraphicType="Line" LineType="Wavy" ${extra} Start="120 200" End="260 200"/>
+  </page>
+</CDXML>`;
+
+    // Baseline: with no ArrowType the very same element imports wavy, so the attribute is read.
+    const plainLine = openChemDraftPayload(cdxml("")).document?.pages[0].objects[0] as GraphicObject;
+    expect(plainLine.data.artPathKind).toBe("wavy");
+
+    // Naming the chemistry must not cost the geometry — for a reaction arrow…
+    const reaction = openChemDraftPayload(cdxml('ArrowType="FullHead"')).document?.pages[0].objects[0] as GraphicObject;
+    expect(reaction.data.artToolId).toBe("reactionArrow");
+    expect(reaction.data.artPathKind).toBe("wavy");
+
+    // …nor for the single-barbed fishhook, whose importer had the same hard assignment.
+    const fishhook = openChemDraftPayload(cdxml('ArrowType="HalfHead"')).document?.pages[0].objects[0] as GraphicObject;
+    expect(fishhook.data.artToolId).toBe("fishhookArrow");
+    expect(fishhook.data.artPathKind).toBe("wavy");
+
+    // But NOT on the two-shaft arrows. The wavy generator emits one shaft and ignores `dualShaft`,
+    // so keeping the kind there would collapse an equilibrium's opposed pair — and a retro arrow's
+    // parallel pair plus its "=>" head — into a single wavy line while `dualShaft` still said
+    // otherwise. Straightening loses the wave; keeping it would lose the arrow. Reported either way.
+    for (const [arrowType, tool] of [["Equilibrium", "equilibriumArrow"], ["RetroSynthetic", "retroArrow"]]) {
+      const opened = openChemDraftPayload(cdxml(`ArrowType="${arrowType}"`));
+      const arrow = opened.document?.pages[0].objects[0] as GraphicObject;
+      expect(arrow.data.artToolId).toBe(tool);
+      expect(arrow.data.dualShaft).toBe(true);
+      expect(arrow.data.artPathKind).toBe("line");
+      expect(opened.warnings.map((entry) => entry.code)).toContain("cdxml.wavy_dual_shaft_arrow_straightened");
+    }
+
+    // A straight two-shaft arrow is not reported — the warning is about actual loss, not shape.
+    const straightEquilibrium = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="9" BoundingBox="120 200 260 200" Z="1" GraphicType="Line" ArrowType="Equilibrium" Start="120 200" End="260 200"/>
+  </page>
+</CDXML>`);
+    expect(straightEquilibrium.warnings.map((entry) => entry.code)).not.toContain("cdxml.wavy_dual_shaft_arrow_straightened");
+
+    // A straight arrow stays straight: the fix defaults the kind, it does not invent one.
+    const straight = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="9" BoundingBox="120 200 260 200" Z="1" GraphicType="Line" ArrowType="FullHead" Start="120 200" End="260 200"/>
+  </page>
+</CDXML>`).document?.pages[0].objects[0] as GraphicObject;
+    expect(straight.data.artPathKind).toBe("line");
+  });
+
+  // The loss above is reachable through ChemDraft's OWN writer, which is what makes it data loss
+  // rather than an interop approximation: the exporter emits `LineType="Wavy"` for this object, and
+  // re-opening the file it just wrote gave back a straight arrow.
+  it("round-trips a wavy reaction arrow through its own exporter", () => {
+    const document = createEmptyDocument({ title: "Wavy Arrow", now: "2026-06-06T00:00:00.000Z" });
+    const wavyArrow: GraphicObject = {
+      id: "graphic_wavy_arrow",
+      type: "graphic",
+      x: 120,
+      y: 190,
+      width: 140,
+      height: 20,
+      rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "wavy",
+        artToolId: "reactionArrow",
+        lineStart: { x: 120, y: 200 },
+        lineEnd: { x: 260, y: 200 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    };
+    document.pages[0].objects.push(wavyArrow);
+
+    const exported = exportDocumentToCdxml(document, { creationProgram: "Wavy Arrow Round Trip" });
+    expect(exported.contents).toContain('ArrowType="FullHead"');
+    expect(exported.contents).toContain('LineType="Wavy"');
+
+    // Reopen as a foreign file, so the VISIBLE CDXML is what gets read. The embedded native payload
+    // rides in `<objecttag Name="org.chemdraft/…">` elements and restores the object verbatim, which
+    // would mask the loss for ChemDraft while every other reader of the same file saw a straight
+    // arrow. Assert the source too, so this can never quietly pass through the payload again.
+    const visibleOnly = exported.contents.replace(/<objecttag Name="org\.chemdraft\/[^>]*\/>/g, "");
+    const reopened = openChemDraftPayload(visibleOnly);
+    expect(reopened.source).toBe("external-cdxml");
+    const arrow = reopened.document?.pages[0].objects.find(
+      (object) => object.type === "graphic"
+    ) as GraphicObject | undefined;
+    expect(arrow?.data.artToolId).toBe("reactionArrow");
+    expect(arrow?.data.artPathKind).toBe("wavy");
+  });
+
   it("imports and exports ChemDraw shape graphics as native graphic objects", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
