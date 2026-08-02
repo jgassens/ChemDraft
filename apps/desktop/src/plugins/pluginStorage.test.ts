@@ -143,4 +143,71 @@ describe("createPersistentPluginStorage", () => {
 
     expect(writeCalls()).toHaveLength(1);
   });
+
+  it("reports an unserializable value instead of an unhandled rejection", async () => {
+    // Only the invoke was wrapped, so JSON.stringify — which throws on a cyclic value or a BigInt
+    // a plugin stored quite legitimately — escaped as an unhandled rejection from a detached timer:
+    // no diagnostic, nothing written, and every later set repeated it. The plugin saw success.
+    const diagnostics: string[] = [];
+    invoke.mockImplementation((command: string) =>
+      command === "plugin_storage_read" ? Promise.resolve(null) : Promise.resolve(undefined)
+    );
+
+    const storage = createPersistentPluginStorage("org.test.plugin", (message) => diagnostics.push(message));
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+    await storage.set("cyclic", cyclic);
+    await waitUntil(() => diagnostics.length > 0);
+
+    expect(diagnostics.join(" ")).toContain("could not be saved");
+    // Nothing was written, and the value stays readable in memory rather than being lost silently.
+    expect(writeCalls()).toHaveLength(0);
+    expect(await storage.get("cyclic")).toBe(cyclic);
+  });
+
+  it("reports a corrupt file rather than discarding it silently", async () => {
+    // Starting fresh is right — the contents are unusable — but the next save overwrites whatever
+    // was in there, and that should not happen without a word.
+    const diagnostics: string[] = [];
+    invoke.mockImplementation((command: string) =>
+      command === "plugin_storage_read" ? Promise.resolve("{not json") : Promise.resolve(undefined)
+    );
+
+    const storage = createPersistentPluginStorage("org.test.plugin", (message) => diagnostics.push(message));
+    await storage.set("fresh", true);
+    await waitUntil(() => writeCalls().length > 0);
+
+    expect(diagnostics.join(" ")).toContain("could not be parsed");
+    // Writing stays enabled: overwriting an unparseable file is the repair, unlike an unreadable one.
+    expect(writeCalls()).toHaveLength(1);
+  });
+
+  it("keeps working when the tauri module itself fails to load", async () => {
+    // ensureLoaded memoises its promise, and the dynamic import used to sit OUTSIDE the try. A
+    // chunk that would not load therefore left `loaded` permanently rejected: `if (!loaded)` is
+    // false forever, so no retry, every later call throwing for the rest of the session, and
+    // persistDisabled never set — so the documented degrade-to-in-memory never happened for the
+    // one failure mode that most needs it.
+    vi.resetModules();
+    vi.doMock("@tauri-apps/api/core", () => {
+      throw new Error("chunk load failed");
+    });
+
+    try {
+      const { createPersistentPluginStorage: freshFactory } = await import("./pluginStorage");
+      const diagnostics: string[] = [];
+      const storage = freshFactory("org.test.plugin", (message) => diagnostics.push(message));
+
+      // Every entry point must RESOLVE, not throw.
+      await expect(storage.set("a", 1)).resolves.toBeUndefined();
+      await expect(storage.get("a")).resolves.toBe(1);
+      await expect(storage.listKeys()).resolves.toEqual(["a"]);
+      await expect(storage.delete("a")).resolves.toBeUndefined();
+      await expect(storage.listKeys()).resolves.toEqual([]);
+      expect(diagnostics.join(" ")).toContain("will not be saved this session");
+    } finally {
+      vi.doUnmock("@tauri-apps/api/core");
+      vi.resetModules();
+    }
+  });
 });
