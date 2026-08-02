@@ -536,6 +536,36 @@ either release.**
 protonation-state enumeration · NMR improvements · candidate 2D-correlation diagrams clearly
 distinguished from simulated spectra. `AGENTS.md` §8a scientific-claim rules bind these.
 
+**Joback landed 2026-08-02** — normal boiling point, critical temperature, critical pressure, and
+critical volume, each with its own contract, RDKit SMARTS fragmentation, and Joback's published mean
+absolute error carried as a real `Uncertainty`. Classified `fragment-rule` / `prediction`: an estimate
+is not a descriptor, and filing one as such would put a ±13 K boiling point in the same table as a
+computed ring count. Stein-Brown, protonation states, and correlation maps are still open.
+
+**The unsupported-group half is the half that mattered**, exactly as §9 implies by asking for it.
+Joback is a *sum over groups*, so a structure containing something unparameterised still yields a
+number — describing a smaller molecule. The same failure the envelope refuses for isotope labels and
+the OpenClatura benchmark found in naming, so it gets the same answer: every heavy atom lands in
+exactly one parameterised group or the method declines. Phenylboronic acid and sodium benzoate decline
+rather than reporting a boiling point for the fragment that happened to match, and `=NH` declines
+separately because Joback publishes no Tb or Tc term for it — null is not zero.
+
+**Validated against an independent implementation**, Caleb Bell's `thermo` (MIT), the same discipline
+RDKit-vs-IsoSpec gives the envelope and OPSIN gives naming. It paid immediately: the first critical
+pressure read Joback's `nA` as the heavy-atom count, giving n-octane **50.3 bar against the correct
+25.35** — `nA` counts hydrogens. Both are plausible-looking critical pressures, so only a second
+implementation catches it.
+
+**Two things the wiring exposed.** The `source` interpretation declared four policies and left the
+tautomer one implicit, so the registry refused to run any tautomer-sensitive method against it — and
+Joback is genuinely tautomer-sensitive, since keto and enol acetylacetone have different group counts.
+Fixed by *stating what was already true* (`as-drawn — no tautomer standardisation`) rather than
+weakening the flag. And the corpus's C320 alkane turned whole runs `unsupported`, because Joback's Tc
+denominator goes negative at that size — `thermo` returns a negative critical temperature there, so
+declining was right and only the *status* was wrong. An out-of-range correlation is the method's domain
+working, like a water loss from a molecule with no oxygen, so it is `not-applicable`; a missing
+parameter stays `unsupported`, matching Crippen logP on sodium.
+
 **Computational sidecars.** MOPAC ≥23.1.0 on macOS arm64 (heat of formation, ionization potential,
 dipole, HOMO/LUMO, PM7 optimization, vibrational frequencies) · optional compliant xtb · detection
 adapters for user-installed ORCA, GAMESS, Psi4, NWChem · the §5 job protocol.
