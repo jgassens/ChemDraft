@@ -1,6 +1,6 @@
-import { graphicMarkerRenderedSizeFloorPx, planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
+import { graphicMarkerRenderedSizeFloorPx, graphicMarkerRenderedSizePx, planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
 import type { ChemDraftDocument, GraphicMarker, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
-import { graphicObjectHasShaftMark, graphicObjectSupportsMarkers, nativeArrowToolIdForGraphic } from "./documentWorkflow";
+import { graphicObjectHasShaftMark, graphicObjectSupportsMarkersWithPlan, nativeArrowToolIdForGraphic } from "./documentWorkflow";
 import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
@@ -132,7 +132,10 @@ export interface ArtInspectorModel {
     /** Absent marker keys read as "none" so a bare tail is a real value, not a mixed-null. */
     markerStartKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
     markerEndKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
-    /** The STORED head size — the render floors it at strokeWidth×4, which the widget clamps for. */
+    /** The head size as RENDERED: the stored `sizePx`, or the engine's 10px default, floored per
+     *  marker kind by {@link markerRenderedSizeFloorPx}. Reporting the raw stored value meant an
+     *  unset head read as a size nothing drew at, and it could also fall below the floor the widget
+     *  clamps its choices to — so the control offered a value it could not round-trip. */
     markerSizePx: ArtInspectorMixedValue<number>;
     /** No-reaction ✗ size: an explicit px value, or "auto" when derived from stroke width. */
     shaftMarkSizePx: ArtInspectorMixedValue<number | "auto">;
@@ -180,7 +183,11 @@ export function createArtInspectorModel({
   const supportsDash = planned.map((entry) => entry.plan?.capabilities.supportsDash === true);
   const supportsLineEnds = planned.map((entry) => entry.plan?.capabilities.supportsLineCap === true);
   const supportsCorners = planned.map((entry) => entry.plan?.capabilities.supportsLineJoin === true);
-  const supportsMarkers = planned.map((entry) => entry.object.type === "graphic" && graphicObjectSupportsMarkers(entry.object));
+  // From the plan computed above, not a second planNativeArtVisual call — see the note on
+  // `graphicObjectSupportsMarkersWithPlan`. This model is rebuilt every pointermove frame.
+  const supportsMarkers = planned.map(
+    (entry) => entry.object.type === "graphic" && entry.plan !== undefined && graphicObjectSupportsMarkersWithPlan(entry.object, entry.plan)
+  );
   const supportsShaftMark = planned.map((entry) => entry.object.type === "graphic" && graphicObjectHasShaftMark(entry.object));
   const arrowToolIdByEntry = planned.map((entry) => entry.object.type === "graphic" ? nativeArrowToolIdForGraphic(entry.object) : undefined);
   const arrowCount = arrowToolIdByEntry.filter((toolId) => toolId !== undefined).length;
@@ -462,15 +469,22 @@ function renderedMarkerSizeValue(
     if (!supportsMarkers[index] || entry.object.type !== "graphic") {
       return;
     }
+    const strokeWidth = entry.plan?.stroke.width ?? 1.5;
     for (const markerId of ["markerStart", "markerEnd"] as const) {
       const marker = entry.object.data[markerId];
       if (!marker || marker.kind === "none") {
         continue;
       }
-      const size = metadataNumberValue(marker.sizePx, 16);
-      if (size !== undefined && size !== null) {
-        sizes.push(size);
-      }
+      // The size this head DRAWS at, from the engine's own rule. Substituting a flat 16 for an
+      // absent `sizePx` reported a number nothing rendered — the renderer defaults to 10 and floors
+      // by stroke width — so a selection mixing a stored 16 with an unset head read as a confident
+      // uniform 16: exactly the state the paragraph above says this function exists to prevent, and
+      // picking that size then made the misreport true.
+      //
+      // Read from the STORED marker, not the plan's `markerStart`/`markerEnd`: those are dual-shaft
+      // scaled, while the size command writes an unscaled `sizePx`, so reporting the scaled value
+      // would just trade one disagreement for another.
+      sizes.push(graphicMarkerRenderedSizePx(marker, strokeWidth));
     }
   });
   if (sizes.length === 0) {
@@ -543,7 +557,7 @@ function skippedForControl(
         reason: plan.capabilities.hasCorners ? "unsupported" : "no-corners"
       }];
     }
-    if (control === "markers" && !graphicObjectSupportsMarkers(object)) {
+    if (control === "markers" && !graphicObjectSupportsMarkersWithPlan(object, plan)) {
       return [{
         objectId: object.id,
         // Closed shapes have no terminals to head; retro arrows (path-geometry "⇒") and other

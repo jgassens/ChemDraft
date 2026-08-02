@@ -807,6 +807,35 @@ describe("arrowhead size reporting", () => {
     expect(modelFor([symmetric]).values.markerSizePx).toEqual({ value: 20, mixed: false });
   });
 
+  it("reports the size an unset head renders at, not a fabricated one", () => {
+    // The engine draws a head with no stored `sizePx` at max(2, 10, floor). Substituting 16 here
+    // reported a size nothing rendered, and — worse — a selection mixing a stored 16 with an unset
+    // head read as a confident uniform 16, the exact state this reporting exists to prevent.
+    const unset = arrow("art_unset", {
+      style: { strokeColor: "#111111", strokeWidth: 2 },
+      data: { artPathKind: "line", artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow" } }
+    });
+    // strokeWidth 2 -> filled floor 8, so the 10px default wins.
+    expect(modelFor([unset]).values.markerSizePx).toEqual({ value: 10, mixed: false });
+
+    // The pair that used to agree at a fabricated 16 now reads honestly as mixed.
+    const stored16 = arrow("art_stored", {
+      style: { strokeColor: "#111111", strokeWidth: 2 },
+      data: { artPathKind: "line", artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow", sizePx: 16 } }
+    });
+    expect(modelFor([unset, stored16]).values.markerSizePx).toEqual({ value: null, mixed: true });
+
+    // The floor is part of the answer: a thick stroke raises what a small stored size draws at, and
+    // the reported value must not sit below the minimum the widget clamps its choices to.
+    const flooredByStroke = arrow("art_floored", {
+      style: { strokeColor: "#111111", strokeWidth: 6 },
+      data: { artPathKind: "line", artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow", sizePx: 4 } }
+    });
+    const model = modelFor([flooredByStroke]);
+    expect(model.values.markerSizePx).toEqual({ value: 24, mixed: false });
+    expect(model.values.markerSizePx.value).toBeGreaterThanOrEqual(model.markerRenderedSizeFloorPx ?? 0);
+  });
+
   it("ignores a present-but-none head when reporting size", () => {
     // `{kind: "none"}` is not a rendered head, so its size must not be read as the arrow's.
     const bareTail = arrow("art_bare_tail", {

@@ -25,6 +25,7 @@ import {
   type NativeArtBooleanSkippedInput,
   type NativeArtBooleanResultPath,
   type NativeArtMarkerHandleId,
+  type NativeArtVisualPlan,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints,
   type GraphicPathNodeEditPoints,
@@ -8088,10 +8089,32 @@ function updateGraphicObjectData(
  * path geometry, not a marker, so a marker command would draw a second head.
  */
 export function graphicObjectSupportsMarkers(object: DocumentObject | undefined): boolean {
-  if (!object || object.type !== "graphic" || object.graphicKind !== "path" || object.data.dualShaftParallel === true) {
+  if (!object || object.type !== "graphic" || !graphicShapeCanCarryMarkers(object)) {
     return false;
   }
-  return planNativeArtVisual(object, { coordinateSpace: "local" }).capabilities.isOpenStroke === true;
+  return graphicObjectSupportsMarkersWithPlan(object, planNativeArtVisual(object, { coordinateSpace: "local" }));
+}
+
+/** The half of the test that needs no plan, so the plan is only built when it can still change the
+ *  answer. */
+function graphicShapeCanCarryMarkers(object: GraphicObject): boolean {
+  return object.graphicKind === "path" && object.data.dualShaftParallel !== true;
+}
+
+/**
+ * {@link graphicObjectSupportsMarkers} for a caller that already holds the object's render plan.
+ *
+ * Planning is not cheap — it samples path geometry — and `createArtInspectorModel` is keyed on
+ * `document`, which is replaced on every pointermove frame. It planned each selected graphic once
+ * up front and then called the planless helper twice more (the `supportsMarkers` map and
+ * `skippedForControl`), so a selected path was planned two to three times per frame with the answer
+ * already in hand.
+ */
+export function graphicObjectSupportsMarkersWithPlan(
+  object: GraphicObject,
+  plan: NativeArtVisualPlan
+): boolean {
+  return graphicShapeCanCarryMarkers(object) && plan.capabilities.isOpenStroke === true;
 }
 
 /**

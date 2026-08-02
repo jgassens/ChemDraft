@@ -3098,17 +3098,32 @@ export function graphicMarkerRenderedSizeFloorPx(kind: GraphicMarker["kind"], st
       : strokeWidth * 4;
 }
 
+/**
+ * The size a marker actually draws at: its stored `sizePx` if it has one, the 10px default if not,
+ * floored by the stroke-aware minimum for its kind.
+ *
+ * Exported because anything REPORTING a head's size has to answer the same question the renderer
+ * does. The art inspector had its own answer — a flat 16 for an absent `sizePx` — so an arrow with
+ * no stored size read as 16 while drawing at 10, and a selection mixing the two reported a confident
+ * uniform 16. Reading the stored value alone is not enough either: the floor can raise it.
+ */
+export function graphicMarkerRenderedSizePx(marker: GraphicMarker, strokeWidth: number): number {
+  return Math.max(
+    2,
+    metadataNumber(marker.sizePx) ?? 10,
+    graphicMarkerRenderedSizeFloorPx(marker.kind, strokeWidth)
+  );
+}
+
 function nativeArtMarkerPlan(value: unknown, strokeWidth: number): NativeArtMarkerPlan | undefined {
   const marker = graphicMarkerMetadata(value);
   if (!marker || marker.kind === "none") {
     return undefined;
   }
 
-  const metadataSize = metadataNumber(marker.sizePx);
-  const strokeAwareSize = graphicMarkerRenderedSizeFloorPx(marker.kind, strokeWidth);
   return {
     kind: marker.kind,
-    sizePx: Math.max(2, metadataSize ?? 10, strokeAwareSize),
+    sizePx: graphicMarkerRenderedSizePx(marker, strokeWidth),
     angleDegrees: metadataNumber(marker.angleDegrees) ?? 0
   };
 }
