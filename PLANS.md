@@ -401,8 +401,56 @@ rights.
   contains a **`MolGpKa_retrained/`** directory, so its provenance relationship to MolGpKa's
   ACD/Labs-derived labels must be checked explicitly — it may inherit the same blocker rather than
   resolve it.
-- **Uni-pKa** (Apache-2.0, public weights and datasets, microstate enumeration + learned free-energy
-  model) — scientifically stronger, expects a Python/Uni-Mol environment.
+- **Uni-pKa** (`dptech-corp/Uni-pKa`, **Apache-2.0**, last push 2025-04-01; public weights and datasets,
+  microstate enumeration + learned free-energy model) — scientifically stronger, expects a
+  Python/Uni-Mol environment.
+- **QupKake** (`Shualdon/QupKake`, **BSD-3-Clause**, last push 2024-06-04) — GFN2-xTB features plus a
+  GNN, micro-pKa, published in *JCTC* 2024 (`10.1021/acs.jctc.4c00328`). **Not on PyPI**: installed from
+  source, and it pins `xtb == 6.4.1`, a native binary, on top of torch / torch-geometric /
+  pytorch-lightning. Deployability is therefore a real evaluation axis for it, not a footnote.
+- **pkasolver** (`mayrf/pkasolver`, **MIT**, last push 2026-05-20) — the older GNN generation. Its
+  strongest model was transfer-learned against **Schrödinger's Epik** and *cannot be distributed*; only
+  the weaker variant ships. A concrete instance of the blocker this section is about.
+- **OPERA** (`kmansouri/OPERA`, **MIT**, last push 2025-07-03) — the EPA/NIEHS open QSAR baseline over
+  the DataWarrior measured set. Government-funded and fully open, which makes it the natural *floor* to
+  beat rather than a candidate to embed.
+
+**A permissive licence is not clearance, and that is the whole point of this list.** MolGpKa is MIT and
+still blocked, because the code's licence says nothing about labels computed with ACD/Labs and sites
+identified with Epik.
+
+**Both remaining candidates were read at artifact level on 2026-08-02, and the result inverts the
+obvious reading: the one that is easy to obtain is the one that is hard to clear.**
+
+*QupKake — weights in hand, labels are ChemAxon's.* The three checkpoints ship in the repository
+(`qupkake/models/*.ckpt`), so there is nothing to negotiate for. But its own `data/README.md` says the
+initial pKa model was trained on `chembl_crest_combined_set.csv.gz`, and that file's columns are
+`cx_most_apka` / `cx_most_bpka` over **1,551,870 ChEMBL rows** — "cx" is ChemAxon. Experimental data
+enters only at the transfer-learning stage. So the base model encodes ~1.5M **ChemAxon-predicted**
+values: structurally the same situation as MolGpKa's ACD/Labs labels, BSD-3-Clause code
+notwithstanding.
+
+*Uni-pKa — labels are experimental, weights are not a download.* Its ChEMBL stage is
+`loss_func="pretrain_mlm"` — **masked language modelling, self-supervised over structures**, not
+regression against someone else's pKa predictions. The supervised signal comes entirely from
+`finetune_mse` on `dwar-iBond.tsv`: **8,232 rows carrying a per-row `ref.` column** ("DataWarrior index
+5074", and so on), i.e. experimental values with traceable attribution. That is a materially cleaner
+provenance story than any other entry here. The cost is retrieval: the weights are not in the
+repository, only "available" through a Bohrium notebook, with the datasets on AISSquare.
+
+**So the two blockers are different problems, not one.** QupKake's is what the weights were trained on;
+Uni-pKa's is getting the weights at all. Only the second is the kind of problem that a request, or a
+retraining run on the open Dwar-iBond set, can actually solve.
+
+**Accuracy claims for these are recorded as unverified.** Figures circulating for QupKake (RMSE 0.5–0.8;
+"would have won SAMPL6/SAMPL8") and for Rowan's Starling are from prose, not from anything run here.
+This branch's record on prose-shaped claims is poor — Joback's critical pressure looked entirely
+plausible and was 2× wrong, and OpenClatura's "99% coverage" was real but meant something other than
+accuracy. §9's gate is "model/data-license clearance **and external validation**"; nothing above has
+passed the second.
+
+*(Starling (Rowan) is noted and excluded: weights are not distributed, so it cannot be embedded whatever
+its accuracy. Useful as a comparison point, not a candidate.)*
 
 Dimorphite-derived functionality stays labeled **protonation-state enumeration**.
 
