@@ -60,6 +60,13 @@
  * Left in, it produced confident values for transitions that do not exist: 5.83 on histidine's
  * protonless ring nitrogen, 3.74 on pyridine's, four separate numbers across caffeine.
  *
+ * **Why a plain amine gets no number.** Its N-H acidity is near 35: outside water, outside the
+ * training set (zero of 3,031 labels is an unactivated amine), and outside the range a forest bounded
+ * by its own leaves could return. Scored anyway, histidine's amine terminus came out at 9.03 — which
+ * is nearly the alpha-ammonium's measured 9.2 and so reads as correct, while describing a different
+ * transition entirely. The rule that excludes it was checked against the training set in both
+ * directions: it rejects 0 of 3,031 rows, so it can only withhold chemistry the model never learned.
+ *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
  * in this space has evidence about a metal centre, so a site adjacent to one is reported as
@@ -373,6 +380,75 @@ export function withdrawProtonlessSites(scan: IonizationScan, graph: PkaMolecula
   return { sites, unassessed };
 }
 
+/**
+ * Move any site whose acidity no aqueous dataset can contain out of the scored list.
+ *
+ * **The case: a plain amine's N-H.** Histidine's amine terminus was scored 9.03, which looks right —
+ * histidine's alpha-ammonium measures 9.2. It is not that number. As drawn the nitrogen is a neutral
+ * -NH2, so the transition being reported is that N-H losing a proton, whose pKa is around 35. Water
+ * cannot hold a measurement there, so no aqueous dataset contains one, so the model never saw one.
+ *
+ * **The justification is a count, not a chemical opinion** — the same shape as the metal decline.
+ * Classifying every training label by what its site atom is attached to: 17 rows look like "neutral
+ * N-H on saturated carbon", and every one of them is activated — thioamides, cyano-substituted
+ * enamines. Unactivated amines: **zero of 3,031**. And the rule below was checked the other way too,
+ * which is what makes it safe: applied to the training set it rejects **0 rows**, so it can only
+ * exclude chemistry the model never learned.
+ *
+ * A forest also cannot answer this even in principle: its output is bounded by its leaf values, and
+ * the whole training set tops out at 30.9. Asked for a 35, the best it can do is a confident number
+ * that is 25 log units wrong.
+ *
+ * Anilines, amides, sulfonamides and thioamides all keep their values — each has real support, and
+ * each has a neighbour bearing a multiple bond, which is exactly what the test looks for.
+ */
+export function withdrawUnmeasurableAmines(scan: IonizationScan, graph: PkaMolecularGraph): IonizationScan {
+  const sites: IonizationSite[] = [];
+  const unassessed = [...scan.unassessed];
+
+  const activated = (atomIndex: number): boolean => {
+    for (const bond of graph.bonds) {
+      const [a, b] = bond.atoms;
+      if (a !== atomIndex && b !== atomIndex) continue;
+      const other = a === atomIndex ? b : a;
+      // Any neighbour that is not a saturated carbon can acidify the N-H: a carbonyl, a thiocarbonyl,
+      // an aromatic ring, a sulfonyl, an adjacent heteroatom.
+      if (graph.atoms[other]!.element !== "C") return true;
+      for (const inner of graph.bonds) {
+        const [c, d] = inner.atoms;
+        if (c !== other && d !== other) continue;
+        if (inner.order > 1) return true;
+      }
+    }
+    return false;
+  };
+
+  for (const site of scan.sites) {
+    const atom = graph.atoms[site.ionizableAtomIndex];
+    const plainAmine =
+      atom !== undefined &&
+      atom.element === "N" &&
+      atom.charge === 0 &&
+      atom.hydrogens > 0 &&
+      !activated(site.ionizableAtomIndex);
+    if (!plainAmine) {
+      sites.push(site);
+      continue;
+    }
+    unassessed.push({
+      atomIndices: site.atomIndices,
+      reason:
+        "As drawn this is a neutral amine, so the only acidity it has is that N-H losing a proton — " +
+        "a pKa near 35, which water cannot hold and no aqueous dataset records. Zero of the model's " +
+        "3,031 training labels is an unactivated amine, so it has nothing to answer from. The " +
+        "familiar ~10 for an amine belongs to its AMMONIUM; draw the nitrogen protonated to ask for " +
+        "that instead."
+    });
+  }
+
+  return { sites, unassessed };
+}
+
 /** The subset of MinimalLib a depiction needs. Both are optional on the vendored build. */
 export interface DepictableMolecule {
   set_new_coords?(useCoordGen?: boolean): boolean;
@@ -548,12 +624,14 @@ export function ionizationContract(): MethodContract {
         "nitrogen, histidine's second ring nitrogen, and all four of caffeine's. None of them has a " +
         "hydrogen to lose, so none has an acidity; each is reported as unassessed with the reason. " +
         "Draw the conjugate acid and the value appears — pyridinium scores where pyridine declines.",
-      "IT DOES NOT REPORT BASICITY, and for amines that is the number most people want. The site " +
-        "patterns locate an amine on its NEUTRAL nitrogen, so what gets scored is that N-H losing a " +
-        "proton — very weakly acidic, hence a high value — and not the ~10 of the corresponding " +
-        "ammonium. Redrawing the amine protonated does not help: the pattern requires a neutral " +
-        "nitrogen and finds no site at all. Treat a high value on a basic nitrogen as 'not acidic' " +
-        "rather than as that centre's pKa.",
+      "IT DOES NOT REPORT BASICITY, and for amines that is the number most people want. A PLAIN AMINE " +
+        "IS THEREFORE NOT SCORED AT ALL: drawn neutral, its only acidity is that N-H losing a proton, " +
+        "a pKa near 35 that water cannot hold and no aqueous dataset records — zero of the 3,031 " +
+        "training labels is an unactivated amine. The familiar ~10 belongs to the AMMONIUM, and the " +
+        "site patterns require a neutral nitrogen, so redrawing it protonated finds no site either. " +
+        "An amine's basicity is outside this method in both directions; it says so rather than " +
+        "returning a number that looks like the answer. Anilines, amides, sulfonamides and " +
+        "thioamides keep their values — their N-H acidity IS aqueous-measurable and IS in the data.",
       `trained on ${PKA_MODEL_TRAINING.samples} sites from the open Dwar-iBond experimental set, ` +
         `cross-validated by scaffold at a mean absolute error of ${PKA_MODEL_TRAINING.cvMae.toFixed(2)} ` +
         "log units against 2.94 for predicting the dataset mean. That figure describes the method " +
@@ -628,6 +706,9 @@ export function ionizationContract(): MethodContract {
       "the matched atom carries no hydrogen as drawn — it is a basic position with no acidity to " +
         "report, and every one of the model's 3,031 training labels had a proton on the acid atom, " +
         "so such a site is outside its domain by construction",
+      "the matched atom is a neutral amine nitrogen whose neighbours are all saturated carbon — its " +
+        "N-H acidity is near 35, beyond water and beyond the training range (-9.02 to 30.90), which " +
+        "a forest bounded by its own leaf values could not return in any case",
       "a matching site is adjacent to a metal centre — reported as unassessed, with the reason",
       "the Hammett method alone declines on an ortho substituent, a fused ring, a non-benzene ring, " +
         "or a substituent with no tabulated constant; the model still scores those sites"

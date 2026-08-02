@@ -103,7 +103,8 @@ import {
   scanIonizableSites,
   scoreSitesWithHammett,
   scoreSitesWithModel,
-  withdrawProtonlessSites
+  withdrawProtonlessSites,
+  withdrawUnmeasurableAmines
 } from "./ionization";
 import type { PkaMolecularGraph } from "./pkaModel";
 import {
@@ -968,6 +969,9 @@ function ionizationResultFor(
   // positions as well as acidic ones. Scoring one invents a number for a transition that does not
   // exist.
   scan = withdrawProtonlessSites(scan, graph);
+  // And a neutral amine's N-H, whose real pKa is around 35 — outside water, outside the training set,
+  // and outside what a forest bounded by its leaf values could return even if it knew.
+  scan = withdrawUnmeasurableAmines(scan, graph);
   scan = scoreSitesWithModel(scan, graph);
 
   // Then a second, independent opinion wherever the Hammett relationship reaches, and let the two
