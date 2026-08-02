@@ -415,32 +415,65 @@ rights.
   the DataWarrior measured set. Government-funded and fully open, which makes it the natural *floor* to
   beat rather than a candidate to embed.
 
-**A permissive licence is not clearance, and that is the whole point of this list.** MolGpKa is MIT and
-still blocked, because the code's licence says nothing about labels computed with ACD/Labs and sites
-identified with Epik.
+**The question that decides this is provenance, not licensing.** A licence governs whether we may ship
+a file. What matters more here is stated three paragraphs down, as a requirement this section already
+imposes on any pKa result: it must record *"whether the value is experimentally trained,
+quantum-derived, or **inherited from another predictor**."* That third category is not a legal
+classification. It is a statement about what a number is, and it is the one this branch exists to keep
+honest.
 
-**Both remaining candidates were read at artifact level on 2026-08-02, and the result inverts the
-obvious reading: the one that is easy to obtain is the one that is hard to clear.**
+A model trained on another model's outputs inherits that model's systematic errors. Its ceiling, on any
+chemistry where the teacher was wrong, *is* the teacher's wrongness — and nothing in its output says so.
+That is the same failure shape as OpenClatura dropping an arsonic acid and Joback summing around a
+group it has no parameter for: confident, well-formed, and quietly describing something else.
 
-*QupKake — weights in hand, labels are ChemAxon's.* The three checkpoints ship in the repository
-(`qupkake/models/*.ckpt`), so there is nothing to negotiate for. But its own `data/README.md` says the
-initial pKa model was trained on `chembl_crest_combined_set.csv.gz`, and that file's columns are
-`cx_most_apka` / `cx_most_bpka` over **1,551,870 ChEMBL rows** — "cx" is ChemAxon. Experimental data
-enters only at the transfer-learning stage. So the base model encodes ~1.5M **ChemAxon-predicted**
-values: structurally the same situation as MolGpKa's ACD/Labs labels, BSD-3-Clause code
-notwithstanding.
+**Both live candidates were read at artifact level on 2026-08-02, and they fall on opposite sides of
+that line.**
 
-*Uni-pKa — labels are experimental, weights are not a download.* Its ChEMBL stage is
+*QupKake — **inherited from another predictor**.* Its three checkpoints ship in the repository
+(`qupkake/models/*.ckpt`), so obtaining it is trivial. But its own `data/README.md` says the initial
+pKa model was trained on `chembl_crest_combined_set.csv.gz`, whose columns are `cx_most_apka` /
+`cx_most_bpka` over **1,551,870 ChEMBL rows** — "cx" is ChemAxon. Experimental data enters only at the
+transfer-learning stage. So the base model was fitted to reproduce a commercial predictor across 1.5M
+molecules, and a smaller experimental set then corrects it by an unknown amount in unknown places.
+Shipping it would oblige us to label every value `inherited from another predictor`, which is accurate
+and is also most of the argument against shipping it.
+
+**The predicted blind spot was measured, and it is not "thin" — it is total.** Counting bracketed metal
+atoms across every training and test set both projects ship:
+
+| set | molecules | containing a metal |
+|---|---:|---:|
+| QupKake pretraining (ChEMBL, ChemAxon labels) | 1,551,870 | **0** |
+| QupKake transfer set (experimental) | 5,637 | **0** (one arsenic, not a metal) |
+| QupKake Novartis test | 280 | **0** |
+| QupKake literature test | 122 | **0** |
+| Uni-pKa finetuning (Dwar-iBond, experimental) | 8,232 | **0** |
+
+The detector was checked against this repo's own corpus first — it hits ferrocene, cisplatin, sodium
+benzoate, and calcium chloride, and passes over aspirin and benzene — because a surprising zero is
+usually a broken instrument. It is not broken. **Across 1.57M molecules, neither model has seen a
+single metal-containing structure**, in training or in test. The lone non-organic atom in either
+project's experimental data is one arsenic — the same element that broke OpenClatura.
+
+**Neither model has any way to say so.** Asked for the pKa of a metal complex, both will return a
+number, extrapolated past everything they were fitted to, with nothing in the output marking it. That
+is the failure this branch keeps meeting, now measured rather than predicted — and it means the
+organometallic gap is not a coverage weakness to be improved at the margin but an absence of signal.
+Any pKa capability shipped here must decline on metals outright; there is no evidence on which it could
+do anything else.
+
+*Uni-pKa — **experimentally trained**, but not simply obtainable.* Its ChEMBL stage is
 `loss_func="pretrain_mlm"` — **masked language modelling, self-supervised over structures**, not
 regression against someone else's pKa predictions. The supervised signal comes entirely from
 `finetune_mse` on `dwar-iBond.tsv`: **8,232 rows carrying a per-row `ref.` column** ("DataWarrior index
-5074", and so on), i.e. experimental values with traceable attribution. That is a materially cleaner
-provenance story than any other entry here. The cost is retrieval: the weights are not in the
-repository, only "available" through a Bohrium notebook, with the datasets on AISSquare.
+5074", and so on) — experimental values with traceable attribution. That is the cleanest provenance
+story of anything here. The cost is retrieval: the weights are not in the repository, only "available"
+through a Bohrium notebook, with the datasets on AISSquare.
 
-**So the two blockers are different problems, not one.** QupKake's is what the weights were trained on;
-Uni-pKa's is getting the weights at all. Only the second is the kind of problem that a request, or a
-retraining run on the open Dwar-iBond set, can actually solve.
+**So the two problems are different in kind.** QupKake's is what its numbers *are*; Uni-pKa's is
+logistics. Only the second is the sort a request — or a retraining run on the open Dwar-iBond set,
+which *is* downloadable — could dissolve.
 
 **Accuracy claims for these are recorded as unverified.** Figures circulating for QupKake (RMSE 0.5–0.8;
 "would have won SAMPL6/SAMPL8") and for Rowan's Starling are from prose, not from anything run here.
