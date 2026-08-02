@@ -53,6 +53,13 @@
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
+ * **Why a located site is not always a scored one.** Dimorphite is a protonation-state *enumerator*:
+ * it finds positions that can gain a proton as well as ones that can lose it. This method reports one
+ * number — the pKa of the drawn hydrogen leaving that atom — so a matched atom with no hydrogen has
+ * nothing to report, and `withdrawProtonlessSites` moves it to `unassessed` before anything is scored.
+ * Left in, it produced confident values for transitions that do not exist: 5.83 on histidine's
+ * protonless ring nitrogen, 3.74 on pyridine's, four separate numbers across caffeine.
+ *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
  * in this space has evidence about a metal centre, so a site adjacent to one is reported as
@@ -104,8 +111,9 @@ export const HAMMETT_IN_DOMAIN_MAE = CONSENSUS_CALIBRATION.hammettMae;
  * Where the model's interval stops meaning "trust this" and starts meaning "check this".
  *
  * The first and third quartile boundaries of its out-of-fold interval, so the bands are the ones whose
- * accuracy was actually measured: at or below `good` is the quarter of sites with MAE
- * ${"`"}quartileMae[0]${"`"}, above ${"`"}poor${"`"} the quarter with ${"`"}quartileMae[3]${"`"}. Read from the calibration, never typed.
+ * accuracy was actually measured: at or below `good` is the quarter of sites whose MAE is
+ * `quartileMae[0]`, above `poor` the quarter whose MAE is `quartileMae[3]`. Read from the
+ * calibration, never typed here.
  */
 export const IONIZATION_CONFIDENCE_BANDS = {
   good: PKA_MODEL_CALIBRATION.intervalQuartiles[0]!,
@@ -318,6 +326,53 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
   return merged;
 }
 
+/**
+ * Move any site with no proton to lose out of the scored list.
+ *
+ * **A site without a hydrogen has no acidity.** This method reports one number — the pKa of the drawn
+ * hydrogen leaving that atom — and an atom with zero hydrogens has no such transition. Scoring one
+ * produces a value for a reaction that does not exist, which is worse than an inaccurate value because
+ * there is nothing it could be compared against.
+ *
+ * The table invites exactly this. Dimorphite-DL is a protonation-state *enumerator*: it locates
+ * positions that can gain **or** lose a proton, and its `Aromatic_nitrogen_unprotonated` entry is a
+ * basic site, found so that a proton can be added. Histidine's pyridine-type ring nitrogen, pyridine
+ * itself, and all four of caffeine's ring nitrogens match it. Every one was being handed a confident
+ * pKa for a proton it does not have.
+ *
+ * The training data settles it rather than chemical argument alone: across all 3,031 labels the acid
+ * microstate's site atom carries at least one hydrogen, always more than the base form's. A protonless
+ * site is therefore outside the model's domain *by construction*, not merely by opinion — and a model
+ * asked outside its domain answers anyway, which is the failure this whole method is built against.
+ *
+ * Reported as unassessed rather than dropped, and the reason says what to draw instead: the number
+ * most people want from a basic nitrogen is its conjugate acid's, which this method will give once the
+ * protonated form is what it is looking at.
+ */
+export function withdrawProtonlessSites(scan: IonizationScan, graph: PkaMolecularGraph): IonizationScan {
+  const sites: IonizationSite[] = [];
+  const unassessed = [...scan.unassessed];
+
+  for (const site of scan.sites) {
+    const atom = graph.atoms[site.ionizableAtomIndex];
+    if (!atom || atom.hydrogens > 0) {
+      sites.push(site);
+      continue;
+    }
+    unassessed.push({
+      atomIndices: site.atomIndices,
+      reason:
+        `This ${site.siteType} site (${atom.element}${
+          atom.charge === 0 ? "" : atom.charge > 0 ? `+${atom.charge}` : atom.charge
+        }) carries no hydrogen as drawn, so it has no acidity to report — it is a basic position, one ` +
+        "that accepts a proton rather than losing one, and this method reports acidity only. Draw it " +
+        "protonated to get the pKa of the conjugate acid, which is the value usually wanted here."
+    });
+  }
+
+  return { sites, unassessed };
+}
+
 /** The subset of MinimalLib a depiction needs. Both are optional on the vendored build. */
 export interface DepictableMolecule {
   set_new_coords?(useCoordGen?: boolean): boolean;
@@ -488,6 +543,11 @@ export function ionizationContract(): MethodContract {
     conventions: [
       "EACH VALUE IS THE ACIDITY OF THAT SITE AS DRAWN — the pKa of it losing a proton. A microscopic " +
         "pKa for one transition, not a molecule-wide figure.",
+      "A SITE WITH NO PROTON IS NOT SCORED AT ALL. The table is a protonation-state enumerator and " +
+        "locates basic positions too — its Aromatic_nitrogen_unprotonated entry matches pyridine's " +
+        "nitrogen, histidine's second ring nitrogen, and all four of caffeine's. None of them has a " +
+        "hydrogen to lose, so none has an acidity; each is reported as unassessed with the reason. " +
+        "Draw the conjugate acid and the value appears — pyridinium scores where pyridine declines.",
       "IT DOES NOT REPORT BASICITY, and for amines that is the number most people want. The site " +
         "patterns locate an amine on its NEUTRAL nitrogen, so what gets scored is that N-H losing a " +
         "proton — very weakly acidic, hence a high value — and not the ~10 of the corresponding " +
@@ -565,6 +625,9 @@ export function ionizationContract(): MethodContract {
     ],
     declinesWhen: [
       "no tabulated site substructure matches the structure",
+      "the matched atom carries no hydrogen as drawn — it is a basic position with no acidity to " +
+        "report, and every one of the model's 3,031 training labels had a proton on the acid atom, " +
+        "so such a site is outside its domain by construction",
       "a matching site is adjacent to a metal centre — reported as unassessed, with the reason",
       "the Hammett method alone declines on an ortho substituent, a fused ring, a non-benzene ring, " +
         "or a substituent with no tabulated constant; the model still scores those sites"

@@ -102,7 +102,8 @@ import {
   ionizationContract,
   scanIonizableSites,
   scoreSitesWithHammett,
-  scoreSitesWithModel
+  scoreSitesWithModel,
+  withdrawProtonlessSites
 } from "./ionization";
 import type { PkaMolecularGraph } from "./pkaModel";
 import {
@@ -962,6 +963,11 @@ function ionizationResultFor(
   // Score with the trained model, on the IMPLICIT-hydrogen graph the model was trained against.
   // Feature-ising the hydrogen-explicit copy would change degree and neighbour counts for every site.
   const graph = modelGraph(context, json, defaultZ);
+
+  // Before anything is scored: a site with no proton has no acidity, and the table locates basic
+  // positions as well as acidic ones. Scoring one invents a number for a transition that does not
+  // exist.
+  scan = withdrawProtonlessSites(scan, graph);
   scan = scoreSitesWithModel(scan, graph);
 
   // Then a second, independent opinion wherever the Hammett relationship reaches, and let the two

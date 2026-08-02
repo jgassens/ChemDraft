@@ -25,7 +25,7 @@ import {
   type Classification
 } from "./classification";
 import { interpretationChangesIdentity, type MolecularInterpretation } from "./interpretation";
-import type { AnalysisResult, AnalysisRun } from "./results";
+import { statusHasValue, type AnalysisResult, type AnalysisRun } from "./results";
 import { unit as unitDefinition, type UnitId } from "./units";
 import { ionizationBand, ionizationFigureSvg } from "./ionizationFigure";
 
@@ -292,8 +292,14 @@ function activeInterpretationId(run: AnalysisRun): string {
 
 export function buildAnalysisReport(run: AnalysisRun, options: { title?: string } = {}): AnalysisReport {
   const active = activeInterpretationId(run);
-  const ok = run.results.filter((result) => result.status === "ok");
-  const declined = run.results.filter((result) => result.status !== "ok");
+  // `partial` belongs with the rendered results, not the declined ones. It means "here are values, and
+  // here is what I could not do" — a result that computed three of histidine's four sites still has
+  // three values to show. Filtering on `=== "ok"` dropped all of them and left the category missing
+  // from the report entirely, which is precisely the "TPSA unavailable is indistinguishable from TPSA
+  // not asked for" failure this module's header is about. `statusHasValue` is the existing predicate
+  // for exactly this distinction; each section renders its own shortfall alongside its values.
+  const ok = run.results.filter((result) => statusHasValue(result.status));
+  const declined = run.results.filter((result) => !statusHasValue(result.status));
   const sections: AnalysisReportSection[] = [];
   const displayLabel = labelStripper(
     run.interpretations.find((entry) => entry.id === active)?.label,

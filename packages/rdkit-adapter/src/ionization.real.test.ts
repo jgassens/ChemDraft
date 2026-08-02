@@ -334,3 +334,88 @@ describe("what a reader actually sees", () => {
     }
   });
 });
+
+describe("a site with no proton has no acidity", () => {
+  it("refuses to score histidine's protonless ring nitrogen", async () => {
+    // The contradiction this guards. Histidine's imidazole has two nitrogens: one carries a hydrogen
+    // and can lose it, the other carries none. The second was being given a confident 5.83 — a pKa for
+    // a transition that does not exist, on a method whose one claim is "the pKa of the drawn hydrogen
+    // leaving that atom".
+    const { result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
+    for (const site of result.sites) {
+      const atom = result.depiction?.atoms[site.ionizableAtomIndex];
+      if (site.pKa === null || !atom) continue;
+      expect(atom.hydrogens, `atom ${site.ionizableAtomIndex} was scored with no proton`).toBeGreaterThan(0);
+    }
+    // Reported, not dropped — a silent omission reads as "there is nothing here".
+    expect(result.unassessed.some((entry) => /no hydrogen as drawn/.test(entry.reason))).toBe(true);
+    expect(result.status).toBe("partial");
+  });
+
+  it("scores nothing at all on pyridine, whose only site is basic", async () => {
+    // Dimorphite is a protonation-state enumerator: `Aromatic_nitrogen_unprotonated` is a site it
+    // locates in order to ADD a proton. Every such match was being scored as an acid.
+    const { result } = await ionization("c1ccncc1");
+    expect(result.sites.filter((site) => site.pKa !== null)).toEqual([]);
+    expect(result.unassessed).toHaveLength(1);
+  });
+
+  it("withholds all four of caffeine's ring nitrogens rather than inventing four values", async () => {
+    const { result } = await ionization("CN1C=NC2=C1C(=O)N(C)C(=O)N2C");
+    expect(result.sites.filter((site) => site.pKa !== null)).toEqual([]);
+    expect(result.unassessed).toHaveLength(4);
+  });
+
+  it("gives the value the decline message promises, once the form is redrawn", async () => {
+    // The reason tells the reader to draw the conjugate acid. That has to actually work, or the
+    // message is worse than no message. Pyridinium measures 5.2.
+    const { result } = await ionization("c1cc[nH+]cc1");
+    const site = result.sites.find((entry) => entry.pKa !== null);
+    expect(site, "the protonated form scores nothing — the decline message is wrong").toBeDefined();
+    expect(site!.pKa!).toBeGreaterThan(3);
+    expect(site!.pKa!).toBeLessThan(7);
+  });
+
+  it("leaves an ordinary acid untouched", async () => {
+    // The filter must not cost anything where the chemistry is fine.
+    const { result } = await ionization("Oc1ccccc1");
+    expect(result.unassessed).toEqual([]);
+    expect(result.sites[0]!.pKa).toBeGreaterThan(8.5);
+  });
+});
+
+describe("a partial result still shows what it computed", () => {
+  it("renders histidine's three real sites even though a fourth was withheld", async () => {
+    // The regression this guards is severe and quiet. Withholding the protonless nitrogen turned the
+    // result's status from "ok" to "partial", and the report filtered on `status === "ok"` — so the
+    // whole category vanished from the panel and the three perfectly good values went with it. A
+    // report that drops what it DID compute is worse than the bug it was fixing.
+    const { run, result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
+    expect(result.status).toBe("partial");
+
+    const report = buildAnalysisReport(run);
+    const table = report.sections.find(
+      (section) => section.kind === "table" && section.title.startsWith("Ionizable sites (")
+    );
+    expect(table, "the sites table is missing from a partial result").toBeDefined();
+    if (table?.kind === "table") expect(table.rows).toHaveLength(3);
+
+    expect(report.sections.some((section) => section.kind === "svg")).toBe(true);
+    // And the shortfall is still disclosed, in its own section rather than by omission.
+    expect(
+      report.sections.some(
+        (section) => section.kind === "table" && section.title === "Ionizable sites not assessed"
+      )
+    ).toBe(true);
+  });
+
+  it("does not draw a value on an atom that has no proton", async () => {
+    // The figure must agree with the table. A coloured halo with no number would still read as "this
+    // atom was assessed".
+    const { run } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
+    const figure = buildAnalysisReport(run).sections.find((section) => section.kind === "svg");
+    if (figure?.kind !== "svg") throw new Error("no figure");
+    // Three values drawn, one per remaining site.
+    expect(figure.svg.match(/±/g) ?? []).toHaveLength(3);
+  });
+});
