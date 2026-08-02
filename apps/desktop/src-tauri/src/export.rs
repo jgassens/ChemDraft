@@ -321,8 +321,8 @@ mod tests {
         let cases = [
             (RasterExportFormat::Png, &[0x89, b'P', b'N', b'G'][..]),
             (RasterExportFormat::Jpeg, &[0xff, 0xd8][..]),
-            (RasterExportFormat::Bmp, &[b'B', b'M'][..]),
-            (RasterExportFormat::Gif, &[b'G', b'I', b'F', b'8'][..]),
+            (RasterExportFormat::Bmp, &b"BM"[..]),
+            (RasterExportFormat::Gif, &b"GIF8"[..]),
         ];
 
         for (format, magic) in cases {
