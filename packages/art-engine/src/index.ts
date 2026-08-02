@@ -3220,7 +3220,11 @@ function graphicPathLocalBoundsPoints(object: GraphicObject): NativeArtPoint[] {
   const points = graphicPathLocalSamplePoints(object);
   const pathD = graphicPathD(object, "local");
   const bounds = pathD ? svgPathBounds(pathD) : undefined;
-  if (!bounds) {
+  // The same locality test the sampler applies. A stored `pathD` can be in PAGE coordinates, which
+  // is exactly why `svgPathLocalSamplePoints` returns [] for one — appending its corners regardless
+  // handed page coordinates to callers that project them as local, so the frame, the selection
+  // chrome and the transform handles all landed off the object.
+  if (!bounds || !pathBoundsLookLocal(bounds, object)) {
     return points;
   }
   return [
@@ -3314,20 +3318,24 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   return [];
 }
 
-function svgPathLocalSamplePoints(pathD: string, object: GraphicObject): NativeArtPoint[] {
-  const bounds = svgPathBounds(pathD);
-  if (!bounds) {
-    return [];
-  }
-
+/**
+ * Whether a path's own bounds sit inside the object's frame, i.e. the path really is in LOCAL
+ * coordinates. `data.pathD` carries no coordinate space of its own and some are stored in PAGE
+ * space, so anything that treats a stored path as local has to ask this first — sampling AND
+ * bounding. Keeping the test in one place is what stopped the two disagreeing.
+ */
+function pathBoundsLookLocal(bounds: NativeArtBounds, object: GraphicObject): boolean {
   const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
   const tolerance = Math.max(8, strokeWidth * 2);
-  const pathLooksLocal =
-    bounds.x >= -tolerance &&
+  return bounds.x >= -tolerance &&
     bounds.y >= -tolerance &&
     bounds.x + bounds.width <= object.width + tolerance &&
     bounds.y + bounds.height <= object.height + tolerance;
-  if (!pathLooksLocal) {
+}
+
+function svgPathLocalSamplePoints(pathD: string, object: GraphicObject): NativeArtPoint[] {
+  const bounds = svgPathBounds(pathD);
+  if (!bounds || !pathBoundsLookLocal(bounds, object)) {
     return [];
   }
 

@@ -600,6 +600,39 @@ describe("art-engine native art planning", () => {
     expect(split.object.data.shaftMarkSizePx).toBeUndefined();
   });
 
+  it("ignores a stored path that is in page coordinates when bounding the frame", () => {
+    // `data.pathD` is not guaranteed to be in the object's LOCAL space, so
+    // `svgPathLocalSamplePoints` refuses a path whose bbox sits outside the frame and returns [].
+    // The bounds helper appended that same path's bbox corners anyway, so page coordinates reached
+    // a caller that projects them as local: frame bounds, selection chrome and transform handles
+    // all landed hundreds of pixels off the object.
+    const base = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 400,
+      y: 300,
+      width: 100,
+      height: 60,
+      style: { ...baseGraphic.style, tiltXDegrees: 20 }
+    } as const;
+
+    // The same stroke expressed both ways: once in the object's local frame, once in page space.
+    const local = planNativeArtVisual(
+      { ...base, data: { pathD: "M 0 0 L 100 60" } } satisfies GraphicObject,
+      { coordinateSpace: "local" }
+    );
+    const pageSpace = planNativeArtVisual(
+      { ...base, data: { pathD: "M 400 300 L 500 360" } } satisfies GraphicObject,
+      { coordinateSpace: "local" }
+    );
+
+    // Local frame bounds start at the object's own origin, never at its page position.
+    expect(local.frameBounds.x).toBeCloseTo(0, 3);
+    expect(pageSpace.frameBounds.x).toBeCloseTo(0, 3);
+    expect(pageSpace.frameBounds.y).toBeLessThan(base.height);
+    expect(pageSpace.frameBounds.width).toBeLessThanOrEqual(base.width + 1);
+  });
+
   it("samples a polyline along its own path, not around its bounding box", () => {
     // svgPathSamplePoints appended the four bbox corners to the ordered sample list, so a bent
     // polyline's samples jumped off the stroke and back: the visible path scribbled a rectangle and
