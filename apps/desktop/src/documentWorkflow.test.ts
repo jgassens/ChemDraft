@@ -103,6 +103,7 @@ import {
   createNativeFreehandGraphicObject,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
+  createNativeMolfileMolecule,
   createPhase4Document,
   createSelectionClipboardPayload,
   deleteSelectedDocumentObjects,
@@ -1168,6 +1169,34 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("counts formula hydrogens with the same charge rule the drawn label uses", () => {
+    // The label became charge-aware while the formula kept counting against the neutral valence,
+    // so methoxide drew as "O-" with no hydrogen while the formula still reported one. A formula
+    // that contradicts the structure beside it is worse than either being wrong on its own.
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Alkoxide"), { x: 200, y: 200 });
+    const seed = base.pages[0].objects[0] as MoleculeObject;
+    const charged = applyPatches(base, [{
+      op: "updateObject",
+      objectId: seed.id,
+      changes: {
+        atoms: seed.atoms.map((atom, index) => (
+          index === 1 ? { ...atom, element: "O", formalCharge: -1 } : atom
+        ))
+      }
+    }]);
+    const molecule = charged.pages[0].objects[0] as MoleculeObject;
+    const oxygen = molecule.atoms[1]!;
+
+    // The drawn label: O- takes one bond, which this O already has, so no hydrogen.
+    expect(atomDisplayLabel(oxygen, molecule.bonds)).toBe("O-");
+
+    // The formula must agree. createNativeMolfileMolecule runs the same chemistry derivation the
+    // app uses whenever a molecule is (re)built, so round-trip this graph through it.
+    const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    const rebuilt = createNativeMolfileMolecule(charged, { x: 200, y: 200 }, molfile, "molfile-v2000");
+    expect(rebuilt.chemistry?.formula).toBe("CH3O");
   });
 
   it("carries aromatic and unknown bond orders through a pasted depiction", () => {

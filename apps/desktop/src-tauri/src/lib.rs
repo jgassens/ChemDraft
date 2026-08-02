@@ -675,7 +675,14 @@ fn close_toolset_window(
     let window = app.get_webview_window(&toolset_window_label(&toolset_id));
     if let Some(window) = window.as_ref() {
         if let Some(position) = current_toolset_window_position(window) {
-            persist_toolset_position(&app, &toolset_id, position.x, position.y)?;
+            // Best-effort, exactly like the `Moved` handler. Remembering where the palette was is
+            // housekeeping; it must never be able to veto the close the user asked for. Once
+            // `update_toolset_layout_state` began propagating read errors instead of swallowing
+            // them as defaults, a `?` here meant an unreadable toolbar-state.json left the palette
+            // on screen with its menu item still checked and no state event emitted.
+            if let Err(error) = persist_toolset_position(&app, &toolset_id, position.x, position.y) {
+                eprintln!("chemdraft: could not save the position of toolset {toolset_id}: {error}");
+            }
         }
     }
 

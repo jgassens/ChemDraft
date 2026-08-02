@@ -583,6 +583,41 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(molecule?.atoms[1]?.y).toBeCloseTo(100);
   });
 
+  it("transposes only the parts of a codec-v1 layer that were written y-first", () => {
+    // Codec v1 was MIXED, which is what makes a blanket transpose wrong. `formatPoint` wrote atom
+    // and text `p` y-first, but `formatXyPoint` (Head3D/Tail3D/Center3D) and `formatXyBoundingBox`
+    // (graphic/arrow BoundingBox) wrote x-first. `importShapeGraphic` tags everything it builds
+    // with `cdxmlCoordinateSpace: "xy"`, and that tag is what says "already spec order, leave it".
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft 0.1.0">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <objecttag Name="${ChemDraftObjectTags.codecVersion}" Persistent="yes" TagType="String" Value="${CdxmlEnvelopeCodecVersionV1}"/>
+    <fragment id="f1">
+      <n id="a1" p="75 75"/>
+      <n id="a2" p="75 111"/>
+      <b id="b1" B="a1" E="a2" Order="1"/>
+    </fragment>
+    <arrow id="34" BoundingBox="200 296 320 304" Head3D="320 300 0" Tail3D="200 300 0" ArrowheadHead="Full" ArrowheadType="Solid"/>
+  </page>
+</CDXML>`);
+    const objects = opened.document?.pages[0].objects ?? [];
+    const molecule = objects.find((object) => object.type === "molecule") as MoleculeObject | undefined;
+    const arrow = objects.find((object) => object.type === "graphic") as GraphicObject | undefined;
+
+    // The atoms WERE y-first, so they transpose: p="75 111" was authored as (x 111, y 75).
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(100);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(100);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(148);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(100);
+
+    // The arrow was ALREADY x-first, so it must be left alone: tail (200,300) -> head (320,300)
+    // is horizontal, and transposing it would stand it up vertically.
+    expect(arrow?.data.lineStart?.y).toBeCloseTo(arrow?.data.lineEnd?.y ?? Number.NaN, 6);
+    expect((arrow?.data.lineEnd?.x ?? 0) - (arrow?.data.lineStart?.x ?? 0)).toBeCloseTo(120 * (4 / 3), 6);
+    expect(arrow!.width).toBeGreaterThan(arrow!.height);
+  });
+
   it("returns a friendly unsupported-version warning for forward codec versions", () => {
     const document = createEmptyDocument({ now: "2026-06-06T00:00:00.000Z" });
     const result = exportDocumentToCdxml(document, { creationProgram: "Future Test" });
@@ -1298,6 +1333,63 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // An explicitly removed head is a faithful export, not a loss.
     const bare = exportDocumentToCdxml(decorated({ kind: "none" }), { creationProgram: "T" });
     expect(bare.warnings).toEqual([]);
+  });
+
+  it("warns when a decorative art arrow's head or shaft mark cannot be exported", () => {
+    // A no-reaction arrow is a crossed shaft: it asserts the reaction does NOT proceed. Standard
+    // CDXML has no spelling for it, so it takes the generic <graphic> path, which writes only
+    // Start/End — the cross AND the head both vanish and the line reads as an ordinary one. Losing
+    // it is unavoidable; losing it SILENTLY is not (AGENTS.md section 16, and the two sibling
+    // arrow paths already warn for exactly this class).
+    const noReaction = documentWithObjects([{
+      id: "art_no_reaction",
+      type: "graphic",
+      x: 100, y: 88, width: 120, height: 24, rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "noReactionArrow",
+        lineStart: { x: 100, y: 100 },
+        lineEnd: { x: 220, y: 100 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 },
+        shaftMark: "cross",
+        shaftMarkSizePx: 12
+      }
+    } satisfies GraphicObject]);
+
+    const exported = exportDocumentToCdxml(noReaction, { creationProgram: "T" });
+    expect(exported.warnings.map((warning) => warning.code)).toContain("cdxml.graphic_marker_payload_only");
+
+    // A plain decorative stroke with no head and no mark stays quiet.
+    const plainLine = documentWithObjects([{
+      id: "art_plain",
+      type: "graphic",
+      x: 100, y: 88, width: 120, height: 24, rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: { artPathKind: "line", lineStart: { x: 100, y: 100 }, lineEnd: { x: 220, y: 100 } }
+    } satisfies GraphicObject]);
+    expect(exportDocumentToCdxml(plainLine, { creationProgram: "T" }).warnings.map((w) => w.code))
+      .not.toContain("cdxml.graphic_marker_payload_only");
+
+    // And a semantic reaction arrow keeps using its own head-loss warning, not this one.
+    const reaction = documentWithObjects([{
+      id: "art_reaction",
+      type: "graphic",
+      x: 100, y: 88, width: 120, height: 24, rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "reactionArrow",
+        lineStart: { x: 100, y: 100 },
+        lineEnd: { x: 220, y: 100 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject]);
+    expect(exportDocumentToCdxml(reaction, { creationProgram: "T" }).warnings.map((w) => w.code))
+      .not.toContain("cdxml.graphic_marker_payload_only");
   });
 
   it("keeps colour, dash, and head-loss warnings on semantic arrow export", () => {

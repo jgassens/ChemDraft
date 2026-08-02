@@ -4770,7 +4770,7 @@ const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> =
  * N- (2), C+ (3), C- (3) and B- (4) right on the way. Hydrogen follows the duet rule instead, so
  * it is handled on its own: H+ and H- both take no bonds.
  */
-function nativeAtomValenceForCharge(element: NativeElementSymbol, formalCharge: number): number {
+export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalCharge: number): number {
   const electrons = nativeAtomValenceElectrons[element];
   if (electrons === undefined) {
     return 0;

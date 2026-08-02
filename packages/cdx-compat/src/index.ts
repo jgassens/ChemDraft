@@ -705,6 +705,7 @@ function exportGraphicObject(
   if (isSemanticReactionArrowGraphic(graphic)) {
     return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
   }
+  warnForGenericGraphicMarkerLoss(graphic, warnings);
   return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
 }
 
@@ -804,6 +805,36 @@ function warnForSemanticArrowHeadLoss(
   warnings.push({
     code: "cdxml.arrow_head_payload_only",
     message: `Arrowhead changes on this ${arrowKind} arrow are preserved exactly only in the embedded ChemDraft payload; standard CDXML reopens it with the default heads for ArrowType.`,
+    sourceObjectId: graphic.id
+  });
+}
+
+/**
+ * The generic `<graphic>` export writes geometry and stroke only — no `ArrowType`, no arrowhead
+ * attributes, no shaft mark. Standard CDXML simply cannot name a no-reaction cross or a head on a
+ * decorative stroke, so the loss is unavoidable; going quiet about it is not. A no-reaction arrow
+ * that reopens as a plain line has had its meaning inverted, not merely simplified.
+ *
+ * The two sibling arrow paths already warn for this class ({@link warnForSemanticArrowHeadLoss},
+ * {@link warnForUnrepresentableArrowheads}); this covers the graphics that reach neither.
+ */
+function warnForGenericGraphicMarkerLoss(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const headKind = graphic.data.markerEnd?.kind;
+  const tailKind = graphic.data.markerStart?.kind;
+  const hasHead = (headKind !== undefined && headKind !== "none") || (tailKind !== undefined && tailKind !== "none");
+  const hasShaftMark = graphic.data.shaftMark !== undefined;
+  if (!hasHead && !hasShaftMark) {
+    return;
+  }
+
+  warnings.push({
+    code: "cdxml.graphic_marker_payload_only",
+    message: hasShaftMark
+      ? "This arrow's shaft mark (and any arrowhead) is preserved only in the embedded ChemDraft payload; standard CDXML has no spelling for it, so other programs will read a plain line."
+      : "This stroke's arrowhead is preserved only in the embedded ChemDraft payload; standard CDXML carries heads on reaction arrows only, so other programs will read a plain line.",
     sourceObjectId: graphic.id
   });
 }
@@ -1455,6 +1486,16 @@ function applyImportTransformToPageObjects(
  * R/S strings imported verbatim, so the document claimed R over a depiction showing S.
  */
 function transposeImportedObject(object: DocumentObject): DocumentObject {
+  // Codec v1 was MIXED, not uniformly y-first. `formatPoint` wrote atom and text `p` y-first, but
+  // `formatXyPoint` (Head3D/Tail3D/Center3D/MajorAxisEnd3D) and `formatXyBoundingBox` (graphic and
+  // arrow BoundingBox) wrote x-first — already spec order. `importShapeGraphic` tags everything it
+  // builds with `cdxmlCoordinateSpace: "xy"`, so that tag is the record of which half a v1 object
+  // came from, and transposing a tagged object stands a horizontal arrow on its end and turns a
+  // wide rectangle into a tall one somewhere else entirely.
+  if (object.compatibility?.unknown.cdxmlCoordinateSpace === "xy") {
+    return object;
+  }
+
   if (object.type === "molecule") {
     const atoms = object.atoms.map((atom) => {
       const point = transposePoint(atom);

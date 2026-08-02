@@ -24,16 +24,29 @@ export const RENAMED_COMMAND_IDS: Readonly<Record<string, string>> = {
   "tool.retroArrow": "tool.art.retroArrow"
 };
 
+/**
+ * Every lookup goes through `Object.hasOwn` first.
+ *
+ * A bracket read on an object literal resolves inherited members, so `RENAMED_COMMAND_IDS["toString"]`
+ * returned a FUNCTION and `["__proto__"]` returned `Object.prototype` — both past the `?? id` and
+ * `!== undefined` guards, and both typed as `string`. Persisted layout state is just ids from disk,
+ * so a hidden-command entry of `__proto__` was rewritten to a non-string before schema validation,
+ * and the gallery silently dropped any command named after an `Object.prototype` member.
+ */
+function renamedTarget(id: string): string | undefined {
+  return Object.hasOwn(RENAMED_COMMAND_IDS, id) ? RENAMED_COMMAND_IDS[id] : undefined;
+}
+
 /** The id a renamed command now goes by, or the id itself when it was never renamed. */
 export function canonicalCommandId(id: string): string {
-  return RENAMED_COMMAND_IDS[id] ?? id;
+  return renamedTarget(id) ?? id;
 }
 
 /** True when `id` is a retired alias that {@link canonicalCommandId} redirects somewhere else. */
 export function isRenamedCommandId(id: string): boolean {
-  return RENAMED_COMMAND_IDS[id] !== undefined;
+  return renamedTarget(id) !== undefined;
 }
 
 export function renamedCommandId(id: unknown): string | undefined {
-  return typeof id === "string" ? RENAMED_COMMAND_IDS[id] : undefined;
+  return typeof id === "string" ? renamedTarget(id) : undefined;
 }

@@ -111,6 +111,7 @@ import {
   planBondExtension,
   planFreeformBondExtension,
   doubleBondRendersSymmetric,
+  nativeAtomValenceForCharge,
   ringInteriorDoubleBondSides,
   type LayoutPoint
 } from "@chemdraft/layout-engine";
@@ -14933,7 +14934,11 @@ function nativeSingleBondGraphMetadata(
     elementCounts.set(element, (elementCounts.get(element) ?? 0) + 1);
 
     if (element !== "H") {
-      const implicitHydrogens = nativeImplicitHydrogenCount(element, valenceUsage.get(atom.id) ?? 0);
+      const implicitHydrogens = nativeImplicitHydrogenCount(
+        element,
+        valenceUsage.get(atom.id) ?? 0,
+        atom.formalCharge
+      );
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
@@ -15515,9 +15520,20 @@ function nativeChargeValue(charge: number | undefined): NativeChargeValue | unde
   return undefined;
 }
 
-function nativeImplicitHydrogenCount(element: NativeElementSymbol, valenceUsed: number): number {
-  const neutralValence = nativeAtomValence[element];
-  return neutralValence === undefined ? 0 : Math.max(0, neutralValence - valenceUsed);
+/**
+ * Implicit hydrogens for the molecular formula, from the SAME derivation the drawn label uses.
+ *
+ * This counted against the neutral valence table and ignored `formalCharge`, so once
+ * `atomDisplayLabel` became charge-aware the two disagreed: methoxide drew as "O-" with no hydrogen
+ * while the formula still reported CH4O. A formula that contradicts the depiction beside it is
+ * worse than either being wrong alone, and AGENTS.md 5.26 puts atom-label content in layout-engine.
+ */
+function nativeImplicitHydrogenCount(
+  element: NativeElementSymbol,
+  valenceUsed: number,
+  formalCharge: number
+): number {
+  return Math.max(0, nativeAtomValenceForCharge(element, formalCharge) - valenceUsed);
 }
 
 function nativeAtomFormalChargeForValence(
