@@ -362,10 +362,14 @@ pub fn run() {
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
-                        if !APP_QUITTING.load(Ordering::SeqCst) {
-                            if let Err(error) = persist_main_window_geometry(window) {
-                                eprintln!("Could not persist ChemDraft main window frame: {error}");
-                            }
+                        // An early return rather than clippy's suggested match guard: a guard that
+                        // fails falls through to the next arm, which is only equivalent as long as
+                        // nothing below also matches Moved/Resized. This says what it means.
+                        if APP_QUITTING.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        if let Err(error) = persist_main_window_geometry(window) {
+                            eprintln!("Could not persist ChemDraft main window frame: {error}");
                         }
                     }
                     _ => {}
@@ -680,8 +684,11 @@ fn close_toolset_window(
             // `update_toolset_layout_state` began propagating read errors instead of swallowing
             // them as defaults, a `?` here meant an unreadable toolbar-state.json left the palette
             // on screen with its menu item still checked and no state event emitted.
-            if let Err(error) = persist_toolset_position(&app, &toolset_id, position.x, position.y) {
-                eprintln!("chemdraft: could not save the position of toolset {toolset_id}: {error}");
+            if let Err(error) = persist_toolset_position(&app, &toolset_id, position.x, position.y)
+            {
+                eprintln!(
+                    "chemdraft: could not save the position of toolset {toolset_id}: {error}"
+                );
             }
         }
     }
@@ -3349,7 +3356,10 @@ mod tests {
         // An IO error must stay an error. Turning it into defaults is what let a transient read
         // failure during a window Moved event overwrite every saved position and visibility.
         let failed = toolset_layout_state_from_read(Err("permission denied".to_string()));
-        assert!(failed.is_err(), "an IO error must not be reported as a usable state");
+        assert!(
+            failed.is_err(),
+            "an IO error must not be reported as a usable state"
+        );
 
         // And a good file still round-trips.
         let saved = ToolsetLayoutState {
@@ -3369,7 +3379,8 @@ mod tests {
 
     #[test]
     fn read_optional_file_distinguishes_absent_from_present() {
-        let dir = std::env::temp_dir().join(format!("chemdraft-read-optional-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("chemdraft-read-optional-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("state.json");
@@ -3389,7 +3400,8 @@ mod tests {
 
     #[test]
     fn write_file_atomic_replaces_completely_creates_parents_and_leaves_no_temp() {
-        let dir = std::env::temp_dir().join(format!("chemdraft-write-atomic-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("chemdraft-write-atomic-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         // Parent dir does not exist yet — write_file_atomic must create it.
         let path = dir.join("nested").join("state.json");
@@ -3420,7 +3432,8 @@ mod tests {
         // Tauri runs commands on a thread pool, so two writes to the same path can overlap inside
         // one process. With a pid-only temp name they shared a temp file and one rename could
         // publish the other's half-written bytes; the per-write counter keeps them separate.
-        let dir = std::env::temp_dir().join(format!("chemdraft-write-concurrent-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("chemdraft-write-concurrent-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let path = dir.join("state.json");
         let short = "s".repeat(64);
@@ -3429,7 +3442,11 @@ mod tests {
         let mut handles = Vec::new();
         for index in 0..8 {
             let path = path.clone();
-            let payload = if index % 2 == 0 { short.clone() } else { long.clone() };
+            let payload = if index % 2 == 0 {
+                short.clone()
+            } else {
+                long.clone()
+            };
             handles.push(std::thread::spawn(move || {
                 for _ in 0..12 {
                     write_file_atomic(&path, &payload).expect("concurrent write");

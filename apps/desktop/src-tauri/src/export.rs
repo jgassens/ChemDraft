@@ -53,8 +53,10 @@ pub(crate) fn rasterize_svg(request: RasterExportRequest) -> Result<RasterExport
 }
 
 fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
-    let mut options = usvg::Options::default();
-    options.fontdb = shared_fontdb();
+    let options = usvg::Options {
+        fontdb: shared_fontdb(),
+        ..Default::default()
+    };
 
     let tree = usvg::Tree::from_data(request.svg.as_bytes(), &options)
         .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
