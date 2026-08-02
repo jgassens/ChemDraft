@@ -487,6 +487,35 @@ its accuracy. Useful as a comparison point, not a candidate.)*
 
 Dimorphite-derived functionality stays labeled **protonation-state enumeration**.
 
+**Groundwork done 2026-08-02; the implementation is not started.** Dimorphite-DL 2.0.2 (Apache-2.0)
+installs and runs, and its site table was read at artifact level so that the implementation starts from
+verified ground rather than from a plausible reading. It is **41 entries** in
+`smarts/site_substructures.smarts`: name, SMARTS, then repeating triples of *(site index, pKa mean, pKa
+standard deviation)* — two entries (phosphate, phosphonate) carry two sites each.
+
+**The site index is the position in the match tuple, not the SMARTS atom-map number**, confirmed at
+`protonate/site.py:251` (`idx_atom = self.idxs_match[pka.idx_site]`) after the two readings disagreed
+on real entries. `Nitro` is the clean discriminator: index `3` selects the hydroxyl oxygen under the
+positional reading and the carbonyl `=O` under the map-number reading. Getting this backwards would
+have reported the wrong atom as ionizable for most of the table — a per-atom error with nothing in the
+output to reveal it, which is the same class as Joback's `nA`.
+
+Two further notes worth carrying: a `*` prefix on the name marks *"an aromatic nitrogen that needs
+special treatment"*, and the file's own comments warn that **with recursive SMARTS RDKit counts only
+the first atom as the match** — subsequent atoms define the environment, which shifts every position
+after it.
+
+**Why this method is worth having even though `pKa` itself is blocked.** It is rule-based: SMARTS plus
+a tabulated pKa range per *site type*. It has none of the training-data provenance problem measured
+above, it makes no molecule-specific pKa claim, and on a metal complex it simply matches nothing —
+which is the correct answer rather than a silent extrapolation. That is precisely why §8 insists the
+label stay "protonation-state enumeration".
+
+**What remains:** the result shape. None of the eight existing result kinds fits a list of sites each
+carrying atom indices and a pKa range, so this needs a new kind alongside `CompositionResult` — which
+the results module already records as a deliberate extension rather than drift — plus its schema,
+report rendering, and the run wiring. That is a slice to start whole, not to bolt on.
+
 A pKa result needs a richer output model than the §3 base: microscopic vs macroscopic pKa, acidic vs
 basic transition, the two microstates each microscopic pKa connects, solvent and temperature,
 charge-state enumeration limits, tautomer handling, and whether the value is experimentally trained,
