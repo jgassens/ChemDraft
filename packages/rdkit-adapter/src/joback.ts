@@ -117,7 +117,23 @@ function contributionSum(
 
 export type JobackEstimate =
   | { ok: true; value: number }
-  | { ok: false; reason: string; unsupportedFeature?: string };
+  | {
+      ok: false;
+      reason: string;
+      unsupportedFeature?: string;
+      /**
+       * Which kind of "no" this is, because the two are not the same shortfall.
+       *
+       * `unsupported` — Joback has no parameters for something in this molecule. A real capability
+       * gap, and the same status `declineForElements` gives Crippen logP on sodium.
+       *
+       * `not-applicable` — the parameters exist and the correlation itself is out of range, as it is
+       * for a 320-carbon alkane whose Tc denominator goes negative. That is the method's domain
+       * working, not a gap, and it must not drag a whole run's status down any more than a water loss
+       * from a molecule with no oxygen does.
+       */
+      kind: "unsupported" | "not-applicable";
+    };
 
 /**
  * The gate every property passes through first.
@@ -133,7 +149,8 @@ function requireFullCoverage(fragmentation: JobackFragmentation): JobackEstimate
     reason:
       `${count} heavy atom${count === 1 ? "" : "s"} (index ${fragmentation.unassignedAtoms.join(", ")}) ` +
       "matched no parameterised Joback group, so any estimate would describe only part of the molecule.",
-    unsupportedFeature: "unparameterised group"
+    unsupportedFeature: "unparameterised group",
+    kind: "unsupported"
   };
 }
 
@@ -143,7 +160,8 @@ function missingParameterReason(missing: string[], property: string): JobackEsti
     reason:
       `Joback publishes no ${property} contribution for ${[...new Set(missing)].join(", ")}, ` +
       "so the sum would silently omit it.",
-    unsupportedFeature: "group without a published contribution"
+    unsupportedFeature: "group without a published contribution",
+    kind: "unsupported"
   };
 }
 
@@ -173,8 +191,12 @@ export function jobackCriticalTemperature(fragmentation: JobackFragmentation): J
   if (denominator <= 0) {
     return {
       ok: false,
-      reason: "The Joback critical-temperature correlation is undefined for this group sum.",
-      unsupportedFeature: "correlation out of range"
+      reason:
+        "The Joback critical-temperature correlation is out of range for this molecule: the group sum " +
+        "drives its denominator non-positive, which would report a negative critical temperature. " +
+        "Joback was fitted to small organics and does not extrapolate to structures this large.",
+      unsupportedFeature: "correlation out of range",
+      kind: "not-applicable"
     };
   }
   return { ok: true, value: boiling.value / denominator };
@@ -191,8 +213,9 @@ export function jobackCriticalPressure(fragmentation: JobackFragmentation): Joba
   if (base === 0) {
     return {
       ok: false,
-      reason: "The Joback critical-pressure correlation is undefined for this group sum.",
-      unsupportedFeature: "correlation out of range"
+      reason: "The Joback critical-pressure correlation is out of range for this molecule.",
+      unsupportedFeature: "correlation out of range",
+      kind: "not-applicable"
     };
   }
   return { ok: true, value: 1 / (base * base) };

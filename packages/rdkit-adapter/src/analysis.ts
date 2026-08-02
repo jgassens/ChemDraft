@@ -80,6 +80,21 @@ import {
   isotopeEnvelopeContract
 } from "./envelope";
 import {
+  JOBACK_PC_METHOD_ID,
+  JOBACK_TB_METHOD_ID,
+  JOBACK_TC_METHOD_ID,
+  JOBACK_VC_METHOD_ID,
+  fragmentForJoback,
+  jobackContracts,
+  jobackCriticalPressure,
+  jobackCriticalTemperature,
+  jobackCriticalVolume,
+  jobackNormalBoilingPoint,
+  jobackUncertainty,
+  type JobackEstimate,
+  type JobackFragmentation
+} from "./joback";
+import {
   PINNED_ISOSPEC_VERSION,
   PINNED_ISOSPEC_WASM_SHA256,
   ensureIsoSpec,
@@ -242,7 +257,8 @@ export function rdkitAnalysisContracts(
     ...rdkitMethodContracts(engineVersion, capabilities),
     ...adductContracts(engineVersion),
     ...neutralLossContracts(engineVersion),
-    isotopeEnvelopeContract(isospecVersion)
+    isotopeEnvelopeContract(isospecVersion),
+    ...jobackContracts()
   ];
 }
 
@@ -286,6 +302,11 @@ export function sourceInterpretation(format: string, value: string): MolecularIn
     componentPolicy: "whole-input" as const,
     explicitHydrogenPolicy: "as-drawn — implicit hydrogens stay implicit, explicit ones stay explicit",
     isotopePolicy: "preserve-labels",
+    // Stated rather than left implicit, which is what a tautomer-sensitive method requires before it
+    // may run (§1). "as-drawn" is the honest description: no tautomer standardisation is applied, so
+    // the keto and enol forms of acetylacetone are analysed as the two different molecules they are.
+    // Declaring it does not weaken the guarantee — it is the guarantee, made checkable.
+    tautomerPolicy: "as-drawn — no tautomer standardisation; the drawn form is the analysed form",
     aromaticityModel: "rdkit-default",
     transformations: []
   };
@@ -624,6 +645,9 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     }
     const results: AnalysisResult[] = [];
     const extraWarnings: AnalysisWarning[] = [];
+    // Computed on first use and reused across all four Joback properties: 41 SMARTS patterns is the
+    // expensive part, and a run that asks for none of them pays nothing.
+    let jobackFragmentation: JobackFragmentation | undefined;
 
     // The "— change" affordance: one interpretation for the whole run, chosen by the caller.
     let primary = sourceContext;
@@ -653,6 +677,16 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       // it says so itself when an element is missing).
       if (contract.id === ISOTOPE_ENVELOPE_METHOD_ID) {
         results.push(envelopeResultFor(contract, primary, isospec));
+        continue;
+      }
+
+      // Joback shares the envelope's shape: driven by a fragmentation of the whole molecule rather
+      // than by a per-element parameterisation check, and declining on its own terms when an atom
+      // falls outside its 41 groups. The fragmentation is computed once and reused across all four
+      // properties — SMARTS matching over 41 patterns is the expensive part, not the arithmetic.
+      if (JOBACK_METHOD_IDS.has(contract.id)) {
+        jobackFragmentation ??= fragmentationFor(primary, module);
+        results.push(jobackResultFor(contract, primary, jobackFragmentation));
         continue;
       }
 
@@ -748,6 +782,87 @@ async function loadIsoSpecOrNull(): Promise<IsoSpecModule | null> {
     return null;
   }
 }
+
+export const JOBACK_METHOD_IDS: ReadonlySet<string> = new Set([
+  JOBACK_TB_METHOD_ID,
+  JOBACK_TC_METHOD_ID,
+  JOBACK_PC_METHOD_ID,
+  JOBACK_VC_METHOD_ID
+]);
+
+/**
+ * Fragment the interpretation for Joback, once per run.
+ *
+ * `nA` in Joback's critical-pressure correlation counts hydrogens, so implicit ones are added back —
+ * reading it as the heavy-atom count gives n-octane 50.3 bar against the correct 25.35, and both look
+ * like plausible critical pressures.
+ */
+function fragmentationFor(context: DerivedContext, module: RdkitMinimalModule): JobackFragmentation {
+  const json = JSON.parse(context.mol.get_json()) as {
+    molecules: { atoms: { impHs?: number }[] }[];
+    defaults?: { atom?: { impHs?: number } };
+  };
+  const atoms = json.molecules[0]?.atoms ?? [];
+  const defaultImpHs = json.defaults?.atom?.impHs ?? 0;
+  const totalAtoms = atoms.length + atoms.reduce((sum, atom) => sum + (atom.impHs ?? defaultImpHs), 0);
+  return fragmentForJoback(
+    module as unknown as Parameters<typeof fragmentForJoback>[0],
+    context.mol as unknown as Parameters<typeof fragmentForJoback>[1],
+    atoms.map((_, index) => index),
+    totalAtoms
+  );
+}
+
+/** One Joback property: estimate, or the decline with its reason. */
+function jobackResultFor(
+  contract: MethodContract,
+  context: DerivedContext,
+  fragmentation: JobackFragmentation
+): AnalysisResult {
+  const estimate = JOBACK_ESTIMATORS[contract.id]!(fragmentation);
+  const base = resultBase({ contract, interpretation: context.interpretation, composition: context.composition });
+  const unit = contract.unit ?? "dimensionless";
+
+  if (!estimate.ok) {
+    return {
+      ...base,
+      kind: "scalar",
+      // The estimate says which shortfall this is; see JobackEstimate. A correlation that is merely
+      // out of range must not drag the run's status down the way a real capability gap does.
+      status: estimate.kind,
+      value: null,
+      unit,
+      applicability: {
+        status: "out-of-domain",
+        reasons: [estimate.reason],
+        unsupportedFeatures: estimate.unsupportedFeature ? [estimate.unsupportedFeature] : []
+      },
+      warnings: [warning("joback.declined", estimate.reason, "info", [base.id])]
+    };
+  }
+
+  return {
+    ...base,
+    kind: "scalar",
+    status: "ok",
+    value: estimate.value,
+    unit,
+    // The uncertainty is the point, not decoration: an estimate rendered as a bare number reads as a
+    // measurement, which is the distinction §8a draws between `prediction` and `descriptor`.
+    uncertainties: jobackUncertainty(contract.id),
+    // Joback's own precision. More digits would imply the method resolves what it does not.
+    decimalPlaces: 1,
+    applicability: { status: "in-domain", reasons: [], unsupportedFeatures: [] },
+    warnings: []
+  };
+}
+
+const JOBACK_ESTIMATORS: Record<string, (fragmentation: JobackFragmentation) => JobackEstimate> = {
+  [JOBACK_TB_METHOD_ID]: jobackNormalBoilingPoint,
+  [JOBACK_TC_METHOD_ID]: jobackCriticalTemperature,
+  [JOBACK_PC_METHOD_ID]: jobackCriticalPressure,
+  [JOBACK_VC_METHOD_ID]: jobackCriticalVolume
+};
 
 /** The envelope's own dispatch: composition in, `DistributionResult` out. */
 function envelopeResultFor(

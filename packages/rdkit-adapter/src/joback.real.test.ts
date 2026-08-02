@@ -157,3 +157,51 @@ describe("the contracts", () => {
     expect(jobackUncertainty("not.a.method")).toEqual([]);
   });
 });
+
+describe("in the run", () => {
+  it("reports an estimate with its uncertainty, and does not drag the run down when out of range", async () => {
+    const { analyzeStructure } = await import("./analysis");
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "CCCCCCCC",
+      runId: "joback-run",
+      startedAt: "2026-08-02T00:00:00.000Z"
+    } as never);
+
+    const tb = run.results.find((result) => result.methodId === JOBACK_TB_METHOD_ID);
+    expect(tb?.kind).toBe("scalar");
+    if (tb?.kind !== "scalar") return;
+    expect(tb.status).toBe("ok");
+    expect(tb.value).toBeCloseTo(382.64, 1);
+    // An estimate rendered without its uncertainty reads as a measurement.
+    expect(tb.uncertainties).toHaveLength(1);
+    expect(tb.uncertainties[0]!.metric).toBe("mae");
+  });
+
+  it("separates a capability gap from a correlation that is merely out of range", async () => {
+    const { analyzeStructure } = await import("./analysis");
+
+    // C320: the Tc denominator goes negative, which would report a NEGATIVE critical temperature.
+    // That is Joback's domain limit working, so it must be `not-applicable` — an `unsupported` here
+    // would drag the whole run's status down for a method behaving correctly.
+    const huge = await analyzeStructure({
+      format: "smiles",
+      value: "C".repeat(320),
+      runId: "joback-huge",
+      startedAt: "2026-08-02T00:00:00.000Z"
+    } as never);
+    const tc = huge.results.find((result) => result.methodId === "joback.critical-temperature");
+    expect(tc?.status).toBe("not-applicable");
+    expect(huge.status).toBe("ok");
+
+    // Boron has no Joback group at all. That IS a capability gap, and keeps `unsupported` — the same
+    // status Crippen logP gets for sodium.
+    const boron = await analyzeStructure({
+      format: "smiles",
+      value: "OB(O)c1ccccc1",
+      runId: "joback-boron",
+      startedAt: "2026-08-02T00:00:00.000Z"
+    } as never);
+    expect(boron.results.find((result) => result.methodId === JOBACK_TB_METHOD_ID)?.status).toBe("unsupported");
+  });
+});
