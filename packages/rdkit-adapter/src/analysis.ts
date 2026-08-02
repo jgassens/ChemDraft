@@ -95,8 +95,10 @@ import {
   type JobackFragmentation
 } from "./joback";
 import {
+  IONIZATION_CONFIDENCE_BANDS,
   IONIZATION_SITES_METHOD_ID,
   combineSiteEstimates,
+  depictionFor,
   ionizationContract,
   scanIonizableSites,
   scoreSitesWithHammett,
@@ -973,6 +975,19 @@ function ionizationResultFor(
     };
   }
 
+  // Coordinates for drawing the sites on the structure. On a COPY for the same reason the hydrogen
+  // pass uses one: `set_new_coords` mutates, and handing every later method a molecule that suddenly
+  // has a conformer is the kind of change that shows up somewhere unrelated.
+  let depiction: ReturnType<typeof depictionFor>;
+  const forDepiction = copy ? copy.call(module, context.mol) : undefined;
+  if (forDepiction) {
+    try {
+      depiction = depictionFor(forDepiction as unknown as Parameters<typeof depictionFor>[0], graph);
+    } finally {
+      forDepiction.delete();
+    }
+  }
+
   // Nothing ionizable is the method not applying, not failing — the same shape as a neutral loss a
   // composition cannot supply. It must not drag the run's status down.
   if (scan.sites.length === 0 && scan.unassessed.length === 0) {
@@ -999,6 +1014,7 @@ function ionizationResultFor(
     // incomplete picture, and the status is where that belongs.
     status: scan.unassessed.length > 0 ? "partial" : "ok",
     sites: scan.sites,
+    ...(depiction ? { depiction, confidenceBands: IONIZATION_CONFIDENCE_BANDS } : {}),
     unassessed: scan.unassessed,
     applicability: {
       status: scan.unassessed.length > 0 ? "borderline" : "in-domain",

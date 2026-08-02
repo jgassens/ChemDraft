@@ -58,7 +58,12 @@
  * in this space has evidence about a metal centre, so a site adjacent to one is reported as
  * *unassessed* with the reason, never given a number.
  */
-import type { Classification, IonizationSite, MethodContract } from "@chemdraft/analysis-core";
+import type {
+  Classification,
+  IonizationResult,
+  IonizationSite,
+  MethodContract
+} from "@chemdraft/analysis-core";
 
 import { estimateHammettPka, hammettApplies } from "./hammett";
 import { IONIZATION_SITE_TYPES, SENTINEL_PKA_MAGNITUDE } from "./ionizationSites";
@@ -94,6 +99,18 @@ export const IONIZATION_SITES_METHOD_ID = "dimorphite.ionizable-sites";
  * applies to -- see `hammett.ts` for why the benzoic half of that number is partly circular.
  */
 export const HAMMETT_IN_DOMAIN_MAE = CONSENSUS_CALIBRATION.hammettMae;
+
+/**
+ * Where the model's interval stops meaning "trust this" and starts meaning "check this".
+ *
+ * The first and third quartile boundaries of its out-of-fold interval, so the bands are the ones whose
+ * accuracy was actually measured: at or below `good` is the quarter of sites with MAE
+ * ${"`"}quartileMae[0]${"`"}, above ${"`"}poor${"`"} the quarter with ${"`"}quartileMae[3]${"`"}. Read from the calibration, never typed.
+ */
+export const IONIZATION_CONFIDENCE_BANDS = {
+  good: PKA_MODEL_CALIBRATION.intervalQuartiles[0]!,
+  poor: PKA_MODEL_CALIBRATION.intervalQuartiles[2]!
+};
 
 const IONIZATION_ENGINE = "dimorphite-site-table";
 const IONIZATION_ENGINE_VERSION = "2.0.2";
@@ -299,6 +316,87 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
     });
   }
   return merged;
+}
+
+/** The subset of MinimalLib a depiction needs. Both are optional on the vendored build. */
+export interface DepictableMolecule {
+  set_new_coords?(useCoordGen?: boolean): boolean;
+  get_molblock?(): string;
+}
+
+/**
+ * 2D coordinates for the molecule the sites were found on, in the sites' own atom numbering.
+ *
+ * **The numbering is the entire risk here.** Site indices come from `get_json()`; these coordinates
+ * come from a molblock. If the two ever disagree, every pKa lands on the wrong atom — drawn
+ * confidently, on a plausible-looking structure, with nothing to reveal it. That is the same defect
+ * shape as the training-label extraction bug (a canonical SMILES stored beside a pre-canonicalisation
+ * index) and as Dimorphite's match-position trap.
+ *
+ * Two things make it safe rather than hoped-for. The molblock is generated from a COPY of the very
+ * molecule the scan ran on, so RDKit's atom order carries through untouched — not from a re-parsed
+ * SMILES, which is where reordering would come from. And the element sequence is then checked against
+ * the graph's; a mismatch returns undefined and the figure is simply not drawn. Declining to draw is
+ * a visible absence, whereas a shifted label is an invisible lie.
+ */
+export function depictionFor(
+  molecule: DepictableMolecule,
+  graph: PkaMolecularGraph
+): NonNullable<IonizationResult["depiction"]> | undefined {
+  if (!molecule.set_new_coords || !molecule.get_molblock) return undefined;
+  try {
+    if (!molecule.set_new_coords(true) && !molecule.set_new_coords(false)) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  const molblock = molecule.get_molblock();
+  const lines = molblock.split("\n");
+  // V2000 counts line: atom count in columns 0-2, bond count in 3-5.
+  const counts = lines[3];
+  if (!counts) return undefined;
+  const atomCount = Number.parseInt(counts.slice(0, 3), 10);
+  const bondCount = Number.parseInt(counts.slice(3, 6), 10);
+  if (!Number.isFinite(atomCount) || !Number.isFinite(bondCount)) return undefined;
+  if (atomCount !== graph.atoms.length) return undefined;
+
+  const atoms: NonNullable<IonizationResult["depiction"]>["atoms"] = [];
+  for (let i = 0; i < atomCount; i += 1) {
+    const line = lines[4 + i];
+    if (!line) return undefined;
+    const x = Number.parseFloat(line.slice(0, 10));
+    const y = Number.parseFloat(line.slice(10, 20));
+    const element = line.slice(31, 34).trim();
+    if (!Number.isFinite(x) || !Number.isFinite(y) || element.length === 0) return undefined;
+    // The guard. Same element, same position, or nothing is drawn.
+    if (element !== graph.atoms[i]!.element) return undefined;
+    atoms.push({
+      index: i,
+      x,
+      // Molfile y grows upward, SVG y grows downward. Flipped once, here, so no consumer has to
+      // remember — a figure drawn upside down is the kind of thing that survives review.
+      y: -y,
+      element,
+      charge: graph.atoms[i]!.charge,
+      hydrogens: graph.atoms[i]!.hydrogens
+    });
+  }
+
+  const bonds: NonNullable<IonizationResult["depiction"]>["bonds"] = [];
+  for (let i = 0; i < bondCount; i += 1) {
+    const line = lines[4 + atomCount + i];
+    if (!line) return undefined;
+    const from = Number.parseInt(line.slice(0, 3), 10) - 1;
+    const to = Number.parseInt(line.slice(3, 6), 10) - 1;
+    const order = Number.parseInt(line.slice(6, 9), 10);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return undefined;
+    if (from < 0 || to < 0 || from >= atomCount || to >= atomCount) return undefined;
+    // Aromatic (4) and other query orders are drawn as single rather than dropped: a missing bond
+    // reads as a different molecule, a plain line reads as a simplified drawing.
+    bonds.push({ from, to, order: order >= 1 && order <= 3 ? order : 1 });
+  }
+
+  return { atoms, bonds };
 }
 
 /**

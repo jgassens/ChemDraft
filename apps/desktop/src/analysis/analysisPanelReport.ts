@@ -40,6 +40,15 @@ function toSection(section: AnalysisReportSection): PluginPanelSection {
       };
     case "table":
       return { kind: "table", title: section.title, columns: [...section.columns], rows: section.rows.map((row) => [...row]) };
+    case "svg":
+      // Straight through: `svg` exists in the plugin panel schema already, and the renderer puts it in
+      // an <img>, so a figure the core built travels the same script-free path a plugin's would.
+      return {
+        kind: "svg",
+        title: section.title,
+        svg: section.svg,
+        ...(section.caption ? { caption: section.caption } : {})
+      };
     case "spectrum":
       // A fallback only. The Molecular Inspector draws spectra itself and never routes them here; any
       // other surface using this mapper gets the values as a table rather than nothing at all.

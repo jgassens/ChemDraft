@@ -108,6 +108,12 @@ function entriesOf(section: AnalysisReportSection): InspectorEntry[] {
         label: group.appliesTo.join(", "),
         value: group.conventions.join(" · ")
       }));
+    case "svg":
+      // A figure has no entries to list. Its caption is the one thing a flat inspector list can carry,
+      // and the values it draws arrive through the table section beside it.
+      return section.caption
+        ? [{ id: section.title, label: section.title, value: section.caption }]
+        : [];
     case "text":
       return [{ id: section.title, label: section.title, value: section.body }];
     case "spectrum":

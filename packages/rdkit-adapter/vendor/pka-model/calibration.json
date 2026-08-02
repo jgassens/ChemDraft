@@ -13,5 +13,10 @@
   "1.5": 0.7964,
   "2.0": 0.8868
  },
- "spreadMultiplier": 1.5
+ "spreadMultiplier": 1.5,
+ "intervalQuartiles": [
+  0.996,
+  1.724,
+  2.647
+ ]
 }

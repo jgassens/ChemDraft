@@ -27,6 +27,7 @@ import {
 import { interpretationChangesIdentity, type MolecularInterpretation } from "./interpretation";
 import type { AnalysisResult, AnalysisRun } from "./results";
 import { unit as unitDefinition, type UnitId } from "./units";
+import { ionizationBand, ionizationFigureSvg } from "./ionizationFigure";
 
 /**
  * The category a section belongs to in a grouped view, when that is not simply its own title.
@@ -95,6 +96,8 @@ export type AnalysisReportSection =
   | { kind: "table"; title: string; category?: string; columns: string[]; rows: string[][] }
   | { kind: "text"; title: string; category?: string; body: string }
   | { kind: "conventions"; title: string; category?: string; groups: ReportConventionGroup[] }
+  /** A finished picture. Static by design: it renders in an <img>, so it can carry no script. */
+  | { kind: "svg"; title: string; category?: string; svg: string; caption?: string }
   | ReportSpectrumSection;
 
 export interface ReportInterpretation {
@@ -382,6 +385,45 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   // one method, two methods weighted by their measured accuracy, or no value at all for a site that is
   // recognised but never titrates.
   for (const ionization of ok.filter(isKind("ionization"))) {
+    // The figure first, then the table. A pKa is about one hydrogen on one atom, and a reader who has
+    // to map "atom 7" onto a structure in their head has been handed a number without its subject.
+    if (ionization.depiction && ionization.sites.length > 0) {
+      const bands = ionization.confidenceBands;
+      const annotations = ionization.sites
+        .filter((site) => site.pKa !== null)
+        .map((site) => ({
+          atomIndex: site.ionizableAtomIndex,
+          text: site.spread === undefined
+            ? formatNumber(site.pKa!, 2)
+            : `${formatNumber(site.pKa!, 2)} ± ${formatNumber(site.spread, 2)}`,
+          band: bands ? ionizationBand(site.spread, bands) : ("unknown" as const)
+        }));
+      const svg = ionizationFigureSvg({
+        structure: ionization.depiction,
+        annotations,
+        title: `Ionizable sites of ${displayLabel(ionization)}`
+      });
+      if (svg) {
+        sections.push({
+          kind: "svg",
+          title: "Ionizable sites",
+          svg,
+          // The caption carries what the colours mean and what the drawn hydrogen is, because the
+          // figure is the first thing read and the contract is the last.
+          caption:
+            "Each value is the pKa of the drawn hydrogen leaving that atom — check the drawn form is " +
+            "the transition you meant" +
+            (bands
+              ? `. Colour is the method's measured accuracy at that interval: green within ±${formatNumber(
+                  bands.good,
+                  1
+                )} (MAE 0.5), amber to ±${formatNumber(bands.poor, 1)}, red beyond (MAE 2.2)`
+              : "") +
+            "."
+        });
+      }
+    }
+
     if (ionization.sites.length > 0) {
       sections.push({
         kind: "table",
@@ -651,6 +693,10 @@ export function renderReportText(report: AnalysisReport): string {
       for (const entry of section.rows) {
         lines.push(`${entry.label.padEnd(width)}  ${entry.value}${entry.note ? `   [${entry.note}]` : ""}`);
       }
+    } else if (section.kind === "svg") {
+      // A figure cannot travel as text. Its caption can, and the values it draws are in the table
+      // right below it — so the paste loses the picture, never the numbers.
+      if (section.caption) lines.push(section.caption);
     } else {
       const widths = padColumns(section.columns, section.rows);
       lines.push(section.columns.map((column, index) => column.padEnd(widths[index]!)).join("  "));
@@ -708,6 +754,12 @@ export function renderReportMarkdown(report: AnalysisReport): string {
         const value = entry.note ? `${entry.value} _(${entry.note})_` : entry.value;
         lines.push(`| ${escape(entry.label)} | ${escape(value)} |`);
       }
+      lines.push("");
+    } else if (section.kind === "svg") {
+      // Inlined as a data URI so a pasted report keeps its figure where the destination renders
+      // Markdown images, and degrades to the alt text where it does not.
+      lines.push(`![${escape(section.title)}](data:image/svg+xml;utf8,${encodeURIComponent(section.svg)})`);
+      if (section.caption) lines.push("", `_${escape(section.caption)}_`);
       lines.push("");
     } else {
       lines.push(`| ${section.columns.map(escape).join(" | ")} |`);

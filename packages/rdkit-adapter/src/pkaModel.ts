@@ -193,6 +193,8 @@ export const PKA_MODEL_CALIBRATION = calibrationJson as {
   /** Fraction of held-out errors inside +/- k*sd, keyed by k. */
   coverage: Record<string, number>;
   spreadMultiplier: number;
+  /** Interval widths at the 25th/50th/75th percentile, the bands `quartileMae` was measured over. */
+  intervalQuartiles: number[];
 };
 
 /**

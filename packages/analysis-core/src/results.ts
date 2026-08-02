@@ -261,6 +261,30 @@ export interface IonizationResult extends AnalysisResultBase {
    * Reported rather than omitted: a silent absence reads as "no ionizable sites here".
    */
   unassessed: { atomIndices: number[]; reason: string }[];
+  /**
+   * 2D coordinates for drawing the sites on the structure they belong to.
+   *
+   * `index` is the SAME numbering the sites use, which is the whole point — a depiction whose atom
+   * order drifts from the site indices would put every pKa on the wrong atom, silently and
+   * plausibly. Optional because a build without coordinate generation can still report the sites.
+   *
+   * `hydrogens` is carried per atom so the figure can draw the proton the value is about. A pKa is a
+   * statement about a specific H leaving a specific atom, and a report that shows neither cannot be
+   * checked.
+   */
+  depiction?: {
+    atoms: { index: number; x: number; y: number; element: string; charge: number; hydrogens: number }[];
+    bonds: { from: number; to: number; order: number }[];
+  };
+  /**
+   * Interval widths at which the method's own accuracy changes band, in log units.
+   *
+   * Carried on the result rather than known to the renderer, because only the method knows what it
+   * measured. These are quartile boundaries of its out-of-fold interval: at or below `good` is the
+   * quarter of sites where its MAE is lowest, above `poor` the quarter where it is highest. A figure
+   * that colours by them is reporting a measurement; one that picks its own cutoffs is decorating.
+   */
+  confidenceBands?: { good: number; poor: number };
 }
 
 /**
@@ -448,6 +472,32 @@ const IonizationResultSchema = z
     ...resultBaseShape,
     kind: z.literal("ionization"),
     sites: z.array(IonizationSiteSchema).default([]),
+    depiction: z
+      .object({
+        atoms: z.array(
+          z.object({
+            index: z.number().int().nonnegative(),
+            x: z.number().finite(),
+            y: z.number().finite(),
+            element: z.string().min(1),
+            charge: z.number().int(),
+            hydrogens: z.number().int().nonnegative()
+          }).strict()
+        ),
+        bonds: z.array(
+          z.object({
+            from: z.number().int().nonnegative(),
+            to: z.number().int().nonnegative(),
+            order: z.number().int().min(1).max(3)
+          }).strict()
+        )
+      })
+      .strict()
+      .optional(),
+    confidenceBands: z
+      .object({ good: z.number().finite().positive(), poor: z.number().finite().positive() })
+      .strict()
+      .optional(),
     unassessed: z
       .array(
         z
