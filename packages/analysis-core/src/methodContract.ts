@@ -37,7 +37,16 @@ export interface MethodContract {
   version: string;
   implementation: MethodImplementation;
   defaultInterpretationId: string;
-  resultKind: "scalar" | "identifier" | "composition" | "distribution" | "spectrum" | "geometry" | "orbital" | "correlation-map";
+  resultKind:
+    | "scalar"
+    | "identifier"
+    | "composition"
+    | "distribution"
+    | "spectrum"
+    | "geometry"
+    | "orbital"
+    | "correlation-map"
+    | "ionization";
   /** Required for scalars and distributions; a number without a unit is not a result. */
   unit?: UnitId;
   /**
@@ -100,7 +109,8 @@ export const MethodContractSchema = z
       "spectrum",
       "geometry",
       "orbital",
-      "correlation-map"
+      "correlation-map",
+      "ionization"
     ]),
     unit: UnitIdSchema.optional(),
     conventions: z.array(z.string().min(1)).default([]),

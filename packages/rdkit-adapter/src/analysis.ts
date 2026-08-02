@@ -38,7 +38,7 @@ import {
   type MolecularInterpretation
 } from "@chemdraft/analysis-core";
 
-import { compositionFromRdkitJson, type DerivedComposition, type RdkitJson } from "./composition";
+import { compositionFromRdkitJson, elementSymbol, type DerivedComposition, type RdkitJson } from "./composition";
 import { ensureRdkit, type RdkitJsMol, type RdkitMinimalModule } from "./conformer";
 import {
   deriveInterpretation,
@@ -94,6 +94,11 @@ import {
   type JobackEstimate,
   type JobackFragmentation
 } from "./joback";
+import {
+  IONIZATION_SITES_METHOD_ID,
+  ionizationContract,
+  scanIonizableSites
+} from "./ionization";
 import {
   PINNED_ISOSPEC_VERSION,
   PINNED_ISOSPEC_WASM_SHA256,
@@ -258,7 +263,8 @@ export function rdkitAnalysisContracts(
     ...adductContracts(engineVersion),
     ...neutralLossContracts(engineVersion),
     isotopeEnvelopeContract(isospecVersion),
-    ...jobackContracts()
+    ...jobackContracts(),
+    ionizationContract()
   ];
 }
 
@@ -684,6 +690,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       // than by a per-element parameterisation check, and declining on its own terms when an atom
       // falls outside its 41 groups. The fragmentation is computed once and reused across all four
       // properties — SMARTS matching over 41 patterns is the expensive part, not the arithmetic.
+      // Like the envelope and Joback: driven by a scan of the whole structure, declining on its own
+      // terms rather than through the per-element parameterisation check.
+      if (contract.id === IONIZATION_SITES_METHOD_ID) {
+        results.push(ionizationResultFor(contract, primary, module));
+        continue;
+      }
+
       if (JOBACK_METHOD_IDS.has(contract.id)) {
         jobackFragmentation ??= fragmentationFor(primary, module);
         results.push(jobackResultFor(contract, primary, jobackFragmentation));
@@ -863,6 +876,86 @@ const JOBACK_ESTIMATORS: Record<string, (fragmentation: JobackFragmentation) => 
   [JOBACK_PC_METHOD_ID]: jobackCriticalPressure,
   [JOBACK_VC_METHOD_ID]: jobackCriticalVolume
 };
+
+/** Ionizable sites: scan in, `IonizationResult` out. */
+function ionizationResultFor(
+  contract: MethodContract,
+  context: DerivedContext,
+  module: RdkitMinimalModule
+): AnalysisResult {
+  const base = resultBase({ contract, interpretation: context.interpretation, composition: context.composition });
+  const json = JSON.parse(context.mol.get_json()) as {
+    molecules: { atoms: { z?: number }[] }[];
+    defaults?: { atom?: { z?: number } };
+  };
+  const defaultZ = json.defaults?.atom?.z ?? 6;
+  const elements = (json.molecules[0]?.atoms ?? []).map((atom) => elementSymbol(atom.z ?? defaultZ));
+
+  // The site patterns need explicit hydrogens, and adding them mutates — so this works on a COPY.
+  // Mutating `context.mol` would hand every later method a hydrogen-explicit molecule and silently
+  // change descriptor values that were computed against the implicit form.
+  const copy = (module as unknown as { get_mol_copy?: (mol: unknown) => AnalysisMol }).get_mol_copy;
+  const withHydrogens = copy ? copy.call(module, context.mol) : undefined;
+  if (!withHydrogens) {
+    const reason = "This RDKit build cannot copy a molecule, so ionizable sites were not scanned.";
+    return {
+      ...base,
+      kind: "ionization",
+      status: "unsupported",
+      sites: [],
+      unassessed: [],
+      applicability: { status: "undetermined", reasons: [reason], unsupportedFeatures: [] },
+      warnings: [warning("ionization.engine_unavailable", reason, "warning", [base.id])]
+    };
+  }
+
+  let scan;
+  try {
+    (withHydrogens as unknown as { add_hs_in_place(): void }).add_hs_in_place();
+    scan = scanIonizableSites(
+      module as unknown as Parameters<typeof scanIonizableSites>[0],
+      withHydrogens as unknown as Parameters<typeof scanIonizableSites>[1],
+      elements
+    );
+  } finally {
+    withHydrogens.delete();
+  }
+
+  // Nothing ionizable is the method not applying, not failing — the same shape as a neutral loss a
+  // composition cannot supply. It must not drag the run's status down.
+  if (scan.sites.length === 0 && scan.unassessed.length === 0) {
+    const reason = "No tabulated ionizable site matched this structure.";
+    return {
+      ...base,
+      kind: "ionization",
+      status: "not-applicable",
+      sites: [],
+      unassessed: [],
+      applicability: { status: "out-of-domain", reasons: [reason], unsupportedFeatures: [] },
+      warnings: [warning("ionization.no_sites", reason, "info", [base.id])]
+    };
+  }
+
+  const notes = scan.unassessed.map((entry) =>
+    warning("ionization.unassessed_site", entry.reason, "warning", [base.id])
+  );
+
+  return {
+    ...base,
+    kind: "ionization",
+    // `partial` when something was recognised but could not be scored: the reader is looking at an
+    // incomplete picture, and the status is where that belongs.
+    status: scan.unassessed.length > 0 ? "partial" : "ok",
+    sites: scan.sites,
+    unassessed: scan.unassessed,
+    applicability: {
+      status: scan.unassessed.length > 0 ? "borderline" : "in-domain",
+      reasons: scan.unassessed.map((entry) => entry.reason),
+      unsupportedFeatures: scan.unassessed.length > 0 ? ["metal-adjacent site"] : []
+    },
+    warnings: notes
+  };
+}
 
 /** The envelope's own dispatch: composition in, `DistributionResult` out. */
 function envelopeResultFor(

@@ -74,7 +74,8 @@ export type AnalysisResultKind =
   | "spectrum"
   | "geometry"
   | "orbital"
-  | "correlation-map";
+  | "correlation-map"
+  | "ionization";
 
 // --- shared base -----------------------------------------------------------------------------
 
@@ -187,6 +188,58 @@ export interface CompositionResult extends AnalysisResultBase {
 }
 
 /**
+ * One ionizable position, and where its number came from.
+ *
+ * `basis` is not decoration. §8's requirement for any pKa-adjacent value is that it record "whether the
+ * value is experimentally trained, quantum-derived, or inherited from another predictor", and a site
+ * whose figure is a *type average* is a fourth thing again — it describes a class of sites, not this
+ * molecule. Carrying it per site is what lets one report mix a tabulated carboxyl with a model-derived
+ * amine and stay honest about both.
+ */
+export interface IonizationSite {
+  /** Every atom of the matched substructure, in the source interpretation's numbering. */
+  atomIndices: number[];
+  /** The atom that gains or loses the proton. */
+  ionizableAtomIndex: number;
+  /** Human-readable site class, e.g. "Carboxylic acid". */
+  siteType: string;
+  /**
+   * The estimate, or `null` for a site recognised but not titratable in any accessible range.
+   *
+   * Null rather than a sentinel number: Dimorphite encodes that case as -1000, and passing it through
+   * would put "pKa -1000" in front of a reader.
+   */
+  pKa: number | null;
+  /** Spread on `pKa`, in log units. Absent when `pKa` is null. */
+  spread?: number;
+  /** What kind of number this is. */
+  basis: "site-type-average" | "experimentally-trained-model" | "inherited-from-another-predictor" | "consensus";
+  /** Which methods produced a value here, and what they said. Populated when more than one did. */
+  agreement?: {
+    methods: string[];
+    values: number[];
+    /** Largest pairwise gap, in log units. The confidence signal: wide means the methods disagree. */
+    span: number;
+  };
+}
+
+/**
+ * The ionizable sites of a structure, each with its own provenance.
+ *
+ * A list rather than a scalar because a molecule has as many pKa values as it has ionizable sites, and
+ * collapsing them to "the pKa" is the first thing that makes a pKa number wrong. Histidine has three.
+ */
+export interface IonizationResult extends AnalysisResultBase {
+  kind: "ionization";
+  sites: IonizationSite[];
+  /**
+   * Sites the method could not assess but knows exist, e.g. a metal centre no training set covers.
+   * Reported rather than omitted: a silent absence reads as "no ionizable sites here".
+   */
+  unassessed: { atomIndices: number[]; reason: string }[];
+}
+
+/**
  * An isotope envelope, or any other set of (position, intensity) pairs that is not a spectrum.
  *
  * `truncation` is required, not optional. An envelope is always cut off somewhere, and an intensity
@@ -276,7 +329,8 @@ export type AnalysisResult =
   | SpectrumResult
   | GeometryResult
   | OrbitalResult
-  | CorrelationMapResult;
+  | CorrelationMapResult
+  | IonizationResult;
 
 // --- schemas ---------------------------------------------------------------------------------
 
@@ -325,6 +379,52 @@ const CompositionResultSchema = z
     components: z.array(CompositionComponentSchema).default([]),
     hasExplicitIsotopes: z.boolean(),
     radicalElectronCount: z.number().int().nonnegative()
+  })
+  .strict();
+
+const IonizationSiteSchema = z
+  .object({
+    atomIndices: z.array(z.number().int().nonnegative()).min(1),
+    ionizableAtomIndex: z.number().int().nonnegative(),
+    siteType: z.string().min(1),
+    pKa: z.number().finite().nullable(),
+    spread: z.number().finite().nonnegative().optional(),
+    basis: z.enum([
+      "site-type-average",
+      "experimentally-trained-model",
+      "inherited-from-another-predictor",
+      "consensus"
+    ]),
+    agreement: z
+      .object({
+        methods: z.array(z.string().min(1)).min(2),
+        values: z.array(z.number().finite()).min(2),
+        span: z.number().finite().nonnegative()
+      })
+      .strict()
+      .optional()
+  })
+  .strict()
+  // A spread without a value is meaningless, and a value without one hides that this is an estimate.
+  .refine((site) => (site.pKa === null) === (site.spread === undefined), {
+    message: "An ionization site must carry a spread exactly when it carries a pKa."
+  });
+
+const IonizationResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("ionization"),
+    sites: z.array(IonizationSiteSchema).default([]),
+    unassessed: z
+      .array(
+        z
+          .object({
+            atomIndices: z.array(z.number().int().nonnegative()).min(1),
+            reason: z.string().min(1)
+          })
+          .strict()
+      )
+      .default([])
   })
   .strict();
 
@@ -434,6 +534,11 @@ function payloadIsAbsent(result: AnalysisResult): boolean {
       return result.values.length === 0;
     case "correlation-map":
       return result.correlations.length === 0;
+    case "ionization":
+      // An unassessed entry IS a payload — "there is a site here I cannot judge" is the answer, not the
+      // absence of one. Only a result carrying neither sites nor gaps is empty, and that case belongs
+      // to `not-applicable`: a molecule with nothing ionizable is the method not applying, not failing.
+      return result.sites.length === 0 && result.unassessed.length === 0;
   }
 }
 
@@ -442,6 +547,7 @@ export const AnalysisResultSchema = z
     ScalarResultSchema,
     IdentifierResultSchema,
     CompositionResultSchema,
+    IonizationResultSchema,
     DistributionResultSchema,
     SpectrumResultSchema,
     GeometryResultSchema,
