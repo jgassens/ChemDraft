@@ -96,8 +96,10 @@ import {
 } from "./joback";
 import {
   IONIZATION_SITES_METHOD_ID,
+  combineSiteEstimates,
   ionizationContract,
   scanIonizableSites,
+  scoreSitesWithHammett,
   scoreSitesWithModel
 } from "./ionization";
 import type { PkaMolecularGraph } from "./pkaModel";
@@ -957,7 +959,19 @@ function ionizationResultFor(
 
   // Score with the trained model, on the IMPLICIT-hydrogen graph the model was trained against.
   // Feature-ising the hydrogen-explicit copy would change degree and neighbour counts for every site.
-  scan = scoreSitesWithModel(scan, modelGraph(context, json, defaultZ));
+  const graph = modelGraph(context, json, defaultZ);
+  scan = scoreSitesWithModel(scan, graph);
+
+  // Then a second, independent opinion wherever the Hammett relationship reaches, and let the two
+  // methods' disagreement set the confidence. It reaches few sites and says so on the rest; where it
+  // does reach, the pair is measurably better than either alone.
+  const fromHammett = scoreSitesWithHammett(scan, graph);
+  if (fromHammett.length > 0) {
+    scan = {
+      sites: combineSiteEstimates({ model: scan.sites, hammett: fromHammett }),
+      unassessed: scan.unassessed
+    };
+  }
 
   // Nothing ionizable is the method not applying, not failing — the same shape as a neutral loss a
   // composition cannot supply. It must not drag the run's status down.

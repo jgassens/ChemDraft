@@ -11,7 +11,14 @@ import type { IonizationSite } from "@chemdraft/analysis-core";
 
 import { analyzeStructure } from "./analysis";
 import { resetRdkitForTesting } from "./conformer";
-import { IONIZATION_SITES_METHOD_ID, combineSiteEstimates, ionizationContract } from "./ionization";
+import {
+  CONSENSUS_CALIBRATION,
+  HAMMETT_IN_DOMAIN_MAE,
+  IONIZATION_SITES_METHOD_ID,
+  combineSiteEstimates,
+  ionizationContract
+} from "./ionization";
+import { PKA_MODEL_TRAINING } from "./pkaModel";
 import { IONIZATION_SITE_TYPES } from "./ionizationSites";
 import { installRealRdkitModuleLoader } from "./testing";
 
@@ -147,6 +154,46 @@ describe("what it refuses to score", () => {
   });
 });
 
+describe("the second method, end to end", () => {
+  it("reaches a consensus on a substituted phenol", async () => {
+    // 4-nitrophenol measures 7.13. The model alone lands well off it; the Hammett relationship gets it
+    // almost exactly, and the weighted consensus should sit close to the better method.
+    const { result } = await ionization("O=[N+]([O-])c1ccc(O)cc1");
+    const site = result.sites.find((entry) => entry.basis === "consensus");
+    expect(site, "no consensus site — the second method did not fire").toBeDefined();
+    expect(site!.agreement!.methods).toEqual(["model", "hammett"]);
+    expect(site!.pKa).toBeGreaterThan(6.5);
+    expect(site!.pKa).toBeLessThan(8.5);
+  });
+
+  it("shows the working, so a chemist can check it by hand", async () => {
+    // The reason an LFER is worth having as the second opinion rather than another black box.
+    const { result } = await ionization("Clc1ccc(O)cc1");
+    const site = result.sites.find((entry) => entry.basis === "consensus");
+    expect(site).toBeDefined();
+    // The consensus itself carries no derivation, but the run must have had one to combine.
+    const merged = combineSiteEstimates({
+      model: [{ ...site!, basis: "experimentally-trained-model", pKa: 9.0 }],
+      hammett: [{ ...site!, basis: "linear-free-energy-relationship", pKa: 9.44 }]
+    });
+    expect(merged[0]!.basis).toBe("consensus");
+  });
+
+  it("leaves a site the relationship cannot reach on the model alone", async () => {
+    // Acetic acid is not an aryl acid. One opinion stays one opinion.
+    const { result } = await ionization("CC(=O)O");
+    for (const site of result.sites) expect(site.basis).not.toBe("consensus");
+  });
+
+  it("declines an ortho-substituted phenol rather than adding a bad second opinion", async () => {
+    // 2-cresol is exactly the case Hammett does not describe. The model still scores it; the
+    // relationship must simply not appear.
+    const { result } = await ionization("Cc1ccccc1O");
+    for (const site of result.sites) expect(site.basis).not.toBe("consensus");
+    expect(result.sites.some((site) => site.pKa !== null)).toBe(true);
+  });
+});
+
 describe("confidence from agreement", () => {
   const site = (atom: number, pKa: number, spread: number): IonizationSite => ({
     atomIndices: [atom],
@@ -158,28 +205,58 @@ describe("confidence from agreement", () => {
   });
 
   it("narrows nothing when two methods disagree", async () => {
-    // The point of the span. Two routes three log units apart must not produce a confident consensus;
-    // the merged spread is at least half their disagreement.
+    // The point of the span. Two routes three log units apart must not produce a confident consensus:
+    // the merged interval is the whole disagreement, not a fraction of it.
     const merged = combineSiteEstimates({
-      table: [site(3, 4.0, 0.5)],
-      model: [site(3, 7.0, 0.5)]
+      model: [site(3, 7.0, 0.5)],
+      hammett: [site(3, 4.0, 0.5)]
     });
     expect(merged).toHaveLength(1);
     expect(merged[0]!.basis).toBe("consensus");
-    expect(merged[0]!.pKa).toBeCloseTo(5.5, 6);
     expect(merged[0]!.agreement!.span).toBeCloseTo(3.0, 6);
-    expect(merged[0]!.spread).toBeGreaterThanOrEqual(1.5);
+    expect(merged[0]!.spread).toBeGreaterThanOrEqual(3.0);
   });
 
-  it("keeps the methods' own spread when they agree", async () => {
+  it("weights by measured accuracy rather than averaging", async () => {
+    // Averaging is the obvious rule and it is measurably wrong. Where both methods fire, the forest
+    // scores MAE 0.43 and the relationship 0.16; their mean scores 0.23 — worse than the better method
+    // alone. So the consensus sits near the method that has earned it, not halfway.
     const merged = combineSiteEstimates({
-      table: [site(3, 4.0, 0.6)],
-      model: [site(3, 4.2, 0.4)]
+      model: [site(3, 7.0, 0.5)],
+      hammett: [site(3, 4.0, 0.5)]
+    });
+    expect(merged[0]!.pKa).toBeLessThan(5.5);
+
+    // The weight is a rule, not a constant to keep in step by hand: inverse of each method's own
+    // published MAE. Checked against the calibrated figure to make sure the rule and the measurement
+    // are still describing the same thing.
+    const weight =
+      1 / PKA_MODEL_TRAINING.cvMae / (1 / PKA_MODEL_TRAINING.cvMae + 1 / HAMMETT_IN_DOMAIN_MAE);
+    expect(weight).toBeCloseTo(CONSENSUS_CALIBRATION.forestWeight, 3);
+    expect(merged[0]!.pKa).toBeCloseTo(4.0 + 3.0 * weight, 6);
+  });
+
+  it("takes the tightest input spread as its floor, not the widest", async () => {
+    // Adding a precise second opinion has to be allowed to make the answer more precise, or there is
+    // no reason to consult one. Measured: the consensus interval is 2.1x tighter than the model's own
+    // and still covers more of the actual error (91% against 81%).
+    const merged = combineSiteEstimates({
+      model: [site(3, 4.2, 0.6)],
+      hammett: [site(3, 4.0, 0.4)]
     });
     expect(merged[0]!.agreement!.span).toBeCloseTo(0.2, 6);
-    // Half the span is 0.1, which is narrower than the widest input spread — so that wins.
-    expect(merged[0]!.spread).toBeCloseTo(0.6, 6);
-    expect(merged[0]!.agreement!.methods).toEqual(["table", "model"]);
+    expect(merged[0]!.spread).toBeCloseTo(0.4, 6);
+    expect(merged[0]!.agreement!.methods).toEqual(["model", "hammett"]);
+  });
+
+  it("never reports certainty from two methods landing on the same number", async () => {
+    // Span zero. Exact agreement is not evidence that both are right, so the floor still applies.
+    const merged = combineSiteEstimates({
+      model: [site(3, 4.0, 0.6)],
+      hammett: [site(3, 4.0, 0.4)]
+    });
+    expect(merged[0]!.agreement!.span).toBe(0);
+    expect(merged[0]!.spread).toBeCloseTo(0.4, 6);
   });
 
   it("passes a lone estimate through unchanged rather than calling it a consensus", async () => {

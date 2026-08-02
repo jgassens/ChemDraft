@@ -1,0 +1,1505 @@
+[
+ {
+  "smiles": "O=C(O)c1cc(Cl)cc([N+](=O)[O-])c1",
+  "atomIdx": 2,
+  "pKa": 3.12,
+  "series": "benzoic",
+  "sigmaSum": 1.08,
+  "substituents": [
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ],
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 2.17
+ },
+ {
+  "smiles": "O=C(O)c1ccc(Br)c([N+](=O)[O-])c1",
+  "atomIdx": 2,
+  "pKa": 3.26,
+  "series": "benzoic",
+  "sigmaSum": 0.94,
+  "substituents": [
+   [
+    "para",
+    "Br+0h0d1",
+    0.23
+   ],
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 3.24
+ },
+ {
+  "smiles": "O=C(O)c1ccc(Cl)c([N+](=O)[O-])c1",
+  "atomIdx": 2,
+  "pKa": 3.26,
+  "series": "benzoic",
+  "sigmaSum": 0.94,
+  "substituents": [
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ],
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 3.33
+ },
+ {
+  "smiles": "O=C(O)c1ccc(F)c([N+](=O)[O-])c1",
+  "atomIdx": 2,
+  "pKa": 3.43,
+  "series": "benzoic",
+  "sigmaSum": 0.77,
+  "substituents": [
+   [
+    "para",
+    "F+0h0d1",
+    0.06
+   ],
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 3.37
+ },
+ {
+  "smiles": "O=C(O)c1ccc([N+](=O)[O-])cc1",
+  "atomIdx": 2,
+  "pKa": 3.42,
+  "series": "benzoic",
+  "sigmaSum": 0.78,
+  "substituents": [
+   [
+    "para",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.78
+   ]
+  ],
+  "observed": 3.43
+ },
+ {
+  "smiles": "O=C(O)c1cccc([N+](=O)[O-])c1",
+  "atomIdx": 2,
+  "pKa": 3.49,
+  "series": "benzoic",
+  "sigmaSum": 0.71,
+  "substituents": [
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 3.47
+ },
+ {
+  "smiles": "Cc1ccc(C(=O)O)cc1[N+](=O)[O-]",
+  "atomIdx": 7,
+  "pKa": 3.66,
+  "series": "benzoic",
+  "sigmaSum": 0.54,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ],
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 3.62
+ },
+ {
+  "smiles": "Cc1cc(C(=O)O)ccc1[N+](=O)[O-]",
+  "atomIdx": 6,
+  "pKa": 3.49,
+  "series": "benzoic",
+  "sigmaSum": 0.71,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.78
+   ]
+  ],
+  "observed": 3.65
+ },
+ {
+  "smiles": "O=C(O)c1cccc(Br)c1",
+  "atomIdx": 2,
+  "pKa": 3.81,
+  "series": "benzoic",
+  "sigmaSum": 0.39,
+  "substituents": [
+   [
+    "meta",
+    "Br+0h0d1",
+    0.39
+   ]
+  ],
+  "observed": 3.79
+ },
+ {
+  "smiles": "O=C(O)c1cccc(Cl)c1",
+  "atomIdx": 2,
+  "pKa": 3.83,
+  "series": "benzoic",
+  "sigmaSum": 0.37,
+  "substituents": [
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 3.8
+ },
+ {
+  "smiles": "O=C(O)c1cccc(I)c1",
+  "atomIdx": 2,
+  "pKa": 3.85,
+  "series": "benzoic",
+  "sigmaSum": 0.35,
+  "substituents": [
+   [
+    "meta",
+    "I+0h0d1",
+    0.35
+   ]
+  ],
+  "observed": 3.83
+ },
+ {
+  "smiles": "O=C(O)c1cccc(F)c1",
+  "atomIdx": 2,
+  "pKa": 3.86,
+  "series": "benzoic",
+  "sigmaSum": 0.34,
+  "substituents": [
+   [
+    "meta",
+    "F+0h0d1",
+    0.34
+   ]
+  ],
+  "observed": 3.9
+ },
+ {
+  "smiles": "O=C(O)c1cccc(Oc2ccccc2)c1",
+  "atomIdx": 2,
+  "pKa": 3.95,
+  "series": "benzoic",
+  "sigmaSum": 0.25,
+  "substituents": [
+   [
+    "meta",
+    "O+0h0d2|C+0h0d3|C+0h1d2,C+0h1d2|C+0h1d2,C+0h1d2",
+    0.25
+   ]
+  ],
+  "observed": 3.95
+ },
+ {
+  "smiles": "Cc1ccc(C(=O)O)cc1Br",
+  "atomIdx": 7,
+  "pKa": 3.98,
+  "series": "benzoic",
+  "sigmaSum": 0.22,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ],
+   [
+    "meta",
+    "Br+0h0d1",
+    0.39
+   ]
+  ],
+  "observed": 3.96
+ },
+ {
+  "smiles": "O=C(O)c1ccc(Cl)cc1",
+  "atomIdx": 2,
+  "pKa": 3.97,
+  "series": "benzoic",
+  "sigmaSum": 0.23,
+  "substituents": [
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 3.98
+ },
+ {
+  "smiles": "O=C(O)c1ccc(I)cc1",
+  "atomIdx": 2,
+  "pKa": 4.02,
+  "series": "benzoic",
+  "sigmaSum": 0.18,
+  "substituents": [
+   [
+    "para",
+    "I+0h0d1",
+    0.18
+   ]
+  ],
+  "observed": 3.99
+ },
+ {
+  "smiles": "O=C(O)c1ccc(Br)cc1",
+  "atomIdx": 2,
+  "pKa": 3.97,
+  "series": "benzoic",
+  "sigmaSum": 0.23,
+  "substituents": [
+   [
+    "para",
+    "Br+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 3.99
+ },
+ {
+  "smiles": "Cc1cc(C(=O)O)ccc1Br",
+  "atomIdx": 6,
+  "pKa": 4.04,
+  "series": "benzoic",
+  "sigmaSum": 0.16,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "Br+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 4.03
+ },
+ {
+  "smiles": "COc1cccc(C(=O)O)c1",
+  "atomIdx": 9,
+  "pKa": 4.08,
+  "series": "benzoic",
+  "sigmaSum": 0.12,
+  "substituents": [
+   [
+    "meta",
+    "O+0h0d2|C+0h3d1",
+    0.12
+   ]
+  ],
+  "observed": 4.06
+ },
+ {
+  "smiles": "Cc1ccc(C(=O)O)cc1Cl",
+  "atomIdx": 7,
+  "pKa": 4.0,
+  "series": "benzoic",
+  "sigmaSum": 0.2,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ],
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 4.06
+ },
+ {
+  "smiles": "Cc1cc(C(=O)O)ccc1Cl",
+  "atomIdx": 6,
+  "pKa": 4.04,
+  "series": "benzoic",
+  "sigmaSum": 0.16,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 4.07
+ },
+ {
+  "smiles": "COc1cc(C(=O)O)ccc1C",
+  "atomIdx": 7,
+  "pKa": 4.25,
+  "series": "benzoic",
+  "sigmaSum": -0.05,
+  "substituents": [
+   [
+    "meta",
+    "O+0h0d2|C+0h3d1",
+    0.12
+   ],
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ]
+  ],
+  "observed": 4.13
+ },
+ {
+  "smiles": "O=C(O)c1ccc(F)cc1",
+  "atomIdx": 2,
+  "pKa": 4.14,
+  "series": "benzoic",
+  "sigmaSum": 0.06,
+  "substituents": [
+   [
+    "para",
+    "F+0h0d1",
+    0.06
+   ]
+  ],
+  "observed": 4.16
+ },
+ {
+  "smiles": "CCOc1cccc(C(=O)O)c1",
+  "atomIdx": 10,
+  "pKa": 4.1,
+  "series": "benzoic",
+  "sigmaSum": 0.1,
+  "substituents": [
+   [
+    "meta",
+    "O+0h0d2|C+0h2d2|C+0h3d1",
+    0.1
+   ]
+  ],
+  "observed": 4.17
+ },
+ {
+  "smiles": "O=C(O)c1ccccc1",
+  "atomIdx": 2,
+  "pKa": 4.2,
+  "series": "benzoic",
+  "sigmaSum": 0.0,
+  "substituents": [],
+  "observed": 4.18
+ },
+ {
+  "smiles": "O=C(O)c1ccc(CO)cc1",
+  "atomIdx": 2,
+  "pKa": 4.2,
+  "series": "benzoic",
+  "sigmaSum": 0.0,
+  "substituents": [
+   [
+    "para",
+    "C+0h2d2|O+0h1d1",
+    0.0
+   ]
+  ],
+  "observed": 4.18
+ },
+ {
+  "smiles": "CSc1ccc(C(=O)O)cc1",
+  "atomIdx": 8,
+  "pKa": 4.2,
+  "series": "benzoic",
+  "sigmaSum": 0.0,
+  "substituents": [
+   [
+    "para",
+    "S+0h0d2|C+0h3d1",
+    0.0
+   ]
+  ],
+  "observed": 4.23
+ },
+ {
+  "smiles": "CC(C)c1cccc(C(=O)O)c1",
+  "atomIdx": 10,
+  "pKa": 4.27,
+  "series": "benzoic",
+  "sigmaSum": -0.07,
+  "substituents": [
+   [
+    "meta",
+    "C+0h1d3|C+0h3d1,C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 4.27
+ },
+ {
+  "smiles": "Cc1cccc(C(=O)O)c1",
+  "atomIdx": 8,
+  "pKa": 4.27,
+  "series": "benzoic",
+  "sigmaSum": -0.07,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 4.28
+ },
+ {
+  "smiles": "Cc1cc(C)cc(C(=O)O)c1",
+  "atomIdx": 9,
+  "pKa": 4.34,
+  "series": "benzoic",
+  "sigmaSum": -0.14,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 4.3
+ },
+ {
+  "smiles": "CC(C)c1ccc(C(=O)O)cc1",
+  "atomIdx": 9,
+  "pKa": 4.35,
+  "series": "benzoic",
+  "sigmaSum": -0.15,
+  "substituents": [
+   [
+    "para",
+    "C+0h1d3|C+0h3d1,C+0h3d1",
+    -0.15
+   ]
+  ],
+  "observed": 4.31
+ },
+ {
+  "smiles": "COc1ccc(C(=O)O)cc1C",
+  "atomIdx": 8,
+  "pKa": 4.54,
+  "series": "benzoic",
+  "sigmaSum": -0.34,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h3d1",
+    -0.27
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 4.35
+ },
+ {
+  "smiles": "CC(C)(C)c1ccc(C(=O)O)cc1",
+  "atomIdx": 10,
+  "pKa": 4.4,
+  "series": "benzoic",
+  "sigmaSum": -0.2,
+  "substituents": [
+   [
+    "para",
+    "C+0h0d4|C+0h3d1,C+0h3d1,C+0h3d1",
+    -0.2
+   ]
+  ],
+  "observed": 4.36
+ },
+ {
+  "smiles": "Cc1ccc(C(=O)O)cc1",
+  "atomIdx": 7,
+  "pKa": 4.37,
+  "series": "benzoic",
+  "sigmaSum": -0.17,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ]
+  ],
+  "observed": 4.37
+ },
+ {
+  "smiles": "Cc1ccc(C(=O)O)cc1C",
+  "atomIdx": 7,
+  "pKa": 4.44,
+  "series": "benzoic",
+  "sigmaSum": -0.24,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 4.41
+ },
+ {
+  "smiles": "COc1ccc(C(=O)O)cc1",
+  "atomIdx": 8,
+  "pKa": 4.47,
+  "series": "benzoic",
+  "sigmaSum": -0.27,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h3d1",
+    -0.27
+   ]
+  ],
+  "observed": 4.45
+ },
+ {
+  "smiles": "O=C(O)c1ccc(Oc2ccccc2)cc1",
+  "atomIdx": 2,
+  "pKa": 4.23,
+  "series": "benzoic",
+  "sigmaSum": -0.03,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h0d3|C+0h1d2,C+0h1d2|C+0h1d2,C+0h1d2",
+    -0.03
+   ]
+  ],
+  "observed": 4.52
+ },
+ {
+  "smiles": "CCOc1ccc(C(=O)O)cc1",
+  "atomIdx": 9,
+  "pKa": 4.44,
+  "series": "benzoic",
+  "sigmaSum": -0.24,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h2d2|C+0h3d1",
+    -0.24
+   ]
+  ],
+  "observed": 4.64
+ },
+ {
+  "smiles": "O=Cc1ccc(O)cc1Cl",
+  "atomIdx": 6,
+  "pKa": 6.828,
+  "series": "phenol",
+  "sigmaSum": 1.4,
+  "substituents": [
+   [
+    "para",
+    "C+0h1d2|O+0h0d1",
+    1.03
+   ],
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 6.6
+ },
+ {
+  "smiles": "O=[N+]([O-])c1ccc(O)cc1",
+  "atomIdx": 7,
+  "pKa": 7.1179,
+  "series": "phenol",
+  "sigmaSum": 1.27,
+  "substituents": [
+   [
+    "para",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    1.27
+   ]
+  ],
+  "observed": 7.13
+ },
+ {
+  "smiles": "O=Cc1ccc(O)cc1",
+  "atomIdx": 6,
+  "pKa": 7.6531,
+  "series": "phenol",
+  "sigmaSum": 1.03,
+  "substituents": [
+   [
+    "para",
+    "C+0h1d2|O+0h0d1",
+    1.03
+   ]
+  ],
+  "observed": 7.53
+ },
+ {
+  "smiles": "Cc1cc(O)ccc1[N+](=O)[O-]",
+  "atomIdx": 4,
+  "pKa": 7.274,
+  "series": "phenol",
+  "sigmaSum": 1.2,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    1.27
+   ]
+  ],
+  "observed": 7.65
+ },
+ {
+  "smiles": "Oc1cc(Cl)c(Cl)c(Cl)c1",
+  "atomIdx": 0,
+  "pKa": 7.7869,
+  "series": "phenol",
+  "sigmaSum": 0.97,
+  "substituents": [
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ],
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ],
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 7.7
+ },
+ {
+  "smiles": "CS(=O)(=O)c1ccc(O)cc1",
+  "atomIdx": 8,
+  "pKa": 7.4301,
+  "series": "phenol",
+  "sigmaSum": 1.13,
+  "substituents": [
+   [
+    "para",
+    "S+0h0d4|C+0h3d1,O+0h0d1,O+0h0d1",
+    1.13
+   ]
+  ],
+  "observed": 7.83
+ },
+ {
+  "smiles": "N#Cc1ccc(O)cc1",
+  "atomIdx": 6,
+  "pKa": 7.72,
+  "series": "phenol",
+  "sigmaSum": 1.0,
+  "substituents": [
+   [
+    "para",
+    "C+0h0d2|N+0h0d1",
+    1.0
+   ]
+  ],
+  "observed": 7.89
+ },
+ {
+  "smiles": "Oc1cc(Br)cc(Br)c1",
+  "atomIdx": 0,
+  "pKa": 8.2106,
+  "series": "phenol",
+  "sigmaSum": 0.78,
+  "substituents": [
+   [
+    "meta",
+    "Br+0h0d1",
+    0.39
+   ],
+   [
+    "meta",
+    "Br+0h0d1",
+    0.39
+   ]
+  ],
+  "observed": 8.01
+ },
+ {
+  "smiles": "Oc1cc(Cl)cc(Cl)c1",
+  "atomIdx": 0,
+  "pKa": 8.2998,
+  "series": "phenol",
+  "sigmaSum": 0.74,
+  "substituents": [
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ],
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 8.07
+ },
+ {
+  "smiles": "Cc1cc(O)cc(C)c1C#N",
+  "atomIdx": 4,
+  "pKa": 8.0322,
+  "series": "phenol",
+  "sigmaSum": 0.86,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "C+0h0d2|N+0h0d1",
+    1.0
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 8.21
+ },
+ {
+  "smiles": "Cc1cc(O)cc(C)c1[N+](=O)[O-]",
+  "atomIdx": 4,
+  "pKa": 7.4301,
+  "series": "phenol",
+  "sigmaSum": 1.13,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    1.27
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 8.25
+ },
+ {
+  "smiles": "O=[N+]([O-])c1cccc(O)c1",
+  "atomIdx": 8,
+  "pKa": 8.3667,
+  "series": "phenol",
+  "sigmaSum": 0.71,
+  "substituents": [
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 8.31
+ },
+ {
+  "smiles": "COC(=O)c1ccc(O)cc1",
+  "atomIdx": 8,
+  "pKa": 8.2775,
+  "series": "phenol",
+  "sigmaSum": 0.75,
+  "substituents": [
+   [
+    "para",
+    "C+0h0d3|O+0h0d1,O+0h0d2|C+0h3d1",
+    0.75
+   ]
+  ],
+  "observed": 8.34
+ },
+ {
+  "smiles": "Oc1ccc(Cl)c(Cl)c1",
+  "atomIdx": 0,
+  "pKa": 8.612,
+  "series": "phenol",
+  "sigmaSum": 0.6,
+  "substituents": [
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ],
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 8.58
+ },
+ {
+  "smiles": "N#Cc1cccc(O)c1",
+  "atomIdx": 7,
+  "pKa": 8.7012,
+  "series": "phenol",
+  "sigmaSum": 0.56,
+  "substituents": [
+   [
+    "meta",
+    "C+0h0d2|N+0h0d1",
+    0.56
+   ]
+  ],
+  "observed": 8.63
+ },
+ {
+  "smiles": "COc1ccc(O)cc1[N+](=O)[O-]",
+  "atomIdx": 6,
+  "pKa": 8.9688,
+  "series": "phenol",
+  "sigmaSum": 0.44,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h3d1",
+    -0.27
+   ],
+   [
+    "meta",
+    "N+1h0d3|O+0h0d1,O-1h0d1",
+    0.71
+   ]
+  ],
+  "observed": 8.68
+ },
+ {
+  "smiles": "Oc1cc(O)cc(O)c1",
+  "atomIdx": 0,
+  "pKa": 9.4148,
+  "series": "phenol",
+  "sigmaSum": 0.24,
+  "substituents": [
+   [
+    "meta",
+    "O+0h1d1",
+    0.12
+   ],
+   [
+    "meta",
+    "O+0h1d1",
+    0.12
+   ]
+  ],
+  "observed": 8.83
+ },
+ {
+  "smiles": "O=Cc1cccc(O)c1",
+  "atomIdx": 7,
+  "pKa": 9.1695,
+  "series": "phenol",
+  "sigmaSum": 0.35,
+  "substituents": [
+   [
+    "meta",
+    "C+0h1d2|O+0h0d1",
+    0.35
+   ]
+  ],
+  "observed": 8.86
+ },
+ {
+  "smiles": "Oc1cccc(Cl)c1",
+  "atomIdx": 0,
+  "pKa": 9.1249,
+  "series": "phenol",
+  "sigmaSum": 0.37,
+  "substituents": [
+   [
+    "meta",
+    "Cl+0h0d1",
+    0.37
+   ]
+  ],
+  "observed": 8.96
+ },
+ {
+  "smiles": "Oc1cccc(Br)c1",
+  "atomIdx": 0,
+  "pKa": 9.0803,
+  "series": "phenol",
+  "sigmaSum": 0.39,
+  "substituents": [
+   [
+    "meta",
+    "Br+0h0d1",
+    0.39
+   ]
+  ],
+  "observed": 8.99
+ },
+ {
+  "smiles": "Oc1cccc(I)c1",
+  "atomIdx": 0,
+  "pKa": 9.1695,
+  "series": "phenol",
+  "sigmaSum": 0.35,
+  "substituents": [
+   [
+    "meta",
+    "I+0h0d1",
+    0.35
+   ]
+  ],
+  "observed": 9.02
+ },
+ {
+  "smiles": "COc1ccc(O)cc1Br",
+  "atomIdx": 6,
+  "pKa": 9.6824,
+  "series": "phenol",
+  "sigmaSum": 0.12,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h3d1",
+    -0.27
+   ],
+   [
+    "meta",
+    "Br+0h0d1",
+    0.39
+   ]
+  ],
+  "observed": 9.09
+ },
+ {
+  "smiles": "Oc1ccc(Cl)cc1",
+  "atomIdx": 0,
+  "pKa": 9.4371,
+  "series": "phenol",
+  "sigmaSum": 0.23,
+  "substituents": [
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 9.29
+ },
+ {
+  "smiles": "Oc1ccc(Br)cc1",
+  "atomIdx": 0,
+  "pKa": 9.4371,
+  "series": "phenol",
+  "sigmaSum": 0.23,
+  "substituents": [
+   [
+    "para",
+    "Br+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 9.29
+ },
+ {
+  "smiles": "Oc1ccc(I)cc1",
+  "atomIdx": 0,
+  "pKa": 9.5486,
+  "series": "phenol",
+  "sigmaSum": 0.18,
+  "substituents": [
+   [
+    "para",
+    "I+0h0d1",
+    0.18
+   ]
+  ],
+  "observed": 9.32
+ },
+ {
+  "smiles": "Cc1cc(O)ccc1Cl",
+  "atomIdx": 4,
+  "pKa": 9.5932,
+  "series": "phenol",
+  "sigmaSum": 0.16,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ]
+  ],
+  "observed": 9.4
+ },
+ {
+  "smiles": "CSc1cccc(O)c1",
+  "atomIdx": 7,
+  "pKa": 9.6155,
+  "series": "phenol",
+  "sigmaSum": 0.15,
+  "substituents": [
+   [
+    "meta",
+    "S+0h0d2|C+0h3d1",
+    0.15
+   ]
+  ],
+  "observed": 9.47
+ },
+ {
+  "smiles": "Oc1ccc(-c2ccccc2)cc1",
+  "atomIdx": 0,
+  "pKa": 9.9723,
+  "series": "phenol",
+  "sigmaSum": -0.01,
+  "substituents": [
+   [
+    "para",
+    "C+0h0d3|C+0h1d2,C+0h1d2|C+0h1d2,C+0h1d2|C+0h1d2",
+    -0.01
+   ]
+  ],
+  "observed": 9.47
+ },
+ {
+  "smiles": "CSc1ccc(O)cc1",
+  "atomIdx": 6,
+  "pKa": 9.95,
+  "series": "phenol",
+  "sigmaSum": 0.0,
+  "substituents": [
+   [
+    "para",
+    "S+0h0d2|C+0h3d1",
+    0.0
+   ]
+  ],
+  "observed": 9.5
+ },
+ {
+  "smiles": "COc1cccc(O)c1",
+  "atomIdx": 7,
+  "pKa": 9.6824,
+  "series": "phenol",
+  "sigmaSum": 0.12,
+  "substituents": [
+   [
+    "meta",
+    "O+0h0d2|C+0h3d1",
+    0.12
+   ]
+  ],
+  "observed": 9.51
+ },
+ {
+  "smiles": "Oc1cccc(O)c1",
+  "atomIdx": 0,
+  "pKa": 9.6824,
+  "series": "phenol",
+  "sigmaSum": 0.12,
+  "substituents": [
+   [
+    "meta",
+    "O+0h1d1",
+    0.12
+   ]
+  ],
+  "observed": 9.56
+ },
+ {
+  "smiles": "Oc1cccc(-c2ccccc2)c1",
+  "atomIdx": 0,
+  "pKa": 9.8162,
+  "series": "phenol",
+  "sigmaSum": 0.06,
+  "substituents": [
+   [
+    "meta",
+    "C+0h0d3|C+0h1d2,C+0h1d2|C+0h1d2,C+0h1d2|C+0h1d2",
+    0.06
+   ]
+  ],
+  "observed": 9.59
+ },
+ {
+  "smiles": "CCc1cc(O)cc(C)c1Cl",
+  "atomIdx": 5,
+  "pKa": 9.7493,
+  "series": "phenol",
+  "sigmaSum": 0.09,
+  "substituents": [
+   [
+    "meta",
+    "C+0h2d2|C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "Cl+0h0d1",
+    0.23
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 9.6
+ },
+ {
+  "smiles": "Oc1ccc(F)cc1",
+  "atomIdx": 0,
+  "pKa": 9.8162,
+  "series": "phenol",
+  "sigmaSum": 0.06,
+  "substituents": [
+   [
+    "para",
+    "F+0h0d1",
+    0.06
+   ]
+  ],
+  "observed": 9.88
+ },
+ {
+  "smiles": "C=Cc1ccc(O)cc1",
+  "atomIdx": 6,
+  "pKa": 9.9946,
+  "series": "phenol",
+  "sigmaSum": -0.02,
+  "substituents": [
+   [
+    "para",
+    "C+0h1d2|C+0h2d1",
+    -0.02
+   ]
+  ],
+  "observed": 9.91
+ },
+ {
+  "smiles": "Oc1ccc(O)cc1",
+  "atomIdx": 0,
+  "pKa": 10.7751,
+  "series": "phenol",
+  "sigmaSum": -0.37,
+  "substituents": [
+   [
+    "para",
+    "O+0h1d1",
+    -0.37
+   ]
+  ],
+  "observed": 9.93
+ },
+ {
+  "smiles": "Oc1ccccc1",
+  "atomIdx": 0,
+  "pKa": 9.95,
+  "series": "phenol",
+  "sigmaSum": 0.0,
+  "substituents": [],
+  "observed": 9.935
+ },
+ {
+  "smiles": "Cc1cccc(O)c1",
+  "atomIdx": 6,
+  "pKa": 10.1061,
+  "series": "phenol",
+  "sigmaSum": -0.07,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 10.01
+ },
+ {
+  "smiles": "CCc1cc(C)cc(O)c1",
+  "atomIdx": 8,
+  "pKa": 10.2622,
+  "series": "phenol",
+  "sigmaSum": -0.14,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "meta",
+    "C+0h2d2|C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 10.1
+ },
+ {
+  "smiles": "Cc1cc(C)cc(O)c1",
+  "atomIdx": 7,
+  "pKa": 10.2622,
+  "series": "phenol",
+  "sigmaSum": -0.14,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 10.13
+ },
+ {
+  "smiles": "Cc1ccc(O)cc1",
+  "atomIdx": 5,
+  "pKa": 10.3291,
+  "series": "phenol",
+  "sigmaSum": -0.17,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ]
+  ],
+  "observed": 10.22
+ },
+ {
+  "smiles": "CCOc1ccc(O)cc1",
+  "atomIdx": 7,
+  "pKa": 10.4852,
+  "series": "phenol",
+  "sigmaSum": -0.24,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h2d2|C+0h3d1",
+    -0.24
+   ]
+  ],
+  "observed": 10.23
+ },
+ {
+  "smiles": "COc1ccc(O)cc1",
+  "atomIdx": 6,
+  "pKa": 10.5521,
+  "series": "phenol",
+  "sigmaSum": -0.27,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h3d1",
+    -0.27
+   ]
+  ],
+  "observed": 10.24
+ },
+ {
+  "smiles": "COc1ccc(O)cc1C",
+  "atomIdx": 6,
+  "pKa": 10.7082,
+  "series": "phenol",
+  "sigmaSum": -0.34,
+  "substituents": [
+   [
+    "para",
+    "O+0h0d2|C+0h3d1",
+    -0.27
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 10.24
+ },
+ {
+  "smiles": "CC(C)(C)c1ccc(O)cc1",
+  "atomIdx": 8,
+  "pKa": 10.396,
+  "series": "phenol",
+  "sigmaSum": -0.2,
+  "substituents": [
+   [
+    "para",
+    "C+0h0d4|C+0h3d1,C+0h3d1,C+0h3d1",
+    -0.2
+   ]
+  ],
+  "observed": 10.27
+ },
+ {
+  "smiles": "Cc1cc(O)ccc1C(C)C",
+  "atomIdx": 4,
+  "pKa": 10.4406,
+  "series": "phenol",
+  "sigmaSum": -0.22,
+  "substituents": [
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ],
+   [
+    "para",
+    "C+0h1d3|C+0h3d1,C+0h3d1",
+    -0.15
+   ]
+  ],
+  "observed": 10.31
+ },
+ {
+  "smiles": "Cc1ccc(O)cc1C",
+  "atomIdx": 5,
+  "pKa": 10.4852,
+  "series": "phenol",
+  "sigmaSum": -0.24,
+  "substituents": [
+   [
+    "para",
+    "C+0h3d1",
+    -0.17
+   ],
+   [
+    "meta",
+    "C+0h3d1",
+    -0.07
+   ]
+  ],
+  "observed": 10.32
+ },
+ {
+  "smiles": "C[NH+](C)c1cccc2cccc([NH+](C)C)c12",
+  "atomIdx": 1,
+  "declined": "site is not an oxygen",
+  "branch": "site is not an oxygen"
+ },
+ {
+  "smiles": "COc1ccc(C([OH2+])c2ccccc2)cc1",
+  "atomIdx": 7,
+  "declined": "site oxygen is not a neutral -OH",
+  "branch": "site oxygen is not a neutral -OH"
+ },
+ {
+  "smiles": "O=[N+]([O-])c1ccc(S(=O)(=O)O)cc1",
+  "atomIdx": 10,
+  "declined": "not a benzoic acid or phenol",
+  "branch": "not a benzoic acid or phenol"
+ },
+ {
+  "smiles": "O=C(O)c1c(Br)cccc1[N+](=O)[O-]",
+  "atomIdx": 2,
+  "declined": "ortho substituent",
+  "branch": "ortho substituent"
+ },
+ {
+  "smiles": "O=C(C1=C(O)C(=O)c2ccccc2C1=O)c1ccccc1",
+  "atomIdx": 4,
+  "declined": "ring is fused",
+  "branch": "ring is fused"
+ },
+ {
+  "smiles": "O=C(O)c1cccc(/C=C/[N+](=O)[O-])c1",
+  "atomIdx": 2,
+  "declined": "no sigma constant for C+0h1d2|C+0h1d2|N+1h0d3|O+0h0d1,O-1h0d1",
+  "branch": "no sigma constant"
+ },
+ {
+  "smiles": "O=C(O)C1(O)CCCCC1",
+  "atomIdx": 2,
+  "declined": "ring is not benzene",
+  "branch": "ring is not benzene"
+ },
+ {
+  "smiles": "Oc1ccc2ccccc2c1",
+  "atomIdx": 0,
+  "declined": "ring is fused",
+  "branch": "ring is fused"
+ },
+ {
+  "smiles": "Oc1ccc2c(c1)CCC2",
+  "atomIdx": 0,
+  "declined": "ring is fused",
+  "branch": "ring is fused"
+ },
+ {
+  "smiles": "O=C1C=CC(=O)C(O)=C1",
+  "atomIdx": 6,
+  "declined": "site is not an oxygen",
+  "branch": "site is not an oxygen"
+ }
+]

@@ -213,7 +213,19 @@ export interface IonizationSite {
   /** Spread on `pKa`, in log units. Absent when `pKa` is null. */
   spread?: number;
   /** What kind of number this is. */
-  basis: "site-type-average" | "experimentally-trained-model" | "inherited-from-another-predictor" | "consensus";
+  basis:
+    | "site-type-average"
+    | "experimentally-trained-model"
+    | "linear-free-energy-relationship"
+    | "inherited-from-another-predictor"
+    | "consensus";
+  /**
+   * How this particular value was arrived at, when the method can show its working.
+   *
+   * A Hammett estimate is checkable by hand if the reader can see which substituent contributed which
+   * constant; a bare number is not. Absent for methods with nothing legible to show.
+   */
+  derivation?: string;
   /**
    * Present when several site types claim this atom and the table cannot say which applies.
    *
@@ -404,9 +416,11 @@ const IonizationSiteSchema = z
     basis: z.enum([
       "site-type-average",
       "experimentally-trained-model",
+      "linear-free-energy-relationship",
       "inherited-from-another-predictor",
       "consensus"
     ]),
+    derivation: z.string().min(1).optional(),
     ambiguity: z
       .object({
         candidateTypes: z.array(z.string().min(1)).min(2),

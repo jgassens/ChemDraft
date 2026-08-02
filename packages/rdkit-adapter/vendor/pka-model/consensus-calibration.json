@@ -1,0 +1,19 @@
+{
+ "measurement": "out-of-fold forest predictions vs the literature Hammett relationship, on the sites where both apply",
+ "samples": 85,
+ "phenolSamples": 47,
+ "benzoicSamples": 38,
+ "forestWeight": 0.1179,
+ "hammettMae": 0.1583,
+ "hammettMaePhenol": 0.2272,
+ "hammettMaeBenzoic": 0.0732,
+ "forestMaeHere": 0.4287,
+ "meanMae": 0.2292,
+ "consensusMae": 0.1462,
+ "consensusMaePhenol": 0.1946,
+ "coverage": 0.9059,
+ "disagreementCorrelation": 0.8446,
+ "medianHalfWidth": 0.3823,
+ "modelHalfWidthHere": 0.798,
+ "forestWeightRule": "inverse of each method's own measured MAE"
+}

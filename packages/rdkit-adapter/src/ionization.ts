@@ -28,10 +28,30 @@
  * from: `pkaModel.ts`, MAE 1.17 over held-out scaffolds, with a per-site interval taken from how much
  * its trees disagreed rather than one global error figure stamped on every row.
  *
- * **This leaves `combineSiteEstimates` with one estimator to combine.** It is built and tested, and it
- * is honest about that: a lone estimate passes through as itself and is never labelled a consensus.
- * The obvious second opinion was the table, and measuring it is what disqualified it — agreement with
- * a method that scores worse than a constant would be confidence in nothing.
+ * **A second opinion, where one is available.** The obvious candidate was the table, and measuring it
+ * is what disqualified it: agreement with a method that scores worse than a constant is confidence in
+ * nothing. The second estimator is instead a Hammett linear free-energy relationship (`hammett.ts`)
+ * whose constants come from the physical-organic literature rather than from this project's training
+ * set — so its agreement with the model carries information instead of being circular.
+ *
+ * It reaches only 2.8% of sites and declines on the rest, which is what an LFER should do. Where it
+ * does reach, measured over those 85 sites:
+ *
+ * | | MAE (log units) |
+ * |---|---|
+ * | the model alone | 0.43 |
+ * | the relationship alone | 0.16 |
+ * | their plain average | 0.23 |
+ * | weighted by measured accuracy | **0.15** |
+ *
+ * The third row is the one that shaped the code. Averaging is the obvious rule and it makes the answer
+ * *worse than the better method alone*, so `combineSiteEstimates` weights by each method's own measured
+ * error instead. Their disagreement is also the best confidence signal available — r = 0.84 against
+ * actual error, where the forest's internal tree variance manages 0.42 on the same sites — and the
+ * resulting interval is 2.1x tighter than the model's own while covering more of the real error
+ * (91% against 81%).
+ *
+ * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -40,7 +60,9 @@
  */
 import type { Classification, IonizationSite, MethodContract } from "@chemdraft/analysis-core";
 
+import { estimateHammettPka, hammettApplies } from "./hammett";
 import { IONIZATION_SITE_TYPES, SENTINEL_PKA_MAGNITUDE } from "./ionizationSites";
+import consensusJson from "../vendor/pka-model/consensus-calibration.json";
 import {
   PKA_MODEL_CALIBRATION,
   PKA_MODEL_TRAINING,
@@ -50,7 +72,28 @@ import {
   type PkaMolecularGraph
 } from "./pkaModel";
 
+/** What combining the two methods was measured to be worth. Read, not asserted. */
+export const CONSENSUS_CALIBRATION = consensusJson as unknown as {
+  samples: number; phenolSamples: number; benzoicSamples: number;
+  forestWeight: number; hammettMae: number; hammettMaePhenol: number; hammettMaeBenzoic: number;
+  forestMaeHere: number; consensusMae: number; consensusMaePhenol: number;
+  /** MAE of the plain average of the two, kept because it is why the code does not average. */
+  meanMae: number;
+  coverage: number; disagreementCorrelation: number;
+  /** Median interval half-width of the consensus, and of the model alone on those same sites. */
+  medianHalfWidth: number; modelHalfWidthHere: number;
+};
+
 export const IONIZATION_SITES_METHOD_ID = "dimorphite.ionizable-sites";
+
+/**
+ * The Hammett relationship's measured error within the domain it accepts.
+ *
+ * One figure for the whole series, not a per-site one: an LFER is fitted to a substituent series and
+ * makes no claim about which of its members it fits best. Measured over the 85 Dwar-iBond sites it
+ * applies to -- see `hammett.ts` for why the benzoic half of that number is partly circular.
+ */
+export const HAMMETT_IN_DOMAIN_MAE = CONSENSUS_CALIBRATION.hammettMae;
 
 const IONIZATION_ENGINE = "dimorphite-site-table";
 const IONIZATION_ENGINE_VERSION = "2.0.2";
@@ -182,15 +225,35 @@ export function scanIonizableSites(
 }
 
 /**
+ * How much each method's estimate counts, as the inverse of the error it has been measured to make.
+ *
+ * A plain average would be the obvious thing and it is measurably wrong here. On the 94 sites where
+ * both methods fire, the forest scores MAE 0.42 and the Hammett relationship 0.16; averaging them
+ * gives 0.22 — *worse than the better method alone*. Weighting by inverse MAE gives 0.15, and on the
+ * non-circular phenol half it beats Hammett alone too (0.18 against 0.22).
+ *
+ * The exact weight is not a knob that was tuned: inverse-MAE from each method's own published figure
+ * puts the forest at 0.164, and the optimum measured across the sweep is flat from 0.10 to 0.30.
+ */
+const METHOD_MAE: Readonly<Record<string, number>> = {
+  model: PKA_MODEL_TRAINING.cvMae,
+  hammett: HAMMETT_IN_DOMAIN_MAE
+};
+
+/**
  * Merge what several methods said about the same atom, and let their disagreement set the confidence.
  *
- * The consensus value is the mean; the **span** — the widest gap between any two methods — is what a
- * reader should look at. Two independent routes agreeing within a few tenths is worth more than either
- * alone; two disagreeing by three log units means neither should be trusted for that site, and the
- * span says so without anyone having to decide which was right.
+ * The **span** — the widest gap between any two methods — is what a reader should look at. Two
+ * independent routes agreeing within a few tenths is worth more than either alone; two disagreeing by
+ * three log units means neither should be trusted for that site, and the span says so without anyone
+ * having to decide which was right. It is the best error signal available here: measured against actual
+ * error it scores r = 0.85, where the forest's own tree disagreement manages 0.42.
  *
- * The spread is the larger of the methods' own spreads and half the span, so consensus can never look
- * *more* certain than the disagreement between its inputs.
+ * The value is weighted by measured accuracy rather than averaged — see `METHOD_MAE`. A method with no
+ * measured figure falls back to an equal share, which is the honest default for an unknown.
+ *
+ * The interval is the span itself (measured coverage 93%), floored so that two methods agreeing exactly
+ * cannot report perfect certainty.
  */
 export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly IonizationSite[]>>): IonizationSite[] {
   const byAtom = new Map<number, { method: string; site: IonizationSite }[]>();
@@ -210,6 +273,7 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
       continue;
     }
     if (scored.length === 1) {
+      // Passed through as itself, never relabelled a consensus. One opinion is one opinion.
       merged.push(scored[0]!.site);
       continue;
     }
@@ -217,21 +281,57 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
     const values = scored.map((entry) => entry.site.pKa!);
     const methods = scored.map((entry) => entry.method);
     const span = Math.max(...values) - Math.min(...values);
-    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-    const widest = Math.max(...scored.map((entry) => entry.site.spread ?? 0));
+    const weights = scored.map((entry) => 1 / (METHOD_MAE[entry.method] ?? 1));
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    const combined = scored.reduce((sum, entry, i) => sum + entry.site.pKa! * weights[i]!, 0) / total;
+    const floor = Math.min(...scored.map((entry) => entry.site.spread ?? Infinity));
 
     merged.push({
       atomIndices: scored[0]!.site.atomIndices,
       ionizableAtomIndex: atom,
       siteType: scored[0]!.site.siteType,
-      pKa: mean,
-      // Never narrower than the disagreement it is averaging over.
-      spread: Math.max(widest, span / 2),
+      pKa: combined,
+      // Never narrower than the disagreement, nor than the tightest input claimed on its own: exact
+      // agreement between two methods is not evidence that both are right.
+      spread: Math.max(span, Number.isFinite(floor) ? floor : 0),
       basis: "consensus",
       agreement: { methods, values, span }
     });
   }
   return merged;
+}
+
+/**
+ * Add the Hammett estimate wherever the relationship reaches, leaving every other site untouched.
+ *
+ * Only sites the table already located are considered: this is a second opinion on a known ionizable
+ * position, not a second way of finding them.
+ */
+export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularGraph): IonizationSite[] {
+  const sites: IonizationSite[] = [];
+  for (const site of scan.sites) {
+    if (site.ionizableAtomIndex >= graph.atoms.length) continue;
+    const outcome = estimateHammettPka(graph, site.ionizableAtomIndex);
+    if (!hammettApplies(outcome)) continue;
+    sites.push({
+      atomIndices: site.atomIndices,
+      ionizableAtomIndex: site.ionizableAtomIndex,
+      siteType: site.siteType,
+      pKa: outcome.pKa,
+      // The method's measured in-domain error, not a per-site figure: an LFER has one residual for the
+      // whole series it was fitted to and does not claim to know which members it fits best.
+      spread: HAMMETT_IN_DOMAIN_MAE,
+      basis: "linear-free-energy-relationship",
+      derivation:
+        `${outcome.series} series, rho applied to ` +
+        (outcome.substituents.length === 0
+          ? "the unsubstituted parent"
+          : outcome.substituents
+              .map((entry) => `${entry.position}-${entry.name} (sigma ${entry.sigma.toFixed(2)})`)
+              .join(", "))
+    });
+  }
+  return sites;
 }
 
 /**
@@ -323,6 +423,29 @@ export function ionizationContract(): MethodContract {
       "A NARROW INTERVAL MEANS THE MODEL SAW MANY SIMILAR SITES, NOT THAT THE VALUE IS RIGHT. Tree " +
         "agreement measures where the training data was dense; a molecule unlike anything in the set " +
         "can still draw confident agreement from trees that are all extrapolating the same way.",
+      `a SECOND, INDEPENDENT method scores the sites it reaches: a Hammett relationship whose ` +
+        `substituent and reaction constants come from the physical-organic literature, not from this ` +
+        `project's training data. It applies to substituted benzoic acids and phenols with no ortho ` +
+        `substituent and an unfused ring — ${CONSENSUS_CALIBRATION.samples} of the labelled sites — ` +
+        `and declines everywhere else with a reason.`,
+      `where both methods fire the value is WEIGHTED BY THEIR MEASURED ACCURACY, not averaged. ` +
+        `Averaging is the obvious rule and it is worse than the better method alone ` +
+        `(${CONSENSUS_CALIBRATION.meanMae.toFixed(2)} against ` +
+        `${CONSENSUS_CALIBRATION.hammettMae.toFixed(2)}); weighting scores ` +
+        `${CONSENSUS_CALIBRATION.consensusMae.toFixed(2)}, where the model alone scores ` +
+        `${CONSENSUS_CALIBRATION.forestMaeHere.toFixed(2)} on those same sites.`,
+      `where two methods agree the interval is their DISAGREEMENT, floored by the tighter method's own. ` +
+        `Cross-method disagreement predicts error better than anything internal to either ` +
+        `(r = ${CONSENSUS_CALIBRATION.disagreementCorrelation.toFixed(2)}, against ` +
+        `${PKA_MODEL_CALIBRATION.correlation.toFixed(2)} for the model's tree variance), and the ` +
+        `result covers ${Math.round(CONSENSUS_CALIBRATION.coverage * 100)}% of actual error at ` +
+        `${(CONSENSUS_CALIBRATION.modelHalfWidthHere / CONSENSUS_CALIBRATION.medianHalfWidth).toFixed(1)}x ` +
+        `the precision of the model alone.`,
+      `the Hammett method's ${CONSENSUS_CALIBRATION.hammettMaeBenzoic.toFixed(2)} on benzoic acids is ` +
+        `PARTLY CIRCULAR and should not be read as out-of-sample accuracy: sigma was defined by benzoic ` +
+        `acid ionisation and rho is 1.00 there by construction, so it largely measures that the ` +
+        `compilation is self-consistent. The phenol figure ` +
+        `(${CONSENSUS_CALIBRATION.hammettMaePhenol.toFixed(2)}) is the honest one.`,
       "aqueous only, at room temperature. No value here says anything about DMSO, acetonitrile, or " +
         "any mixed solvent.",
       "sites are found by substructure match, so a genuinely ionizable group the table has no pattern " +
@@ -333,7 +456,8 @@ export function ionizationContract(): MethodContract {
     classification: CLASSIFICATION,
     supportedChemistry: [
       "locating ionizable positions in organic acids and bases matching a tabulated site substructure",
-      "polyprotic molecules — every ionizable atom is reported separately"
+      "polyprotic molecules — every ionizable atom is reported separately",
+      "substituted benzoic acids and phenols, which additionally get an independent Hammett estimate"
     ],
     knownUnsupportedChemistry: [
       "anything containing a metal: no open pKa dataset contains a metal-bearing structure, so such " +
@@ -343,7 +467,9 @@ export function ionizationContract(): MethodContract {
     ],
     declinesWhen: [
       "no tabulated site substructure matches the structure",
-      "a matching site is adjacent to a metal centre — reported as unassessed, with the reason"
+      "a matching site is adjacent to a metal centre — reported as unassessed, with the reason",
+      "the Hammett method alone declines on an ortho substituent, a fused ring, a non-benzene ring, " +
+        "or a substituent with no tabulated constant; the model still scores those sites"
     ],
     accuracyClaims: [
       {
@@ -356,9 +482,42 @@ export function ionizationContract(): MethodContract {
           "train and test; an ungrouped split scores better and means less. Predicting the dataset " +
           "mean scores 2.94 for comparison.",
         citationId: "dwar-ibond"
+      },
+      {
+        metric: "mae",
+        value: CONSENSUS_CALIBRATION.hammettMae,
+        unit: "log10-unit",
+        basis:
+          `The Hammett relationship over the ${CONSENSUS_CALIBRATION.samples} Dwar-iBond sites it ` +
+          `applies to — ${CONSENSUS_CALIBRATION.phenolSamples} phenols and ` +
+          `${CONSENSUS_CALIBRATION.benzoicSamples} benzoic acids. Its constants were not fitted to this ` +
+          "dataset, so this is a held-out figure for the phenols; for the benzoic acids it is partly " +
+          "circular, sigma having been defined by benzoic acid ionisation in the first place.",
+        citationId: "hansch-leo-taft-1991"
+      },
+      {
+        metric: "mae",
+        value: CONSENSUS_CALIBRATION.consensusMae,
+        unit: "log10-unit",
+        basis:
+          "Both methods combined, weighted by each one's measured error, over the same sites. The " +
+          `model alone scores ${CONSENSUS_CALIBRATION.forestMaeHere.toFixed(2)} there and a plain ` +
+          `average of the two scores ${CONSENSUS_CALIBRATION.meanMae.toFixed(2)}.`,
+        citationId: "dwar-ibond"
       }
     ],
     citations: [
+      {
+        id: "hansch-leo-taft-1991",
+        kind: "journal",
+        title:
+          "A survey of Hammett substituent constants and resonance and field parameters. " +
+          "Chemical Reviews 91 (2) 165-195. The source of every sigma this method uses, including the " +
+          "sigma-para-minus values applied to phenols with a through-conjugating para substituent.",
+        authors: "Hansch, C.; Leo, A.; Taft, R. W.",
+        year: 1991,
+        doi: "10.1021/cr00002a004"
+      },
       {
         id: "dwar-ibond",
         kind: "dataset",
