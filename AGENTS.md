@@ -493,18 +493,30 @@ Not allowed:
 
 ### 6.19 `rdkit-adapter`
 
-Currently a **placeholder** (`rdkitAdapterStatus === "placeholder"`).
+**Half placeholder, half real** — and the two halves must not be confused for each other.
+
+The 2D chemistry/depiction surface is still a placeholder
+(`rdkitAdapterStatus === "placeholder"`, `createRdkitPlaceholderAdapter`).
+
+The 3D conformer engine is real: ETKDGv3 running in a custom RDKit MinimalLib WASM build, vendored
+at `packages/rdkit-adapter/vendor/` and wired in `conformer.ts`. That slice landed in `81711038`;
+the build is this project's own artifact and its provenance is documented in `vendor/BUILD.md`.
 
 Allowed:
 
-- Placeholder adapter and honest capability reporting (`createRdkitPlaceholderAdapter`)
-- Real RDKit-WASM wiring when that slice lands
+- The placeholder adapter and its honest capability reporting, for the surfaces still unimplemented
+- The vendored custom MinimalLib WASM and the conformer engine built on it
 
 Not allowed:
 
 - Presenting placeholder results as real chemistry
 - Loading RDKit/WASM at startup rather than lazily (§15)
-- Vendoring RDKit builds into the repository
+- Vendoring further RDKit distributions — the custom MinimalLib build is the deliberate exception,
+  not a precedent; another binary needs its own decision and its own `BUILD.md`
+
+This section previously described the whole package as a placeholder and forbade vendoring RDKit
+outright, which `81711038` had already and deliberately done. A rulebook that contradicts the
+shipped tree teaches the reader to discount it, so the rule is scoped rather than left to rot.
 
 ### 6.20 `engine3d-api`
 
@@ -1113,6 +1125,18 @@ chains dragged off an existing atom and off empty canvas including against a pag
 applied to a typed formula, one undo entry per gesture, and SVG export parity with the canvas for
 arrows, brackets, and orbitals.
 
+Toolbar and arrow surfaces added since: the curated arrow flyout (bold, dashed, curved 90/180, both
+fishhooks, no-reaction) opened cold, warm, and after a long idle — the first press of a session must
+place the popout under its button, not offset from the screen origin; the selection-aware Main style
+widget in all four variants (text, molecule, arrow, shape) including its no-reaction ✗-size select,
+with a gesture cancelled mid-press (the layout must not freeze on the previous selection); Shift-hover
+transform boxes on arrows — the box latches to the first arrow for the whole hold, its rotate, 3D
+rotate, and resize handles all work under the arrow tools, and dismissal leaves no ghost pixels;
+arrowhead resizing on a scaled equilibrium (the head must land at the pointer, and an untouched shaft
+handle must not move the shaft); "Set as Default Arrow Style" captured from a dashed arrow made solid;
+tooltips on a palette dragged to a second monitor; and toolbars restored after being left off-screen
+or on a since-detached display.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
@@ -1170,6 +1194,40 @@ worktree.
 
 If a worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed on
 that branch yet — pick it up by merging from `main`, which carries all four files above.
+
+### 21.2 `/Applications/ChemDraft.app` is the stable build from `main` (do not remove)
+
+`/Applications/ChemDraft.app` is the installed **stable** app, built from `main`. A branch must never
+replace it, build over it, rename it, or unregister it. Branch bundles live in that worktree's own
+`app/` folder (gitignored) and are a **different application** to macOS:
+
+- **bundle id** — `org.chemdraft.desktop.dev.<worktree-slug>`, derived per worktree by `run-app`.
+  Never `org.chemdraft.desktop`; `run-app` refuses to launch if it ever resolves to the stable id.
+- **display name** — `ChemDraft (dev)`, so the Dock and ⌘-Tab never read as the stable app.
+- **location** — `<worktree>/app/ChemDraft (dev).app`. `tauri build` writes to
+  `target/release/bundle/macos/` with the *stable* id, so `run-app` **moves** (never copies) that
+  output into `app/` and rewrites its `Info.plist`; leaving a copy behind would shadow the stable app
+  in LaunchServices.
+
+Why this exists: every build used to be stamped `org.chemdraft.desktop` and force-registered with
+`lsregister -f`, so a branch build impersonated the stable app. `open`, the Dock, and
+`tell application id` resolved to whichever registered last, and all builds shared one
+`~/Library/Application Support/org.chemdraft.desktop` — so two running builds fought over
+`toolbar-state.json` and overwrote each other's palette positions. A whole debugging session was lost
+to "the toolbar won't open" that was really the July-26 `/Applications` build being launched.
+
+Consequences to expect, not to fix: a dev build has its **own** Application Support directory, so it
+starts with fresh settings, plugins, and session — it does not inherit the stable app's. `run-app`
+only ever clears saved window state and `defaults` for its own dev id.
+
+Corollaries:
+
+- A separate bundle id means the screenshot/automation tooling sees a distinct app. `./run-app --dev`
+  runs the bare `target/debug/chemdraft` binary, which has **no** `CFBundleIdentifier` at all — so
+  bundle-id-scoped tools (macOS screen-recording permissions, computer-use allowlists) cannot see it.
+  Verify `--dev` through the Vite page or the accessibility API, or use `./run-app` for a real bundle.
+- Never diagnose "which build am I looking at" from the window alone. Read the on-screen build stamp
+  (§21.1); it names the worktree, branch, and commit.
 
 ## 22. Closeout requirements
 

@@ -1,5 +1,7 @@
 import {
   editGraphicMarkerSize,
+  snapGraphicMarkerSizePx,
+  clampGraphicShaftMarkSizePx,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
   deleteGraphicPathNode,
@@ -23,6 +25,7 @@ import {
   type NativeArtBooleanSkippedInput,
   type NativeArtBooleanResultPath,
   type NativeArtMarkerHandleId,
+  type NativeArtVisualPlan,
   type GraphicPathEditHandle,
   type GraphicPathEditPoints,
   type GraphicPathNodeEditPoints,
@@ -59,6 +62,7 @@ import {
   type FlattenWarning,
   type GraphicFreehandOptions,
   type GraphicFreehandPoint,
+  type GraphicMarker,
   type GraphicObjectData,
   type GraphicObject,
   type GroupObject,
@@ -107,6 +111,8 @@ import {
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
+  doubleBondRendersSymmetric,
+  nativeAtomValenceForCharge,
   ringInteriorDoubleBondSides,
   type LayoutPoint
 } from "@chemdraft/layout-engine";
@@ -261,6 +267,17 @@ export type NativeArtToolId =
   | "pencil"
   | "brush"
   | "arrow"
+  | "reactionArrow"
+  | "reactionArrowBold"
+  | "reactionArrowDashed"
+  | "resonanceArrow"
+  | "equilibriumArrow"
+  | "retroArrow"
+  | "curvedArrow90"
+  | "curvedArrow180"
+  | "fishhookArrow"
+  | "fishhookCurved"
+  | "noReactionArrow"
   | "arc270"
   | "arc270Dashed"
   | "arc180"
@@ -383,7 +400,76 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
   }, { strokeColor: "#111111", fillColor: "none" }),
   artShapeTool("arrow", "Arrow", "path", 82, 46, {
     artPathKind: "line",
-    markerEnd: { kind: "filled-arrow", sizePx: 10 }
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Reaction/resonance arrows are drawn with the full art-arrow mechanics (draggable ends, arc,
+  // arrowhead size) but carry their chemical identity in `artToolId`, which the CDXML layer reads to
+  // emit/parse them as reaction arrows (single-headed reaction = forward; double-headed resonance).
+  artShapeTool("reactionArrow", "Reaction Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("reactionArrowBold", "Reaction Arrow (Large Head)", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 24 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("reactionArrowDashed", "Dashed Reaction Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt", strokeDasharray: "6 6" }),
+  artShapeTool("resonanceArrow", "Resonance Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerStart: { kind: "filled-arrow", sizePx: 16 },
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Equilibrium: two parallel half-shafts pointing opposite ways. `markerEnd` heads the forward shaft
+  // and `markerStart` the reverse one, so head sizing reuses the ordinary marker handles; each shaft's
+  // length is an independent fraction of the axis (an equilibrium's two sides are rarely equal).
+  artShapeTool("equilibriumArrow", "Equilibrium Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    dualShaft: true,
+    dualShaftGapPx: 7,
+    markerStart: { kind: "half-arrow", sizePx: 14 },
+    markerEnd: { kind: "half-arrow", sizePx: 14 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Retrosynthetic: the same two-shaft geometry, but both shafts run the same way with a single open
+  // head spanning them ("=>"). Being an art arrow is what gives it the hover dots, drag-to-move and
+  // hover-delete the other arrows have; `artToolId` still exports it as ArrowType="RetroSynthetic".
+  // No marker: the "=>" head is part of the arrow's own path geometry (see graphicEquilibriumPathD) —
+  // an axis-centred arrowhead marker can never span the two shafts.
+  artShapeTool("retroArrow", "Retrosynthesis Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    dualShaft: true,
+    dualShaftParallel: true,
+    dualShaftGapPx: 5
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Electron/arrow-pushing curves: the existing arc geometry with a reaction arrowhead. Dragging an
+  // endpoint flips the sweep, so clockwise presets cover both directions.
+  artShapeTool("curvedArrow90", "Curved Arrow (Gentle)", "path", 58, 58, {
+    artPathKind: "arc",
+    arcSweepRadians: degreesToRadians(90),
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("curvedArrow180", "Curved Arrow (Pronounced)", "path", 58, 58, {
+    artPathKind: "arc",
+    arcSweepRadians: degreesToRadians(180),
+    markerEnd: { kind: "filled-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // Fishhook (single-barb) arrows for radical / single-electron pushing.
+  artShapeTool("fishhookArrow", "Fishhook Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "half-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  artShapeTool("fishhookCurved", "Curved Fishhook Arrow", "path", 58, 58, {
+    artPathKind: "arc",
+    arcSweepRadians: degreesToRadians(180),
+    markerEnd: { kind: "half-arrow", sizePx: 16 }
+  }, { ...artOutlineStyle, strokeLineCap: "butt" }),
+  // "Reaction didn't work": a reaction arrow crossed with an X at the shaft midpoint.
+  artShapeTool("noReactionArrow", "No-Reaction Arrow", "path", 82, 46, {
+    artPathKind: "line",
+    markerEnd: { kind: "filled-arrow", sizePx: 16 },
+    shaftMark: "cross"
   }, { ...artOutlineStyle, strokeLineCap: "butt" }),
   artArcTool("arc270", "Three-quarter Arc", 270, false),
   artArcTool("arc270Dashed", "Dashed Three-quarter Arc", 270, true),
@@ -718,26 +804,6 @@ export function normalizeNativeAtomElementLabel(value: string): string {
 export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
   const normalized = normalizeNativeAtomElementLabel(value);
   return nativeElementSymbolSet.has(normalized) ? normalized as NativeElementSymbol : undefined;
-}
-
-export function nativeAtomDisplayLabel(
-  atom: MoleculeAtom,
-  bonds: readonly MoleculeBond[]
-): string | undefined {
-  const element = nativeElementFromAtomLabel(atom.element);
-  if (!element) {
-    const symbol = atom.element.trim() || "C";
-    return `${symbol}${atomChargeLabelSuffix(atom.formalCharge)}`;
-  }
-  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
-  const implicitHydrogenCount = nativeImplicitHydrogenCount(element, valenceUsed);
-  const formalCharge = atom.formalCharge;
-
-  if (element === "C" && valenceUsed > 0 && formalCharge === 0 && atom.labelVisible !== true) {
-    return undefined;
-  }
-
-  return `${element}${implicitHydrogenLabelSuffix(implicitHydrogenCount)}${atomChargeLabelSuffix(formalCharge)}`;
 }
 
 export function nativeAtomValidationState(
@@ -1204,7 +1270,8 @@ export function createNativeArtGraphicObject(
   const page = firstPage(document);
   const x = clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
   const y = clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
-  const data = nativeArtToolDataForPlacement(tool.data, x, y);
+  const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
+  const data = nativeArtToolDataForPlacement(toolData, x, y);
   return {
     id: nextObjectId(document, `art_${tool.id}`),
     type: "graphic",
@@ -1214,7 +1281,7 @@ export function createNativeArtGraphicObject(
     height: tool.height,
     rotation: 0,
     style: {
-      ...tool.style,
+      ...toolStyle,
       source: "chemdraft-native-art",
       artToolCommandId: tool.commandId
     },
@@ -1627,6 +1694,387 @@ export function insertNativeArtGraphicObject(
   );
 }
 
+/** Default length of a click-placed (undragged) art line/arrow, in page units. Matches the reaction
+ *  arrow default so a plain click drops a sensible horizontal arrow rather than a zero-length dot. */
+export const nativeArtLineDefaultLengthPx = 120;
+
+/** The arrow-family art tools — the ones "Set as Default Arrow Style" applies to. */
+const nativeArrowStyleToolIds = new Set<NativeArtToolId>([
+  "arrow",
+  "reactionArrow",
+  "reactionArrowBold",
+  "reactionArrowDashed",
+  "resonanceArrow",
+  "equilibriumArrow",
+  "retroArrow",
+  "curvedArrow90",
+  "curvedArrow180",
+  "fishhookArrow",
+  "fishhookCurved",
+  "noReactionArrow"
+]);
+
+/**
+ * The reusable parts of an arrow's look — everything "Set as Default Arrow Style" carries from a
+ * right-clicked arrow onto every subsequent one drawn with the same tool. Geometry that the draw
+ * gesture itself decides (endpoints, length, angle) is deliberately absent; the bow is stored as a
+ * signed fraction of the length so a curved default bends new arrows proportionally at any size.
+ */
+export interface NativeArrowStyleDefault {
+  markerStartSizePx?: number;
+  markerEndSizePx?: number;
+  dualShaftScale?: number;
+  dualShaftForwardFrac?: number;
+  dualShaftReverseFrac?: number;
+  arcSweepRadians?: number;
+  bowFrac?: number;
+  strokeColor?: string;
+  strokeWidth?: number;
+  /** Three states, because a tool can ship a dashed base style: absent = "not captured, keep the
+   *  tool's own dash", a string = that dash, and `null` = explicitly solid, which must CLEAR the
+   *  tool's base dash. Without the null case, making a dashed arrow solid and saving it as the
+   *  default was unrepresentable and the next arrow came back dashed. */
+  strokeDasharray?: string | null;
+}
+
+/** Per-tool "draw new arrows like this" defaults. Session state seeded from persistence by the main
+ *  window; consulted by the art-object constructors so every creation path picks them up. */
+const nativeArrowStyleDefaults = new Map<NativeArtToolId, NativeArrowStyleDefault>();
+
+export function setNativeArrowStyleDefault(toolId: NativeArtToolId, style: NativeArrowStyleDefault): void {
+  nativeArrowStyleDefaults.set(toolId, style);
+}
+
+export function loadNativeArrowStyleDefaults(record: Readonly<Record<string, NativeArrowStyleDefault>>): void {
+  for (const [toolId, style] of Object.entries(record)) {
+    if (nativeArrowStyleToolIds.has(toolId as NativeArtToolId) && style && typeof style === "object") {
+      nativeArrowStyleDefaults.set(toolId as NativeArtToolId, style);
+    }
+  }
+}
+
+export function nativeArrowStyleDefaultsSnapshot(): Record<string, NativeArrowStyleDefault> {
+  return Object.fromEntries(nativeArrowStyleDefaults);
+}
+
+export function clearNativeArrowStyleDefaults(): void {
+  nativeArrowStyleDefaults.clear();
+}
+
+/** The arrow-family tool ids as a stable list, for exhaustive tests and UI enumerations. */
+export const nativeArrowStyleToolIdList: readonly NativeArtToolId[] = [...nativeArrowStyleToolIds];
+
+/** The arrow-family tool id a graphic was drawn with, or undefined for non-arrow graphics. The one
+ *  membership check for "is this an arrow" — the style-default capture and the selection classifier
+ *  both key off it. */
+export function nativeArrowToolIdForGraphic(object: DocumentObject): NativeArtToolId | undefined {
+  if (object.type !== "graphic") {
+    return undefined;
+  }
+  const toolId = object.data.artToolId as NativeArtToolId | undefined;
+  return toolId && nativeArrowStyleToolIds.has(toolId) ? toolId : undefined;
+}
+
+/** True when the graphic was drawn with one of the twelve arrow tools. */
+export function isNativeArrowGraphic(object: DocumentObject): boolean {
+  return nativeArrowToolIdForGraphic(object) !== undefined;
+}
+
+/** Object types present in the current selection, for routing a command (or a selection-aware
+ *  widget) to a surface that can edit them. */
+export function selectedDocumentObjectTypes(document: ChemDraftDocument): ReadonlySet<DocumentObject["type"]> {
+  const selectedIds = new Set(document.selection.objectIds);
+  const types = new Set<DocumentObject["type"]>();
+  if (selectedIds.size === 0) {
+    return types;
+  }
+  for (const page of document.pages) {
+    for (const object of page.objects) {
+      if (selectedIds.has(object.id)) {
+        types.add(object.type);
+      }
+    }
+  }
+  return types;
+}
+
+/**
+ * Read a right-clicked arrow's reusable style, or undefined when the object isn't an arrow. Captures
+ * only what the object actually expresses: marker sizes it has, dual-shaft heft and half-lengths, an
+ * arc's sweep, a bent line's bow, and explicit stroke styling.
+ */
+export function nativeArrowStyleDefaultFromGraphic(
+  object: DocumentObject
+): { toolId: NativeArtToolId; title: string; style: NativeArrowStyleDefault } | undefined {
+  if (object.type !== "graphic") {
+    return undefined;
+  }
+  const toolId = nativeArrowToolIdForGraphic(object);
+  if (!toolId) {
+    return undefined;
+  }
+  const tool = nativeArtToolDefinitions.find((definition) => definition.id === toolId);
+  if (!tool) {
+    return undefined;
+  }
+
+  const style: NativeArrowStyleDefault = {};
+  const markerStartSize = object.data.markerStart?.sizePx;
+  const markerEndSize = object.data.markerEnd?.sizePx;
+  if (typeof markerStartSize === "number") {
+    style.markerStartSizePx = markerStartSize;
+  }
+  if (typeof markerEndSize === "number") {
+    style.markerEndSizePx = markerEndSize;
+  }
+  if (object.data.dualShaft === true) {
+    if (typeof object.data.dualShaftScale === "number") {
+      style.dualShaftScale = object.data.dualShaftScale;
+    }
+    if (object.data.dualShaftParallel !== true) {
+      if (typeof object.data.dualShaftForwardFrac === "number") {
+        style.dualShaftForwardFrac = object.data.dualShaftForwardFrac;
+      }
+      if (typeof object.data.dualShaftReverseFrac === "number") {
+        style.dualShaftReverseFrac = object.data.dualShaftReverseFrac;
+      }
+    }
+  }
+  if (object.data.artPathKind === "arc" && typeof object.data.arcSweepRadians === "number") {
+    style.arcSweepRadians = object.data.arcSweepRadians;
+  }
+  const bow = nativeArrowBowFraction(object);
+  if (bow !== undefined) {
+    style.bowFrac = bow;
+  }
+  if (typeof object.style.strokeColor === "string") {
+    style.strokeColor = object.style.strokeColor;
+  }
+  if (typeof object.style.strokeWidth === "number") {
+    style.strokeWidth = object.style.strokeWidth;
+  }
+  // Capture solid explicitly (null) rather than omitting it, so "make this dashed tool draw solid
+  // arrows from now on" is expressible; omission still means "keep whatever the tool draws".
+  style.strokeDasharray = typeof object.style.strokeDasharray === "string"
+    ? object.style.strokeDasharray
+    : null;
+
+  return { toolId, title: tool.title, style };
+}
+
+/** A bent line's bow: the control point's signed perpendicular offset at the midpoint, as a fraction
+ *  of the length — transplantable onto a new arrow of any length or angle. */
+function nativeArrowBowFraction(object: GraphicObject): number | undefined {
+  if (object.data.artPathKind !== "quadratic") {
+    return undefined;
+  }
+  const start = object.data.lineStart;
+  const end = object.data.lineEnd;
+  const control = object.data.pathControlPoint;
+  if (!start || !end || !control) {
+    return undefined;
+  }
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  if (length < 1) {
+    return undefined;
+  }
+  const axis = { x: (end.x - start.x) / length, y: (end.y - start.y) / length };
+  const normal = { x: axis.y, y: -axis.x };
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  return ((control.x - mid.x) * normal.x + (control.y - mid.y) * normal.y) / length;
+}
+
+/** Overlay a tool's stored default style onto freshly built creation data + style. */
+function nativeArrowStyleDefaultOverlay(
+  tool: NativeArtToolDefinition,
+  data: GraphicObjectData,
+  style: GraphicObjectStyle
+): { data: GraphicObjectData; style: GraphicObjectStyle } {
+  const stored = nativeArrowStyleDefaults.get(tool.id);
+  if (!stored) {
+    return { data, style };
+  }
+
+  const nextData: GraphicObjectData = { ...data };
+  // Marker sizes only resize heads the tool already draws — a default never adds or removes one.
+  if (typeof stored.markerStartSizePx === "number" && nextData.markerStart) {
+    nextData.markerStart = { ...nextData.markerStart, sizePx: stored.markerStartSizePx };
+  }
+  if (typeof stored.markerEndSizePx === "number" && nextData.markerEnd) {
+    nextData.markerEnd = { ...nextData.markerEnd, sizePx: stored.markerEndSizePx };
+  }
+  if (nextData.dualShaft === true) {
+    if (typeof stored.dualShaftScale === "number") {
+      nextData.dualShaftScale = stored.dualShaftScale;
+    }
+    if (nextData.dualShaftParallel !== true) {
+      if (typeof stored.dualShaftForwardFrac === "number") {
+        nextData.dualShaftForwardFrac = stored.dualShaftForwardFrac;
+      }
+      if (typeof stored.dualShaftReverseFrac === "number") {
+        nextData.dualShaftReverseFrac = stored.dualShaftReverseFrac;
+      }
+    }
+  }
+  if (nextData.artPathKind === "arc" && typeof stored.arcSweepRadians === "number") {
+    nextData.arcSweepRadians = stored.arcSweepRadians;
+  }
+
+  const nextStyle: GraphicObjectStyle = { ...style };
+  if (typeof stored.strokeColor === "string") {
+    nextStyle.strokeColor = stored.strokeColor;
+  }
+  if (typeof stored.strokeWidth === "number") {
+    nextStyle.strokeWidth = stored.strokeWidth;
+  }
+  if (typeof stored.strokeDasharray === "string") {
+    nextStyle.strokeDasharray = stored.strokeDasharray;
+  } else if (stored.strokeDasharray === null) {
+    // Explicitly solid: clear the tool's base dash instead of leaving it in place.
+    delete nextStyle.strokeDasharray;
+  }
+
+  return { data: nextData, style: nextStyle };
+}
+
+/** Line-family art tools (straight and wavy lines, plain/reaction/resonance arrows) draw between two
+ *  endpoints, so — like bonds and reaction arrows — they support press-drag-release placement rather
+ *  than plopping a fixed box. Arc/quadratic/bezier/polyline/freehand tools are excluded. */
+export function nativeArtToolIsLineDraw(commandId: string): boolean {
+  const kind = nativeArtToolForCommand(commandId)?.data.artPathKind;
+  return kind === "line" || kind === "wavy";
+}
+
+/** Arrow-mode in-place editing applies to line-draw tools and to arrow-family arcs (curved pushing /
+ *  fishhook arrows — arcs that carry an arrowhead marker). Plain arcs and shapes are excluded. */
+export function nativeArtToolSupportsArrowHoverEdit(commandId: string): boolean {
+  if (nativeArtToolIsLineDraw(commandId)) {
+    return true;
+  }
+  const tool = nativeArtToolForCommand(commandId);
+  return tool?.data.artPathKind === "arc" &&
+    (tool.data.markerStart !== undefined || tool.data.markerEnd !== undefined);
+}
+
+/** Build a line-family art graphic with explicit endpoints. The bounding box encloses both ends plus
+ *  padding for stroke + arrowhead so selection/hit-testing stay honest; `lineStart`/`lineEnd` make the
+ *  arrow immediately editable (drag ends, curve the middle) and let the CDXML layer read its geometry. */
+export function createNativeArtLineGraphicObject(
+  document: ChemDraftDocument,
+  start: PagePoint,
+  end: PagePoint,
+  commandId: string
+): GraphicObject | undefined {
+  const tool = nativeArtToolForCommand(commandId);
+  if (!tool || !nativeArtToolIsLineDraw(commandId)) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const clampedStart = {
+    x: clamp(start.x, 0, page.width),
+    y: clamp(start.y, 0, page.height)
+  };
+  const clampedEnd = {
+    x: clamp(end.x, 0, page.width),
+    y: clamp(end.y, 0, page.height)
+  };
+  const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
+
+  // A stored bow default bends the new arrow proportionally: same signed fraction of its length.
+  const bowFrac = nativeArrowStyleDefaults.get(tool.id)?.bowFrac;
+  const bowData: GraphicObjectData = {};
+  if (typeof bowFrac === "number" && toolData.artPathKind === "line" && toolData.dualShaft !== true) {
+    const length = Math.hypot(clampedEnd.x - clampedStart.x, clampedEnd.y - clampedStart.y);
+    if (length >= 1 && Math.abs(bowFrac) > 0.001) {
+      const axis = { x: (clampedEnd.x - clampedStart.x) / length, y: (clampedEnd.y - clampedStart.y) / length };
+      const normal = { x: axis.y, y: -axis.x };
+      bowData.artPathKind = "quadratic";
+      bowData.pathControlPoint = {
+        x: (clampedStart.x + clampedEnd.x) / 2 + normal.x * bowFrac * length,
+        y: (clampedStart.y + clampedEnd.y) / 2 + normal.y * bowFrac * length
+      };
+    }
+  }
+
+  const strokeWidth = typeof toolStyle.strokeWidth === "number" ? toolStyle.strokeWidth : 2;
+  const markerSize = Math.max(toolData.markerStart?.sizePx ?? 0, toolData.markerEnd?.sizePx ?? 0);
+  const padding = Math.max(8, strokeWidth * 2 + markerSize);
+  const boxPoints = [clampedStart, clampedEnd, ...(bowData.pathControlPoint ? [bowData.pathControlPoint] : [])];
+  const minX = Math.min(...boxPoints.map((point) => point.x)) - padding;
+  const minY = Math.min(...boxPoints.map((point) => point.y)) - padding;
+  const maxX = Math.max(...boxPoints.map((point) => point.x)) + padding;
+  const maxY = Math.max(...boxPoints.map((point) => point.y)) + padding;
+
+  return {
+    id: nextObjectId(document, `art_${tool.id}`),
+    type: "graphic",
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+    rotation: 0,
+    style: {
+      ...toolStyle,
+      source: "chemdraft-native-art",
+      artToolCommandId: tool.commandId
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    graphicKind: tool.graphicKind,
+    data: {
+      ...toolData,
+      lineStart: { x: clampedStart.x, y: clampedStart.y },
+      lineEnd: { x: clampedEnd.x, y: clampedEnd.y },
+      ...bowData,
+      artToolId: tool.id
+    }
+  };
+}
+
+/** Insert a line-family art graphic spanning `start`→`end` and select it. */
+export function applyNativeArtLineToolAtPoint(
+  document: ChemDraftDocument,
+  start: PagePoint,
+  end: PagePoint,
+  commandId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = createNativeArtLineGraphicObject(document, start, end, commandId);
+  if (!object) {
+    return document;
+  }
+
+  return applyPatches(
+    document,
+    [
+      { op: "addObject", pageId: page.id, object },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/** Click (no drag) placement: drop a default-length horizontal arrow with the press point as the tail. */
+export function applyNativeArtLineToolDefaultAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  commandId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const startX = clamp(point.x, 0, Math.max(0, page.width - nativeArtLineDefaultLengthPx));
+  const y = clamp(point.y, 0, page.height);
+  return applyNativeArtLineToolAtPoint(
+    document,
+    { x: startX, y },
+    { x: startX + nativeArtLineDefaultLengthPx, y },
+    commandId
+  );
+}
+
 export function nativeGraphicPathEditPoints(object: GraphicObject): NativeGraphicPathEditPoints | undefined {
   return graphicPathEditPoints(object);
 }
@@ -1865,14 +2313,15 @@ export function updateNativeGraphicMarkerHandle(
   document: ChemDraftDocument,
   objectId: string,
   markerId: NativeGraphicMarkerHandleId,
-  point: PagePoint
+  point: PagePoint,
+  options: { symmetric?: boolean } = {}
 ): ChemDraftDocument {
   const object = findDocumentObject(document, objectId);
   if (!object || object.type !== "graphic") {
     return document;
   }
 
-  const edited = editGraphicMarkerSize(object, markerId, point);
+  const edited = editGraphicMarkerSize(object, markerId, point, options);
   if (!edited || edited === object) {
     return document;
   }
@@ -4000,7 +4449,11 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
       return [{
         from,
         to,
-        order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+        // Carried through, not collapsed. `MoleculeBond["order"]` — which this interface already
+        // declares — accepts both, the insert path stores whatever arrives, and the OCL adapter
+        // explicitly refuses this same collapse citing AGENTS.md section 5.7. Flattening an
+        // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
+        order: bond.order,
         wedge: bond.bondStyle ?? null
       }];
     })
@@ -4174,18 +4627,37 @@ export function applyClipboardPastePayload(
   }
 
   if (payload.kind === "molfile") {
-    const nextDocument = insertNativeMolfileMolecule(document, point, payload.text, payload.format);
-    const selected = getSelectedMolecule(nextDocument);
-    const parsedWarnings = selected?.compatibility?.warnings
-      .filter((warning) => warning.code.startsWith("clipboard."))
-      .map((warning) => ({ code: warning.code, message: warning.message })) ?? [];
-    return {
-      document: nextDocument,
-      status: `Pasted editable ${payload.format === "molfile-v3000" ? "MOL V3000" : "MOL V2000"} structure`,
-      kind: payload.kind,
-      selectedObjectId: selected?.id,
-      warnings: [...payload.warnings, ...parsedWarnings]
-    };
+    // Detection is a heuristic over clipboard text, so it can hand this branch something that is
+    // not a molfile at all. `parseMolfileGraph` throws on malformed input, and an exception here
+    // escapes the whole paste handler — paste then does nothing at all, with no message. Fail the
+    // same way the RXN branch below does: keep the document, report why (§16).
+    try {
+      const nextDocument = insertNativeMolfileMolecule(document, point, payload.text, payload.format);
+      const selected = getSelectedMolecule(nextDocument);
+      const parsedWarnings = selected?.compatibility?.warnings
+        .filter((warning) => warning.code.startsWith("clipboard."))
+        .map((warning) => ({ code: warning.code, message: warning.message })) ?? [];
+      return {
+        document: nextDocument,
+        status: `Pasted editable ${payload.format === "molfile-v3000" ? "MOL V3000" : "MOL V2000"} structure`,
+        kind: payload.kind,
+        selectedObjectId: selected?.id,
+        warnings: [...payload.warnings, ...parsedWarnings]
+      };
+    } catch (error) {
+      const warning = {
+        code: "clipboard.molfile_parse_failed",
+        message: error instanceof Error
+          ? `ChemDraft detected a MOL structure on the clipboard, but could not parse it: ${error.message}`
+          : "ChemDraft detected a MOL structure on the clipboard, but could not parse it."
+      };
+      return {
+        document,
+        status: warning.message,
+        kind: payload.kind,
+        warnings: [...payload.warnings, warning]
+      };
+    }
   }
 
   if (payload.kind === "rxnfile") {
@@ -7574,6 +8046,166 @@ function updateGraphicObjects(
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
+/** Sibling of {@link updateGraphicObjects} for `data` patches (markers live in data, not style).
+ *  The updater returns the ORIGINAL `object.data` reference to signal "no change" — reference
+ *  equality is the bail, so no-op invokes never create patches (or undo entries). */
+function updateGraphicObjectData(
+  document: ChemDraftDocument,
+  objectIds: readonly string[],
+  updateData: (object: GraphicObject) => GraphicObjectData,
+  supportsUpdate: (object: GraphicObject) => boolean = () => true
+): ChemDraftDocument {
+  const targetIds = new Set(objectIds);
+  if (targetIds.size === 0) {
+    return document;
+  }
+
+  const patches = document.pages.flatMap((page) =>
+    page.objects.flatMap((object) => {
+      if (object.type !== "graphic" || !targetIds.has(object.id) || !supportsUpdate(object)) {
+        return [];
+      }
+
+      const nextData = updateData(object);
+      return nextData === object.data
+        ? []
+        : [{
+            op: "updateObject" as const,
+            objectId: object.id,
+            changes: {
+              data: nextData
+            }
+          }];
+    })
+  );
+
+  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+/**
+ * Ends that can carry an arrowhead marker: open-stroke paths whose terminals the marker machinery
+ * plans. Keyed off `isOpenStroke` (not "has a handle today") so an arrow with a bare tail still
+ * counts — growing a tail head is the point. Retrosynthetic arrows are excluded: their "⇒" head is
+ * path geometry, not a marker, so a marker command would draw a second head.
+ */
+export function graphicObjectSupportsMarkers(object: DocumentObject | undefined): boolean {
+  if (!object || object.type !== "graphic" || !graphicShapeCanCarryMarkers(object)) {
+    return false;
+  }
+  return graphicObjectSupportsMarkersWithPlan(object, planNativeArtVisual(object, { coordinateSpace: "local" }));
+}
+
+/** The half of the test that needs no plan, so the plan is only built when it can still change the
+ *  answer. */
+function graphicShapeCanCarryMarkers(object: GraphicObject): boolean {
+  return object.graphicKind === "path" && object.data.dualShaftParallel !== true;
+}
+
+/**
+ * {@link graphicObjectSupportsMarkers} for a caller that already holds the object's render plan.
+ *
+ * Planning is not cheap — it samples path geometry — and `createArtInspectorModel` is keyed on
+ * `document`, which is replaced on every pointermove frame. It planned each selected graphic once
+ * up front and then called the planless helper twice more (the `supportsMarkers` map and
+ * `skippedForControl`), so a selected path was planned two to three times per frame with the answer
+ * already in hand.
+ */
+export function graphicObjectSupportsMarkersWithPlan(
+  object: GraphicObject,
+  plan: NativeArtVisualPlan
+): boolean {
+  return graphicShapeCanCarryMarkers(object) && plan.capabilities.isOpenStroke === true;
+}
+
+/**
+ * Set one end's arrowhead kind on every marker-capable graphic in the selection. `kind: "none"`
+ * deletes the marker key rather than storing `{kind: "none"}` — the render plan treats both as
+ * absent, and a deleted key keeps "Set as Default Arrow Style"'s never-adds-or-removes-heads
+ * contract honest. Adding a head to a bare end seeds its size from the opposite head (falling back
+ * to the 16px tool default) so the pair matches.
+ */
+export function applyGraphicObjectMarkerKindToSelection(
+  document: ChemDraftDocument,
+  markerId: NativeArtMarkerHandleId,
+  kind: GraphicMarker["kind"],
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    const current = object.data[markerId];
+    if (kind === "none") {
+      if (!current) {
+        return object.data;
+      }
+      const nextData = { ...object.data };
+      delete nextData[markerId];
+      return nextData;
+    }
+    if (current?.kind === kind) {
+      return object.data;
+    }
+    const otherId: NativeArtMarkerHandleId = markerId === "markerStart" ? "markerEnd" : "markerStart";
+    const seedSizePx = current?.sizePx ?? object.data[otherId]?.sizePx ?? 16;
+    return {
+      ...object.data,
+      [markerId]: {
+        kind,
+        sizePx: seedSizePx,
+        ...(current?.angleDegrees !== undefined ? { angleDegrees: current.angleDegrees } : {})
+      }
+    };
+  }, graphicObjectSupportsMarkers);
+}
+
+/** Set every non-none head's size on the selection's marker-capable graphics, snapped to the same
+ *  4px steps the canvas handle drags between (both ends together, matching the handle's symmetric
+ *  default — asymmetric sizing stays a canvas Shift-drag capability). */
+export function applyGraphicObjectMarkerSizeToSelection(
+  document: ChemDraftDocument,
+  sizePx: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const snapped = snapGraphicMarkerSizePx(sizePx);
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    let nextData = object.data;
+    for (const markerId of ["markerStart", "markerEnd"] as const) {
+      const marker = nextData[markerId];
+      if (marker && marker.kind !== "none" && marker.sizePx !== snapped) {
+        nextData = { ...nextData, [markerId]: { ...marker, sizePx: snapped } };
+      }
+    }
+    return nextData;
+  }, graphicObjectSupportsMarkers);
+}
+
+/** Graphics that draw a shaft mark (the no-reaction ✗). */
+export function graphicObjectHasShaftMark(object: DocumentObject | undefined): boolean {
+  return object?.type === "graphic" && object.data.shaftMark === "cross";
+}
+
+/** Set (or, with undefined, return to stroke-derived "auto") the no-reaction cross size on
+ *  every shaft-marked graphic in the selection. Explicit sizes clamp to the engine's bounds. */
+export function applyGraphicShaftMarkSizeToSelection(
+  document: ChemDraftDocument,
+  sizePx: number | undefined,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const clamped = sizePx === undefined ? undefined : clampGraphicShaftMarkSizePx(sizePx);
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    if (clamped === undefined) {
+      if (object.data.shaftMarkSizePx === undefined) {
+        return object.data;
+      }
+      const nextData = { ...object.data };
+      delete nextData.shaftMarkSizePx;
+      return nextData;
+    }
+    if (object.data.shaftMarkSizePx === clamped) {
+      return object.data;
+    }
+    return { ...object.data, shaftMarkSizePx: clamped };
+  }, graphicObjectHasShaftMark);
+}
+
 function updateVisualEffectObjects(
   document: ChemDraftDocument,
   objectIds: readonly string[],
@@ -9139,7 +9771,72 @@ function resizeGraphicObjectDataForFrame(
     nextData.arcRadiusY = Math.max(1, data.arcRadiusY * Math.abs(scaleY));
   }
 
+  // A parametric arc traces (cx + rx*cos t, cy + ry*sin t). Mirroring the centre and radii alone
+  // left t untouched, so a flipped curved arrow kept its original sweep direction — and for the
+  // curved pushing arrows that direction IS the chemistry. Under a mirror cos t and/or sin t change
+  // sign, which is exactly atan2 of the signed components; the sweep reverses only when a single
+  // axis flipped (a negative determinant). Mapping the START angle rather than the end keeps
+  // markerStart/markerEnd on the ends they were already attached to.
+  const signX = scaleX < 0 ? -1 : 1;
+  const signY = scaleY < 0 ? -1 : 1;
+  if (signX < 0 || signY < 0) {
+    if (typeof data.arcStartRadians === "number" && Number.isFinite(data.arcStartRadians)) {
+      nextData.arcStartRadians = Math.atan2(
+        signY * Math.sin(data.arcStartRadians),
+        signX * Math.cos(data.arcStartRadians)
+      );
+    }
+    if (signX * signY < 0 && typeof data.arcSweepRadians === "number" && Number.isFinite(data.arcSweepRadians)) {
+      nextData.arcSweepRadians = -data.arcSweepRadians;
+    }
+  }
+
+  // Arrowheads are a size in px, not a pair of endpoints, so scaling the geometry alone would drag a
+  // fixed-size head along a longer shaft — the arrow would look progressively wrong as it grew.
+  // Scale by the OVERALL size change (see proportionalGraphicScale), not by one axis, so stretching
+  // an arrow mostly-horizontally still enlarges its head somewhat rather than not at all.
+  const headScale = proportionalGraphicScale(scaleX, scaleY);
+  if (Math.abs(headScale - 1) > 0.0001) {
+    nextData.markerStart = scaleGraphicMarker(data.markerStart, headScale);
+    nextData.markerEnd = scaleGraphicMarker(data.markerEnd, headScale);
+    if (typeof data.dualShaftGapPx === "number" && Number.isFinite(data.dualShaftGapPx)) {
+      nextData.dualShaftGapPx = roundFreehandNumber(Math.max(0.5, data.dualShaftGapPx * headScale));
+    }
+    // An explicit no-reaction cross size scales with the arrow like the heads do; the derived
+    // "auto" size follows stroke width, which the same resize already scales.
+    if (typeof data.shaftMarkSizePx === "number" && Number.isFinite(data.shaftMarkSizePx)) {
+      nextData.shaftMarkSizePx = clampGraphicShaftMarkSizePx(data.shaftMarkSizePx * headScale);
+    }
+  }
+
   return nextData;
+}
+
+/**
+ * One scale factor for the parts of a graphic that have a thickness rather than a pair of endpoints
+ * — arrowhead size, stroke width, shaft gap.
+ *
+ * The geometric mean of the two axes: it is the factor that changes area by the same amount the
+ * resize did, so a uniform drag scales these exactly with the shape, and a one-axis stretch grows
+ * them by the square root rather than either ignoring the stretch or doubling it.
+ */
+export function proportionalGraphicScale(scaleX: number, scaleY: number): number {
+  const sx = Number.isFinite(scaleX) ? Math.abs(scaleX) : 1;
+  const sy = Number.isFinite(scaleY) ? Math.abs(scaleY) : 1;
+  if (sx <= 0 || sy <= 0) {
+    return 1;
+  }
+  return Math.sqrt(sx * sy);
+}
+
+function scaleGraphicMarker(
+  marker: GraphicObjectData["markerEnd"],
+  scale: number
+): GraphicObjectData["markerEnd"] {
+  if (!marker || typeof marker.sizePx !== "number" || !Number.isFinite(marker.sizePx)) {
+    return marker;
+  }
+  return { ...marker, sizePx: roundFreehandNumber(Math.max(2, marker.sizePx * scale)) };
 }
 
 function transformGraphicPathNodes(
@@ -10862,6 +11559,19 @@ function transformOtherObjectAroundPoint(
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
+    // Stroke width scales with the arrow too, so a resized arrow keeps its proportions instead of
+    // turning spindly as it grows. Arrow-family only: other art keeps its existing behaviour, where
+    // a resized rectangle deliberately holds its stroke weight.
+    const strokeScale = proportionalGraphicScale(scaleX, scaleY);
+    if (isNativeArrowGraphic(object) && Math.abs(strokeScale - 1) > 0.0001) {
+      const strokeWidth = object.style.strokeWidth;
+      if (typeof strokeWidth === "number" && Number.isFinite(strokeWidth) && strokeWidth > 0) {
+        changes.style = {
+          ...object.style,
+          strokeWidth: roundFreehandNumber(Math.max(0.1, strokeWidth * strokeScale))
+        };
+      }
+    }
   }
   // Arrow endpoints are absolute page points, so scaling only the frame would leave the drawn arrow
   // at its original size inside a resized box.
@@ -11044,12 +11754,12 @@ function flipOtherObjectAroundPoint(
     height: object.height,
     // An object with no mirrorable interior can only fake a horizontal flip as "rotate 180 after a
     // vertical one". Objects that mirror their own geometry below need no such trick: negating the
-    // angle is the exact rotation of the mirrored shape, for either axis.
-    rotation: object.type === "graphic"
-      ? object.rotation
-      : mirrorsOwnGeometry
-        ? normalizeDegrees(-object.rotation)
-        : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
+    // angle is the exact rotation of the mirrored shape, for either axis. Graphics used to be
+    // carved out of that rule and kept their angle, so a rotated one flipped to 2*theta off the
+    // mirror — and this branch made every arrow a graphic, putting the two arrow kinds at odds.
+    rotation: mirrorsOwnGeometry
+      ? normalizeDegrees(-object.rotation)
+      : normalizeDegrees(axis === "horizontal" ? 180 - object.rotation : -object.rotation)
   };
 
   if (object.type === "electron-mark" && object.markKind === "charge") {
@@ -12180,10 +12890,23 @@ export function flattenSpunMolecule(
   // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
   // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
+  const ringInteriorSides = ringInteriorDoubleBondSides(sideMolecule);
   const nextBonds = projectedBonds.map((bond, bondIndex) => {
     const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
     if (bond.order === "double") {
-      display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+      // Baking a side unconditionally broke "releasing changes nothing visually": a bond that
+      // renders as the symmetric straddle has no side, and writing one turned it one-sided the
+      // instant the spin was committed. An explicit side is itself one of the conditions that
+      // suppresses the straddle, so only bonds that really draw with a side get one.
+      const fromAtom = nextAtoms.find((atom) => atom.id === bond.fromAtomId);
+      const toAtom = nextAtoms.find((atom) => atom.id === bond.toAtomId);
+      const symmetric = fromAtom !== undefined && toAtom !== undefined &&
+        doubleBondRendersSymmetric(fromAtom, toAtom, sideMolecule, bond, ringInteriorSides.get(bond.id));
+      if (symmetric) {
+        delete display.doubleBondSide;
+      } else {
+        display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+      }
     }
     const depthWeight = depthWeightFor(bondIndex);
     if (depthWeight !== undefined) display.depthWeight = depthWeight;
@@ -14234,7 +14957,11 @@ function nativeSingleBondGraphMetadata(
     elementCounts.set(element, (elementCounts.get(element) ?? 0) + 1);
 
     if (element !== "H") {
-      const implicitHydrogens = nativeImplicitHydrogenCount(element, valenceUsage.get(atom.id) ?? 0);
+      const implicitHydrogens = nativeImplicitHydrogenCount(
+        element,
+        valenceUsage.get(atom.id) ?? 0,
+        atom.formalCharge
+      );
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
@@ -14798,14 +15525,6 @@ function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): 
     : Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
 }
 
-function implicitHydrogenLabelSuffix(count: number): string {
-  if (count <= 0) {
-    return "";
-  }
-
-  return count === 1 ? "H" : `H${count}`;
-}
-
 function atomChargeLabelSuffix(charge: number): string {
   if (charge === 0) {
     return "";
@@ -14824,9 +15543,20 @@ function nativeChargeValue(charge: number | undefined): NativeChargeValue | unde
   return undefined;
 }
 
-function nativeImplicitHydrogenCount(element: NativeElementSymbol, valenceUsed: number): number {
-  const neutralValence = nativeAtomValence[element];
-  return neutralValence === undefined ? 0 : Math.max(0, neutralValence - valenceUsed);
+/**
+ * Implicit hydrogens for the molecular formula, from the SAME derivation the drawn label uses.
+ *
+ * This counted against the neutral valence table and ignored `formalCharge`, so once
+ * `atomDisplayLabel` became charge-aware the two disagreed: methoxide drew as "O-" with no hydrogen
+ * while the formula still reported CH4O. A formula that contradicts the depiction beside it is
+ * worse than either being wrong alone, and AGENTS.md 5.26 puts atom-label content in layout-engine.
+ */
+function nativeImplicitHydrogenCount(
+  element: NativeElementSymbol,
+  valenceUsed: number,
+  formalCharge: number
+): number {
+  return Math.max(0, nativeAtomValenceForCharge(element, formalCharge) - valenceUsed);
 }
 
 function nativeAtomFormalChargeForValence(

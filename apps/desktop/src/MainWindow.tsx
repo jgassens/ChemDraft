@@ -16,6 +16,7 @@ import {
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
+  graphicDualShaftScaleHandlePoint,
   maxGraphicCornerRadius,
   projectGraphicObjectPoint,
   unprojectGraphicObjectPoint,
@@ -79,6 +80,7 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
+import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
 import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
 import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
@@ -122,6 +124,10 @@ import {
   depthCuedBondStrokeWidth,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  doubleBondMinimumVisibleSegmentPx,
+  doubleBondRendersSymmetric,
+  doubleBondSecondaryFlushEnds,
+  ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
   nativeMoleculeRings,
@@ -173,6 +179,10 @@ import {
   objectOpacityForCommand,
   objectPaintTypeForCommand,
   objectStyleActions,
+  objectMarkerKindForCommand,
+  objectMarkerSizeForCommand,
+  objectShaftMarkSizeAutoCommandId,
+  objectShaftMarkSizeForCommand,
   objectStrokeDashCommands,
   objectStrokeLineCapCommands,
   objectStrokeLineJoinCommands,
@@ -320,7 +330,12 @@ import {
   applyGraphicObjectNoneToSelection,
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
+  applyGraphicObjectMarkerKindToSelection,
+  applyGraphicObjectMarkerSizeToSelection,
+  applyGraphicShaftMarkSizeToSelection,
+  graphicObjectHasShaftMark,
   applyGraphicObjectStrokeStyleToSelection,
+  graphicObjectSupportsMarkers,
   applyMoleculeObjectColorToSelection,
   applyMoleculeObjectNoneToSelection,
   applyMoleculeObjectOpacityToSelection,
@@ -369,13 +384,21 @@ import {
   applyFormulaTextFormatting,
   type NativeChainAnchor,
   insertNativeArtGraphicObject,
+  nativeArtToolIsLineDraw,
+  nativeArrowStyleDefaultFromGraphic,
+  selectedDocumentObjectTypes,
+  setNativeArrowStyleDefault,
+  loadNativeArrowStyleDefaults,
+  nativeArrowStyleDefaultsSnapshot,
+  nativeArtToolSupportsArrowHoverEdit,
+  applyNativeArtLineToolAtPoint,
+  applyNativeArtLineToolDefaultAtPoint,
   nativeBezierPathDocument,
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
-  nativeAtomDisplayLabel,
   documentObjectProjectedPlaneTilt,
   nativeChargeAssociationsForMolecule,
   nativeChargeByAtomIdFromAssociations,
@@ -390,6 +413,7 @@ import {
   nativeGraphicRadialGradientHandlePoints,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
+  isNativeArrowGraphic,
   nativeArtToolForCommand,
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
@@ -503,6 +527,7 @@ import {
   broadcastToolsetActiveTool,
   broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
+  broadcastToolsetDefinitions,
   broadcastToolsetLayoutState,
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
@@ -516,6 +541,7 @@ import {
   listenForToolsetActiveToolRequests,
   listenForToolsetCommandSpecsRequests,
   listenForToolsetCustomizeModeRequests,
+  listenForToolsetDefinitionsRequests,
   listenForToolsetLayoutEdits,
   listenForToolsetLayoutStateRequests,
   listenForToolsetTextStyleRequests,
@@ -549,6 +575,7 @@ import {
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
   migrateLegacyMainToolbarLayoutState,
+  type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
@@ -574,7 +601,7 @@ import {
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
@@ -690,7 +717,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -700,6 +727,7 @@ type NativePlacementDragState = {
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
   chainAnchor?: NativeChainAnchor;
+  artLineCommandId?: string;
   dragging: boolean;
 };
 type NativeBondEditDragState = {
@@ -757,6 +785,9 @@ type GraphicMarkerDragState = {
   startDocument: ChemDraftDocument;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
+  // Shift held ⇒ resize only the dragged arrowhead; otherwise a double-headed arrow resizes both heads
+  // symmetrically. Tracked live so toggling Shift mid-drag takes effect.
+  shiftKey: boolean;
   dragging: boolean;
 };
 type GraphicGradientDragState = {
@@ -1242,7 +1273,6 @@ const INTERACTIVE_3D_POST_OPEN_POLL_COUNT = 8;
 const INTERACTIVE_3D_POST_OPEN_POLL_MS = 90;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
-const DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX = 13;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
 const rasterExportFormatsByFormatId: Partial<Record<ExportFormatId, NativeRasterExportFormat>> = {
   png: "png",
@@ -1268,7 +1298,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "7.25.18.20-fable";
+const CURRENT_BUILD_STAMP = "8.1.8.56-fable";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1428,6 +1458,12 @@ function isTransformHandleDoublePress(
     Math.hypot(current.x - previous.x, current.y - previous.y) <= radiusPx
   );
 }
+/** Persisted per-tool "draw new arrows like this" defaults (documentWorkflow's session registry). */
+const ARROW_STYLE_DEFAULTS_STORAGE_KEY = "chemdraft.arrowStyleDefaults.v1";
+/** Handled by applyArrowStyleDefaultCommand inside `invoke` (and the object context menu, which
+ *  passes the right-clicked object), not via the command registry. */
+const SET_DEFAULT_ARROW_STYLE_COMMAND_ID = "arrow.setDefaultStyle";
+
 const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.bringForward", label: "Move Object Forward" },
   { commandId: "layout.bringToFront", label: "Move Object to Front" },
@@ -1585,6 +1621,29 @@ export function MainWindow({
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
   const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
+  // The line-family art arrow/line currently open for in-place editing while a line-draw art tool is
+  // active — the one just drawn, or the one under the pointer. Arrow mode doubles as an arrow-editing
+  // mode: hovering any arrow reveals small translucent dot handles you can grab, and clicking empty
+  // space still draws a new arrow.
+  const [arrowEditTargetId, setArrowEditTargetId] = useState<string | undefined>();
+  const arrowEditTargetIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    arrowEditTargetIdRef.current = arrowEditTargetId;
+  }, [arrowEditTargetId]);
+  // The arrow under the pointer while Shift is held. Shift-hovering an arrow swaps its small dot
+  // handles for the classic size box + rotate handles, in the arrow tools AND the selection tool.
+  // A hover-following affordance (a grip floating beside the arrow) was tried first and does not
+  // work: reaching for it moves the pointer off the arrow, which clears the hover and takes the
+  // affordance with it. A held modifier has no such race.
+  const [shiftHoveredArrowId, setShiftHoveredArrowId] = useState<string | undefined>();
+  const shiftHoveredArrowIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    shiftHoveredArrowIdRef.current = shiftHoveredArrowId;
+  }, [shiftHoveredArrowId]);
+  // The arrow the pointer is over right now, Shift or not. Kept so pressing Shift while already
+  // hovering an arrow raises the box immediately — without it the box only appeared once the mouse
+  // moved again, which reads as the feature not working.
+  const hoveredArrowIdRef = useRef<string | undefined>(undefined);
   const [selectedGraphicPathNode, setSelectedGraphicPathNode] = useState<SelectedGraphicPathNodeState | undefined>();
   const [activeArtPaintTarget, setActiveArtPaintTarget] = useState<GraphicStylePaintTarget>("fill");
   const [artPaintTargetCueActive, setArtPaintTargetCueActive] = useState(false);
@@ -1602,6 +1661,9 @@ export function MainWindow({
     applyRegistry();
     return toolbarCatalog.onDidChange(applyRegistry);
   }, [toolbarCatalog]);
+  // Latest plugin toolset definitions, cached so a late-joining palette window's request can be
+  // answered (mirrors shellCommandSpecsRef for the command-spec channel).
+  const pluginToolsetsRef = useRef<readonly DesktopToolsetDefinition[]>([]);
   const [visibleToolsetIds, setVisibleToolsetIds] = useState(() =>
     initialPaletteMode === "hidden" ? new Set<string>() : new Set(defaultVisibleToolsetIds)
   );
@@ -1700,6 +1762,9 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
+  // Autosave writes the session file only after a clean read of it. A failed read leaves this false
+  // so the blank startup document can never replace a session we merely failed to decode.
+  const documentSessionSaveEnabledRef = useRef(false);
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
@@ -1736,6 +1801,11 @@ export function MainWindow({
     (phase: "beginDrag" | "updateDrag" | "endDrag", atomId: string, target?: Engine3DCoordinate) => void
   >(() => undefined);
   const activeToolCommandIdRef = useRef(activeToolState.activeCommandId);
+  // Switching tools (including between arrow types) drops the just-drawn arrow's edit chrome; drawing
+  // more arrows with the same tool keeps it, since the active command id is unchanged then.
+  useEffect(() => {
+    setArrowEditTargetId(undefined);
+  }, [activeToolState.activeCommandId]);
   const nativePaletteRef = useRef(nativePalette);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
@@ -1825,6 +1895,18 @@ export function MainWindow({
     : undefined;
   useEffect(() => {
     prewarmNativeDialogModule();
+  }, []);
+  // "Set as Default Arrow Style" survives restarts: seed the in-session defaults from localStorage
+  // once on mount; each set writes the snapshot back (see the context-menu handler).
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(ARROW_STYLE_DEFAULTS_STORAGE_KEY);
+      if (raw) {
+        loadNativeArrowStyleDefaults(JSON.parse(raw));
+      }
+    } catch {
+      // Unreadable storage (or corrupted JSON) just means factory defaults this session.
+    }
   }, []);
   useEffect(() => {
     if (!selectedGraphicPathNode) {
@@ -1921,6 +2003,22 @@ export function MainWindow({
     ? eyedropperStatusLabel(effectiveArtPaintTarget)
     : eyedropperChooseTargetStatusLabel(effectiveArtPaintTarget);
   const currentToolbarTextScript = selectedTextObject ? selectedTextScript : "normal";
+  const currentToolbarSelection = useMemo(
+    () => classifyToolbarSelection({
+      document,
+      moleculeContext: currentMoleculeInspector.targets.context,
+      activeTextEditObjectId,
+      // Composed from the art model, which has already planned every selected object — deriving it
+      // here would re-run planNativeArtVisual per object on every document change.
+      markerCapableGraphicCount: currentArtStyle?.markersSupportedCount
+    }),
+    [
+      activeTextEditObjectId,
+      currentArtStyle?.markersSupportedCount,
+      currentMoleculeInspector.targets.context,
+      document
+    ]
+  );
 
   useEffect(() => {
     if (activeToolState.activeCommandId === "tool.art.eyedropper") {
@@ -1934,7 +2032,8 @@ export function MainWindow({
       currentToolbarTextScript,
       currentArtStyle,
       activeArtPaintTarget,
-      currentMoleculeInspector
+      currentMoleculeInspector,
+      currentToolbarSelection
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -1942,7 +2041,8 @@ export function MainWindow({
     currentToolbarTextScript,
     currentArtStyle,
     activeArtPaintTarget,
-    currentMoleculeInspector
+    currentMoleculeInspector,
+    currentToolbarSelection
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -1954,6 +2054,10 @@ export function MainWindow({
   const bondToolActive = activeNativeBondToolStyle !== undefined;
   const activeChargeToolValue = chargeValueForToolCommand(activeToolState.activeCommandId);
   const activeNativeArtTool = nativeArtToolForCommand(activeToolState.activeCommandId);
+  // An arrow-editing art tool (line/arrow, or a curved/fishhook arrow arc) is active: the arrow under
+  // the pointer (or just drawn) keeps its direct-edit dot handles.
+  const activeArtLineDrawToolActive = activeNativeArtTool !== undefined &&
+    nativeArtToolSupportsArrowHoverEdit(activeNativeArtTool.commandId);
   const activePage = document.pages[0];
   const plannedDisplayPage = useMemo(() => {
     if (!nativeDoubleBondSidePreview) {
@@ -2343,10 +2447,12 @@ export function MainWindow({
       .filter((id) => resolvedToolsetIdsRef.current.has(id));
     const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
     layoutStateRef.current = nextState;
-    // Chain the writes so their completion order matches the order the states were produced.
+    // Chain the writes so their completion order matches the order the states were produced. Surface a
+    // save failure on the status line (it used to be swallowed, so a lost write looked successful) and
+    // still resolve so the chain stays alive for the next write.
     layoutSaveChainRef.current = layoutSaveChainRef.current
       .then(() => saveToolsetLayoutState(nextState))
-      .catch(() => undefined);
+      .catch(() => setStatus("Couldn't save toolbar visibility; your last change may not persist"));
   }, [visibleToolsetIds, nativePalette, toolsetRegistry]);
 
   useEffect(() => {
@@ -2376,10 +2482,18 @@ export function MainWindow({
         currentToolbarTextScript,
         currentArtStyle,
         activeArtPaintTarget,
-        currentMoleculeInspector
+        currentMoleculeInspector,
+        currentToolbarSelection
       )
     ).catch(() => undefined);
-  }, [activeArtPaintTarget, currentArtStyle, currentMoleculeInspector, currentToolbarTextScript, currentToolbarTextStyle]);
+  }, [
+    activeArtPaintTarget,
+    currentArtStyle,
+    currentMoleculeInspector,
+    currentToolbarSelection,
+    currentToolbarTextScript,
+    currentToolbarTextStyle
+  ]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -2709,6 +2823,28 @@ export function MainWindow({
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
+    // Arrow mode: Delete removes the arrow under the pointer. Arrow mode is the arrow-editing mode,
+    // so clearing one shouldn't mean switching to Select and selecting it first.
+    const hoveredArrowId = arrowEditTargetIdRef.current;
+    // Gate on the SAME predicate that populated the hover target. Gating on the narrower line-draw
+    // set meant that under the curved/fishhook arc tools — whose arrows do get hover targets and dot
+    // handles — Delete fell through to the generic selected-object delete and destroyed a different
+    // arrow (the one still selected from being drawn) while leaving the hovered one alone.
+    if (hoveredArrowId && nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current)) {
+      const nextDocument = deleteSelectedDocumentObjects(
+        selectDocumentObject(currentDocument, hoveredArrowId)
+      );
+      if (nextDocument !== currentDocument) {
+        commitDocumentChange(nextDocument);
+        toolbarStyleTargetRef.current = undefined;
+        setArrowEditTargetId(undefined);
+        setActiveEditorObjectId(undefined);
+        setObjectContextMenu(undefined);
+        setStatus("Deleted arrow");
+        return;
+      }
+    }
+
     // A lasso fragment selection ("parts") takes precedence over a hovered atom/bond:
     // delete every selected atom and bond in one step. A non-fragment selected part
     // (single atom/bond) still routes through the same part-delete path.
@@ -2717,7 +2853,11 @@ export function MainWindow({
     // pressing Delete would remove only B. Ring parts aren't deletable (excluded here). A lasso
     // "parts" fragment or a genuine multi-molecule selection takes precedence over a hovered
     // atom/bond; a lone atom/bond part still defers to the hovered target (single-select feel).
-    const selectedDeleteTargets = selectedNativeMoleculeParts
+    // Read through the ref, not the captured array. The deps below track only the LAST part's
+    // identity, so the array could shrink — part pruning, a double-click dropping back to one
+    // part — while that element stayed the same, leaving this callback holding the pre-shrink
+    // array. Delete then destroyed a bond the user had just deselected.
+    const selectedDeleteTargets = selectedNativeMoleculePartsRef.current
       .map((part) => nativeTransformableSelectionPart(part))
       .filter((part): part is NativeMoleculeTransformableSelectionPart => part !== undefined);
     const selectionTakesPrecedence = selectedDeleteTargets.length > 1
@@ -3315,6 +3455,9 @@ export function MainWindow({
     // to the PROJECTED ring interior each frame (matching the 2D drawing and the flatten),
     // instead of the substituent-count heuristic that flips outward on substituted rings.
     const ringAtomIdsByBond = smallestRingAtomIdsByBondId(molecule);
+    // Same per-molecule ring-interior map the committed drawing uses, so the symmetric decision
+    // below is answered from identical inputs.
+    const ringInteriorSides = ringInteriorDoubleBondSides(molecule);
     const bondPairs: [number, number][] = [];
     const bondRender: SpinBondRenderInfo[] = [];
     for (const bond of molecule.bonds) {
@@ -3338,8 +3481,17 @@ export function MainWindow({
         // keeps the spin overlay identical to the drawing it replaces (and to the flatten).
         order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
         bold: bond.display?.bondStyle === "bold",
+        // Ask the layout engine the same question the committed drawing asks. Testing only
+        // `isTerminalHeteroatomDoubleBond` used the last of four clauses, so an aldehyde or amide
+        // C=O with a derivable inner side drew one-sided on canvas but symmetric while spinning.
         symmetric: fromAtom !== undefined && toAtom !== undefined &&
-          isTerminalHeteroatomDoubleBond(fromAtom, toAtom, molecule, bond),
+          doubleBondRendersSymmetric(fromAtom, toAtom, molecule, bond, ringInteriorSides.get(bond.id)),
+        // Likewise for the secondary line's end insets. A terminal methylene (=CH2) draws flush,
+        // and copying only the inset formula shortened ethylene and every terminal alkene here
+        // while the committed drawing left it flush.
+        secondaryFlush: fromAtom !== undefined && toAtom !== undefined
+          ? doubleBondSecondaryFlushEnds(fromAtom, toAtom, molecule, bond)
+          : { from: false, to: false },
         neighborIndices,
         ringAtomIndices
       });
@@ -4765,6 +4917,14 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
+    if (nativeArtToolSupportsArrowHoverEdit(commandId)) {
+      // Arrow-family arcs (curved pushing / fishhook arrows) behave like the straight arrows: the tool
+      // stays active for the next placement and the placed arrow opens with its dot handles.
+      setArrowEditTargetId(nextDocument.selection.objectIds[0]);
+      const tool = nativeArtToolForCommand(commandId);
+      setStatus(tool ? `Inserted ${tool.title.toLowerCase()}` : "Inserted arrow");
+      return;
+    }
     switchToSelectTool();
     setStatus(selectToolStatusLabel());
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
@@ -4833,7 +4993,9 @@ export function MainWindow({
             bonds: fallback.bonds.map((bond) => ({
               from: bond.from,
               to: bond.to,
-              order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+              // Same contract as `pastedStructureDepictionFromMolfile`: orders are carried, not
+              // flattened. Collapsing aromatic/unknown to single silently rewrites the chemistry.
+              order: bond.order,
               wedge: bond.wedge
             }))
           };
@@ -5360,6 +5522,45 @@ export function MainWindow({
       }, moleculeObjectIds, ringOverrideMode);
     }
 
+    const markerKind = objectMarkerKindForCommand(commandId);
+    if (markerKind) {
+      // Stricter than the stroke family's `targeted`: markers only exist on open-stroke paths, so a
+      // selection of rectangles must report untargeted rather than "Updated selected arrowhead".
+      const markerObjectIds = graphicObjectIds.filter((objectId) =>
+        graphicObjectSupportsMarkers(findDocumentObject(currentDocument, objectId)));
+      return {
+        document: applyGraphicObjectMarkerKindToSelection(currentDocument, markerKind.markerId, markerKind.kind, markerObjectIds),
+        handled: true,
+        targeted: markerObjectIds.length > 0,
+        message: markerKind.markerId === "markerEnd" ? "Updated selected arrowhead" : "Updated selected arrow tail"
+      };
+    }
+
+    const markerSize = objectMarkerSizeForCommand(commandId);
+    if (markerSize) {
+      const markerObjectIds = graphicObjectIds.filter((objectId) =>
+        graphicObjectSupportsMarkers(findDocumentObject(currentDocument, objectId)));
+      return {
+        document: applyGraphicObjectMarkerSizeToSelection(currentDocument, markerSize.value, markerObjectIds),
+        handled: true,
+        targeted: markerObjectIds.length > 0,
+        message: "Updated selected arrowhead size"
+      };
+    }
+
+    const shaftMarkSize = objectShaftMarkSizeForCommand(commandId);
+    if (shaftMarkSize || commandId === objectShaftMarkSizeAutoCommandId) {
+      // Only no-reaction arrows draw the ✗, so anything else in the selection is untargeted.
+      const shaftMarkObjectIds = graphicObjectIds.filter((objectId) =>
+        graphicObjectHasShaftMark(findDocumentObject(currentDocument, objectId)));
+      return {
+        document: applyGraphicShaftMarkSizeToSelection(currentDocument, shaftMarkSize?.value, shaftMarkObjectIds),
+        handled: true,
+        targeted: shaftMarkObjectIds.length > 0,
+        message: shaftMarkSize ? "Updated no-reaction mark size" : "No-reaction mark size follows stroke width"
+      };
+    }
+
     const strokeWidth = objectStrokeWidthCommands.find((command) => command.id === commandId);
     if (strokeWidth) {
       return {
@@ -5490,6 +5691,36 @@ export function MainWindow({
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
   }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
+
+  // "Set as Default Arrow Style", shared by the object context menu (which passes the right-clicked
+  // object, selected or not) and the arrow style widget's button (which reads the single selected
+  // arrow). Returns true when the command id was handled, even if only with a status message.
+  const applyArrowStyleDefaultCommand = useCallback((commandId: string, sourceObjectId?: string): boolean => {
+    if (commandId !== SET_DEFAULT_ARROW_STYLE_COMMAND_ID) {
+      return false;
+    }
+    const currentDocument = documentRef.current;
+    const targetObjectId = sourceObjectId ?? (
+      currentDocument.selection.objectIds.length === 1 ? currentDocument.selection.objectIds[0] : undefined
+    );
+    const targetObject = targetObjectId ? findDocumentObject(currentDocument, targetObjectId) : undefined;
+    const captured = targetObject ? nativeArrowStyleDefaultFromGraphic(targetObject) : undefined;
+    if (!captured) {
+      setStatus(targetObjectId ? "No arrow style to capture" : "Select one arrow first");
+      return true;
+    }
+    setNativeArrowStyleDefault(captured.toolId, captured.style);
+    try {
+      window.localStorage.setItem(
+        ARROW_STYLE_DEFAULTS_STORAGE_KEY,
+        JSON.stringify(nativeArrowStyleDefaultsSnapshot())
+      );
+    } catch {
+      // Session-only defaults when storage is unavailable.
+    }
+    setStatus(`New ${captured.title.toLowerCase()}s will use this style`);
+    return true;
+  }, []);
 
   const previewObjectStyleCommand = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current;
@@ -6400,6 +6631,13 @@ export function MainWindow({
         if (!active) {
           return;
         }
+        // The promise RESOLVING is the clean read — including a resolve of "no session yet", which
+        // is exactly what a first run sees. Un-gate here, before any of the early returns below:
+        // gating after them left a brand-new user (no session file), a don't-restore envelope, or a
+        // launch where "Open With" beat the restore with autosave permanently, silently disabled.
+        // Only a REJECTION (a read or parse we could not decode) must keep it closed, so that a
+        // session we failed to decode is never overwritten with the blank startup document.
+        documentSessionSaveEnabledRef.current = true;
         const envelope = parseDocumentSessionEnvelope(raw);
         if (!envelope || !shouldRestoreDocumentSession(envelope)) {
           return;
@@ -6419,7 +6657,12 @@ export function MainWindow({
           // Never block startup on a bad autosave; the next edit overwrites it.
         }
       })
-      .catch(() => undefined)
+      .catch(() => {
+        // Read or parse failed: the file may hold a real session we simply could not decode, so
+        // autosave stays disabled for this run rather than overwriting it with the blank startup
+        // document. Editing is unaffected; only the session file is left alone.
+        setStatus("Could not read the last session; this session will not be autosaved");
+      })
       .finally(() => {
         if (active) {
           documentSessionHydratedRef.current = true;
@@ -6439,7 +6682,7 @@ export function MainWindow({
       return undefined;
     }
     const handle = window.setTimeout(() => {
-      if (!documentSessionHydratedRef.current) {
+      if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
         return;
       }
       try {
@@ -6855,6 +7098,13 @@ export function MainWindow({
 
     toolCommandSpecs.forEach((tool) => {
       if (
+        // `toolCommandSpecs` is derived from the CUSTOMIZABLE toolset registry, so a command the user
+        // dragged onto a toolbar (Undo, Save, a hovered-atom edit, an atom-element key, …) appears
+        // here too. Those already have a real, domain-specific handler registered by an EARLIER loop
+        // (quickActions/editActions/atomElementActions); re-registering would replace it with the
+        // generic "command routed" no-op below and break that command everywhere — menus and
+        // shortcuts share this registry. First binding wins: skip anything already bound.
+        bindings.has(tool.id) ||
         isLayerCommandId(tool.id) ||
         objectStyleCommandIds.has(tool.id) ||
         tool.id === toggleRingInspectorCommandId ||
@@ -7177,10 +7427,18 @@ export function MainWindow({
     : false;
 
   // Keep the catalog's plugin toolsets in sync with the runtime, and register the dev-only
-  // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development.
+  // fixture plugin so the whole contribute-a-toolset pipeline is exercised in development. Also
+  // publish the definitions to the detached palette webviews (they only ship the core manifest, so
+  // this is how a plugin toolset window learns what to render) and cache them for the request
+  // responder below.
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
-    const syncPluginToolsets = () => toolbarCatalog.setPluginToolsets(runtime.listPluginToolsets());
+    const syncPluginToolsets = () => {
+      const pluginToolsets = runtime.listPluginToolsets();
+      pluginToolsetsRef.current = pluginToolsets;
+      toolbarCatalog.setPluginToolsets(pluginToolsets);
+      void broadcastToolsetDefinitions(pluginToolsets).catch(() => undefined);
+    };
     const unsubscribe = runtime.onDidChange(syncPluginToolsets);
     if (import.meta.env.DEV) {
       try {
@@ -7245,8 +7503,24 @@ export function MainWindow({
       pluginId: panel.pluginId,
       panelId: panel.panelId,
       title: panel.report.title || panel.title
-    })
-      .catch(() => undefined);
+    }).catch((error: unknown) => {
+      // The panel was detached before the window existed. Swallowing this stranded it: off the
+      // in-app surface, with no window to render it, recoverable only by disabling the plugin.
+      pluginPanelReportsRef.current.delete(key);
+      const reattached = pluginRuntime.runtime.panels.reattachPanel(panel.pluginId, panel.panelId);
+      if (!reattached) {
+        // Another panel claimed the in-app slot meanwhile, so there is nowhere to put this one
+        // back. Close it properly instead — the plugin gets its ADR-0012 cancellation signal
+        // rather than waiting on a panel that no surface will ever show.
+        pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
+      }
+      pluginRuntime.runtime.panels.reportDiagnostic(
+        "panel.window_open_failed",
+        `Could not open "${panel.report.title || panel.title}" in a window; ${
+          reattached ? "it stayed in the app" : "it was closed"
+        }. (${error instanceof Error ? error.message : String(error)})`
+      );
+    });
     void broadcastPluginPanelReport(payload).catch(() => undefined);
   }, [pluginRuntime.runtime]);
 
@@ -7381,6 +7655,10 @@ export function MainWindow({
       return;
     }
 
+    if (applyArrowStyleDefaultCommand(commandId)) {
+      return;
+    }
+
     if (applyMoleculeInspectorCommand(commandId)) {
       return;
     }
@@ -7484,10 +7762,12 @@ export function MainWindow({
     // window creation — without this, item hides/reorders/renames never reach them), and again once
     // the save has flushed so a palette window created mid-save can't be left on the stale disk copy.
     void broadcastToolsetLayoutState(next).catch(() => undefined);
+    // Report a persistence failure on the status line instead of swallowing it (a lost write used to
+    // look like a successful save), and still resolve so the chain survives for the next edit.
     layoutSaveChainRef.current = layoutSaveChainRef.current
       .then(() => saveToolsetLayoutState(next))
       .then(() => broadcastToolsetLayoutState(next))
-      .catch(() => undefined);
+      .catch(() => setStatus("Couldn't save toolbar customization; your last change may not persist"));
     if (closeDialog) {
       setCustomizeToolbarsOpen(false);
     }
@@ -8212,6 +8492,20 @@ export function MainWindow({
     const setShiftPressed = (pressed: boolean) => {
       shiftKeyPressedRef.current = pressed;
       setTransformRotationHandlesVisible(pressed);
+      // Pressing Shift while already hovering an arrow raises the box at once; releasing puts it
+      // back to dot handles. Neither is applied mid-drag, or letting go of Shift during a resize
+      // would yank the frame out from under it — and an arrowhead-size drag reads Shift as its own
+      // modifier (resize one head instead of both), so raising the box there would unmount the very
+      // handle being dragged. While a box is already latched, a repeat press signal (any keydown
+      // carries shiftKey while Shift is held) must not re-target it to whatever arrow happens to be
+      // under the pointer — the latch holds until Shift releases.
+      if (!objectResizeDragRef.current && !objectRotateDragRef.current && !graphicMarkerDragRef.current) {
+        if (!pressed) {
+          setShiftHoveredArrowId(undefined);
+        } else if (shiftHoveredArrowIdRef.current === undefined) {
+          setShiftHoveredArrowId(hoveredArrowIdRef.current);
+        }
+      }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Shift" || event.shiftKey) {
@@ -8241,6 +8535,39 @@ export function MainWindow({
       window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
+
+  // Ghost-pixel scrub (WKWebView): unmounting or relocating object chrome — transform
+  // frames, rotate/tilt buttons, path-edit dots — can leave stale pixels on the canvas
+  // because WebKit under-invalidates the chrome's overhang in several compositing
+  // configurations. Whenever chrome-driving state changes, flip the page background var
+  // for one frame; the full-page repaint that forces erases anything stale regardless
+  // of which interaction dropped it. The one-frame color delta (#fff → #fffefe) is
+  // imperceptible, and the page repaints on these transitions anyway.
+  const chromeScrubSelectionKey = document.selection.objectIds.join("|");
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) {
+      return;
+    }
+    page.style.setProperty("--cd-bg-page", "#fffefe");
+    let scrubFrame: number | undefined = window.requestAnimationFrame(() => {
+      scrubFrame = undefined;
+      page.style.removeProperty("--cd-bg-page");
+    });
+    return () => {
+      if (scrubFrame !== undefined) {
+        window.cancelAnimationFrame(scrubFrame);
+      }
+      page.style.removeProperty("--cd-bg-page");
+    };
+  }, [
+    chromeScrubSelectionKey,
+    shiftHoveredArrowId,
+    transformRotationHandlesVisible,
+    arrowEditTargetId,
+    activeGraphicTransformObjectId,
+    selectedGraphicPathNode
+  ]);
 
   // Esc cancels an active 3D spin (transient; never touched the document) — or,
   // before the overlay is up, abandons the in-flight conformer generation.
@@ -8281,9 +8608,9 @@ export function MainWindow({
     void reconcileNativePaletteWindows({
       listToolsetWindowStates,
       openToolsetWindow: (toolsetId) => openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId)),
+      closeToolsetWindow,
       isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
       desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
-      defaultVisibleToolsetIds: () => [...createDefaultVisibleToolsetIds(toolsetRegistry)],
       isCancelled: () => cancelled
     }).then((result) => {
       if (cancelled || result.outcome === "cancelled") {
@@ -8293,8 +8620,12 @@ export function MainWindow({
         // Do NOT narrow visibleToolsetIds to the set that actually opened. If one palette missed its
         // creating frame (is_visible() briefly false) while others opened, the reconciler returns a
         // partial openedToolsetIds; overwriting the desired set with it — and then persisting that —
-        // would permanently drop that palette. The desired set stays authoritative; a later
-        // reconcile pass reopens anything that missed.
+        // would permanently drop that palette. The desired set stays authoritative.
+        //
+        // A partial set now means the reconciler retried that palette and it still would not open,
+        // because it keeps going until the whole desired set is up. This effect cannot be the retry:
+        // its deps are native mode and the registry, and it reads the desired set from a ref, so
+        // nothing re-runs it when an open fails.
         return;
       }
       // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars
@@ -8331,6 +8662,7 @@ export function MainWindow({
     let unlistenState: (() => void) | undefined;
     let unlistenActiveToolRequest: (() => void) | undefined;
     let unlistenCommandSpecsRequest: (() => void) | undefined;
+    let unlistenDefinitionsRequest: (() => void) | undefined;
     let unlistenTextStyleRequest: (() => void) | undefined;
     let unlistenPreview: (() => void) | undefined;
     let unlistenCommit: (() => void) | undefined;
@@ -8381,6 +8713,17 @@ export function MainWindow({
           return;
         }
         unlistenCommandSpecsRequest = cleanup;
+      })
+      .catch(() => undefined);
+    void listenForToolsetDefinitionsRequests(() => {
+      void broadcastToolsetDefinitions(pluginToolsetsRef.current).catch(() => undefined);
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenDefinitionsRequest = cleanup;
       })
       .catch(() => undefined);
     void listenForToolsetTextStyleRequests(() => {
@@ -8434,6 +8777,7 @@ export function MainWindow({
       unlistenState?.();
       unlistenActiveToolRequest?.();
       unlistenCommandSpecsRequest?.();
+      unlistenDefinitionsRequest?.();
       unlistenTextStyleRequest?.();
       unlistenPreview?.();
       unlistenCommit?.();
@@ -8717,6 +9061,7 @@ export function MainWindow({
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor }
+      | { kind: "art-line"; commandId: string }
   ): boolean => {
     const startDocument = documentRef.current;
     const placementDocument = placement.kind === "template"
@@ -8725,7 +9070,9 @@ export function MainWindow({
         ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
         : placement.kind === "chain"
           ? applyNativeChainTool(startDocument, point, undefined, placement.anchor)
-          : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+          : placement.kind === "art-line"
+            ? applyNativeArtLineToolDefaultAtPoint(startDocument, point, placement.commandId)
+            : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
     const objectId = placementDocument.selection.objectIds[0];
     // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
     const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
@@ -8745,10 +9092,16 @@ export function MainWindow({
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
+      artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
-    replacePresentDocument(placementDocument);
+    // Arrows of every family — art lines and the legacy reaction arrows alike — paint nothing on the
+    // initial press: the arrow appears once the pointer moves (custom length/angle) or the press is
+    // released (default-length arrow). Bonds, templates, and chains keep their press-time preview,
+    // where seeing the placement under the cursor is the point.
+    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow";
+    replacePresentDocument(paintsOnPress ? placementDocument : startDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -8763,6 +9116,28 @@ export function MainWindow({
     event.currentTarget.setPointerCapture(event.pointerId);
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
+
+  // Line-family art tools (lines, plain/reaction/resonance arrows) draw like ChemDraw's arrow: press
+  // sets the tail, drag stretches the head, release commits. A plain click (no drag past threshold)
+  // drops a default-length horizontal arrow. The tool stays active either way so repeated clicks keep
+  // adding arrows — unlike the fixed-box art-shape placement, which switches back to Select.
+  const startNativeArtLineDrawOrDefault = useCallback((
+    event: ObjectPointerEvent,
+    point: ClientPoint,
+    commandId: string,
+    title: string
+  ): void => {
+    // Drop the previous arrow's post-draw edit chrome before drawing the next one.
+    setArrowEditTargetId(undefined);
+    if (startNativePlacementDrag(event, point, { kind: "art-line", commandId })) {
+      return;
+    }
+    const nextDocument = applyNativeArtLineToolDefaultAtPoint(documentRef.current, point, commandId);
+    if (nextDocument !== documentRef.current) {
+      commitDocumentChange(nextDocument);
+      setStatus(`Inserted ${title.toLowerCase()}`);
+    }
+  }, [commitDocumentChange, startNativePlacementDrag]);
 
   const applyNativeBondDisplayStyleDocumentTarget = useCallback((
     target: NativeBondOrderTarget,
@@ -9035,18 +9410,31 @@ export function MainWindow({
 
   const nativePlacementDocumentFromDrag = useCallback((
     drag: NativePlacementDragState,
-    point: ClientPoint
+    point: ClientPoint,
+    // Preview frames may skip derivation work; the COMMIT must not. This function serves both, so
+    // the distinction has to be passed in rather than hardcoded per branch.
+    options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
     if (drag.kind === "arrow") {
       // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
       return stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point);
     }
+    if (drag.kind === "art-line" && drag.artLineCommandId) {
+      // Art lines/arrows regenerate from the start document: the press point is the tail and the
+      // pointer sets the head, so length and angle follow the drag (identical to ChemDraw's arrow).
+      return applyNativeArtLineToolAtPoint(drag.startDocument, drag.startPoint, point, drag.artLineCommandId);
+    }
     if (drag.kind === "chain") {
       // Chains regenerate from the start document each move: the drag vector sets axis and
       // segment count, so the whole zig-zag is recomputed rather than transformed.
       // `preview`: the frames the user drags through are drawn from atoms and bonds, so the
-      // whole-molecule SMILES derivation is pure cost until the gesture commits.
-      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, { preview: true });
+      // whole-molecule SMILES derivation is pure cost until the gesture commits. The commit runs
+      // WITHOUT the flag so `structure`/`chemistry` are re-derived once — hardcoding it here meant a
+      // dragged chain committed with the pre-drag SMILES, and any later editor round-trip or SMILES
+      // export silently dropped the appended chain.
+      return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
+        preview: options.preview
+      });
     }
     return rotateNativeMoleculeObjectAroundPoint(
       drag.placementDocument,
@@ -9063,7 +9451,7 @@ export function MainWindow({
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint): boolean => {
     const placed = drag.dragging
-      ? nativePlacementDocumentFromDrag(drag, point)
+      ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
     if (placed === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
@@ -9214,7 +9602,13 @@ export function MainWindow({
 
   const graphicMarkerDocumentFromDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint): ChemDraftDocument => {
     const editPoint = nativeGraphicPathEditPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
-    return updateNativeGraphicMarkerHandle(drag.startDocument, drag.objectId, drag.markerId, editPoint);
+    // Two-headed arrows default to whichever behaviour is usually wanted, and Shift asks for the other:
+    // a resonance arrow's heads should match, so it scales both unless Shift; an equilibrium's two
+    // halves are routinely unequal, so it sizes one head unless Shift.
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    const dualShaft = object?.type === "graphic" && object.data.dualShaft === true;
+    const symmetric = dualShaft ? drag.shiftKey : !drag.shiftKey;
+    return updateNativeGraphicMarkerHandle(drag.startDocument, drag.objectId, drag.markerId, editPoint, { symmetric });
   }, []);
 
   const previewGraphicMarkerDrag = useCallback((drag: GraphicMarkerDragState, point: ClientPoint) => {
@@ -10500,6 +10894,10 @@ export function MainWindow({
         startNativeFreehandArtDrag(event, point, activeNativeArtTool.commandId);
         return;
       }
+      if (nativeArtToolIsLineDraw(activeNativeArtTool.commandId)) {
+        startNativeArtLineDrawOrDefault(event, point, activeNativeArtTool.commandId, activeNativeArtTool.title);
+        return;
+      }
       applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
       return;
     }
@@ -10596,6 +10994,7 @@ export function MainWindow({
     startSelectionLasso,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
+    startNativeArtLineDrawOrDefault,
     startNativePlacementDrag
   ]);
 
@@ -10819,6 +11218,7 @@ export function MainWindow({
         return;
       }
 
+      graphicMarkerDrag.shiftKey = event.shiftKey;
       graphicMarkerDrag.latestPoint = point;
       if (!graphicMarkerDrag.dragging && clientPointDistance(graphicMarkerDrag.startPoint, point) >= GRAPHIC_HANDLE_DRAG_THRESHOLD) {
         graphicMarkerDrag.dragging = true;
@@ -11173,6 +11573,7 @@ export function MainWindow({
     if (graphicMarkerDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
       const point = pagePointFromPointerEvent(event) ?? graphicMarkerDrag.latestPoint;
+      graphicMarkerDrag.shiftKey = event.shiftKey;
       if (graphicMarkerDrag.dragging) {
         const changed = commitGraphicMarkerDrag(graphicMarkerDrag, point);
         setStatus(changed ? "Adjusted arrowhead size" : "Arrowhead size unchanged");
@@ -11236,11 +11637,18 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
       const changed = commitNativePlacementDrag(nativePlacementDrag, point);
       const label = nativePlacementStatusLabel(nativePlacementDrag);
-      const draggedVerb = nativePlacementDrag.kind === "arrow"
+      const draggedVerb = nativePlacementDrag.kind === "arrow" || nativePlacementDrag.kind === "art-line"
         ? "Inserted angled"
         : nativePlacementDrag.kind === "chain"
           ? "Inserted"
           : "Inserted rotated";
+      // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
+      // but the just-drawn arrow is put straight into direct-edit so its end/arc/arrowhead handles
+      // show immediately — no tool switch required to reshape it.
+      if (nativePlacementDrag.kind === "art-line" && changed) {
+        setArrowEditTargetId(nativePlacementDrag.objectId);
+        setActiveGraphicTransformObjectId(undefined);
+      }
       setStatus(changed
         ? nativePlacementDrag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
         : `${capitalizeLabel(label)} not placed`);
@@ -11466,6 +11874,26 @@ export function MainWindow({
       clearObjectRotateDrag(event);
     }
 
+    // Resize and corner-radius capture on the page like every drag family around them, but had no
+    // cancel branch: a pointer cancel mid-drag left the preview document standing, un-restored and
+    // with no undo entry to get back from — breaking the cancel-restores-start invariant its
+    // siblings all keep.
+    const objectResizeDrag = objectResizeDragRef.current;
+    if (objectResizeDrag?.pointerId === event.pointerId) {
+      if (objectResizeDrag.dragging) {
+        replacePresentDocument(objectResizeDrag.startDocument);
+      }
+      clearObjectResizeDrag(event);
+    }
+
+    const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
+    if (graphicCornerRadiusDrag?.pointerId === event.pointerId) {
+      if (graphicCornerRadiusDrag.dragging) {
+        replacePresentDocument(graphicCornerRadiusDrag.startDocument);
+      }
+      clearGraphicCornerRadiusDrag(event);
+    }
+
     const graphicPathEditDrag = graphicPathEditDragRef.current;
     if (graphicPathEditDrag?.pointerId === event.pointerId) {
       if (graphicPathEditDrag.dragging) {
@@ -11510,6 +11938,18 @@ export function MainWindow({
       setStatus(freehandArtStatusLabel(freehandArtDrag.commandId));
     }
 
+    // A path draw is click-to-place: there is no preview document to restore, but the state is live
+    // geometry all the same. `pathArtDrawRef.current` gates two pointer-move paths with no pointerId
+    // check and an early `return`, so a stranded draw swallows every later move on the page and on
+    // every object, leaves the preview overlay on screen with no gesture behind it, and keeps a
+    // `startDocument` snapshot that goes stale as the commit base. Escape already abandons a draw
+    // exactly this way; a pointer cancel is the same abandonment arriving from the other direction.
+    const pathArtDraw = pathArtDrawRef.current;
+    if (pathArtDraw) {
+      clearNativePathArtDraw();
+      setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind));
+    }
+
     const lasso = selectionLassoRef.current;
     if (lasso?.pointerId === event.pointerId) {
       lassoMachineRef.current = initialInteractionState();
@@ -11529,7 +11969,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePartDrag, clearNativePlacementDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -11675,6 +12115,58 @@ export function MainWindow({
       event.preventDefault();
       event.stopPropagation();
       startNativeFreehandArtDrag(event, point, activeNativeArtTool.commandId);
+      return;
+    }
+
+    // Arrow mode over an existing arrow: press its body (anywhere that isn't one of its handles —
+    // those are buttons that take the press themselves) to MOVE it. Arrow mode is the arrow-editing
+    // mode, so repositioning an arrow shouldn't require a trip to the Select tool; a press on empty
+    // canvas still draws a new one.
+    if (
+      activeNativeArtTool &&
+      nativeArtToolIsLineDraw(activeNativeArtTool.commandId) &&
+      point &&
+      object &&
+      isNativeArtLineFamilyGraphic(object)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedDocument = document.selection.objectIds.includes(objectId)
+        ? document
+        : selectDocumentObject(document, objectId);
+      replacePresentDocument(selectedDocument);
+      setArrowEditTargetId(objectId);
+      objectDragRef.current = {
+        pointerId: event.pointerId,
+        objectId,
+        startDocument: selectedDocument,
+        startPoint: point,
+        latestPoint: point,
+        startObjectX: object.x,
+        startObjectY: object.y,
+        bondTarget: undefined,
+        groupObjectIds: undefined,
+        artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
+        dragging: false
+      };
+      objectDragMachineRef.current = interactionReducer(initialInteractionState(), {
+        type: "pointerDown",
+        pointerId: event.pointerId,
+        world: point,
+        target: { kind: "object", objectId },
+        dragKind: "object-move"
+      });
+      captureElement.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    // Line-family art tools (arrows) commonly start on top of a reagent, so — like reaction arrows —
+    // they need the same drag-to-draw branch here; the object handler stops propagation before the
+    // page handler ever sees the press.
+    if (activeNativeArtTool && nativeArtToolIsLineDraw(activeNativeArtTool.commandId) && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      startNativeArtLineDrawOrDefault(event, point, activeNativeArtTool.commandId, activeNativeArtTool.title);
       return;
     }
 
@@ -12375,6 +12867,7 @@ export function MainWindow({
     startAtomLabelEdit,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
+    startNativeArtLineDrawOrDefault,
     startSelectionLasso,
     startTapeMeasureDrag,
     toggleDocumentObjectSelection
@@ -12453,7 +12946,10 @@ export function MainWindow({
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+    // A Shift-hovered arrow shows the size box under the arrow tools too, so its handles must work
+    // there — and select the arrow on grab, since it need not have been selected first.
+    const shiftArrowTarget = shiftHoveredArrowIdRef.current === objectId;
+    if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !shiftArrowTarget)) {
       return;
     }
 
@@ -12472,7 +12968,7 @@ export function MainWindow({
       : undefined;
     const canRotateObject =
       object?.type === "text" ||
-      (object !== undefined && documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)) ||
+      (object !== undefined && documentObjectSupportsArtTransform(object) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)) ||
       (object?.type === "molecule" && (
         isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
         selectedFragmentBounds !== undefined
@@ -12613,7 +13109,10 @@ export function MainWindow({
   const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+    // Same bypass as the rotate/resize handles: a Shift-hovered arrow's box works under
+    // the arrow tools too, and grabbing a handle selects the arrow as a side effect.
+    const shiftArrowTarget = shiftHoveredArrowIdRef.current === objectId;
+    if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !shiftArrowTarget)) {
       return;
     }
 
@@ -12636,7 +13135,8 @@ export function MainWindow({
       : undefined;
     const canTiltObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object) &&
+          (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : isNativeMoleculeGraph(object) &&
           object.atoms.length > 0 &&
           (
@@ -12885,7 +13385,11 @@ export function MainWindow({
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+    // Selection tools always edit path handles; a line-family art tool also edits the handles of the
+    // arrow it's currently hovering/just drew (arrowEditTargetId), so arrow mode reshapes arrows in place.
+    const artLineHoverEdit = objectId === arrowEditTargetIdRef.current &&
+      nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current);
+    if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !artLineHoverEdit)) {
       return;
     }
     try {
@@ -12988,7 +13492,10 @@ export function MainWindow({
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+    // Also allow arrowhead-size dragging on the arrow arrow mode is hovering/just drew.
+    const artLineHoverEdit = objectId === arrowEditTargetIdRef.current &&
+      nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current);
+    if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !artLineHoverEdit)) {
       return;
     }
     try {
@@ -13027,6 +13534,7 @@ export function MainWindow({
       startDocument: selectedDocument,
       startPoint: point,
       latestPoint: point,
+      shiftKey: event.shiftKey,
       dragging: false
     };
     (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
@@ -13117,7 +13625,8 @@ export function MainWindow({
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.button !== 0 || activeToolState.activeKind !== "selection") {
+    const shiftArrowTarget = shiftHoveredArrowIdRef.current === objectId;
+    if (event.button !== 0 || (activeToolState.activeKind !== "selection" && !shiftArrowTarget)) {
       return;
     }
 
@@ -13136,7 +13645,7 @@ export function MainWindow({
       : undefined;
     const canResizeObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : object.atoms.length > 0 &&
           (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
@@ -13303,6 +13812,35 @@ export function MainWindow({
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
+    // Arrow mode doubles as an arrow-editing mode: hovering (no button pressed) over a line-family art
+    // arrow opens it for in-place handle editing — its translucent dot handles appear and become
+    // grabbable. Hovering a non-arrow clears the target; pointer-leave (below) clears it on exit.
+    if (event.buttons === 0 && nativeArtToolSupportsArrowHoverEdit(activeToolCommandIdRef.current)) {
+      const hovered = findDocumentObject(documentRef.current, objectId);
+      const nextTarget = hovered && isNativeArtLineFamilyGraphic(hovered) ? objectId : undefined;
+      if (arrowEditTargetIdRef.current !== nextTarget) {
+        setArrowEditTargetId(nextTarget);
+      }
+    }
+    // Shift-hover reveals the size box on an arrow. Tracked separately from arrowEditTargetId
+    // because it must also work under the selection tool, not just the arrow tools.
+    if (event.buttons === 0) {
+      const hovered = findDocumentObject(documentRef.current, objectId);
+      const overArrow = hovered && isNativeArrowGraphic(hovered) ? objectId : undefined;
+      hoveredArrowIdRef.current = overArrow;
+      if (event.shiftKey) {
+        // The FIRST arrow Shift-hovered latches the box for the whole Shift hold: crossing
+        // another arrow must not steal it, and leaving every arrow must not clear it. The
+        // pointer has to be able to travel across a crowded canvas — over other arrows
+        // included — to reach this box's rotate/resize handles. Only releasing Shift lets
+        // a different arrow take the box.
+        if (overArrow && shiftHoveredArrowIdRef.current === undefined) {
+          setShiftHoveredArrowId(overArrow);
+        }
+      } else if (shiftHoveredArrowIdRef.current !== undefined) {
+        setShiftHoveredArrowId(undefined);
+      }
+    }
     const bezierArtNodeDrag = bezierArtNodeDragRef.current;
     if (bezierArtNodeDrag?.pointerId === event.pointerId) {
       const point = pagePointFromPointerEvent(event);
@@ -13853,6 +14391,14 @@ export function MainWindow({
       clearBezierArtNodeDrag(event);
     }
 
+    // As in `handlePagePointerCancel`. A path draw takes no capture of its own (polyline) or captures
+    // whichever element got the click (pen), so the cancel can arrive at either handler.
+    const pathArtDraw = pathArtDrawRef.current;
+    if (pathArtDraw) {
+      clearNativePathArtDraw();
+      setStatus(pathArtDrawStatusLabel(pathArtDraw.pathKind));
+    }
+
     const objectDrag = objectDragRef.current;
     if (objectDrag?.pointerId === event.pointerId && objectDrag.dragging) {
       replacePresentDocument(objectDrag.startDocument);
@@ -13876,6 +14422,7 @@ export function MainWindow({
     clearNativeBondDrag,
     clearNativeBondEditDrag,
     clearNativePartDrag,
+    clearNativePathArtDraw,
     clearGraphicCornerRadiusDrag,
     clearGraphicGradientDrag,
     clearGraphicPathEditDrag,
@@ -13904,11 +14451,22 @@ export function MainWindow({
       return;
     }
 
+    if (hoveredArrowIdRef.current === objectId) {
+      hoveredArrowIdRef.current = undefined;
+    }
+    // The size box persists while Shift is held even as the pointer leaves the arrow — reaching for
+    // a rotate/resize handle passes off the stroke, and losing the frame there is the whole bug this
+    // fixes. Releasing Shift (or hovering a different arrow) is what dismisses or moves it.
+    if (!shiftKeyPressedRef.current) {
+      setShiftHoveredArrowId((current) => current === objectId ? undefined : current);
+    }
     setHoveredNativeAtom((current) => current?.objectId === objectId ? undefined : current);
     setNativeDoubleBondSidePreview((current) => current?.objectId === objectId ? undefined : current);
     assignHoveredNativeDeleteTarget(
       hoveredNativeDeleteTargetRef.current?.objectId === objectId ? undefined : hoveredNativeDeleteTargetRef.current
     );
+    // Leaving an arrow in arrow mode hides its hover dot handles (unless it's mid-edit, guarded above).
+    setArrowEditTargetId((current) => current === objectId ? undefined : current);
   }, [assignHoveredNativeDeleteTarget]);
 
   const handleApplyKetcherEdit = useCallback((result: Parameters<typeof applyEditorSaveResultToSelectedMolecule>[1]) => {
@@ -14196,6 +14754,7 @@ export function MainWindow({
                   currentArtStyle,
                   currentArtStyleTarget: activeArtPaintTarget,
                   currentMoleculeInspector,
+                  currentSelection: currentToolbarSelection,
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
@@ -14471,6 +15030,8 @@ export function MainWindow({
                       selected={selected}
                       inGroupSelection={inGroupSelection}
                       graphicTransformActive={activeGraphicTransformObjectId === object.id}
+                      graphicArrowEditActive={arrowEditTargetId === object.id && activeArtLineDrawToolActive}
+                      graphicShiftTransformActive={shiftHoveredArrowId === object.id}
                       graphicDirectEditActive={activeToolState.activeCommandId === "tool.art.directEdit"}
                       graphicPathFeedbackActive={
                         activeToolState.activeCommandId === "tool.art.scissors" &&
@@ -14743,10 +15304,17 @@ export function MainWindow({
           objectCount={activePage.objects.length}
           targetKind={objectContextMenu.targetKind}
           bondDepthContext={objectContextMenu.bondDepthContext}
+          arrowStyleSource={(() => {
+            const menuObject = findDocumentObject(document, objectContextMenu.objectId);
+            return menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
+          })()}
           position={{ x: objectContextMenu.x, y: objectContextMenu.y }}
           onInvoke={(commandId) => {
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (menu && applyArrowStyleDefaultCommand(commandId, menu.objectId)) {
+              return;
+            }
             if (isBondDepthCommandId(commandId) && menu?.bondDepthContext) {
               const changed = commitDocumentChange((current) => {
                 const patches = planBondDepthPatches(current.pages[0].id, menu.bondDepthContext, commandId);
@@ -16777,6 +17345,9 @@ function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
   }
+  if (drag.kind === "art-line" && drag.artLineCommandId) {
+    return nativeArtToolForCommand(drag.artLineCommandId)?.title.toLowerCase() ?? "line";
+  }
   if (drag.kind === "chain") {
     return "carbon chain";
   }
@@ -17498,6 +18069,11 @@ interface SpinBondRenderInfo {
   /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
    *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
   symmetric: boolean;
+  /** Which ends draw the secondary line flush rather than inset, from layout-engine's
+   *  `doubleBondSecondaryFlushEnds` — a terminal methylene (=CH2) has no junction to tuck away
+   *  from. Copying the inset formula without this exception shortened ethylene and every terminal
+   *  alkene while spinning, then drew it flush on commit. */
+  secondaryFlush: { from: boolean; to: boolean };
   /** Atom indices bonded to either endpoint (excluding the endpoints): the fallback
    *  substituent-rich side for NON-ring double bonds, matching `defaultDoubleBondSide`. */
   neighborIndices: number[];
@@ -17656,7 +18232,8 @@ function SpinOverlay({
         // (flatten bakes the identical weight into display.depthWeight) — releasing changes
         // nothing visually. undefined ⇒ no cue, exactly as the commit leaves a planar view.
         const weight = depthWeights[bond.index];
-        const render = state.bondRender[bond.index] ?? { order: 1, bold: false, symmetric: false, neighborIndices: [] };
+        const render = state.bondRender[bond.index]
+          ?? { order: 1, bold: false, symmetric: false, secondaryFlush: { from: false, to: false }, neighborIndices: [] };
         const stroke = depthCuedBondColor(drawingStyle.bondColor, weight);
         const baseWidth = render.bold ? drawingStyle.bondBoldWidthPx : drawingStyle.bondStrokeWidthPx;
         const width = depthCuedBondStrokeWidth(baseWidth, weight);
@@ -17720,15 +18297,20 @@ function SpinOverlay({
             }
           }
           const dir = score >= 0 ? 1 : -1;
-          const minimumVisible = Math.min(DOUBLE_BOND_MIN_VISIBLE_SEGMENT_PX, length);
-          const inset = Math.min(drawingStyle.doubleBondInsetPx, Math.max(0, (length - minimumVisible) / 2));
+          const secondary = spinDoubleBondSecondaryLine({
+            from: { x: ax, y: ay },
+            to: { x: bx, y: by },
+            unit: { x: ux, y: uy },
+            normal: { x: nx, y: ny },
+            gap,
+            side: dir,
+            insetPx: drawingStyle.doubleBondInsetPx,
+            minimumVisiblePx: doubleBondMinimumVisibleSegmentPx,
+            flush: render.secondaryFlush
+          });
           return [
             line(ax, ay, bx, by, "p"),
-            line(
-              ax + ux * inset + nx * gap * dir, ay + uy * inset + ny * gap * dir,
-              bx - ux * inset + nx * gap * dir, by - uy * inset + ny * gap * dir,
-              "s"
-            )
+            line(secondary.x1, secondary.y1, secondary.x2, secondary.y2, "s")
           ];
         }
         if (render.order === 3) {
@@ -18156,6 +18738,7 @@ export function ObjectLayerContextMenu({
   objectCount,
   targetKind,
   bondDepthContext,
+  arrowStyleSource,
   position,
   onInvoke
 }: {
@@ -18164,6 +18747,8 @@ export function ObjectLayerContextMenu({
   objectCount: number;
   targetKind: ObjectContextMenuState["targetKind"];
   bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
+  /** Present when the clicked object is an arrow whose look can become the tool's default. */
+  arrowStyleSource?: { title: string };
   position: ClientPoint;
   onInvoke(commandId: string): void;
 }) {
@@ -18185,6 +18770,21 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {arrowStyleSource ? (
+        <>
+          <div className="object-context-menu-title">{arrowStyleSource.title}</div>
+          <button
+            type="button"
+            role="menuitem"
+            className="object-context-menu-item"
+            data-command-id={SET_DEFAULT_ARROW_STYLE_COMMAND_ID}
+            onClick={() => onInvoke(SET_DEFAULT_ARROW_STYLE_COMMAND_ID)}
+          >
+            Set as Default Arrow Style
+          </button>
+          <div className="object-context-menu-separator" role="separator" />
+        </>
+      ) : null}
       {hasBondDepthContext ? (
         <>
           <div className="object-context-menu-title">Bond depth</div>
@@ -18886,7 +19486,14 @@ export function nativeMoleculeRingSelectionFromPoint(
     : undefined;
 }
 
-function nativeMoleculeRingSelectionFromPointerTarget(
+/**
+ * The shipped ring-press resolver. Reads the ring key straight off the pressed SVG node when the
+ * browser gave us one, and falls back to a geometric pick within this molecule otherwise.
+ *
+ * Exported for tests: the `data-ring-hit-key` branch runs FIRST on every ring press, and had no
+ * coverage at all — only the geometric fallback did.
+ */
+export function nativeMoleculeRingSelectionFromPointerTarget(
   object: MoleculeObject,
   target: EventTarget | null,
   point: ClientPoint
@@ -19802,23 +20409,6 @@ function PageSvgSurface({
   );
 }
 
-/** Object types in the current selection, for routing a command to a surface that can edit them. */
-export function selectedDocumentObjectTypes(document: ChemDraftDocument): ReadonlySet<DocumentObject["type"]> {
-  const selectedIds = new Set(document.selection.objectIds);
-  const types = new Set<DocumentObject["type"]>();
-  if (selectedIds.size === 0) {
-    return types;
-  }
-  for (const page of document.pages) {
-    for (const object of page.objects) {
-      if (selectedIds.has(object.id)) {
-        types.add(object.type);
-      }
-    }
-  }
-  return types;
-}
-
 export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
   // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
   // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
@@ -19965,6 +20555,8 @@ function DocumentObjectView({
   selected,
   inGroupSelection,
   graphicTransformActive,
+  graphicArrowEditActive,
+  graphicShiftTransformActive,
   graphicDirectEditActive,
   graphicPathFeedbackActive,
   graphicSegmentEraseActive,
@@ -20032,6 +20624,8 @@ function DocumentObjectView({
   selected: boolean;
   inGroupSelection: boolean;
   graphicTransformActive: boolean;
+  graphicArrowEditActive: boolean;
+  graphicShiftTransformActive: boolean;
   graphicDirectEditActive: boolean;
   graphicPathFeedbackActive: boolean;
   graphicSegmentEraseActive: boolean;
@@ -20292,7 +20886,10 @@ function DocumentObjectView({
     !resizeReadout &&
     !resizeInput &&
     !objectTransformPreview;
-  const pathGraphicInEditMode = (selected || graphicPathFeedbackActive) &&
+  const pathGraphicInEditMode = (selected || graphicPathFeedbackActive || graphicArrowEditActive) &&
+    // Shift-hover swaps the dot handles for the size box; showing both at once would put a resize
+    // corner on top of an endpoint dot.
+    !graphicShiftTransformActive &&
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive &&
@@ -20312,7 +20909,7 @@ function DocumentObjectView({
     !resizeInput;
   const graphicDirectEditChromeActive = pathGraphicInEditMode ||
     showGraphicGradientHandles;
-  const showArtObjectTransformFrame = selected &&
+  const showArtObjectTransformFrame = (selected || graphicShiftTransformActive) &&
     !inGroupSelection &&
     documentObjectSupportsArtTransform(object) &&
     !graphicDirectEditChromeActive;
@@ -20991,6 +21588,9 @@ function DocumentObjectView({
         selectedNodeIndex={selectedGraphicPathNodeIndex}
         segmentHitTargetsActive={graphicSegmentEraseActive}
         counterRotationDegrees={graphicVisualRotationDegrees}
+        // Line-family arrows use the small translucent dot handles in every mode (arrow-mode hover
+        // and Select-tool editing alike); other art shapes keep the full opaque direct-edit handles.
+        dotStyle={isNativeArtLineFamilyGraphic(object)}
         onMarkerPointerDown={handleGraphicMarkerPointerDown}
         onPointerDown={handleGraphicPathEditPointerDown}
       />
@@ -21035,7 +21635,7 @@ function DocumentObjectView({
         data-art-transform-preview={objectTransformPreview ? "true" : undefined}
         data-art-transform-preview-mode={objectTransformPreview?.mode}
         data-art-transform-preview-proxy={artTransformProxy?.kind}
-        data-graphic-interaction-mode={(selected || graphicPathFeedbackActive) && !inGroupSelection
+        data-graphic-interaction-mode={(selected || graphicPathFeedbackActive || graphicArrowEditActive || graphicShiftTransformActive) && !inGroupSelection
           ? pathGraphicInEditMode ? "path-edit"
             : showGraphicGradientHandles ? "gradient-edit"
               : showGraphicCornerRadiusHandle ? "corner-radius-edit"
@@ -21496,6 +22096,11 @@ function reactSvgFlattenedMarker(
   if (marker.kind === "filled-arrow") {
     return <path key={id} {...sharedProps} d={markerPath([tip, markerPoint(size, -half), markerPoint(size, half)])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
   }
+  if (marker.kind === "half-arrow") {
+    // Fishhook: a single-sided barb (radical / single-electron pushing). One triangle on one side of
+    // the shaft; the inner point sits slightly back along the shaft so the hook reads as a curl.
+    return <path key={id} {...sharedProps} d={markerPath([tip, markerPoint(size, -half), markerPoint(size * 0.4, 0)])} fill={color} fillOpacity={opacity === 1 ? undefined : opacity} stroke="none" />;
+  }
   if (marker.kind === "open-arrow") {
     return <path key={id} {...sharedProps} d={[
       `M ${tip.x} ${tip.y}`,
@@ -21528,6 +22133,44 @@ function reactSvgFlattenedMarker(
   const barStart = markerPoint(0, -half);
   const barEnd = markerPoint(0, half);
   return <path key={id} {...sharedProps} d={`M ${barStart.x} ${barStart.y} L ${barEnd.x} ${barEnd.y}`} fill="none" strokeWidth={Math.max(1.4, size * 0.16)} {...sharedStroke} />;
+}
+
+/** The no-reaction X: two short segments crossing the shaft at its midpoint, rotated ±45° to the
+ *  local tangent so the mark tracks the arrow's angle (and the curve, for arcs). */
+function reactSvgShaftMark(
+  mark: NonNullable<NativeArtVisualPlan["shaftMark"]>,
+  id: string,
+  color: string,
+  strokeWidth: number,
+  opacity: number
+) {
+  const direction = mark.direction;
+  const normal = { x: -direction.y, y: direction.x };
+  const arm = mark.sizePx / 2;
+  const invSqrt2 = Math.SQRT1_2;
+  // Unit vectors at ±45° to the tangent.
+  const armA = { x: (direction.x + normal.x) * invSqrt2, y: (direction.y + normal.y) * invSqrt2 };
+  const armB = { x: (direction.x - normal.x) * invSqrt2, y: (direction.y - normal.y) * invSqrt2 };
+  const d = [
+    `M ${mark.point.x - armA.x * arm} ${mark.point.y - armA.y * arm}`,
+    `L ${mark.point.x + armA.x * arm} ${mark.point.y + armA.y * arm}`,
+    `M ${mark.point.x - armB.x * arm} ${mark.point.y - armB.y * arm}`,
+    `L ${mark.point.x + armB.x * arm} ${mark.point.y + armB.y * arm}`
+  ].join(" ");
+  return (
+    <path
+      key={id}
+      id={id}
+      data-graphic-shaft-mark={mark.kind}
+      d={d}
+      fill="none"
+      stroke={color}
+      strokeOpacity={opacity === 1 ? undefined : opacity}
+      strokeWidth={Math.max(1.6, strokeWidth)}
+      strokeLinecap="round"
+      vectorEffect="non-scaling-stroke"
+    />
+  );
 }
 
 function markerTerminalDirection(terminal: NonNullable<NativeArtVisualPlan["markerEndTerminal"]>) {
@@ -21736,6 +22379,9 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const markerEnd = plan.markerEnd && plan.markerEndTerminal
     ? reactSvgFlattenedMarker(plan.markerEnd, plan.markerEndTerminal, markerEndId, "end", strokeColor, plan.stroke.opacity)
     : null;
+  const shaftMark = plan.shaftMark
+    ? reactSvgShaftMark(plan.shaftMark, `graphic-shaft-mark-${object.id}`, strokeColor, strokeWidth, plan.stroke.opacity)
+    : null;
   return (
     <svg
       className="graphic-glyph"
@@ -21909,6 +22555,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             {sketchPaths}
             {markerStart}
             {markerEnd}
+            {shaftMark}
           </>
         ) : line && visibleLine ? (
           <>
@@ -21945,6 +22592,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
             {sketchPaths}
             {markerStart}
             {markerEnd}
+            {shaftMark}
           </>
         ) : (
           <line className="graphic-glyph-stroke" x1="0" y1="0" x2={width} y2={height} {...sharedStrokeProps} />
@@ -21957,6 +22605,20 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
 
 function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
   return object.graphicKind === "path" && object.data.artPathKind === "freehand";
+}
+
+/** Line-family art graphics (straight/wavy lines, arrows, lines bent into a quadratic curve, and
+ *  arrow-family arcs — curved pushing/fishhook arrows carrying a marker) — the objects arrow mode
+ *  hover-edits in place. Plain arcs, closed shapes, and node paths are excluded. */
+function isNativeArtLineFamilyGraphic(object: DocumentObject): boolean {
+  if (object.type !== "graphic") {
+    return false;
+  }
+  const kind = object.data.artPathKind;
+  if (kind === "line" || kind === "wavy" || kind === "quadratic") {
+    return true;
+  }
+  return kind === "arc" && (object.data.markerStart !== undefined || object.data.markerEnd !== undefined);
 }
 
 function graphicObjectHasDirectEditChrome(object: GraphicObject, target: GraphicStylePaintTarget): boolean {
@@ -22202,12 +22864,25 @@ function GraphicRadialGradientHandles({
   );
 }
 
+/**
+ * Whether this object shows draggable arrowhead-size handles.
+ *
+ * Suppressed only on equilibrium arrows: their shaft-length handles seat themselves at the base of
+ * each arrowhead, which is where the arrowhead-size handle also sits — measured 2px apart, so the
+ * size handle covered the shaft handle outright and took every press. Every other arrow keeps the
+ * handle, since dragging it is the only way to size an arrowhead at all.
+ */
+function graphicShowsArrowheadSizeHandles(object: GraphicObject): boolean {
+  return object.data.dualShaft !== true;
+}
+
 function GraphicPathEditHandles({
   object,
   nodeEditPoints,
   selectedNodeIndex,
   segmentHitTargetsActive,
   counterRotationDegrees,
+  dotStyle = false,
   onMarkerPointerDown,
   onPointerDown
 }: {
@@ -22216,6 +22891,10 @@ function GraphicPathEditHandles({
   selectedNodeIndex?: number;
   segmentHitTargetsActive: boolean;
   counterRotationDegrees: number;
+  // Arrow-mode hover editing paints every handle (ends, arc, arrowheads) as a small translucent dot
+  // instead of the full opaque Select-tool chrome, so hovering an arrow reveals subtle grab points
+  // rather than burying it under handles.
+  dotStyle?: boolean;
   onMarkerPointerDown(markerId: NativeGraphicMarkerHandleId): (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerDown(handle: NativeGraphicPathEditHandle): (event: PointerEvent<Element>) => void;
 }) {
@@ -22225,10 +22904,12 @@ function GraphicPathEditHandles({
   }
 
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
-  const markerHandles = plan.markerHandles.map((handle) => ({
-    ...handle,
-    point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
-  }));
+  const markerHandles = graphicShowsArrowheadSizeHandles(object)
+    ? plan.markerHandles.map((handle) => ({
+        ...handle,
+        point: projectGraphicObjectPoint(object, handle.point, { coordinateSpace: "local" })
+      }))
+    : [];
   if (nodeEditPoints) {
     const bezierControlHandles = nodeEditPoints.pathKind === "bezier" && selectedNodeIndex !== undefined
       ? bezierControlHandlePlans(nodeEditPoints, selectedNodeIndex)
@@ -22362,23 +23043,65 @@ function GraphicPathEditHandles({
   }
 
   const circularArc = isSemanticCircularGraphicArc(object, points);
+  const dualShaftScaleHandlePoint = graphicDualShaftScaleHandlePoint(object);
   const projectedPoints = {
     start: projectGraphicObjectPoint(object, points.start),
     middle: projectGraphicObjectPoint(object, points.middle),
     end: projectGraphicObjectPoint(object, points.end)
   };
   const arcRadianReadout = circularArc ? graphicArcSweepRadiansLabel(object) : undefined;
-  const handles: Array<{ handle: NativeGraphicPathEditHandle; point: NativeArtPoint; label: string }> = circularArc
+  const allHandles: Array<{ handle: NativeGraphicPathEditHandle; point: NativeArtPoint; label: string }> = circularArc
     ? [
         { handle: "start", point: projectedPoints.start, label: "Adjust arc start" },
         { handle: "middle", point: projectedPoints.middle, label: "Adjust arc radius" },
         { handle: "end", point: projectedPoints.end, label: "Adjust arc sweep" }
       ]
-    : [
-        { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
-        { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
-        { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
-      ];
+    : points.shafts
+      // Equilibrium: the axis stays straight, so instead of the curve-bend slot it gets one handle
+      // per half-shaft (each setting that direction's length) plus the off-axis resize knob that
+      // grows the whole arrow — shaft gap and both harpoon heads together.
+      ? [
+          { handle: "start", point: projectedPoints.start, label: "Adjust equilibrium start" },
+          { handle: "end", point: projectedPoints.end, label: "Adjust equilibrium end" },
+          {
+            handle: "shaft:forward" as const,
+            point: projectGraphicObjectPoint(object, points.shafts.forward),
+            label: "Adjust forward arrow length"
+          },
+          {
+            handle: "shaft:reverse" as const,
+            point: projectGraphicObjectPoint(object, points.shafts.reverse),
+            label: "Adjust reverse arrow length"
+          },
+          ...(dualShaftScaleHandlePoint
+            ? [{
+                handle: "middle" as const,
+                point: projectGraphicObjectPoint(object, dualShaftScaleHandlePoint),
+                label: "Resize arrow"
+              }]
+            : [])
+        ]
+      : object.data.dualShaft === true
+        // Retrosynthetic: two shafts, one arrow. Its axis stays straight, so the middle knob resizes
+        // the arrow — shaft gap and head together — instead of bending it. The knob sits off the
+        // axis, where its distance reads as the arrow's heft.
+        ? [
+            { handle: "start", point: projectedPoints.start, label: "Adjust arrow start" },
+            { handle: "end", point: projectedPoints.end, label: "Adjust arrow end" },
+            ...(dualShaftScaleHandlePoint
+              ? [{
+                  handle: "middle" as const,
+                  point: projectGraphicObjectPoint(object, dualShaftScaleHandlePoint),
+                  label: "Resize arrow"
+                }]
+              : [])
+          ]
+        : [
+            { handle: "start", point: projectedPoints.start, label: "Adjust line start" },
+            { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
+            { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
+          ];
+  const handles = allHandles;
 
   return (
     <>
@@ -22388,7 +23111,9 @@ function GraphicPathEditHandles({
           className={[
             "graphic-path-edit-handle",
             `graphic-path-edit-handle-${handle}`,
-            circularArc && handle === "middle" ? "graphic-path-edit-handle-arc-middle" : undefined
+            circularArc && handle === "middle" ? "graphic-path-edit-handle-arc-middle" : undefined,
+            // Arrow-mode hover: small translucent dot instead of the full opaque handle.
+            dotStyle ? "graphic-path-edit-handle-dot" : undefined
           ].filter(Boolean).join(" ")}
           aria-label={label}
           data-graphic-path-handle={handle}
@@ -22407,8 +23132,10 @@ function GraphicPathEditHandles({
           className={[
             "graphic-path-edit-handle",
             "graphic-marker-edit-handle",
-            `graphic-marker-edit-handle-${handle.id === "markerStart" ? "start" : "end"}`
-          ].join(" ")}
+            `graphic-marker-edit-handle-${handle.id === "markerStart" ? "start" : "end"}`,
+            // Arrow-mode hover: small translucent dot instead of the full opaque arrowhead handle.
+            dotStyle ? "graphic-path-edit-handle-dot" : undefined
+          ].filter(Boolean).join(" ")}
           aria-label={handle.id === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size"}
           data-graphic-marker-handle={handle.id}
           data-graphic-marker-size={String(Math.round(handle.marker.sizePx))}

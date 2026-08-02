@@ -76,7 +76,7 @@ describe("buildGallerySections", () => {
     cmd("tool.bond", "Single Bond"),
     cmd("tool.benzene", "Benzene Template"),
     cmd("atom.setHoveredElement.N", "Set Hovered Atom: N"),
-    cmd("tool.reactionArrow", "Reaction Arrow"),
+    cmd("tool.art.reactionArrow", "Reaction Arrow"),
     cmd("tool.plus", "Positive Charge Tool"),
     cmd("tool.pOrbital", "p Orbital Tool"),
     cmd("structure.cleanup2d", "Clean up Structure 2D"),
@@ -192,5 +192,28 @@ describe("buildGallerySections", () => {
   it("drops empty sections, so a search shows only the themes that hit", () => {
     const sections = buildGallerySections(themed, widgets, new Set(), "benzene");
     expect(sections.map((section) => section.id)).toEqual(["rings"]);
+  });
+});
+
+describe("renamed command aliases", () => {
+  it("offers a renamed tool once, under its current id", () => {
+    // tool.reactionArrow and tool.art.reactionArrow are the same button either side of a rename.
+    // Both carry the same title and both pass the catalog's tool.* filter, so the tray showed two
+    // identical "Reaction Arrow" tiles — and dragging the legacy one onto the toolbar produced a
+    // button that built the retired reaction-arrow object, with no Shift transform box, no marker
+    // commands, and no default-style capture.
+    const commands = [
+      { id: "tool.reactionArrow", title: "Reaction Arrow" },
+      { id: "tool.art.reactionArrow", title: "Reaction Arrow" },
+      { id: "tool.bond", title: "Bond Tool" }
+    ] as unknown as CommandSpec[];
+
+    const entries = buildGalleryModel(commands, [], new Set(), "");
+    const commandIds = entries.filter((entry) => entry.kind === "command").map((entry) => entry.commandId);
+
+    expect(commandIds).toContain("tool.art.reactionArrow");
+    expect(commandIds).not.toContain("tool.reactionArrow");
+    expect(commandIds.filter((id) => id === "tool.art.reactionArrow")).toHaveLength(1);
+    expect(commandIds).toContain("tool.bond");
   });
 });

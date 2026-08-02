@@ -51,7 +51,8 @@ function toPasted(depiction: Depiction2D): PastedStructureDepiction {
     bonds: depiction.bonds.map((bond) => ({
       from: bond.from,
       to: bond.to,
-      order: bond.order === "aromatic" || bond.order === "unknown" ? "single" : bond.order,
+      // Mirrors the production path, which carries orders rather than collapsing them.
+      order: bond.order,
       wedge: bond.wedge
     }))
   };

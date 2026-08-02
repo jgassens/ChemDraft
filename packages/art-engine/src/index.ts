@@ -199,14 +199,26 @@ export interface NativeArtVisualPlan {
   markerStartTerminal?: NativeArtStrokeTerminalPlan;
   markerEndTerminal?: NativeArtStrokeTerminalPlan;
   markerHandles: NativeArtMarkerHandlePlan[];
+  /** Decoration across the shaft midpoint (the no-reaction X), positioned along the sampled path. */
+  shaftMark?: NativeArtShaftMarkPlan;
   projectedShapePathD?: string;
   glossGradient?: NativeArtGlossGradientPlan;
+}
+
+export interface NativeArtShaftMarkPlan {
+  kind: "cross";
+  point: NativeArtPoint;
+  direction: NativeArtPoint;
+  sizePx: number;
 }
 
 export type GraphicPathEditHandle =
   | "start"
   | "middle"
   | "end"
+  // Equilibrium arrows only: drag a half-shaft's head end to lengthen or shorten that direction.
+  | "shaft:forward"
+  | "shaft:reverse"
   | `node:${number}`
   | `node:${number}:in`
   | `node:${number}:out`
@@ -227,6 +239,10 @@ export interface GraphicPathEditPoints {
   middle: NativeArtPoint;
   end: NativeArtPoint;
   pathKind: GraphicPathKind;
+  /** Equilibrium arrows: head-end of each half-shaft, draggable to set that direction's length. The
+   *  middle handle is absent for these — an equilibrium's axis is straight, so there is no curve to
+   *  bend, and its slot is taken by the two shaft handles. */
+  shafts?: { forward: NativeArtPoint; reverse: NativeArtPoint };
 }
 
 export interface GraphicPathNodeEditPoint {
@@ -381,8 +397,12 @@ export function planNativeArtVisual(
   const pathD = object.graphicKind === "path"
     ? graphicPathD(object, coordinateSpace)
     : undefined;
-  const markerStart = rendersStroke ? nativeArtMarkerPlan(object.data.markerStart, stroke.width) : undefined;
-  const markerEnd = rendersStroke ? nativeArtMarkerPlan(object.data.markerEnd, stroke.width) : undefined;
+  const markerStart = rendersStroke
+    ? nativeArtMarkerPlan(dualShaftScaledMarker(object, object.data.markerStart), stroke.width)
+    : undefined;
+  const markerEnd = rendersStroke
+    ? nativeArtMarkerPlan(dualShaftScaledMarker(object, object.data.markerEnd), stroke.width)
+    : undefined;
   const pathPoints = object.graphicKind === "path" && shouldSampleGraphicPathForPlan({
     object,
     matrix,
@@ -393,10 +413,26 @@ export function planNativeArtVisual(
   })
     ? graphicPathSamplePoints(object, coordinateSpace)
     : undefined;
-  const openStrokeTerminals = capabilities.isOpenStroke && rendersStroke
-    ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
+  // Equilibrium arrows carry two disjoint shafts in one `d`, so the generic terminal derivation (which
+  // walks the path as a single polyline) would straddle the gap between them. Take the terminals
+  // straight from the geometry instead: `markerEnd` heads the forward shaft, `markerStart` the reverse.
+  // The shafts are pre-trimmed for their heads in `graphicPathD`, so the visible-stroke pass is a no-op.
+  const equilibrium = capabilities.isOpenStroke && rendersStroke
+    ? graphicEquilibriumGeometry(object, coordinateSpace)
     : undefined;
-  const visibleStroke = nativeArtVisibleOpenStroke({
+  const openStrokeTerminals = equilibrium
+    ? equilibrium.head
+      // Parallel (retrosynthetic): one head at the axis end, spanning both shafts. Both terminals
+      // resolve to it so the head renders once wherever the marker is declared.
+      ? { start: equilibrium.head, end: equilibrium.head }
+      : {
+          start: { point: equilibrium.reverse.end, direction: equilibrium.reverse.direction },
+          end: { point: equilibrium.forward.end, direction: equilibrium.forward.direction }
+        }
+    : capabilities.isOpenStroke && rendersStroke
+      ? nativeArtOpenStrokeTerminals(line, pathD, pathPoints)
+      : undefined;
+  const visibleStroke = equilibrium ? undefined : nativeArtVisibleOpenStroke({
     line,
     pathD,
     pathPoints,
@@ -453,6 +489,9 @@ export function planNativeArtVisual(
       markerStartTerminal: openStrokeTerminals?.start,
       markerEndTerminal: openStrokeTerminals?.end
     }),
+    shaftMark: capabilities.isOpenStroke && rendersStroke
+      ? nativeArtShaftMarkPlan(object, line, pathPoints, stroke.width)
+      : undefined,
     projectedShapePathD,
     glossGradient: capabilities.supportsFill && fill.mode === "gloss"
       ? nativeArtGlossGradient(object, coordinateSpace, matrix)
@@ -770,7 +809,7 @@ function shouldSampleGraphicPathForPlan(input: {
 
   return input.capabilities.isOpenStroke &&
     input.rendersStroke &&
-    (input.markerStart !== undefined || input.markerEnd !== undefined);
+    (input.markerStart !== undefined || input.markerEnd !== undefined || input.object.data.shaftMark !== undefined);
 }
 
 function nativeArtMarkerHandle(
@@ -790,10 +829,35 @@ function nativeArtMarkerHandle(
   };
 }
 
+/** Arrowhead size increments (px) — dragging the marker handle snaps to multiples of this step. */
+export const MARKER_SIZE_STEP_PX = 4;
+
+/** Largest arrowhead the marker handle (or a size command) can set. */
+export const MARKER_SIZE_MAX_PX = 96;
+
+/** Snap an arrowhead size to the discrete steps the marker handle drags between (4, 8, … 96 px).
+ *  The single source of truth for the step/limits — the handle drag and the toolbar size command
+ *  both funnel through it. */
+export function snapGraphicMarkerSizePx(sizePx: number): number {
+  const snapped = Math.round(clamp(sizePx, MARKER_SIZE_STEP_PX, MARKER_SIZE_MAX_PX) / MARKER_SIZE_STEP_PX) * MARKER_SIZE_STEP_PX;
+  return roundLayoutNumber(clamp(snapped, MARKER_SIZE_STEP_PX, MARKER_SIZE_MAX_PX));
+}
+
+/** Bounds for an explicit no-reaction cross size (data.shaftMarkSizePx). */
+export const SHAFT_MARK_SIZE_MIN_PX = 6;
+export const SHAFT_MARK_SIZE_MAX_PX = 64;
+
+/** Clamp an explicit shaft-mark size to its bounds — the single source of truth shared by the
+ *  toolbar command and the render plan, mirroring snapGraphicMarkerSizePx for arrowheads. */
+export function clampGraphicShaftMarkSizePx(sizePx: number): number {
+  return roundLayoutNumber(clamp(sizePx, SHAFT_MARK_SIZE_MIN_PX, SHAFT_MARK_SIZE_MAX_PX));
+}
+
 export function editGraphicMarkerSize(
   object: GraphicObject,
   markerId: NativeArtMarkerHandleId,
-  point: NativeArtPoint
+  point: NativeArtPoint,
+  options: { symmetric?: boolean } = {}
 ): GraphicObject | undefined {
   const plan = planNativeArtVisual(object, { coordinateSpace: "page" });
   const handle = plan.markerHandles.find((candidate) => candidate.id === markerId);
@@ -808,9 +872,28 @@ export function editGraphicMarkerSize(
   if (!Number.isFinite(distance)) {
     return undefined;
   }
-  const nextSize = roundLayoutNumber(clamp(distance, 4, 96));
+  // Arrowhead size snaps to discrete steps (4, 8, 12, 16, … px = levels 1, 2, 3, 4, …) so dragging
+  // steps cleanly between sizes instead of sliding continuously. The default 16 px lands on a step.
+  //
+  // The measured distance is to the DISPLAYED handle, and a dual-shaft arrow displays its heads
+  // scaled by the arrow's heft (dualShaftScale, see dualShaftScaledMarker) — so the displayed
+  // distance must be divided back out before it is stored as the raw size, or the scale is applied
+  // twice and the head lands at scale² of the pointer (a 2× equilibrium jumped 14 → 40 stored,
+  // rendering at 80).
+  const displayScale = dualShaftArrowScale(object);
+  const nextSize = snapGraphicMarkerSizePx(displayScale > 0 ? distance / displayScale : distance);
+
+  // Symmetric resize (double-headed arrows, default): the opposite arrowhead tracks this one so both
+  // heads stay the same size. Holding Shift (symmetric === false) resizes only the dragged head.
+  const otherId: NativeArtMarkerHandleId = markerId === "markerStart" ? "markerEnd" : "markerStart";
+  const otherMarker = otherId === "markerStart" ? object.data.markerStart : object.data.markerEnd;
+  const syncOther = options.symmetric === true && otherMarker !== undefined && otherMarker.kind !== "none";
+
   const currentSize = metadataNumber(currentMarker.sizePx) ?? handle.marker.sizePx;
-  if (Math.abs(nextSize - currentSize) < 0.001) {
+  const otherSize = syncOther ? metadataNumber(otherMarker.sizePx) : undefined;
+  const draggedUnchanged = Math.abs(nextSize - currentSize) < 0.001;
+  const otherUnchanged = otherSize === undefined || Math.abs(nextSize - otherSize) < 0.001;
+  if (draggedUnchanged && otherUnchanged) {
     return object;
   }
 
@@ -821,7 +904,8 @@ export function editGraphicMarkerSize(
       [markerId]: {
         ...currentMarker,
         sizePx: nextSize
-      }
+      },
+      ...(syncOther ? { [otherId]: { ...otherMarker, sizePx: nextSize } } : {})
     }
   };
 }
@@ -925,7 +1009,12 @@ function nativeArtVisibleOpenStroke(input: {
 }
 
 function nativeArtMarkerShaftInset(marker: NativeArtMarkerPlan, strokeWidth: number): number {
-  if (marker.kind === "filled-arrow" || marker.kind === "chevron" || marker.kind === "diamond") {
+  if (
+    marker.kind === "filled-arrow" ||
+    marker.kind === "half-arrow" ||
+    marker.kind === "chevron" ||
+    marker.kind === "diamond"
+  ) {
     return Math.max(strokeWidth * 1.5, marker.sizePx * 0.42);
   }
   if (marker.kind === "dot") {
@@ -1009,6 +1098,49 @@ function nativeArtPolylinePointAtLength(
   }
 
   return points[points.length - 1];
+}
+
+/** Midpoint + local tangent of the shaft, for the no-reaction cross. Uses the sampled path points so
+ *  the mark sits on the curve for arcs, or the straight line for line arrows. */
+function nativeArtShaftMarkPlan(
+  object: GraphicObject,
+  line: NativeArtVisualPlan["line"],
+  pathPoints: NativeArtPoint[] | undefined,
+  strokeWidth: number
+): NativeArtShaftMarkPlan | undefined {
+  if (object.data.shaftMark !== "cross") {
+    return undefined;
+  }
+
+  const points = pathPoints && pathPoints.length >= 2
+    ? pathPoints
+    : line
+      ? [{ x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 }]
+      : undefined;
+  if (!points) {
+    return undefined;
+  }
+
+  const halfLength = nativeArtPolylineLength(points) / 2;
+  const point = nativeArtPolylinePointAtLength(points, halfLength);
+  const before = nativeArtPolylinePointAtLength(points, Math.max(0, halfLength - 1));
+  const after = nativeArtPolylinePointAtLength(points, halfLength + 1);
+  if (!point || !before || !after) {
+    return undefined;
+  }
+
+  const direction = normalizedVector({ x: after.x - before.x, y: after.y - before.y }) ?? { x: 1, y: 0 };
+  // An explicit size (data.shaftMarkSizePx) wins; otherwise derive from the stroke so the X
+  // keeps proportion with the shaft by default.
+  const explicitSize = typeof object.data.shaftMarkSizePx === "number" && Number.isFinite(object.data.shaftMarkSizePx)
+    ? clampGraphicShaftMarkSizePx(object.data.shaftMarkSizePx)
+    : undefined;
+  return {
+    kind: "cross",
+    point,
+    direction,
+    sizePx: explicitSize ?? Math.max(12, strokeWidth * 5)
+  };
 }
 
 function nativeArtPointsPathD(points: readonly NativeArtPoint[]): string {
@@ -1263,11 +1395,13 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
   const explicitControl = pointMetadata(object.data.pathControlPoint);
   const start = explicitStart ?? fallback.start;
   const end = explicitEnd ?? fallback.end;
+  const shafts = graphicEquilibriumHandlePoints(object);
   return {
     start,
     end,
     middle: explicitControl ?? fallback.middle ?? midpoint(start, end),
-    pathKind
+    pathKind,
+    ...(shafts ? { shafts } : {})
   };
 }
 
@@ -1308,7 +1442,16 @@ export function editGraphicPathGeometry(
   }
 
   const kind = graphicPathKind(object);
+  if (handle === "shaft:forward" || handle === "shaft:reverse") {
+    return editEquilibriumShaftLength(object, handle, point);
+  }
   if (kind === "line" && handle === "middle") {
+    // A dual-shaft arrow's middle knob resizes it rather than bending it — its axis stays straight,
+    // but the whole arrow grows or shrinks: shaft gap and head for a retrosynthetic, shaft gap and
+    // both harpoon heads for an equilibrium.
+    if (object.data.dualShaft === true) {
+      return editDualShaftArrowScale(object, point);
+    }
     return promoteLineToQuadraticCurve(object, point);
   }
   if (kind === "quadratic" || isLegacyQuadraticArc(object)) {
@@ -1321,6 +1464,82 @@ export function editGraphicPathGeometry(
     return editOpenSegmentGeometry(object, handle, point);
   }
   return undefined;
+}
+
+/**
+ * Drag the middle knob to resize a retrosynthetic arrow. Scale comes from how far the pointer sits
+ * off the axis, measured the same way the knob is placed, so the arrow tracks the cursor 1:1.
+ */
+function editDualShaftArrowScale(object: GraphicObject, point: NativeArtPoint): GraphicObject | undefined {
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  if (!start || !end) {
+    return undefined;
+  }
+
+  const axis = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+  if (!axis) {
+    return undefined;
+  }
+
+  const normal = { x: axis.y, y: -axis.x };
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const offAxis = Math.abs((point.x - mid.x) * normal.x + (point.y - mid.y) * normal.y);
+  const scale = clamp(offAxis / RETRO_SCALE_HANDLE_OFFSET_PX, RETRO_MIN_SCALE, RETRO_MAX_SCALE);
+  if (Math.abs(dualShaftArrowScale(object) - scale) < 0.001) {
+    return object;
+  }
+
+  return {
+    ...object,
+    data: { ...object.data, dualShaftScale: roundLayoutNumber(scale * 100) / 100 }
+  };
+}
+
+/**
+ * Drag one half-shaft's head to set that direction's length, as a fraction of the axis. The pointer is
+ * projected onto the axis, so the shaft slides along it rather than chasing the cursor sideways — the
+ * two halves stay parallel however the user drags.
+ */
+function editEquilibriumShaftLength(
+  object: GraphicObject,
+  handle: "shaft:forward" | "shaft:reverse",
+  point: NativeArtPoint
+): GraphicObject | undefined {
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  // Parallel (retrosynthetic) arrows have no independent half-lengths — both shafts are one arrow.
+  if (object.data.dualShaft !== true || object.data.dualShaftParallel === true || !start || !end) {
+    return undefined;
+  }
+
+  const axis = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  if (!axis || length <= 0.001) {
+    return undefined;
+  }
+
+  // Shafts are centred on the axis midpoint, so a drag measures the head's distance from the centre —
+  // half the shaft's length — and the shaft grows or shrinks symmetrically about it. The handle sits
+  // seated back from the tip, so add that inset back for the tip to track the pointer.
+  const forward = handle === "shaft:forward";
+  const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const sign = forward ? 1 : -1;
+  const fromCentre = ((point.x - mid.x) * axis.x + (point.y - mid.y) * axis.y) * sign;
+  const shaftLength = equilibriumShaftLengthForSeat(object, fromCentre);
+  const frac = clamp(shaftLength / length, EQUILIBRIUM_MIN_FRAC, 1);
+  const key = forward ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
+  if (Math.abs(equilibriumShaftFraction(object.data[key]) - frac) < 0.001) {
+    return object;
+  }
+
+  return {
+    ...object,
+    data: {
+      ...object.data,
+      [key]: roundLayoutNumber(frac * 1000) / 1000
+    }
+  };
 }
 
 export function deleteGraphicPathNode(
@@ -1978,6 +2197,26 @@ function deleteSemanticArcData(data: GraphicObject["data"]): void {
   delete data.arcSweepRadians;
 }
 
+/**
+ * Drop everything that makes a graphic an *arrow* rather than a path.
+ *
+ * Splitting bends a two-point arrow into a three-node polyline, which no arrow mechanic can carry:
+ * the bow handle is gone, an equilibrium's two shafts have collapsed while `dualShaft` still claims
+ * them, "Set as Default Arrow Style" no longer recognises the shape, and CDXML export would still
+ * emit `ArrowType="FullHead"` — writing a straight arrow and losing the bend with no warning. This
+ * is the conversion PLANS.md Thread C promises when it keeps anchor editing on the Scissors tool.
+ */
+function deleteArrowIdentityData(data: GraphicObject["data"]): void {
+  delete data.artToolId;
+  delete data.markerStart;
+  delete data.markerEnd;
+  delete data.dualShaft;
+  delete data.dualShaftGapPx;
+  delete data.dualShaftParallel;
+  delete data.shaftMark;
+  delete data.shaftMarkSizePx;
+}
+
 function splitLinePathSegmentAtPoint(
   object: GraphicObject,
   point: NativeArtPoint,
@@ -2009,6 +2248,7 @@ function splitLinePathSegmentAtPoint(
   delete nextData.pathControlPoint;
   delete nextData.pathD;
   deleteSemanticArcData(nextData);
+  deleteArrowIdentityData(nextData);
 
   const edited = updateGraphicPathObject(object, nextData);
   if (!edited || edited === object) {
@@ -2503,7 +2743,7 @@ function nativeArtUnprojectedLocalFrameBounds(object: GraphicObject): NativeArtB
     return defaultBounds;
   }
 
-  const points = graphicPathLocalSamplePoints(object);
+  const points = graphicPathLocalBoundsPoints(object);
   if (points.length === 0) {
     return defaultBounds;
   }
@@ -2537,7 +2777,7 @@ function nativeArtProjectedLocalBounds(
   }
 
   if (object.graphicKind === "path") {
-    const pathPoints = graphicPathLocalSamplePoints(object);
+    const pathPoints = graphicPathLocalBoundsPoints(object);
     if (pathPoints.length > 0) {
       return projectedPointsBounds(pathPoints, width, height, matrix);
     }
@@ -2846,21 +3086,44 @@ function graphicPaintMetadata(value: unknown): GraphicPaint | undefined {
   return typeof paint.kind === "string" ? paint : undefined;
 }
 
+/** The smallest size a marker of this kind can RENDER at for a given stroke width — the renderer
+ *  floors head size so a head can never vanish inside its own shaft. Exported so UI that offers head
+ *  sizes can hide the ones this would silently override, instead of hand-copying the rule (which
+ *  drifted: the widget assumed ×4 for every kind). */
+export function graphicMarkerRenderedSizeFloorPx(kind: GraphicMarker["kind"], strokeWidth: number): number {
+  return kind === "bar"
+    ? strokeWidth * 2.4
+    : kind === "dot"
+      ? strokeWidth * 2.8
+      : strokeWidth * 4;
+}
+
+/**
+ * The size a marker actually draws at: its stored `sizePx` if it has one, the 10px default if not,
+ * floored by the stroke-aware minimum for its kind.
+ *
+ * Exported because anything REPORTING a head's size has to answer the same question the renderer
+ * does. The art inspector had its own answer — a flat 16 for an absent `sizePx` — so an arrow with
+ * no stored size read as 16 while drawing at 10, and a selection mixing the two reported a confident
+ * uniform 16. Reading the stored value alone is not enough either: the floor can raise it.
+ */
+export function graphicMarkerRenderedSizePx(marker: GraphicMarker, strokeWidth: number): number {
+  return Math.max(
+    2,
+    metadataNumber(marker.sizePx) ?? 10,
+    graphicMarkerRenderedSizeFloorPx(marker.kind, strokeWidth)
+  );
+}
+
 function nativeArtMarkerPlan(value: unknown, strokeWidth: number): NativeArtMarkerPlan | undefined {
   const marker = graphicMarkerMetadata(value);
   if (!marker || marker.kind === "none") {
     return undefined;
   }
 
-  const metadataSize = metadataNumber(marker.sizePx);
-  const strokeAwareSize = marker.kind === "bar"
-    ? strokeWidth * 2.4
-    : marker.kind === "dot"
-      ? strokeWidth * 2.8
-      : strokeWidth * 4;
   return {
     kind: marker.kind,
-    sizePx: Math.max(2, metadataSize ?? 10, strokeAwareSize),
+    sizePx: graphicMarkerRenderedSizePx(marker, strokeWidth),
     angleDegrees: metadataNumber(marker.angleDegrees) ?? 0
   };
 }
@@ -2878,6 +3141,7 @@ function isNativeArtMarkerKind(kind: unknown): kind is NativeArtMarkerKind {
   return kind === "none" ||
     kind === "open-arrow" ||
     kind === "filled-arrow" ||
+    kind === "half-arrow" ||
     kind === "bar" ||
     kind === "dot" ||
     kind === "diamond" ||
@@ -2960,6 +3224,33 @@ function graphicLineLocalPoints(object: GraphicObject): NativeArtPoint[] {
   ];
 }
 
+/**
+ * Sample points plus the corners of the path's own bounding box, for the two frame-bounds callers.
+ *
+ * Bounds genuinely need the box: a sampled curve under-covers its own extremes, so bounding the
+ * samples alone shrinks the frame. The ordered walk must never contain these corners — it is read
+ * as a path, and a corner in the middle of it is a phantom segment.
+ */
+function graphicPathLocalBoundsPoints(object: GraphicObject): NativeArtPoint[] {
+  const points = graphicPathLocalSamplePoints(object);
+  const pathD = graphicPathD(object, "local");
+  const bounds = pathD ? svgPathBounds(pathD) : undefined;
+  // The same locality test the sampler applies. A stored `pathD` can be in PAGE coordinates, which
+  // is exactly why `svgPathLocalSamplePoints` returns [] for one — appending its corners regardless
+  // handed page coordinates to callers that project them as local, so the frame, the selection
+  // chrome and the transform handles all landed off the object.
+  if (!bounds || !pathBoundsLookLocal(bounds, object)) {
+    return points;
+  }
+  return [
+    ...points,
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+    { x: bounds.x, y: bounds.y + bounds.height }
+  ];
+}
+
 function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
   const localPoints = object.graphicKind === "line"
     ? graphicLineLocalPoints(object)
@@ -3007,12 +3298,13 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   }
 
   if (pathKind === "wavy") {
-    const endpoints = graphicPathEndpoints(object, "local", inset);
-    return wavyLinePoints(
-      endpoints.start,
-      endpoints.end,
-      Math.max(2, Math.min(5, (metadataNumber(object.style.strokeWidth) ?? 2) * 1.6))
-    );
+    // Sample the path the renderer actually draws. Re-deriving the wave here duplicated geometry
+    // that `graphicPathD` decides in two branches — a drawn wave between explicit endpoints, or a
+    // horizontal wave across the frame for a click-placed one — and this copy only ever knew the
+    // first. Since sampling starts the moment a marker exists, adding an arrowhead flipped a
+    // click-placed wave from horizontal to corner-to-corner diagonal (§5.26/§5.27).
+    const pathD = graphicPathD(object, "local");
+    return pathD ? svgPathSamplePoints(pathD) : [];
   }
 
   if (pathKind === "arc") {
@@ -3041,20 +3333,24 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   return [];
 }
 
-function svgPathLocalSamplePoints(pathD: string, object: GraphicObject): NativeArtPoint[] {
-  const bounds = svgPathBounds(pathD);
-  if (!bounds) {
-    return [];
-  }
-
+/**
+ * Whether a path's own bounds sit inside the object's frame, i.e. the path really is in LOCAL
+ * coordinates. `data.pathD` carries no coordinate space of its own and some are stored in PAGE
+ * space, so anything that treats a stored path as local has to ask this first — sampling AND
+ * bounding. Keeping the test in one place is what stopped the two disagreeing.
+ */
+function pathBoundsLookLocal(bounds: NativeArtBounds, object: GraphicObject): boolean {
   const strokeWidth = metadataNumber(object.style.strokeWidth) ?? 2;
   const tolerance = Math.max(8, strokeWidth * 2);
-  const pathLooksLocal =
-    bounds.x >= -tolerance &&
+  return bounds.x >= -tolerance &&
     bounds.y >= -tolerance &&
     bounds.x + bounds.width <= object.width + tolerance &&
     bounds.y + bounds.height <= object.height + tolerance;
-  if (!pathLooksLocal) {
+}
+
+function svgPathLocalSamplePoints(pathD: string, object: GraphicObject): NativeArtPoint[] {
+  const bounds = svgPathBounds(pathD);
+  if (!bounds || !pathBoundsLookLocal(bounds, object)) {
     return [];
   }
 
@@ -3081,35 +3377,35 @@ function svgPathBounds(pathD: string): NativeArtBounds | undefined {
   }
 }
 
-function svgPathSamplePoints(
-  pathD: string,
-  options: { includeBounds?: boolean } = {}
-): NativeArtPoint[] {
+/**
+ * Points along a path, in path order.
+ *
+ * This used to append the four corners of the path's bounding box. Callers treat the list as an
+ * ordered walk — it drives the visible stroke, the marker terminals, and hit-testing — so those
+ * corners were phantom segments: a bent polyline drew its legs and then scribbled its own bounding
+ * rectangle, hit-testing reported hits along empty box edges, and the end terminal snapped to
+ * whichever corner came last, putting the arrowhead on the wrong end pointing the wrong way. No
+ * caller ever wanted them; the two that asked for bounds asked `getPathBBox` directly.
+ */
+function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
   try {
     if (!isValidPath(pathD)) {
       return [];
     }
     const length = getTotalLength(pathD);
-    const bounds = getPathBBox(pathD);
-    const boundsPoints = [
-      { x: bounds.x, y: bounds.y },
-      { x: bounds.x2, y: bounds.y },
-      { x: bounds.x2, y: bounds.y2 },
-      { x: bounds.x, y: bounds.y2 }
-    ];
     if (!Number.isFinite(length) || length <= 0) {
-      return boundsPoints;
+      // A zero-length path is a dot: its bounding box collapses to that point.
+      const bounds = getPathBBox(pathD);
+      return [{ x: bounds.x, y: bounds.y }].filter(
+        (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+      );
     }
 
     const steps = Math.max(8, Math.min(96, Math.ceil(length / 8)));
-    const pathPoints = Array.from({ length: steps + 1 }, (_, index) => {
+    return Array.from({ length: steps + 1 }, (_, index) => {
       const point = getPointAtLength(pathD, length * index / steps);
       return { x: point.x, y: point.y };
-    });
-    const samples = options.includeBounds === false ? pathPoints : [...pathPoints, ...boundsPoints];
-    return samples.filter((point) =>
-      Number.isFinite(point.x) && Number.isFinite(point.y)
-    );
+    }).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   } catch {
     return [];
   }
@@ -3182,13 +3478,13 @@ function graphicObjectBooleanLocalPoints(object: GraphicObject): {
       return { reason: "open-shape" };
     }
     const pathD = graphicNodePathD(object, pathKind, "local");
-    const points = pathD ? svgPathSamplePoints(pathD, { includeBounds: false }) : [];
+    const points = pathD ? svgPathSamplePoints(pathD) : [];
     return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
   }
 
   if (pathKind === "freehand") {
     const pathD = graphicFreehandPathD(object, "local");
-    const points = pathD ? svgPathSamplePoints(pathD, { includeBounds: false }) : [];
+    const points = pathD ? svgPathSamplePoints(pathD) : [];
     return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
   }
 
@@ -3204,7 +3500,7 @@ function graphicObjectBooleanLocalPoints(object: GraphicObject): {
     return { reason: "open-shape" };
   }
 
-  const points = svgPathSamplePoints(storedPath, { includeBounds: false });
+  const points = svgPathSamplePoints(storedPath);
   return points.length >= 3 ? { points } : { reason: "invalid-geometry" };
 }
 
@@ -3375,6 +3671,14 @@ function graphicPathD(
   }
 
   if (pathKind === "line") {
+    const equilibrium = graphicEquilibriumPathD(
+      object,
+      coordinateSpace,
+      metadataNumber(object.style.strokeWidth) ?? 2
+    );
+    if (equilibrium) {
+      return equilibrium;
+    }
     const endpoints = graphicPathEndpoints(object, coordinateSpace, inset);
     return `M ${formatNumber(endpoints.start.x)} ${formatNumber(endpoints.start.y)} L ${formatNumber(endpoints.end.x)} ${formatNumber(endpoints.end.y)}`;
   }
@@ -3616,6 +3920,288 @@ function formattedNodePoint(
 ): string {
   const resolved = pointForArtSpace(object, point, coordinateSpace);
   return `${formatNumber(resolved.x)} ${formatNumber(resolved.y)}`;
+}
+
+/** One half of an equilibrium arrow: tail at `start`, arrowhead at `end` pointing along `direction`. */
+export interface NativeArtEquilibriumShaft {
+  start: NativeArtPoint;
+  end: NativeArtPoint;
+  direction: NativeArtPoint;
+}
+
+export interface NativeArtEquilibriumGeometry {
+  forward: NativeArtEquilibriumShaft;
+  reverse: NativeArtEquilibriumShaft;
+  /** Retrosynthetic (parallel) arrows only: the single head spanning both shafts, at the axis end.
+   *  Its presence is also what marks the geometry as parallel rather than opposed. */
+  head?: { point: NativeArtPoint; direction: NativeArtPoint };
+}
+
+export const EQUILIBRIUM_DEFAULT_GAP_PX = 10;
+/** Shafts never shrink past this fraction of the axis, so both halves stay grabbable. */
+const EQUILIBRIUM_MIN_FRAC = 0.15;
+/**
+ * How far back along its shaft a length handle sits from the arrowhead tip.
+ *
+ * At full length a shaft's head lands exactly on the axis endpoint, so a handle drawn at the tip would
+ * stack on top of the endpoint handle and the endpoint would always win the press. Seating the handle
+ * at the base of the arrowhead keeps the two apart and grabbable.
+ */
+export const EQUILIBRIUM_SHAFT_HANDLE_INSET_PX = 16;
+/** Retrosynthetic head arms: how far back along the axis they sweep from the tip, and how far past
+ *  each shaft they reach. Proportions follow the long-standing retrosynthesis drawing (arms ~10px
+ *  back, ~4.5px beyond shafts sitting 2.5px off the axis). */
+const RETRO_HEAD_ARM_BACK_PX = 10;
+const RETRO_HEAD_ARM_CLEARANCE_PX = 4.5;
+/** Where the resize knob floats off the axis at scale 1; it tracks the scale, so grabbing it never
+ *  jumps and the drag distance reads directly as the new scale. */
+const RETRO_SCALE_HANDLE_OFFSET_PX = 12;
+const RETRO_MIN_SCALE = 0.4;
+const RETRO_MAX_SCALE = 6;
+
+/** The seat may take at most this fraction of a shaft. Strictly below 0.5 on purpose: at exactly a
+ *  half the handle lands on the arrow's centre for EVERY short shaft, so the placement stops being
+ *  one-to-one and the length cannot be recovered from the handle. */
+const EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION = 0.4;
+
+/**
+ * How far an equilibrium shaft's length handle is seated back from its tip, for a shaft of the given
+ * length. The seat scales with the arrow's heft so the handle stays at the base of the (scaled)
+ * harpoon head instead of disappearing inside a grown one, and it is capped at a QUARTER of the
+ * shaft so the placement stays invertible: capping at half collapsed every short shaft's handle onto
+ * the arrow's centre, so many lengths shared one handle position and the inverse drag could not
+ * recover the length — feeding an unchanged handle back in moved the shaft (0.2 → 0.32), making it
+ * jump the moment it was grabbed. One helper, used by both placement and the inverse.
+ */
+function equilibriumShaftSeatInset(object: GraphicObject, shaftLength: number): number {
+  const seatInset = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object);
+  return Math.min(seatInset, Math.max(0, shaftLength * EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION));
+}
+
+/** The inverse of {@link equilibriumShaftSeatInset}: the shaft length whose handle seats at
+ *  `fromCentre` along the axis (shafts are centred, so a handle sits at length/2 − inset). */
+function equilibriumShaftLengthForSeat(object: GraphicObject, fromCentre: number): number {
+  const seatInset = EQUILIBRIUM_SHAFT_HANDLE_INSET_PX * dualShaftArrowScale(object);
+  // Above the cap the inset is the constant seat (so ordinary shafts keep their exact placement);
+  // below it the inset is a fixed fraction of the shaft. The branches meet where the two rules
+  // agree, so the whole mapping is continuous, strictly increasing, and one-to-one.
+  const knee = seatInset * (0.5 - EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION) / EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION;
+  return fromCentre >= knee
+    ? 2 * (fromCentre + seatInset)
+    : Math.max(0, fromCentre / (0.5 - EQUILIBRIUM_SHAFT_SEAT_MAX_FRACTION));
+}
+
+/** Overall heft of a dual-shaft arrow: scales its shaft gap and head(s) together. */
+export function dualShaftArrowScale(object: GraphicObject): number {
+  const scale = metadataNumber(object.data.dualShaftScale);
+  return scale === undefined ? 1 : clamp(scale, RETRO_MIN_SCALE, RETRO_MAX_SCALE);
+}
+
+/** Dual-shaft arrows draw their marker heads scaled by the arrow's heft, so the middle-knob resize
+ *  grows an equilibrium's harpoons together with its shaft gap. Non-dual-shaft markers pass through. */
+function dualShaftScaledMarker(
+  object: GraphicObject,
+  marker: GraphicMarker | undefined
+): GraphicMarker | undefined {
+  if (object.data.dualShaft !== true || !marker || marker.kind === "none") {
+    return marker;
+  }
+  const scale = dualShaftArrowScale(object);
+  const sizePx = metadataNumber(marker.sizePx);
+  if (scale === 1 || sizePx === undefined) {
+    return marker;
+  }
+  return { ...marker, sizePx: sizePx * scale };
+}
+
+export function equilibriumShaftFraction(value: unknown): number {
+  const frac = metadataNumber(value);
+  return frac === undefined ? 1 : clamp(frac, EQUILIBRIUM_MIN_FRAC, 1);
+}
+
+/**
+ * The two half-shafts of an equilibrium arrow, derived from the `lineStart`->`lineEnd` axis.
+ *
+ * The forward shaft sits one half-gap to the left of the axis and runs from the tail toward the head;
+ * the reverse shaft mirrors it on the other side, running back the other way. Each length is an
+ * independent fraction of the axis so the two directions can be drawn unequal.
+ */
+export function graphicEquilibriumGeometry(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace = "page"
+): NativeArtEquilibriumGeometry | undefined {
+  if (object.data.dualShaft !== true) {
+    return undefined;
+  }
+
+  const rawStart = pointMetadata(object.data.lineStart);
+  const rawEnd = pointMetadata(object.data.lineEnd);
+  if (!rawStart || !rawEnd) {
+    return undefined;
+  }
+
+  const a = pointForArtSpace(object, rawStart, coordinateSpace);
+  const b = pointForArtSpace(object, rawEnd, coordinateSpace);
+  const axis = normalizedVector({ x: b.x - a.x, y: b.y - a.y });
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!axis || length <= 0.001) {
+    return undefined;
+  }
+
+  // The forward shaft takes the -normal side (above a left-to-right axis) and the reverse shaft the
+  // +normal side, which is the conventional equilibrium layout: forward on top, reverse beneath. It
+  // also puts each half-arrow's barb — always drawn on one fixed side of its own direction — on the
+  // outside of the pair rather than facing inward, which reads as upside down.
+  const normal = { x: axis.y, y: -axis.x };
+  // Both dual-shaft forms scale their gap with the arrow's heft (the middle-knob resize).
+  const half = ((metadataNumber(object.data.dualShaftGapPx) ?? EQUILIBRIUM_DEFAULT_GAP_PX) / 2) *
+    dualShaftArrowScale(object);
+
+  // Retrosynthetic: both shafts run the same way, full length, with one head spanning them at the
+  // axis end. There is nothing per-shaft to vary here — it reads as a single double-shafted arrow.
+  if (object.data.dualShaftParallel === true) {
+    const offset = (side: 1 | -1): NativeArtEquilibriumShaft => ({
+      start: { x: a.x + normal.x * half * side, y: a.y + normal.y * half * side },
+      end: { x: b.x + normal.x * half * side, y: b.y + normal.y * half * side },
+      direction: axis
+    });
+    return { forward: offset(1), reverse: offset(-1), head: { point: b, direction: axis } };
+  }
+
+  const forwardLength = length * equilibriumShaftFraction(object.data.dualShaftForwardFrac);
+  const reverseLength = length * equilibriumShaftFraction(object.data.dualShaftReverseFrac);
+  // Both shafts stay centred on the axis midpoint: an equilibrium's two halves are often unequal in
+  // length, but they are always centred on each other rather than anchored to opposite ends.
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const reach = (shaftLength: number, towards: 1 | -1, side: 1 | -1): NativeArtPoint => ({
+    x: mid.x + axis.x * (shaftLength / 2) * towards + normal.x * half * side,
+    y: mid.y + axis.y * (shaftLength / 2) * towards + normal.y * half * side
+  });
+
+  return {
+    forward: {
+      start: reach(forwardLength, -1, 1),
+      end: reach(forwardLength, 1, 1),
+      direction: axis
+    },
+    reverse: {
+      start: reach(reverseLength, 1, -1),
+      end: reach(reverseLength, -1, -1),
+      direction: { x: -axis.x, y: -axis.y }
+    }
+  };
+}
+
+/**
+ * Where a dual-shaft arrow's resize knob sits (retrosynthetic and equilibrium alike): off the axis
+ * midpoint, at a distance that tracks the current scale. Because position and scale share one
+ * factor, grabbing the knob never makes it jump, and the drag distance maps straight back to the
+ * new scale.
+ */
+export function graphicDualShaftScaleHandlePoint(object: GraphicObject): NativeArtPoint | undefined {
+  const geometry = graphicEquilibriumGeometry(object);
+  const start = pointMetadata(object.data.lineStart);
+  const end = pointMetadata(object.data.lineEnd);
+  if (!geometry || !start || !end) {
+    return undefined;
+  }
+
+  const axis = normalizedVector({ x: end.x - start.x, y: end.y - start.y });
+  if (!axis) {
+    return undefined;
+  }
+
+  const normal = { x: axis.y, y: -axis.x };
+  const reach = RETRO_SCALE_HANDLE_OFFSET_PX * dualShaftArrowScale(object);
+  return {
+    x: (start.x + end.x) / 2 + normal.x * reach,
+    y: (start.y + end.y) / 2 + normal.y * reach
+  };
+}
+
+/** Where each half-shaft's length handle sits: back along the shaft from its arrowhead tip. */
+export function graphicEquilibriumHandlePoints(
+  object: GraphicObject
+): { forward: NativeArtPoint; reverse: NativeArtPoint } | undefined {
+  const geometry = graphicEquilibriumGeometry(object);
+  // Parallel (retrosynthetic) arrows have nothing per-shaft to adjust — both halves are one arrow —
+  // so they get the ordinary endpoint handles only.
+  if (!geometry || geometry.head) {
+    return undefined;
+  }
+
+  const seat = (shaft: NativeArtEquilibriumShaft): NativeArtPoint => {
+    const length = Math.hypot(shaft.end.x - shaft.start.x, shaft.end.y - shaft.start.y);
+    const inset = equilibriumShaftSeatInset(object, length);
+    return {
+      x: shaft.end.x - shaft.direction.x * inset,
+      y: shaft.end.y - shaft.direction.y * inset
+    };
+  };
+
+  return { forward: seat(geometry.forward), reverse: seat(geometry.reverse) };
+}
+
+/** Both shafts as one two-subpath `d`, each already shortened to leave room for its arrowhead. */
+function graphicEquilibriumPathD(
+  object: GraphicObject,
+  coordinateSpace: NativeArtVisualCoordinateSpace,
+  strokeWidth: number
+): string | undefined {
+  const geometry = graphicEquilibriumGeometry(object, coordinateSpace);
+  if (!geometry) {
+    return undefined;
+  }
+
+  // Retrosynthetic head geometry, needed up front because the shafts stop where they MEET the arms.
+  // The arms sweep from the tip back past both shafts, so each shaft's trim is the along-axis
+  // distance at which an arm crosses its offset: back * (halfGap / reach). A fixed trim only worked
+  // at scale 1 — grow the head and the shafts speared straight through the V.
+  const head = geometry.head
+    ? (() => {
+        const { point: tip, direction } = geometry.head;
+        const normal = { x: direction.y, y: -direction.x };
+        const halfGap = Math.abs(
+          (geometry.forward.start.x - geometry.reverse.start.x) * normal.x +
+          (geometry.forward.start.y - geometry.reverse.start.y) * normal.y
+        ) / 2;
+        const scale = dualShaftArrowScale(object);
+        const reach = halfGap + RETRO_HEAD_ARM_CLEARANCE_PX * scale;
+        const back = RETRO_HEAD_ARM_BACK_PX * scale;
+        return { tip, direction, normal, reach, back, shaftTrim: back * (halfGap / reach) };
+      })()
+    : undefined;
+
+  const shaft = (part: NativeArtEquilibriumShaft, marker: GraphicMarker | undefined): string => {
+    const plan = nativeArtMarkerPlan(dualShaftScaledMarker(object, marker), strokeWidth);
+    const inset = head
+      ? head.shaftTrim
+      : plan ? nativeArtMarkerShaftInset(plan, strokeWidth) : 0;
+    const length = Math.hypot(part.end.x - part.start.x, part.end.y - part.start.y);
+    const trim = Math.min(inset, Math.max(0, length - 1));
+    const tip = {
+      x: part.end.x - part.direction.x * trim,
+      y: part.end.y - part.direction.y * trim
+    };
+    return `M ${formatNumber(part.start.x)} ${formatNumber(part.start.y)} ` +
+      `L ${formatNumber(tip.x)} ${formatNumber(tip.y)}`;
+  };
+
+  const shafts = `${shaft(geometry.forward, object.data.markerEnd)} ${shaft(geometry.reverse, object.data.markerStart)}`;
+  if (!head) {
+    return shafts;
+  }
+
+  // Two arms from the tip sweeping back past BOTH shafts, the classic "=>" — an ordinary arrowhead
+  // marker centred on the axis can never span the pair. Drawn as the arrow's own path geometry.
+  const arm = (side: 1 | -1): string => {
+    const end = {
+      x: head.tip.x - head.direction.x * head.back + head.normal.x * head.reach * side,
+      y: head.tip.y - head.direction.y * head.back + head.normal.y * head.reach * side
+    };
+    return `M ${formatNumber(head.tip.x)} ${formatNumber(head.tip.y)} L ${formatNumber(end.x)} ${formatNumber(end.y)}`;
+  };
+  return `${shafts} ${arm(1)} ${arm(-1)}`;
 }
 
 function graphicPathEndpoints(

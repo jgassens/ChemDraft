@@ -481,46 +481,88 @@
               }
             },
             {
-              "commandId": "tool.reactionArrow",
+              "commandId": "tool.art.reactionArrow",
               "title": "Reaction Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow",
               "category": "arrows",
-              "id": "tool.reactionArrow",
+              "id": "tool.art.reactionArrow",
               "kind": "button",
               "label": "Reaction Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.reactionArrow"
+                "commandId": "tool.art.reactionArrow"
               },
               "submenu": {
                 "type": "command-grid",
                 "title": "Arrow tools",
-                "columns": 3,
+                "columns": 4,
                 "items": [
                   {
-                    "commandId": "tool.reactionArrow",
+                    "commandId": "tool.art.reactionArrow",
                     "label": "Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow"
                   },
                   {
-                    "commandId": "tool.resonanceArrow",
+                    "commandId": "tool.art.reactionArrowBold",
+                    "label": "Reaction Arrow (Large Head)",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Bold"
+                  },
+                  {
+                    "commandId": "tool.art.reactionArrowDashed",
+                    "label": "Dashed Reaction Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Dashed"
+                  },
+                  {
+                    "commandId": "tool.art.resonanceArrow",
                     "label": "Resonance Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Resonance"
                   },
                   {
-                    "commandId": "tool.equilibriumArrow",
+                    "commandId": "tool.art.equilibriumArrow",
                     "label": "Equilibrium Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Equilibrium"
                   },
                   {
-                    "commandId": "tool.retroArrow",
+                    "commandId": "tool.art.retroArrow",
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
+                  },
+                  {
+                    "commandId": "tool.art.noReactionArrow",
+                    "label": "No-Reaction Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_No_Reaction"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow90",
+                    "label": "Curved Arrow (Gentle)",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Curved"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow180",
+                    "label": "Curved Arrow (Pronounced)",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Curved_Pronounced"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookArrow",
+                    "label": "Fishhook Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Fishhook"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookCurved",
+                    "label": "Curved Fishhook Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Fishhook_Curved"
                   }
                 ],
                 "id": "arrow-tools"
@@ -536,17 +578,17 @@
               }
             },
             {
-              "commandId": "tool.resonanceArrow",
+              "commandId": "tool.art.resonanceArrow",
               "title": "Resonance Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Resonance",
               "category": "arrows",
-              "id": "tool.resonanceArrow",
+              "id": "tool.art.resonanceArrow",
               "kind": "button",
               "label": "Resonance Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.resonanceArrow"
+                "commandId": "tool.art.resonanceArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -559,17 +601,17 @@
               }
             },
             {
-              "commandId": "tool.equilibriumArrow",
+              "commandId": "tool.art.equilibriumArrow",
               "title": "Equilibrium Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Equilibrium",
               "category": "arrows",
-              "id": "tool.equilibriumArrow",
+              "id": "tool.art.equilibriumArrow",
               "kind": "button",
               "label": "Equilibrium Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.equilibriumArrow"
+                "commandId": "tool.art.equilibriumArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -582,17 +624,17 @@
               }
             },
             {
-              "commandId": "tool.retroArrow",
+              "commandId": "tool.art.retroArrow",
               "title": "Retrosynthesis Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Retro",
               "category": "arrows",
-              "id": "tool.retroArrow",
+              "id": "tool.art.retroArrow",
               "kind": "button",
               "label": "Retrosynthesis Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.retroArrow"
+                "commandId": "tool.art.retroArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -2221,46 +2263,88 @@
           "id": "core.arrows.tools",
           "items": [
             {
-              "commandId": "tool.reactionArrow",
+              "commandId": "tool.art.reactionArrow",
               "title": "Reaction Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow",
               "category": "arrows",
-              "id": "tool.reactionArrow",
+              "id": "tool.art.reactionArrow",
               "kind": "button",
               "label": "Reaction Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.reactionArrow"
+                "commandId": "tool.art.reactionArrow"
               },
               "submenu": {
                 "type": "command-grid",
                 "title": "Arrow tools",
-                "columns": 3,
+                "columns": 4,
                 "items": [
                   {
-                    "commandId": "tool.reactionArrow",
+                    "commandId": "tool.art.reactionArrow",
                     "label": "Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow"
                   },
                   {
-                    "commandId": "tool.resonanceArrow",
+                    "commandId": "tool.art.reactionArrowBold",
+                    "label": "Reaction Arrow (Large Head)",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Bold"
+                  },
+                  {
+                    "commandId": "tool.art.reactionArrowDashed",
+                    "label": "Dashed Reaction Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Dashed"
+                  },
+                  {
+                    "commandId": "tool.art.resonanceArrow",
                     "label": "Resonance Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Resonance"
                   },
                   {
-                    "commandId": "tool.equilibriumArrow",
+                    "commandId": "tool.art.equilibriumArrow",
                     "label": "Equilibrium Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Equilibrium"
                   },
                   {
-                    "commandId": "tool.retroArrow",
+                    "commandId": "tool.art.retroArrow",
                     "label": "Retrosynthesis Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_Retro"
+                  },
+                  {
+                    "commandId": "tool.art.noReactionArrow",
+                    "label": "No-Reaction Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_No_Reaction"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow90",
+                    "label": "Curved Arrow (Gentle)",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Curved"
+                  },
+                  {
+                    "commandId": "tool.art.curvedArrow180",
+                    "label": "Curved Arrow (Pronounced)",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Curved_Pronounced"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookArrow",
+                    "label": "Fishhook Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Fishhook"
+                  },
+                  {
+                    "commandId": "tool.art.fishhookCurved",
+                    "label": "Curved Fishhook Arrow",
+                    "icon": "export",
+                    "assetName": "Custom_Arrow_Fishhook_Curved"
                   }
                 ],
                 "id": "arrow-tools"
@@ -2276,17 +2360,17 @@
               }
             },
             {
-              "commandId": "tool.resonanceArrow",
+              "commandId": "tool.art.resonanceArrow",
               "title": "Resonance Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Resonance",
               "category": "arrows",
-              "id": "tool.resonanceArrow",
+              "id": "tool.art.resonanceArrow",
               "kind": "button",
               "label": "Resonance Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.resonanceArrow"
+                "commandId": "tool.art.resonanceArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -2299,17 +2383,17 @@
               }
             },
             {
-              "commandId": "tool.equilibriumArrow",
+              "commandId": "tool.art.equilibriumArrow",
               "title": "Equilibrium Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Equilibrium",
               "category": "arrows",
-              "id": "tool.equilibriumArrow",
+              "id": "tool.art.equilibriumArrow",
               "kind": "button",
               "label": "Equilibrium Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.equilibriumArrow"
+                "commandId": "tool.art.equilibriumArrow"
               },
               "submenu": null,
               "tooltip": {
@@ -2322,17 +2406,17 @@
               }
             },
             {
-              "commandId": "tool.retroArrow",
+              "commandId": "tool.art.retroArrow",
               "title": "Retrosynthesis Arrow",
               "icon": "export",
               "assetName": "Custom_Arrow_Retro",
               "category": "arrows",
-              "id": "tool.retroArrow",
+              "id": "tool.art.retroArrow",
               "kind": "button",
               "label": "Retrosynthesis Arrow",
               "primary": {
                 "type": "command",
-                "commandId": "tool.retroArrow"
+                "commandId": "tool.art.retroArrow"
               },
               "submenu": null,
               "tooltip": {

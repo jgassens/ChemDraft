@@ -451,6 +451,7 @@ pub fn run() {
             plugin_storage_write,
             open_plugin_panel_window,
             open_toolset_popover,
+            prewarm_toolset_popover,
             show_toolset_tooltip_window,
             close_toolset_popover,
             set_toolset_window_focusable,
@@ -460,6 +461,7 @@ pub fn run() {
             write_clipboard_text_items,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
+            window_logical_position,
             agent_bridge_status,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
@@ -673,7 +675,14 @@ fn close_toolset_window(
     let window = app.get_webview_window(&toolset_window_label(&toolset_id));
     if let Some(window) = window.as_ref() {
         if let Some(position) = current_toolset_window_position(window) {
-            persist_toolset_position(&app, &toolset_id, position.x, position.y)?;
+            // Best-effort, exactly like the `Moved` handler. Remembering where the palette was is
+            // housekeeping; it must never be able to veto the close the user asked for. Once
+            // `update_toolset_layout_state` began propagating read errors instead of swallowing
+            // them as defaults, a `?` here meant an unreadable toolbar-state.json left the palette
+            // on screen with its menu item still checked and no state event emitted.
+            if let Err(error) = persist_toolset_position(&app, &toolset_id, position.x, position.y) {
+                eprintln!("chemdraft: could not save the position of toolset {toolset_id}: {error}");
+            }
         }
     }
 
@@ -701,12 +710,54 @@ fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindow
         .collect()
 }
 
+/// Read a file, distinguishing "not there yet" (`Ok(None)`) from a genuine read failure (`Err`).
+/// Swallowing every error as "absent" is a data-loss trap: a transient or permission read miss then
+/// looks like "no saved state", and the caller's next save overwrites the real file with defaults.
+fn read_optional_file(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Write `contents` to `path` atomically. A plain `fs::write` truncates then rewrites, so a crash or
+/// power loss mid-write can leave a partial, unparseable file. Instead write a complete sibling temp
+/// in the SAME directory (so the rename stays on one filesystem) and `rename` it over the target:
+/// `rename(2)` atomically replaces the destination, leaving either the old complete file or the new
+/// complete one, never a torn one. The temp name carries this process's pid AND a per-write counter:
+/// the pid separates ChemDraft instances, and the counter separates concurrent writes *within* one
+/// instance — Tauri runs commands on a thread pool, so a fire-and-forget autosave that outlives its
+/// debounce can overlap the next one, and a shared temp name would let writer A's rename publish
+/// writer B's half-written bytes, which is exactly the torn file this helper exists to prevent.
+fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    static WRITE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = WRITE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.{}.tmp", std::process::id(), sequence));
+    let tmp = PathBuf::from(tmp);
+    // Clean up on BOTH failure paths. The rename arm already did; the write arm did not, so a
+    // write that failed partway (a full disk, a quota) left its temp sibling behind next to the
+    // real file — and the name carries a pid and a counter, so each attempt orphaned a new one.
+    fs::write(&tmp, contents).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        error.to_string()
+    })?;
+    fs::rename(&tmp, path).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        error.to_string()
+    })
+}
+
 #[tauri::command]
 fn load_toolset_customization_state(
     app: tauri::AppHandle,
 ) -> Result<Option<serde_json::Value>, String> {
     let path = toolset_customization_state_path(&app)?;
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Some(contents) = read_optional_file(&path)? else {
         return Ok(None);
     };
 
@@ -723,18 +774,14 @@ fn save_toolset_customization_state(
     state: serde_json::Value,
 ) -> Result<(), String> {
     let path = toolset_customization_state_path(&app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 #[tauri::command]
 fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
     let path = document_session_path(&app)?;
-    let Ok(contents) = fs::read_to_string(path) else {
+    let Some(contents) = read_optional_file(&path)? else {
         return Ok(None);
     };
 
@@ -749,12 +796,8 @@ fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Val
 #[tauri::command]
 fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
     let path = document_session_path(&app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 /// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
@@ -886,10 +929,7 @@ fn plugin_storage_write(
         ));
     }
     let path = plugin_storage_path(&app, &plugin_id)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    std::fs::write(&path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -960,20 +1000,58 @@ fn open_toolset_popover(
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
     if let Some(window) = app.get_webview_window(&label) {
-        // Warm reuse: the webview already has content, so position + show immediately.
+        // Warm reuse: position it, but do NOT show yet — the palette pushes the requested content
+        // right after this call, and the popover webview reveals itself once that content has
+        // painted at the right size (getCurrentWindow().show(), permitted by
+        // core:window:allow-show). Showing here would flash whatever the webview painted last
+        // (a stale flyout, or a prewarmed window's empty shell) before the swap landed.
+        //
+        // Configure FIRST, position LAST: panel configuration (level, collection behavior)
+        // can nudge an NSWindow's frame, and the first open after a prewarm used to land the
+        // popover away from its anchor. An explicit LogicalPosition set is the final word in
+        // both the warm and cold paths.
+        configure_toolset_popover_window(&window, false)?;
         window
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|error| error.to_string())?;
-        window.show().map_err(|error| error.to_string())?;
-        configure_toolset_popover_window(&window, true)?;
         return Ok(());
     }
 
+    build_toolset_popover_window(&app, &label, &toolset_id, &kind, false, x, y)
+}
+
+/// Builds a palette's popover window hidden, before any flyout/color press needs it. The cold build
+/// is the expensive part of a popover open (a fresh webview loading the whole app bundle — easily a
+/// second or more), which used to land on the FIRST press-and-hold as a long, sometimes-gave-up-
+/// looking delay. Prewarming at palette startup moves that cost off the interaction entirely: every
+/// user-visible open then takes the warm path (reposition + content push + self-reveal, a frame or
+/// two). The `prewarm=1` route param tells the webview to stay hidden until real content arrives.
+#[tauri::command]
+fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
+    let label = toolset_popover_window_label(&toolset_id);
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+
+    build_toolset_popover_window(&app, &label, &toolset_id, "artColor", true, 0.0, 0.0)
+}
+
+fn build_toolset_popover_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    toolset_id: &str,
+    kind: &str,
+    prewarm: bool,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
     let window = WebviewWindowBuilder::new(
-        &app,
-        &label,
+        app,
+        label,
         WebviewUrl::App(
-            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}").into(),
+            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
+                .into(),
         ),
     )
     .title("ChemDraft color picker")
@@ -998,6 +1076,13 @@ fn open_toolset_popover(
     .map_err(|error| error.to_string())?;
 
     configure_toolset_popover_window(&window, false)?;
+    // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
+    // can nudge the frame, and builder-time positioning has proven less trustworthy than an
+    // explicit post-build LogicalPosition set (first opens landed away from the anchor).
+    // Prewarm builds pass (0, 0), where this is harmless — the warm open repositions.
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1044,6 +1129,30 @@ fn set_toolset_window_focusable(
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+struct WindowLogicalPosition {
+    x: f64,
+    y: f64,
+}
+
+/// The calling window's outer position in global logical coordinates, read natively.
+/// The JS route (outerPosition()/scaleFactor(), divide) proved fragile on the FIRST
+/// call in a palette webview: the popover anchored through it landed at the raw
+/// palette-local offset, as if the palette sat at the origin — and every later call
+/// was fine. Native reads have no warm-up; the window server is the source of truth.
+#[tauri::command]
+fn window_logical_position(window: tauri::WebviewWindow) -> Result<WindowLogicalPosition, String> {
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let position = window
+        .outer_position()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale);
+    Ok(WindowLogicalPosition {
+        x: position.x,
+        y: position.y,
+    })
 }
 
 const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
@@ -2446,6 +2555,10 @@ fn ensure_toolset_window<R: Runtime>(
     let label = toolset_window_label(toolset_id);
 
     if let Some(window) = app.get_webview_window(&label) {
+        // Already built — but it may have been created (or dragged) offscreen earlier, or the
+        // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
+        // so re-opening from View ▸ Toolbars is always enough to recover a lost palette.
+        recover_offscreen_toolset_window(app, &window);
         window.show().map_err(|error| error.to_string())?;
         configure_toolset_utility_window(&window, true)?;
         return Ok(());
@@ -2472,7 +2585,14 @@ fn ensure_toolset_window<R: Runtime>(
         ),
     };
     // A persisted position wins (the user moved it before); otherwise the JS-supplied default.
-    let position = persisted_toolset_position(app, toolset_id).unwrap_or(default_position);
+    // Either way it's clamped onto an attached monitor — a position saved on a display that's since
+    // been unplugged would otherwise open the palette offscreen with no way to get it back.
+    let position = clamp_toolset_position(
+        app,
+        persisted_toolset_position(app, toolset_id).unwrap_or(default_position),
+        width,
+        height,
+    );
 
     // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
     // without the manifest (the label itself is lossy).
@@ -2785,6 +2905,99 @@ fn is_routed_menu_command(command_id: &str) -> bool {
         || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
 }
 
+/// How much of a palette must land on a monitor for the user to be able to grab and move it.
+const TOOLSET_WINDOW_MIN_VISIBLE_PX: f64 = 48.0;
+
+/// A monitor's bounds in the same logical points palette positions are persisted in.
+fn monitor_logical_bounds(monitor: &tauri::Monitor) -> (f64, f64, f64, f64) {
+    let scale = monitor.scale_factor();
+    let origin = monitor.position().to_logical::<f64>(scale);
+    let size = monitor.size().to_logical::<f64>(scale);
+    (
+        origin.x,
+        origin.y,
+        origin.x + size.width,
+        origin.y + size.height,
+    )
+}
+
+/// True when the rect overlaps some attached monitor enough to be seen and dragged.
+fn toolset_position_is_reachable(
+    monitors: &[tauri::Monitor],
+    position: &ToolsetWindowPosition,
+    width: f64,
+    height: f64,
+) -> bool {
+    monitors.iter().any(|monitor| {
+        let (left, top, right, bottom) = monitor_logical_bounds(monitor);
+        let overlap_w = (position.x + width).min(right) - position.x.max(left);
+        let overlap_h = (position.y + height).min(bottom) - position.y.max(top);
+        overlap_w >= TOOLSET_WINDOW_MIN_VISIBLE_PX && overlap_h >= TOOLSET_WINDOW_MIN_VISIBLE_PX
+    })
+}
+
+/// Pull a palette position back onto an attached monitor.
+///
+/// Positions are persisted in logical points, so a toolbar last parked on an external display comes
+/// back at coordinates that no longer exist once that display is unplugged. The window is then
+/// created successfully and painted into nowhere — which reads to the user as "the toolbar won't
+/// open" even though View ▸ Toolbars shows it checked, with no UI path to recover it. Clamp onto the
+/// primary monitor (the one that's certainly present) whenever the saved spot is unreachable.
+fn clamp_toolset_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    position: ToolsetWindowPosition,
+    width: f64,
+    height: f64,
+) -> ToolsetWindowPosition {
+    let monitors = match app.available_monitors() {
+        Ok(monitors) if !monitors.is_empty() => monitors,
+        // No monitor info (headless, or the platform refused): trust the saved position rather than
+        // moving a window the user may have deliberately placed.
+        _ => return position,
+    };
+
+    if toolset_position_is_reachable(&monitors, &position, width, height) {
+        return position;
+    }
+
+    let target = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| monitors[0].clone());
+    let (left, top, right, bottom) = monitor_logical_bounds(&target);
+    // max() before min() so a palette taller/wider than the monitor still pins to the top-left
+    // corner instead of inverting to a negative offset.
+    ToolsetWindowPosition {
+        x: position.x.min(right - width).max(left),
+        y: position.y.min(bottom - height).max(top),
+    }
+}
+
+/// Move an already-built palette back onscreen if its current spot is unreachable. Best-effort: a
+/// window we can't measure or move is left exactly as it is rather than teleported on a guess.
+fn recover_offscreen_toolset_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    window: &tauri::WebviewWindow<R>,
+) {
+    let Some(position) = current_toolset_window_position(window) else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let size = size.to_logical::<f64>(scale);
+    let clamped = clamp_toolset_position(app, position.clone(), size.width, size.height);
+    if (clamped.x - position.x).abs() < 0.5 && (clamped.y - position.y).abs() < 0.5 {
+        return;
+    }
+
+    let _ = window.set_position(tauri::LogicalPosition::new(clamped.x, clamped.y));
+}
+
 fn persisted_toolset_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
@@ -2975,20 +3188,41 @@ fn update_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut ToolsetLayoutState),
 ) -> Result<(), String> {
-    let mut layout_state = load_toolset_layout_state(app);
+    // Read-then-write, so a read failure must NOT become a write. This used to swallow every read
+    // error as `default()`, and a transient failure during a window `Moved` event then wrote those
+    // defaults over toolbar-state.json -- losing every saved position and visibility. Same trap the
+    // write side was rewired to avoid; propagate instead, and the mutation is simply skipped.
+    let mut layout_state = read_toolset_layout_state(app)?;
     update(&mut layout_state);
     save_toolset_layout_state(app, &layout_state)
 }
 
-fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLayoutState {
-    let Ok(path) = toolset_layout_state_path(app) else {
-        return ToolsetLayoutState::default();
+/// What a layout-state read means, separated from where it came from so it can be tested directly.
+///
+/// Absent is not a failure: there is no file until the first save, and defaults are correct. Present
+/// but unparseable falls back to defaults too -- writes are atomic, so this is not a half-written
+/// file but genuinely unusable content, and returning defaults lets the next save repair it. An IO
+/// error is the case that must NOT turn into a value: the file may be perfectly good and merely
+/// unreadable right now, so it is returned as an error for a caller about to write to refuse on.
+fn toolset_layout_state_from_read(
+    read: Result<Option<String>, String>,
+) -> Result<ToolsetLayoutState, String> {
+    let Some(contents) = read? else {
+        return Ok(ToolsetLayoutState::default());
     };
-    let Ok(contents) = fs::read_to_string(path) else {
-        return ToolsetLayoutState::default();
-    };
+    Ok(serde_json::from_str(&contents).unwrap_or_default())
+}
 
-    serde_json::from_str(&contents).unwrap_or_default()
+fn read_toolset_layout_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<ToolsetLayoutState, String> {
+    let path = toolset_layout_state_path(app)?;
+    toolset_layout_state_from_read(read_optional_file(&path))
+}
+
+/// Best-effort read for callers that only inspect the state and never write it back.
+fn load_toolset_layout_state<R: Runtime>(app: &tauri::AppHandle<R>) -> ToolsetLayoutState {
+    read_toolset_layout_state(app).unwrap_or_default()
 }
 
 fn save_toolset_layout_state<R: Runtime>(
@@ -2996,12 +3230,8 @@ fn save_toolset_layout_state<R: Runtime>(
     layout_state: &ToolsetLayoutState,
 ) -> Result<(), String> {
     let path = toolset_layout_state_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let contents = serde_json::to_string_pretty(layout_state).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
+    write_file_atomic(&path, &contents)
 }
 
 fn toolset_layout_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
@@ -3102,6 +3332,191 @@ fn find_menu_item_by_id<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_state_read_error_never_becomes_defaults() {
+        // An absent file is not a failure: defaults are correct until the first save.
+        let absent = toolset_layout_state_from_read(Ok(None)).expect("absent is not an error");
+        assert_eq!(absent.toolsets.len(), 0);
+        assert!(absent.main_window.is_none());
+
+        // Unparseable content falls back to defaults so the next save can repair the file. Writes
+        // are atomic, so this is genuinely bad content rather than a half-written one.
+        let corrupt = toolset_layout_state_from_read(Ok(Some("{not json".to_string())))
+            .expect("corrupt content falls back to defaults");
+        assert_eq!(corrupt.toolsets.len(), 0);
+
+        // An IO error must stay an error. Turning it into defaults is what let a transient read
+        // failure during a window Moved event overwrite every saved position and visibility.
+        let failed = toolset_layout_state_from_read(Err("permission denied".to_string()));
+        assert!(failed.is_err(), "an IO error must not be reported as a usable state");
+
+        // And a good file still round-trips.
+        let saved = ToolsetLayoutState {
+            version: 1,
+            toolsets: HashMap::new(),
+            main_window: Some(MainWindowGeometry {
+                x: 12.0,
+                y: 34.0,
+                width: 800.0,
+                height: 600.0,
+            }),
+        };
+        let json = serde_json::to_string(&saved).expect("serialize");
+        let loaded = toolset_layout_state_from_read(Ok(Some(json))).expect("valid state parses");
+        assert_eq!(loaded.main_window.map(|frame| frame.x), Some(12.0));
+    }
+
+    #[test]
+    fn read_optional_file_distinguishes_absent_from_present() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-read-optional-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("state.json");
+
+        // Absent file → Ok(None), NOT an error — so a caller never mistakes a transient miss for
+        // "no saved state" and clobbers the real file with defaults.
+        expect_true(matches!(read_optional_file(&path), Ok(None)));
+
+        fs::write(&path, "{\"v\":1}").expect("seed file");
+        match read_optional_file(&path) {
+            Ok(Some(contents)) => expect_eq("{\"v\":1}", &contents),
+            other => panic!("expected Ok(Some(..)), got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_file_atomic_replaces_completely_creates_parents_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-write-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // Parent dir does not exist yet — write_file_atomic must create it.
+        let path = dir.join("nested").join("state.json");
+
+        write_file_atomic(&path, "first").expect("first write");
+        expect_eq("first", &fs::read_to_string(&path).expect("read first"));
+
+        // Overwriting a longer payload fully replaces the file (never torn).
+        write_file_atomic(&path, "second-longer-payload").expect("second write");
+        expect_eq(
+            "second-longer-payload",
+            &fs::read_to_string(&path).expect("read second"),
+        );
+
+        // No sibling temp file lingers after a successful commit.
+        let leftover_temps = fs::read_dir(path.parent().expect("parent"))
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        expect_eq(&0usize.to_string(), &leftover_temps.to_string());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_to_one_path_never_publish_a_torn_file() {
+        // Tauri runs commands on a thread pool, so two writes to the same path can overlap inside
+        // one process. With a pid-only temp name they shared a temp file and one rename could
+        // publish the other's half-written bytes; the per-write counter keeps them separate.
+        let dir = std::env::temp_dir().join(format!("chemdraft-write-concurrent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("state.json");
+        let short = "s".repeat(64);
+        let long = "L".repeat(64_000);
+
+        let mut handles = Vec::new();
+        for index in 0..8 {
+            let path = path.clone();
+            let payload = if index % 2 == 0 { short.clone() } else { long.clone() };
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..12 {
+                    write_file_atomic(&path, &payload).expect("concurrent write");
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("writer thread");
+        }
+
+        // Whatever landed last, it must be exactly one of the complete payloads — never a splice.
+        let final_contents = fs::read_to_string(&path).expect("read final");
+        if final_contents != short && final_contents != long {
+            panic!(
+                "torn write: {} bytes matching neither payload",
+                final_contents.len()
+            );
+        }
+
+        let leftover_temps = fs::read_dir(path.parent().expect("parent"))
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        expect_eq(&0usize.to_string(), &leftover_temps.to_string());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Every custom command registered with `generate_handler!` needs BOTH a generated permission
+    /// file and a capability grant, or Tauri's deny-by-default ACL rejects the invoke — and because
+    /// the JS side swallows invoke rejections, the feature simply does nothing with no error
+    /// anywhere. That is how the popover reveal and cold-start "Open With" each shipped broken. This
+    /// cross-checks the registered list against both, so the next omission fails here instead of in
+    /// a user's hands. (build.rs's list only *generates* the permission files, which are committed,
+    /// so it is deliberately not the thing asserted.)
+    #[test]
+    fn registered_commands_have_permissions_and_capability_grants() {
+        let lib_source = include_str!("lib.rs");
+        let capability = include_str!("../capabilities/default.json");
+
+        let handler_start = lib_source
+            .find("generate_handler![")
+            .expect("generate_handler! invocation");
+        let handler_body = &lib_source[handler_start..];
+        let handler_end = handler_body.find(']').expect("generate_handler! close");
+        let registered: Vec<String> = handler_body[.."generate_handler![".len() + handler_end]
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let name = line.trim().trim_end_matches(',').trim();
+                // Module-qualified commands (export::, fonts::) carry their own permissions.
+                if name.is_empty()
+                    || name.contains("::")
+                    || name.contains('[')
+                    || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .collect();
+        assert!(
+            registered.len() > 10,
+            "expected to parse the handler list, got {registered:?}"
+        );
+
+        let permissions_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("permissions")
+            .join("autogenerated");
+        for command in registered {
+            let permission_file = permissions_dir.join(format!("{command}.toml"));
+            assert!(
+                permission_file.exists(),
+                "command `{command}` is registered but has no generated permission at {}; add it to \
+                 build.rs's app-manifest list so the permission is generated",
+                permission_file.display()
+            );
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                capability.contains(&format!("\"{permission}\"")),
+                "command `{command}` is registered but `{permission}` is not granted in \
+                 capabilities/default.json, so every invoke is denied and the JS silently swallows it"
+            );
+        }
+    }
 
     #[test]
     fn toolset_window_labels_are_stable_and_sanitized() {

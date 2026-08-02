@@ -13,6 +13,7 @@ import {
   type VisualEffect
 } from "@chemdraft/chem-core";
 import {
+  atomDisplayLabel,
   nativeMoleculeAtomIndicatorStyle,
   nativeMoleculeBondDrawingStyle,
   nativeMoleculeRings
@@ -107,6 +108,10 @@ export interface MoleculeInspectorAtomLabelsModel {
   enabled: boolean;
   targetCount: number;
   targetKind: "molecule" | "atom";
+  /** Whether toggling implicit hydrogens would change anything the canvas draws. Plain bonded
+   *  carbons render no label at all, so on a skeletal structure the control is inert — surfaces
+   *  say so instead of offering a toggle whose effect never appears. */
+  implicitHydrogensAffectLabels: boolean;
   values: {
     fontFamily: ArtInspectorMixedValue<string>;
     fontFace: ArtInspectorMixedValue<MoleculeInspectorFontFace>;
@@ -448,6 +453,7 @@ function createAtomLabelsModel(
     enabled: entries.length > 0,
     targetCount: entries.length,
     targetKind,
+    implicitHydrogensAffectLabels: implicitHydrogensAffectLabels(targetObjects, atomLabelTargets),
     values: {
       fontFamily: uniformValue(entries, (style) => style.atomLabelFontFamily, fallback.atomLabelFontFamily),
       fontFace: uniformValue(
@@ -819,6 +825,44 @@ function clampUnit(value: number): number {
 
 function fontFacesEqual(first: MoleculeInspectorFontFace, second: MoleculeInspectorFontFace): boolean {
   return first.weight === second.weight && first.style === second.style;
+}
+
+/**
+ * Would toggling implicit hydrogens change anything the canvas draws? Only labelled atoms carry an
+ * H count — `atomDisplayLabel` returns undefined for a plain bonded carbon, so a skeletal structure
+ * has nothing to attach hydrogens to until a heteroatom, an isolated atom, or shown terminal
+ * carbons puts a label on screen. Decided by diffing the renderer's OWN label function across both
+ * settings, so this can never drift from what is actually drawn.
+ */
+function implicitHydrogensAffectLabels(
+  targetObjects: readonly MoleculeObject[],
+  atomLabelTargets: readonly MoleculeInspectorAtomLabelTarget[]
+): boolean {
+  const scopedAtomKeys = atomLabelTargets.length > 0
+    ? new Set(atomLabelTargets.map((target) => `${target.objectId}\0${target.atomId}`))
+    : undefined;
+
+  return targetObjects.some((object) =>
+    object.atoms.some((atom) => {
+      if (scopedAtomKeys && !scopedAtomKeys.has(`${object.id}\0${atom.id}`)) {
+        return false;
+      }
+      const style = nativeMoleculeAtomLabelStyle(object, atom.id);
+      const shown = atomDisplayLabel(
+        atom,
+        object.bonds,
+        { ...style, atomLabelHideImplicitHydrogens: false },
+        object.atoms
+      );
+      const hidden = atomDisplayLabel(
+        atom,
+        object.bonds,
+        { ...style, atomLabelHideImplicitHydrogens: true },
+        object.atoms
+      );
+      return shown !== hidden;
+    })
+  );
 }
 
 function nativeMoleculeAtomLabelStyle(object: MoleculeObject, atomId: string) {

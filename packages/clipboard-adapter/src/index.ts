@@ -291,7 +291,11 @@ export function detectMolfileFormat(text: string): ClipboardMolfileFormat | unde
     return undefined;
   }
 
-  if (/\bV3000\b/.test(normalized) || normalized.includes("M  V30 ")) {
+  // "V3000" alone is not evidence: it appears in ordinary prose (a spectrometer model, a filename),
+  // and classifying prose as a molfile sent it to a parser that throws. Require the structural
+  // marker a real V3000 molfile always carries — its "M  V30 " block lines, or at minimum the
+  // "M  END" terminator the V2000 branch below already insists on.
+  if (normalized.includes("M  V30 ") || (/\bV3000\b/.test(normalized) && normalized.includes("M  END"))) {
     return "molfile-v3000";
   }
   if (/\bV2000\b/.test(normalized) && normalized.includes("M  END")) {
@@ -443,8 +447,51 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   };
 }
 
+/**
+ * Strip the "M  V30 " prefix and rejoin wrapped lines.
+ *
+ * V3000 keeps lines within 80 columns by ending a wrapped one with "-" and continuing it on the
+ * next "M  V30 " line; the "-" is the marker, not data. Splitting on newlines without rejoining
+ * dropped everything past the wrap, so an atom whose CHG= or CFG= fell just past the limit pasted
+ * as neutral or unstereo — silently, because the truncated line still parses.
+ */
+function joinV3000ContinuationLines(rawLines: readonly string[]): string[] {
+  const joined: string[] = [];
+  let pending: string | undefined;
+  for (const raw of rawLines) {
+    const isBlockLine = /^M  V30(\s|$)/.test(raw);
+    const body = raw.replace(/^M  V30\s+/, "").trim();
+    if (pending !== undefined) {
+      if (!isBlockLine) {
+        // A continuation must be followed by another block line; anything else means the file is
+        // malformed. Keep what was read rather than swallowing it.
+        joined.push(pending, body);
+        pending = undefined;
+        continue;
+      }
+      const merged = pending + body;
+      if (merged.endsWith("-")) {
+        pending = merged.slice(0, -1);
+      } else {
+        joined.push(merged);
+        pending = undefined;
+      }
+      continue;
+    }
+    if (isBlockLine && body.endsWith("-")) {
+      pending = body.slice(0, -1);
+      continue;
+    }
+    joined.push(body);
+  }
+  if (pending !== undefined) {
+    joined.push(pending);
+  }
+  return joined;
+}
+
 function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
-  const lines = molfile.split("\n").map((line) => line.replace(/^M  V30\s+/, "").trim());
+  const lines = joinV3000ContinuationLines(molfile.split("\n"));
   const warnings: ClipboardTransferWarning[] = [];
   let section: "atom" | "bond" | undefined;
   const atoms: ParsedClipboardAtom[] = [];

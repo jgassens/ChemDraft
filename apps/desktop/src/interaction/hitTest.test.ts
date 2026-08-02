@@ -458,7 +458,11 @@ describe("hit provenance (invariant #5)", () => {
   });
 });
 
-describe("resolveSelectionHit", () => {
+// NOT the shipped ring press. `resolveSelectionHit` has no caller yet; the app presses rings via
+// `nativeMoleculeRingSelectionFromPointerTarget`, covered in `ringPress.dom.test.ts`. These cases
+// pin the behaviour this resolver is intended to bring when it is adopted — read them as a spec,
+// not as evidence that ring selection works today.
+describe("resolveSelectionHit (not yet wired — intended behaviour)", () => {
   function benzene() {
     const document = insertNativeTemplateMolecule(createPhase4Document("ring-hit"), { x: 240, y: 240 }, "benzene");
     const molecule = document.pages[0].objects[0];

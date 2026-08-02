@@ -8,7 +8,12 @@ import {
   deleteGraphicPathNode,
   editGraphicCornerRadius,
   editGraphicMarkerSize,
+  MARKER_SIZE_STEP_PX,
   editGraphicPathGeometry,
+  graphicEquilibriumGeometry,
+  graphicEquilibriumHandlePoints,
+  graphicDualShaftScaleHandlePoint,
+  EQUILIBRIUM_SHAFT_HANDLE_INSET_PX,
   graphicCornerRadiusEditPoint,
   graphicObjectIntersectsPolygon,
   graphicPathEditPoints,
@@ -509,6 +514,177 @@ describe("art-engine native art planning", () => {
     expect(plan.visiblePathD).not.toContain("L 79 43");
   });
 
+  it("samples a click-placed wavy line along the wave it actually draws", () => {
+    // Two generators disagreed. The renderer drew a click-placed wavy line as a horizontal 3-hump
+    // wave across the frame; the sampler always walked `wavyLinePoints` between the frame's
+    // endpoints, i.e. corner to corner. Sampling only kicks in once a marker exists, so adding an
+    // arrowhead in the inspector visibly flipped the wave from horizontal to diagonal and aimed the
+    // head down-right. Hit-testing followed the sampler, so it missed the drawn stroke too.
+    const wavy = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 60,
+      data: { artPathKind: "wavy", markerEnd: { kind: "filled-arrow", sizePx: 12 } }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(wavy, { coordinateSpace: "local" });
+    if (!plan.visiblePathD || !plan.markerEndTerminal) {
+      throw new Error("Expected a visible wavy path and an end terminal.");
+    }
+
+    // The drawn wave oscillates about the vertical middle (y = 30) by at most the amplitude, so no
+    // point on it can reach the frame's corners.
+    const drawn = [...plan.visiblePathD.matchAll(/[ML] (-?[\d.]+) (-?[\d.]+)/g)].map((match) => ({
+      x: Number(match[1]),
+      y: Number(match[2])
+    }));
+    expect(drawn.length).toBeGreaterThan(4);
+    for (const point of drawn) {
+      expect({ y: point.y, withinWave: Math.abs(point.y - 30) <= 16 }).toEqual({
+        y: point.y,
+        withinWave: true
+      });
+    }
+
+    // And the head sits at the right-hand end travelling roughly horizontally, not into a corner.
+    expect(plan.markerEndTerminal.point.x).toBeGreaterThan(150);
+    expect(Math.abs(plan.markerEndTerminal.point.y - 30)).toBeLessThanOrEqual(16);
+    // It follows the wave's own tangent at the end of the last hump, so it is not perfectly
+    // horizontal — but it must travel more across than down, unlike the 0.58/0.81 diagonal before.
+    expect(plan.markerEndTerminal.direction.x).toBeGreaterThan(Math.abs(plan.markerEndTerminal.direction.y));
+  });
+
+  it("strips arrow identity when a line arrow is split into a polyline", () => {
+    // PLANS.md Thread C states that splitting "converts arrows to plain polylines and destroys
+    // their arrow identity", and anchor-point editing is kept out of the arrow toolbar on exactly
+    // that promise. Nothing implemented it: the split deleted only the line/arc fields, so the
+    // result stayed a tagged arrow — one that still exported as ArrowType="FullHead", silently
+    // dropping the bend, and whose dualShaft flags now described geometry it no longer had.
+    const arrow = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        artToolId: "tool.art.reactionArrow",
+        lineStart: { x: 10, y: 20 },
+        lineEnd: { x: 190, y: 20 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 },
+        markerStart: { kind: "filled-arrow", sizePx: 16 },
+        dualShaft: true,
+        dualShaftGapPx: 5,
+        shaftMark: "cross",
+        shaftMarkSizePx: 12
+      }
+    } satisfies GraphicObject;
+
+    const split = splitGraphicPathSegmentAtPoint(arrow, { x: 100, y: 20 }, { maxDistancePx: 12 });
+    if (!split) {
+      throw new Error("Expected the arrow to split at its midpoint.");
+    }
+
+    expect(split.object.data.artPathKind).toBe("polyline");
+    expect(split.object.data.pathNodes).toHaveLength(3);
+    expect(split.object.data.artToolId).toBeUndefined();
+    expect(split.object.data.markerStart).toBeUndefined();
+    expect(split.object.data.markerEnd).toBeUndefined();
+    expect(split.object.data.dualShaft).toBeUndefined();
+    expect(split.object.data.dualShaftGapPx).toBeUndefined();
+    expect(split.object.data.shaftMark).toBeUndefined();
+    expect(split.object.data.shaftMarkSizePx).toBeUndefined();
+  });
+
+  it("ignores a stored path that is in page coordinates when bounding the frame", () => {
+    // `data.pathD` is not guaranteed to be in the object's LOCAL space, so
+    // `svgPathLocalSamplePoints` refuses a path whose bbox sits outside the frame and returns [].
+    // The bounds helper appended that same path's bbox corners anyway, so page coordinates reached
+    // a caller that projects them as local: frame bounds, selection chrome and transform handles
+    // all landed hundreds of pixels off the object.
+    const base = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 400,
+      y: 300,
+      width: 100,
+      height: 60,
+      style: { ...baseGraphic.style, tiltXDegrees: 20 }
+    } as const;
+
+    // The same stroke expressed both ways: once in the object's local frame, once in page space.
+    const local = planNativeArtVisual(
+      { ...base, data: { pathD: "M 0 0 L 100 60" } } satisfies GraphicObject,
+      { coordinateSpace: "local" }
+    );
+    const pageSpace = planNativeArtVisual(
+      { ...base, data: { pathD: "M 400 300 L 500 360" } } satisfies GraphicObject,
+      { coordinateSpace: "local" }
+    );
+
+    // Local frame bounds start at the object's own origin, never at its page position.
+    expect(local.frameBounds.x).toBeCloseTo(0, 3);
+    expect(pageSpace.frameBounds.x).toBeCloseTo(0, 3);
+    expect(pageSpace.frameBounds.y).toBeLessThan(base.height);
+    expect(pageSpace.frameBounds.width).toBeLessThanOrEqual(base.width + 1);
+  });
+
+  it("samples a polyline along its own path, not around its bounding box", () => {
+    // svgPathSamplePoints appended the four bbox corners to the ordered sample list, so a bent
+    // polyline's samples jumped off the stroke and back: the visible path scribbled a rectangle and
+    // the arrowhead landed on a bbox corner rather than the path end. Hit-testing walked the same
+    // phantom segments, reporting hits in empty regions along the box edges.
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 120,
+      data: {
+        artPathKind: "polyline",
+        pathNodes: [
+          { point: { x: 10, y: 10 } },
+          { point: { x: 10, y: 110 } },
+          { point: { x: 190, y: 110 } }
+        ],
+        markerEnd: { kind: "filled-arrow", sizePx: 12 }
+      }
+    } satisfies GraphicObject;
+
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "local" });
+    if (!plan.visiblePathD || !plan.markerEndTerminal) {
+      throw new Error("Expected a visible path and an end terminal.");
+    }
+
+    // The L goes down the left edge then along the bottom, so it never visits the top-right corner
+    // (190, 10). The appended bbox corners made the visible stroke jump back to the origin and
+    // trace the box: "... L 190 110 L 10 10 L 190 10 L 190 110 ...".
+    expect(plan.visiblePathD).not.toContain("L 190 10 ");
+
+    // Every point on the visible stroke must sit on one of the two legs.
+    const drawn = [...plan.visiblePathD.matchAll(/[ML] (-?[\d.]+) (-?[\d.]+)/g)].map((match) => ({
+      x: Number(match[1]),
+      y: Number(match[2])
+    }));
+    expect(drawn.length).toBeGreaterThan(4);
+    for (const point of drawn) {
+      const onLeftLeg = Math.abs(point.x - 10) < 1.5 && point.y >= 9 && point.y <= 111;
+      const onBottomLeg = Math.abs(point.y - 110) < 1.5 && point.x >= 9 && point.x <= 191;
+      expect({ point, onPath: onLeftLeg || onBottomLeg }).toEqual({ point, onPath: true });
+    }
+
+    // The head belongs at the far end of the path pointing along it — the phantom segments put it
+    // at the bottom-LEFT corner aiming left, i.e. the wrong end of the arrow entirely.
+    expect(plan.markerEndTerminal.point.x).toBeCloseTo(190, 0);
+    expect(plan.markerEndTerminal.point.y).toBeCloseTo(110, 0);
+    expect(plan.markerEndTerminal.direction.x).toBeGreaterThan(0.9);
+  });
+
   it("keeps resized curved arrow shafts inside filled heads without adding connector strokes", () => {
     const graphic = {
       ...baseGraphic,
@@ -572,6 +748,475 @@ describe("art-engine native art planning", () => {
       kind: "filled-arrow",
       sizePx: 24
     });
+  });
+
+  it("plans an equilibrium arrow as two opposed half-shafts with independent lengths", () => {
+    const equilibrium = (extra: Record<string, unknown> = {}) => ({
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftGapPx: 8,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 },
+        ...extra
+      }
+    }) as GraphicObject;
+
+    const geometry = graphicEquilibriumGeometry(equilibrium());
+    if (!geometry) {
+      throw new Error("Expected equilibrium geometry.");
+    }
+    // The shafts straddle the axis pointing opposite ways, forward above and reverse below — the
+    // conventional layout, which also puts each half-arrow's barb on the outside of the pair.
+    expect(geometry.forward.start).toEqual({ x: 0, y: 16 });
+    expect(geometry.forward.end).toEqual({ x: 100, y: 16 });
+    expect(geometry.forward.direction).toEqual({ x: 1, y: 0 });
+    expect(geometry.reverse.start).toEqual({ x: 100, y: 24 });
+    expect(geometry.reverse.end).toEqual({ x: 0, y: 24 });
+    expect(geometry.reverse.direction.x).toBe(-1);
+    expect(geometry.reverse.direction.y).toBeCloseTo(0, 10);
+
+    // At full length each head lands on the axis endpoint, so the length handles are seated back
+    // along their shafts — otherwise they would stack on the endpoint handles and never win a press.
+    const handles = graphicEquilibriumHandlePoints(equilibrium());
+    expect(handles?.forward.x).toBeCloseTo(100 - EQUILIBRIUM_SHAFT_HANDLE_INSET_PX, 6);
+    expect(handles?.reverse.x).toBeCloseTo(EQUILIBRIUM_SHAFT_HANDLE_INSET_PX, 6);
+
+    // Each direction's length is independent — an equilibrium's two sides are rarely equal — but a
+    // shorter shaft stays centred on the axis rather than sliding to one end.
+    const lopsided = graphicEquilibriumGeometry(equilibrium({ dualShaftForwardFrac: 0.4 }));
+    expect(lopsided?.forward.start.x).toBeCloseTo(30, 6);
+    expect(lopsided?.forward.end.x).toBeCloseTo(70, 6);
+    const forwardCentre = ((lopsided?.forward.start.x ?? 0) + (lopsided?.forward.end.x ?? 0)) / 2;
+    const reverseCentre = ((lopsided?.reverse.start.x ?? 0) + (lopsided?.reverse.end.x ?? 0)) / 2;
+    expect(forwardCentre).toBeCloseTo(50, 6);
+    expect(reverseCentre).toBeCloseTo(50, 6);
+
+    // Both shafts render in one two-subpath `d`, and the marker terminals sit at the two heads.
+    const plan = planNativeArtVisual(equilibrium(), { coordinateSpace: "page" });
+    expect((plan.pathD ?? "").match(/M/g)?.length).toBe(2);
+    expect(plan.markerEndTerminal?.point).toEqual(geometry.forward.end);
+    expect(plan.markerStartTerminal?.point).toEqual(geometry.reverse.end);
+    expect(plan.markerHandles.map((handle) => handle.id).sort()).toEqual(["markerEnd", "markerStart"]);
+  });
+
+  it("plans a retrosynthetic arrow as two parallel shafts under one head", () => {
+    const retro = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftParallel: true,
+        dualShaftGapPx: 5,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 }
+      }
+    } as GraphicObject;
+
+    const geometry = graphicEquilibriumGeometry(retro);
+    if (!geometry) {
+      throw new Error("Expected retrosynthetic geometry.");
+    }
+    // Both shafts run the SAME way (unlike an equilibrium's opposed halves), straddling the axis...
+    expect(geometry.forward.direction).toEqual(geometry.reverse.direction);
+    expect(geometry.forward.start).toEqual({ x: 0, y: 17.5 });
+    expect(geometry.reverse.start).toEqual({ x: 0, y: 22.5 });
+    // ...under a single head centred on the axis end, spanning them.
+    expect(geometry.head?.point).toEqual({ x: 100, y: 20 });
+
+    // Four subpaths: two shafts plus the two head arms — the "=>" head is path geometry, not a
+    // marker, because an axis-centred marker can never span both shafts.
+    const plan = planNativeArtVisual(retro, { coordinateSpace: "page" });
+    const subpaths = (plan.pathD ?? "").split("M").map((part) => part.trim()).filter(Boolean);
+    expect(subpaths).toHaveLength(4);
+    // Arms start at the tip and sweep back past both shafts (shafts at y=17.5/22.5; arms reach ±7).
+    expect(subpaths[2]).toBe("100 20 L 90 13");
+    expect(subpaths[3]).toBe("100 20 L 90 27");
+    expect(plan.markerEnd).toBeUndefined();
+    expect(plan.markerHandles).toHaveLength(0);
+
+    // The two halves are one arrow, so there are no independent shaft-length handles to offer.
+    expect(graphicEquilibriumHandlePoints(retro)).toBeUndefined();
+    expect(editGraphicPathGeometry(retro, "shaft:forward", { x: 60, y: 20 })).toBeUndefined();
+  });
+
+  it("resizes an equilibrium arrow from its middle knob: gap, harpoons, and seats together", () => {
+    const equilibrium = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftGapPx: 8,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    } as GraphicObject;
+
+    // The knob sits off the axis and its distance reads as the scale — same idiom as retrosynthetic.
+    expect(graphicDualShaftScaleHandlePoint(equilibrium)).toEqual({ x: 50, y: 8 });
+    const bigger = editGraphicPathGeometry(equilibrium, "middle", { x: 50, y: -4 });
+    if (!bigger) {
+      throw new Error("Expected a resized equilibrium arrow.");
+    }
+    expect(bigger.data.dualShaftScale).toBeCloseTo(2, 3);
+
+    // Gap doubles...
+    const gap = (object: GraphicObject) => {
+      const geometry = graphicEquilibriumGeometry(object)!;
+      return Math.abs(geometry.forward.start.y - geometry.reverse.start.y);
+    };
+    expect(gap(bigger)).toBeCloseTo(gap(equilibrium) * 2, 3);
+
+    // ...both harpoon heads double with it...
+    const planBefore = planNativeArtVisual(equilibrium, { coordinateSpace: "page" });
+    const planAfter = planNativeArtVisual(bigger, { coordinateSpace: "page" });
+    expect(planAfter.markerStart?.sizePx).toBeCloseTo((planBefore.markerStart?.sizePx ?? 0) * 2, 3);
+    expect(planAfter.markerEnd?.sizePx).toBeCloseTo((planBefore.markerEnd?.sizePx ?? 0) * 2, 3);
+
+    // ...and the shaft-length seats slide back so they stay at the base of the grown heads.
+    const seatBefore = graphicEquilibriumHandlePoints(equilibrium)!;
+    const seatAfter = graphicEquilibriumHandlePoints(bigger)!;
+    expect(100 - seatAfter.forward.x).toBeCloseTo((100 - seatBefore.forward.x) * 2, 3);
+
+    // Per-shaft length dragging still works at the new scale, measuring through the scaled seat.
+    const shortened = editGraphicPathGeometry(bigger, "shaft:forward", { x: 60, y: 44 });
+    expect(shortened?.data.dualShaftForwardFrac).toBeCloseTo((2 * (60 - 50 + 32)) / 100, 3);
+
+    // The middle knob never bends the axis.
+    expect(bigger.data.pathControlPoint).toBeUndefined();
+  });
+
+  it("resizes a retrosynthetic arrow from its middle knob, keeping the proportions", () => {
+    const retro = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftParallel: true,
+        dualShaftGapPx: 5,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 }
+      }
+    } as GraphicObject;
+
+    // The knob sits off the axis at a distance that tracks the scale, so grabbing it never jumps.
+    expect(graphicDualShaftScaleHandlePoint(retro)).toEqual({ x: 50, y: 8 });
+
+    // Dragging it to twice that distance doubles the arrow: shaft gap and head grow together.
+    const bigger = editGraphicPathGeometry(retro, "middle", { x: 50, y: -4 });
+    if (!bigger) {
+      throw new Error("Expected a resized retrosynthetic arrow.");
+    }
+    expect(bigger.data.dualShaftScale).toBeCloseTo(2, 3);
+    expect(graphicDualShaftScaleHandlePoint(bigger)).toEqual({ x: 50, y: -4 });
+
+    const before = graphicEquilibriumGeometry(retro)!;
+    const after = graphicEquilibriumGeometry(bigger)!;
+    const gap = (g: NonNullable<ReturnType<typeof graphicEquilibriumGeometry>>) =>
+      Math.abs(g.forward.start.y - g.reverse.start.y);
+    expect(gap(after)).toBeCloseTo(gap(before) * 2, 3);
+
+    const subpathsOf = (object: GraphicObject) =>
+      (planNativeArtVisual(object, { coordinateSpace: "page" }).pathD ?? "")
+        .split("M").map((part) => part.trim()).filter(Boolean);
+    const armReach = (object: GraphicObject) => {
+      const [, armY] = subpathsOf(object)[2]!.split("L")[1]!.trim().split(" ").map(Number);
+      return Math.abs(20 - armY!);
+    };
+    expect(armReach(bigger)).toBeCloseTo(armReach(retro) * 2, 3);
+
+    // The shafts stop where the head arms cross them AT EVERY SCALE — with a fixed trim, growing the
+    // head sent the shafts spearing straight through the V. Where an arm crosses a shaft's offset:
+    // x = tip - back * (halfGap / reach); each shaft must end there, not past it.
+    for (const object of [retro, bigger]) {
+      const subpaths = subpathsOf(object);
+      const geometry = graphicEquilibriumGeometry(object)!;
+      const halfGap = Math.abs(geometry.forward.start.y - geometry.reverse.start.y) / 2;
+      const armEnd = subpaths[2]!.split("L")[1]!.trim().split(" ").map(Number);
+      const back = 100 - armEnd[0]!;
+      const reach = Math.abs(20 - armEnd[1]!);
+      const crossingX = 100 - back * (halfGap / reach);
+      for (const shaftIndex of [0, 1]) {
+        const shaftEndX = Number(subpaths[shaftIndex]!.split("L")[1]!.trim().split(" ")[0]);
+        expect(shaftEndX).toBeCloseTo(crossingX, 3);
+      }
+    }
+
+    // Resizing must never bend it — the axis of a retrosynthetic arrow stays straight.
+    expect(bigger.data.pathControlPoint).toBeUndefined();
+    expect(bigger.data.artPathKind).toBe("line");
+  });
+
+  it("stores a dual-shaft head size at the pointer, not the scale applied twice", () => {
+    // A dual-shaft arrow DISPLAYS its heads scaled by dualShaftScale, so a drag measured against the
+    // displayed handle must divide that scale back out before storing. It did not, so the stored
+    // size was the displayed distance and the head rendered at scale² of the pointer (14 -> 40
+    // stored, rendering at 80 for a 2x arrow).
+    const equilibrium = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        dualShaftScale: 2,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    } as GraphicObject;
+
+    const plan = planNativeArtVisual(equilibrium, { coordinateSpace: "page" });
+    const tip = plan.markerEndTerminal?.point;
+    if (!tip) {
+      throw new Error("Expected an end terminal.");
+    }
+    // Drag the head handle to 40px from the tip: the head should RENDER at ~40, so the stored raw
+    // size must be ~20 (40 / scale 2).
+    const dragged = editGraphicMarkerSize(equilibrium, "markerEnd", { x: tip.x - 40, y: tip.y }, { symmetric: true });
+    if (!dragged) {
+      throw new Error("Expected a resized marker.");
+    }
+    expect(dragged.data.markerEnd?.sizePx).toBeCloseTo(20, 3);
+    const draggedPlan = planNativeArtVisual(dragged, { coordinateSpace: "page" });
+    expect(draggedPlan.markerEnd?.sizePx).toBeCloseTo(40, 3);
+
+    // An unscaled arrow is unaffected by the division.
+    const plainScale = { ...equilibrium, data: { ...equilibrium.data, dualShaftScale: 1 } } as GraphicObject;
+    const plainTip = planNativeArtVisual(plainScale, { coordinateSpace: "page" }).markerEndTerminal!.point;
+    const plainDragged = editGraphicMarkerSize(plainScale, "markerEnd", { x: plainTip.x - 24, y: plainTip.y }, { symmetric: true });
+    expect(plainDragged?.data.markerEnd?.sizePx).toBeCloseTo(24, 3);
+  });
+
+  it("keeps equilibrium shaft handles invertible: an unchanged handle never moves the shaft", () => {
+    // The handle seat is capped so it can never land on the arrow's centre; at a half-shaft cap it
+    // did, so every short shaft shared one handle position and feeding that position back changed
+    // the length (0.2 -> 0.32) — the shaft jumped the instant it was grabbed.
+    const equilibriumAt = (frac: number, scale?: number) => ({
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 },
+        dualShaftForwardFrac: frac,
+        dualShaftReverseFrac: frac,
+        ...(scale === undefined ? {} : { dualShaftScale: scale })
+      }
+    } as GraphicObject);
+
+    for (const scale of [undefined, 0.5, 1.5, 2.5]) {
+      for (const frac of [0.08, 0.2, 0.35, 0.5, 0.75, 1]) {
+        const object = equilibriumAt(frac, scale);
+        const handles = graphicEquilibriumHandlePoints(object);
+        if (!handles) {
+          throw new Error("Expected equilibrium handles.");
+        }
+        for (const handle of ["shaft:forward", "shaft:reverse"] as const) {
+          const seat = handle === "shaft:forward" ? handles.forward : handles.reverse;
+          // Re-feeding the handle's own position is a no-op: editGraphicPathGeometry returns the
+          // same object when nothing changed.
+          const edited = editGraphicPathGeometry(object, handle, seat);
+          const key = handle === "shaft:forward" ? "dualShaftForwardFrac" : "dualShaftReverseFrac";
+          const nextFrac = (edited ?? object).data[key];
+          expect(
+            Math.abs(Number(nextFrac) - frac),
+            `${handle} frac ${frac} at scale ${String(scale)}`
+          ).toBeLessThan(0.01);
+        }
+      }
+    }
+  });
+
+  it("drags an equilibrium half-shaft to set only that direction's length", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 120,
+      height: 40,
+      data: {
+        artPathKind: "line",
+        dualShaft: true,
+        lineStart: { x: 0, y: 20 },
+        lineEnd: { x: 100, y: 20 },
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    } as GraphicObject;
+
+    // Shafts are centred, so a drag measures the head's distance from the midpoint (x=50) — half the
+    // shaft — and the handle's seat inset is added back so the tip tracks the cursor.
+    const fracFor = (headX: number) => (2 * (headX - 50 + EQUILIBRIUM_SHAFT_HANDLE_INSET_PX)) / 100;
+    const shortened = editGraphicPathGeometry(graphic, "shaft:forward", { x: 60, y: 44 });
+    expect(shortened?.data.dualShaftForwardFrac).toBeCloseTo(fracFor(60), 3);
+    expect(shortened?.data.dualShaftReverseFrac).toBeUndefined();
+
+    // The reverse shaft measures the other way from the same midpoint.
+    const reverse = editGraphicPathGeometry(graphic, "shaft:reverse", { x: 25, y: 4 });
+    expect(reverse?.data.dualShaftReverseFrac).toBeCloseTo(fracFor(75), 3);
+    expect(reverse?.data.dualShaftForwardFrac).toBeUndefined();
+
+    // An equilibrium's axis is straight: the middle handle resizes the arrow, never bends it.
+    const resized = editGraphicPathGeometry(graphic, "middle", { x: 50, y: 0 });
+    expect(resized?.data.pathControlPoint).toBeUndefined();
+    expect(resized?.data.artPathKind).toBe("line");
+    expect(resized?.data.dualShaftScale).toBeGreaterThan(1);
+  });
+
+  it("snaps arrowhead marker size to discrete 4px steps", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const handle = plan.markerHandles.find((candidate) => candidate.id === "markerEnd");
+    if (!handle) {
+      throw new Error("Expected marker end handle.");
+    }
+
+    // Every snapped size is a multiple of the 4px step, regardless of the exact drag distance.
+    const sizesByDistance = [18, 22, 30, 44, 60].map((distance) => {
+      const edited = editGraphicMarkerSize(graphic, "markerEnd", {
+        x: handle.terminal.point.x - handle.terminal.direction.x * distance,
+        y: handle.terminal.point.y - handle.terminal.direction.y * distance
+      });
+      const sizePx = edited?.data.markerEnd?.sizePx;
+      if (typeof sizePx !== "number") {
+        throw new Error("Expected a resized arrowhead.");
+      }
+      return sizePx;
+    });
+    for (const sizePx of sizesByDistance) {
+      expect(sizePx % MARKER_SIZE_STEP_PX).toBe(0);
+    }
+    // Larger drags never produce a smaller snapped size (monotonic, stepped).
+    for (let index = 1; index < sizesByDistance.length; index += 1) {
+      expect(sizesByDistance[index]).toBeGreaterThanOrEqual(sizesByDistance[index - 1]);
+    }
+  });
+
+  it("resizes both arrowheads symmetrically by default and only one when asked", () => {
+    const graphic = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerStart: { kind: "filled-arrow", sizePx: 16 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(graphic, { coordinateSpace: "page" });
+    const handle = plan.markerHandles.find((candidate) => candidate.id === "markerEnd");
+    if (!handle) {
+      throw new Error("Expected marker end handle.");
+    }
+    const dragPoint = {
+      x: handle.terminal.point.x - handle.terminal.direction.x * 40,
+      y: handle.terminal.point.y - handle.terminal.direction.y * 40
+    };
+
+    // Default (symmetric): dragging the end head also grows the start head to the same size.
+    const symmetric = editGraphicMarkerSize(graphic, "markerEnd", dragPoint, { symmetric: true });
+    expect(symmetric?.data.markerEnd?.sizePx).toBe(40);
+    expect(symmetric?.data.markerStart?.sizePx).toBe(40);
+
+    // Shift held (symmetric: false): only the dragged head changes.
+    const single = editGraphicMarkerSize(graphic, "markerEnd", dragPoint, { symmetric: false });
+    expect(single?.data.markerEnd?.sizePx).toBe(40);
+    expect(single?.data.markerStart?.sizePx).toBe(16);
+  });
+
+  it("plans half-arrow markers on lines and arcs with size handles", () => {
+    const fishhookLine = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        markerEnd: { kind: "half-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const linePlan = planNativeArtVisual(fishhookLine, { coordinateSpace: "page" });
+    expect(linePlan.markerEnd).toMatchObject({ kind: "half-arrow", sizePx: 16 });
+    expect(linePlan.markerEndTerminal).toBeDefined();
+    expect(linePlan.markerHandles.some((handle) => handle.id === "markerEnd")).toBe(true);
+
+    const fishhookArc = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 58,
+      height: 58,
+      data: {
+        artPathKind: "arc",
+        arcSweepRadians: Math.PI,
+        markerEnd: { kind: "half-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject;
+    const arcPlan = planNativeArtVisual(fishhookArc, { coordinateSpace: "page" });
+    expect(arcPlan.markerEnd).toMatchObject({ kind: "half-arrow", sizePx: 16 });
+    expect(arcPlan.markerEndTerminal).toBeDefined();
+    expect(arcPlan.markerHandles.some((handle) => handle.id === "markerEnd")).toBe(true);
+  });
+
+  it("plans the no-reaction cross at the shaft midpoint", () => {
+    const noReaction = {
+      ...baseGraphic,
+      graphicKind: "path",
+      width: 82,
+      height: 46,
+      data: {
+        artPathKind: "line",
+        lineStart: { x: 10, y: 20 },
+        lineEnd: { x: 74, y: 20 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 },
+        shaftMark: "cross"
+      }
+    } satisfies GraphicObject;
+    const plan = planNativeArtVisual(noReaction, { coordinateSpace: "page" });
+    expect(plan.shaftMark?.kind).toBe("cross");
+    // Midpoint of the horizontal shaft, tangent along +x.
+    expect(plan.shaftMark?.point.x).toBeCloseTo(42, 0);
+    expect(plan.shaftMark?.point.y).toBeCloseTo(20, 0);
+    expect(Math.abs(plan.shaftMark?.direction.x ?? 0)).toBeCloseTo(1, 1);
+    // No mark without the data flag.
+    const plain = planNativeArtVisual({
+      ...noReaction,
+      data: { ...noReaction.data, shaftMark: undefined }
+    }, { coordinateSpace: "page" });
+    expect(plain.shaftMark).toBeUndefined();
   });
 
   it("derives fill and corner capabilities for custom path topology", () => {

@@ -186,7 +186,7 @@ export const GraphicObjectStyleSchema = z
 
 export const GraphicMarkerSchema = z
   .object({
-    kind: z.enum(["none", "open-arrow", "filled-arrow", "bar", "dot", "diamond", "chevron"]),
+    kind: z.enum(["none", "open-arrow", "filled-arrow", "half-arrow", "bar", "dot", "diamond", "chevron"]),
     sizePx: z.number().finite().positive().optional(),
     angleDegrees: z.number().finite().optional()
   })
@@ -238,6 +238,25 @@ export const GraphicObjectDataSchema = z
     arcSweepRadians: z.number().finite().optional(),
     markerStart: GraphicMarkerSchema.optional(),
     markerEnd: GraphicMarkerSchema.optional(),
+    // Decoration drawn across the shaft midpoint ("cross" = X, the no-reaction mark).
+    shaftMark: z.enum(["cross"]).optional(),
+    // Explicit size for the shaft mark; absent = derived from stroke width (max(12, stroke×5)).
+    shaftMarkSizePx: z.number().finite().optional(),
+    // Equilibrium arrows: two parallel half-shafts pointing opposite ways along lineStart->lineEnd.
+    // `markerEnd` heads the forward (offset +normal) shaft, `markerStart` the reverse one, so head
+    // sizing rides the ordinary marker machinery. Each shaft's length is an independent fraction of
+    // the axis, because an equilibrium's two directions are rarely equal.
+    dualShaft: z.boolean().optional(),
+    // Retrosynthetic arrows: both shafts run the same way with one open head spanning them (the
+    // double-shafted "=>"), rather than the equilibrium's two opposed half-arrows.
+    dualShaftParallel: z.boolean().optional(),
+    dualShaftGapPx: z.number().finite().positive().optional(),
+    // Dual-shaft arrows: overall heft (the middle-knob resize). Scales the shaft gap together with
+    // the head(s) — a retrosynthetic's spanning head, an equilibrium's harpoon pair — so a bigger
+    // arrow keeps its proportions rather than growing heads onto hairline shafts.
+    dualShaftScale: z.number().finite().positive().optional(),
+    dualShaftForwardFrac: z.number().finite().positive().optional(),
+    dualShaftReverseFrac: z.number().finite().positive().optional(),
     cornerRadiusPx: z.number().finite().nonnegative().optional(),
     imageHref: z.string().optional(),
     imageMimeType: z.string().optional(),

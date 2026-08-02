@@ -22,6 +22,7 @@ fn main() {
             "plugin_storage_write",
             "open_plugin_panel_window",
             "open_toolset_popover",
+            "prewarm_toolset_popover",
             "show_toolset_tooltip_window",
             "close_toolset_popover",
             "set_toolset_window_focusable",
@@ -36,6 +37,9 @@ fn main() {
             "tool_palette_state",
             "route_palette_command",
             "toggle_spin3d_debugger_window",
+            "agent_bridge_status",
+            "window_logical_position",
+            "take_pending_open_document",
         ]),
     ))
     .expect("failed to run Tauri build script");

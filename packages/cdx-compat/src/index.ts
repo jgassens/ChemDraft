@@ -14,6 +14,7 @@ import {
   type CrossingOverride,
   type DocumentObject,
   type DocumentPage,
+  type GraphicMarker,
   type GraphicObject,
   type MoleculeAtom,
   type MoleculeBond,
@@ -53,7 +54,18 @@ export interface ChemDraftOpenResult {
   conflict?: ChemDraftOpenConflict;
 }
 
-export const CdxmlEnvelopeCodecVersion = "chemdraft.cdxml.v1";
+/** The codec version ChemDraft wrote while its 2D CDXML attributes were y-first. Still READ (the
+ *  embedded native payload is JSON and unaffected by the visible layer's coordinate order); its
+ *  visible layer is transposed back on import. Never written again. */
+export const CdxmlEnvelopeCodecVersionV1 = "chemdraft.cdxml.v1";
+
+/** Current codec: spec-order visible layer ("x y" points, "left top right bottom" rectangles). */
+export const CdxmlEnvelopeCodecVersion = "chemdraft.cdxml.v2";
+
+const SupportedCdxmlEnvelopeCodecVersions: ReadonlySet<string> = new Set([
+  CdxmlEnvelopeCodecVersionV1,
+  CdxmlEnvelopeCodecVersion
+]);
 export const ChemDraftObjectTagPrefix = "org.chemdraft/";
 export const ChemDraftObjectTags = {
   codecVersion: "org.chemdraft/codec-version",
@@ -83,6 +95,11 @@ const defaultCdxmlFillColor = "none";
 const defaultCdxmlLineWidthPx = 0.8;
 const defaultCdxmlBoldWidthPx = 2.68;
 const defaultCdxmlCornerRadiusFactor = 100;
+// Arrowhead sizes for imported arrows. CDXML's arrowhead attributes name a head's shape but not its
+// size, so an imported head takes the native arrow tools' default (documentWorkflow's artShapeTool
+// defaults) and is indistinguishable from a drawn one.
+const defaultCdxmlArrowheadSizePx = 16;
+const defaultCdxmlHalfArrowheadSizePx = 14;
 const standardCdxmlColorTable = [
   "#ffffff",
   "#000000",
@@ -124,6 +141,8 @@ interface CdxmlCrossingImportHint {
 }
 
 interface ImportPageContext {
+  /** Import warnings for this page, so object importers can report an approximation in place. */
+  warnings: CompatibilityConversionWarning[];
   bondRefsByCdxmlId: Map<string, BondRef>;
   zByRefKey: Map<string, number>;
   displayByRefKey: Map<string, string>;
@@ -133,7 +152,7 @@ interface ImportPageContext {
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
 type BondDisplayStyle = NonNullable<MoleculeBond["display"]>["bondStyle"];
-type CdxmlImportTransform = "none" | "rotate-counterclockwise-90";
+type CdxmlImportTransform = "none" | "transpose-legacy-v1";
 
 export function exportDocumentToCdxml(
   document: ChemDraftDocument,
@@ -227,7 +246,11 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   }
 
   const codecVersion = tags[ChemDraftObjectTags.codecVersion];
-  if (codecVersion !== CdxmlEnvelopeCodecVersion) {
+  // Accept every codec this build understands, not just the current one: v1 files keep opening
+  // exactly as they always did (their payload is the authority, and their visible layer is
+  // transposed back when it has to be imported). Read-only migration — nothing is rewritten until
+  // the user saves.
+  if (codecVersion === undefined || !SupportedCdxmlEnvelopeCodecVersions.has(codecVersion)) {
     return {
       source: "native-payload",
       warnings: [
@@ -394,7 +417,9 @@ function buildStandardColorTableXml(): string {
 function buildPageXml(page: DocumentPage, children: string): string {
   const attributes = [
     `id="${escapeXmlAttribute(page.id)}"`,
-    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.height))} ${formatNumber(cssPxToCdxml(page.width))}"`
+    // "left top right bottom": a portrait page must export as width-then-height, or every
+    // spec-conforming reader sees it as landscape.
+    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.width))} ${formatNumber(cssPxToCdxml(page.height))}"`
   ];
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
@@ -670,10 +695,148 @@ function exportGraphicObject(
 ): string {
   const graphicId = idFor(ids, graphic.id, allocator);
   warnForGraphicCdxmlLimitations(graphic, warnings);
+  // An object that came in as an <arrow> goes back out as one, even now that it is tagged as a
+  // native arrow. The element's ArrowheadHead/ArrowheadTail/ArrowheadType triple is RICHER than the
+  // closed ArrowType enum — it can say hollow, angled, or half-headed per end — so round-tripping
+  // the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
   }
+  if (isSemanticReactionArrowGraphic(graphic)) {
+    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
+  }
+  warnForGenericGraphicMarkerLoss(graphic, warnings);
   return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
+}
+
+/**
+ * The chemistry an art arrow carries that standard CDXML can name, or undefined for a plain
+ * (decorative) art arrow. Arrows are drawn with the art-arrow tools for their rich editing but
+ * carry their meaning in `artToolId`, which is how the CDXML layer knows to write/read them as
+ * chemical arrows rather than generic graphics.
+ *
+ * `fishhook` is deliberately NOT a member of `ArrowObject["arrowKind"]`. That enum describes the
+ * legacy `reaction-arrow` OBJECT, and a half-headed arrow imports as a graphic (see
+ * {@link importHalfHeadArrowAsFishhook}) — so adding a member there would invent a state no
+ * reaction-arrow object can ever hold and force a dead case into every switch over it. The question
+ * being answered here is a CDXML one, so it is keyed on the tool rather than on that enum.
+ */
+type SemanticArrowExportKind = Exclude<ArrowObject["arrowKind"], "unknown"> | "fishhook";
+
+function semanticArrowExportKind(graphic: GraphicObject): SemanticArrowExportKind | undefined {
+  if (
+    graphic.data.artToolId === "reactionArrow" ||
+    graphic.data.artToolId === "reactionArrowBold" ||
+    graphic.data.artToolId === "reactionArrowDashed"
+  ) {
+    return "forward";
+  }
+  if (graphic.data.artToolId === "resonanceArrow") {
+    return "resonance";
+  }
+  if (graphic.data.artToolId === "equilibriumArrow") {
+    return "equilibrium";
+  }
+  if (graphic.data.artToolId === "retroArrow") {
+    return "retrosynthesis";
+  }
+  // Only the straight fishhook. `fishhookCurved` is one-electron too, but this exporter writes a
+  // Start/End pair, so naming it would trade a curved pushing arrow's curvature — the whole point
+  // of it — for a label. It stays a graphic, where its arc survives.
+  if (graphic.data.artToolId === "fishhookArrow") {
+    return "fishhook";
+  }
+  return undefined;
+}
+
+function isSemanticReactionArrowGraphic(graphic: GraphicObject): boolean {
+  return semanticArrowExportKind(graphic) !== undefined;
+}
+
+/** Export a reaction/resonance-tagged art arrow as the standard CDXML reaction arrow
+ *  (`<graphic GraphicType="Line" ArrowType=…>`) so other programs read it as a reaction arrow. The
+ *  exact art geometry (arc, arrowhead size, style) still round-trips within ChemDraft via the
+ *  embedded native payload; this is purely the interop representation. */
+function exportSemanticReactionArrowGraphic(
+  graphic: GraphicObject,
+  graphicId: string,
+  warnings: CompatibilityConversionWarning[]
+): string {
+  const line = graphicLineEndpointsForCdxml(graphic);
+  const arrowKind = semanticArrowExportKind(graphic) ?? "forward";
+  const arrowType = cdxmlArrowTypeByExportKind[arrowKind];
+  // Appearance rides the same helpers every other graphic export uses; without them a dashed or
+  // coloured reaction arrow reopened elsewhere as a default solid black one, silently and with no
+  // warning. The colour helper also raises the out-of-table warning, so this path stops reporting
+  // clean on a lossy export.
+  const attributes = [
+    `id="${graphicId}"`,
+    `GraphicType="Line"`,
+    `ArrowType="${escapeXmlAttribute(arrowType)}"`,
+    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlLineTypeAttributes(graphic),
+    `BoundingBox="${formatLineBoundingBox(line.start, line.end)}"`,
+    `Start="${formatPoint(line.start)}"`,
+    `End="${formatPoint(line.end)}"`
+  ];
+  warnForSemanticArrowHeadLoss(graphic, arrowKind, warnings);
+  return `<graphic ${attributes.join(" ")}/>`;
+}
+
+/** Standard CDXML carries an arrow's heads in the closed `ArrowType` enum, so a head the user
+ *  removed or swapped (a bare tail, a bar head) cannot be represented — it reopens elsewhere as the
+ *  kind's default. Say so rather than exporting a silent lie. */
+function warnForSemanticArrowHeadLoss(
+  graphic: GraphicObject,
+  arrowKind: SemanticArrowExportKind,
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const headKind = graphic.data.markerEnd?.kind;
+  const tailKind = graphic.data.markerStart?.kind;
+  const expectsTail = arrowKind === "resonance" || arrowKind === "equilibrium";
+  const headMissing = arrowKind !== "retrosynthesis" && (headKind === undefined || headKind === "none");
+  const tailMismatch = expectsTail
+    ? tailKind === undefined || tailKind === "none"
+    : tailKind !== undefined && tailKind !== "none";
+  if (!headMissing && !tailMismatch) {
+    return;
+  }
+
+  warnings.push({
+    code: "cdxml.arrow_head_payload_only",
+    message: `Arrowhead changes on this ${arrowKind} arrow are preserved exactly only in the embedded ChemDraft payload; standard CDXML reopens it with the default heads for ArrowType.`,
+    sourceObjectId: graphic.id
+  });
+}
+
+/**
+ * The generic `<graphic>` export writes geometry and stroke only — no `ArrowType`, no arrowhead
+ * attributes, no shaft mark. Standard CDXML simply cannot name a no-reaction cross or a head on a
+ * decorative stroke, so the loss is unavoidable; going quiet about it is not. A no-reaction arrow
+ * that reopens as a plain line has had its meaning inverted, not merely simplified.
+ *
+ * The two sibling arrow paths already warn for this class ({@link warnForSemanticArrowHeadLoss},
+ * {@link warnForUnrepresentableArrowheads}); this covers the graphics that reach neither.
+ */
+function warnForGenericGraphicMarkerLoss(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const headKind = graphic.data.markerEnd?.kind;
+  const tailKind = graphic.data.markerStart?.kind;
+  const hasHead = (headKind !== undefined && headKind !== "none") || (tailKind !== undefined && tailKind !== "none");
+  const hasShaftMark = graphic.data.shaftMark !== undefined;
+  if (!hasHead && !hasShaftMark) {
+    return;
+  }
+
+  warnings.push({
+    code: "cdxml.graphic_marker_payload_only",
+    message: hasShaftMark
+      ? "This arrow's shaft mark (and any arrowhead) is preserved only in the embedded ChemDraft payload; standard CDXML has no spelling for it, so other programs will read a plain line."
+      : "This stroke's arrowhead is preserved only in the embedded ChemDraft payload; standard CDXML carries heads on reaction arrows only, so other programs will read a plain line.",
+    sourceObjectId: graphic.id
+  });
 }
 
 function warnForGraphicCdxmlLimitations(
@@ -784,13 +947,69 @@ function exportGraphicAsCdxmlArrow(
     ...cdxmlGraphicColorAttribute(graphic, warnings),
     ...cdxmlLineTypeAttributes(graphic),
     'FillType="None"',
-    'ArrowheadType="Solid"',
+    ...cdxmlArrowheadAttributes(graphic, warnings),
     ...(isArc ? [`AngularSize="${escapeXmlAttribute(cdxmlAngularSizeForGraphic(graphic))}"`] : []),
     `Head3D="${formatXyPoint(line.end)}"`,
     `Tail3D="${formatXyPoint(line.start)}"`,
     ...cdxmlLineAxisAttributes(line.start, line.end)
   ];
   return `<arrow ${attrs.join(" ")}/>`;
+}
+
+/** The write side of {@link cdxmlArrowMarkers}: name which ends are headed and how, so an arrow
+ *  keeps its head across a round trip. Every exported `<arrow>` used to claim `ArrowheadType="Solid"`
+ *  with no `ArrowheadHead`, which reads back — correctly — as a headless line.
+ *
+ *  `ArrowheadType` is written even when neither end is headed, matching what ChemDraw itself writes
+ *  for a plain line arrow. */
+function cdxmlArrowheadAttributes(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): string[] {
+  const head = cdxmlArrowheadForMarker(graphic.data.markerEnd);
+  const tail = cdxmlArrowheadForMarker(graphic.data.markerStart);
+  warnForUnrepresentableArrowheads(graphic, warnings);
+  return [
+    ...(head ? [`ArrowheadHead="${head.head}"`] : []),
+    ...(tail ? [`ArrowheadTail="${tail.head}"`] : []),
+    `ArrowheadType="${head?.type ?? tail?.type ?? "Solid"}"`
+  ];
+}
+
+function cdxmlArrowheadForMarker(marker: GraphicMarker | undefined): { head: string; type: string } | undefined {
+  switch (marker?.kind) {
+    case "filled-arrow":
+      return { head: "Full", type: "Solid" };
+    case "open-arrow":
+      return { head: "Full", type: "Angle" };
+    // CDXML's half heads are handed and the native one is not, so this picks a side rather than
+    // inventing one from geometry; the native payload carries the exact head for ChemDraft readers.
+    case "half-arrow":
+      return { head: "HalfLeft", type: "Solid" };
+    default:
+      return undefined;
+  }
+}
+
+/** CDXML's arrowhead enum covers full, half, and unfilled heads and nothing else, so the decorative
+ *  native heads have no spelling. Drop them with a warning rather than exporting a full head that
+ *  claims the user drew something they didn't. */
+function warnForUnrepresentableArrowheads(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[]
+): void {
+  const dropped = [graphic.data.markerEnd, graphic.data.markerStart].filter(
+    (marker): marker is GraphicMarker =>
+      marker !== undefined && marker.kind !== "none" && cdxmlArrowheadForMarker(marker) === undefined
+  );
+  if (dropped.length === 0) {
+    return;
+  }
+  warnings.push({
+    code: "cdxml.arrow_marker_payload_only",
+    message: `Native ${[...new Set(dropped.map((marker) => marker.kind))].join(" and ")} arrowheads have no CDXML spelling; the exported arrow has no head there, and they are preserved exactly only in the embedded ChemDraft payload.`,
+    sourceObjectId: graphic.id
+  });
 }
 
 function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line" | "Oval" | "Rectangle" | "Unknown" {
@@ -1188,6 +1407,7 @@ function importPageObjects(
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
   const objects: DocumentObject[] = [];
   const context: ImportPageContext = {
+    warnings,
     bondRefsByCdxmlId: new Map(),
     zByRefKey: new Map(),
     displayByRefKey: new Map(),
@@ -1249,90 +1469,87 @@ function applyImportTransformToPageObjects(
     return page;
   }
 
-  const bounds = boundsForDocumentObjects(page.objects);
-  const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
   return {
     ...page,
-    objects: page.objects.map((object) => rotateImportedObjectCounterclockwise90(object, center))
+    objects: page.objects.map((object) => transposeImportedObject(object))
   };
 }
 
-function rotateImportedObjectCounterclockwise90(object: DocumentObject, center: Point): DocumentObject {
+/**
+ * Undo a codec-v1 misread. ChemDraft wrote every 2D CDXML attribute y-first through v1; reading such
+ * a file with the (correct) x-first parsers yields the exact TRANSPOSE of the true geometry, so
+ * swapping x/y back recovers it — no rotation, no reflection, and it is its own inverse.
+ *
+ * This replaced a CCW-90 rotation applied to any file whose CreationProgram said "ChemDraw". That
+ * rotation existed to paper over the same y-first misread, but transpose ∘ rotation has determinant
+ * −1: the net import of a real ChemDraw file was a MIRROR. Wedge/hash geometry flipped while `AS`
+ * R/S strings imported verbatim, so the document claimed R over a depiction showing S.
+ */
+function transposeImportedObject(object: DocumentObject): DocumentObject {
+  // Codec v1 was MIXED, not uniformly y-first. `formatPoint` wrote atom and text `p` y-first, but
+  // `formatXyPoint` (Head3D/Tail3D/Center3D/MajorAxisEnd3D) and `formatXyBoundingBox` (graphic and
+  // arrow BoundingBox) wrote x-first — already spec order. `importShapeGraphic` tags everything it
+  // builds with `cdxmlCoordinateSpace: "xy"`, so that tag is the record of which half a v1 object
+  // came from, and transposing a tagged object stands a horizontal arrow on its end and turns a
+  // wide rectangle into a tall one somewhere else entirely.
   if (object.compatibility?.unknown.cdxmlCoordinateSpace === "xy") {
     return object;
   }
 
   if (object.type === "molecule") {
     const atoms = object.atoms.map((atom) => {
-      const point = rotatePointCounterclockwise90(atom, center);
+      const point = transposePoint(atom);
       if (!atom.labelOffset) {
-        return {
-          ...atom,
-          ...point
-        };
+        return { ...atom, ...point };
       }
-      const labelPoint = rotatePointCounterclockwise90({
-        x: atom.x + atom.labelOffset.x,
-        y: atom.y + atom.labelOffset.y
-      }, center);
       return {
         ...atom,
         ...point,
-        labelOffset: {
-          x: labelPoint.x - point.x,
-          y: labelPoint.y - point.y
-        }
+        labelOffset: { x: atom.labelOffset.y, y: atom.labelOffset.x }
       };
     });
-    const bounds = boundsForAtoms(atoms);
     return {
       ...object,
-      ...bounds,
+      ...boundsForAtoms(atoms),
       atoms
     };
   }
 
   if (object.type === "reaction-arrow") {
     const start = object.start.kind === "point" && object.start.point
-      ? { ...object.start, point: rotatePointCounterclockwise90(object.start.point, center) }
+      ? { ...object.start, point: transposePoint(object.start.point) }
       : object.start;
     const end = object.end.kind === "point" && object.end.point
-      ? { ...object.end, point: rotatePointCounterclockwise90(object.end.point, center) }
+      ? { ...object.end, point: transposePoint(object.end.point) }
       : object.end;
     const pointBounds = start.kind === "point" && start.point && end.kind === "point" && end.point
       ? boundsForPoints([start.point, end.point])
-      : rotateBoxCounterclockwise90(object, center);
-    return {
-      ...object,
-      ...pointBounds,
-      start,
-      end
-    };
+      : transposeBox(object);
+    return { ...object, ...pointBounds, start, end };
   }
 
-  return {
-    ...object,
-    ...rotateBoxCounterclockwise90(object, center)
-  } as DocumentObject;
+  if (object.type === "graphic") {
+    const data = { ...object.data };
+    for (const key of ["lineStart", "lineEnd", "pathControlPoint", "arcCenter"] as const) {
+      const point = data[key];
+      if (point && typeof point === "object" && typeof point.x === "number" && typeof point.y === "number") {
+        data[key] = transposePoint(point);
+      }
+    }
+    return { ...object, ...transposeBox(object), data };
+  }
+
+  return { ...object, ...transposeBox(object) } as DocumentObject;
 }
 
-function rotateBoxCounterclockwise90(
-  box: { x: number; y: number; width: number; height: number },
-  center: Point
+function transposeBox(
+  box: { x: number; y: number; width: number; height: number }
 ): { x: number; y: number; width: number; height: number } {
-  return boundsForPoints([
-    rotatePointCounterclockwise90({ x: box.x, y: box.y }, center),
-    rotatePointCounterclockwise90({ x: box.x + box.width, y: box.y }, center),
-    rotatePointCounterclockwise90({ x: box.x, y: box.y + box.height }, center),
-    rotatePointCounterclockwise90({ x: box.x + box.width, y: box.y + box.height }, center)
-  ]);
+  return { x: box.y, y: box.x, width: box.height, height: box.width };
 }
 
-function rotatePointCounterclockwise90(point: Point, center: Point): Point {
-  return {
-    x: center.x - (point.y - center.y),
-    y: center.y + (point.x - center.x)
-  };
+function transposePoint(point: Point): Point {
+  return { x: point.y, y: point.x };
 }
 
 function importFragment(
@@ -1887,6 +2104,20 @@ function importGraphic(
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
+    // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it
+    // onto a full reaction arrow asserted different chemistry, and a re-export then laundered it to
+    // ArrowType="FullHead" with nothing said. Native fishhooks are one-sided but not
+    // left/right-handed, so this is an approximation and is reported as one.
+    if (normalizedCdxmlToken(element.attributes.ArrowType) === "halfhead") {
+      return importHalfHeadArrowAsFishhook(element, pageIndex, objectIndex, context);
+    }
+    const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType);
+    // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
+    // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
+    // and unknown stay the legacy `reaction-arrow` object until they're migrated in a later pass.
+    if (arrowKind === "forward" || arrowKind === "resonance" || arrowKind === "equilibrium" || arrowKind === "retrosynthesis") {
+      return importReactionArrowAsArtArrow(element, pageIndex, objectIndex, context, arrowKind);
+    }
     const start = parseCdxmlPoint(element.attributes.Start) ?? { x: box.x, y: box.y };
     const end = parseCdxmlPoint(element.attributes.End) ?? { x: box.x + box.width, y: box.y + box.height };
     return {
@@ -1898,7 +2129,7 @@ function importGraphic(
       height: box.height,
       rotation: 0,
       style: {},
-      arrowKind: arrowKindFromCdxml(element.attributes.ArrowType),
+      arrowKind,
       start: { kind: "point", point: start },
       end: { kind: "point", point: end },
       labels: [],
@@ -1914,13 +2145,183 @@ function importGraphic(
   return importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
 }
 
+/** Import a CDXML reaction/resonance arrow as an editable art-arrow graphic (the reverse of
+ *  {@link exportSemanticReactionArrowGraphic}). Reuses the line-graphic importer for correct
+ *  geometry/style, then tags it: single filled head for a reaction (forward) arrow, heads at both
+ *  ends for a resonance arrow, plus the `artToolId` that round-trips its chemical identity. */
+function importReactionArrowAsArtArrow(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext,
+  arrowKind: "forward" | "resonance" | "equilibrium" | "retrosynthesis"
+): GraphicObject {
+  const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
+  // The two-shaft forms: equilibrium is opposed half-arrows, one head per shaft; retrosynthesis runs
+  // both shafts the same way under a single open head.
+  const equilibrium = arrowKind === "equilibrium";
+  const retro = arrowKind === "retrosynthesis";
+  // Sizes and gaps mirror the native arrow tools (documentWorkflow's artShapeTool defaults) so an
+  // imported arrow is indistinguishable from a drawn one — an imported retro arrow used to carry an
+  // 80%-wider shaft gap, and imported heads were 10px against the tools' 16px.
+  const marker = equilibrium
+    ? { kind: "half-arrow" as const, sizePx: defaultCdxmlHalfArrowheadSizePx }
+    : { kind: "filled-arrow" as const, sizePx: defaultCdxmlArrowheadSizePx };
+  const artToolId = equilibrium
+    ? "equilibriumArrow"
+    : retro
+      ? "retroArrow"
+      : arrowKind === "resonance" ? "resonanceArrow" : "reactionArrow";
+  // `LineType="Wavy"` survives only on the single-shaft arrows. The wavy generator emits ONE shaft
+  // and ignores `dualShaft`, so keeping the kind here would collapse an equilibrium's two opposed
+  // shafts — and a retrosynthetic arrow's parallel pair plus its "=>" head — into a single wavy line
+  // while `dualShaft` still claimed otherwise, trading a small loss for the arrow's whole identity.
+  const dualShaft = equilibrium || retro;
+  if (dualShaft && graphic.data.artPathKind === "wavy") {
+    context.warnings.push(
+      warning(
+        "cdxml.wavy_dual_shaft_arrow_straightened",
+        `A wavy ${arrowKind} arrow was imported with a straight shaft: its two shafts are drawn geometry, which ChemDraft cannot currently draw as a wave. The arrow's chemistry is unchanged.`
+      )
+    );
+  }
+  return {
+    ...graphic,
+    graphicKind: "path",
+    data: {
+      ...graphic.data,
+      // Only DEFAULT the path kind, as the `<arrow>` importer does. `graphicDataFromCdxmlShape` has
+      // already read `LineType="Wavy"` off this element, and `exportSemanticReactionArrowGraphic`
+      // writes that same attribute back out — so overwriting it here straightened a wavy shaft on
+      // the way in, including on files this codec had just written itself.
+      artPathKind: dualShaft ? "line" : graphic.data.artPathKind ?? "line",
+      // A retrosynthetic arrow has no marker: its "=>" head is part of the path geometry.
+      ...(retro ? {} : { markerEnd: marker }),
+      ...(arrowKind === "resonance" || equilibrium ? { markerStart: marker } : {}),
+      ...(equilibrium ? { dualShaft: true, dualShaftGapPx: 7 } : {}),
+      ...(retro ? { dualShaft: true, dualShaftParallel: true, dualShaftGapPx: 5 } : {}),
+      artToolId
+    }
+  };
+}
+
+/** Import `ArrowType="HalfHead"` as a native fishhook: a `half-arrow` head on the fishhook tool,
+ *  which is the honest representation of a one-electron arrow. It is deliberately NOT tagged as a
+ *  semantic reaction arrow — that tagging is what made a re-export write `ArrowType="FullHead"`. */
+function importHalfHeadArrowAsFishhook(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext
+): GraphicObject {
+  const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "graphic");
+  context.warnings.push(
+    warning(
+      "cdxml.half_head_arrow_import_approximation",
+      "A half-headed (fishhook) arrow was imported as ChemDraft's fishhook arrow, and exports again as ArrowType=\"HalfHead\". Its single-barb chemistry round-trips; the barb's left/right handedness does not, because native fishhook heads are one-sided but not handed."
+    )
+  );
+  return {
+    ...graphic,
+    graphicKind: "path",
+    data: {
+      ...graphic.data,
+      // Defaulted, not overwritten — as above, and for the same reason.
+      artPathKind: graphic.data.artPathKind ?? "line",
+      markerEnd: { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx },
+      artToolId: "fishhookArrow"
+    }
+  };
+}
+
+/**
+ * Import a standalone `<arrow>` as a native art arrow, the same shape the
+ * `<graphic GraphicType="Line" ArrowType=…>` path produces.
+ *
+ * ChemDraw writes reaction arrows as `<arrow>` elements; ChemDraft writes them as tagged
+ * `<graphic>` lines. Only the second path produced a real arrow, so an imported ChemDraw arrow
+ * arrived as an untagged `graphicKind: "line"` — a generic shape to everything downstream. The Main
+ * toolbar offered it the shape layout (a fill colour, for a line), `graphicObjectSupportsMarkers`
+ * requires `graphicKind === "path"` so its own head could not be edited, "Set as Default Arrow
+ * Style" did not recognise it, and it re-exported as a decorative stroke.
+ *
+ * The tool is read from the heads, which is the only chemistry an `<arrow>` states: one head is a
+ * reaction arrow, heads at both ends a resonance arrow, a single barb a fishhook. A headless
+ * `<arrow>` is left untagged — it is a line, and should not claim to be a chemical arrow — but it
+ * still becomes a path so a head can be added to it later.
+ */
 function importArrowGraphic(
   element: XmlElementView,
   pageIndex: number,
   objectIndex: number,
   context: ImportPageContext
 ): GraphicObject {
-  return importShapeGraphic(element, pageIndex, objectIndex, context, "arrow");
+  const graphic = importShapeGraphic(element, pageIndex, objectIndex, context, "arrow");
+  const markers = cdxmlArrowMarkers(element);
+  const artToolId = artToolIdForImportedArrowMarkers(markers);
+  return {
+    ...graphic,
+    graphicKind: "path",
+    data: {
+      ...graphic.data,
+      // Only default the path kind — an <arrow> can carry real geometry of its own (a wavy shaft,
+      // for one), and overwriting that would straighten it on import.
+      artPathKind: graphic.data.artPathKind ?? "line",
+      ...markers,
+      ...(artToolId === undefined ? {} : { artToolId })
+    }
+  };
+}
+
+/** The native arrow tool an imported `<arrow>` stands for, judged by which ends carry heads. */
+function artToolIdForImportedArrowMarkers(
+  markers: Pick<GraphicObject["data"], "markerStart" | "markerEnd">
+): string | undefined {
+  const head = markers.markerEnd?.kind;
+  const tail = markers.markerStart?.kind;
+  if (head === undefined && tail === undefined) {
+    return undefined;
+  }
+  // A single barb is one electron, not two — the same distinction ArrowType="HalfHead" carries.
+  if (head === "half-arrow" || tail === "half-arrow") {
+    return "fishhookArrow";
+  }
+  return head !== undefined && tail !== undefined ? "resonanceArrow" : "reactionArrow";
+}
+
+/** A standalone `<arrow>` carries its heads in three attributes rather than the closed `ArrowType`
+ *  enum a `<graphic GraphicType="Line">` reaction arrow uses: `ArrowheadHead`/`ArrowheadTail` say
+ *  which ends are headed, and `ArrowheadType` says how they are drawn. Keying only off `ArrowType`
+ *  — which an `<arrow>` element never carries — imported every ChemDraw arrow as a bare line. */
+function cdxmlArrowMarkers(element: XmlElementView): Pick<GraphicObject["data"], "markerStart" | "markerEnd"> {
+  const arrowheadType = normalizedCdxmlToken(element.attributes.ArrowheadType);
+  const markerEnd = cdxmlArrowMarker(element.attributes.ArrowheadHead, arrowheadType);
+  const markerStart = cdxmlArrowMarker(element.attributes.ArrowheadTail, arrowheadType);
+  return {
+    ...(markerEnd ? { markerEnd } : {}),
+    ...(markerStart ? { markerStart } : {})
+  };
+}
+
+function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string): GraphicMarker | undefined {
+  const head = normalizedCdxmlToken(arrowhead);
+  // An absent attribute and "Unspecified" both mean the end is unheaded — which is why ChemDraw
+  // writes a plain line arrow as `ArrowheadType="Solid"` with no `ArrowheadHead` at all.
+  if (head === "" || head === "none" || head === "unspecified") {
+    return undefined;
+  }
+  if (head === "halfleft" || head === "halfright") {
+    // Native fishhook heads are one-sided but not left/right-handed, so both spellings land on the
+    // same marker; a ChemDraft-authored arrow keeps its exact head in the embedded payload.
+    return { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx };
+  }
+  // "Full" (and any head spelling this build doesn't know) draws a head; `ArrowheadType` picks which
+  // one. "Hollow" and "Angle" are both unfilled, and `open-arrow` is the nearest native head to
+  // either; an unstated type means ChemDraw's default solid head.
+  return {
+    kind: arrowheadType === "hollow" || arrowheadType === "angle" ? "open-arrow" : "filled-arrow",
+    sizePx: defaultCdxmlArrowheadSizePx
+  };
 }
 
 function importShapeGraphic(
@@ -1977,10 +2378,12 @@ function graphicTypeForCdxmlArrow(element: XmlElementView): string {
 }
 
 function cdxmlLinePointsForShape(element: XmlElementView): { start: Point; end: Point } | undefined {
-  // Tail3D/Head3D are 3D "x y z" attributes; Start/End are 2D "y x" position attributes (see
-  // formatPoint). They must be parsed with matching coordinate order or the endpoints transpose.
-  const tail = parseCdxmlXyPoint(element.attributes.Tail3D) ?? parseCdxmlYxPoint(element.attributes.Start);
-  const head = parseCdxmlXyPoint(element.attributes.Head3D) ?? parseCdxmlYxPoint(element.attributes.End);
+  // Tail3D/Head3D are 3D "x y z"; Start/End are 2D "x y". Both are x-first, so one parser order
+  // serves all four — the real ChemDraw file that settled this carries an <arrow> with Head3D
+  // "341 232 0" / Tail3D "260 232 0" and a BoundingBox "260 227.62 341 235.38" that only agrees
+  // with those endpoints read left-top-right-bottom.
+  const tail = parseCdxmlXyPoint(element.attributes.Tail3D) ?? parseCdxmlXyPoint(element.attributes.Start);
+  const head = parseCdxmlXyPoint(element.attributes.Head3D) ?? parseCdxmlXyPoint(element.attributes.End);
   return tail && head ? { start: tail, end: head } : undefined;
 }
 
@@ -2537,11 +2940,13 @@ function elementFromCdxmlAtom(element: string | undefined): string {
   return element;
 }
 
+/** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our
+ *  own v2 output) writes spec order and needs no correction. Keyed off the codec tag rather than
+ *  CreationProgram so a foreign file can never be transposed by accident. */
 function importTransformForTree(tree: OrderedXmlTree): CdxmlImportTransform {
-  const root = findElements(tree, "CDXML")[0];
-  const creationProgram = root?.attributes.CreationProgram ?? "";
-  return /\bChemDraw\b/i.test(creationProgram)
-    ? "rotate-counterclockwise-90"
+  const tags = findChemDraftObjectTags(tree);
+  return tags[ChemDraftObjectTags.codecVersion] === CdxmlEnvelopeCodecVersionV1
+    ? "transpose-legacy-v1"
     : "none";
 }
 
@@ -2595,8 +3000,11 @@ function formatColorComponent(value: number): string {
   return formatNumber(Math.max(0, Math.min(255, value)) / 255);
 }
 
+/** CDXML 2D positions are "x y" — see the CDXCoordinates note that the y-first order belongs to
+ *  BINARY CDX, not CDXML. ChemDraft wrote y-first through codec v1; v2 writes spec order, and a v1
+ *  file's visible layer is transposed on import (see {@link transposeImportedObject}). */
 function formatPoint(point: Point): string {
-  return `${formatNumber(cssPxToCdxml(point.y))} ${formatNumber(cssPxToCdxml(point.x))}`;
+  return `${formatNumber(cssPxToCdxml(point.x))} ${formatNumber(cssPxToCdxml(point.y))}`;
 }
 
 function formatXyPoint(point: Point): string {
@@ -2617,32 +3025,11 @@ function parseCdxmlXyPoint(point: string | undefined): Point | undefined {
   };
 }
 
+/** Spec-order 2D position: "x y", falling back to the origin when absent or malformed. */
 function parseCdxmlPoint(point: string | undefined): Point {
-  if (!point) {
-    return { x: 0, y: 0 };
-  }
-  const [vertical, horizontal] = point.trim().split(/\s+/).map(Number);
-  return {
-    x: cdxmlToCssPx(Number.isFinite(horizontal) ? horizontal : 0),
-    y: cdxmlToCssPx(Number.isFinite(vertical) ? vertical : 0)
-  };
+  return parseCdxmlXyPoint(point) ?? { x: 0, y: 0 };
 }
 
-// Parse a 2D CDXML position attribute written in "vertical horizontal" (y x) order, returning
-// undefined when absent or malformed so callers can fall back to other attributes.
-function parseCdxmlYxPoint(point: string | undefined): Point | undefined {
-  if (!point) {
-    return undefined;
-  }
-  const [vertical, horizontal] = point.trim().split(/\s+/).map(Number);
-  if (!Number.isFinite(horizontal) || !Number.isFinite(vertical)) {
-    return undefined;
-  }
-  return {
-    x: cdxmlToCssPx(horizontal),
-    y: cdxmlToCssPx(vertical)
-  };
-}
 
 function formatXyBoundingBox(points: readonly Point[]): string {
   const bounds = boundsForPoints(points);
@@ -2654,27 +3041,20 @@ function formatXyBoundingBox(points: readonly Point[]): string {
   ].join(" ");
 }
 
+/** CDXRectangle is "left top right bottom". */
 function formatBoundingBox(object: { x: number; y: number; width: number; height: number }): string {
-  return `${formatNumber(cssPxToCdxml(object.y))} ${formatNumber(cssPxToCdxml(object.x))} ${formatNumber(cssPxToCdxml(object.y + object.height))} ${formatNumber(cssPxToCdxml(object.x + object.width))}`;
+  return `${formatNumber(cssPxToCdxml(object.x))} ${formatNumber(cssPxToCdxml(object.y))} ${formatNumber(cssPxToCdxml(object.x + object.width))} ${formatNumber(cssPxToCdxml(object.y + object.height))}`;
 }
 
 function formatLineBoundingBox(start: Point, end: Point): string {
-  return `${formatNumber(cssPxToCdxml(Math.min(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.min(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.max(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.max(start.x, end.x)))}`;
+  return `${formatNumber(cssPxToCdxml(Math.min(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.min(start.y, end.y)))} ${formatNumber(cssPxToCdxml(Math.max(start.x, end.x)))} ${formatNumber(cssPxToCdxml(Math.max(start.y, end.y)))}`;
 }
 
+/** Spec-order rectangle: "left top right bottom", falling back to a 1x1 frame at the origin when
+ *  the attribute is absent or malformed. One reader, so a corner-reversed box normalizes the same
+ *  way everywhere. */
 function parseBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } {
-  if (!box) {
-    return { x: 0, y: 0, width: 1, height: 1 };
-  }
-  const [top, left, bottom, right] = box.trim().split(/\s+/).map(Number);
-  const x = cdxmlToCssPx(Number.isFinite(left) ? left : 0);
-  const y = cdxmlToCssPx(Number.isFinite(top) ? top : 0);
-  return {
-    x,
-    y,
-    width: Math.max(1, cdxmlToCssPx(Number.isFinite(right) ? right : left) - x),
-    height: Math.max(1, cdxmlToCssPx(Number.isFinite(bottom) ? bottom : top) - y)
-  };
+  return parseCdxmlXyBoundingBox(box) ?? { x: 0, y: 0, width: 1, height: 1 };
 }
 
 function parseCdxmlXyBoundingBox(box: string | undefined): { x: number; y: number; width: number; height: number } | undefined {
@@ -2773,10 +3153,18 @@ const cdxmlArrowTypeByKind: Readonly<Record<Exclude<ArrowObject["arrowKind"], "u
   retrosynthesis: "RetroSynthetic"
 };
 
+/** The same spellings plus the one an art arrow can carry that no `reaction-arrow` object can. */
+const cdxmlArrowTypeByExportKind: Readonly<Record<SemanticArrowExportKind, string>> = {
+  ...cdxmlArrowTypeByKind,
+  fishhook: "HalfHead"
+};
+
 const arrowKindByCdxmlArrowType: ReadonlyMap<string, ArrowObject["arrowKind"]> = new Map([
   // Real CDXML spellings.
   ["fullhead", "forward"],
-  ["halfhead", "forward"],
+  // "halfhead" is absent on purpose: a half-headed arrow is one-electron chemistry and is
+  // intercepted before this lookup (see importHalfHeadArrowAsFishhook). Mapping it to "forward"
+  // here is what used to launder it into a two-electron reaction arrow.
   ["resonance", "resonance"],
   ["equilibrium", "equilibrium"],
   ["retrosynthetic", "retrosynthesis"],

@@ -15,11 +15,22 @@ CHEMDRAFT_WORKTREE_LABEL="$(basename "$ROOT_DIR")${CHEMDRAFT_WORKTREE_BRANCH:+ [
 export CHEMDRAFT_WORKTREE_LABEL
 LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
 TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
-RUN_APP_BUNDLE="$TAURI_OUTPUT_BUNDLE"
+# /Applications/ChemDraft.app is the STABLE build from `main` and is never written, renamed, or
+# unregistered by this script. A worktree build is a different application: it gets its own bundle
+# id, its own display name, and its own home under <worktree>/app/. Before this split every build
+# was stamped org.chemdraft.desktop and force-registered with LaunchServices, so a branch build
+# impersonated the stable app — `open`, the Dock, and `tell application id` all resolved to whichever
+# was registered last, and every build shared one ~/Library/Application Support/org.chemdraft.desktop
+# (so two running builds fought over toolbar-state.json and clobbered each other's window positions).
+STABLE_BUNDLE_ID="org.chemdraft.desktop"
+# Per-worktree, so sibling worktrees are also distinct apps rather than rivals for one identity.
+RUN_APP_WORKTREE_SLUG="$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+RUN_APP_BUNDLE_ID="${STABLE_BUNDLE_ID}.dev.${RUN_APP_WORKTREE_SLUG:-worktree}"
+RUN_APP_DISPLAY_NAME="ChemDraft (dev)"
+RUN_APP_BUNDLE_DIR="$ROOT_DIR/app"
+RUN_APP_BUNDLE="$RUN_APP_BUNDLE_DIR/$RUN_APP_DISPLAY_NAME.app"
 LEGACY_RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app"
-RUN_APP_BUNDLE_ID="org.chemdraft.desktop"
 LEGACY_RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
-RUN_APP_DISPLAY_NAME="ChemDraft"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 DEV_APP_EXECUTABLE="$APP_DIR/src-tauri/target/debug/chemdraft"
 RELEASE_APP_EXECUTABLE="$APP_DIR/src-tauri/target/release/chemdraft"
@@ -35,6 +46,9 @@ print_launch_banner() {
   echo "  ChemDraft  ▸  $CHEMDRAFT_WORKTREE_LABEL"
   echo "  worktree:  $ROOT_DIR"
   echo "  mode:      $mode"
+  # Printed so a launch is self-evidently NOT the stable /Applications app.
+  echo "  bundle id: $RUN_APP_BUNDLE_ID"
+  echo "  stable:    /Applications/ChemDraft.app ($STABLE_BUNDLE_ID) — untouched"
   echo "============================================================"
   echo ""
 }
@@ -150,6 +164,9 @@ unregister_bundle() {
 unregister_stale_chem_draft_bundles() {
   if [ -x "$LSREGISTER" ] && command -v mdfind >/dev/null 2>&1; then
     local bundle
+    # Two sweeps, deliberately different in scope:
+    #  - this worktree's OWN dev id, anywhere (an old copy moved elsewhere still steals the id);
+    #  - the legacy run-app id, anywhere (nothing should answer to it any more).
     while IFS= read -r bundle; do
       if [ -z "$bundle" ] || [ "$bundle" = "$RUN_APP_BUNDLE" ]; then
         continue
@@ -158,7 +175,21 @@ unregister_stale_chem_draft_bundles() {
         echo "Unregistering stale ChemDraft app bundle: $bundle"
         unregister_bundle "$bundle"
       fi
-    done < <(mdfind 'kMDItemCFBundleIdentifier == "org.chemdraft.desktop" || kMDItemCFBundleIdentifier == "org.chemdraft.desktop.run-app"' 2>/dev/null || true)
+    done < <(mdfind "kMDItemCFBundleIdentifier == \"$RUN_APP_BUNDLE_ID\" || kMDItemCFBundleIdentifier == \"$LEGACY_RUN_APP_BUNDLE_ID\"" 2>/dev/null || true)
+
+    # A bundle carrying the STABLE id is only ours to touch when it sits inside this worktree —
+    # a leftover `tauri build` output, which would otherwise shadow /Applications/ChemDraft.app in
+    # LaunchServices. Anything outside this checkout (above all /Applications) is left alone.
+    while IFS= read -r bundle; do
+      case "$bundle" in
+        "$ROOT_DIR"/*) ;;
+        *) continue ;;
+      esac
+      if [ -d "$bundle" ]; then
+        echo "Unregistering worktree build that claims the stable ChemDraft id: $bundle"
+        unregister_bundle "$bundle"
+      fi
+    done < <(mdfind "kMDItemCFBundleIdentifier == \"$STABLE_BUNDLE_ID\"" 2>/dev/null || true)
   fi
 
   if [ -d "$LEGACY_RUN_APP_BUNDLE" ]; then
@@ -314,7 +345,9 @@ select_dev_port() {
 }
 
 clear_saved_window_state() {
-  local saved_state_dir="$HOME/Library/Saved Application State/org.chemdraft.desktop.savedState"
+  # Scoped to THIS worktree's dev id (and the dead legacy id). Clearing the stable id here would
+  # throw away the window state of /Applications/ChemDraft.app, which this script does not own.
+  local saved_state_dir="$HOME/Library/Saved Application State/$RUN_APP_BUNDLE_ID.savedState"
   local legacy_run_app_saved_state_dir="$HOME/Library/Saved Application State/$LEGACY_RUN_APP_BUNDLE_ID.savedState"
 
   if [ -d "$saved_state_dir" ]; then
@@ -324,7 +357,7 @@ clear_saved_window_state() {
     rm -rf "$legacy_run_app_saved_state_dir"
   fi
 
-  defaults delete org.chemdraft.desktop NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
+  defaults delete "$RUN_APP_BUNDLE_ID" NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
   defaults delete "$LEGACY_RUN_APP_BUNDLE_ID" NSQuitAlwaysKeepsWindows >/dev/null 2>&1 || true
 }
 
@@ -342,6 +375,16 @@ set_bundle_display_name() {
   plist_set_or_add_string "$plist" CFBundleIdentifier "$RUN_APP_BUNDLE_ID"
   /usr/libexec/PlistBuddy -c "Delete :LSRequiresCarbon" "$plist" >/dev/null 2>&1 || true
   plist_set_or_add_string "$plist" NSPrincipalClass NSApplication
+
+  # A branch build must never follow the PRODUCTION update feed. That appcast ships
+  # org.chemdraft.desktop builds; once it advances past this branch's version, Sparkle would offer
+  # this dev app an update whose bundle identity differs — the install fails validation, or worse
+  # replaces the branch build and defeats the whole identity split. Strip the feed and disable
+  # scheduled checks; a dev feed would be safe only if it published this exact dev bundle id.
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$plist" >/dev/null 2>&1 || true
+  if ! /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$plist" >/dev/null 2>&1 || true
+  fi
 }
 
 plist_set_or_add_string() {
@@ -369,7 +412,27 @@ stage_run_app_bundle() {
     rm -rf "$RUN_APP_BUNDLE"
   fi
 
+  # Move rather than copy: `tauri build` stamps its output with the STABLE id, and a copy left
+  # behind in target/ would keep shadowing /Applications/ChemDraft.app in LaunchServices.
+  mkdir -p "$RUN_APP_BUNDLE_DIR"
   mv "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_BUNDLE"
+}
+
+assert_stable_app_untouched() {
+  # A cheap tripwire for the one invariant this script must never break: whatever is installed in
+  # /Applications belongs to `main` and is not ours to build over.
+  case "$RUN_APP_BUNDLE" in
+    /Applications/*)
+      echo "Refusing to stage a worktree build into /Applications."
+      echo "That path is reserved for the stable build from main."
+      exit 1
+      ;;
+  esac
+  if [ "$RUN_APP_BUNDLE_ID" = "$STABLE_BUNDLE_ID" ]; then
+    echo "Refusing to launch: this worktree build would claim the stable bundle id"
+    echo "$STABLE_BUNDLE_ID, which belongs to /Applications/ChemDraft.app."
+    exit 1
+  fi
 }
 
 strip_bundle_detritus() {
@@ -459,6 +522,7 @@ fi
 
 "$ROOT_DIR/scripts/prepare-sparkle.sh"
 
+assert_stable_app_untouched
 stop_existing_dev_apps
 unregister_stale_chem_draft_bundles
 stop_stale_dev_servers_for_this_checkout
@@ -472,6 +536,9 @@ if [ "$RUN_MODE" = "--dev" ]; then
   select_dev_port
   prime_tauri_context_rebuild_for_dev
   print_launch_banner "dev (Vite HMR)"
+  # Same identifier split as the packaged path, so the HMR build also gets its own app_data_dir
+  # instead of sharing the stable app's. dev:tauri merges this into its --config.
+  export CHEMDRAFT_DEV_BUNDLE_ID="$RUN_APP_BUNDLE_ID"
   exec npm run dev:tauri
 fi
 
@@ -486,7 +553,12 @@ fi
 
 force_tauri_context_rebuild
 
-node_modules/.bin/tauri build --bundles app
+# The identifier must be overridden at BUILD time, not patched into Info.plist afterwards:
+# `generate_context!()` bakes it in at compile time and Tauri derives app_data_dir() from it. Patching
+# only the plist would give the bundle a separate LaunchServices identity while it kept reading and
+# writing ~/Library/Application Support/org.chemdraft.desktop — still fighting the stable app over
+# toolbar-state.json, which is the whole thing this split exists to stop.
+node_modules/.bin/tauri build --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
 set_bundle_display_name "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_DISPLAY_NAME"
 stage_run_app_bundle
 resign_local_bundle "$RUN_APP_BUNDLE"

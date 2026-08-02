@@ -1,7 +1,9 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
+import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
@@ -21,6 +23,8 @@ export const TOOLSET_LAYOUT_STATE_REQUEST_EVENT = "chemdraft://toolset-layout-st
 export const TOOLSET_LAYOUT_EDIT_EVENT = "chemdraft://toolset-layout-edit";
 export const TOOLSET_COMMAND_SPECS_EVENT = "chemdraft://toolset-command-specs";
 export const TOOLSET_COMMAND_SPECS_REQUEST_EVENT = "chemdraft://toolset-command-specs-request";
+export const TOOLSET_DEFINITIONS_EVENT = "chemdraft://toolset-definitions";
+export const TOOLSET_DEFINITIONS_REQUEST_EVENT = "chemdraft://toolset-definitions-request";
 export const TOOLSET_CUSTOMIZE_MODE_EVENT = "chemdraft://toolset-customize-mode";
 export const TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT = "chemdraft://toolset-customize-mode-request";
 export const PALETTE_TOOLTIP_SHOW_EVENT = "chemdraft://palette-tooltip-show";
@@ -58,10 +62,18 @@ export interface ToolsetTextStylePayload {
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+  /** Selection classification for variant-swapping widgets; absent in older payloads. */
+  currentSelection?: ToolbarSelectionModel;
 }
 
 export interface ToolsetCommandSpecsPayload {
   commands: CommandSpec[];
+}
+
+export interface ToolsetDefinitionsPayload {
+  /** Plugin toolset DEFINITIONS (structure: groups/items/title). Core toolsets are static in every
+   *  palette webview; only runtime plugin contributions need to travel over this channel. */
+  toolsets: ToolsetDefinition[];
 }
 
 /** Stable semantic fingerprint for command snapshots. Array order is intentionally significant
@@ -117,13 +129,15 @@ export function createToolsetTextStylePayload(
   currentTextScript: TextSpan["script"] = "normal",
   currentArtStyle?: ToolsetArtStylePayload,
   currentArtStyleTarget: ToolsetArtPaintTarget = "fill",
-  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload
+  currentMoleculeInspector?: ToolsetMoleculeInspectorPayload,
+  currentSelection?: ToolbarSelectionModel
 ): ToolsetTextStylePayload {
   return {
     currentTextStyle,
     currentTextScript,
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
-    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {})
+    ...(currentMoleculeInspector ? { currentMoleculeInspector } : {}),
+    ...(currentSelection ? { currentSelection } : {})
   };
 }
 
@@ -181,6 +195,20 @@ export async function openToolsetPopoverWindow(
 
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_toolset_popover", { toolsetId, kind, x, y });
+}
+
+/**
+ * Builds a palette's popover window hidden, ahead of any press that needs it. The cold build (a
+ * fresh webview loading the app bundle) is what made the first flyout/color open slow; prewarming at
+ * palette startup moves that cost off the interaction, so every visible open takes the warm path.
+ */
+export async function prewarmToolsetPopoverWindow(toolsetId: string): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("prewarm_toolset_popover", { toolsetId }).catch(() => undefined);
 }
 
 export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void> {
@@ -271,19 +299,34 @@ export type ToolsetPopoverContent =
   | { kind: "artColor" }
   | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot };
 
-export type ToolsetPopoverContentPayload = { toolsetId: string } & ToolsetPopoverContent;
+/** Where the popover's top-left belongs, in global logical coordinates. Rides the content
+ *  push so the popover can re-assert it AFTER sizing itself: macOS anchors window resizes
+ *  at the bottom-left, so a content-fit height change after Rust's set_position shoved the
+ *  first open down by exactly the height delta. Size first, then position, then show —
+ *  the order the tooltip window has always used. */
+export interface ToolsetPopoverAnchor {
+  x: number;
+  y: number;
+}
+
+export type ToolsetPopoverContentPayload = { toolsetId: string; anchor?: ToolsetPopoverAnchor } & ToolsetPopoverContent;
 
 const TOOLSET_POPOVER_CONTENT_EVENT = "chemdraft://toolset-popover-content";
 const TOOLSET_POPOVER_CONTENT_REQUEST_EVENT = "chemdraft://toolset-popover-content-request";
 
-/** Palette → popover: set what the popover window renders (its owner sends this on every open). */
-export async function setToolsetPopoverContent(toolsetId: string, content: ToolsetPopoverContent): Promise<void> {
+/** Palette → popover: set what the popover window renders (its owner sends this on every open).
+ *  The anchor lets the popover re-assert its position after content-fit resizing. */
+export async function setToolsetPopoverContent(
+  toolsetId: string,
+  content: ToolsetPopoverContent,
+  anchor?: ToolsetPopoverAnchor
+): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, ...content }).catch(
+  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }).catch(
     () => undefined
   );
 }
@@ -397,6 +440,11 @@ export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
 /**
  * Persist the full toolbar layout/customization state (visibility, order, user toolsets). JS owns
  * this now; Rust just writes the opaque JSON to disk. No-op off the desktop runtime.
+ *
+ * REJECTS on a native write failure rather than swallowing it: a silently-dropped save leaves the
+ * user's customization looking saved but gone after relaunch. Callers own the save chain and decide
+ * how to surface the failure (see MainWindow — it reports it on the status line and keeps the chain
+ * alive for the next write).
  */
 export async function saveToolsetLayoutState(state: unknown): Promise<void> {
   if (!isDesktopRuntime()) {
@@ -404,7 +452,7 @@ export async function saveToolsetLayoutState(state: unknown): Promise<void> {
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("save_toolset_customization_state", { state }).catch(() => undefined);
+  await invoke("save_toolset_customization_state", { state });
 }
 
 /** Load the working-document autosave envelope (see documentSession.ts). Undefined when there is
@@ -562,13 +610,16 @@ export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosit
     return undefined;
   }
 
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const window = getCurrentWindow();
-  const [position, scaleFactor] = await Promise.all([window.outerPosition(), window.scaleFactor()]);
-  return {
-    x: position.x / scaleFactor,
-    y: position.y / scaleFactor
-  };
+  // Native read (window_logical_position): the JS route — outerPosition()/scaleFactor()
+  // and dividing — misreported on the FIRST call in a fresh palette webview, which sent
+  // the first popover open to a fabricated origin while every later call was fine. Rust
+  // asks the window server directly and has no warm-up.
+  const { invoke } = await import("@tauri-apps/api/core");
+  const position = await invoke<{ x: number; y: number }>("window_logical_position");
+  if (typeof position?.x !== "number" || typeof position?.y !== "number") {
+    return undefined;
+  }
+  return { x: position.x, y: position.y };
 }
 
 export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition): Promise<void> {
@@ -781,6 +832,73 @@ export async function listenForToolsetCommandSpecsRequests(handler: () => void):
   return listen(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
 }
 
+// A native palette webview only ships with the CORE toolset manifest. Plugin toolsets are contributed
+// at runtime in the main window, so their DEFINITIONS (not just command metadata) must be published to
+// the palette webviews — otherwise a window opened for a plugin toolset can't find it and renders the
+// wrong toolbar. Mirrors the command-specs channel: broadcast on change, and answer a late palette's
+// request. Browser/tests use the DOM bus; desktop uses the Tauri event bus.
+function isToolsetDefinitionsPayload(value: unknown): value is ToolsetDefinitionsPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as ToolsetDefinitionsPayload).toolsets) &&
+    (value as ToolsetDefinitionsPayload).toolsets.every((toolset) =>
+      typeof toolset === "object" &&
+      toolset !== null &&
+      typeof (toolset as ToolsetDefinition).id === "string" &&
+      typeof (toolset as ToolsetDefinition).title === "string" &&
+      Array.isArray((toolset as ToolsetDefinition).groups)
+    )
+  );
+}
+
+/** Main → palettes: publish the current plugin toolset definitions. */
+export async function broadcastToolsetDefinitions(toolsets: readonly ToolsetDefinition[]): Promise<void> {
+  const payload: ToolsetDefinitionsPayload = { toolsets: [...toolsets] };
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, payload);
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, payload);
+}
+
+export async function listenForToolsetDefinitions(
+  handler: (toolsets: ToolsetDefinition[]) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return listenForDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, (event) => {
+      if (isToolsetDefinitionsPayload(event.detail)) {
+        handler(event.detail.toolsets);
+      }
+    });
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, (event) => {
+    if (isToolsetDefinitionsPayload(event.payload)) {
+      handler(event.payload.toolsets);
+    }
+  });
+}
+
+/** A detached palette asks the main window for the current plugin toolset definitions after subscribing. */
+export async function requestToolsetDefinitions(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, {});
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_DEFINITIONS_REQUEST_EVENT);
+}
+
+export async function listenForToolsetDefinitionsRequests(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return listenForDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
+}
+
 // ————————————————————————————————————————————————————————————————————————————————————————————————
 // In-place customize mode (core.main): the palette sends single edit ops back to the main window,
 // which applies them against its authoritative layout state and re-broadcasts. Ops (not full state)
@@ -935,6 +1053,43 @@ export async function showPaletteFloatingTooltip(payload: PaletteTooltipPayload)
   }
   const { emit } = await import("@tauri-apps/api/event");
   await emit(PALETTE_TOOLTIP_SHOW_EVENT, payload);
+}
+
+/** Global-logical bounds of one attached monitor. Mirrors the Rust side's
+ *  monitor_logical_bounds: physical position/size divided by that monitor's own
+ *  scale factor, in the shared global logical coordinate space. */
+export interface MonitorLogicalBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** The logical bounds of the attached monitor containing the given global-logical
+ *  point, or undefined when no monitor contains it (or outside the desktop runtime).
+ *  Used to clamp floating chrome (the palette tooltip window) to the monitor its
+ *  anchor lives on — clamping against `window.screen` pins it to whichever display
+ *  the floating window happened to be on, which is wrong on multi-display setups. */
+export async function monitorLogicalBoundsAt(
+  x: number,
+  y: number
+): Promise<MonitorLogicalBounds | undefined> {
+  if (!isDesktopRuntime()) {
+    return undefined;
+  }
+  const { availableMonitors } = await import("@tauri-apps/api/window");
+  const monitors = await availableMonitors().catch(() => []);
+  for (const monitor of monitors) {
+    const scale = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+    const left = monitor.position.x / scale;
+    const top = monitor.position.y / scale;
+    const right = left + monitor.size.width / scale;
+    const bottom = top + monitor.size.height / scale;
+    if (x >= left && x < right && y >= top && y < bottom) {
+      return { left, top, right, bottom };
+    }
+  }
+  return undefined;
 }
 
 export async function hidePaletteFloatingTooltip(): Promise<void> {

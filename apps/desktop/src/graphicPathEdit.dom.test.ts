@@ -6,6 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MainWindow, type MainWindowProps } from "./MainWindow";
 import {
+  applyNativeArtLineToolAtPoint,
+  applyNativeTemplateToolAtPoint,
   createPhase4Document,
   insertNativeArtGraphicObject,
   nativeGraphicPathEditPoints,
@@ -317,6 +319,250 @@ describe("graphic path direct editing interactions", () => {
     });
   });
 
+  function transformResizeCorner(corner: "top-left" | "top-right" | "bottom-left" | "bottom-right"): HTMLButtonElement {
+    const button = container.querySelector<HTMLButtonElement>(`[data-object-resize-corner="${corner}"]`);
+    if (!button) {
+      throw new Error(`Expected ${corner} resize handle on the transform frame.`);
+    }
+    return button;
+  }
+
+  async function shiftHover(objectId: string) {
+    // buttons:0 marks a hover (no drag); shiftKey:true is what raises the size box on an arrow.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 260, y: 190 }, 31, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+  }
+
+  it("shift-hovering an arrow shows the size box and hides its dot handles", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Shift Frame"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    // Arrow tool active: the case where the floating grip failed, because reaching for it left the
+    // arrow. A held modifier can't be raced that way.
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    await shiftHover(objectId);
+    // Size box with resize corners appears; the small path/marker dot handles step aside.
+    expect(container.querySelector('[data-object-resize-corner]')).not.toBeNull();
+    expect(container.querySelector('[data-graphic-path-handle]')).toBeNull();
+
+    // Releasing Shift is the real dismissal (letting go of the modifier), and it puts a still-
+    // selected arrow back to its dot handles. (A synthetic React pointerleave is unreliable in jsdom.)
+    await releaseShiftForRotationHandles();
+    expect(container.querySelector('[data-object-resize-corner]')).toBeNull();
+    expect(container.querySelector('[data-graphic-path-handle]')).not.toBeNull();
+  });
+
+  it("raises the size box when Shift is pressed while already hovering an arrow", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Hover Then Shift"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    // Plain hover first (no Shift) — no box yet.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 260, y: 190 }, 33, 1, { buttons: 0 });
+    });
+    expect(container.querySelector('[data-object-resize-corner]')).toBeNull();
+
+    // Now press Shift without moving the pointer: the box must appear immediately, not wait for a
+    // jiggle. This is the case the pointermove-only tracking missed.
+    await holdShiftForRotationHandles();
+    expect(container.querySelector('[data-object-resize-corner]')).not.toBeNull();
+  });
+
+  it("resizes a shift-hovered arrow proportionally, head and stroke together, as one undo", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Shift Resize"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    const before = debugArtObject(objectId);
+    const startHead = before.object.data.markerEnd?.sizePx ?? 0;
+    const startStroke = typeof before.object.style.strokeWidth === "number" ? before.object.style.strokeWidth : 0;
+    const center = {
+      x: before.object.x + before.object.width / 2,
+      y: before.object.y + before.object.height / 2
+    };
+
+    await shiftHover(objectId);
+    // Drag the bottom-right corner outward from the centre to roughly double the box on both axes.
+    const corner = {
+      x: before.object.x + before.object.width,
+      y: before.object.y + before.object.height
+    };
+    const target = {
+      x: center.x + (corner.x - center.x) * 2,
+      y: center.y + (corner.y - center.y) * 2
+    };
+    await act(async () => {
+      dispatchPointer(transformResizeCorner("bottom-right"), "pointerdown", corner, 32);
+      dispatchPointer(pageElement(), "pointermove", target, 32);
+      dispatchPointer(pageElement(), "pointerup", target, 32);
+    });
+
+    const after = debugArtObject(objectId);
+    expect(after.object.width).toBeGreaterThan(before.object.width * 1.5);
+    // Head and stroke grew with the box, not left behind on a longer shaft.
+    expect(after.object.data.markerEnd?.sizePx).toBeGreaterThan(startHead * 1.5);
+    expect(typeof after.object.style.strokeWidth === "number" ? after.object.style.strokeWidth : 0)
+      .toBeGreaterThan(startStroke * 1.5);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        key: "z",
+        metaKey: true
+      }));
+    });
+    // One undo returns the whole resize.
+    const undone = debugArtObject(objectId);
+    expect(undone.object.width).toBeCloseTo(before.object.width, 3);
+    expect(undone.object.data.markerEnd?.sizePx).toBeCloseTo(startHead, 3);
+  });
+
+  it("keeps an arrow's size box up while Shift is held and the pointer moves off it", async () => {
+    // Two objects: the arrow whose box we raise, and a rectangle the pointer then crosses onto.
+    let doc = insertNativeArtGraphicObject(
+      createPhase4Document("Persist While Shift"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const arrowId = doc.selection.objectIds[0] ?? "";
+    doc = insertNativeArtGraphicObject(doc, { x: 220, y: 320 }, "tool.art.rect");
+    const rectId = doc.selection.objectIds[0] ?? "";
+    await renderMainWindow(doc, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    const arrowCorners = () => container.querySelectorAll(`[data-object-id="${arrowId}"] [data-object-resize-corner]`).length;
+    await shiftHover(arrowId);
+    expect(arrowCorners()).toBe(4);
+
+    // Shift-held move onto the rectangle (a non-arrow). Reaching a rotate/resize handle takes the
+    // pointer off the stroke; the arrow's box must survive that, not vanish.
+    await act(async () => {
+      dispatchPointer(objectElement(rectId), "pointermove", { x: 260, y: 340 }, 34, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+    expect(arrowCorners()).toBe(4);
+
+    // Releasing Shift is what finally dismisses it.
+    await releaseShiftForRotationHandles();
+    expect(arrowCorners()).toBe(0);
+  });
+
+  it("latches the size box to the first arrow while Shift is held, even across other arrows", async () => {
+    // Two arrows. The first one Shift-hovered owns the box; crossing the second must not
+    // steal it — the pointer has to be able to travel over a crowded canvas to reach the
+    // first box's handles. Only a Shift release frees the box for another arrow.
+    let doc = insertNativeArtGraphicObject(
+      createPhase4Document("Latch While Shift"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const firstArrowId = doc.selection.objectIds[0] ?? "";
+    doc = insertNativeArtGraphicObject(doc, { x: 220, y: 320 }, "tool.art.reactionArrow");
+    const secondArrowId = doc.selection.objectIds[0] ?? "";
+    await renderMainWindow(doc, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+
+    const cornersOn = (objectId: string) =>
+      container.querySelectorAll(`[data-object-id="${objectId}"] [data-object-resize-corner]`).length;
+
+    await shiftHover(firstArrowId);
+    expect(cornersOn(firstArrowId)).toBe(4);
+
+    // Shift-held move onto the OTHER arrow: the box stays latched to the first.
+    await act(async () => {
+      dispatchPointer(objectElement(secondArrowId), "pointermove", { x: 260, y: 340 }, 35, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+    expect(cornersOn(firstArrowId)).toBe(4);
+    expect(cornersOn(secondArrowId)).toBe(0);
+
+    // After releasing Shift, a fresh Shift-hover on the second arrow gives IT the box.
+    await releaseShiftForRotationHandles();
+    expect(cornersOn(firstArrowId)).toBe(0);
+    await act(async () => {
+      dispatchPointer(objectElement(secondArrowId), "pointermove", { x: 260, y: 340 }, 36, 1, {
+        buttons: 0,
+        shiftKey: true
+      });
+    });
+    expect(cornersOn(secondArrowId)).toBe(4);
+    expect(cornersOn(firstArrowId)).toBe(0);
+    await releaseShiftForRotationHandles();
+  });
+
+  it("X/Y rotates a shift-hovered arrow from the tilt handle under the arrow tool", async () => {
+    // The tilt (3D rotate) button is part of the same Shift box as the rotate and resize
+    // handles, so it must honor the same shift-arrow bypass: under the arrow tools, on an
+    // unselected arrow, a tilt drag has to start — not bail at the selection-tool gate.
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Arrow Shift Tilt"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    const before = debugArtObject(objectId);
+    const startTilt = documentObjectProjectedPlaneTiltMagnitude(before.object);
+
+    // Shift is physically held in this flow: the rotate/tilt buttons are revealed by the
+    // key state, while the hover with shiftKey latches the box itself.
+    await holdShiftForRotationHandles();
+    await shiftHover(objectId);
+    const tiltHandle = container.querySelector<HTMLButtonElement>("[data-selection-tilt3d-handle]");
+    expect(tiltHandle).not.toBeNull();
+
+    await act(async () => {
+      dispatchPointer(tiltHandle as HTMLButtonElement, "pointerdown", { x: 270, y: 150 }, 37);
+      dispatchPointer(pageElement(), "pointermove", { x: 330, y: 165 }, 37);
+      dispatchPointer(pageElement(), "pointerup", { x: 330, y: 165 }, 37);
+    });
+
+    const after = debugArtObject(objectId);
+    expect(documentObjectProjectedPlaneTiltMagnitude(after.object)).toBeGreaterThan(startTilt);
+    await releaseShiftForRotationHandles();
+  });
+
+  function documentObjectProjectedPlaneTiltMagnitude(object: {
+    style: { tiltXDegrees?: unknown; tiltYDegrees?: unknown };
+  }): number {
+    const tiltX = typeof object.style.tiltXDegrees === "number" ? object.style.tiltXDegrees : 0;
+    const tiltY = typeof object.style.tiltYDegrees === "number" ? object.style.tiltYDegrees : 0;
+    return Math.abs(tiltX) + Math.abs(tiltY);
+  }
+
+  it("does not raise the size box for a plain line on shift-hover", async () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Line No Frame"),
+      { x: 220, y: 180 },
+      "tool.art.line"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.line" });
+    await shiftHover(objectId);
+    // The size box is an arrow affordance; a plain line keeps its ordinary handles.
+    expect(container.querySelector('[data-object-resize-corner]')).toBeNull();
+  });
+
   it("drags an arrowhead handle to resize the marker as one undoable edit", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Arrowhead Marker Drag"),
@@ -362,7 +608,7 @@ describe("graphic path direct editing interactions", () => {
 
     expect(debugArtObject(objectId).object.data.markerEnd).toEqual({
       kind: "filled-arrow",
-      sizePx: 10
+      sizePx: 16
     });
   });
 
@@ -1731,5 +1977,187 @@ describe("graphic path direct editing interactions", () => {
       (after.projectedEditPoints?.end.y ?? 0) - target.y
     )).toBeLessThan(0.75);
     expect(pathD(".graphic-glyph-hit-target")).toBe(pathD(".graphic-glyph-path"));
+  });
+
+  it("drags an existing arrow to move it while the arrow tool is still active", async () => {
+    // Arrow mode doubles as the arrow-editing mode: pressing an arrow's body (anywhere that isn't
+    // one of its handles) moves it, so repositioning never needs a trip to the Select tool.
+    const document = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Arrow Move In Arrow Mode"),
+      { x: 200, y: 300 },
+      { x: 360, y: 300 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    const before = debugArtObject(objectId);
+    const renderedArrowCount = () => container.querySelectorAll(".graphic-object").length;
+    const arrowsBefore = renderedArrowCount();
+
+    // Hover first: arrow mode opens the hovered arrow for editing, which is what routes the press
+    // to a move instead of drawing a new arrow.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 280, y: 300 }, 31);
+    });
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointerdown", { x: 280, y: 300 }, 31);
+      dispatchPointer(pageElement(), "pointermove", { x: 320, y: 340 }, 31);
+      dispatchPointer(pageElement(), "pointerup", { x: 320, y: 340 }, 31);
+    });
+
+    const after = debugArtObject(objectId);
+    expect(after.object.x - before.object.x).toBeCloseTo(40, 0);
+    expect(after.object.y - before.object.y).toBeCloseTo(40, 0);
+    // Moved the existing arrow rather than drawing an extra one on top of it.
+    expect(renderedArrowCount()).toBe(arrowsBefore);
+  });
+
+  it("commits a dragged chain with its structure re-derived, not the pre-drag SMILES", async () => {
+    // Preview frames deliberately skip the whole-molecule SMILES/chemistry derivation; the COMMIT
+    // must not. The chain branch hardcoded the preview flag for both, so a chain dragged off an
+    // existing atom committed with the pre-drag `structure` — invisible on canvas, but any editor
+    // round-trip or SMILES export afterwards silently dropped the appended chain.
+    const seeded = applyNativeTemplateToolAtPoint(
+      createPhase4Document("Chain Drag Commit"),
+      { x: 200, y: 260 },
+      "benzene"
+    );
+    const moleculeId = seeded.selection.objectIds[0] ?? "";
+    const molecule = seeded.pages[0].objects.find((object) => object.id === moleculeId);
+    if (!molecule || molecule.type !== "molecule") {
+      throw new Error("Expected a seeded molecule.");
+    }
+    const anchorAtom = molecule.atoms[0];
+    const structureBefore = molecule.structure;
+    const atomsBefore = molecule.atoms.length;
+
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.chain" });
+
+    // Press on the anchor atom and drag away to grow a chain.
+    await act(async () => {
+      dispatchPointer(objectElement(moleculeId), "pointerdown", { x: anchorAtom.x, y: anchorAtom.y }, 51);
+    });
+    for (let step = 1; step <= 4; step += 1) {
+      await act(async () => {
+        dispatchPointer(pageElement(), "pointermove", { x: anchorAtom.x + step * 26, y: anchorAtom.y - step * 12 }, 51);
+      });
+    }
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: anchorAtom.x + 104, y: anchorAtom.y - 48 }, 51);
+    });
+
+    const bridge = window.__CHEMDRAFT_AGENT__;
+    if (!bridge) {
+      throw new Error("Expected agent bridge.");
+    }
+    const committed = bridge.snapshot().document.pages[0].objects.find((object) => object.id === moleculeId);
+    if (!committed || committed.type !== "molecule") {
+      throw new Error("Expected the molecule after the drag.");
+    }
+
+    // The graph actually grew...
+    expect(committed.atoms.length).toBeGreaterThan(atomsBefore);
+    // ...and the derived structure grew with it, rather than staying at the pre-drag SMILES.
+    expect(committed.structure).not.toBe(structureBefore);
+  });
+
+  it("deletes the hovered arrow on Delete while the arrow tool is active", async () => {
+    // Two arrows, with the SECOND left selected: Delete must take the one under the pointer, not the
+    // selected one, or this passes on the ordinary delete-selection path without exercising hover.
+    const hoveredDocument = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Arrow Delete On Hover"),
+      { x: 200, y: 300 },
+      { x: 360, y: 300 },
+      "tool.art.reactionArrow"
+    );
+    const hoveredId = hoveredDocument.selection.objectIds[0] ?? "";
+    const document = applyNativeArtLineToolAtPoint(
+      hoveredDocument,
+      { x: 200, y: 500 },
+      { x: 360, y: 500 },
+      "tool.art.reactionArrow"
+    );
+    const selectedId = document.selection.objectIds[0] ?? "";
+    expect(selectedId).not.toBe(hoveredId);
+
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
+    expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).not.toBeNull();
+
+    await act(async () => {
+      // buttons: 0 — a genuine hover. Arrow mode only opens an arrow for editing when nothing is
+      // being dragged, so a move with a button held would not register as hovering it.
+      dispatchPointer(objectElement(hoveredId), "pointermove", { x: 280, y: 300 }, 32, 1, { buttons: 0 });
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Delete" }));
+    });
+
+    expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).toBeNull();
+    expect(container.querySelector(`[data-object-id="${selectedId}"]`)).not.toBeNull();
+  });
+
+  it("deletes the hovered arrow under the curved arrow tools too, not a different one", async () => {
+    // Curved/fishhook arrows are arc-kind: they get hover targets and dot handles like straight
+    // arrows, but the Delete branch gated on the narrower line-draw predicate, so it fell through to
+    // the selected-object delete and destroyed the wrong arrow.
+    const hoveredDocument = insertNativeArtGraphicObject(
+      createPhase4Document("Arc Arrow Delete On Hover"),
+      { x: 220, y: 300 },
+      "tool.art.curvedArrow180"
+    );
+    const hoveredId = hoveredDocument.selection.objectIds[0] ?? "";
+    const document = insertNativeArtGraphicObject(
+      hoveredDocument,
+      { x: 220, y: 520 },
+      "tool.art.curvedArrow180"
+    );
+    const selectedId = document.selection.objectIds[0] ?? "";
+    expect(selectedId).not.toBe(hoveredId);
+
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.curvedArrow180" });
+
+    await act(async () => {
+      dispatchPointer(objectElement(hoveredId), "pointermove", { x: 260, y: 320 }, 41, 1, { buttons: 0 });
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Delete" }));
+    });
+
+    expect(container.querySelector(`[data-object-id="${hoveredId}"]`)).toBeNull();
+    expect(container.querySelector(`[data-object-id="${selectedId}"]`)).not.toBeNull();
+  });
+
+  it("keeps the arrowhead handles mounted when Shift is pressed mid marker drag", async () => {
+    // Shift is the marker drag's own modifier (resize one head instead of both), so pressing it must
+    // not raise the Shift transform box — that unmounted the handle under the cursor mid-drag.
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Marker Drag Shift"),
+      { x: 220, y: 180 },
+      "tool.art.resonanceArrow"
+    );
+    const objectId = document.selection.objectIds[0] ?? "";
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.resonanceArrow" });
+
+    // Hover so the arrow opens for editing and its marker handles mount.
+    await act(async () => {
+      dispatchPointer(objectElement(objectId), "pointermove", { x: 260, y: 190 }, 42, 1, { buttons: 0 });
+    });
+    const markerHandle = container.querySelector<HTMLElement>("[data-graphic-marker-handle]");
+    if (!markerHandle) {
+      throw new Error("Expected an arrowhead size handle.");
+    }
+
+    await act(async () => {
+      dispatchPointer(markerHandle, "pointerdown", { x: 300, y: 190 }, 43);
+    });
+    // Shift down mid-drag: the handles must survive it.
+    await holdShiftForRotationHandles();
+    expect(container.querySelector("[data-graphic-marker-handle]")).not.toBeNull();
+    expect(container.querySelector("[data-object-resize-corner]")).toBeNull();
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: 320, y: 190 }, 43);
+    });
+    await releaseShiftForRotationHandles();
   });
 });

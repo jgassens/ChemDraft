@@ -140,9 +140,17 @@ reaction-arrow object, so it missed everything arrow mode gained."
 
 Arrows are `GraphicObject`s tagged with `artToolId` (`packages/chem-core/src/schemas.ts:182`), which
 is the semantic marker the CDXML layer reads. `insertNativeReactionArrow` survives in
-`documentWorkflow.ts` but has **no live caller** — only `documentWorkflow.test.ts` references it.
-The `reaction-arrow` type remains in the schema (`schemas.ts:407`) for older documents and for
-arrows that import as `unknown`.
+`documentWorkflow.ts` for older documents and for arrows that import as `unknown`; the
+`reaction-arrow` type remains in the schema (`schemas.ts:407`) to carry them.
+
+This section previously claimed `insertNativeReactionArrow` had **no live caller**. That was wrong:
+`applyReactionArrowToolAtPoint` still reached it, and the four retired tool ids
+(`tool.reactionArrow`, `tool.resonanceArrow`, `tool.equilibriumArrow`, `tool.retroArrow`) still
+passed the Customize gallery's filter — so the tray offered two identically-titled "Reaction Arrow"
+tiles, and the legacy one built the retired object type with none of the mechanics above. Those ids
+are now aliases: `canonicalCommandId` (`apps/desktop/src/renamedCommands.ts`) redirects them to
+their `tool.art.*` replacements at activation, and the gallery does not offer a renamed id as its
+own tile.
 
 ### B3. CDXML interop contract
 
@@ -215,6 +223,34 @@ barb) for radical single-electron pushing; and `noReactionArrow` using a new `sh
 field that renders an X at the shaft midpoint, oriented to the local tangent so it tracks curves.
 No per-open cost was added: the grid is pre-rendered and the new items use the procedural
 `ArtToolIcon` SVG fallback rather than PNG assets.
+
+## Thread C — Selection-aware Main Toolbar style widget
+
+The Main Toolbar's style widget (`widget.core.mainStyleControls`) now swaps its layout by what is
+selected: **text** (the old widget verbatim — also the fallback for empty/mixed selections and
+customize mode), **molecule** (bond width, double-bond spacing, atom-label font/size, H/terminal-C
+toggles), **shape** (fill/stroke target, paint type, width/dash/corners, swap), and **arrow**
+(head kind/size, tail toggle, width/dash, set-as-default, flip). One widget id, one 12×2 grid
+slot; every layout budgets exactly 11 cells per row and the CSS pins the footprint so variants
+can never resize the toolbar. The classifier (`toolbars/toolbarSelectionKind.ts`) rides the
+text-style broadcast to detached palette windows.
+
+**Command ids introduced by this slice** (per the AGENTS.md command-id rule):
+
+- `object.marker.end.kind.*` / `object.marker.start.kind.*` — 8 static presets per end
+  (`none`/`filledArrow`/`openArrow`/`halfArrow`/`bar`/`dot`/`diamond`/`chevron`), setting one
+  end's arrowhead kind on marker-capable graphics. `none` deletes the marker key; adding a head
+  seeds its size from the opposite end.
+- `object.marker.size:<n>` — dynamic head size, snapped to the same 4–96px steps as the canvas
+  handle (`snapGraphicMarkerSizePx`, now the single source of truth in art-engine); sets every
+  non-none head on the selection, matching the handle's symmetric default.
+- `arrow.setDefaultStyle` — previously a context-menu-local string; now also handled inside
+  `invoke` (`applyArrowStyleDefaultCommand`) so the arrow widget's button can capture the single
+  selected arrow. The context menu still captures the right-clicked object, selected or not.
+
+Retro arrows are excluded from marker commands (their "⇒" head is path geometry); anchor-point
+add/remove stays with the Scissors/Eraser tools because splitting converts arrows to plain
+polylines and destroys their arrow identity (`splitLinePathSegmentAtPoint`).
 
 ## Open items
 

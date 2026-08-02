@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
+import { atomDisplayLabel } from "@chemdraft/layout-engine";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   applyPatch,
@@ -31,6 +32,7 @@ import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
+  pastedStructureDepictionFromMolfile,
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
@@ -101,6 +103,7 @@ import {
   createNativeFreehandGraphicObject,
   createNativeSavePayload,
   createNativeSingleBondMolecule,
+  createNativeMolfileMolecule,
   createPhase4Document,
   createSelectionClipboardPayload,
   deleteSelectedDocumentObjects,
@@ -115,6 +118,14 @@ import {
   groupSelectedDocumentObjects,
   getSelectedMolecule,
   insertNativeArtGraphicObject,
+  nativeArtToolIsLineDraw,
+  nativeArtToolSupportsArrowHoverEdit,
+  applyNativeArtLineToolAtPoint,
+  applyNativeArtLineToolDefaultAtPoint,
+  nativeArrowStyleDefaultFromGraphic,
+  setNativeArrowStyleDefault,
+  clearNativeArrowStyleDefaults,
+  nativeArtLineDefaultLengthPx,
   insertAdapterFallbackMolecule,
   applyFormulaTextFormatting,
   applyNativeChainTool,
@@ -138,7 +149,6 @@ import {
   insertNativeTemplateMolecule,
   getSelectedTextObject,
   nativeAtomHitRadiusPx,
-  nativeAtomDisplayLabel,
   nativeBondLengthPx,
   nativeChargeAssociationRadiusPx,
   nativeChargeAssociationsForMolecule,
@@ -192,6 +202,8 @@ import {
   reverseGraphicObjectGradientStopsForSelection,
   rotateGraphicObjectGradientStopsForSelection,
   scaleDocumentObjectsAroundPoint,
+  proportionalGraphicScale,
+  applyGraphicShaftMarkSizeToSelection,
   selectionBounds,
   selectAllDocumentObjects,
   selectedGraphicObjectIds,
@@ -1157,6 +1169,73 @@ describe("Phase 4 document workflow", () => {
       objectIds
     });
     expect(selectAllDocumentObjects(selected, selected.pages[0].id)).toBe(selected);
+  });
+
+  it("counts formula hydrogens with the same charge rule the drawn label uses", () => {
+    // The label became charge-aware while the formula kept counting against the neutral valence,
+    // so methoxide drew as "O-" with no hydrogen while the formula still reported one. A formula
+    // that contradicts the structure beside it is worse than either being wrong on its own.
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Alkoxide"), { x: 200, y: 200 });
+    const seed = base.pages[0].objects[0] as MoleculeObject;
+    const charged = applyPatches(base, [{
+      op: "updateObject",
+      objectId: seed.id,
+      changes: {
+        atoms: seed.atoms.map((atom, index) => (
+          index === 1 ? { ...atom, element: "O", formalCharge: -1 } : atom
+        ))
+      }
+    }]);
+    const molecule = charged.pages[0].objects[0] as MoleculeObject;
+    const oxygen = molecule.atoms[1]!;
+
+    // The drawn label: O- takes one bond, which this O already has, so no hydrogen.
+    expect(atomDisplayLabel(oxygen, molecule.bonds)).toBe("O-");
+
+    // The formula must agree. createNativeMolfileMolecule runs the same chemistry derivation the
+    // app uses whenever a molecule is (re)built, so round-trip this graph through it.
+    const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    const rebuilt = createNativeMolfileMolecule(charged, { x: 200, y: 200 }, molfile, "molfile-v2000");
+    expect(rebuilt.chemistry?.formula).toBe("CH3O");
+  });
+
+  it("carries aromatic and unknown bond orders through a pasted depiction", () => {
+    // The depiction interface declares MoleculeBond["order"] and the insert path stores whatever
+    // arrives, but the conversion collapsed aromatic/unknown to single — silently kekulizing an
+    // un-kekulized ring into all-single bonds. The OCL adapter refuses this exact collapse citing
+    // AGENTS.md section 5.7.
+    const aromaticPair = [
+      "aromatic-fragment",
+      "",
+      "",
+      "  2  1  0  0  0  0  0  0  0  0999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.4000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  4  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    expect(pastedStructureDepictionFromMolfile(aromaticPair).bonds.map((bond) => bond.order)).toEqual([
+      "aromatic"
+    ]);
+  });
+
+  it("reports a malformed MOL paste instead of throwing out of the paste handler", () => {
+    // Clipboard classification is a heuristic over text, so this branch can receive something that
+    // is not a molfile. parseMolfileGraph throws on malformed input, and the exception escaped the
+    // whole handler: paste did nothing at all, with no message. The RXN branch beside it already
+    // caught and reported; this one now matches (AGENTS.md section 16).
+    const document = createPhase4Document("Malformed MOL Paste");
+    const result = applyClipboardPastePayload(document, {
+      kind: "molfile",
+      format: "molfile-v3000",
+      text: "Bruker V3000 spectrometer manual\nM  END",
+      warnings: []
+    }, { x: 200, y: 200 });
+
+    expect(result.document).toBe(document);
+    expect(result.warnings.map((warning) => warning.code)).toContain("clipboard.molfile_parse_failed");
+    expect(result.status).toContain("could not parse");
   });
 
   it("retells the structure format when native editing rewrites an imported molfile as SMILES", () => {
@@ -3952,14 +4031,14 @@ describe("Phase 4 document workflow", () => {
     }
 
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
-    expect(nativeAtomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
+    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
   it("labels isolated neutral common atoms with implicit hydrogens", () => {
-    expect(nativeAtomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
-    expect(nativeAtomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
-    expect(nativeAtomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("OH2");
+    expect(atomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
+    expect(atomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
+    expect(atomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("OH2");
   });
 
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
@@ -4242,10 +4321,10 @@ describe("Phase 4 document workflow", () => {
     const yMolecule = selectedMolecule(yGeneric);
 
     expect(labeled.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Cl" });
-    expect(nativeAtomDisplayLabel(labeled.atoms[0], labeled.bonds)).toBe("Cl");
+    expect(atomDisplayLabel(labeled.atoms[0], labeled.bonds)).toBe("Cl");
     expect(nativeMoleculeInvalidAtomStates(labeled)).toEqual([]);
     expect(genericMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
-    expect(nativeAtomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds)).toBe("Xx");
+    expect(atomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds)).toBe("Xx");
     expect(nativeMoleculeInvalidAtomStates(genericMolecule)).toEqual([]);
     expect(yMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Y" });
     expect(nativeMoleculeInvalidAtomStates(yMolecule)).toEqual([]);
@@ -4522,13 +4601,308 @@ describe("Phase 4 document workflow", () => {
       data: {
         artPathKind: "line",
         artToolId: "arrow",
-        markerEnd: { kind: "filled-arrow", sizePx: 10 }
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
       },
       style: {
         artToolCommandId: "tool.art.arrow",
         strokeLineCap: "butt"
       }
     });
+  });
+
+  it("lets a dashed arrow tool remember an explicitly solid default", () => {
+    try {
+      // The dashed reaction-arrow tool ships strokeDasharray "6 6". Making one solid and saving it
+      // as the default must clear that base dash — capturing only present strings left the saved
+      // style with no instruction to clear it, so the next arrow came back dashed.
+      const dashedDoc = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Dashed Default Solid"),
+        { x: 100, y: 300 },
+        { x: 220, y: 300 },
+        "tool.art.reactionArrowDashed"
+      );
+      const dashedId = dashedDoc.selection.objectIds[0]!;
+      expect(graphicById(dashedDoc, dashedId).style.strokeDasharray).toBe("6 6");
+
+      const solidDoc = applyPatches(dashedDoc, [{
+        op: "updateObject",
+        objectId: dashedId,
+        changes: { style: { ...graphicById(dashedDoc, dashedId).style, strokeDasharray: undefined } }
+      }]);
+      const captured = nativeArrowStyleDefaultFromGraphic(graphicById(solidDoc, dashedId));
+      if (!captured) {
+        throw new Error("Expected the dashed arrow to yield a default style.");
+      }
+      // Explicitly solid is recorded, not merely omitted.
+      expect(captured.style.strokeDasharray).toBeNull();
+      setNativeArrowStyleDefault(captured.toolId, captured.style);
+
+      const nextDashed = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Dashed Default Applied"),
+        { x: 100, y: 340 },
+        { x: 220, y: 340 },
+        "tool.art.reactionArrowDashed"
+      );
+      expect(graphicById(nextDashed, nextDashed.selection.objectIds[0]!).style.strokeDasharray).toBeUndefined();
+
+      // And the reverse still works: a dash captured from a solid tool applies to new arrows.
+      const solidToolDoc = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Solid Default Dashed"),
+        { x: 100, y: 380 },
+        { x: 220, y: 380 },
+        "tool.art.reactionArrow"
+      );
+      const solidToolId = solidToolDoc.selection.objectIds[0]!;
+      const nowDashed = applyPatches(solidToolDoc, [{
+        op: "updateObject",
+        objectId: solidToolId,
+        changes: { style: { ...graphicById(solidToolDoc, solidToolId).style, strokeDasharray: "4 3" } }
+      }]);
+      const dashCapture = nativeArrowStyleDefaultFromGraphic(graphicById(nowDashed, solidToolId));
+      setNativeArrowStyleDefault(dashCapture!.toolId, dashCapture!.style);
+      const nextSolidTool = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Solid Default Dashed Applied"),
+        { x: 100, y: 420 },
+        { x: 220, y: 420 },
+        "tool.art.reactionArrow"
+      );
+      expect(graphicById(nextSolidTool, nextSolidTool.selection.objectIds[0]!).style.strokeDasharray).toBe("4 3");
+    } finally {
+      clearNativeArrowStyleDefaults();
+    }
+  });
+
+  it("captures a right-clicked arrow's style as the tool default and applies it to new arrows", () => {
+    try {
+      // A resized retro arrow becomes the default: subsequent retros draw at that heft.
+      const retroDoc = applyNativeArtLineToolDefaultAtPoint(
+        createPhase4Document("Arrow Default Retro"),
+        { x: 120, y: 200 },
+        "tool.art.retroArrow"
+      );
+      const retroId = retroDoc.selection.objectIds[0]!;
+      const scaledRetroDoc = applyPatches(retroDoc, [{
+        op: "updateObject",
+        objectId: retroId,
+        changes: { data: { ...graphicById(retroDoc, retroId).data, dualShaftScale: 2.5 } }
+      }]);
+      const captured = nativeArrowStyleDefaultFromGraphic(graphicById(scaledRetroDoc, retroId));
+      if (!captured) {
+        throw new Error("Expected the retro arrow to yield a default style.");
+      }
+      expect(captured.toolId).toBe("retroArrow");
+      expect(captured.style.dualShaftScale).toBe(2.5);
+      setNativeArrowStyleDefault(captured.toolId, captured.style);
+
+      const nextRetro = applyNativeArtLineToolDefaultAtPoint(
+        createPhase4Document("Arrow Default Retro Applied"),
+        { x: 140, y: 220 },
+        "tool.art.retroArrow"
+      );
+      expect(graphicById(nextRetro, nextRetro.selection.objectIds[0]!).data.dualShaftScale).toBe(2.5);
+
+      // A bent reaction arrow with a grown head: new reaction arrows bow proportionally and keep the
+      // head size, at any drawn length.
+      const reactionDoc = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Arrow Default Reaction"),
+        { x: 100, y: 300 },
+        { x: 220, y: 300 },
+        "tool.art.reactionArrow"
+      );
+      const reactionId = reactionDoc.selection.objectIds[0]!;
+      const bentDoc = applyPatches(reactionDoc, [{
+        op: "updateObject",
+        objectId: reactionId,
+        changes: {
+          data: {
+            ...graphicById(reactionDoc, reactionId).data,
+            artPathKind: "quadratic",
+            pathControlPoint: { x: 160, y: 270 },
+            markerEnd: { kind: "filled-arrow", sizePx: 24 }
+          }
+        }
+      }]);
+      const reactionCaptured = nativeArrowStyleDefaultFromGraphic(graphicById(bentDoc, reactionId));
+      if (!reactionCaptured) {
+        throw new Error("Expected the reaction arrow to yield a default style.");
+      }
+      expect(reactionCaptured.style.markerEndSizePx).toBe(24);
+      expect(reactionCaptured.style.bowFrac).toBeCloseTo(0.25, 3);
+      setNativeArrowStyleDefault(reactionCaptured.toolId, reactionCaptured.style);
+
+      const nextReaction = applyNativeArtLineToolAtPoint(
+        createPhase4Document("Arrow Default Reaction Applied"),
+        { x: 100, y: 400 },
+        { x: 340, y: 400 },
+        "tool.art.reactionArrow"
+      );
+      const drawn = graphicById(nextReaction, nextReaction.selection.objectIds[0]!);
+      expect(drawn.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 24 });
+      expect(drawn.data.artPathKind).toBe("quadratic");
+      // Bow scales with the drawn length: 0.25 x 240 = 60 above the midpoint (240, 400).
+      expect(drawn.data.pathControlPoint?.x).toBeCloseTo(220, 3);
+      expect(drawn.data.pathControlPoint?.y).toBeCloseTo(340, 3);
+
+      // Curved (arc) arrows: sweep and head size carry through the click-placement path.
+      const curvedDoc = insertNativeArtGraphicObject(
+        createPhase4Document("Arrow Default Curved"),
+        { x: 200, y: 200 },
+        "tool.art.curvedArrow90"
+      );
+      const curvedId = curvedDoc.selection.objectIds[0]!;
+      const sweptDoc = applyPatches(curvedDoc, [{
+        op: "updateObject",
+        objectId: curvedId,
+        changes: {
+          data: {
+            ...graphicById(curvedDoc, curvedId).data,
+            arcSweepRadians: Math.PI * 1.2
+          }
+        }
+      }]);
+      const curvedCaptured = nativeArrowStyleDefaultFromGraphic(graphicById(sweptDoc, curvedId));
+      if (!curvedCaptured) {
+        throw new Error("Expected the curved arrow to yield a default style.");
+      }
+      setNativeArrowStyleDefault(curvedCaptured.toolId, curvedCaptured.style);
+      const nextCurved = insertNativeArtGraphicObject(
+        createPhase4Document("Arrow Default Curved Applied"),
+        { x: 260, y: 260 },
+        "tool.art.curvedArrow90"
+      );
+      expect(graphicById(nextCurved, nextCurved.selection.objectIds[0]!).data.arcSweepRadians)
+        .toBeCloseTo(Math.PI * 1.2, 6);
+
+      // Non-arrow art objects never offer the capture.
+      const lobeDoc = insertNativeArtGraphicObject(
+        createPhase4Document("Arrow Default Lobe"),
+        { x: 200, y: 200 },
+        "tool.lobe"
+      );
+      expect(nativeArrowStyleDefaultFromGraphic(graphicById(lobeDoc, lobeDoc.selection.objectIds[0]!)))
+        .toBeUndefined();
+    } finally {
+      clearNativeArrowStyleDefaults();
+    }
+  });
+
+  it("draws reaction/resonance art arrows between two dragged endpoints", () => {
+    const start = { x: 200, y: 300 };
+    const end = { x: 520, y: 360 };
+    const drawn = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Native Art Reaction Arrow"),
+      start,
+      end,
+      "tool.art.reactionArrow"
+    );
+    const objectId = drawn.selection.objectIds[0];
+    if (!objectId) {
+      throw new Error("Expected drawn reaction arrow to be selected.");
+    }
+
+    const object = graphicById(drawn, objectId);
+    // The tail follows the press and the head follows the release, so length + angle track the drag —
+    // exactly what a fixed-box plop cannot express.
+    expect(object.data.lineStart).toEqual(start);
+    expect(object.data.lineEnd).toEqual(end);
+    expect(object.data.artToolId).toBe("reactionArrow");
+    expect(object.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(object.data.markerStart).toBeUndefined();
+    // Bounding box encloses both endpoints (plus stroke/arrowhead padding).
+    expect(object.x).toBeLessThanOrEqual(start.x);
+    expect(object.y).toBeLessThanOrEqual(start.y);
+    expect(object.x + object.width).toBeGreaterThanOrEqual(end.x);
+    expect(object.y + object.height).toBeGreaterThanOrEqual(end.y);
+
+    const resonance = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Native Art Resonance Arrow"),
+      start,
+      end,
+      "tool.art.resonanceArrow"
+    );
+    const resonanceObject = graphicById(resonance, resonance.selection.objectIds[0]!);
+    expect(resonanceObject.data.artToolId).toBe("resonanceArrow");
+    expect(resonanceObject.data.markerStart).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(resonanceObject.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+  });
+
+  it("drops a default horizontal art arrow on a plain click (no drag)", () => {
+    const clicked = applyNativeArtLineToolDefaultAtPoint(
+      createPhase4Document("Native Art Default Arrow"),
+      { x: 240, y: 260 },
+      "tool.art.reactionArrow"
+    );
+    const object = graphicById(clicked, clicked.selection.objectIds[0]!);
+    const startPoint = object.data.lineStart!;
+    const endPoint = object.data.lineEnd!;
+    // Horizontal, default length, tail at the press point.
+    expect(startPoint).toEqual({ x: 240, y: 260 });
+    expect(endPoint.y).toBe(260);
+    expect(endPoint.x - startPoint.x).toBe(nativeArtLineDefaultLengthPx);
+  });
+
+  it("defines the preconfigured arrow variants with their expected geometry", () => {
+    const document = createPhase4Document("Preconfigured Arrow Variants");
+    const byTool = (commandId: string) => {
+      const inserted = insertNativeArtGraphicObject(document, { x: 220, y: 180 }, commandId);
+      const objectId = inserted.selection.objectIds[0];
+      if (!objectId) {
+        throw new Error(`Expected ${commandId} to insert and select an object.`);
+      }
+      return graphicById(inserted, objectId);
+    };
+
+    const bold = byTool("tool.art.reactionArrowBold");
+    expect(bold.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 24 });
+    expect(bold.data.artPathKind).toBe("line");
+
+    const dashed = byTool("tool.art.reactionArrowDashed");
+    expect(dashed.style.strokeDasharray).toBe("6 6");
+    expect(dashed.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+
+    const curved = byTool("tool.art.curvedArrow180");
+    expect(curved.data.artPathKind).toBe("arc");
+    expect(curved.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+
+    const fishhook = byTool("tool.art.fishhookArrow");
+    expect(fishhook.data.markerEnd).toEqual({ kind: "half-arrow", sizePx: 16 });
+
+    const fishhookCurved = byTool("tool.art.fishhookCurved");
+    expect(fishhookCurved.data.artPathKind).toBe("arc");
+    expect(fishhookCurved.data.markerEnd).toEqual({ kind: "half-arrow", sizePx: 16 });
+
+    const noReaction = byTool("tool.art.noReactionArrow");
+    expect(noReaction.data.shaftMark).toBe("cross");
+    expect(noReaction.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+  });
+
+  it("classifies arrow-family tools for arrow-mode hover editing", () => {
+    // Line-family arrows and lines: hover-editable and drag-to-draw.
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.reactionArrowBold")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.reactionArrowDashed")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.fishhookArrow")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.noReactionArrow")).toBe(true);
+    // Arrow-family arcs: hover-editable but not drag-to-draw (preset arc placement).
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.curvedArrow90")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.curvedArrow180")).toBe(true);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.fishhookCurved")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.curvedArrow180")).toBe(false);
+    // Plain arcs and shapes stay excluded.
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.arc180")).toBe(false);
+    expect(nativeArtToolSupportsArrowHoverEdit("tool.art.rect")).toBe(false);
+  });
+
+  it("classifies only line/wavy art tools as drag-to-draw", () => {
+    expect(nativeArtToolIsLineDraw("tool.art.reactionArrow")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.resonanceArrow")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.arrow")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.line")).toBe(true);
+    expect(nativeArtToolIsLineDraw("tool.art.lineWavy")).toBe(true);
+    // Arcs, closed shapes, and node-path tools keep fixed-box / multi-click placement.
+    expect(nativeArtToolIsLineDraw("tool.art.arc180")).toBe(false);
+    expect(nativeArtToolIsLineDraw("tool.art.rect")).toBe(false);
+    expect(nativeArtToolIsLineDraw("tool.art.polyline")).toBe(false);
+    expect(nativeArtToolIsLineDraw("tool.art.pen")).toBe(false);
   });
 
   it("inserts native art polylines as path-node graphics", () => {
@@ -4848,7 +5222,8 @@ describe("Phase 4 document workflow", () => {
 
     const marker = graphicById(edited, objectId).data.markerEnd;
     expect(marker?.kind).toBe("filled-arrow");
-    expect(marker?.sizePx).toBeCloseTo(36.77, 3);
+    // Arrowhead size snaps to 4px steps: the ~36.77px drag distance rounds to 36.
+    expect(marker?.sizePx).toBe(36);
     expect(edited.selection.objectIds).toEqual([objectId]);
   });
 
@@ -5799,7 +6174,7 @@ describe("Phase 4 document workflow", () => {
       strokeDasharray: "8 6",
       strokeLineCap: "square"
     });
-    expect(graphicById(copiedStroke, lineTargetId).data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 10 });
+    expect(graphicById(copiedStroke, lineTargetId).data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
     expect(graphicById(copiedStroke, lineTargetId).style.fillColor).toBe("none");
 
     const fullAppearanceTarget = applyPatches(paintedSource, [
@@ -6546,6 +6921,109 @@ describe("Phase 4 document workflow", () => {
     }
     expect(pointDistance(scaledPoints!.start, beforePoints.start)).toBeGreaterThan(0.5);
     expect(pointDistance(scaledPoints!.end, beforePoints.end)).toBeGreaterThan(0.5);
+  });
+
+  it("grows an arrow's head and stroke proportionally when the frame is resized", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Arrow Proportionally"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const graphic = graphicById(inserted, objectId);
+    const startHead = graphic.data.markerEnd?.sizePx ?? 0;
+    const startStroke = typeof graphic.style.strokeWidth === "number" ? graphic.style.strokeWidth : 0;
+    expect(startHead).toBeGreaterThan(0);
+    expect(startStroke).toBeGreaterThan(0);
+    const oldCenter = { x: graphic.x + graphic.width / 2, y: graphic.y + graphic.height / 2 };
+
+    // Uniform 2× → head and stroke both ~2×, not just the geometry.
+    const doubled = graphicById(
+      scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, 2, 2),
+      objectId
+    );
+    expect(doubled.data.markerEnd?.sizePx).toBeCloseTo(startHead * 2, 3);
+    expect(doubled.style.strokeWidth).toBeCloseTo(startStroke * 2, 3);
+
+    // A one-axis stretch still enlarges the head — by the geometric mean, √(1.6·1.0), so a long thin
+    // stretch keeps the arrow looking like an arrow rather than a fixed head on a stretched shaft.
+    const stretched = graphicById(
+      scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, 1.6, 1),
+      objectId
+    );
+    const meanScale = Math.sqrt(1.6);
+    expect(stretched.data.markerEnd?.sizePx).toBeCloseTo(startHead * meanScale, 3);
+    expect(stretched.style.strokeWidth).toBeCloseTo(startStroke * meanScale, 3);
+  });
+
+  it("sets, clamps, scales, and clears the no-reaction ✗ size", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("No-Reaction Mark Size"),
+      { x: 220, y: 180 },
+      "tool.art.noReactionArrow"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    expect(graphicById(inserted, objectId).data.shaftMark).toBe("cross");
+    // Fresh arrows have no explicit size — the render derives it from stroke width.
+    expect(graphicById(inserted, objectId).data.shaftMarkSizePx).toBeUndefined();
+
+    const sized = applyGraphicShaftMarkSizeToSelection(inserted, 20, [objectId]);
+    expect(graphicById(sized, objectId).data.shaftMarkSizePx).toBe(20);
+
+    // Out-of-range requests clamp to the engine bounds rather than storing nonsense.
+    const clamped = applyGraphicShaftMarkSizeToSelection(inserted, 500, [objectId]);
+    expect(graphicById(clamped, objectId).data.shaftMarkSizePx).toBe(64);
+
+    // A frame resize scales the explicit size with the arrow, like the heads.
+    const center = {
+      x: graphicById(sized, objectId).x + graphicById(sized, objectId).width / 2,
+      y: graphicById(sized, objectId).y + graphicById(sized, objectId).height / 2
+    };
+    const doubled = graphicById(scaleDocumentObjectsAroundPoint(sized, [objectId], center, 2, 2), objectId);
+    expect(doubled.data.shaftMarkSizePx).toBeCloseTo(40, 3);
+
+    // Auto (undefined) deletes the override entirely.
+    const cleared = applyGraphicShaftMarkSizeToSelection(sized, undefined, [objectId]);
+    expect(graphicById(cleared, objectId).data.shaftMarkSizePx).toBeUndefined();
+    expect("shaftMarkSizePx" in graphicById(cleared, objectId).data).toBe(false);
+
+    // A plain reaction arrow has no shaft mark, so the command leaves it untouched.
+    const plainArrow = insertNativeArtGraphicObject(
+      createPhase4Document("Plain Arrow Untouched"),
+      { x: 220, y: 180 },
+      "tool.art.reactionArrow"
+    );
+    const plainId = plainArrow.selection.objectIds[0] ?? "";
+    const afterPlain = applyGraphicShaftMarkSizeToSelection(plainArrow, 20, [plainId]);
+    expect(afterPlain).toBe(plainArrow);
+  });
+
+  it("computes the proportional graphic scale as the geometric mean of the two axes", () => {
+    expect(proportionalGraphicScale(2, 2)).toBeCloseTo(2, 6);
+    expect(proportionalGraphicScale(1.6, 1)).toBeCloseTo(Math.sqrt(1.6), 6);
+    expect(proportionalGraphicScale(4, 0.25)).toBeCloseTo(1, 6);
+    // Degenerate axes fall back to 1 rather than collapsing the size.
+    expect(proportionalGraphicScale(0, 3)).toBe(1);
+    expect(proportionalGraphicScale(Number.NaN, 2)).toBeCloseTo(Math.sqrt(2), 6);
+  });
+
+  it("leaves a plain rectangle's stroke width unchanged when resized", () => {
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Scale Plain Rect"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = inserted.selection.objectIds[0] ?? "";
+    const graphic = graphicById(inserted, objectId);
+    const startStroke = typeof graphic.style.strokeWidth === "number" ? graphic.style.strokeWidth : 0;
+    const oldCenter = { x: graphic.x + graphic.width / 2, y: graphic.y + graphic.height / 2 };
+
+    // Non-arrow art keeps its existing behaviour: a bigger rectangle keeps its line weight.
+    const scaled = graphicById(
+      scaleDocumentObjectsAroundPoint(inserted, [objectId], oldCenter, 2, 2),
+      objectId
+    );
+    expect(scaled.style.strokeWidth).toBe(startStroke);
   });
 
   it("scales native polyline path nodes with the frame", () => {
@@ -7870,7 +8348,7 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.bonds).toEqual([]);
     expect(molecule.structure).toBe("C.C.C.C");
     expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
-    expect(molecule.atoms.map((atom) => nativeAtomDisplayLabel(atom, molecule.bonds))).toEqual([
+    expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
       "CH4",
       "CH4",
       "CH4",
@@ -7899,7 +8377,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(hypervalentMolecule)).toMatchObject([
       { atomId: "atom_001", element: "N", valenceUsed: 4, formalCharge: 0, expectedFormalCharge: 1, valid: false }
     ]);
-    expect(nativeAtomDisplayLabel(nitrogen!, hypervalentMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(nitrogen!, hypervalentMolecule.bonds)).toBe("N");
 
     const neutralAmine = applyNativeMoleculeDeleteTarget(neutralHypervalent, {
       objectId: hypervalentMolecule.id,
@@ -7912,7 +8390,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(neutralNitrogen).toMatchObject({ element: "N", formalCharge: 0 });
     expect(neutralMolecule.chemistry).toMatchObject({ formula: "C3H9N", totalCharge: 0 });
-    expect(nativeAtomDisplayLabel(neutralNitrogen!, neutralMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(neutralNitrogen!, neutralMolecule.bonds)).toBe("N");
     expect(neutralMolecule.atoms.find((atom) => atom.id === "atom_002")).toBeUndefined();
   });
 
@@ -8996,6 +9474,131 @@ describe("Phase 4 document workflow", () => {
       structure: "edited-molfile-v3000"
     });
     expect(getSelectedMolecule(withOtherObject)?.structure).toBe("CC");
+  });
+
+  it("mirrors a parametric arc's sweep when it is flipped", () => {
+    // Flipping mirrored arcCenter and scaled the radii but left arcStartRadians/arcSweepRadians
+    // alone, so a curved pushing arrow kept curving the same way after a mirror — and for those
+    // arrows the sweep direction IS the chemistry being asserted.
+    const inserted = insertNativeArtGraphicObject(
+      createPhase4Document("Arc Flip Sweep"),
+      { x: 200, y: 200 },
+      "tool.art.curvedArrow90"
+    );
+    const objectId = inserted.selection.objectIds[0]!;
+    // A click-placed arc derives its geometry from the frame; store the parametric form explicitly
+    // so the angles under test are the ones actually being carried through the flip.
+    const parametric = applyPatches(inserted, [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        data: {
+          ...graphicById(inserted, objectId).data,
+          arcCenter: { x: 240, y: 230 },
+          arcRadiusX: 40,
+          arcRadiusY: 25,
+          arcStartRadians: 0.6,
+          arcSweepRadians: 1.9
+        }
+      }
+    }]);
+    const before = graphicById(parametric, objectId);
+    expect(before.data.artPathKind).toBe("arc");
+
+    const pivot = { x: before.x + before.width / 2, y: before.y + before.height / 2 };
+    const flipped = graphicById(
+      flipDocumentObjectsAroundPoint(parametric, [objectId], pivot, "horizontal"),
+      objectId
+    );
+
+    // One axis flipped, so the traversal direction reverses.
+    expect(flipped.data.arcSweepRadians).toBeCloseTo(-(before.data.arcSweepRadians ?? 0), 9);
+
+    // Both parametric endpoints must land on the mirror of where they were. This is what catches a
+    // sweep remap that traces the right curve but swaps which end is "start" — that would silently
+    // move the arrowhead to the other end of the arc.
+    const arcPoint = (object: typeof before, t: number): PagePoint => ({
+      x: (object.data.arcCenter?.x ?? 0) + (object.data.arcRadiusX ?? 0) * Math.cos(t),
+      y: (object.data.arcCenter?.y ?? 0) + (object.data.arcRadiusY ?? 0) * Math.sin(t)
+    });
+    const startOf = (object: typeof before): number => object.data.arcStartRadians ?? 0;
+    const endOf = (object: typeof before): number => startOf(object) + (object.data.arcSweepRadians ?? 0);
+
+    const mirroredStart = arcPoint(before, startOf(before));
+    const mirroredEnd = arcPoint(before, endOf(before));
+    expectPointToBeClose(arcPoint(flipped, startOf(flipped)), {
+      x: 2 * pivot.x - mirroredStart.x,
+      y: mirroredStart.y
+    });
+    expectPointToBeClose(arcPoint(flipped, endOf(flipped)), {
+      x: 2 * pivot.x - mirroredEnd.x,
+      y: mirroredEnd.y
+    });
+
+    // Flipping both axes is a 180-degree rotation, not a mirror: the sweep must survive intact.
+    const bothAxes = graphicById(
+      flipDocumentObjectsAroundPoint(
+        flipDocumentObjectsAroundPoint(parametric, [objectId], pivot, "horizontal"),
+        [objectId],
+        pivot,
+        "vertical"
+      ),
+      objectId
+    );
+    expect(bothAxes.data.arcSweepRadians).toBeCloseTo(before.data.arcSweepRadians ?? 0, 9);
+  });
+
+  it("mirrors a rotated graphic's rendered geometry when it is flipped", () => {
+    // `rotation` is a render transform about the object's centre, so a true mirror is R(-theta)
+    // over the mirrored interior. Graphics were carved out of that rule and kept R(theta) -- the
+    // exact case this branch created by turning every arrow into a graphic -- so a 30-degree arrow
+    // flipped horizontally rendered at 210 degrees instead of 150. The interior mirrored and the
+    // frame moved, so the bug reads as "the arrow flipped, but at the wrong angle".
+    const angle = 30;
+    const placed = applyNativeArtLineToolAtPoint(
+      createPhase4Document("Rotated Graphic Flip"),
+      { x: 200, y: 300 },
+      { x: 320, y: 300 },
+      "tool.art.reactionArrow"
+    );
+    const objectId = placed.selection.objectIds[0]!;
+    const graphic = graphicById(placed, objectId);
+    const pivot = { x: graphic.x + graphic.width / 2, y: graphic.y + graphic.height / 2 };
+    const rotated = rotateDocumentObjectsAroundPoint(placed, [objectId], pivot, angle);
+    const before = graphicById(rotated, objectId);
+
+    const flipped = graphicById(
+      flipDocumentObjectsAroundPoint(rotated, [objectId], pivot, "horizontal"),
+      objectId
+    );
+
+    // Negating is the exact rotation of the mirrored shape: 30 degrees mirrors to 330, not 30.
+    expect(flipped.rotation).toBeCloseTo(330, 6);
+
+    // The claim that matters is what the user sees: apply each object's own rotation to its
+    // endpoints and the resulting world points must be mirrored about the pivot.
+    const worldEnds = (object: typeof before): { start: PagePoint; end: PagePoint } => {
+      const centre = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+      const radians = (object.rotation * Math.PI) / 180;
+      const place = (point: PagePoint): PagePoint => {
+        const dx = point.x - centre.x;
+        const dy = point.y - centre.y;
+        return {
+          x: centre.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+          y: centre.y + dx * Math.sin(radians) + dy * Math.cos(radians)
+        };
+      };
+      return { start: place(object.data.lineStart!), end: place(object.data.lineEnd!) };
+    };
+
+    const beforeEnds = worldEnds(before);
+    const flippedEnds = worldEnds(flipped);
+    expect(flippedEnds.start.x).toBeCloseTo(2 * pivot.x - beforeEnds.start.x, 6);
+    expect(flippedEnds.start.y).toBeCloseTo(beforeEnds.start.y, 6);
+    expect(flippedEnds.end.x).toBeCloseTo(2 * pivot.x - beforeEnds.end.x, 6);
+    expect(flippedEnds.end.y).toBeCloseTo(beforeEnds.end.y, 6);
+    // The head pointed right-and-down of the tail; mirrored it must point left-and-down.
+    expect(flippedEnds.end.x).toBeLessThan(flippedEnds.start.x);
   });
 
   it("syncs Ketcher V3000 saves into the selected molecule preview graph", () => {

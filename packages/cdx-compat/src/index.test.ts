@@ -13,6 +13,7 @@ import {
 import { cdxmlFixtures } from "@chemdraft/fixtures";
 import {
   CdxmlEnvelopeCodecVersion,
+  CdxmlEnvelopeCodecVersionV1,
   ChemDraftObjectTags,
   canonicalVisibleCdxml,
   decodeBase64UrlUtf8,
@@ -77,11 +78,11 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(visibleHash).toBe(visibleHashForCdxml(result.contents));
     expect(canonicalVisibleCdxml(result.contents)).toContain("<fragment");
-    expect(result.contents).toContain('p="75 111"');
+    expect(result.contents).toContain('p="111 75"');
     expect(canonicalVisibleCdxml(result.contents)).not.toContain("org.chemdraft/native-document");
   });
 
-  it("exports visible CDXML page and atom coordinates as vertical-then-horizontal", () => {
+  it("exports visible CDXML page and atom coordinates in spec order (x then y)", () => {
     const document = documentWithObjects([
       {
         ...singleBondMolecule(),
@@ -103,11 +104,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
     const result = exportDocumentToCdxml(document, { creationProgram: "Coordinate Order Test" });
 
-    expect(result.contents).toContain('<page id="page_001" BoundingBox="0 0 792 612">');
-    expect(result.contents).toContain('p="157.6553 130.875"');
-    expect(result.contents).toContain('p="157.6553 147.375"');
-    expect(result.contents).toContain('p="173.2089 152.8828"');
-    expect(result.contents).not.toContain('p="130.875 157.6553"');
+    // A portrait Letter page is 612 wide x 792 tall; "left top right bottom" must say so, or every
+    // spec-conforming reader (ChemDraw, RDKit, ChemAxon) sees the page as landscape.
+    expect(result.contents).toContain('<page id="page_001" BoundingBox="0 0 612 792">');
+    expect(result.contents).toContain('p="130.875 157.6553"');
+    expect(result.contents).toContain('p="147.375 157.6553"');
+    expect(result.contents).toContain('p="152.8828 173.2089"');
+    // The y-first order ChemDraft wrote through codec v1 must not come back.
+    expect(result.contents).not.toContain('p="157.6553 130.875"');
   });
 
   it("canonicalizes equivalent visible XML despite comments, whitespace, CDATA, and attribute ordering", () => {
@@ -326,8 +330,10 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(result.contents).toContain('GraphicType="Arc"');
     expect(result.contents).toContain('AngularSize="270"');
-    expect(result.contents).toContain('Start="66.75 70.5"');
-    expect(result.contents).toContain('End="48 51.75"');
+    // Centre (51.75, 66.75), r 18.75: angle 0 leaves the centre's y untouched, and a 270-degree
+    // sweep lands straight above it — both only true when the pair reads "x y".
+    expect(result.contents).toContain('Start="70.5 66.75"');
+    expect(result.contents).toContain('End="51.75 48"');
     expect(result.warnings).toEqual([]);
   });
 
@@ -336,7 +342,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
 <CDXML CreationProgram="Arc Import Test">
   <page id="20" BoundingBox="0 0 540 720">
-    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="66.75 70.5" End="48 51.75"/>
+    <graphic id="7" BoundingBox="30 45 73.5 88.5" GraphicType="Arc" AngularSize="270" Start="70.5 66.75" End="51.75 48"/>
   </page>
 </CDXML>`);
     const graphic = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
@@ -414,6 +420,108 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       | GraphicObject
       | undefined;
     expect(reopened?.style.fillColor?.toLowerCase()).toBe("#00ff00");
+  });
+
+  // `graphicDataFromCdxmlShape` already reads `LineType="Wavy"` into `artPathKind` for every line
+  // graphic, and `exportSemanticReactionArrowGraphic` already WRITES `LineType` on reaction arrows —
+  // so a wavy reaction arrow is representable at both ends of this codec. The two semantic-arrow
+  // importers threw it away with a hard `artPathKind: "line"`, straightening the shaft on the way in.
+  // The `<arrow>` importer beside them defaults the kind (`?? "line"`) for exactly this reason.
+  it("keeps a wavy shaft on an imported reaction arrow instead of straightening it", () => {
+    const cdxml = (extra: string) => `<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="9" BoundingBox="120 200 260 200" Z="1" GraphicType="Line" LineType="Wavy" ${extra} Start="120 200" End="260 200"/>
+  </page>
+</CDXML>`;
+
+    // Baseline: with no ArrowType the very same element imports wavy, so the attribute is read.
+    const plainLine = openChemDraftPayload(cdxml("")).document?.pages[0].objects[0] as GraphicObject;
+    expect(plainLine.data.artPathKind).toBe("wavy");
+
+    // Naming the chemistry must not cost the geometry — for a reaction arrow…
+    const reaction = openChemDraftPayload(cdxml('ArrowType="FullHead"')).document?.pages[0].objects[0] as GraphicObject;
+    expect(reaction.data.artToolId).toBe("reactionArrow");
+    expect(reaction.data.artPathKind).toBe("wavy");
+
+    // …nor for the single-barbed fishhook, whose importer had the same hard assignment.
+    const fishhook = openChemDraftPayload(cdxml('ArrowType="HalfHead"')).document?.pages[0].objects[0] as GraphicObject;
+    expect(fishhook.data.artToolId).toBe("fishhookArrow");
+    expect(fishhook.data.artPathKind).toBe("wavy");
+
+    // But NOT on the two-shaft arrows. The wavy generator emits one shaft and ignores `dualShaft`,
+    // so keeping the kind there would collapse an equilibrium's opposed pair — and a retro arrow's
+    // parallel pair plus its "=>" head — into a single wavy line while `dualShaft` still said
+    // otherwise. Straightening loses the wave; keeping it would lose the arrow. Reported either way.
+    for (const [arrowType, tool] of [["Equilibrium", "equilibriumArrow"], ["RetroSynthetic", "retroArrow"]]) {
+      const opened = openChemDraftPayload(cdxml(`ArrowType="${arrowType}"`));
+      const arrow = opened.document?.pages[0].objects[0] as GraphicObject;
+      expect(arrow.data.artToolId).toBe(tool);
+      expect(arrow.data.dualShaft).toBe(true);
+      expect(arrow.data.artPathKind).toBe("line");
+      expect(opened.warnings.map((entry) => entry.code)).toContain("cdxml.wavy_dual_shaft_arrow_straightened");
+    }
+
+    // A straight two-shaft arrow is not reported — the warning is about actual loss, not shape.
+    const straightEquilibrium = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="9" BoundingBox="120 200 260 200" Z="1" GraphicType="Line" ArrowType="Equilibrium" Start="120 200" End="260 200"/>
+  </page>
+</CDXML>`);
+    expect(straightEquilibrium.warnings.map((entry) => entry.code)).not.toContain("cdxml.wavy_dual_shaft_arrow_straightened");
+
+    // A straight arrow stays straight: the fix defaults the kind, it does not invent one.
+    const straight = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="ChemDraw 26.0.0.6599">
+  <page id="20" BoundingBox="0 0 540 720">
+    <graphic id="9" BoundingBox="120 200 260 200" Z="1" GraphicType="Line" ArrowType="FullHead" Start="120 200" End="260 200"/>
+  </page>
+</CDXML>`).document?.pages[0].objects[0] as GraphicObject;
+    expect(straight.data.artPathKind).toBe("line");
+  });
+
+  // The loss above is reachable through ChemDraft's OWN writer, which is what makes it data loss
+  // rather than an interop approximation: the exporter emits `LineType="Wavy"` for this object, and
+  // re-opening the file it just wrote gave back a straight arrow.
+  it("round-trips a wavy reaction arrow through its own exporter", () => {
+    const document = createEmptyDocument({ title: "Wavy Arrow", now: "2026-06-06T00:00:00.000Z" });
+    const wavyArrow: GraphicObject = {
+      id: "graphic_wavy_arrow",
+      type: "graphic",
+      x: 120,
+      y: 190,
+      width: 140,
+      height: 20,
+      rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "wavy",
+        artToolId: "reactionArrow",
+        lineStart: { x: 120, y: 200 },
+        lineEnd: { x: 260, y: 200 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    };
+    document.pages[0].objects.push(wavyArrow);
+
+    const exported = exportDocumentToCdxml(document, { creationProgram: "Wavy Arrow Round Trip" });
+    expect(exported.contents).toContain('ArrowType="FullHead"');
+    expect(exported.contents).toContain('LineType="Wavy"');
+
+    // Reopen as a foreign file, so the VISIBLE CDXML is what gets read. The embedded native payload
+    // rides in `<objecttag Name="org.chemdraft/…">` elements and restores the object verbatim, which
+    // would mask the loss for ChemDraft while every other reader of the same file saw a straight
+    // arrow. Assert the source too, so this can never quietly pass through the payload again.
+    const visibleOnly = exported.contents.replace(/<objecttag Name="org\.chemdraft\/[^>]*\/>/g, "");
+    const reopened = openChemDraftPayload(visibleOnly);
+    expect(reopened.source).toBe("external-cdxml");
+    const arrow = reopened.document?.pages[0].objects.find(
+      (object) => object.type === "graphic"
+    ) as GraphicObject | undefined;
+    expect(arrow?.data.artToolId).toBe("reactionArrow");
+    expect(arrow?.data.artPathKind).toBe("wavy");
   });
 
   it("imports and exports ChemDraw shape graphics as native graphic objects", () => {
@@ -533,6 +641,85 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.visible_layer_modified");
   });
 
+  it("still opens codec-v1 envelopes ChemDraft already wrote", () => {
+    // v1 is every .cdxml this app shipped before the coordinate order was corrected. Its embedded
+    // payload is native JSON and was always right, so accepting the version is the whole migration:
+    // drop v1 from the supported set and every existing document fails to open.
+    const document = createEmptyDocument({ now: "2026-06-06T00:00:00.000Z" });
+    const molecule = singleBondMolecule();
+    const withMolecule: ChemDraftDocument = {
+      ...document,
+      pages: [{ ...document.pages[0], objects: [molecule] }]
+    };
+    const exported = exportDocumentToCdxml(withMolecule, { creationProgram: "V1 Compatibility" });
+    const asV1 = replaceObjectTag(exported.contents, ChemDraftObjectTags.codecVersion, CdxmlEnvelopeCodecVersionV1);
+    const opened = openChemDraftPayload(asV1);
+
+    expect(opened.source).toBe("native-payload");
+    expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.codec_version_unsupported");
+    expect(opened.document?.pages[0].objects[0]).toEqual(molecule);
+  });
+
+  it("transposes the visible layer of a codec-v1 envelope whose payload is gone", () => {
+    // A v1 file stripped of its payload leaves only a visible layer ChemDraft wrote y-first.
+    // Reading it with the corrected parsers yields the exact transpose, so swapping back recovers
+    // the true geometry: p="75 111" was authored as (x 111, y 75) — a horizontal bond.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft 0.1.0">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <objecttag Name="${ChemDraftObjectTags.codecVersion}" Persistent="yes" TagType="String" Value="${CdxmlEnvelopeCodecVersionV1}"/>
+    <fragment id="f1">
+      <n id="a1" p="75 75"/>
+      <n id="a2" p="75 111"/>
+      <b id="b1" B="a1" E="a2" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    expect(molecule?.atoms).toHaveLength(2);
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(100);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(100);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(148);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(100);
+  });
+
+  it("transposes only the parts of a codec-v1 layer that were written y-first", () => {
+    // Codec v1 was MIXED, which is what makes a blanket transpose wrong. `formatPoint` wrote atom
+    // and text `p` y-first, but `formatXyPoint` (Head3D/Tail3D/Center3D) and `formatXyBoundingBox`
+    // (graphic/arrow BoundingBox) wrote x-first. `importShapeGraphic` tags everything it builds
+    // with `cdxmlCoordinateSpace: "xy"`, and that tag is what says "already spec order, leave it".
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft 0.1.0">
+  <page id="p1" BoundingBox="0 0 792 612">
+    <objecttag Name="${ChemDraftObjectTags.codecVersion}" Persistent="yes" TagType="String" Value="${CdxmlEnvelopeCodecVersionV1}"/>
+    <fragment id="f1">
+      <n id="a1" p="75 75"/>
+      <n id="a2" p="75 111"/>
+      <b id="b1" B="a1" E="a2" Order="1"/>
+    </fragment>
+    <arrow id="34" BoundingBox="200 296 320 304" Head3D="320 300 0" Tail3D="200 300 0" ArrowheadHead="Full" ArrowheadType="Solid"/>
+  </page>
+</CDXML>`);
+    const objects = opened.document?.pages[0].objects ?? [];
+    const molecule = objects.find((object) => object.type === "molecule") as MoleculeObject | undefined;
+    const arrow = objects.find((object) => object.type === "graphic") as GraphicObject | undefined;
+
+    // The atoms WERE y-first, so they transpose: p="75 111" was authored as (x 111, y 75).
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(100);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(100);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(148);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(100);
+
+    // The arrow was ALREADY x-first, so it must be left alone: tail (200,300) -> head (320,300)
+    // is horizontal, and transposing it would stand it up vertically.
+    expect(arrow?.data.lineStart?.y).toBeCloseTo(arrow?.data.lineEnd?.y ?? Number.NaN, 6);
+    expect((arrow?.data.lineEnd?.x ?? 0) - (arrow?.data.lineStart?.x ?? 0)).toBeCloseTo(120 * (4 / 3), 6);
+    expect(arrow!.width).toBeGreaterThan(arrow!.height);
+  });
+
   it("returns a friendly unsupported-version warning for forward codec versions", () => {
     const document = createEmptyDocument({ now: "2026-06-06T00:00:00.000Z" });
     const result = exportDocumentToCdxml(document, { creationProgram: "Future Test" });
@@ -586,22 +773,24 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.structure_string_not_derived");
   });
 
-  it("imports CDXML p and BoundingBox coordinates as vertical-then-horizontal", () => {
+  it("imports CDXML p and BoundingBox coordinates in spec order (x then y)", () => {
+    // Two fragments stacked vertically at the same x, with a label below both. Written in spec
+    // order — "x y" points, "left top right bottom" boxes — so the imported layout must agree.
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
-  <page id="p1" BoundingBox="0 0 720 540">
+  <page id="p1" BoundingBox="0 0 540 720">
     <fragment id="top" BoundingBox="100 120 100 156">
       <n id="a1" p="100 120"/>
       <n id="a2" p="100 156"/>
       <b id="b1" B="a1" E="a2" Order="1"/>
     </fragment>
-    <fragment id="bottom" BoundingBox="220 120 220 156">
-      <n id="a3" p="220 120"/>
-      <n id="a4" p="220 156"/>
+    <fragment id="bottom" BoundingBox="100 320 100 356">
+      <n id="a3" p="100 320"/>
+      <n id="a4" p="100 356"/>
       <b id="b2" B="a3" E="a4" Order="1"/>
     </fragment>
-    <t id="label" p="300 120">vertical stack</t>
+    <t id="label" p="100 520">vertical stack</t>
   </page>
 </CDXML>`);
 
@@ -615,7 +804,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(label?.y ?? 0).toBeGreaterThan((bottom?.y ?? 0) + 100);
   });
 
-  it("rotates ChemDraw 26 visible CDXML into the displayed page orientation", () => {
+  it("imports ChemDraw CDXML faithfully — no rotation, no mirror", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
 <CDXML CreationProgram="ChemDraw 26.0.0.6599">
@@ -630,11 +819,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
-    expect(molecule?.atoms[0]?.x).toBeCloseTo(184);
-    expect(molecule?.atoms[0]?.y).toBeCloseTo(109.33333333333334);
-    expect(molecule?.atoms[1]?.x).toBeCloseTo(184);
-    expect(molecule?.atoms[1]?.y).toBeCloseTo(157.33333333333334);
-    expect(molecule?.atoms[0]?.labelOffset?.x).toBeCloseTo(2.666666666666657);
+    // p="100 120" and p="100 156" are (x, y): a vertical bond at x=100, imported at the 4/3 scale.
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(133.33333333333334);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(160);
+    expect(molecule?.atoms[1]?.x).toBeCloseTo(133.33333333333334);
+    expect(molecule?.atoms[1]?.y).toBeCloseTo(208);
+    // The Cl label box "94 112 102 124" centres at (98, 118), up-and-LEFT of its atom at (100, 120).
+    // The old CCW-90 compensation turned that into +x — the mirror, baked into the expectation.
+    expect(molecule?.atoms[0]?.labelOffset?.x).toBeCloseTo(-2.666666666666657);
     expect(molecule?.atoms[0]?.labelOffset?.y).toBeCloseTo(-2.666666666666657);
     expect((molecule?.height ?? 0)).toBeGreaterThan(molecule?.width ?? 0);
   });
@@ -666,12 +858,15 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.source).toBe("external-cdxml");
     expect(molecule?.atoms).toHaveLength(7);
     expect(molecule?.bonds).toHaveLength(6);
+    // A real ChemDraw file: p="157.6553 130.875" is already (x, y), so the import is a plain 4/3
+    // scale with no swap. The three round-trip assertions at the end of this test are the proof
+    // that the reader and the writer agree on that order.
     expect(molecule?.atoms[0]?.element).toBe("C");
-    expect(molecule?.atoms[0]?.x).toBeCloseTo(174.5);
-    expect(molecule?.atoms[0]?.y).toBeCloseTo(210.20706666666667);
+    expect(molecule?.atoms[0]?.x).toBeCloseTo(210.20706666666667);
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(174.5);
     expect(molecule?.atoms[5]?.element).toBe("C");
-    expect(molecule?.atoms[5]?.x).toBeCloseTo(216.0896);
-    expect(molecule?.atoms[5]?.y).toBeCloseTo(265.52826666666665);
+    expect(molecule?.atoms[5]?.x).toBeCloseTo(265.52826666666665);
+    expect(molecule?.atoms[5]?.y).toBeCloseTo(216.0896);
     expect(molecule?.bonds[5]).toMatchObject({
       fromAtomId: "atom_005",
       toAtomId: "atom_007",
@@ -709,14 +904,13 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
-    expect(molecule?.bonds[0]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
-    expect(molecule?.bonds[2]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
+    // Orientation pin: a1 p="100 100" and a2 p="136 100" share a y and run left-to-right. The
+    // inward check below is mirror-invariant on its own, so the hexagon's pose is asserted here.
+    expect(molecule?.atoms[0]?.y).toBeCloseTo(molecule?.atoms[1]?.y ?? Number.NaN);
+    expect(molecule?.atoms[1]?.x).toBeGreaterThan(molecule?.atoms[0]?.x ?? Number.NaN);
+    expect(molecule?.bonds[0].order).toBe("double");
+    expect(molecule?.bonds[2].order).toBe("double");
+    expectRingDoubleBondsPointInward(molecule);
   });
 
   it("keeps imported cyclic double-bond secondary lines inside the ring", () => {
@@ -743,14 +937,9 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
 
-    expect(molecule?.bonds[0]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
-    expect(molecule?.bonds[2]).toMatchObject({
-      order: "double",
-      display: { doubleBondSide: "right" }
-    });
+    expect(molecule?.bonds[0].order).toBe("double");
+    expect(molecule?.bonds[2].order).toBe("double");
+    expectRingDoubleBondsPointInward(molecule);
   });
 
   it("imports synthetic single and triple bond fixtures", () => {
@@ -901,7 +1090,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
 
     expect(opened.document?.pages[0].objects.map((object) => object.type)).toEqual([
       "text",
-      "reaction-arrow",
+      "graphic",
       "molecule",
       "molecule",
       "molecule",
@@ -909,7 +1098,8 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       "unknown-compatibility-object"
     ]);
     expect((opened.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("DIPEA, DMSO");
-    expect((opened.document?.pages[0].objects[1] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
+    // The FullHead reaction arrow imports as an editable art arrow tagged with its chemical identity.
+    expect((opened.document?.pages[0].objects[1] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
   });
@@ -965,7 +1155,8 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     ]);
     expect((textPlusMolecule.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("  reagent & label  ");
     expect((textPlusMolecule.document?.pages[0].objects[1] as TextObject | undefined)?.text).toBe("+");
-    expect((reactionArrow.document?.pages[0].objects[0] as ArrowObject | undefined)?.type).toBe("reaction-arrow");
+    // A reaction (FullHead) arrow imports as an editable art arrow carrying its chemical identity.
+    expect((reactionArrow.document?.pages[0].objects[0] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
   });
 
   it("warns when brackets and curved art degrade on the way to CDXML", () => {
@@ -1021,6 +1212,324 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(oval.warnings.map((warning) => warning.code)).not.toContain("cdxml.graphic_shape_payload_only");
   });
 
+  it("imports semantic reaction arrows with a frame that matches their endpoints", () => {
+    // CDXRectangle is "left top right bottom" and CDXPoint2D is "x y". Reading either transposed
+    // detaches the frame from the line: the arrow still draws between its endpoints, but selection
+    // and transform geometry describe the mirrored shape. Assert the frame spans the endpoints.
+    const arrowCdxml = (arrowType: string, horizontal: boolean) => {
+      const box = horizontal ? "120 120 216 120" : "120 120 120 216";
+      const start = "120 120";
+      const end = horizontal ? "216 120" : "120 216";
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="Arrow Frame Test">
+  <page id="1" BoundingBox="0 0 540 720">
+    <graphic id="a1" GraphicType="Line" ArrowType="${arrowType}" BoundingBox="${box}" Start="${start}" End="${end}"/>
+  </page>
+</CDXML>`;
+    };
+
+    for (const arrowType of ["FullHead", "Resonance", "Equilibrium", "RetroSynthetic"]) {
+      const horizontal = openChemDraftPayload(arrowCdxml(arrowType, true)).document?.pages[0].objects[0] as GraphicObject;
+      expect(horizontal.width, `${arrowType} horizontal width`).toBeGreaterThan(horizontal.height);
+      // The frame must span the endpoints it drew between, not their transpose.
+      expect(horizontal.width).toBeCloseTo(Math.abs((horizontal.data.lineEnd?.x ?? 0) - (horizontal.data.lineStart?.x ?? 0)), 6);
+
+      const vertical = openChemDraftPayload(arrowCdxml(arrowType, false)).document?.pages[0].objects[0] as GraphicObject;
+      expect(vertical.height, `${arrowType} vertical height`).toBeGreaterThan(vertical.width);
+      expect(vertical.height).toBeCloseTo(Math.abs((vertical.data.lineEnd?.y ?? 0) - (vertical.data.lineStart?.y ?? 0)), 6);
+    }
+  });
+
+  it("imports a half-headed arrow as a fishhook, and says so", () => {
+    // A single-barbed arrow moves ONE electron; a full head moves two. Importing HalfHead as a
+    // reaction arrow asserted the wrong chemistry, and a re-export then wrote ArrowType="FullHead"
+    // — laundering it with nothing said. The native fishhook head is the honest mapping, and the
+    // handedness that native fishhooks do not carry is reported rather than silently dropped.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="Half Head Import Test">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <graphic id="a1" GraphicType="Line" ArrowType="HalfHead" BoundingBox="120 120 216 120" Start="120 120" End="216 120"/>
+  </page>
+</CDXML>`);
+    const arrow = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+
+    expect(arrow?.data.artToolId).toBe("fishhookArrow");
+    expect(arrow?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
+    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.half_head_arrow_import_approximation");
+
+    // And it must not be re-emitted as a full-headed reaction arrow.
+    const exported = exportDocumentToCdxml(opened.document!);
+    expect(exported.contents).not.toContain('ArrowType="FullHead"');
+  });
+
+  it("round-trips a half-headed arrow back out as ArrowType=\"HalfHead\"", () => {
+    // Importing honestly is only half the job: exporting the fishhook as a plain line still loses
+    // the arrow's chemical identity, so a ChemDraw file opened and re-saved came back as a
+    // decorative stroke. HalfHead is a real CDXML spelling and the fishhook is exactly what it
+    // means, so the pair must survive a full lap.
+    const source = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="Half Head Round Trip">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <graphic id="a1" GraphicType="Line" ArrowType="HalfHead" BoundingBox="120 120 216 120" Start="120 120" End="216 120"/>
+  </page>
+</CDXML>`;
+    const opened = openChemDraftPayload(source);
+    const exported = exportDocumentToCdxml(opened.document!);
+
+    // The visible layer must say HalfHead — not FullHead (wrong chemistry) and not a bare line
+    // (no chemistry). Check the visible <graphic>, since the embedded payload is JSON.
+    const visibleGraphic = exported.contents
+      .split("\n")
+      .find((line) => line.includes("<graphic ") && line.includes("GraphicType=\"Line\""));
+    expect(visibleGraphic).toBeDefined();
+    expect(visibleGraphic).toContain('ArrowType="HalfHead"');
+
+    // Reopening the export must land on the same fishhook, not drift a second time.
+    const reopened = openChemDraftPayload(exported.contents);
+    const arrow = reopened.document?.pages[0].objects[0] as GraphicObject | undefined;
+    expect(arrow?.data.artToolId).toBe("fishhookArrow");
+    expect(arrow?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
+  });
+
+  it("imports a ChemDraw <arrow> element as a real native arrow, not a bare shape", () => {
+    // ChemDraw writes reaction arrows as standalone <arrow> elements; ChemDraft writes them as
+    // <graphic GraphicType="Line" ArrowType=...>. Only the second path tagged the result, so an
+    // imported ChemDraw arrow arrived as an untagged graphicKind:"line" — a generic shape to the
+    // rest of the app. The Main toolbar offered it the SHAPE layout (fill colour, on a line),
+    // `graphicObjectSupportsMarkers` returned false so its own head could not be edited, "Set as
+    // Default Arrow Style" did not recognise it, and it re-exported as a decorative stroke.
+    const importArrow = (attributes: string) => {
+      const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="Arrow Element Test">
+  <page id="p1" BoundingBox="0 0 540 720">
+    <arrow id="a1" BoundingBox="200 296 320 304" Head3D="320 300 0" Tail3D="200 300 0" ${attributes}/>
+  </page>
+</CDXML>`);
+      return opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+    };
+
+    // A plain forward arrow: head at one end only.
+    const forward = importArrow('ArrowheadHead="Full" ArrowheadType="Solid"');
+    expect(forward?.graphicKind).toBe("path");
+    expect(forward?.data.artPathKind).toBe("line");
+    expect(forward?.data.artToolId).toBe("reactionArrow");
+    expect(forward?.data.markerEnd).toMatchObject({ kind: "filled-arrow" });
+
+    // Heads at BOTH ends is a resonance arrow.
+    const resonance = importArrow('ArrowheadHead="Full" ArrowheadTail="Full" ArrowheadType="Solid"');
+    expect(resonance?.data.artToolId).toBe("resonanceArrow");
+    expect(resonance?.data.markerStart).toMatchObject({ kind: "filled-arrow" });
+
+    // A single barb is one-electron chemistry, same as ArrowType="HalfHead".
+    const fishhook = importArrow('ArrowheadHead="HalfRight" ArrowheadType="Solid"');
+    expect(fishhook?.data.artToolId).toBe("fishhookArrow");
+    expect(fishhook?.data.markerEnd).toMatchObject({ kind: "half-arrow" });
+
+    // A headless <arrow> is just a line: still a path so a head CAN be added, but not tagged as a
+    // chemical arrow, because it does not claim to be one.
+    const headless = importArrow("");
+    expect(headless?.graphicKind).toBe("path");
+    expect(headless?.data.artToolId).toBeUndefined();
+  });
+
+  it("reads a ChemDraw <arrow> frame consistently with its unambiguous 3D endpoints", () => {
+    // Head3D/Tail3D are "x y z" in every CDX dialect, so they pin the arrow's true direction with
+    // no convention to argue about. A real ChemDraw 26 document was inspected to settle this: its
+    // arrow's BoundingBox agreed with its Head3D/Tail3D only when read left-top-right-bottom, and
+    // its page box read portrait only when read x-first. This fixture is hand-authored to carry
+    // the same discriminating shape — a horizontal arrow inside a thin band centred on its axis.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraw Shaped Fixture">
+  <page id="33" BoundingBox="0 0 540 720">
+    <arrow id="34" BoundingBox="200 296 320 304" ArrowheadHead="Full" ArrowheadType="Solid" Head3D="320 300 0" Tail3D="200 300 0"/>
+    <graphic id="35" GraphicType="Rectangle" BoundingBox="200 296 320 304"/>
+  </page>
+</CDXML>`);
+    const arrow = opened.document?.pages[0].objects[0] as GraphicObject | undefined;
+    const rectangle = opened.document?.pages[0].objects[1] as GraphicObject | undefined;
+
+    // The arrow's frame is derived from Head3D/Tail3D: tail (200, 300) -> head (320, 300), so it
+    // must import horizontal and 120 units long at the 4/3 scale.
+    expect(arrow).toBeDefined();
+    expect(arrow!.data.lineStart?.y).toBeCloseTo(arrow!.data.lineEnd?.y ?? Number.NaN, 6);
+    expect((arrow!.data.lineEnd?.x ?? 0) - (arrow!.data.lineStart?.x ?? 0)).toBeCloseTo(120 * (4 / 3), 6);
+    expect(arrow!.width).toBeGreaterThan(arrow!.height);
+
+    // The rectangle's frame comes only from the BoundingBox, so it is what pins the box order:
+    // "200 296 320 304" is a 120x8 band read left-top-right-bottom, and a 8x120 one transposed.
+    expect(rectangle).toBeDefined();
+    expect(rectangle!.width).toBeCloseTo(120 * (4 / 3), 6);
+    expect(rectangle!.height).toBeCloseTo(8 * (4 / 3), 6);
+    expect(rectangle!.x).toBeCloseTo(200 * (4 / 3), 6);
+    expect(rectangle!.y).toBeCloseTo(296 * (4 / 3), 6);
+  });
+
+  it("reads a standalone <arrow>'s heads from ArrowheadHead/ArrowheadTail and writes them back", () => {
+    // A standalone <arrow> carries neither GraphicType nor ArrowType, so keying the arrowhead off
+    // those — the reaction-arrow spelling — dropped the head from every arrow ChemDraw writes: a
+    // solid-headed arrow imported as a bare line. An <arrow>'s heads live in ArrowheadHead and
+    // ArrowheadTail (which ends are headed) crossed with ArrowheadType (how they are drawn).
+    const opened = openChemDraftPayload(cdxmlFixture("arrow-heads.cdxml"));
+    const [solid, angle, half, doubleEnded, headless] = (opened.document?.pages[0].objects ?? []) as GraphicObject[];
+
+    expect(solid.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(solid.data.markerStart).toBeUndefined();
+    expect(angle.data.markerEnd).toEqual({ kind: "open-arrow", sizePx: 16 });
+    expect(half.data.markerEnd).toEqual({ kind: "half-arrow", sizePx: 14 });
+    expect(doubleEnded.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(doubleEnded.data.markerStart).toEqual({ kind: "filled-arrow", sizePx: 16 });
+
+    // ArrowheadType with no ArrowheadHead is how ChemDraw writes a plain line arrow, so the type
+    // alone must not conjure a head.
+    expect(headless.data.markerEnd).toBeUndefined();
+    expect(headless.data.markerStart).toBeUndefined();
+
+    const exported = exportDocumentToCdxml(opened.document ?? documentWithObjects([]), {
+      creationProgram: "Arrowhead Round Trip Test"
+    });
+    expect(exported.warnings).toEqual([]);
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadType="Solid"');
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadType="Angle"');
+    expect(exported.contents).toContain('ArrowheadHead="HalfLeft" ArrowheadType="Solid"');
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadTail="Full" ArrowheadType="Solid"');
+
+    // Close the loop through the reader — the writer's own arrows, read back as a foreign document,
+    // must carry the same heads. Reopening the exported envelope would only prove the embedded
+    // native payload survived, which says nothing about the visible layer other programs see.
+    const arrows = exported.contents.match(/<arrow [^>]*\/>/g) ?? [];
+    expect(arrows).toHaveLength(5);
+    const reopened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<CDXML CreationProgram="Arrowhead Round Trip Test">
+  <page id="p1" BoundingBox="0 0 612 792">
+    ${arrows.join("\n    ")}
+  </page>
+</CDXML>`);
+    const reopenedHeads = (reopened.document?.pages[0].objects ?? [])
+      .map((object) => (object as GraphicObject).data.markerEnd?.kind);
+    expect(reopenedHeads).toEqual(["filled-arrow", "open-arrow", "half-arrow", "filled-arrow", undefined]);
+  });
+
+  it("warns instead of inventing a CDXML spelling for decorative arrowheads", () => {
+    // CDXML's arrowhead enum is full/half/unfilled and nothing else, so a dot or diamond head has no
+    // spelling. Exporting it as a full head would claim the user drew something they didn't.
+    const decorated = (kind: GraphicObject["data"]["markerEnd"]): ChemDraftDocument => documentWithObjects([
+      {
+        id: "art_decorated",
+        type: "graphic",
+        x: 100, y: 158, width: 120, height: 4, rotation: 0,
+        style: { strokeColor: "#000000", strokeWidth: 2 },
+        graphicKind: "line",
+        data: { artPathKind: "line", lineStart: { x: 100, y: 160 }, lineEnd: { x: 220, y: 160 }, markerEnd: kind },
+        compatibility: { sourceFormat: "cdxml", warnings: [], unknown: { cdxmlElementName: "arrow" } }
+      } satisfies GraphicObject
+    ]);
+
+    const diamond = exportDocumentToCdxml(decorated({ kind: "diamond", sizePx: 16 }), { creationProgram: "T" });
+    expect(diamond.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_marker_payload_only");
+    expect(diamond.contents).not.toContain("ArrowheadHead=");
+
+    // An explicitly removed head is a faithful export, not a loss.
+    const bare = exportDocumentToCdxml(decorated({ kind: "none" }), { creationProgram: "T" });
+    expect(bare.warnings).toEqual([]);
+  });
+
+  it("warns when a decorative art arrow's head or shaft mark cannot be exported", () => {
+    // A no-reaction arrow is a crossed shaft: it asserts the reaction does NOT proceed. Standard
+    // CDXML has no spelling for it, so it takes the generic <graphic> path, which writes only
+    // Start/End — the cross AND the head both vanish and the line reads as an ordinary one. Losing
+    // it is unavoidable; losing it SILENTLY is not (AGENTS.md section 16, and the two sibling
+    // arrow paths already warn for exactly this class).
+    const noReaction = documentWithObjects([{
+      id: "art_no_reaction",
+      type: "graphic",
+      x: 100, y: 88, width: 120, height: 24, rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "noReactionArrow",
+        lineStart: { x: 100, y: 100 },
+        lineEnd: { x: 220, y: 100 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 },
+        shaftMark: "cross",
+        shaftMarkSizePx: 12
+      }
+    } satisfies GraphicObject]);
+
+    const exported = exportDocumentToCdxml(noReaction, { creationProgram: "T" });
+    expect(exported.warnings.map((warning) => warning.code)).toContain("cdxml.graphic_marker_payload_only");
+
+    // A plain decorative stroke with no head and no mark stays quiet.
+    const plainLine = documentWithObjects([{
+      id: "art_plain",
+      type: "graphic",
+      x: 100, y: 88, width: 120, height: 24, rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: { artPathKind: "line", lineStart: { x: 100, y: 100 }, lineEnd: { x: 220, y: 100 } }
+    } satisfies GraphicObject]);
+    expect(exportDocumentToCdxml(plainLine, { creationProgram: "T" }).warnings.map((w) => w.code))
+      .not.toContain("cdxml.graphic_marker_payload_only");
+
+    // And a semantic reaction arrow keeps using its own head-loss warning, not this one.
+    const reaction = documentWithObjects([{
+      id: "art_reaction",
+      type: "graphic",
+      x: 100, y: 88, width: 120, height: 24, rotation: 0,
+      style: { strokeColor: "#000000", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "reactionArrow",
+        lineStart: { x: 100, y: 100 },
+        lineEnd: { x: 220, y: 100 },
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    } satisfies GraphicObject]);
+    expect(exportDocumentToCdxml(reaction, { creationProgram: "T" }).warnings.map((w) => w.code))
+      .not.toContain("cdxml.graphic_marker_payload_only");
+  });
+
+  it("keeps colour, dash, and head-loss warnings on semantic arrow export", () => {
+    const arrow = (style: GraphicObject["style"], data: GraphicObject["data"]): ChemDraftDocument =>
+      documentWithObjects([
+        {
+          id: "art_semantic",
+          type: "graphic",
+          x: 100, y: 88, width: 120, height: 24, rotation: 0,
+          style,
+          graphicKind: "path",
+          data: { artPathKind: "line", artToolId: "reactionArrow", ...data }
+        } satisfies GraphicObject
+      ]);
+
+    // Dash and colour reach standard CDXML instead of silently reopening as default solid black.
+    const dashed = exportDocumentToCdxml(
+      arrow({ strokeColor: "#ff0000", strokeWidth: 2, strokeDasharray: "6 6" }, { markerEnd: { kind: "filled-arrow", sizePx: 16 } }),
+      { creationProgram: "T" }
+    );
+    expect(dashed.contents).toContain('LineType="Dashed"');
+    expect(dashed.contents).toMatch(/<graphic[^>]*ArrowType="FullHead"[^>]*color="/);
+
+    // A removed head cannot be said in standard CDXML — that must warn rather than export a lie.
+    const headless = exportDocumentToCdxml(
+      arrow({ strokeColor: "#000000", strokeWidth: 2 }, {}),
+      { creationProgram: "T" }
+    );
+    expect(headless.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_head_payload_only");
+
+    // The ordinary case still exports clean.
+    const plain = exportDocumentToCdxml(
+      arrow({ strokeColor: "#000000", strokeWidth: 2 }, { markerEnd: { kind: "filled-arrow", sizePx: 16 } }),
+      { creationProgram: "T" }
+    );
+    expect(plain.warnings.map((warning) => warning.code)).not.toContain("cdxml.arrow_head_payload_only");
+  });
+
   it("writes real CDXML ArrowType spellings and reads foreign and legacy ones", () => {
     // The previous test asserted our own lowercase output against our own reader, so it passed
     // while real CDXML imported as "unknown". Assert the wire spellings directly.
@@ -1048,16 +1557,34 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // Foreign CDXML — the spellings another program writes. `bactvue-visible-subset` is a real
     // third-party fixture already carrying ArrowType="FullHead"; substituting into it keeps the
     // reader on genuinely foreign input rather than on our own output.
+    // The imported semantic arrow kind, regardless of representation: every named arrow kind now
+    // arrive as tagged art arrows (graphic + artToolId), unknown as a legacy reaction-arrow object.
+    const ART_ARROW_KINDS: Readonly<Record<string, ArrowObject["arrowKind"]>> = {
+      reactionArrow: "forward",
+      resonanceArrow: "resonance",
+      equilibriumArrow: "equilibrium",
+      retroArrow: "retrosynthesis"
+    };
     const foreign = (arrowType: string) => {
       const cdxml = cdxmlFixture("bactvue-visible-subset.cdxml")
         .replace('ArrowType="FullHead"', `ArrowType="${arrowType}"`);
-      return openChemDraftPayload(cdxml).document?.pages[0].objects.find(
-        (object): object is ArrowObject => object.type === "reaction-arrow"
-      )?.arrowKind;
+      const objects = openChemDraftPayload(cdxml).document?.pages[0].objects ?? [];
+      const artArrow = objects.find(
+        (object): object is GraphicObject =>
+          object.type === "graphic" &&
+          typeof object.data.artToolId === "string" &&
+          object.data.artToolId in ART_ARROW_KINDS
+      );
+      if (artArrow) {
+        return ART_ARROW_KINDS[artArrow.data.artToolId as string];
+      }
+      return objects.find((object): object is ArrowObject => object.type === "reaction-arrow")?.arrowKind;
     };
 
     expect(foreign("FullHead")).toBe("forward");
-    expect(foreign("HalfHead")).toBe("forward");
+    // HalfHead is a single-barbed fishhook — one electron, not two — so it deliberately does NOT
+    // land on "forward" any more. It has its own assertion below.
+    expect(foreign("HalfHead")).toBeUndefined();
     expect(foreign("Resonance")).toBe("resonance");
     expect(foreign("Equilibrium")).toBe("equilibrium");
     expect(foreign("RetroSynthetic")).toBe("retrosynthesis");
@@ -1073,6 +1600,105 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(degraded.contents).toContain('GraphicType="Line"');
     expect(degraded.contents).not.toContain("ArrowType=");
     expect(degraded.warnings.map((warning) => warning.code)).toContain("cdxml.arrow_type_unknown");
+  });
+
+  it("exports reaction/resonance art arrows as standard CDXML reaction arrows (interop half of the round trip)", () => {
+    const marker = { kind: "filled-arrow" as const, sizePx: 10 };
+    const artArrow = (artToolId: "reactionArrow" | "resonanceArrow", double: boolean): GraphicObject => ({
+      id: `art_${artToolId}`,
+      type: "graphic",
+      x: 100,
+      y: 158,
+      width: 120,
+      height: 4,
+      rotation: 0,
+      style: { strokeColor: "#111111", fillColor: "none", strokeWidth: 2, strokeLineCap: "butt" },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        lineStart: { x: 100, y: 160 },
+        lineEnd: { x: 220, y: 160 },
+        markerEnd: marker,
+        ...(double ? { markerStart: marker } : {}),
+        artToolId
+      }
+    });
+
+    // A reaction/resonance art arrow (rich editable object) emits the STANDARD reaction-arrow CDXML so
+    // other programs read it as a reaction arrow — not as a generic <graphic>/<arrow>.
+    const reactionCdxml = exportDocumentToCdxml(
+      documentWithObjects([artArrow("reactionArrow", false)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(reactionCdxml).toContain('GraphicType="Line"');
+    expect(reactionCdxml).toContain('ArrowType="FullHead"');
+
+    const resonanceCdxml = exportDocumentToCdxml(
+      documentWithObjects([artArrow("resonanceArrow", true)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(resonanceCdxml).toContain('ArrowType="Resonance"');
+  });
+
+  it("exports the preconfigured bold/dashed reaction arrow variants as forward reaction arrows", () => {
+    const variantArrow = (artToolId: string, sizePx: number): GraphicObject => ({
+      id: `art_${artToolId}`,
+      type: "graphic",
+      x: 100,
+      y: 158,
+      width: 120,
+      height: 4,
+      rotation: 0,
+      style: { strokeColor: "#111111", fillColor: "none", strokeWidth: 2, strokeLineCap: "butt" },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        lineStart: { x: 100, y: 160 },
+        lineEnd: { x: 220, y: 160 },
+        markerEnd: { kind: "filled-arrow", sizePx },
+        artToolId
+      }
+    });
+
+    for (const artToolId of ["reactionArrowBold", "reactionArrowDashed"]) {
+      const cdxml = exportDocumentToCdxml(
+        documentWithObjects([variantArrow(artToolId, artToolId === "reactionArrowBold" ? 24 : 16)]),
+        { creationProgram: "T" }
+      ).contents;
+      expect(cdxml).toContain('GraphicType="Line"');
+      expect(cdxml).toContain('ArrowType="FullHead"');
+    }
+
+    // A fishhook DOES have a standard spelling — HalfHead — and it is different chemistry from
+    // FullHead, so it must be named rather than flattened to a generic graphic.
+    const fishhookCdxml = exportDocumentToCdxml(
+      documentWithObjects([{
+        ...variantArrow("fishhookArrow", 16),
+        data: {
+          ...variantArrow("fishhookArrow", 16).data,
+          markerEnd: { kind: "half-arrow", sizePx: 16 }
+        }
+      }]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(fishhookCdxml).toContain('ArrowType="HalfHead"');
+    expect(fishhookCdxml).not.toContain('ArrowType="FullHead"');
+
+    // A no-reaction arrow really has no CDXML equivalent — its crossed shaft is not in the
+    // ArrowType enum at all — so it stays a generic graphic and round-trips via the payload.
+    const noReactionCdxml = exportDocumentToCdxml(
+      documentWithObjects([variantArrow("noReactionArrow", 16)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(noReactionCdxml).not.toContain("ArrowType=");
+
+    // Curved fishhooks stay graphics too: this exporter writes a Start/End pair, so naming one
+    // would trade its curvature — the point of a curved pushing arrow — for a label.
+    const curvedFishhookCdxml = exportDocumentToCdxml(
+      documentWithObjects([variantArrow("fishhookCurved", 16)]),
+      { creationProgram: "T" }
+    ).contents;
+    expect(curvedFishhookCdxml).not.toContain("ArrowType=");
   });
 
   it("round-trips a resonance reaction arrow through CDXML", () => {
@@ -1115,6 +1741,39 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
   });
 });
+
+/**
+ * Asserts every double bond in a single-ring molecule carries its secondary line toward the ring
+ * interior, derived from the imported coordinates rather than a hard-coded "left"/"right". The
+ * normal and the sign convention mirror `doubleBondSideTowardRingInterior` in the layout engine:
+ * normal = (-dy, dx)/len, and "left" offsets toward +normal.
+ */
+function expectRingDoubleBondsPointInward(molecule: MoleculeObject | undefined): void {
+  expect(molecule).toBeDefined();
+  const atoms = molecule!.atoms;
+  const centroidX = atoms.reduce((sum, atom) => sum + atom.x, 0) / atoms.length;
+  const centroidY = atoms.reduce((sum, atom) => sum + atom.y, 0) / atoms.length;
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const doubleBonds = molecule!.bonds.filter((bond) => bond.order === "double");
+  expect(doubleBonds.length).toBeGreaterThan(0);
+  for (const bond of doubleBonds) {
+    const from = atomById.get(bond.fromAtomId);
+    const to = atomById.get(bond.toAtomId);
+    expect(from).toBeDefined();
+    expect(to).toBeDefined();
+    const dx = to!.x - from!.x;
+    const dy = to!.y - from!.y;
+    const length = Math.hypot(dx, dy);
+    const dot =
+      (centroidX - (from!.x + to!.x) / 2) * (-dy / length) +
+      (centroidY - (from!.y + to!.y) / 2) * (dx / length);
+    expect(Math.abs(dot)).toBeGreaterThan(1e-9);
+    expect({ bond: bond.id, side: bond.display?.doubleBondSide }).toEqual({
+      bond: bond.id,
+      side: dot > 0 ? "left" : "right"
+    });
+  }
+}
 
 function documentWithObjects(objects: ChemDraftDocument["pages"][number]["objects"]): ChemDraftDocument {
   const base = createEmptyDocument({ title: "Round Trip", now: "2026-06-06T00:00:00.000Z" });

@@ -348,3 +348,53 @@ export function bondDepthWeights(
   if (depthSpan <= median3d * 0.12) return bondDepths.map(() => undefined);
   return bondDepths.map((depth) => Math.round(((depth - minDepth) / depthSpan) * 100) / 100);
 }
+
+/** A screen-space point, in the same units the projection produces. */
+interface OverlayPoint {
+  x: number;
+  y: number;
+}
+
+export interface SpinDoubleBondSecondaryInput {
+  /** Bond endpoints AFTER label clearance, so the inset is measured against what is drawn. */
+  from: OverlayPoint;
+  to: OverlayPoint;
+  /** Unit vector along the bond, and the screen-space normal. */
+  unit: OverlayPoint;
+  normal: OverlayPoint;
+  /** Distance from the primary line to the secondary, and which side (+1 / -1) it sits on. */
+  gap: number;
+  side: number;
+  insetPx: number;
+  /** The shortest the secondary line may become; the inset is clamped so it survives short bonds. */
+  minimumVisiblePx: number;
+  /** Ends that draw flush instead of inset — layout-engine's `doubleBondSecondaryFlushEnds`. */
+  flush: { from: boolean; to: boolean };
+}
+
+/**
+ * The secondary (inner) line of a double bond in the spin overlay.
+ *
+ * Lives here, with the rest of the overlay's geometry, because it has to agree with the committed
+ * 2D drawing (`bondLineSegments`) and nothing was checking that it did. It had the inset formula
+ * copied across but not the terminal-methylene exception, so ethylene and every terminal alkene drew
+ * a shortened secondary line while spinning and a flush one the moment the spin was committed — the
+ * divergence AGENTS.md 5.26 exists to prevent. The `flush` flags now come from layout-engine's own
+ * rule, and this endpoint math has a seam a test can reach.
+ */
+export function spinDoubleBondSecondaryLine(
+  input: SpinDoubleBondSecondaryInput
+): { x1: number; y1: number; x2: number; y2: number } {
+  const length = Math.hypot(input.to.x - input.from.x, input.to.y - input.from.y) || 1;
+  const minimumVisible = Math.min(input.minimumVisiblePx, length);
+  const inset = Math.min(input.insetPx, Math.max(0, (length - minimumVisible) / 2));
+  const insetFrom = input.flush.from ? 0 : inset;
+  const insetTo = input.flush.to ? 0 : inset;
+  const offset = input.gap * input.side;
+  return {
+    x1: input.from.x + input.unit.x * insetFrom + input.normal.x * offset,
+    y1: input.from.y + input.unit.y * insetFrom + input.normal.y * offset,
+    x2: input.to.x - input.unit.x * insetTo + input.normal.x * offset,
+    y2: input.to.y - input.unit.y * insetTo + input.normal.y * offset
+  };
+}
