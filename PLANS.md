@@ -286,7 +286,7 @@ Errors from earlier drafts, recorded so they do not reappear.
 | An xtb subprocess "sidesteps LGPL entirely" | It weakens the combined-work argument; it does not remove obligations from redistributing an LGPL binary. Prefer detect-user-installed, or a separately downloadable component with a full compliance package. |
 | FreeSASA covers Connolly surface and volume | FreeSASA computes **solvent-accessible** area (rolling-probe *center*). ChemDraw's Connolly outputs are **solvent-excluded** surface and volume. **Connolly SES/volume remains a gap.** |
 | MM2 has no open implementation | **Tinker implements MM2-1991 and MM3-2000** — free for academic/nonprofit use, but not open source, restricts redistribution, commercial license required. Ship UFF/MMFF unless licensed. |
-| Dimorphite-DL gives a numeric pKa with ± | It gives **protonation-state enumeration**. Its file carries per-group mean and SD, but a group average is not a molecular pKa — every carboxyl gets the same number. |
+| Dimorphite-DL gives a numeric pKa with ± | It gives **site location**. Its file carries per-group mean and SD, but a group average is not a molecular pKa — every carboxyl gets the same number. Since measured: those averages score MAE 2.77 against 2.33 for predicting the dataset mean, so the shipped method takes atoms from the table and values from a model trained here (§8). |
 | STOUT is wrong "roughly 10% of the time" | Unsupported by the cited sources — the rate was invented. STOUT is separately defunct (repo, weight buckets, Zenodo record, web app all 404/410) and its V2 labels came from OpenEye Lexichem. |
 | Structure→name "is not shippable in 2026" | **Obsolete** — see §8. |
 | MolGpKa ONNX export is a "~3–5 day spike, ~14 MB" | **Removed.** That specificity read as measured; it came from source reading, not a recorded export experiment. |
@@ -369,7 +369,8 @@ work.
 
 ¹H/¹³C NMR predictor (shipping, from its own repository — **§4 exposure applies**) · Joback/Stein-Brown
 thermophysical (large method surface, applicability limits, parameter provenance) ·
-protonation-state enumeration (**not** labeled pKa) · candidate HSQC/HMBC/COSY maps ·
+protonation-state *enumeration* — the microstate-graph work, distinct from the per-site pKa that
+landed in core (§8) · candidate HSQC/HMBC/COSY maps ·
 OpenClatura structure→name · OPSIN name→structure.
 
 **This list is a plan, not an inventory** — of the six, one ships and the rest are unbuilt. It is also
@@ -386,11 +387,38 @@ with an in-UI notice that the user's own license governs · **Psi4 (LGPL-3.0), N
 only, too large for the base app · **Tinker/MM2** — do not bundle without a redistribution or commercial
 license.
 
-### pKa — no *cleared embeddable* predictor
+### pKa — shipped, by training our own rather than embedding someone else's
 
-A clearance problem, not an absence of technology. All three below are **evaluation set, not approved
-list**; each needs artifact-level review of model files, training data, transitives, and redistribution
-rights.
+**Status 2026-08-02: shipped.** Every candidate below was rejected — on provenance, on deployability,
+or on retrieval — and the way through was to stop looking for a model to embed. The open Dwar-iBond
+labels are downloadable, so a model was trained here from them directly. What ships:
+
+| | |
+|---|---|
+| site location | Dimorphite-DL's 41-entry SMARTS table, which contributes **no pKa value** |
+| primary estimate | a random forest trained here on 3,031 per-site labels, **MAE 1.18** scaffold-grouped |
+| second estimate | a Hammett LFER from the physical-organic literature, **MAE 0.158** on the 85 sites it reaches |
+| combined, where both fire | **MAE 0.146**, interval 2.1x tighter than the model alone at 91% coverage |
+| per-site confidence | forest tree disagreement (r = 0.49) or, better, cross-method disagreement (r = 0.84) |
+| metals | declined outright, on the measurement below |
+
+Provenance is clean by construction: the supervised signal is measured pKa throughout, so no value
+carries `inherited-from-another-predictor`. The reasoning that got here is preserved below, because the
+rejections are the substance of the decision.
+
+Three findings changed the code after it was written, and each is recorded where it applies:
+
+- **The site table cannot value what it locates.** Scored against 1,750 labelled sites, its per-type
+  averages give MAE 2.77 where exactly one type matches — worse than the 2.33 of predicting the dataset
+  mean. The table was already implemented and reporting numbers when this was measured; the numbers
+  came out.
+- **Averaging two methods is worse than the better one alone** (0.229 against 0.158). The consensus
+  weights by each method's measured error instead.
+- **Cross-method disagreement beats any single model's internal confidence** — r = 0.84 against 0.42 —
+  which is the concrete argument for having a second method at all.
+
+The candidates below remain **evaluation set, not approved list**; each would still need artifact-level
+review of model files, training data, transitives, and redistribution rights before being embedded.
 
 - **MolGpKa** (MIT code, ships weights). Blocked on provenance: the published model was trained largely
   on **ACD/Labs-calculated** pKa values from ChEMBL, with **Epik** used to identify acidic and basic
@@ -485,9 +513,10 @@ passed the second.
 *(Starling (Rowan) is noted and excluded: weights are not distributed, so it cannot be embedded whatever
 its accuracy. Useful as a comparison point, not a candidate.)*
 
-Dimorphite-derived functionality stays labeled **protonation-state enumeration**.
+Dimorphite-derived functionality stays labeled **site location**. It contributes the atoms, never a
+value — see the measurement above.
 
-**Groundwork done 2026-08-02; the implementation is not started.** Dimorphite-DL 2.0.2 (Apache-2.0)
+**Groundwork done 2026-08-02, and the implementation followed it.** Dimorphite-DL 2.0.2 (Apache-2.0)
 installs and runs, and its site table was read at artifact level so that the implementation starts from
 verified ground rather than from a plausible reading. It is **41 entries** in
 `smarts/site_substructures.smarts`: name, SMARTS, then repeating triples of *(site index, pKa mean, pKa
@@ -505,21 +534,25 @@ special treatment"*, and the file's own comments warn that **with recursive SMAR
 the first atom as the match** — subsequent atoms define the environment, which shifts every position
 after it.
 
-**Why this method is worth having even though `pKa` itself is blocked.** It is rule-based: SMARTS plus
-a tabulated pKa range per *site type*. It has none of the training-data provenance problem measured
-above, it makes no molecule-specific pKa claim, and on a metal complex it simply matches nothing —
-which is the correct answer rather than a silent extrapolation. That is precisely why §8 insists the
-label stay "protonation-state enumeration".
+**Why the table was worth having even before a value existed for it.** It is rule-based: SMARTS plus a
+tabulated pKa range per *site type*. It has none of the training-data provenance problem measured above,
+and on a metal complex it simply matches nothing — which is the correct answer rather than a silent
+extrapolation. It kept its place once a real estimator arrived; what it lost was its numbers.
 
-**What remains:** the result shape. None of the eight existing result kinds fits a list of sites each
-carrying atom indices and a pKa range, so this needs a new kind alongside `CompositionResult` — which
-the results module already records as a deliberate extension rather than drift — plus its schema,
-report rendering, and the run wiring. That is a slice to start whole, not to bolt on.
+**Done:** the `IonizationResult` kind alongside `CompositionResult` — sites, atom indices, per-site
+value and interval, `basis`, `ambiguity` when several site types claim one atom, `agreement` when two
+methods do, `derivation` where a method can show its working, and `unassessed` for sites it knows exist
+and refuses to score. Plus its zod schema, report rendering, and the run wiring.
 
-A pKa result needs a richer output model than the §3 base: microscopic vs macroscopic pKa, acidic vs
-basic transition, the two microstates each microscopic pKa connects, solvent and temperature,
-charge-state enumeration limits, tautomer handling, and whether the value is experimentally trained,
-quantum-derived, or inherited from another predictor.
+Delivered against the richer output model this section asked for: microscopic pKa (each value is one
+transition on one atom, never a molecule-wide figure), acidic-vs-basic stated as a *limitation* rather
+than a field — the method reports acidity of the site as drawn and says so in capitals, because for
+amines that is not the number most people want — solvent and temperature fixed at aqueous/room and
+declared, and provenance recorded per value.
+
+**Still open:** macroscopic pKa, the two microstates each microscopic value connects, charge-state
+enumeration limits, and tautomer handling. Those need protonation-state *enumeration*, which is
+listed under §9 Later phases and is not started.
 
 **OpenChemLib has no pKa predictor** — verified three ways; `pKaPredictor`/`pKaPlotter` are
 DataWarrior-side, and `grep -ri pka` over the installed 9.22.1 package returns nothing.
