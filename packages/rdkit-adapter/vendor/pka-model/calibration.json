@@ -1,0 +1,17 @@
+{
+ "measurement": "scaffold-grouped 5-fold cross-validation; every pair is out-of-fold",
+ "samples": 3031,
+ "correlation": 0.4896,
+ "quartileMae": [
+  0.493,
+  0.7956,
+  1.2507,
+  2.1966
+ ],
+ "coverage": {
+  "1.0": 0.6354,
+  "1.5": 0.7964,
+  "2.0": 0.8868
+ },
+ "spreadMultiplier": 1.5
+}

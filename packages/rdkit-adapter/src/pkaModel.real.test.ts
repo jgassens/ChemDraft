@@ -11,13 +11,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ensureRdkit, resetRdkitForTesting } from "./conformer";
 import {
+  PKA_MODEL_CALIBRATION,
   PKA_MODEL_FEATURE_NAMES,
   PKA_MODEL_TRAINING,
   predictSitePka,
+  predictSitePkaWithSpread,
   ringMembership,
   siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
+import calibrationPairs from "../vendor/pka-model/calibration-pairs.json";
 import fixture from "../vendor/pka-model/parity-fixture.json";
 import { installRealRdkitModuleLoader } from "./testing";
 
@@ -93,6 +96,82 @@ describe("feature parity with the training pipeline", () => {
       expect(predicted).toBeCloseTo(entry.prediction, 3);
     }
   );
+});
+
+describe("per-site confidence", () => {
+  it.each(fixture.map((entry, index) => [index, entry.acid] as const))(
+    "reproduces scikit-learn's tree disagreement for fixture %i (%s)",
+    async (index) => {
+      // The spread is only meaningful if it is the same number the calibration was measured on.
+      const entry = fixture[index]!;
+      const graph = await graphFor(entry.acid);
+      const prediction = predictSitePkaWithSpread(siteFeatures(graph, entry.atomIdx, ringMembership(graph)));
+      expect(prediction.treeDisagreement).toBeCloseTo(entry.treeDisagreement, 3);
+    }
+  );
+
+  it("scales the interval to the disagreement it was calibrated against", async () => {
+    const graph = await graphFor("Oc1ccccc1");
+    const prediction = predictSitePkaWithSpread(siteFeatures(graph, 0, ringMembership(graph)));
+    expect(prediction.spread).toBeCloseTo(
+      PKA_MODEL_CALIBRATION.spreadMultiplier * prediction.treeDisagreement,
+      9
+    );
+    expect(prediction.spread).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The calibration is what makes the interval mean anything, so it is checked against its own
+ * evidence rather than trusted.
+ *
+ * Deliberately NOT tested by picking a "familiar" molecule and an "unusual" one and asserting the
+ * first gets the tighter interval — that was tried, and it failed for a real reason: a perfluorinated
+ * carboxylic acid, chosen as the oddity, drew *more* agreement than phenol, because carboxylic acids
+ * are dense in the training data and the trees all put it low. Discrimination is a property of the
+ * population, not a promise about any given pair, and testing it as an anecdote would have encoded a
+ * claim the model does not make.
+ */
+describe("the calibration behind the interval", () => {
+  const pairs = calibrationPairs.pairs as [number, number][];
+  const mae = (rows: [number, number][]) =>
+    rows.reduce((sum, [, error]) => sum + error, 0) / rows.length;
+
+  it("recomputes the published summary from the held-out pairs", () => {
+    // The figures the app shows must be the ones the measurement produced. Editing the summary by
+    // hand — to round a number up, or to keep a stale figure after retraining — fails here.
+    expect(pairs).toHaveLength(PKA_MODEL_CALIBRATION.samples);
+    // Slack of two samples, not an arbitrary decimal place: the pairs are stored rounded to 4 dp, so
+    // a site sitting exactly on the coverage boundary can round to the other side of it.
+    const slack = 2 / pairs.length;
+    for (const [multiplier, published] of Object.entries(PKA_MODEL_CALIBRATION.coverage)) {
+      const covered =
+        pairs.filter(([sd, error]) => error <= Number(multiplier) * sd).length / pairs.length;
+      expect(Math.abs(covered - published), `coverage at ${multiplier} sd`).toBeLessThan(slack);
+    }
+  });
+
+  it("separates the sites worth trusting from the ones that need checking", () => {
+    // The claim the interval rests on: sorted by how much the trees disagreed, the least-disagreeing
+    // quarter is far more accurate than the most. If a retrain kills that signal, the interval is
+    // decoration and this fails rather than shipping quietly.
+    const sorted = [...pairs].sort((a, b) => a[0] - b[0]);
+    const quarter = Math.floor(sorted.length / 4);
+    const best = mae(sorted.slice(0, quarter));
+    const worst = mae(sorted.slice(-quarter));
+
+    expect(best).toBeLessThan(1.0);
+    expect(worst).toBeGreaterThan(1.8);
+    expect(worst / best).toBeGreaterThan(3);
+    expect(best).toBeCloseTo(PKA_MODEL_CALIBRATION.quartileMae[0]!, 2);
+    expect(worst).toBeCloseTo(PKA_MODEL_CALIBRATION.quartileMae[3]!, 2);
+  });
+
+  it("is measured out of fold, and says so", () => {
+    // In-fold the forest agrees with itself and every interval would look excellent.
+    expect(PKA_MODEL_CALIBRATION.measurement).toMatch(/out-of-fold/);
+    expect(PKA_MODEL_CALIBRATION.measurement).toMatch(/scaffold-grouped/);
+  });
 });
 
 describe("ring membership", () => {

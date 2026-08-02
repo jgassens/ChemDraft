@@ -1,11 +1,12 @@
 /**
  * Ionizable-site assessment (PLANS.md §9 Later phases; §8's "protonation-state enumeration").
  *
- * **What this is: site LOCATION, not pKa estimation.** It reports where a structure's ionizable
- * positions are and which tabulated classes they might belong to. It deliberately reports **no pKa
- * value at all**, and that decision is measured rather than cautious.
+ * **Two stages, from two different sources.** The site table *locates* ionizable positions; the model
+ * in `pkaModel.ts`, trained here on measured pKa, *values* them. Keeping them apart is the whole
+ * design, because the table turned out to be good at the first job and unfit for the second.
  *
- * Scored against 1,750 experimentally labelled sites from the open Dwar-iBond set:
+ * **The table contributes no pKa value at all**, and that is measured rather than cautious. Scored
+ * against 1,750 experimentally labelled sites from the open Dwar-iBond set:
  *
  * | reading of the table | MAE (log units) | within 1 |
  * |---|---|---|
@@ -23,7 +24,14 @@
  * the same oxygen in R-OH2+ loses one near -7. Nothing in a substructure match says which is in play,
  * so a number here would be wrong by up to 20 log units with a confident label on it.
  *
- * A pKa value belongs to a method trained on measured values per site. This one finds the sites for it.
+ * A pKa value belongs to a method trained on measured values per site, so that is what the values come
+ * from: `pkaModel.ts`, MAE 1.17 over held-out scaffolds, with a per-site interval taken from how much
+ * its trees disagreed rather than one global error figure stamped on every row.
+ *
+ * **This leaves `combineSiteEstimates` with one estimator to combine.** It is built and tested, and it
+ * is honest about that: a lone estimate passes through as itself and is never labelled a consensus.
+ * The obvious second opinion was the table, and measuring it is what disqualified it — agreement with
+ * a method that scores worse than a constant would be confidence in nothing.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -34,8 +42,9 @@ import type { Classification, IonizationSite, MethodContract } from "@chemdraft/
 
 import { IONIZATION_SITE_TYPES, SENTINEL_PKA_MAGNITUDE } from "./ionizationSites";
 import {
+  PKA_MODEL_CALIBRATION,
   PKA_MODEL_TRAINING,
-  predictSitePka,
+  predictSitePkaWithSpread,
   ringMembership,
   siteFeatures,
   type PkaMolecularGraph
@@ -240,13 +249,15 @@ export function scoreSitesWithModel(scan: IonizationScan, graph: PkaMolecularGra
   const sites = scan.sites.map((site) => {
     if (site.ionizableAtomIndex >= graph.atoms.length) return site;
     try {
-      const value = predictSitePka(siteFeatures(graph, site.ionizableAtomIndex, ring));
+      const prediction = predictSitePkaWithSpread(siteFeatures(graph, site.ionizableAtomIndex, ring));
       return {
         ...site,
-        pKa: value,
-        // The model's cross-validated error, not a per-site confidence. It is a statement about the
-        // method over held-out scaffolds; this molecule may be easier or much harder.
-        spread: PKA_MODEL_TRAINING.cvMae,
+        pKa: prediction.value,
+        // PER-SITE, from how much the forest's trees disagreed here — not one global error figure
+        // repeated on every row. Measured on held-out scaffolds, the lowest-disagreement quartile has
+        // MAE 0.49 against 2.20 for the highest, so this genuinely separates the sites worth trusting
+        // from the ones that need checking.
+        spread: prediction.spread,
         basis: "experimentally-trained-model" as const
       };
     } catch {
@@ -285,9 +296,10 @@ export function ionizationContract(): MethodContract {
         "ammonium. Redrawing the amine protonated does not help: the pattern requires a neutral " +
         "nitrogen and finds no site at all. Treat a high value on a basic nitrogen as 'not acidic' " +
         "rather than as that centre's pKa.",
-      "trained on 3,031 sites from the open Dwar-iBond experimental set, cross-validated by scaffold " +
-        "at a mean absolute error of 1.18 log units against 2.94 for predicting the dataset mean. That " +
-        "error is a property of the method over held-out scaffolds, not a confidence for this site.",
+      `trained on ${PKA_MODEL_TRAINING.samples} sites from the open Dwar-iBond experimental set, ` +
+        `cross-validated by scaffold at a mean absolute error of ${PKA_MODEL_TRAINING.cvMae.toFixed(2)} ` +
+        "log units against 2.94 for predicting the dataset mean. That figure describes the method " +
+        "overall; the interval printed beside each value is the one that describes that site.",
       "aqueous, room temperature, and drug-like organic chemistry. The training set contains no metals " +
         "at all, which is why a metal-adjacent site is reported without a value.",
       "THE SITE TABLE ITSELF REPORTS NO pKa, by design and on evidence: " +
@@ -300,8 +312,17 @@ export function ionizationContract(): MethodContract {
       "46% of labelled sites match more than one type, and the types describe different TRANSITIONS " +
         "on the same atom: the Alcohol entry is R-OH losing a proton (~15), while the same oxygen in " +
         "R-OH2+ loses one near -7. Every candidate class is listed rather than one being chosen.",
-      "the spread is the standard deviation across the compounds the site type was fitted over — a " +
-        "statement about the class, not a confidence interval for this site",
+      `each interval is per-site, from how much the model's ${PKA_MODEL_TRAINING.trees} trees ` +
+        `disagreed about THIS site — not one error figure repeated on every row. Out of fold it ` +
+        `separates: sites in the least-disagreeing quarter have a mean absolute error of ` +
+        `${PKA_MODEL_CALIBRATION.quartileMae[0]!.toFixed(2)} against ` +
+        `${PKA_MODEL_CALIBRATION.quartileMae[3]!.toFixed(2)} for the most, and the interval as drawn ` +
+        `(${PKA_MODEL_CALIBRATION.spreadMultiplier} x that disagreement) contains ` +
+        `${Math.round(PKA_MODEL_CALIBRATION.coverage[PKA_MODEL_CALIBRATION.spreadMultiplier.toFixed(1)]! * 100)}% ` +
+        "of held-out errors.",
+      "A NARROW INTERVAL MEANS THE MODEL SAW MANY SIMILAR SITES, NOT THAT THE VALUE IS RIGHT. Tree " +
+        "agreement measures where the training data was dense; a molecule unlike anything in the set " +
+        "can still draw confident agreement from trees that are all extrapolating the same way.",
       "aqueous only, at room temperature. No value here says anything about DMSO, acetonitrile, or " +
         "any mixed solvent.",
       "sites are found by substructure match, so a genuinely ionizable group the table has no pattern " +

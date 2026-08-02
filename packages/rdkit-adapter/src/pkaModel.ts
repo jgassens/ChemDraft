@@ -27,6 +27,7 @@
  * remain. `vendor/pka-model/parity-fixture.json` pins ten molecules' features and predictions against
  * the Python that trained the model, so a drift in either direction fails a test.
  */
+import calibrationJson from "../vendor/pka-model/calibration.json";
 import forestJson from "../vendor/pka-model/site-pka-forest.json";
 
 /** Elements the one-hot features cover, in the order the model was trained on. Do not reorder. */
@@ -173,14 +174,71 @@ function evaluateTree(tree: PackedTree, features: readonly number[]): number {
   return tree.v[node]!;
 }
 
-/** The forest's prediction: the mean over its trees, exactly as scikit-learn averages them. */
-export function predictSitePka(features: readonly number[]): number {
+/**
+ * What the disagreement signal was measured to be worth, out of fold.
+ *
+ * Read from the measurement rather than typed here, so the figures shown to a user cannot drift away
+ * from the ones the model actually earned. `calibration-pairs.json` holds the 3,031 out-of-fold
+ * (disagreement, error) pairs behind these four numbers, and a test recomputes the summary from them
+ * — a hand-edited claim fails.
+ */
+export const PKA_MODEL_CALIBRATION = calibrationJson as {
+  /** How it was measured, in one line, for anything that reports the figures. */
+  measurement: string;
+  samples: number;
+  /** Pearson r between tree disagreement and actual absolute error. */
+  correlation: number;
+  /** MAE within each quartile of disagreement, lowest first. */
+  quartileMae: number[];
+  /** Fraction of held-out errors inside +/- k*sd, keyed by k. */
+  coverage: Record<string, number>;
+  spreadMultiplier: number;
+};
+
+/**
+ * How wide the interval is drawn relative to the trees' disagreement.
+ *
+ * 1.5 because that is the multiplier whose coverage is closest to a conventional ~80% interval;
+ * `PKA_MODEL_CALIBRATION.coverage` records what each candidate actually delivered.
+ */
+const SPREAD_MULTIPLIER = PKA_MODEL_CALIBRATION.spreadMultiplier;
+
+export interface SitePkaPrediction {
+  value: number;
+  /** Standard deviation across the forest's trees — the raw disagreement signal. */
+  treeDisagreement: number;
+  /** A calibrated ~80% interval half-width, `SPREAD_MULTIPLIER * treeDisagreement`. */
+  spread: number;
+}
+
+/**
+ * The forest's prediction, and how much its trees disagreed about it.
+ *
+ * The disagreement is the useful part. A single global error figure says the same thing about every
+ * molecule; tree variance says something about THIS one, and it is predictive rather than decorative
+ * — see `PKA_MODEL_CALIBRATION` for what it was measured to be worth out of fold.
+ *
+ * It is a population property and not a per-molecule guarantee. It says where the training data was
+ * dense, which is not the same as where the model is right: an unusual molecule can still draw
+ * confident agreement from trees that are all extrapolating the same way, and a common one can draw
+ * a wide interval because its class genuinely spans a wide range. Read a narrow interval as "many
+ * similar sites were seen", not as "this value is correct".
+ */
+export function predictSitePkaWithSpread(features: readonly number[]): SitePkaPrediction {
   if (features.length !== FOREST.featureNames.length) {
     throw new Error(
       `pKa model expects ${FOREST.featureNames.length} features, received ${features.length}.`
     );
   }
-  let total = 0;
-  for (const tree of FOREST.trees) total += evaluateTree(tree, features);
-  return total / FOREST.trees.length;
+  const votes = FOREST.trees.map((tree) => evaluateTree(tree, features));
+  const value = votes.reduce((sum, vote) => sum + vote, 0) / votes.length;
+  // Population sd, matching numpy's default ddof=0 — the calibration above was measured with it.
+  const variance = votes.reduce((sum, vote) => sum + (vote - value) ** 2, 0) / votes.length;
+  const treeDisagreement = Math.sqrt(variance);
+  return { value, treeDisagreement, spread: SPREAD_MULTIPLIER * treeDisagreement };
+}
+
+/** The forest's prediction: the mean over its trees, exactly as scikit-learn averages them. */
+export function predictSitePka(features: readonly number[]): number {
+  return predictSitePkaWithSpread(features).value;
 }

@@ -50,7 +50,8 @@
    1.6
   ],
   "prediction": 1.3775,
-  "measured": -9.0
+  "measured": -9.0,
+  "treeDisagreement": 4.02532
  },
  {
   "acid": "CC([OH2+])c1ccccc1",
@@ -103,7 +104,8 @@
    0.9
   ],
   "prediction": 3.67194,
-  "measured": -7.0
+  "measured": -7.0,
+  "treeDisagreement": 4.31907
  },
  {
   "acid": "Cc1[nH+]cc[nH+]c1C",
@@ -156,7 +158,8 @@
    0.8
   ],
   "prediction": -2.27268,
-  "measured": -4.17
+  "measured": -4.17,
+  "treeDisagreement": 2.23783
  },
  {
   "acid": "[NH3+]c1c([N+](=O)[O-])ccc2ccccc12",
@@ -209,7 +212,8 @@
    1.4
   ],
   "prediction": 2.11465,
-  "measured": -1.6
+  "measured": -1.6,
+  "treeDisagreement": 0.51155
  },
  {
   "acid": "c1ccc2[nH+]ccnc2c1",
@@ -262,7 +266,8 @@
    1.0
   ],
   "prediction": 3.45916,
-  "measured": 0.64
+  "measured": 0.64,
+  "treeDisagreement": 1.59801
  },
  {
   "acid": "O=C1COC(=O)C1Br",
@@ -315,7 +320,8 @@
    0.8
   ],
   "prediction": 2.62758,
-  "measured": 2.23
+  "measured": 2.23,
+  "treeDisagreement": 0.89304
  },
  {
   "acid": "COCc1cccc(COC)[nH+]1",
@@ -368,7 +374,8 @@
    1.2
   ],
   "prediction": 3.74556,
-  "measured": 3.43
+  "measured": 3.43,
+  "treeDisagreement": 1.42677
  },
  {
   "acid": "Cc1ccc(C)c([NH3+])c1",
@@ -421,7 +428,8 @@
    0.9
   ],
   "prediction": 4.34822,
-  "measured": 4.47
+  "measured": 4.47,
+  "treeDisagreement": 0.32487
  },
  {
   "acid": "Cc1cc(C)c2ccc3c(C)cc(C)[nH+]c3c2n1",
@@ -474,7 +482,8 @@
    1.8
   ],
   "prediction": 5.47873,
-  "measured": 6.5
+  "measured": 6.5,
+  "treeDisagreement": 0.64321
  },
  {
   "acid": "CCCOc1ccc(O)cc1",
@@ -527,6 +536,7 @@
    1.1
   ],
   "prediction": 10.29641,
-  "measured": 10.23
+  "measured": 10.23,
+  "treeDisagreement": 0.41663
  }
 ]
