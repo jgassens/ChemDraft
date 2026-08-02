@@ -19443,7 +19443,14 @@ export function nativeMoleculeRingSelectionFromPoint(
     : undefined;
 }
 
-function nativeMoleculeRingSelectionFromPointerTarget(
+/**
+ * The shipped ring-press resolver. Reads the ring key straight off the pressed SVG node when the
+ * browser gave us one, and falls back to a geometric pick within this molecule otherwise.
+ *
+ * Exported for tests: the `data-ring-hit-key` branch runs FIRST on every ring press, and had no
+ * coverage at all — only the geometric fallback did.
+ */
+export function nativeMoleculeRingSelectionFromPointerTarget(
   object: MoleculeObject,
   target: EventTarget | null,
   point: ClientPoint
