@@ -22,6 +22,7 @@ export type UnitDimension =
   | "length"
   | "log-unit"
   | "temperature"
+  | "pressure"
   | "energy"
   | "molar-energy"
   | "electric-potential"
@@ -83,6 +84,13 @@ const DEFINITIONS = [
     note: "logP, logD, logS, and pKa are all log10 units; they are not interconvertible with each other."
   },
   { id: "kelvin", dimension: "temperature", symbol: "K", label: "kelvin" },
+  {
+    id: "bar",
+    dimension: "pressure",
+    symbol: "bar",
+    label: "bar",
+    note: "10^5 Pa. Joback's critical-pressure correlation is written in bar; it is not interchangeable with atm."
+  },
   { id: "kilocalorie-per-mole", dimension: "molar-energy", symbol: "kcal/mol", label: "kilocalorie per mole" },
   { id: "kilojoule-per-mole", dimension: "molar-energy", symbol: "kJ/mol", label: "kilojoule per mole" },
   { id: "electronvolt", dimension: "energy", symbol: "eV", label: "electronvolt" },
