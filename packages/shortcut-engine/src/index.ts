@@ -230,6 +230,11 @@ function normalizeModifier(token: string, platform: ShortcutPlatform): ShortcutM
 }
 
 function normalizeKey(key: string): string {
+  // The spacebar reports key " ", so trimming first erased it: the event normalized to "" while a
+  // "Space" binding normalized to " ", and the two could never match. Handle it before the trim.
+  if (key === " ") {
+    return " ";
+  }
   const value = key.trim();
   const lower = value.toLowerCase();
   // "+" and "=" are the same physical key; which one a KeyboardEvent reports depends only on Shift

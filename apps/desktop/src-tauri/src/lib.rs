@@ -732,7 +732,13 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.{}.tmp", std::process::id(), sequence));
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, contents).map_err(|error| error.to_string())?;
+    // Clean up on BOTH failure paths. The rename arm already did; the write arm did not, so a
+    // write that failed partway (a full disk, a quota) left its temp sibling behind next to the
+    // real file — and the name carries a pid and a counter, so each attempt orphaned a new one.
+    fs::write(&tmp, contents).map_err(|error| {
+        let _ = fs::remove_file(&tmp);
+        error.to_string()
+    })?;
     fs::rename(&tmp, path).map_err(|error| {
         let _ = fs::remove_file(&tmp);
         error.to_string()

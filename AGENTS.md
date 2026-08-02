@@ -493,18 +493,30 @@ Not allowed:
 
 ### 6.19 `rdkit-adapter`
 
-Currently a **placeholder** (`rdkitAdapterStatus === "placeholder"`).
+**Half placeholder, half real** — and the two halves must not be confused for each other.
+
+The 2D chemistry/depiction surface is still a placeholder
+(`rdkitAdapterStatus === "placeholder"`, `createRdkitPlaceholderAdapter`).
+
+The 3D conformer engine is real: ETKDGv3 running in a custom RDKit MinimalLib WASM build, vendored
+at `packages/rdkit-adapter/vendor/` and wired in `conformer.ts`. That slice landed in `81711038`;
+the build is this project's own artifact and its provenance is documented in `vendor/BUILD.md`.
 
 Allowed:
 
-- Placeholder adapter and honest capability reporting (`createRdkitPlaceholderAdapter`)
-- Real RDKit-WASM wiring when that slice lands
+- The placeholder adapter and its honest capability reporting, for the surfaces still unimplemented
+- The vendored custom MinimalLib WASM and the conformer engine built on it
 
 Not allowed:
 
 - Presenting placeholder results as real chemistry
 - Loading RDKit/WASM at startup rather than lazily (§15)
-- Vendoring RDKit builds into the repository
+- Vendoring further RDKit distributions — the custom MinimalLib build is the deliberate exception,
+  not a precedent; another binary needs its own decision and its own `BUILD.md`
+
+This section previously described the whole package as a placeholder and forbade vendoring RDKit
+outright, which `81711038` had already and deliberately done. A rulebook that contradicts the
+shipped tree teaches the reader to discount it, so the rule is scoped rather than left to rot.
 
 ### 6.20 `engine3d-api`
 

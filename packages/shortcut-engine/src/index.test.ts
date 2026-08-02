@@ -101,3 +101,19 @@ describe("the zoom-in key", () => {
     expect(registry().conflicts()).toEqual([]);
   });
 });
+
+describe("the space key", () => {
+  it("resolves a Space binding from a real spacebar press", () => {
+    // A KeyboardEvent reports the spacebar as key " ", and normalizeKey trimmed first — so the
+    // event normalized to "" while the binding normalized to " ", and the two could never meet.
+    // No command binds Space today, which is the only reason this has not bitten anyone.
+    const registry = createShortcutRegistry(
+      shortcutsFromCommands([{ id: "tool.pan", shortcut: "Space" }]),
+      { platform: "macos" }
+    );
+
+    expect(registry.resolve({ key: " ", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false }))
+      .toBe("tool.pan");
+    expect(keyboardEventChord({ key: " " })).toBe(" ");
+  });
+});
