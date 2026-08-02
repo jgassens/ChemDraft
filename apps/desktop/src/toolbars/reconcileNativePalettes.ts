@@ -68,6 +68,8 @@ export async function reconcileNativePaletteWindows(
   } = deps;
 
   const attempts = Math.max(1, maxAttempts);
+  /** The best result any attempt reached, so exhausting the retries can still report a partial win. */
+  let lastOpened = new Set<string>();
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (isCancelled()) {
@@ -131,10 +133,15 @@ export async function reconcileNativePaletteWindows(
         }
       }
 
-      // Lenient success: as long as SOMETHING opened, stay native. A palette that missed its creating
-      // frame while others opened is reopened by a later reconcile pass — we deliberately don't demand
-      // the full desired set here (that would drop to web palettes over one transient miss).
-      if (opened.size > 0) {
+      lastOpened = opened;
+
+      // Retry until the whole desired set is open, not until ANY of it is. Returning on the first
+      // partial success meant the palette that missed its creating frame was never tried again: the
+      // caller's effect re-runs only when native mode toggles or the registry changes, and it reads
+      // the desired set from a ref, so the "later reconcile pass" both comments promised does not
+      // happen on its own. That palette stayed off screen while `visibleToolsetIds` still listed it
+      // and the Toolbars menu still showed it checked, so recovering it took two toggles.
+      if (opened.size === desired.size) {
         return { outcome: "native", openedToolsetIds: [...opened] };
       }
     } catch {
@@ -150,5 +157,14 @@ export async function reconcileNativePaletteWindows(
     }
   }
 
-  return isCancelled() ? { outcome: "cancelled" } : { outcome: "fallback" };
+  if (isCancelled()) {
+    return { outcome: "cancelled" };
+  }
+  // Retries exhausted. Stay lenient about the VERDICT even though the retry loop is now strict:
+  // something opened, so native windows plainly work, and dropping to web palettes here would throw
+  // away the ones that did open — the transient-miss trap this retry loop exists to avoid. Only a
+  // clean sweep of failures means native windows are genuinely unavailable.
+  return lastOpened.size > 0
+    ? { outcome: "native", openedToolsetIds: [...lastOpened] }
+    : { outcome: "fallback" };
 }

@@ -52,6 +52,60 @@ describe("reconcileNativePaletteWindows", () => {
     expect(result.outcome === "native" && result.openedToolsetIds.sort()).toEqual(["core.art", "core.main"]);
   });
 
+  it("retries the palette that failed, instead of stopping because the others opened", async () => {
+    // The leniency above returned as soon as ANY palette opened, so the one that missed was never
+    // tried again. The caller's effect re-runs only when native mode toggles or the registry
+    // changes, and reads the desired set from a ref — so the "later reconcile pass" the comments
+    // promised never came, and the palette stayed off screen while the Toolbars menu still showed
+    // it checked.
+    const attemptsPerToolset = new Map<string, number>();
+    const openToolsetWindow = vi.fn(async (id: string) => {
+      const seen = (attemptsPerToolset.get(id) ?? 0) + 1;
+      attemptsPerToolset.set(id, seen);
+      // core.broken misses its creating frame once, exactly like the transient case above.
+      return state(id, id !== "core.broken" || seen >= 2);
+    });
+
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        openToolsetWindow,
+        desiredVisibleToolsetIds: () => ["core.main", "core.broken", "core.art"]
+      })
+    );
+
+    expect(result.outcome).toBe("native");
+    // All three, not just the two that opened first time.
+    expect(result.outcome === "native" && [...result.openedToolsetIds].sort()).toEqual([
+      "core.art",
+      "core.broken",
+      "core.main"
+    ]);
+    expect(attemptsPerToolset.get("core.broken")).toBe(2);
+  });
+
+  it("stays native with a partial set once retries are exhausted", async () => {
+    // Strict retry loop, lenient verdict: a palette that can never open must not cost the session
+    // the ones that can — that is the transient-miss trap this retry loop exists to avoid.
+    const openToolsetWindow = vi.fn(async (id: string) => {
+      if (id === "core.broken") {
+        throw new Error("window creation failed");
+      }
+      return state(id, true);
+    });
+
+    const result = await reconcileNativePaletteWindows(
+      baseDeps({
+        openToolsetWindow,
+        desiredVisibleToolsetIds: () => ["core.main", "core.broken"],
+        maxAttempts: 3
+      })
+    );
+
+    expect(result).toEqual({ outcome: "native", openedToolsetIds: ["core.main"] });
+    // And it genuinely kept trying the broken one across every attempt.
+    expect(openToolsetWindow.mock.calls.filter(([id]) => id === "core.broken")).toHaveLength(3);
+  });
+
   it("still falls back when every open rejects", async () => {
     const openToolsetWindow = vi.fn(async () => {
       throw new Error("window creation failed");

@@ -8613,8 +8613,12 @@ export function MainWindow({
         // Do NOT narrow visibleToolsetIds to the set that actually opened. If one palette missed its
         // creating frame (is_visible() briefly false) while others opened, the reconciler returns a
         // partial openedToolsetIds; overwriting the desired set with it — and then persisting that —
-        // would permanently drop that palette. The desired set stays authoritative; a later
-        // reconcile pass reopens anything that missed.
+        // would permanently drop that palette. The desired set stays authoritative.
+        //
+        // A partial set now means the reconciler retried that palette and it still would not open,
+        // because it keeps going until the whole desired set is up. This effect cannot be the retry:
+        // its deps are native mode and the registry, and it reads the desired set from a ref, so
+        // nothing re-runs it when an open fails.
         return;
       }
       // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars
