@@ -33,7 +33,7 @@
  */
 import type { IonizationSite } from "@chemdraft/analysis-core";
 
-import { distancesFrom, siteContext } from "./pkaAromaticity";
+import { distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
 import {
   predictSitePkaWithSpread,
   ringMembership,
@@ -165,7 +165,27 @@ export function enumerateMicrostates(siteCount: number): Microstate[] {
  */
 export function macroscopicPka(
   sites: readonly MicrostateSite[],
-  microPka: (state: Microstate, siteIndex: number) => number | undefined
+  microPka: (state: Microstate, siteIndex: number) => number | undefined,
+  /**
+   * Pairs (acidic, basic) whose combined flip is a TAUTOMER rather than a distinct species.
+   *
+   * An azole's two ring nitrogens look like two independent sites — one drawn with a hydrogen, one
+   * without — but deprotonating the first while protonating the second is the proton MOVING, giving
+   * the tautomer with the hydrogen on the other nitrogen. Reaching it needs the ring's double bonds
+   * rearranged, which assigning charges cannot do: the enumeration builds `c1c[nH+]c[n-]1` instead, an
+   * ylide that does not meaningfully exist and which the model scores at 6.95 where the real neutral
+   * imidazole is 13.84.
+   *
+   * Those microstates are dropped rather than scored. Measured: imidazole's first macroscopic pKa goes
+   * from 3.28 to 6.83 against a reference 6.95, pyrazole from -0.00 to 3.42 against 2.49, and
+   * histidine's second from 2.82 to 6.45 against 6.00. Molecules without such a pair are untouched.
+   *
+   * What this does NOT do is compute the tautomer's own binding constant — the state is omitted from
+   * the partition sum, not replaced by the right species. For an azole both tautomers are the same
+   * protonation state, so the cost is a degeneracy factor of at most log10(2), well inside the
+   * method's error.
+   */
+  tautomerPairs: readonly (readonly [number, number])[] = []
 ): ProtonationOutcome {
   if (sites.length === 0) return { declined: "no ionizable sites to enumerate" };
   if (sites.length > MAX_SITES) {
@@ -181,6 +201,23 @@ export function macroscopicPka(
   const key = (protonated: readonly boolean[]) => protonated.map((p) => (p ? "1" : "0")).join("");
   const byKey = new Map(states.map((state) => [key(state.protonated), state]));
 
+  // Only an acid/base pair can be tautomer-related: the proton has to have somewhere to go. Two acidic
+  // sites deprotonating one at a time are two genuinely different microstates, and dropping one of
+  // them would delete a real rung, so such a pair is ignored rather than trusted.
+  const pairs = tautomerPairs.filter(([a, b]) => {
+    const first = sites[a];
+    const second = sites[b];
+    return first !== undefined && second !== undefined && first.transition !== second.transition;
+  });
+
+  /** The acidic partner deprotonated while the basic one is protonated: a proton that moved. */
+  const isTautomerState = (state: Microstate): boolean =>
+    pairs.some(([a, b]) => {
+      const acid = sites[a]!.transition === "acidic" ? a : b;
+      const base = acid === a ? b : a;
+      return state.protonated[acid] === false && state.protonated[base] === true;
+    });
+
   // Reference: the fully deprotonated state, L = 0 by definition.
   const reference = byKey.get("0".repeat(sites.length))!;
   reference.logBinding = 0;
@@ -190,13 +227,14 @@ export function macroscopicPka(
   let inconsistency = 0;
   for (let n = 1; n <= sites.length; n += 1) {
     for (const state of states.filter((s) => s.protonCount === n)) {
+      if (isTautomerState(state)) continue;
       const routes: number[] = [];
       for (let i = 0; i < sites.length; i += 1) {
         if (!state.protonated[i]) continue;
         const lighter = byKey.get(
           key(state.protonated.map((p, j) => (j === i ? false : p)))
         );
-        if (!lighter || lighter.logBinding === undefined) continue;
+        if (!lighter || lighter.logBinding === undefined || isTautomerState(lighter)) continue;
         // The edge's pKa belongs to the ACID — the state that still holds the proton.
         const pKa = microPka(state, i);
         if (pKa === undefined) continue;
@@ -328,6 +366,17 @@ export function macroscopicFromSites(
     return shift;
   };
 
+  // Site pairs sharing an aromatic ring: an azole's two nitrogens, whose combined flip is a tautomer.
+  const tautomerPairs: [number, number][] = [];
+  const context = siteContext(graph);
+  for (let a = 0; a < scored.length; a += 1) {
+    for (let b = a + 1; b < scored.length; b += 1) {
+      if (scored[a]!.transition === scored[b]!.transition) continue;
+      if (!context.aromatic[scored[a]!.atomIndex] || !context.aromatic[scored[b]!.atomIndex]) continue;
+      if (shareARing(adjacency, scored[a]!.atomIndex, scored[b]!.atomIndex)) tautomerPairs.push([a, b]);
+    }
+  }
+
   return macroscopicPka(scored, (state, i) => {
     if (state.protonated.map((p) => (p ? "1" : "0")).join("") === drawnKey) {
       const known = sites[scored[i]!.siteIndex]?.pKa;
@@ -350,5 +399,5 @@ export function macroscopicFromSites(
     } catch {
       return undefined;
     }
-  });
+  }, tautomerPairs);
 }

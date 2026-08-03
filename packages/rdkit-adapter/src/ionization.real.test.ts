@@ -479,6 +479,43 @@ describe("acidic and basic are reported separately", () => {
   });
 });
 
+describe("azoles, where the two ring nitrogens are one proton's two homes", () => {
+  it("does not let imidazole's ylide microstate drag its first pKa down", async () => {
+    // Imidazole's ring nitrogens scan as two sites: the N-H is acidic, the other N is basic. Flipping
+    // both at once is the proton MOVING -- the tautomer, the same molecule redrawn. Enumeration only
+    // assigns charges, so what it actually builds is `c1c[nH+]c[n-]1`, an ylide the model scores at
+    // 6.95 where real neutral imidazole is 13.84. Leaving that in the partition sum pulled the first
+    // macroscopic pKa to 3.28 against a measured 6.95; dropping it gives 6.8.
+    const { result } = await ionization("c1c[nH]cn1");
+    expect(result.macroscopic).toBeDefined();
+    expect(result.macroscopic!.pKa[0]).toBeGreaterThan(5.5);
+    expect(result.macroscopic!.pKa[0]).toBeLessThan(8.5);
+  });
+
+  it("keeps both titration steps for imidazole rather than losing one with the dropped state", async () => {
+    // The tautomer occupies the same protonation state as the microstate that survives, so removing it
+    // must not remove a step. Two sites, two macroscopic values.
+    const { result } = await ionization("c1c[nH]cn1");
+    expect(result.macroscopic!.pKa).toHaveLength(2);
+  });
+
+  it("fixes histidine's imidazolium, the value the whole redesign was about", async () => {
+    // Histidine's side chain titrates near 6.0. With the ylide in the sum it came out at 2.82.
+    const { result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
+    const near6 = result.macroscopic!.pKa.filter((v) => v > 4.5 && v < 7.5);
+    expect(near6, `no imidazolium value in ${result.macroscopic!.pKa.join("/")}`).toHaveLength(1);
+  });
+
+  it("leaves molecules without such a pair untouched", async () => {
+    // Glycine's two sites are an aliphatic amine and a carboxyl, not two nitrogens sharing a ring.
+    // The exclusion must not reach them.
+    const { result } = await ionization("NCC(=O)O");
+    expect(result.macroscopic!.pKa).toHaveLength(2);
+    expect(result.macroscopic!.pKa[0]).toBeLessThan(4);
+    expect(result.macroscopic!.pKa[1]).toBeGreaterThan(8);
+  });
+});
+
 describe("macroscopic pKa, folded from the microscopic ladder", () => {
   it("gets a diamine's two titration steps", async () => {
     // Ethylenediamine measures 6.85 and 9.93. Two independent basic sites, which is the case the fold

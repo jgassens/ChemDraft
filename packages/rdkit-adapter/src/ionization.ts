@@ -77,11 +77,18 @@
  *
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
- * fit. Over twelve polyprotic molecules it lands within 0.30 log units where the sites are
- * independent — piperazine 0.05, ethylenediamine 0.07 — and within 0.70 for zwitterions, which carry
- * an electrostatic correction the microscopic model could not learn from labels that never contain an
- * amino acid's neutral form. They stay flagged: still the weakest case, and worst where several
- * acid/base pairs act at once (glycine 0.38, histidine 1.73).
+ * fit. `vendor/pka-model/macro_validate.py` measures it against fifteen polyprotic molecules with
+ * tabulated constants — 32 values, mean error **0.44** log units. It lands within 0.38 where the sites
+ * are independent (piperazine 0.05, ethylenediamine 0.07, oxalic acid the worst at 1.22) and within
+ * 0.53 for zwitterions, which carry an electrostatic correction the microscopic model could not learn
+ * from labels that never contain an amino acid's neutral form. Zwitterions stay flagged: still the
+ * weakest case, and worst where several acid/base pairs act at once.
+ *
+ * **Azoles, where one proton has two homes.** Imidazole's ring nitrogens scan as two sites, and
+ * flipping both at once is the proton MOVING — the tautomer, the same molecule redrawn. Enumeration
+ * only assigns charges, so it built `c1c[nH+]c[n-]1`, an ylide the model scores at 6.95 where real
+ * neutral imidazole is 13.84. Those microstates are excluded, which took the azoles from 1.77 to 0.49
+ * and histidine's imidazolium from 2.82 to 6.45 against a measured 6.00.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -817,13 +824,20 @@ export function ionizationContract(): MethodContract {
         "carboxyl by 0.6 log units where the real effect is 2.6, and for the ammonium it moves the " +
         "wrong way — because the training labels only contain microstates a titration can populate, " +
         "never an amino acid's neutral form. A Coulomb term across acid/base site pairs, one parameter " +
-        "fitted against MACROSCOPIC values, takes those molecules from 2.06 log units of error to 0.70 " +
-        "while leaving every other molecule at 0.30. Like-charge pairs get no correction: the model " +
+        "fitted against MACROSCOPIC values, takes those molecules from 2.06 log units of error to 0.53 " +
+        "while leaving every other molecule alone. Like-charge pairs get no correction: the model " +
         "already handles them, and applying it there made things worse.",
       "zwitterions remain the weakest case even corrected, which is why they are flagged. Glycine " +
-        "lands at 0.38 and alanine at 0.18, but histidine at 1.73 — the error grows where several " +
-        "acid/base pairs act at once. Diacids and diamines are the reliable end: piperazine 0.05, " +
-        "ethylenediamine 0.07, succinic acid 0.29.",
+        "lands at 0.38, alanine at 0.18, aspartic acid at 0.52 and histidine at 0.86 — the error grows " +
+        "where several acid/base pairs act at once. Diacids and diamines are the reliable end: " +
+        "piperazine 0.05, ethylenediamine 0.07, succinic acid 0.29, though oxalic acid is the worst " +
+        "case anywhere in the set at 1.22, where the two carboxyls sit directly bonded.",
+      "an AZOLE shares one proton between two ring nitrogens, and the two arrangements are tautomers " +
+        "rather than different species. The enumeration assigns charges, which cannot move a double " +
+        "bond, so combining both flips built an ylide the model scored seven log units too acidic. " +
+        "Those microstates are excluded rather than scored, which is why imidazole reads near 6.8 " +
+        "against a measured 6.95. What is NOT done is computing the tautomer’s own stability: for " +
+        "an azole both tautomers are the same protonation state, so the cost is at most log10(2).",
       "the macroscopic fold also reports its own THERMODYNAMIC INCONSISTENCY. pKa is a state function, " +
         "so every route to a microstate should sum to the same binding constant; each edge is predicted " +
         "independently and they do not. A large disagreement means the values cannot be trusted however " +

@@ -68,7 +68,36 @@ def logsumexp10(values):
     return top + np.log10(sum(10 ** (v - top) for v in values))
 
 
-def macroscopic(mol, sites, predict, W, dist, power=1.0):
+def conjugated_pairs(mol, sites):
+    """Acid/base site pairs sharing an aromatic ring, whose combination is a TAUTOMER, not a species.
+
+    Imidazole's two ring nitrogens look like two independent sites: one drawn with a hydrogen (acidic)
+    and one without (basic). Flipping both at once should give the tautomer with the proton on the
+    other nitrogen -- but the enumeration only assigns charges, so it builds `c1c[nH+]c[n-]1`, an ylide
+    that does not meaningfully exist. Reaching the real tautomer needs the ring's double bonds moved
+    too, which charge assignment cannot do.
+
+    The model scores that ylide at 6.95 where the neutral imidazole is 13.84, so it enters the
+    partition sum looking seven log units too acidic. Those microstates are dropped instead.
+
+    Aromaticity comes from `aromaticity.py`, not RDKit's flag: these molecules are kekulised, which
+    clears it.
+    """
+    import aromaticity
+    arom = aromaticity.aromatic_atoms(mol)
+    rings = mol.GetRingInfo().AtomRings()
+    out = set()
+    for a in range(len(sites)):
+        for b in range(a + 1, len(sites)):
+            ia, ka = sites[a]
+            ib, kb = sites[b]
+            if ka == kb: continue
+            if not (arom[ia] and arom[ib]): continue
+            if any(ia in r and ib in r for r in rings): out.add((a, b))
+    return out
+
+
+def macroscopic(mol, sites, predict, W, dist, power=1.0, drop_tautomer_states=True):
     """Fold the ladder, applying the coupling correction to every edge.
 
     `sites` is a list of (atom index, "acidic"|"basic"). Mirrors `protonation.ts`; the parity fixture
@@ -99,6 +128,16 @@ def macroscopic(mol, sites, predict, W, dist, power=1.0):
         except Exception:
             return None
 
+    tautomer_pairs = conjugated_pairs(mol, sites) if drop_tautomer_states else set()
+
+    def is_tautomer_state(state):
+        """The acidic partner deprotonated while the basic one is protonated: a proton that moved."""
+        for a, b in tautomer_pairs:
+            ka, kb = sites[a][1], sites[b][1]
+            acid_i, base_i = (a, b) if ka == "acidic" else (b, a)
+            if not state[acid_i] and state[base_i]: return True
+        return False
+
     cache = {}
     def graph_of(state):
         if state not in cache: cache[state] = build(state)
@@ -107,11 +146,12 @@ def macroscopic(mol, sites, predict, W, dist, power=1.0):
     L = {tuple([0] * n): 0.0}
     for count in range(1, n + 1):
         for state in [s for s in states if sum(s) == count]:
+            if is_tautomer_state(state): continue
             routes = []
             for i in range(n):
                 if not state[i]: continue
                 lighter = tuple(0 if j == i else state[j] for j in range(n))
-                if lighter not in L: continue
+                if lighter not in L or is_tautomer_state(lighter): continue
                 acid = graph_of(state)
                 if acid is None: continue
                 atom_idx = sites[i][0]

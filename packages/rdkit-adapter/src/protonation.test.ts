@@ -144,3 +144,60 @@ describe("the electrostatic coupling", () => {
     expect(coupling.fitMae).toBeLessThan(coupling.fitMaeUncorrected);
   });
 });
+
+describe("a proton that moved rather than left", () => {
+  // An azole's two ring nitrogens present as two independent sites: one drawn with a hydrogen
+  // (acidic), one without (basic). Deprotonating the first while protonating the second is not a
+  // separate species -- it is the same molecule with the proton on the other nitrogen. Enumeration
+  // cannot build it, because reaching the tautomer needs the ring's double bonds rearranged and all
+  // the enumeration does is assign charges; what it builds instead is `c1c[nH+]c[n-]1`, an ylide.
+  const azole: MicrostateSite[] = [
+    { atomIndex: 2, siteIndex: 0, transition: "acidic", drawnCharge: 0 },
+    { atomIndex: 4, siteIndex: 1, transition: "basic", drawnCharge: 0 }
+  ];
+
+  it("drops the state where the acid gave up a proton and the base took one", () => {
+    const seen: string[] = [];
+    macroscopicPka(
+      azole,
+      (state) => {
+        seen.push(state.protonated.map((p) => (p ? "1" : "0")).join(""));
+        return 7;
+      },
+      [[0, 1]]
+    );
+    // 01 is the ylide: site 0 (acidic) deprotonated, site 1 (basic) protonated.
+    expect(seen).not.toContain("01");
+    expect(seen).toContain("10");
+  });
+
+  it("leaves the count of macroscopic values alone", () => {
+    // Dropping a state must not drop a titration step: two sites still give two pKa values, because
+    // the tautomer is the same protonation state as the microstate that survives.
+    const withPair = macroscopicPka(azole, () => 7, [[0, 1]]);
+    const without = macroscopicPka(azole, () => 7, []);
+    expect(macroscopicApplies(withPair)).toBe(true);
+    expect(macroscopicApplies(without)).toBe(true);
+    if (!macroscopicApplies(withPair) || !macroscopicApplies(without)) return;
+    expect(withPair.pKa).toHaveLength(without.pKa.length);
+    expect(withPair.pKa).toHaveLength(2);
+    // One fewer microstate reached, but the same number of titration steps.
+    expect(withPair.microstateCount).toBe(without.microstateCount - 1);
+  });
+
+  it("ignores same-transition pairs, which are never tautomers of each other", () => {
+    // Two acidic sites cannot be related by a proton moving between them in this sense -- there is no
+    // acceptor. Passing such a pair must not silently delete a real microstate.
+    const diacid: MicrostateSite[] = [
+      { atomIndex: 1, siteIndex: 0, transition: "acidic", drawnCharge: 0 },
+      { atomIndex: 5, siteIndex: 1, transition: "acidic", drawnCharge: 0 }
+    ];
+    const paired = macroscopicPka(diacid, () => 4, [[0, 1]]);
+    const plain = macroscopicPka(diacid, () => 4, []);
+    expect(macroscopicApplies(paired)).toBe(true);
+    expect(macroscopicApplies(plain)).toBe(true);
+    if (!macroscopicApplies(paired) || !macroscopicApplies(plain)) return;
+    expect(paired.pKa).toEqual(plain.pKa);
+    expect(paired.microstateCount).toBe(plain.microstateCount);
+  });
+});

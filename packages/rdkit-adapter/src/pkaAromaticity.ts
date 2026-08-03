@@ -137,6 +137,18 @@ export function siteContext(graph: PkaMolecularGraph): SiteContextGraph {
   return { adjacency, bondOrder: order, aromatic, pyrroleType };
 }
 
+/**
+ * Whether some ring contains both atoms.
+ *
+ * Used to spot two ionizable sites in one aromatic ring, whose combination is a tautomer rather than a
+ * separate species. Reuses the same bounded cycle walk the aromaticity test does, so the two agree on
+ * what a ring is.
+ */
+export function shareARing(adjacency: number[][], a: number, b: number): boolean {
+  if (a === b) return false;
+  return cyclesThrough(adjacency, a).some((cycle) => cycle.includes(b));
+}
+
 /** Topological distance from `start` to every atom it can reach. */
 export function distancesFrom(adjacency: number[][], start: number): Map<number, number> {
   const distance = new Map<number, number>([[start, 0]]);
