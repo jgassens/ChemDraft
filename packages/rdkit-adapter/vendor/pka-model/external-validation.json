@@ -1,0 +1,22 @@
+{
+ "measurement": "held-out external data, never used in training or fold selection",
+ "source": "Uni-pKa (dptech-corp/Uni-pKa, Apache-2.0), dataset/ \u2014 Novartis and SAMPL6/7/8",
+ "note": "single-microstate rows only; n is small and its standard error is near 0.2, so this measures the level of the error and cannot resolve a difference between two models",
+ "perSet": {
+  "novartis_acid.tsv": {
+   "n": 27,
+   "mae": 1.2181
+  },
+  "novartis_base.tsv": {
+   "n": 10,
+   "mae": 0.8054
+  },
+  "sampl8.tsv": {
+   "n": 1,
+   "mae": 0.9664
+  }
+ },
+ "samples": 38,
+ "mae": 1.1029,
+ "standardError": 0.1495
+}

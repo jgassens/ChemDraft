@@ -15,7 +15,11 @@ _t = json.load(open(__file__.rsplit("/", 1)[0] + "/hammett-sigma.json"))
 SIGMA = {k: (v[0], v[1]) for k, v in _t["sigma"].items()}
 SIGMA_PARA_MINUS = {k: v[0] for k, v in _t["sigmaParaMinus"].items()}
 NAMES = {k: v[2] for k, v in _t["sigma"].items()}
-SERIES = {"benzoic": (4.20, 1.00), "phenol": (9.95, 2.23)}
+# pKa0, rho, and which equilibrium the series describes. The two basic series report the CONJUGATE
+# ACID's pKa -- the anilinium and the pyridinium -- which is the number a chemist means. Constants from
+# Jaffe (1953) and Perrin; none fitted here.
+SERIES = {"benzoic": (4.20, 1.00, "acidic"), "phenol": (9.95, 2.23, "acidic"),
+          "anilinium": (4.60, 2.89, "basic"), "pyridinium": (5.25, 5.90, "basic")}
 
 
 def graph_of(smiles):
@@ -140,12 +144,76 @@ def shell_key(g, adj, ring, ipso_group, attach):
     return "|".join(",".join(s) for s in shells)
 
 
+def nitrogen_series(smiles, g, adj, idx):
+    """Aniline and pyridine-type nitrogens, both reporting their conjugate acid's pKa.
+
+    The ring must be AROMATIC. Without that check cyclohexylammonium reads as an anilinium and
+    N-ethylpiperidinium as a pyridinium, which measured MAE 0.45 and 1.78; with it, 0.219 and 0.271.
+    """
+    import aromaticity
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None: return None, "unparsable"
+    arom = aromaticity.aromatic_atoms(mol)
+    atom = g["atoms"][idx]
+    # Charge-agnostic on purpose. The training labels carry the ACID microstate, so their aniline and
+    # pyridine sites are cations; the app sees the neutral form it was drawn as. Both name the same
+    # equilibrium and both give the same sigma sum, so both are accepted and the value returned is the
+    # conjugate acid's either way.
+    if atom["charge"] not in (0, 1): return None, "site nitrogen carries an unexpected charge"
+
+    if atom["hydrogens"] >= 1 and len(adj[idx]) == 1:
+        ipso = adj[idx][0]
+        if g["atoms"][ipso]["element"] == "C" and arom[ipso]:
+            ring = carbon_six_cycle(g, adj, ipso)
+            if ring and all(arom[j] for j in ring):
+                return sum_over_ring(g, adj, "anilinium", ipso, ring, {idx})
+
+    # Neutral pyridine has no hydrogen on the ring nitrogen; its conjugate acid has one. Both are the
+    # same equilibrium seen from opposite sides, and the training labels only ever carry the cation.
+    if arom[idx] and ((atom["charge"] == 0 and atom["hydrogens"] == 0) or
+                      (atom["charge"] == 1 and atom["hydrogens"] == 1)):
+        for c in six_cycles(adj, idx):
+            if len(c) != 6 or not all(arom[j] for j in c): continue
+            if sum(1 for j in c if g["atoms"][j]["element"] == "N") != 1: continue
+            # The ipso nitrogen may be charged (a pyridinium); the rest of the ring may not.
+            if not all(g["atoms"][j]["element"] in ("C", "N") for j in c): continue
+            if any(g["atoms"][j]["charge"] != 0 for j in c if j != idx): continue
+            return sum_over_ring(g, adj, "pyridinium", idx, c, {idx})
+
+    return None, "not an aniline or a pyridine-type nitrogen"
+
+
+def sum_over_ring(g, adj, series, ipso, ring, ipso_group):
+    """Walk the ring from `ipso` and sum sigma. Shared by all four series."""
+    if is_fused(adj, ring): return None, "ring is fused"
+    k = ring.index(ipso); order = ring[k:] + ring[:k]
+    total, detail = 0.0, []
+    for pos, a in enumerate(order):
+        if pos == 0: continue
+        branches = [j for j in adj[a] if j not in ring and j not in ipso_group]
+        if not branches: continue
+        dist = min(pos, 6 - pos)
+        if dist == 1: return None, "ortho substituent"
+        for b in branches:
+            key = shell_key(g, adj, ring, ipso_group, b)
+            if key not in SIGMA: return None, f"no sigma constant for {key}"
+            # sigma-minus only where the product anion conjugates into the substituent: the phenolate.
+            s = (SIGMA_PARA_MINUS[key] if dist == 3 and series == "phenol" and key in SIGMA_PARA_MINUS
+                 else SIGMA[key][0 if dist == 2 else 1])
+            total += s; detail.append((("meta" if dist == 2 else "para"), key, s))
+    pka0, rho, transition = SERIES[series]
+    return {"pKa": pka0 - rho * total, "series": series, "transition": transition,
+            "sigmaSum": total, "substituents": detail}, None
+
+
 def estimate(smiles, site_idx):
     g, _ = graph_of(smiles)
     if g is None or site_idx >= len(g["atoms"]): return None, "unparsable"
     adj = adjacency(g)
     atom = g["atoms"][site_idx]
-    if atom["element"] != "O": return None, "site is not an oxygen"
+    if atom["element"] == "N": return nitrogen_series(smiles, g, adj, site_idx)
+    if atom["element"] != "O": return None, "site is neither an oxygen nor a nitrogen"
     if atom["charge"] != 0 or atom["hydrogens"] != 1: return None, "site oxygen is not a neutral -OH"
     if any(bond_order(g, site_idx, j) != 1 for j in adj[site_idx]): return None, "site oxygen is not singly bonded"
 
@@ -165,23 +233,8 @@ def estimate(smiles, site_idx):
             break
     if group is None: return None, "not a benzoic acid or phenol"
     # Fused FIRST, then aromaticity. Both orders are safe, but only this one gives the same answer
-    # whichever Kekule structure the engine handed over.
+    # whichever Kekule structure the engine handed over. The oxygen series additionally require a
+    # CARBOCYCLIC aromatic ring, which the nitrogen series do not.
     if is_fused(adj, ring): return None, "ring is fused"
     if not is_benzene(g, adj, ring): return None, "ring is not benzene"
-
-    k = ring.index(ipso); order = ring[k:] + ring[:k]
-    total, detail = 0.0, []
-    for pos, a in enumerate(order):
-        if pos == 0: continue
-        branches = [j for j in adj[a] if j not in ring and j not in ipso_group]
-        if not branches: continue
-        dist = min(pos, 6 - pos)
-        if dist == 1: return None, "ortho substituent"
-        for b in branches:
-            key = shell_key(g, adj, ring, ipso_group, b)
-            if key not in SIGMA: return None, f"no sigma constant for {key}"
-            s = (SIGMA_PARA_MINUS[key] if dist == 3 and group == "phenol" and key in SIGMA_PARA_MINUS
-                 else SIGMA[key][0 if dist == 2 else 1])
-            total += s; detail.append((("meta" if dist == 2 else "para"), key, s))
-    pka0, rho = SERIES[group]
-    return {"pKa": pka0 - rho * total, "series": group, "sigmaSum": total, "substituents": detail}, None
+    return sum_over_ring(g, adj, group, ipso, ring, ipso_group)

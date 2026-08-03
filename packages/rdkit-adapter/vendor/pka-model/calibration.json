@@ -21,5 +21,91 @@
   2.48,
   3.63
  ],
- "baselinePredictTheMean": 2.9443
+ "baselinePredictTheMean": 2.9443,
+ "bySiteClass": {
+  "N+1 on saturated C": {
+   "n": 573,
+   "mae": 0.7372
+  },
+  "O+0 on C=O / C=N": {
+   "n": 477,
+   "mae": 0.4149
+  },
+  "N+1 aromatic ring": {
+   "n": 309,
+   "mae": 1.4425
+  },
+  "O+0 on aromatic C": {
+   "n": 301,
+   "mae": 1.365
+  },
+  "N+1 on aromatic C": {
+   "n": 292,
+   "mae": 1.318
+  },
+  "N+0 aromatic ring": {
+   "n": 165,
+   "mae": 1.6917
+  },
+  "N+0 on aromatic C": {
+   "n": 125,
+   "mae": 1.2763
+  },
+  "O+0 on N/O": {
+   "n": 98,
+   "mae": 1.0554
+  },
+  "N+1 on C=O / C=N": {
+   "n": 96,
+   "mae": 1.5533
+  },
+  "C+0 on C=O / C=N": {
+   "n": 83,
+   "mae": 2.5676
+  },
+  "N+0 on C=O / C=N": {
+   "n": 81,
+   "mae": 1.343
+  },
+  "N+0 on sulfonyl": {
+   "n": 77,
+   "mae": 1.0447
+  },
+  "O+0 on saturated C": {
+   "n": 74,
+   "mae": 1.5782
+  },
+  "N+0 on N/O": {
+   "n": 44,
+   "mae": 1.8495
+  },
+  "N+1 on N/O": {
+   "n": 34,
+   "mae": 0.9476
+  },
+  "O+1 on C=O / C=N": {
+   "n": 31,
+   "mae": 2.7229
+  },
+  "C+0 on N/O": {
+   "n": 29,
+   "mae": 1.1481
+  },
+  "C+0 on saturated C": {
+   "n": 21,
+   "mae": 4.9077
+  },
+  "C+0 on aromatic C": {
+   "n": 21,
+   "mae": 1.143
+  },
+  "O+0 on sulfonyl": {
+   "n": 20,
+   "mae": 3.6743
+  },
+  "S+0 on aromatic C": {
+   "n": 20,
+   "mae": 2.5034
+  }
+ }
 }

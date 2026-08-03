@@ -28,6 +28,46 @@ from pka_train import FOREST  # one definition of the forest's shape, so the two
 SPREAD_MULTIPLIER = 1.5
 
 
+def site_class(mol, idx):
+    """A coarse chemical class for the site, so the headline MAE can be read by chemistry.
+
+    A single number over 3,031 mixed sites tells a user nothing about whether it applies to THEIR
+    molecule. Carboxyls and tetrazoles do not share an error bar, and the breakdown says so.
+    """
+    atom = mol.GetAtomWithIdx(idx)
+    symbol, charge = atom.GetSymbol(), atom.GetFormalCharge()
+    if atom.GetTotalNumHs() == 0:
+        return f"{symbol}{charge:+d} no hydrogen"
+    if atom.GetIsAromatic():
+        return f"{symbol}{charge:+d} aromatic ring"
+    for n in atom.GetNeighbors():
+        if n.GetSymbol() == "S":
+            return f"{symbol}{charge:+d} on sulfonyl"
+        if n.GetSymbol() == "C" and any(
+            b.GetBondTypeAsDouble() == 2.0 and b.GetOtherAtom(n).GetSymbol() in "ON" for b in n.GetBonds()
+        ):
+            return f"{symbol}{charge:+d} on C=O / C=N"
+        if n.GetSymbol() in "NO":
+            return f"{symbol}{charge:+d} on N/O"
+        if n.GetIsAromatic():
+            return f"{symbol}{charge:+d} on aromatic C"
+    return f"{symbol}{charge:+d} on saturated C"
+
+
+def breakdown(rows, err):
+    """MAE per chemical class, so a reader can find their own chemistry in the figure."""
+    from collections import defaultdict
+    from rdkit import Chem
+    buckets = defaultdict(list)
+    for row, e in zip(rows, err):
+        mol = Chem.MolFromSmiles(row["acid"])
+        if mol is None or row["acidAtomIdx"] >= mol.GetNumAtoms():
+            continue
+        buckets[site_class(mol, row["acidAtomIdx"])].append(float(e))
+    return {k: {"n": len(v), "mae": round(sum(v) / len(v), 4)}
+            for k, v in sorted(buckets.items(), key=lambda kv: -len(kv[1])) if len(v) >= 20}
+
+
 def main(prefix, out):
     X = np.load(f"{prefix}.X.npy")
     y = np.load(f"{prefix}.y.npy")
@@ -56,6 +96,9 @@ def main(prefix, out):
         "intervalQuartiles": [round(float(v) * SPREAD_MULTIPLIER, 3)
                               for v in np.quantile(sd, [0.25, 0.5, 0.75])],
         "baselinePredictTheMean": round(float(np.abs(y - y.mean()).mean()), 4),
+        # The headline number split by chemistry. Classes under 20 sites are omitted rather than
+        # published at a precision they cannot support.
+        "bySiteClass": breakdown(json.load(open(f"{prefix}.meta.json")).get("rows", []), err),
     }
     json.dump(summary, open(f"{out}/calibration.json", "w"), indent=1)
     json.dump(

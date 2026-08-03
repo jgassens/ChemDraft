@@ -34,23 +34,23 @@
  * whose constants come from the physical-organic literature rather than from this project's training
  * set — so its agreement with the model carries information instead of being circular.
  *
- * It reaches only 2.8% of sites and declines on the rest, which is what an LFER should do. Where it
- * does reach, measured over those 85 sites:
+ * It reaches 5.1% of sites and declines on the rest, which is what an LFER should do. Four series
+ * ship — benzoic, phenol, anilinium, pyridinium — and over the 155 sites they reach:
  *
  * | | MAE (log units) |
  * |---|---|
- * | the model alone | 0.42 |
- * | the relationship alone | 0.16 |
- * | their plain average | 0.23 |
- * | weighted by measured accuracy | 0.16 |
+ * | the model alone | 0.56 |
+ * | the relationship alone | 0.19 |
+ * | their plain average | 0.33 |
+ * | weighted by measured accuracy | 0.21 |
  *
  * The third row is the one that shaped the code: averaging is the obvious rule and it is worse than the
  * better method alone, so `combineSiteEstimates` weights by each method's own measured error.
  *
- * The fourth row is level with the relationship on its own, not better — 0.158 against 0.158 on 85
- * sites. What the pair buys is the INTERVAL. Their disagreement tracks actual error at r = 0.88, where
- * the forest's own tree variance manages 0.52, and the resulting interval is 6.3x tighter than the
- * model's while covering 92% of the real error.
+ * The fourth row does not beat the relationship on its own, and the contract says so rather than
+ * claiming otherwise. What the pair buys is the INTERVAL. Their disagreement tracks actual error at
+ * r = 0.87, where the forest's own tree variance manages 0.52, and the resulting interval is 6.5x
+ * tighter than the model's while covering 89% of the real error.
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
@@ -549,8 +549,9 @@ export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularG
       atomIndices: site.atomIndices,
       ionizableAtomIndex: site.ionizableAtomIndex,
       siteType: site.siteType,
-      // An LFER for benzoic acids and phenols describes one direction only.
-      transition: "acidic",
+      // The series decides the direction: benzoic and phenol are acidic, anilinium and pyridinium
+      // report their conjugate acid.
+      transition: outcome.transition,
       pKa: outcome.pKa,
       // The method's measured in-domain error, not a per-site figure: an LFER has one residual for the
       // whole series it was fitted to and does not claim to know which members it fits best.
@@ -760,7 +761,8 @@ export function ionizationContract(): MethodContract {
         `substituent and reaction constants come from the physical-organic literature, not from this ` +
         `project's training data. It applies to substituted benzoic acids and phenols with no ortho ` +
         `substituent and an unfused ring — ${CONSENSUS_CALIBRATION.samples} of the labelled sites — ` +
-        `and declines everywhere else with a reason.`,
+        `and declines everywhere else with a reason. Four series ship: benzoic acids, phenols, ` +
+        `anilines and pyridines, the last two reporting their conjugate acid's pKa.`,
       `where both methods fire the value is WEIGHTED BY THEIR MEASURED ACCURACY, not averaged. ` +
         `Averaging is the obvious rule and it is more than twice as bad as the better method alone ` +
         `(${CONSENSUS_CALIBRATION.meanMae.toFixed(2)} against ` +
@@ -791,7 +793,8 @@ export function ionizationContract(): MethodContract {
     supportedChemistry: [
       "locating ionizable positions in organic acids and bases matching a tabulated site substructure",
       "polyprotic molecules — every ionizable atom is reported separately",
-      "substituted benzoic acids and phenols, which additionally get an independent Hammett estimate"
+      "substituted benzoic acids, phenols, anilines and pyridines, which additionally get an " +
+        "independent Hammett estimate"
     ],
     knownUnsupportedChemistry: [
       "anything containing a metal: no open pKa dataset contains a metal-bearing structure, so such " +
@@ -827,8 +830,7 @@ export function ionizationContract(): MethodContract {
         unit: "log10-unit",
         basis:
           `The Hammett relationship over the ${CONSENSUS_CALIBRATION.samples} Dwar-iBond sites it ` +
-          `applies to — ${CONSENSUS_CALIBRATION.phenolSamples} phenols and ` +
-          `${CONSENSUS_CALIBRATION.benzoicSamples} benzoic acids. Its constants were not fitted to this ` +
+          `applies to, across four series. Its constants were not fitted to this ` +
           "dataset, so this is a held-out figure for the phenols; for the benzoic acids it is partly " +
           "circular, sigma having been defined by benzoic acid ionisation in the first place.",
         citationId: "hansch-leo-taft-1991"
