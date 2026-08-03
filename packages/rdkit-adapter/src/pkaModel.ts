@@ -244,8 +244,16 @@ export const PKA_MODEL_CALIBRATION = calibrationJson as {
 /**
  * How wide the interval is drawn relative to the trees' disagreement.
  *
- * 1.5 because that is the multiplier whose coverage is closest to a conventional ~80% interval;
- * `PKA_MODEL_CALIBRATION.coverage` records what each candidate actually delivered.
+ * 1.5 was chosen when it delivered ~80%. On the current model it delivers 90%, and it is kept rather
+ * than retuned to 1.0 (77%): an interval that covers nine times in ten is the more useful promise, and
+ * the figure the contract quotes is read from `PKA_MODEL_CALIBRATION.coverage` rather than restated
+ * here, so the two cannot disagree.
+ *
+ * A single multiplier across a range this wide looks like it should mis-calibrate — quartile MAE runs
+ * 0.38 to 2.31 — but measured by quartile of disagreement the coverage is 87 / 93 / 88 / 93%. It holds
+ * because the interval scales with the same quantity the error does. The residual imperfection is that
+ * 90% overall exceeds the 80% originally aimed at, which is a conservative interval rather than a
+ * misshapen one.
  */
 const SPREAD_MULTIPLIER = PKA_MODEL_CALIBRATION.spreadMultiplier;
 

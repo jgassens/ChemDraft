@@ -407,14 +407,15 @@ describe("acidic and basic are reported separately", () => {
     // The amine terminus: BASIC. Its 9.03 under an acidity label was the bug — nearly the ammonium's
     // measured 9.25, and so read as correct while describing a different reaction.
     expect(at(0)?.transition).toBe("basic");
-    // Tolerance is the method's own measured error, not a number chosen to pass: asserting tighter
-    // than the MAE it publishes would be pinning noise, and asserting looser would let a real
-    // regression through.
-    expect(Math.abs(at(0)!.pKa! - 9.25)).toBeLessThan(PKA_MODEL_TRAINING.cvMae + 1);
+    // A FIXED tolerance, deliberately not `cvMae + something`. Scaling the bound by the model's own
+    // error makes the gate widen exactly when the model gets worse, so a regression keeps the test
+    // green — the opposite of what it is for. Two log units is a chemistry judgement about whether
+    // the value is still useful, and it does not move when the model does.
+    expect(Math.abs(at(0)!.pKa! - 9.25)).toBeLessThan(2);
 
     // The ring nitrogen with no hydrogen: BASIC, and it has a real value rather than being withheld.
     expect(at(7)?.transition).toBe("basic");
-    expect(Math.abs(at(7)!.pKa! - 6.14)).toBeLessThan(PKA_MODEL_TRAINING.cvMae + 1);
+    expect(Math.abs(at(7)!.pKa! - 6.14)).toBeLessThan(2);
 
     // The ring N-H and the carboxyl: ACIDIC, the protons they are drawn with.
     expect(at(5)?.transition).toBe("acidic");

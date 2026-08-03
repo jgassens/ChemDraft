@@ -411,16 +411,17 @@ Three findings changed the code after it was written, and each is recorded where
 - **A cross-validation split can flatter a model by 0.4 log units.** The published figure was 1.18 for
   months. Folds were grouped by canonical SMILES — which reads like a scaffold split and separates only
   identical molecules, 3,030 groups for 3,031 rows — so every congeneric series straddled the folds.
-  Bemis-Murcko grouping gives 1,167 groups and MAE 1.62; external data the model has never seen
-  (Novartis + SAMPL, n=38) gives 1.24. The training script was not vendored, which is why nobody could
-  read the grouping; it is now, with the correction written into its header.
+  Bemis-Murcko grouping gave 1,167 groups and MAE 1.62 for that same forest; external data it had never
+  seen (Novartis + SAMPL, n=38) gave 1.24. The current model scores 1.21 on Murcko folds. The training
+  script was not vendored, which is why nobody could read the grouping; it is now, with the correction
+  written into its header.
 - **The site table cannot value what it locates.** Scored against 1,750 labelled sites, its per-type
   averages give MAE 2.77 where exactly one type matches — worse than the 2.33 of predicting the dataset
   mean. The table was already implemented and reporting numbers when this was measured; the numbers
   came out.
 - **Averaging two methods is worse than the better one alone** (0.229 against 0.158). The consensus
   weights by each method's measured error instead.
-- **Cross-method disagreement beats any single model's internal confidence** — r = 0.84 against 0.42 —
+- **Cross-method disagreement beats any single model's internal confidence** — r = 0.88 against 0.52 —
   which is the concrete argument for having a second method at all.
 
 The candidates below remain **evaluation set, not approved list**; each would still need artifact-level
