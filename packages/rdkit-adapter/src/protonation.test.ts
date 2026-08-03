@@ -110,3 +110,37 @@ describe("the partition sum", () => {
     expect(logSumExp10(values)).toBeCloseTo(naive, 12);
   });
 });
+
+describe("the electrostatic coupling", () => {
+  /**
+   * The correction is applied inside `macroscopicFromSites`, which needs real structures. What can be
+   * pinned here is the shape it must have — the sign, and that it touches only acid/base pairs.
+   */
+  it("keeps a fitted parameter, not a typed-in one", async () => {
+    const coupling = (await import("../vendor/pka-model/coupling.json")).default as unknown as {
+      W: number; appliesTo: string; validation: Record<string, number>;
+    };
+    expect(coupling.W).toBeGreaterThan(0);
+    expect(coupling.appliesTo).toMatch(/acid\/base/);
+    // The claim the correction exists to make. If a refit stops delivering it, this fails rather than
+    // the improvement quietly evaporating.
+    expect(coupling.validation.zwitterionicMaeAfter).toBeLessThan(
+      coupling.validation.zwitterionicMaeBefore / 2
+    );
+    // And it must not have been bought by degrading everything else.
+    expect(coupling.validation.independentMaeAfter).toBeCloseTo(
+      coupling.validation.independentMaeBefore,
+      2
+    );
+  });
+
+  it("was fitted on a different observable than the model was trained on", async () => {
+    // Fitting it against the same per-site labels would make it a second model on the same data, and
+    // its agreement would mean nothing. Macroscopic values are an aggregate those labels do not hold.
+    const coupling = (await import("../vendor/pka-model/coupling.json")).default as unknown as {
+      measurement: string; fitMae: number; fitMaeUncorrected: number;
+    };
+    expect(coupling.measurement).toMatch(/MACROSCOPIC/);
+    expect(coupling.fitMae).toBeLessThan(coupling.fitMaeUncorrected);
+  });
+});

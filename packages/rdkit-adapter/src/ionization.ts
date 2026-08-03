@@ -78,8 +78,10 @@
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
  * fit. Over twelve polyprotic molecules it lands within 0.30 log units where the sites are
- * independent — piperazine 0.05, ethylenediamine 0.07 — and within 2.06 where the molecule is a
- * zwitterion, which the result flags because nothing else catches it.
+ * independent — piperazine 0.05, ethylenediamine 0.07 — and within 0.70 for zwitterions, which carry
+ * an electrostatic correction the microscopic model could not learn from labels that never contain an
+ * amino acid's neutral form. They stay flagged: still the weakest case, and worst where several
+ * acid/base pairs act at once (glycine 0.38, histidine 1.73).
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -810,11 +812,18 @@ export function ionizationContract(): MethodContract {
         "one of them. The MACROSCOPIC values reported alongside are what a titration measures, folded " +
         "from the microscopic ladder over every protonation microstate: pKa(n) = log10(Z(n)/Z(n-1)), " +
         "which is exact rather than fitted.",
-      "MACROSCOPIC VALUES ARE POOR FOR A ZWITTERION and the result says which ones those are. Measured " +
-        "over twelve polyprotic molecules with tabulated values, those carrying both an acidic and a " +
-        "basic site average 2.06 log units of error against 0.30 for the rest — the microscopic model " +
-        "underestimates how strongly an ammonium and a carboxylate pull on each other. Diacids and " +
-        "diamines are reliable: piperazine 0.05, ethylenediamine 0.07, succinic acid 0.29.",
+      "A ZWITTERION carries an electrostatic correction, and the result says which molecules got one. " +
+        "The microscopic model barely responds to a neighbouring charge — on glycine it shifts the " +
+        "carboxyl by 0.6 log units where the real effect is 2.6, and for the ammonium it moves the " +
+        "wrong way — because the training labels only contain microstates a titration can populate, " +
+        "never an amino acid's neutral form. A Coulomb term across acid/base site pairs, one parameter " +
+        "fitted against MACROSCOPIC values, takes those molecules from 2.06 log units of error to 0.70 " +
+        "while leaving every other molecule at 0.30. Like-charge pairs get no correction: the model " +
+        "already handles them, and applying it there made things worse.",
+      "zwitterions remain the weakest case even corrected, which is why they are flagged. Glycine " +
+        "lands at 0.38 and alanine at 0.18, but histidine at 1.73 — the error grows where several " +
+        "acid/base pairs act at once. Diacids and diamines are the reliable end: piperazine 0.05, " +
+        "ethylenediamine 0.07, succinic acid 0.29.",
       "the macroscopic fold also reports its own THERMODYNAMIC INCONSISTENCY. pKa is a state function, " +
         "so every route to a microstate should sum to the same binding constant; each edge is predicted " +
         "independently and they do not. A large disagreement means the values cannot be trusted however " +

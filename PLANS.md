@@ -562,19 +562,28 @@ with the microscopic model, and folds the ladder into what a titration measures 
 `pKa(n) = log10(Z(n)/Z(n-1))`, exact rather than fitted, verified against the analytic statistical
 factors for equivalent sites. Measured on twelve polyprotic molecules with tabulated values:
 
-| | n | mean error |
-|---|---:|---:|
-| independent sites (diacids, diamines) | 9 | **0.30** |
-| zwitterionic (both an acid and a base) | 3 | 2.06 |
+| | n | before | after the coupling term |
+|---|---:|---:|---:|
+| independent sites (diacids, diamines) | 9 | 0.30 | **0.30** |
+| zwitterionic (both an acid and a base) | 4 | 2.06 | **0.70** |
 
-The split is reported, because nothing else catches it — alanine's thermodynamic inconsistency is 0.00
-while its error is 2.18. The cause is coupling the microscopic model has too few alpha-amino acids to
-have learned: in glycine the carboxyl is far more acidic than it looks because the adjacent ammonium
-stabilises the carboxylate, and vice versa.
+**The zwitterion coupling is fixed, by adding the physics the labels could not teach.** The microscopic
+model barely responds to a neighbouring charge — on glycine it shifts the carboxyl 0.6 log units where
+the real effect is 2.6, and moves the ammonium the wrong way — because Dwar-iBond only records
+microstates a titration can populate, never an amino acid's neutral form. A one-parameter Coulomb term
+across acid/base site pairs, `dpKa = -W·q/d`, fitted against MACROSCOPIC values (an aggregate the
+per-site labels do not contain), closes most of it. Both halves of a scaffold split independently chose
+W = 7 with a flat optimum from 6 to 8.
+
+Like-charge pairs get no correction, and that restriction is measured: ethylenediamine already scores
+6.93/9.98 against 6.85/9.93 untouched, and applying the term there pushed the independent molecules
+from 0.28 to 0.95.
+
+Zwitterions stay flagged — still the weakest case, and worst where several acid/base pairs act at once
+(glycine 0.38, alanine 0.18, histidine 1.73).
 
 **Still open:** the two microstates each microscopic value connects (the ladder computes them but does
-not surface them), tautomer handling, and the zwitterion accuracy above — which is a training-data
-problem, not a machinery one.
+not surface them), and tautomer handling.
 
 **OpenChemLib has no pKa predictor** — verified three ways; `pKaPredictor`/`pKaPlotter` are
 DataWarrior-side, and `grep -ri pka` over the installed 9.22.1 package returns nothing.

@@ -33,12 +33,42 @@
  */
 import type { IonizationSite } from "@chemdraft/analysis-core";
 
+import { distancesFrom, siteContext } from "./pkaAromaticity";
 import {
   predictSitePkaWithSpread,
   ringMembership,
   siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
+import couplingJson from "../vendor/pka-model/coupling.json";
+
+/**
+ * The electrostatic coupling the microscopic model could not learn.
+ *
+ * Charging one site shifts every other site's pKa by their interaction, which is the oldest result in
+ * this subject: dpKa_i = -W * sum_j q_j / d_ij, over the OTHER sites, with q the neighbour's formal
+ * charge in that microstate and d the through-bond distance. The sign falls out of the chemistry —
+ * deprotonation lowers the site's charge by one, so a positive neighbour stabilises the product and
+ * lowers the pKa.
+ *
+ * **Why the model needs help here at all.** Measured on glycine, it shifts the carboxyl by 0.57 log
+ * units between an adjacent NH3+ and an adjacent NH2, where the real effect is about 2.6 — and for the
+ * ammonium it moves the wrong way. The training labels are why: Dwar-iBond records the microstates a
+ * titration can populate, which for an amino acid are the cation, the zwitterion and the anion, never
+ * the neutral form. The model never sees one site with and without an adjacent opposite charge, so no
+ * amount of charge-counting features can teach it the contrast.
+ *
+ * **Applied ONLY across acid/base pairs**, and that restriction is measured rather than assumed. Like
+ * charges it already handles: ethylenediamine comes out at 6.93/9.98 against a measured 6.85/9.93 with
+ * no correction, because both of its microstates are populated and therefore in the labels. Applying
+ * the term to like pairs as well pushed the eight independent molecules from 0.28 to 0.95 while
+ * helping nothing.
+ *
+ * **W is fitted against MACROSCOPIC values**, an aggregate the per-site labels do not contain, so this
+ * is not a second model fitted to the same data. Both halves of a Murcko-scaffold split of the 186
+ * fitting molecules independently choose 7, with a flat optimum from 6 to 8.
+ */
+const COUPLING = couplingJson as unknown as { W: number; appliesTo: string };
 
 /**
  * Most ionizable sites the enumeration will attempt.
@@ -76,18 +106,17 @@ export interface MacroscopicResult {
   microstateCount: number;
   siteCount: number;
   /**
-   * An acidic and a basic site sit close enough to form a zwitterion, where these values are poor.
+   * An acidic and a basic site are both present, so the molecule forms a zwitterion.
    *
-   * Measured, and it separates cleanly. Over thirteen polyprotic molecules with tabulated macroscopic
-   * pKa, the four carrying both kinds of site — glycine, alanine, aspartic acid, histidine — have a
-   * mean error of 2.01 log units, and the nine that do not have 0.30. Nothing else in the result
-   * catches it: alanine's `inconsistency` is 0.00 while its error is 2.18.
+   * These used to be the method's worst case by a wide margin — mean error 2.06 log units against 0.30
+   * for everything else — because the microscopic model barely responds to a neighbouring charge. The
+   * electrostatic term in `COUPLING` closes most of that: 2.06 to 0.70, with the other molecules
+   * untouched at 0.30.
    *
-   * The cause is coupling the microscopic model does not capture. In glycine the carboxyl is far more
-   * acidic than it looks because the adjacent ammonium stabilises the carboxylate, and the ammonium is
-   * far less acidic because the carboxylate stabilises it. Each microstate is predicted on its own
-   * structure, charges included, so the information is present — the model simply has too few
-   * alpha-amino acids to have learned it.
+   * The flag stays because the remaining error is still twice the rest, and because it concentrates
+   * where several acid/base pairs act at once: glycine 0.38 and alanine 0.18, but histidine 1.73 with
+   * four sites. Nothing else in the result catches it — alanine's `inconsistency` was 0.00 while its
+   * error was 2.18.
    */
   zwitterionic: boolean;
 }
@@ -242,6 +271,7 @@ export function macroscopicFromSites(
   graph: PkaMolecularGraph,
   graphFor: (deltas: ReadonlyMap<number, number>) => PkaMolecularGraph | undefined
 ): ProtonationOutcome {
+  const adjacency = siteContext(graph).adjacency;
   const scored: MicrostateSite[] = [];
   for (const [index, site] of sites.entries()) {
     if (site.pKa === null) continue;
@@ -279,9 +309,30 @@ export function macroscopicFromSites(
   // it. Rebuilding it from the model alone put phenol at 10.24 against its own displayed 9.99.
   const drawnKey = scored.map((site) => (site.transition === "acidic" ? "1" : "0")).join("");
 
+  // Through-bond distances between the sites, for the coupling term.
+  const distanceBetween = scored.map((site) => distancesFrom(adjacency, site.atomIndex));
+
+  /** How much every OTHER site's charge shifts this one, in this microstate. */
+  const coupling = (state: Microstate, i: number): number => {
+    let shift = 0;
+    for (let j = 0; j < scored.length; j += 1) {
+      if (j === i) continue;
+      // Acid/base pairs only — see COUPLING. Like charges the model already handles.
+      if (scored[j]!.transition === scored[i]!.transition) continue;
+      const q = chargeDelta(scored[j]!, state.protonated[j] === true);
+      if (q === 0) continue;
+      const d = distanceBetween[i]!.get(scored[j]!.atomIndex);
+      if (d === undefined || d === 0) continue;
+      shift -= (COUPLING.W * q) / d;
+    }
+    return shift;
+  };
+
   return macroscopicPka(scored, (state, i) => {
     if (state.protonated.map((p) => (p ? "1" : "0")).join("") === drawnKey) {
       const known = sites[scored[i]!.siteIndex]?.pKa;
+      // The drawn microstate's value already reflects the charges actually present in it, so it takes
+      // no correction — adding one would count the same interaction twice.
       if (known !== null && known !== undefined) return known;
     }
     // The edge belongs to the ACID: the microstate that still holds this proton.
@@ -292,7 +343,10 @@ export function macroscopicFromSites(
     // The proton has to actually be there, or the value would describe a different reaction.
     if (!atom || atom.hydrogens === 0) return undefined;
     try {
-      return predictSitePkaWithSpread(siteFeatures(acid, site.atomIndex, ringMembership(acid))).value;
+      const base = predictSitePkaWithSpread(
+        siteFeatures(acid, site.atomIndex, ringMembership(acid))
+      ).value;
+      return base + coupling(state, i);
     } catch {
       return undefined;
     }
