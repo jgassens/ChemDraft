@@ -10,30 +10,36 @@
  * §8's requirement is therefore satisfiable honestly, and results carry
  * `basis: "experimentally-trained-model"`.
  *
- * **Accuracy: MAE 1.62 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation,
+ * **Accuracy: MAE 1.21 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation,
  * against 2.94 for predicting the dataset mean.
  *
- * That figure was 1.18 until the grouping was checked, and the correction is worth stating because the
- * mistake is easy to repeat. Folds were grouped by CANONICAL SMILES, which reads like a scaffold split
- * and is not one — it separates identical molecules and nothing else, 3,030 groups for 3,031 rows. So
- * every congeneric series in Dwar-iBond was split across folds and each held-out row kept near-twins in
- * training. Murcko scaffolds give 1,167 groups and MAE 1.62; external data the model has never seen
- * (Novartis + SAMPL, n=38) gives 1.24, between the two. `vendor/pka-model/pka_train.py` now carries the
- * grouping, and it is vendored precisely so this cannot go unread again.
+ * Read the grouping before the number. It was once 1.18 on folds grouped by CANONICAL SMILES, which
+ * reads like a scaffold split and is not one — it separates identical molecules and nothing else,
+ * 3,030 groups for 3,031 rows, so every congeneric series straddled the folds. The same forest scored
+ * 1.62 once the folds were fixed. `vendor/pka-model/pka_train.py` carries the grouping and is vendored
+ * precisely so this cannot go unread again.
+ *
+ * From 1.62 to 1.21 came from three changes, each measured on its own: per-atom aromaticity (+0.02),
+ * context measured outward from the site instead of over the whole molecule (+0.21), and a forest
+ * shape swept for 92 features rather than 45 (+0.14). A fourth candidate — recovering labels from
+ * multi-microstate rows — was measured and REJECTED: the 95 recoverable rows score MAE 1.91 against
+ * 1.17 for the rest, because a macro-pKa is not a micro-pKa even when the changed atom is common.
  *
  * **Why a random forest with JSON weights rather than something stronger.** The product is a
  * TypeScript desktop app, so inference must run in-process. A forest evaluates in a few lines here,
  * its weights are inspectable, and there is no second runtime to bundle. A GNN would score better and
  * could not ship.
  *
- * **The parity rule.** Every feature below must be computable IDENTICALLY from what MinimalLib
- * exposes. RDKit's JSON is Kekulé-ised and carries no per-atom aromaticity flag, so aromaticity is
- * absent from the feature set entirely rather than approximated — a feature that means something
- * different at inference time than it did in training is worse than one that does not exist. Ring
- * membership is included because it *is* exactly reproducible, by pruning degree-1 atoms until none
- * remain. `vendor/pka-model/parity-fixture.json` pins ten molecules' features and predictions against
- * the Python that trained the model, so a drift in either direction fails a test.
+ * **The parity rule.** Every feature must be computable IDENTICALLY from what MinimalLib exposes. A
+ * feature that means something different at inference than it did in training is worse than one that
+ * does not exist: the model is fed a number it never saw and answers confidently. RDKit's JSON is
+ * Kekulé-ised and carries no aromaticity flag, so aromaticity is not read from RDKit — it is computed
+ * from bond orders in `pkaAromaticity.ts` by a rule written twice and checked against itself. Ring
+ * membership is likewise recomputed, by pruning degree-1 atoms.
+ * `vendor/pka-model/parity-fixture.json` pins ten molecules' features, predictions and tree
+ * disagreement against the Python that trained the model, so drift in either direction fails a test.
  */
+import { localEnvironmentFeatures, siteContext } from "./pkaAromaticity";
 import calibrationJson from "../vendor/pka-model/calibration.json";
 import forestJson from "../vendor/pka-model/site-pka-forest.json";
 
@@ -111,12 +117,34 @@ function descriptor(graph: PkaMolecularGraph, name: string): number {
 }
 
 /**
- * Build the 45-element feature vector for one site.
+ * Build the full feature vector for one site: 92 numbers in three blocks.
+ *
+ *     1-45   this atom, its two-bond neighbourhood, and whole-molecule descriptors
+ *     46-48  aromaticity (`pkaAromaticity.ts`)
+ *     49-92  local environment, measured outward from the site
  *
  * The order is the order the model was trained on and must not change; `PKA_MODEL_FEATURE_NAMES`
- * carries the names, and a test asserts the two stay the same length.
+ * carries the names and a test asserts the two stay the same length.
  */
 export function siteFeatures(graph: PkaMolecularGraph, atomIndex: number, ring: boolean[]): number[] {
+  const features = baseSiteFeatures(graph, atomIndex, ring);
+  const context = siteContext(graph);
+  features.push(
+    context.aromatic[atomIndex] ? 1 : 0,
+    graph.bonds.reduce((count, bond) => {
+      const [a, b] = bond.atoms;
+      if (a !== atomIndex && b !== atomIndex) return count;
+      return count + (context.aromatic[a === atomIndex ? b : a] ? 1 : 0);
+    }, 0),
+    // Pyrrole-type: aromatic, carries a hydrogen, no double bond of its own. Separates imidazole's
+    // N-H (14.4) from tetrazole's (4.9), which nothing else in the vector can.
+    context.pyrroleType[atomIndex] ? 1 : 0
+  );
+  return [...features, ...localEnvironmentFeatures(graph, context, atomIndex)];
+}
+
+/** The original 45: this atom, its neighbourhood, and the molecule it sits in. */
+function baseSiteFeatures(graph: PkaMolecularGraph, atomIndex: number, ring: boolean[]): number[] {
   const atom = graph.atoms[atomIndex];
   if (!atom) throw new Error(`No atom at index ${atomIndex}`);
 

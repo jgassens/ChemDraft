@@ -11,7 +11,7 @@ RDLogger.DisableLog("rdApp.*")
 
 # Substituent -> (sigma_meta, sigma_para), keyed by the shell signature below.
 # Values: Hansch, Leo & Taft, Chem. Rev. 91 (1991) 165-195.
-_t = json.load(open(__file__.rsplit("/",1)[0] + "/sigma_table.json"))
+_t = json.load(open(__file__.rsplit("/", 1)[0] + "/hammett-sigma.json"))
 SIGMA = {k: (v[0], v[1]) for k, v in _t["sigma"].items()}
 SIGMA_PARA_MINUS = {k: v[0] for k, v in _t["sigmaParaMinus"].items()}
 NAMES = {k: v[2] for k, v in _t["sigma"].items()}

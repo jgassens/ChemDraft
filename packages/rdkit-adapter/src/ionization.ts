@@ -25,7 +25,7 @@
  * so a number here would be wrong by up to 20 log units with a confident label on it.
  *
  * A pKa value belongs to a method trained on measured values per site, so that is what the values come
- * from: `pkaModel.ts`, MAE 1.62 over Murcko-scaffold-held-out folds, with a per-site interval taken
+ * from: `pkaModel.ts`, MAE 1.21 over Murcko-scaffold-held-out folds, with a per-site interval taken
  * from how much its trees disagreed rather than one global error figure stamped on every row.
  *
  * **A second opinion, where one is available.** The obvious candidate was the table, and measuring it
@@ -39,19 +39,18 @@
  *
  * | | MAE (log units) |
  * |---|---|
- * | the model alone | 0.66 |
+ * | the model alone | 0.42 |
  * | the relationship alone | 0.16 |
- * | their plain average | 0.36 |
- * | weighted by measured accuracy | 0.17 |
+ * | their plain average | 0.23 |
+ * | weighted by measured accuracy | 0.16 |
  *
- * The third row is the one that shaped the code: averaging is the obvious rule and it is twice as bad
- * as the better method alone, so `combineSiteEstimates` weights by each method's own measured error.
+ * The third row is the one that shaped the code: averaging is the obvious rule and it is worse than the
+ * better method alone, so `combineSiteEstimates` weights by each method's own measured error.
  *
- * The fourth row does NOT beat the relationship on its own, and after the fold grouping was corrected
- * it no longer claims to — 0.17 against 0.16 on 85 sites, a gap well inside the noise. What the pair
- * buys is the INTERVAL. Their disagreement tracks actual error at r = 0.93, where the forest's own
- * tree variance manages 0.41, and the resulting interval is 3.4x tighter than the model's while
- * covering 89% of the real error.
+ * The fourth row is level with the relationship on its own, not better — 0.158 against 0.158 on 85
+ * sites. What the pair buys is the INTERVAL. Their disagreement tracks actual error at r = 0.88, where
+ * the forest's own tree variance manages 0.52, and the resulting interval is 6.3x tighter than the
+ * model's while covering 92% of the real error.
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *

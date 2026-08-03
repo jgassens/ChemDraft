@@ -1,14 +1,28 @@
 """Feature extraction restricted to what the TypeScript app can reproduce EXACTLY.
 
 RDKit MinimalLib's `get_json()` is Kekule-ised and carries no per-atom aromaticity flag and no ring
-membership. Ring membership is recoverable in TS by pruning degree-1 atoms until none remain; atom
-aromaticity is not. So aromaticity features are dropped rather than approximated — a feature the two
-sides compute differently is worse than one neither has, because the model would be fed a number that
-means something else at inference time than it did in training.
+membership. Anything the two sides would compute differently is worse than a feature neither has: the
+model would be fed a number that means something else at inference than it did in training, and answer
+confidently anyway.
+
+Ring membership is recoverable by pruning degree-1 atoms. Aromaticity was originally dropped for this
+reason, and is now BACK -- not RDKit's flag, which cannot be reproduced, but a Huckel count computed
+from Kekule bond orders in `aromaticity.py`, which can. `local_environment.py` adds context measured
+outward from the site rather than over the whole molecule.
+
+The three blocks, in order, are the 92 features the model is trained on:
+
+    1-45   site and molecule (below)
+    46-48  aromaticity      (aromaticity.py)
+    49-92  local environment (local_environment.py)
 """
 import json, sys
 import numpy as np
 from rdkit import Chem, RDLogger
+
+import aromaticity
+import local_environment
+from rdkit.Chem.Scaffolds import MurckoScaffold
 
 RDLogger.DisableLog("rdApp.*")
 ELEMENTS = ["N", "O", "C", "S", "P", "F", "Cl", "Br", "I"]
@@ -71,11 +85,43 @@ def site_features(mol, idx, ring):
     return f
 
 
-FEATURE_NAMES = ([f"elem_{e}" for e in ELEMENTS]
+def scaffold_of(mol):
+    """Bemis-Murcko scaffold, or the molecule itself when it has no ring system.
+
+    The fold grouping. Falling back to the whole molecule is the conservative direction: an acyclic
+    compound becomes its own group rather than joining one "no scaffold" bucket that would put
+    unrelated chain acids in the same fold.
+    """
+    try:
+        scaffold = MurckoScaffold.MurckoScaffoldSmiles(mol=mol)
+    except Exception:
+        scaffold = ""
+    return scaffold if scaffold else Chem.MolToSmiles(mol)
+
+
+def full_features(mol, idx):
+    """Every feature the model uses, in the order it was trained on."""
+    f = list(site_features(mol, idx, in_ring_by_pruning(mol)))
+    aromatic, pyrrole = aromaticity.site_flags(mol)
+    neighbours = [n.GetIdx() for n in mol.GetAtomWithIdx(idx).GetNeighbors()]
+    f += [1.0 if aromatic[idx] else 0.0,
+          float(sum(1 for j in neighbours if aromatic[j])),
+          # Pyrrole-type: aromatic, carries a hydrogen, no double bond of its own. Separates
+          # imidazole's N-H (14.4) from tetrazole's (4.9), which the rest of the vector cannot.
+          1.0 if pyrrole[idx] else 0.0]
+    atoms, bonds, adj = aromaticity.kekule_graph(mol)
+    return f + local_environment.local_features(atoms, bonds, adj, aromatic, idx)
+
+
+BASE_FEATURE_NAMES = ([f"elem_{e}" for e in ELEMENTS]
     + ["charge", "in_ring", "n_hydrogens", "degree", "valence"]
     + [f"nbr1_{e}" for e in ELEMENTS] + [f"nbr2_{e}" for e in ELEMENTS]
     + ["nbr_charged", "nbr_in_ring", "double_bonds", "triple_bonds"]
     + ["mw_100", "tpsa_100", "clogp", "hbd", "hba", "rings", "aromatic_rings", "net_charge", "heavy_10"])
+
+FEATURE_NAMES = (BASE_FEATURE_NAMES
+    + ["is_aromatic", "nbr_aromatic", "pyrrole_type"]
+    + local_environment.FEATURE_NAMES)
 
 
 def kekulized(smiles):
@@ -104,9 +150,9 @@ def build(path):
         if mol is None or row["acidAtomIdx"] >= mol.GetNumAtoms():
             continue
         ring = in_ring_by_pruning(mol)
-        X.append(site_features(mol, row["acidAtomIdx"], ring))
+        X.append(full_features(mol, row["acidAtomIdx"]))
         y.append(row["pKa"])
-        groups.append(Chem.MolToSmiles(mol))
+        groups.append(scaffold_of(mol))
         keep.append(row)
     return np.array(X, float), np.array(y, float), groups, keep
 

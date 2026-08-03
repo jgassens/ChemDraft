@@ -20,6 +20,7 @@ import {
   siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
+import { siteContext } from "./pkaAromaticity";
 import calibrationPairs from "../vendor/pka-model/calibration-pairs.json";
 import fixture from "../vendor/pka-model/parity-fixture.json";
 import { installRealRdkitModuleLoader } from "./testing";
@@ -191,9 +192,31 @@ describe("ring membership", () => {
 });
 
 describe("the model itself", () => {
+  it("computes aromaticity itself rather than reading a flag it cannot reproduce", async () => {
+    // The feature was originally absent because MinimalLib's JSON is Kekulé-ised and carries no
+    // aromaticity. It is back, computed from bond orders — and counted PER ATOM, because counting
+    // double bonds inside a ring is not Kekulé-invariant: naphthalene's two rings get three and two
+    // internal doubles depending on the assignment, and the two engines do not always agree on it.
+    // The parity fixture caught exactly that.
+    const naphthalene = await graphFor("c1ccc2ccccc2c1");
+    expect(siteContext(naphthalene).aromatic.every(Boolean)).toBe(true);
+
+    const quinone = await graphFor("O=C1C=CC(=O)C=C1");
+    expect(siteContext(quinone).aromatic.some(Boolean)).toBe(false);
+
+    // Pyrrole-type: imidazole's N-H has it, piperidine's N-H does not.
+    const imidazole = await graphFor("c1c[nH]cn1");
+    expect(siteContext(imidazole).pyrroleType.some(Boolean)).toBe(true);
+    const piperidine = await graphFor("C1CCNCC1");
+    expect(siteContext(piperidine).pyrroleType.some(Boolean)).toBe(false);
+  });
+
   it("carries the training provenance its results will cite", () => {
     expect(PKA_MODEL_TRAINING.samples).toBe(3031);
-    expect(PKA_MODEL_FEATURE_NAMES).toHaveLength(45);
+    // 45 site/molecule + 3 aromaticity + 44 local environment.
+    expect(PKA_MODEL_FEATURE_NAMES).toHaveLength(92);
+    expect(PKA_MODEL_FEATURE_NAMES).toContain("pyrrole_type");
+    expect(PKA_MODEL_FEATURE_NAMES).toContain("dist_nearest_polar");
 
     // Against the baseline rather than a fixed threshold. A bare "MAE below 1.5" says nothing about
     // whether the model learned anything, and it was silently satisfied for months by a figure
@@ -212,6 +235,6 @@ describe("the model itself", () => {
 
   it("refuses a feature vector of the wrong length rather than predicting from it", () => {
     // A silent shape mismatch is how a reordered feature list becomes a confident wrong pKa.
-    expect(() => predictSitePka([1, 2, 3])).toThrow(/expects 45 features/);
+    expect(() => predictSitePka([1, 2, 3])).toThrow(/expects 92 features/);
   });
 });

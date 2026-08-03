@@ -42,41 +42,35 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import GroupKFold
 
-from parity_features import FEATURE_NAMES, in_ring_by_pruning, site_features
+from parity_features import kekulized, FEATURE_NAMES, full_features, scaffold_of
 
 RDLogger.DisableLog("rdApp.*")
 
-FOREST = dict(n_estimators=120, max_depth=12, min_samples_leaf=3, random_state=0, n_jobs=-1)
-
-
-def scaffold_of(mol):
-    """The molecule's Bemis-Murcko scaffold, or the molecule itself when it has no ring system.
-
-    Falling back to the whole molecule is the conservative direction: an acyclic compound becomes its
-    own group rather than joining one big "no scaffold" bucket that would put unrelated chain acids in
-    the same fold.
-    """
-    try:
-        scaffold = MurckoScaffold.MurckoScaffoldSmiles(mol=mol)
-    except Exception:
-        scaffold = ""
-    return scaffold if scaffold else Chem.MolToSmiles(mol)
+# Swept against Murcko-grouped folds after the feature set grew from 45 to 92. The old shape was
+# tuned for the smaller vector and left ~0.14 MAE on the table; `max_features` below 1.0 matters most,
+# since with 92 correlated features every tree otherwise splits on the same handful.
+FOREST = dict(n_estimators=60, max_depth=20, min_samples_leaf=1, max_features=0.4,
+              random_state=0, n_jobs=-1)
 
 
 def build(path):
     rows = json.load(open(path))
-    X, y, groups = [], [], []
+    X, y, groups, kept = [], [], [], []
     for row in rows:
-        mol = Chem.MolFromSmiles(row["acid"])
+        # kekulized(), not MolFromSmiles: RDKit reports an aromatic bond as order 1.5 while
+        # MinimalLib's get_json() gives the Kekule 2, so parsing plainly here would train
+        # `double_bonds` and `valence` to mean something the TypeScript side never computes.
+        mol = kekulized(row["acid"])
         if mol is None or row["acidAtomIdx"] >= mol.GetNumAtoms():
             continue
         try:
-            X.append(site_features(mol, row["acidAtomIdx"], in_ring_by_pruning(mol)))
+            X.append(full_features(mol, row["acidAtomIdx"]))
         except Exception:
             continue
         y.append(row["pKa"])
         groups.append(scaffold_of(mol))
-    return np.array(X, dtype=float), np.array(y, dtype=float), groups
+        kept.append(row)
+    return np.array(X, dtype=float), np.array(y, dtype=float), groups, kept
 
 
 def cross_validate(X, y, groups):
@@ -102,8 +96,44 @@ def pack(forest):
     return packed
 
 
+def walk(tree, features):
+    """Evaluate one PACKED tree, exactly as the TypeScript does.
+
+    Deliberately not `forest.predict`. The packed export rounds thresholds to 6 decimals, and a feature
+    sitting on one of those boundaries can take the other branch — a 0.005 prediction difference that
+    the parity test correctly refused to accept. Pinning scikit-learn's in-memory answer would test
+    something we do not ship; this tests the artifact.
+    """
+    node = 0
+    while tree["f"][node] >= 0:
+        node = tree["l"][node] if features[tree["f"][node]] <= tree["t"][node] else tree["r"][node]
+    return tree["v"][node]
+
+
+def emit_fixture(X, keep, out_path, count=10):
+    """Pin a handful of real sites: features, prediction, and tree disagreement, from the packed trees.
+
+    This is the test the whole port rests on. A feature computed even slightly differently in TypeScript
+    feeds the forest a number that means something else and it answers confidently anyway.
+    """
+    forest = RandomForestRegressor(**FOREST).fit(X, np.array([r["pKa"] for r in keep], float))
+    packed = pack(forest)
+    step = max(1, len(keep) // count)
+    fixture = []
+    for i in range(0, len(keep), step):
+        if len(fixture) >= count:
+            break
+        votes = np.array([walk(t, X[i]) for t in packed])
+        fixture.append({"acid": keep[i]["acid"], "atomIdx": keep[i]["acidAtomIdx"],
+                        "features": [round(float(v), 6) for v in X[i]],
+                        "prediction": round(float(votes.mean()), 5),
+                        "treeDisagreement": round(float(votes.std()), 5)})
+    json.dump(fixture, open(out_path, "w"), indent=1)
+    return fixture
+
+
 if __name__ == "__main__":
-    X, y, groups = build(sys.argv[1])
+    X, y, groups, rows_kept = build(sys.argv[1])
     assert X.shape[1] == len(FEATURE_NAMES), "feature/name mismatch"
     mae, rmse = cross_validate(X, y, groups)
     baseline = float(np.abs(y - y.mean()).mean())
@@ -117,7 +147,7 @@ if __name__ == "__main__":
         "training": {
             "samples": int(X.shape[0]), "cvMae": round(mae, 4), "cvRmse": round(rmse, 4),
             "trees": FOREST["n_estimators"], "maxDepth": FOREST["max_depth"],
-            "minSamplesLeaf": FOREST["min_samples_leaf"],
+            "minSamplesLeaf": FOREST["min_samples_leaf"], "maxFeatures": FOREST["max_features"],
             "grouping": "Bemis-Murcko scaffold", "groups": len(set(groups)),
             "baselinePredictTheMean": round(baseline, 4),
         },
@@ -126,5 +156,6 @@ if __name__ == "__main__":
     # rather than recomputing them and risking a different answer.
     np.save(f"{sys.argv[2]}/pka.X.npy", X)
     np.save(f"{sys.argv[2]}/pka.y.npy", y)
-    json.dump({"featureNames": FEATURE_NAMES, "groups": groups},
+    json.dump({"featureNames": FEATURE_NAMES, "groups": groups, "rows": rows_kept},
               open(f"{sys.argv[2]}/pka.meta.json", "w"))
+    print(f"fixture entries {len(emit_fixture(X, rows_kept, f'{sys.argv[2]}/parity-fixture.json'))}")
