@@ -396,10 +396,10 @@ labels are downloadable, so a model was trained here from them directly. What sh
 | | |
 |---|---|
 | site location | Dimorphite-DL's 41-entry SMARTS table, which contributes **no pKa value** |
-| primary estimate | a random forest trained here on 3,031 per-site labels, **MAE 1.18** scaffold-grouped |
+| primary estimate | a random forest trained here on 3,031 per-site labels, **MAE 1.62** (Murcko-scaffold folds) |
 | second estimate | a Hammett LFER from the physical-organic literature, **MAE 0.158** on the 85 sites it reaches |
-| combined, where both fire | **MAE 0.146**, interval 2.1x tighter than the model alone at 91% coverage |
-| per-site confidence | forest tree disagreement (r = 0.49) or, better, cross-method disagreement (r = 0.84) |
+| combined, where both fire | **MAE 0.169** — no better than the relationship alone, but the interval is 3.4x tighter than the model's at 89% coverage |
+| per-site confidence | forest tree disagreement (r = 0.41) or, better, cross-method disagreement (r = 0.93) |
 | metals | declined outright, on the measurement below |
 
 Provenance is clean by construction: the supervised signal is measured pKa throughout, so no value
@@ -408,6 +408,12 @@ rejections are the substance of the decision.
 
 Three findings changed the code after it was written, and each is recorded where it applies:
 
+- **A cross-validation split can flatter a model by 0.4 log units.** The published figure was 1.18 for
+  months. Folds were grouped by canonical SMILES — which reads like a scaffold split and separates only
+  identical molecules, 3,030 groups for 3,031 rows — so every congeneric series straddled the folds.
+  Bemis-Murcko grouping gives 1,167 groups and MAE 1.62; external data the model has never seen
+  (Novartis + SAMPL, n=38) gives 1.24. The training script was not vendored, which is why nobody could
+  read the grouping; it is now, with the correction written into its header.
 - **The site table cannot value what it locates.** Scored against 1,750 labelled sites, its per-type
   averages give MAE 2.77 where exactly one type matches — worse than the 2.33 of predicting the dataset
   mean. The table was already implemented and reporting numbers when this was measured; the numbers

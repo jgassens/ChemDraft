@@ -1,5 +1,13 @@
 """Measure what the forest's tree disagreement is actually worth, out of fold.
 
+GROUPING IS THE WHOLE MEASUREMENT. Folds are grouped by BEMIS-MURCKO SCAFFOLD, not by canonical
+SMILES. Grouping on canonical SMILES looks like a scaffold split and is not one: it separates
+identical molecules and nothing else, giving 3,030 groups for 3,031 rows, so a congeneric series is
+split across folds and every held-out row keeps near-twins in training. That reported MAE 1.18 for a
+model that scores 1.62 on real scaffold folds and 1.24 against external data. Murcko gives 1,167
+groups. Do not weaken this back.
+
+
 Produces `calibration.json` (the four figures the app displays) and `calibration-pairs.json` (the
 3,031 pairs they were computed from, which a test recomputes the summary from).
 
@@ -12,6 +20,7 @@ look far better than it is.
 import json, sys
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
+from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.model_selection import GroupKFold
 
 SPREAD_MULTIPLIER = 1.5
@@ -20,7 +29,7 @@ SPREAD_MULTIPLIER = 1.5
 def main(prefix, out):
     X = np.load(f"{prefix}.X.npy")
     y = np.load(f"{prefix}.y.npy")
-    groups = json.load(open(f"{prefix}.meta.json"))["groups"]
+    groups = json.load(open(f"{prefix}.meta.json"))["groups"]  # Murcko scaffolds; see the header
 
     sd = np.zeros(len(y))
     pred = np.zeros(len(y))

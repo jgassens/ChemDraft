@@ -25,8 +25,8 @@
  * so a number here would be wrong by up to 20 log units with a confident label on it.
  *
  * A pKa value belongs to a method trained on measured values per site, so that is what the values come
- * from: `pkaModel.ts`, MAE 1.17 over held-out scaffolds, with a per-site interval taken from how much
- * its trees disagreed rather than one global error figure stamped on every row.
+ * from: `pkaModel.ts`, MAE 1.62 over Murcko-scaffold-held-out folds, with a per-site interval taken
+ * from how much its trees disagreed rather than one global error figure stamped on every row.
  *
  * **A second opinion, where one is available.** The obvious candidate was the table, and measuring it
  * is what disqualified it: agreement with a method that scores worse than a constant is confidence in
@@ -39,17 +39,19 @@
  *
  * | | MAE (log units) |
  * |---|---|
- * | the model alone | 0.43 |
+ * | the model alone | 0.66 |
  * | the relationship alone | 0.16 |
- * | their plain average | 0.23 |
- * | weighted by measured accuracy | **0.15** |
+ * | their plain average | 0.36 |
+ * | weighted by measured accuracy | 0.17 |
  *
- * The third row is the one that shaped the code. Averaging is the obvious rule and it makes the answer
- * *worse than the better method alone*, so `combineSiteEstimates` weights by each method's own measured
- * error instead. Their disagreement is also the best confidence signal available — r = 0.84 against
- * actual error, where the forest's internal tree variance manages 0.42 on the same sites — and the
- * resulting interval is 2.1x tighter than the model's own while covering more of the real error
- * (91% against 81%).
+ * The third row is the one that shaped the code: averaging is the obvious rule and it is twice as bad
+ * as the better method alone, so `combineSiteEstimates` weights by each method's own measured error.
+ *
+ * The fourth row does NOT beat the relationship on its own, and after the fold grouping was corrected
+ * it no longer claims to — 0.17 against 0.16 on 85 sites, a gap well inside the noise. What the pair
+ * buys is the INTERVAL. Their disagreement tracks actual error at r = 0.93, where the forest's own
+ * tree variance manages 0.41, and the resulting interval is 3.4x tighter than the model's while
+ * covering 89% of the real error.
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
@@ -724,10 +726,14 @@ export function ionizationContract(): MethodContract {
         "withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
         "sulfonamides and thioamides keep their acidic values too: their N-H acidity IS " +
         "aqueous-measurable and IS in the data.",
-      `trained on ${PKA_MODEL_TRAINING.samples} sites from the open Dwar-iBond experimental set, ` +
-        `cross-validated by scaffold at a mean absolute error of ${PKA_MODEL_TRAINING.cvMae.toFixed(2)} ` +
-        "log units against 2.94 for predicting the dataset mean. That figure describes the method " +
-        "overall; the interval printed beside each value is the one that describes that site.",
+      `trained on ${PKA_MODEL_TRAINING.samples} sites from the open Dwar-iBond experimental set. ` +
+        `Cross-validated with folds held out by ${PKA_MODEL_TRAINING.grouping} ` +
+        `(${PKA_MODEL_TRAINING.groups} groups), MEAN ABSOLUTE ERROR ` +
+        `${PKA_MODEL_TRAINING.cvMae.toFixed(2)} log units, against ` +
+        `${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)} for predicting the dataset mean. ` +
+        "Against external data it has never seen (Novartis + SAMPL, 38 single-site rows) it scores " +
+        "1.24. That figure describes the method overall; the interval printed beside each value is " +
+        "the one that describes that site.",
       "aqueous, room temperature, and drug-like organic chemistry. The training set contains no metals " +
         "at all, which is why a metal-adjacent site is reported without a value.",
       "THE SITE TABLE ITSELF REPORTS NO pKa, by design and on evidence: " +
@@ -757,11 +763,12 @@ export function ionizationContract(): MethodContract {
         `substituent and an unfused ring — ${CONSENSUS_CALIBRATION.samples} of the labelled sites — ` +
         `and declines everywhere else with a reason.`,
       `where both methods fire the value is WEIGHTED BY THEIR MEASURED ACCURACY, not averaged. ` +
-        `Averaging is the obvious rule and it is worse than the better method alone ` +
+        `Averaging is the obvious rule and it is more than twice as bad as the better method alone ` +
         `(${CONSENSUS_CALIBRATION.meanMae.toFixed(2)} against ` +
         `${CONSENSUS_CALIBRATION.hammettMae.toFixed(2)}); weighting scores ` +
         `${CONSENSUS_CALIBRATION.consensusMae.toFixed(2)}, where the model alone scores ` +
-        `${CONSENSUS_CALIBRATION.forestMaeHere.toFixed(2)} on those same sites.`,
+        `${CONSENSUS_CALIBRATION.forestMaeHere.toFixed(2)} on those same sites. The pair does NOT ` +
+        "beat the relationship on its own here; what it buys is the interval below.",
       `where two methods agree the interval is their DISAGREEMENT, floored by the tighter method's own. ` +
         `Cross-method disagreement predicts error better than anything internal to either ` +
         `(r = ${CONSENSUS_CALIBRATION.disagreementCorrelation.toFixed(2)}, against ` +
@@ -808,10 +815,11 @@ export function ionizationContract(): MethodContract {
         value: PKA_MODEL_TRAINING.cvMae,
         unit: "log10-unit",
         basis:
-          `Scaffold-grouped 5-fold cross-validation over ${PKA_MODEL_TRAINING.samples} sites from the ` +
-          "Dwar-iBond experimental set. Grouped by canonical skeleton so no scaffold appears in both " +
-          "train and test; an ungrouped split scores better and means less. Predicting the dataset " +
-          "mean scores 2.94 for comparison.",
+          `5-fold cross-validation over ${PKA_MODEL_TRAINING.samples} sites from the Dwar-iBond ` +
+          `experimental set, folds held out by ${PKA_MODEL_TRAINING.grouping}. An earlier version of ` +
+          "this figure said 1.18; it was grouped by canonical SMILES, which separates identical " +
+          "molecules and nothing else and so left every congeneric series straddling the folds. " +
+          `Predicting the dataset mean scores ${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)}.`,
         citationId: "dwar-ibond"
       },
       {

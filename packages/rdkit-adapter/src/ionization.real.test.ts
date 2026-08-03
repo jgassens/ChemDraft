@@ -280,6 +280,11 @@ describe("the contract", () => {
     expect(conventions).toMatch(/EVERY VALUE SAYS WHICH DIRECTION IT DESCRIBES/);
     expect(conventions).toMatch(/THE SITE TABLE ITSELF REPORTS NO pKa/);
     expect(contract.accuracyClaims[0]!.metric).toBe("mae");
+    // The claim must name how folds were held out. Without that the number is unfalsifiable, which is
+    // exactly how "1.18" survived: it was measured on folds grouped by canonical SMILES, a split that
+    // separates identical molecules and nothing else.
+    expect(contract.accuracyClaims[0]!.basis).toMatch(/Murcko/);
+    expect(conventions).toMatch(/Bemis-Murcko scaffold/);
     expect(contract.datasets.some((entry) => entry.id === "dwar-ibond")).toBe(true);
     expect(conventions).toMatch(/aqueous only/i);
     // The one most likely to mislead: a missing site is not evidence of absence.

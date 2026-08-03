@@ -170,7 +170,7 @@ describe("the calibration behind the interval", () => {
   it("is measured out of fold, and says so", () => {
     // In-fold the forest agrees with itself and every interval would look excellent.
     expect(PKA_MODEL_CALIBRATION.measurement).toMatch(/out-of-fold/);
-    expect(PKA_MODEL_CALIBRATION.measurement).toMatch(/scaffold-grouped/);
+    expect(PKA_MODEL_CALIBRATION.measurement).toMatch(/Murcko-scaffold-grouped/);
   });
 });
 
@@ -193,8 +193,21 @@ describe("ring membership", () => {
 describe("the model itself", () => {
   it("carries the training provenance its results will cite", () => {
     expect(PKA_MODEL_TRAINING.samples).toBe(3031);
-    expect(PKA_MODEL_TRAINING.cvMae).toBeLessThan(1.5);
     expect(PKA_MODEL_FEATURE_NAMES).toHaveLength(45);
+
+    // Against the baseline rather than a fixed threshold. A bare "MAE below 1.5" says nothing about
+    // whether the model learned anything, and it was silently satisfied for months by a figure
+    // measured on folds that could not hold a scaffold out.
+    expect(PKA_MODEL_TRAINING.cvMae).toBeLessThan(PKA_MODEL_TRAINING.baselinePredictTheMean * 0.7);
+  });
+
+  it("records HOW its folds were held out, not just the number they produced", () => {
+    // The correction this exists to prevent repeating. Grouping by canonical SMILES gave 3,030 groups
+    // for 3,031 rows — a split that separates identical molecules and nothing else — and reported
+    // MAE 1.18 for a model that scores 1.62 on real scaffold folds.
+    expect(PKA_MODEL_TRAINING.grouping).toMatch(/Murcko/);
+    expect(PKA_MODEL_TRAINING.groups).toBeLessThan(PKA_MODEL_TRAINING.samples / 2);
+    expect(PKA_MODEL_CALIBRATION.grouping).toBe(PKA_MODEL_TRAINING.grouping);
   });
 
   it("refuses a feature vector of the wrong length rather than predicting from it", () => {

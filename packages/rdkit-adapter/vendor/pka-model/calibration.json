@@ -1,22 +1,25 @@
 {
- "measurement": "scaffold-grouped 5-fold cross-validation; every pair is out-of-fold",
+ "measurement": "Murcko-scaffold-grouped 5-fold cross-validation; every pair is out-of-fold",
+ "grouping": "Bemis-Murcko scaffold",
+ "groups": 1167,
  "samples": 3031,
- "correlation": 0.4896,
+ "correlation": 0.4076,
  "quartileMae": [
-  0.493,
-  0.7956,
-  1.2507,
-  2.1966
+  0.799,
+  1.302,
+  1.7797,
+  2.5963
  ],
  "coverage": {
-  "1.0": 0.6354,
-  "1.5": 0.7964,
-  "2.0": 0.8868
+  "1.0": 0.5962,
+  "1.5": 0.774,
+  "2.0": 0.8756
  },
  "spreadMultiplier": 1.5,
  "intervalQuartiles": [
-  0.996,
-  1.724,
-  2.647
- ]
+  1.289,
+  2.329,
+  3.402
+ ],
+ "baselinePredictTheMean": 2.9443
 }

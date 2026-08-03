@@ -10,9 +10,16 @@
  * §8's requirement is therefore satisfiable honestly, and results carry
  * `basis: "experimentally-trained-model"`.
  *
- * **Accuracy: MAE 1.17 log units** under scaffold-grouped 5-fold cross-validation, against 2.94 for
- * predicting the dataset mean. Grouped by canonical skeleton so a scaffold cannot appear in both
- * train and test — an ungrouped split would score better and mean less.
+ * **Accuracy: MAE 1.62 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation,
+ * against 2.94 for predicting the dataset mean.
+ *
+ * That figure was 1.18 until the grouping was checked, and the correction is worth stating because the
+ * mistake is easy to repeat. Folds were grouped by CANONICAL SMILES, which reads like a scaffold split
+ * and is not one — it separates identical molecules and nothing else, 3,030 groups for 3,031 rows. So
+ * every congeneric series in Dwar-iBond was split across folds and each held-out row kept near-twins in
+ * training. Murcko scaffolds give 1,167 groups and MAE 1.62; external data the model has never seen
+ * (Novartis + SAMPL, n=38) gives 1.24, between the two. `vendor/pka-model/pka_train.py` now carries the
+ * grouping, and it is vendored precisely so this cannot go unread again.
  *
  * **Why a random forest with JSON weights rather than something stronger.** The product is a
  * TypeScript desktop app, so inference must run in-process. A forest evaluates in a few lines here,
@@ -45,7 +52,13 @@ interface PackedTree {
 interface PackedForest {
   featureNames: string[];
   trees: PackedTree[];
-  training: { samples: number; cvMae: number; trees: number; maxDepth: number; minSamplesLeaf: number };
+  training: {
+    samples: number; cvMae: number; cvRmse: number;
+    trees: number; maxDepth: number; minSamplesLeaf: number;
+    /** How folds were held out. The figure above means nothing without it. */
+    grouping: string; groups: number;
+    baselinePredictTheMean: number;
+  };
 }
 
 const FOREST = forestJson as PackedForest;
@@ -190,6 +203,9 @@ export const PKA_MODEL_CALIBRATION = calibrationJson as {
   correlation: number;
   /** MAE within each quartile of disagreement, lowest first. */
   quartileMae: number[];
+  /** How folds were held out. Every figure here is meaningless without it. */
+  grouping: string;
+  groups: number;
   /** Fraction of held-out errors inside +/- k*sd, keyed by k. */
   coverage: Record<string, number>;
   spreadMultiplier: number;
