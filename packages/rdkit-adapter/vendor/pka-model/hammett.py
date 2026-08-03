@@ -198,8 +198,16 @@ def sum_over_ring(g, adj, series, ipso, ring, ipso_group):
         for b in branches:
             key = shell_key(g, adj, ring, ipso_group, b)
             if key not in SIGMA: return None, f"no sigma constant for {key}"
-            # sigma-minus only where the product anion conjugates into the substituent: the phenolate.
-            s = (SIGMA_PARA_MINUS[key] if dist == 3 and series == "phenol" and key in SIGMA_PARA_MINUS
+            # sigma-minus where the PRODUCT of the ionisation conjugates into a para acceptor. Two
+            # series qualify and for the same reason: a phenolate's negative charge delocalises, and a
+            # neutral aniline's nitrogen lone pair does. Both stabilise the product and enhance the
+            # substituent effect beyond plain sigma -- 4-nitroaniline reads 2.35 without this against a
+            # measured 1.00, and 0.93 with it.
+            #
+            # Pyridinium is deliberately NOT included. Its product is neutral pyridine, whose lone pair
+            # lies in the sp2 plane orthogonal to the ring pi system, so there is nothing to conjugate.
+            s = (SIGMA_PARA_MINUS[key]
+                 if dist == 3 and series in ("phenol", "anilinium") and key in SIGMA_PARA_MINUS
                  else SIGMA[key][0 if dist == 2 else 1])
             total += s; detail.append((("meta" if dist == 2 else "para"), key, s))
     pka0, rho, transition = SERIES[series]

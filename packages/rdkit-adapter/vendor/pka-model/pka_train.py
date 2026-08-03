@@ -46,10 +46,14 @@ from parity_features import kekulized, FEATURE_NAMES, full_features, scaffold_of
 
 RDLogger.DisableLog("rdApp.*")
 
-# Swept against Murcko-grouped folds after the feature set grew from 45 to 92. The old shape was
-# tuned for the smaller vector and left ~0.14 MAE on the table; `max_features` below 1.0 matters most,
-# since with 92 correlated features every tree otherwise splits on the same handful.
-FOREST = dict(n_estimators=60, max_depth=20, min_samples_leaf=1, max_features=0.4,
+# Swept against Murcko-grouped folds. `max_features` below 1.0 matters most: with 92 correlated
+# features every tree otherwise splits on the same handful.
+#
+# `min_samples_leaf` is a SIZE decision, not an accuracy one. Fully grown trees over 8,317 labels
+# serialise to 11.3 MB for MAE 1.163; a leaf of 3 gives 4.2 MB for 1.193. The app already carries 7.2 MB
+# of RDKit WASM, so 2.5% of error is not worth doubling the download -- and the larger label set has
+# already bought more than that back on external data.
+FOREST = dict(n_estimators=60, max_depth=20, min_samples_leaf=3, max_features=0.4,
               random_state=0, n_jobs=-1)
 
 

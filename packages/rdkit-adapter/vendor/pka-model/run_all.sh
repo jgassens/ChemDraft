@@ -8,10 +8,12 @@
 # TypeScript against whatever Python last wrote it. Running them separately is how the forest and the
 # fixture end up minutes and one edit apart.
 #
-#   ./run_all.sh <labels.json> <uni-pka-dataset-dir>
+#   ./run_all.sh <dwar-ibond-labels.json> <qupkake-data-dir>
 #
-# Labels come from `pka_labels.py` over Dwar-iBond; the dataset directory is a Uni-pKa checkout, used
-# only for the external evaluation. Neither is vendored — see external_eval.py for why.
+# Labels come from two sources and are merged here. `pka_labels.py` extracts the Dwar-iBond set, where
+# the site is derived from the DATA by diffing an acid/base microstate pair. `qupkake_labels.py` adds
+# the QupKake experimental set, whose values are measurements but whose SITE INDEX is ChemAxon's Marvin
+# — that file explains what is checked before a row is accepted. Neither dataset is vendored.
 #
 # Regenerates, and all of these are committed:
 #   site-pka-forest.json        the model
@@ -31,14 +33,24 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python3}"
 cd "$HERE"
 
+echo "==> merging label sources"
+"$PYTHON" qupkake_labels.py "$DATASET/exp_training_data.sdf" "$LABELS" ./qupkake-labels.json
+"$PYTHON" - "$LABELS" ./qupkake-labels.json ./merged-labels.json <<'MERGE'
+import json, sys
+base = json.load(open(sys.argv[1]))
+extra = json.load(open(sys.argv[2]))
+json.dump(base + extra, open(sys.argv[3], "w"))
+print(f"   {len(base)} + {len(extra)} = {len(base) + len(extra)} labels")
+MERGE
+
 echo "==> training (also emits the feature matrix and the parity fixture)"
-"$PYTHON" pka_train.py "$LABELS" .
+"$PYTHON" pka_train.py ./merged-labels.json .
 
 echo "==> interval calibration"
 "$PYTHON" pka_calibrate.py ./pka .
 
 echo "==> consensus with the Hammett relationship"
-"$PYTHON" consensus_calibrate.py "$LABELS" . >/dev/null
+"$PYTHON" consensus_calibrate.py ./merged-labels.json . >/dev/null
 
 echo "==> external validation"
 "$PYTHON" external_eval.py "$DATASET" . >/dev/null

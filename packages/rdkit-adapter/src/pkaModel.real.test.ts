@@ -212,7 +212,7 @@ describe("the model itself", () => {
   });
 
   it("carries the training provenance its results will cite", () => {
-    expect(PKA_MODEL_TRAINING.samples).toBe(3031);
+    expect(PKA_MODEL_TRAINING.samples).toBeGreaterThan(8000);
     // 45 site/molecule + 3 aromaticity + 44 local environment.
     expect(PKA_MODEL_FEATURE_NAMES).toHaveLength(92);
     expect(PKA_MODEL_FEATURE_NAMES).toContain("pyrrole_type");

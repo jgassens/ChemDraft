@@ -2,15 +2,15 @@
  {
   "smiles": "[NH3+]c1ccc([N+](=O)[O-])c(F)c1",
   "atomIdx": 0,
-  "pKa": 1.3632,
+  "pKa": -0.0529,
   "series": "anilinium",
   "transition": "basic",
-  "sigmaSum": 1.12,
+  "sigmaSum": 1.61,
   "substituents": [
    [
     "para",
     "N+1h0d3|O+0h0d1,O-1h0d1",
-    0.78
+    1.27
    ],
    [
     "meta",
@@ -44,15 +44,15 @@
  {
   "smiles": "[NH3+]c1ccc([N+](=O)[O-])cc1",
   "atomIdx": 0,
-  "pKa": 2.3458,
+  "pKa": 0.9297,
   "series": "anilinium",
   "transition": "basic",
-  "sigmaSum": 0.78,
+  "sigmaSum": 1.27,
   "substituents": [
    [
     "para",
     "N+1h0d3|O+0h0d1,O-1h0d1",
-    0.78
+    1.27
    ]
   ],
   "observed": 1.03
@@ -60,10 +60,10 @@
  {
   "smiles": "Cc1cc([NH3+])ccc1[N+](=O)[O-]",
   "atomIdx": 4,
-  "pKa": 2.5481,
+  "pKa": 1.132,
   "series": "anilinium",
   "transition": "basic",
-  "sigmaSum": 0.71,
+  "sigmaSum": 1.2,
   "substituents": [
    [
     "meta",
@@ -73,7 +73,7 @@
    [
     "para",
     "N+1h0d3|O+0h0d1,O-1h0d1",
-    0.78
+    1.27
    ]
   ],
   "observed": 1.64
@@ -160,10 +160,10 @@
  {
   "smiles": "Cc1cc([NH3+])cc(C)c1[N+](=O)[O-]",
   "atomIdx": 4,
-  "pKa": 2.7504,
+  "pKa": 1.3343,
   "series": "anilinium",
   "transition": "basic",
-  "sigmaSum": 0.64,
+  "sigmaSum": 1.13,
   "substituents": [
    [
     "meta",
@@ -173,7 +173,7 @@
    [
     "para",
     "N+1h0d3|O+0h0d1,O-1h0d1",
-    0.78
+    1.27
    ],
    [
     "meta",
@@ -244,10 +244,10 @@
  {
   "smiles": "CC(C)(C)c1cc([NH3+])cc(C(C)(C)C)c1[N+](=O)[O-]",
   "atomIdx": 7,
-  "pKa": 2.9238,
+  "pKa": 1.5077,
   "series": "anilinium",
   "transition": "basic",
-  "sigmaSum": 0.58,
+  "sigmaSum": 1.07,
   "substituents": [
    [
     "meta",
@@ -257,7 +257,7 @@
    [
     "para",
     "N+1h0d3|O+0h0d1,O-1h0d1",
-    0.78
+    1.27
    ],
    [
     "meta",

@@ -396,10 +396,10 @@ labels are downloadable, so a model was trained here from them directly. What sh
 | | |
 |---|---|
 | site location | Dimorphite-DL's 41-entry SMARTS table, which contributes **no pKa value** |
-| primary estimate | a random forest trained here on 3,031 per-site labels, **MAE 1.21** (Murcko-scaffold folds) |
-| second estimate | a Hammett LFER from the physical-organic literature — four series — **MAE 0.195** on the 155 sites it reaches |
-| combined, where both fire | **MAE 0.209** — the relationship alone is better, but the interval is 6.5x tighter than the model's at 89% coverage |
-| per-site confidence | forest tree disagreement (r = 0.52) or, better, cross-method disagreement (r = 0.87) |
+| primary estimate | a random forest trained here on 8,317 per-site labels, **MAE 1.19** (Murcko folds), **1.24** on 398 external rows |
+| second estimate | a Hammett LFER from the physical-organic literature — four series — **MAE 0.176** on the 227 sites it reaches |
+| combined, where both fire | **MAE 0.168**, and the interval is 5.1x tighter than the model's at 92% coverage |
+| per-site confidence | forest tree disagreement (r = 0.52) or, better, cross-method disagreement (r = 0.94) |
 | metals | declined outright, on the measurement below |
 
 Provenance is clean by construction: the supervised signal is measured pKa throughout, so no value

@@ -42,8 +42,12 @@ def local_features(atoms, bonds, adj, aromatic, site):
             float(sum(1 for i in near if atoms[i]["chg"] < 0)),
             float(sum(1 for i in near if atoms[i]["h"] > 0 and atoms[i]["el"] in ("N", "O", "S"))),
             float(sum(1 for i in near if aromatic[i])),
-            float(sum(1 for i in near
-                      for j in adj[i] if j in d and d[j] <= r and bonds.get((i, j), 1) > 1)) / 2.0,
+            # Counted per ATOM, not per bond. Counting double bonds inside a radius is not
+            # Kekule-invariant: a radius that covers part of an aromatic ring sees a different number
+            # of double bonds depending on which Kekule structure the engine picked, and RDKit in
+            # Python and MinimalLib in the browser do not always pick the same one. "Carries a multiple
+            # bond" is a property of the atom and does not move.
+            float(sum(1 for i in near if any(bonds.get((i, j), 1) > 1 for j in adj[i]))),
         ]
     # How far away the rest of the molecule's polar chemistry sits. A carboxyl four bonds off is a
     # different situation from one bonded directly, and the whole-molecule descriptors cannot say which.

@@ -782,6 +782,11 @@ export function ionizationContract(): MethodContract {
         `acid ionisation and rho is 1.00 there by construction, so it largely measures that the ` +
         `compilation is self-consistent. The phenol figure ` +
         `(${CONSENSUS_CALIBRATION.hammettMaePhenol.toFixed(2)}) is the honest one.`,
+      "EVERY VALUE IS MICROSCOPIC, and for an amino acid that is not the number in the table. " +
+        "Glycine's 9.6 and histidine's 9.25 are MACROSCOPIC: measured on the zwitterion, whose " +
+        "carboxyl is already ionised. What is computed here is the amine of the species as drawn, " +
+        "carboxyl intact — a different equilibrium, and lower. Macroscopic values need " +
+        "protonation-state enumeration, which this method does not do.",
       "aqueous only, at room temperature. No value here says anything about DMSO, acetonitrile, or " +
         "any mixed solvent.",
       "sites are found by substructure match, so a genuinely ionizable group the table has no pattern " +

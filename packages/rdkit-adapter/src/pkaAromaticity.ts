@@ -183,13 +183,14 @@ export function localEnvironmentFeatures(
     const near: number[] = [];
     for (const [atom, d] of distance) if (d > 0 && d <= radius) near.push(atom);
 
-    let unsaturation = 0;
-    for (const i of near) {
-      for (const j of context.adjacency[i]!) {
-        const d = distance.get(j);
-        if (d !== undefined && d <= radius && context.bondOrder(i, j) > 1) unsaturation += 1;
-      }
-    }
+    // Counted per ATOM, not per bond. Counting double bonds inside a radius is not Kekulé-invariant:
+    // a radius covering part of an aromatic ring sees a different number of them depending on which
+    // Kekulé structure the engine chose, and the two engines do not always choose the same one — the
+    // parity fixture caught exactly that on a phthalimide. "Carries a multiple bond" is a property of
+    // the atom and does not move.
+    const unsaturated = near.filter((i) =>
+      context.adjacency[i]!.some((j) => context.bondOrder(i, j) > 1)
+    ).length;
 
     out.push(
       near.length,
@@ -199,8 +200,7 @@ export function localEnvironmentFeatures(
       near.filter((i) => graph.atoms[i]!.charge < 0).length,
       near.filter((i) => graph.atoms[i]!.hydrogens > 0 && ["N", "O", "S"].includes(graph.atoms[i]!.element)).length,
       near.filter((i) => context.aromatic[i]).length,
-      // Each qualifying bond is counted from both ends above.
-      unsaturation / 2
+      unsaturated
     );
   }
 

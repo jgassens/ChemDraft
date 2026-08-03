@@ -5,3 +5,5 @@ __pycache__/
 pka.X.npy
 pka.y.npy
 pka.meta.json
+merged-labels.json
+qupkake-labels.json

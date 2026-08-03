@@ -2,16 +2,25 @@
  * The trained per-site pKa model: features, forest evaluation, and the parity rule that keeps them
  * honest.
  *
- * **Provenance.** Trained here on 3,031 per-site labels derived from the open Dwar-iBond set
- * (DataWarrior + iBond, per-row attributed) that Uni-pKa distributes under Apache-2.0. Each label
- * comes from an acid/base microstate pair differing at exactly one atom — that atom is the site, and
- * every extracted index was verified to be the one whose proton count or charge actually changed. No
- * value here is inherited from another predictor: the supervised signal is measured pKa throughout.
- * §8's requirement is therefore satisfiable honestly, and results carry
- * `basis: "experimentally-trained-model"`.
+ * **Provenance.** Trained here on 8,317 per-site labels from two experimental sources, and the
+ * two are not equally clean.
  *
- * **Accuracy: MAE 1.21 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation,
- * against 2.94 for predicting the dataset mean.
+ * 3,031 come from the open Dwar-iBond set (DataWarrior + iBond) that Uni-pKa distributes under
+ * Apache-2.0, where each label is an acid/base microstate pair differing at exactly one atom — the
+ * site comes from the DATA, with no predictor involved.
+ *
+ * 5,286 come from the QupKake experimental set (BSD-3-Clause, originally Baltruschat & Czodrowski).
+ * Its VALUES are measurements, but its SITE INDEX is ChemAxon's Marvin, which is a predictor
+ * annotation sitting inside the label. `vendor/pka-model/qupkake_labels.py` checks it rather than
+ * trusting it and records the provenance per row. Where the two sources describe the same site they
+ * agree to 0.035 log units on average, with none differing by more than 2.
+ *
+ * No pKa VALUE is inherited from another predictor — the supervised signal is measured throughout — so
+ * results carry `basis: "experimentally-trained-model"`.
+ *
+ * **Accuracy: MAE 1.19 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation
+ * (2,944 scaffolds), against 2.36 for predicting the dataset mean. On 398 external rows
+ * it has never seen — QupKake's Novartis and literature sets — it scores 1.24 +/- 0.06.
  *
  * Read the grouping before the number. It was once 1.18 on folds grouped by CANONICAL SMILES, which
  * reads like a scaffold split and is not one — it separates identical molecules and nothing else,
@@ -19,11 +28,19 @@
  * 1.62 once the folds were fixed. `vendor/pka-model/pka_train.py` carries the grouping and is vendored
  * precisely so this cannot go unread again.
  *
- * From 1.62 to 1.21 came from three changes, each measured on its own: per-atom aromaticity (+0.02),
- * context measured outward from the site instead of over the whole molecule (+0.21), and a forest
- * shape swept for 92 features rather than 45 (+0.14). A fourth candidate — recovering labels from
- * multi-microstate rows — was measured and REJECTED: the 95 recoverable rows score MAE 1.91 against
- * 1.17 for the rest, because a macro-pKa is not a micro-pKa even when the changed atom is common.
+ * From 1.62 came four accepted changes, each measured on its own: per-atom aromaticity (+0.02),
+ * context measured outward from the site rather than over the whole molecule (+0.21), a forest shape
+ * swept for 92 features rather than 45 (+0.14), and the second label source.
+ *
+ * That last one is worth stating carefully, because internally it looks like a loss. On the ORIGINAL
+ * test rows, judged on identical folds, adding it moves MAE from 1.219 to 1.273 — the model shifts
+ * toward ChEMBL-like drug chemistry and pays for it on DataWarrior. On 398 external rows neither
+ * version has seen it moves from 1.40 to 1.27. The external figure is the one that means
+ * generalisation, so the data ships.
+ *
+ * A fifth candidate was measured and REJECTED: recovering labels from multi-microstate Dwar-iBond
+ * rows. Only 95 are unambiguous and they score MAE 1.91 against 1.17 for the rest, because a
+ * macro-pKa is not a micro-pKa even when the changed atom is common.
  *
  * **Why a random forest with JSON weights rather than something stronger.** The product is a
  * TypeScript desktop app, so inference must run in-process. A forest evaluates in a few lines here,

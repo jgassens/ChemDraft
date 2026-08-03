@@ -342,12 +342,18 @@ function sumOverRing(
       const tabulated = SIGMA.sigma[key];
       if (!tabulated) return { declined: `no sigma constant for ${key}` };
 
-      // sigma-para-minus applies only where the product anion conjugates into the substituent: the
-      // phenolate. Without it p-nitrophenol comes out at 8.21 against a measured 7.13. A benzoic
-      // acid's carboxylate is insulated from the ring by its carbonyl, and an anilinium or pyridinium
-      // is a CATION losing a proton with nothing to delocalise — so plain sigma is right for those.
+      // sigma-para-minus where the PRODUCT of the ionisation conjugates into a para acceptor. Two
+      // series qualify, for the same physics: a phenolate's negative charge delocalises into it, and a
+      // neutral aniline's nitrogen lone pair does. Both stabilise the product and enhance the
+      // substituent effect beyond plain sigma — p-nitrophenol reads 8.21 without it against 7.13, and
+      // 4-nitroaniline reads 2.35 against 1.00.
+      //
+      // A benzoic acid's carboxylate is insulated from the ring by its carbonyl. And pyridinium is
+      // deliberately excluded: its product is neutral pyridine, whose lone pair lies in the sp2 plane
+      // orthogonal to the ring pi system, with nothing to conjugate.
+      const conjugatesIntoSubstituent = series === "phenol" || series === "anilinium";
       const throughConjugated =
-        distance === 3 && series === "phenol" ? SIGMA.sigmaParaMinus[key] : undefined;
+        distance === 3 && conjugatesIntoSubstituent ? SIGMA.sigmaParaMinus[key] : undefined;
       const sigma = throughConjugated ? throughConjugated[0] : tabulated[distance === 2 ? 0 : 1];
 
       sigmaSum += sigma;
