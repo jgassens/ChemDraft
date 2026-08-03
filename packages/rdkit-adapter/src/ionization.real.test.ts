@@ -478,3 +478,59 @@ describe("acidic and basic are reported separately", () => {
     expect(piperidine.result.sites.some((entry) => entry.transition === "basic")).toBe(true);
   });
 });
+
+describe("macroscopic pKa, folded from the microscopic ladder", () => {
+  it("gets a diamine's two titration steps", async () => {
+    // Ethylenediamine measures 6.85 and 9.93. Two independent basic sites, which is the case the fold
+    // handles well — and it is a real test of the statistics, since each microscopic value is near 9
+    // and only the degeneracy separates the two macroscopic ones.
+    const { result } = await ionization("NCCN");
+    expect(result.macroscopic).toBeDefined();
+    const macro = result.macroscopic!;
+    expect(macro.pKa).toHaveLength(2);
+    expect(Math.abs(macro.pKa[0]! - 6.85)).toBeLessThan(1);
+    expect(Math.abs(macro.pKa[1]! - 9.93)).toBeLessThan(1);
+    expect(macro.zwitterionic).toBe(false);
+  });
+
+  it("gets a diacid's two steps", async () => {
+    const { result } = await ionization("OC(=O)CCC(=O)O"); // succinic acid, 4.21 and 5.64
+    const macro = result.macroscopic!;
+    expect(macro.pKa).toHaveLength(2);
+    expect(Math.abs(macro.pKa[0]! - 4.21)).toBeLessThan(1);
+    expect(Math.abs(macro.pKa[1]! - 5.64)).toBeLessThan(1);
+  });
+
+  it("collapses to the microscopic value when there is only one site", async () => {
+    // With one ionizable position the two descriptions coincide. Anything else would be a bug in the
+    // fold rather than in the chemistry.
+    const { result } = await ionization("Oc1ccccc1");
+    const macro = result.macroscopic!;
+    expect(macro.pKa).toHaveLength(1);
+    expect(macro.pKa[0]!).toBeCloseTo(result.sites[0]!.pKa!, 6);
+  });
+
+  it("flags a zwitterion rather than presenting its values as sound", async () => {
+    // Glycine is the case that motivated the whole enumeration, and the enumeration does not fix it:
+    // the arithmetic is exact but the microscopic inputs miss the coupling between an ammonium and a
+    // carboxylate. Measured over thirteen polyprotic molecules, zwitterionic ones average 2.0 log
+    // units of error against 0.3 for the rest — so the flag is the deliverable here, not the number.
+    const { result } = await ionization("NCC(=O)O");
+    const macro = result.macroscopic!;
+    expect(macro.pKa).toHaveLength(2);
+    expect(macro.zwitterionic).toBe(true);
+  });
+
+  it("says so in the report, where a reader will actually meet it", async () => {
+    const { run } = await ionization("NCC(=O)O");
+    const report = buildAnalysisReport(run);
+    const about = report.sections.find(
+      (section) => section.kind === "text" && section.title === "About these values"
+    );
+    expect(about, "the macroscopic caveat is missing from the report").toBeDefined();
+    if (about?.kind === "text") {
+      expect(about.body).toMatch(/zwitterion/);
+      expect(about.body).toMatch(/microscopic/);
+    }
+  });
+});

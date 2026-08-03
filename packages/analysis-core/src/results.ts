@@ -297,6 +297,26 @@ export interface IonizationResult extends AnalysisResultBase {
    * that colours by them is reporting a measurement; one that picks its own cutoffs is decorating.
    */
   confidenceBands?: { good: number; poor: number };
+  /**
+   * What a titration would measure, folded from the microscopic ladder (`protonation.ts`).
+   *
+   * Every other value on this result is MICROSCOPIC — one proton, one atom. Reference tables are not:
+   * glycine's 9.6 is the second titration step of the whole molecule, measured on the species whose
+   * carboxyl has already gone, and it equals no single microscopic value.
+   *
+   * `inconsistency` is the honest caveat and belongs beside the numbers. pKa is a state function, so
+   * every route to a microstate should sum to the same binding constant; the model predicts each edge
+   * independently and they do not. The largest disagreement found bounds what these values are worth.
+   */
+  macroscopic?: {
+    pKa: number[];
+    inconsistency: number;
+    microstates: number;
+    /** Both an acidic and a basic site are present, where these values are measurably poor. */
+    zwitterionic: boolean;
+  };
+  /** Why no macroscopic value was folded — too many sites, or a ladder that could not be built. */
+  macroscopicDeclined?: string;
 }
 
 /**
@@ -511,6 +531,16 @@ const IonizationResultSchema = z
       .object({ good: z.number().finite().positive(), poor: z.number().finite().positive() })
       .strict()
       .optional(),
+    macroscopic: z
+      .object({
+        pKa: z.array(z.number().finite()),
+        inconsistency: z.number().finite().nonnegative(),
+        microstates: z.number().int().positive(),
+        zwitterionic: z.boolean()
+      })
+      .strict()
+      .optional(),
+    macroscopicDeclined: z.string().min(1).optional(),
     unassessed: z
       .array(
         z

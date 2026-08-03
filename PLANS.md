@@ -557,9 +557,24 @@ than a field — the method reports acidity of the site as drawn and says so in 
 amines that is not the number most people want — solvent and temperature fixed at aqueous/room and
 declared, and provenance recorded per value.
 
-**Still open:** macroscopic pKa, the two microstates each microscopic value connects, charge-state
-enumeration limits, and tautomer handling. Those need protonation-state *enumeration*, which is
-listed under §9 Later phases and is not started.
+**Macroscopic pKa: done.** `protonation.ts` enumerates every protonation microstate, scores each edge
+with the microscopic model, and folds the ladder into what a titration measures —
+`pKa(n) = log10(Z(n)/Z(n-1))`, exact rather than fitted, verified against the analytic statistical
+factors for equivalent sites. Measured on twelve polyprotic molecules with tabulated values:
+
+| | n | mean error |
+|---|---:|---:|
+| independent sites (diacids, diamines) | 9 | **0.30** |
+| zwitterionic (both an acid and a base) | 3 | 2.06 |
+
+The split is reported, because nothing else catches it — alanine's thermodynamic inconsistency is 0.00
+while its error is 2.18. The cause is coupling the microscopic model has too few alpha-amino acids to
+have learned: in glycine the carboxyl is far more acidic than it looks because the adjacent ammonium
+stabilises the carboxylate, and vice versa.
+
+**Still open:** the two microstates each microscopic value connects (the ladder computes them but does
+not surface them), tautomer handling, and the zwitterion accuracy above — which is a training-data
+problem, not a machinery one.
 
 **OpenChemLib has no pKa predictor** — verified three ways; `pKaPredictor`/`pKaPlotter` are
 DataWarrior-side, and `grep -ri pka` over the installed 9.22.1 package returns nothing.

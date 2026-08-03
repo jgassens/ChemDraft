@@ -432,6 +432,58 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
       }
     }
 
+    // Macroscopic first: it is what a titration measures and what a reference table lists, so it is
+    // the number a reader came for. The per-site values below it are microscopic and are NOT the same
+    // quantity — glycine's tabulated 9.6 equals no single one of them.
+    if (ionization.macroscopic && ionization.macroscopic.pKa.length > 0) {
+      const macro = ionization.macroscopic;
+      const caveats: string[] = [];
+      if (macro.zwitterionic) {
+        caveats.push(
+          "this molecule has both an acidic and a basic site, so it forms a zwitterion — measured " +
+            "over thirteen polyprotic molecules, that case carries a mean error of 2.0 log units " +
+            "against 0.3 for the rest, because the microscopic model underestimates how strongly the " +
+            "two sites pull on each other"
+        );
+      }
+      if (macro.inconsistency > 1) {
+        caveats.push(
+          `routes to the same microstate disagree by up to ${formatNumber(macro.inconsistency, 1)} log ` +
+            "units, which is thermodynamically impossible and bounds what these values are worth"
+        );
+      }
+      // Both sections share a category so the caveat groups WITH the numbers. Left to stand alone it
+      // became its own entry in the panel's sidebar — a disclosure a reader can browse past, which is
+      // the failure this module's header calls out by name.
+      const macroCategory = "Macroscopic pKa";
+      sections.push(
+        keyValueSection(
+          `Macroscopic pKa (${macro.microstates} microstates)`,
+          macro.pKa.map((value, index) => ({
+            label: `pKa${index + 1}`,
+            value: formatNumber(value, 2)
+          })),
+          macroCategory
+        )
+      );
+      sections.push({
+        kind: "text",
+        title: "About these values",
+        category: macroCategory,
+        body:
+          "What a titration would measure, folded from the per-site values below. Those are " +
+          "microscopic — one proton on one atom — and a reference table's figure equals no single " +
+          "one of them." + (caveats.length > 0 ? ` Treat with care: ${caveats.join("; ")}.` : "")
+      });
+    } else if (ionization.macroscopicDeclined) {
+      sections.push({
+        kind: "text",
+        title: "Macroscopic pKa",
+        category: "Macroscopic pKa",
+        body: `Not computed. ${ionization.macroscopicDeclined}`
+      });
+    }
+
     if (ionization.sites.length > 0) {
       sections.push({
         kind: "table",

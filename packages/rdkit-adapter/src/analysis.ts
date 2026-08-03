@@ -103,8 +103,10 @@ import {
   scanIonizableSites,
   scoreSitesWithHammett,
   molblockWithChargedAtom,
+  molblockWithCharges,
   scoreSiteTransitions
 } from "./ionization";
+import { macroscopicApplies, macroscopicFromSites } from "./protonation";
 import type { PkaMolecularGraph } from "./pkaModel";
 import {
   PINNED_ISOSPEC_VERSION,
@@ -1028,6 +1030,43 @@ function ionizationResultFor(
     };
   }
 
+  // Macroscopic pKa: what a titration measures, folded from the microscopic ladder. Needs a molecule
+  // per microstate, built the same way the basic-pKa path builds its one.
+  const graphForDeltas = (deltas: ReadonlyMap<number, number>): PkaMolecularGraph | undefined => {
+    if (deltas.size === 0) return graph;
+    const source = copy ? copy.call(module, context.mol) : undefined;
+    if (!source) return undefined;
+    let molblock: string | undefined;
+    try {
+      molblock = (source as unknown as { get_molblock?(): string }).get_molblock?.();
+    } finally {
+      source.delete();
+    }
+    if (!molblock) return undefined;
+    const edited = molblockWithCharges(molblock, deltas);
+    if (!edited) return undefined;
+    const built = module.get_mol(edited) as AnalysisMol | null;
+    if (!built) return undefined;
+    try {
+      const builtJson = JSON.parse(built.get_json()) as typeof json;
+      const out = modelGraph(
+        { ...context, descriptors: JSON.parse(built.get_descriptors()) as Record<string, number> },
+        builtJson,
+        builtJson.defaults?.atom?.z ?? 6
+      );
+      if (out.atoms.length !== graph.atoms.length) return undefined;
+      for (let i = 0; i < out.atoms.length; i += 1) {
+        if (out.atoms[i]!.element !== graph.atoms[i]!.element) return undefined;
+      }
+      return out;
+    } catch {
+      return undefined;
+    } finally {
+      built.delete();
+    }
+  };
+  const macroscopic = macroscopicFromSites(scan.sites, graph, graphForDeltas);
+
   // Coordinates for drawing the sites on the structure. On a COPY for the same reason the hydrogen
   // pass uses one: `set_new_coords` mutates, and handing every later method a molecule that suddenly
   // has a conformer is the kind of change that shows up somewhere unrelated.
@@ -1068,6 +1107,11 @@ function ionizationResultFor(
     status: scan.unassessed.length > 0 ? "partial" : "ok",
     sites: scan.sites,
     ...(depiction ? { depiction, confidenceBands: IONIZATION_CONFIDENCE_BANDS } : {}),
+    ...(macroscopicApplies(macroscopic)
+      ? { macroscopic: { pKa: macroscopic.pKa, inconsistency: macroscopic.inconsistency,
+                         microstates: macroscopic.microstateCount,
+                         zwitterionic: macroscopic.zwitterionic } }
+      : { macroscopicDeclined: macroscopic.declined }),
     unassessed: scan.unassessed,
     applicability: {
       status: scan.unassessed.length > 0 ? "borderline" : "in-domain",

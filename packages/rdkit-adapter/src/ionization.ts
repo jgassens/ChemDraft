@@ -75,6 +75,12 @@
  * checked the other way too (applied to the training set it rejects 0 rows). The amine still reports
  * its basic pKa, which is the one anybody wanted.
  *
+ * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
+ * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
+ * fit. Over twelve polyprotic molecules it lands within 0.30 log units where the sites are
+ * independent — piperazine 0.05, ethylenediamine 0.07 — and within 2.06 where the molecule is a
+ * zwitterion, which the result flags because nothing else catches it.
+ *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
  * in this space has evidence about a metal centre, so a site adjacent to one is reported as
@@ -413,11 +419,26 @@ interface RdkitLikeMol {
  * microstate comes out right without this code ever reasoning about valence.
  */
 export function molblockWithChargedAtom(molblock: string, atomIndex: number): string | undefined {
+  return molblockWithCharges(molblock, new Map([[atomIndex, 1]]));
+}
+
+/**
+ * The molblock with a whole set of formal-charge DELTAS applied.
+ *
+ * Protonation-state enumeration needs to move several sites at once, and in both directions: a
+ * carboxyl deprotonates to -1 while an amine protonates to +1. Same trick as the single-atom case —
+ * write the charge, let RDKit work out the hydrogens on re-parse.
+ */
+export function molblockWithCharges(
+  molblock: string,
+  deltas: ReadonlyMap<number, number>
+): string | undefined {
   const lines = molblock.split("\n");
   const counts = lines[3];
   if (!counts) return undefined;
   const atomCount = Number.parseInt(counts.slice(0, 3), 10);
-  if (!Number.isFinite(atomCount) || atomIndex >= atomCount) return undefined;
+  if (!Number.isFinite(atomCount)) return undefined;
+  for (const atom of deltas.keys()) if (atom >= atomCount) return undefined;
 
   // Existing charges have to be carried over, not replaced: a nitro group's molblock already has an
   // `M  CHG` line, and dropping it would neutralise the group while protonating something else.
@@ -435,7 +456,9 @@ export function molblockWithChargedAtom(molblock: string, atomIndex: number): st
       if (Number.isFinite(atom) && Number.isFinite(charge)) charges.set(atom, charge);
     }
   }
-  charges.set(atomIndex + 1, (charges.get(atomIndex + 1) ?? 0) + 1);
+  for (const [atom, delta] of deltas) {
+    charges.set(atom + 1, (charges.get(atom + 1) ?? 0) + delta);
+  }
 
   const entries = [...charges.entries()].filter(([, charge]) => charge !== 0).sort((a, b) => a[0] - b[0]);
   const chgLines: string[] = [];
@@ -782,11 +805,20 @@ export function ionizationContract(): MethodContract {
         `acid ionisation and rho is 1.00 there by construction, so it largely measures that the ` +
         `compilation is self-consistent. The phenol figure ` +
         `(${CONSENSUS_CALIBRATION.hammettMaePhenol.toFixed(2)}) is the honest one.`,
-      "EVERY VALUE IS MICROSCOPIC, and for an amino acid that is not the number in the table. " +
-        "Glycine's 9.6 and histidine's 9.25 are MACROSCOPIC: measured on the zwitterion, whose " +
-        "carboxyl is already ionised. What is computed here is the amine of the species as drawn, " +
-        "carboxyl intact — a different equilibrium, and lower. Macroscopic values need " +
-        "protonation-state enumeration, which this method does not do.",
+      "EVERY PER-SITE VALUE IS MICROSCOPIC — one proton, one atom — and a reference table's figure is " +
+        "not. Glycine's 9.6 is the second titration step of the whole molecule and equals no single " +
+        "one of them. The MACROSCOPIC values reported alongside are what a titration measures, folded " +
+        "from the microscopic ladder over every protonation microstate: pKa(n) = log10(Z(n)/Z(n-1)), " +
+        "which is exact rather than fitted.",
+      "MACROSCOPIC VALUES ARE POOR FOR A ZWITTERION and the result says which ones those are. Measured " +
+        "over twelve polyprotic molecules with tabulated values, those carrying both an acidic and a " +
+        "basic site average 2.06 log units of error against 0.30 for the rest — the microscopic model " +
+        "underestimates how strongly an ammonium and a carboxylate pull on each other. Diacids and " +
+        "diamines are reliable: piperazine 0.05, ethylenediamine 0.07, succinic acid 0.29.",
+      "the macroscopic fold also reports its own THERMODYNAMIC INCONSISTENCY. pKa is a state function, " +
+        "so every route to a microstate should sum to the same binding constant; each edge is predicted " +
+        "independently and they do not. A large disagreement means the values cannot be trusted however " +
+        "confident each step looked — though it does not catch the zwitterion case, which the flag does.",
       "aqueous only, at room temperature. No value here says anything about DMSO, acetonitrile, or " +
         "any mixed solvent.",
       "sites are found by substructure match, so a genuinely ionizable group the table has no pattern " +
@@ -809,6 +841,8 @@ export function ionizationContract(): MethodContract {
     ],
     declinesWhen: [
       "no tabulated site substructure matches the structure",
+      "macroscopic pKa above eight ionizable sites — 2^n microstates, each needing its own structure " +
+        "built and scored; the limit is reported rather than the enumeration being truncated",
       "a site offers NEITHER transition — no hydrogen to lose and no lone pair free to accept one",
       "the ACIDIC half of a plain amine, whose N-H pKa near 35 is beyond water and beyond the training " +
         "range (-9.02 to 30.90); its basic half is still reported",
