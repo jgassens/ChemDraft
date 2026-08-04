@@ -86,23 +86,67 @@ def conjugated_pairs(mol, sites):
     import aromaticity
     arom = aromaticity.aromatic_atoms(mol)
     rings = mol.GetRingInfo().AtomRings()
+    # Conjugation per ATOM, never per bond: which bond of a ring carries the double bond depends on the
+    # Kekule structure chosen, and this model has shipped that bug four times.
+    double_bonded = set()
+    for bond in mol.GetBonds():
+        if bond.GetBondTypeAsDouble() >= 2.0:
+            double_bonded.add(bond.GetBeginAtomIdx())
+            double_bonded.add(bond.GetEndAtomIdx())
+    conjugated = lambda i: arom[i] or i in double_bonded
+    neighbours = {a.GetIdx(): {n.GetIdx() for n in a.GetNeighbors()} for a in mol.GetAtoms()}
+
     out = set()
     for a in range(len(sites)):
         for b in range(a + 1, len(sites)):
-            ia, ka = sites[a]
-            ib, kb = sites[b]
-            if ka == kb: continue
-            if not (arom[ia] and arom[ib]): continue
-            if any(ia in r and ib in r for r in rings): out.add((a, b))
+            ia, _ka = sites[a]
+            ib, _kb = sites[b]
+            shared_ring = arom[ia] and arom[ib] and any(ia in r and ib in r for r in rings)
+            # Two heteroatoms on one conjugated centre: urea's nitrogens across a carbonyl, an azole's
+            # across a ring carbon. Moving the proton between them gives the same compound back.
+            shared_centre = any(
+                conjugated(n) and n in neighbours.get(ib, set()) for n in neighbours.get(ia, set())
+            )
+            if shared_ring or shared_centre: out.add((a, b))
     return out
+
+
+def assert_one_rung_per_atom(sites):
+    """Fail loudly if an atom carries more than one rung. The boolean fold below requires it.
+
+    `protonation.ts` no longer represents a site as a boolean. Each ionizable ATOM there carries an
+    ordered LADDER of contiguous charge levels, because an atom that both loses and gains a proton is
+    one variable with two rungs and not two independent switches -- represented as switches, the
+    enumeration could set both and describe a nitrogen that was -1 and +1 at once.
+
+    This script keeps the boolean form, and that is SAFE ONLY WHILE EVERY ATOM HAS ONE RUNG, in which
+    case a level index and a boolean are the same number. Every molecule in the fitting set and in
+    `macro_validate.SET` satisfies that today -- `sites_of` returns after its first match per atom, so
+    it cannot emit two -- which is why TypeScript and Python still reproduce each other exactly
+    (glycine 1.56/10.00, ethylenediamine 6.60/9.67, succinic 3.81/5.79, imidazole 6.91/13.61).
+
+    The guard exists because the failure would otherwise be silent and expensive: an amphoteric
+    molecule entering the fitting set would have W fitted against a state space the shipped code does
+    not use, and nothing would say so. If this ever fires, port this fold to levels rather than
+    relaxing it.
+    """
+    seen = set()
+    for atom, _kind in sites:
+        if atom in seen:
+            raise AssertionError(
+                f"atom {atom} carries more than one rung, so this boolean fold no longer mirrors "
+                "protonation.ts. Port `macroscopic` to ladder levels (mixed radix) before using it."
+            )
+        seen.add(atom)
 
 
 def macroscopic(mol, sites, predict, W, dist, power=1.0, drop_tautomer_states=True):
     """Fold the ladder, applying the coupling correction to every edge.
 
-    `sites` is a list of (atom index, "acidic"|"basic"). Mirrors `protonation.ts`; the parity fixture
-    is what keeps the two the same.
+    `sites` is a list of (atom index, "acidic"|"basic"), at most one per atom -- see
+    `assert_one_rung_per_atom`, which is what keeps this a faithful mirror of `protonation.ts`.
     """
+    assert_one_rung_per_atom(sites)
     n = len(sites)
     states = [tuple((mask >> i) & 1 for i in range(n)) for mask in range(1 << n)]
     by_count = defaultdict(list)
