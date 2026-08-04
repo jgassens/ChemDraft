@@ -104,6 +104,24 @@
  * learn; it was physics the LABELS did not contain, and a corpus that contains it makes the hand-fitted
  * term redundant.
  *
+ * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
+ * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
+ * while predictions were made, and checked here to share no skeleton with any training row — the whole
+ * pipeline scores **MAE 2.2** over 31 macroscopic values, with 58% inside 2 log units and the right
+ * number of steps on 5 of 24 molecules.
+ *
+ * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
+ * SM22's phenol reads 7.48 against a measured 7.43. It is OVER-DETECTION. The scan offers a basicity
+ * to every aromatic ring nitrogen and to amide nitrogens, and scores an amide N-H near 8 where it is
+ * really about 16, so a molecule with one real pKa can come back with five. Those are chemistry
+ * defects in the site table and the model, and they need chemistry to fix.
+ *
+ * What is done in the meantime is narrow and stated: a rung whose interval spans more than half the
+ * aqueous range is not folded into the macroscopic curve, because such a rung locates no step. It is
+ * still REPORTED, with its interval, so nothing is hidden — but urea no longer gets a titration curve
+ * drawn through four values it cannot stand behind. Measured: end-to-end MAE 2.43 to 2.22, molecules
+ * with the right step count 1 to 5, and the fifteen curated polyprotic molecules unchanged.
+ *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
  * in this space has evidence about a metal centre, so a site adjacent to one is reported as
@@ -816,11 +834,13 @@ export function ionizationContract(): MethodContract {
     parameterizedElements: ORGANIC_PARAMETER_SET,
     resultKind: "ionization",
     conventions: [
-      "EXPERIMENTAL. Every accuracy figure below is an ORACLE-SITE measurement: the site and its " +
-        "direction are supplied, so what is measured is how well a known site is valued. Nothing here " +
-        "yet measures whether the right sites were found, whether their directions were classified " +
-        "correctly, or how the whole pipeline behaves end to end. Treat the macroscopic and consensus " +
-        "numbers as indicative until those exist.",
+      "EXPERIMENTAL, and the honest end-to-end figure is the one to read. Supplied a structure and " +
+        "nothing else, on the SAMPL6 blind challenge set (24 drug-like molecules, 31 measured " +
+        "macroscopic values, never trained on), this method scores MAE 2.2 log units and gets the " +
+        "right NUMBER of titration steps for 5 of 24 molecules. The per-site figures below are " +
+        "ORACLE-SITE measurements — the site and its direction are handed in — and they are much " +
+        "better, around 1.0. The gap between those two numbers is this method's real weakness: it " +
+        "finds more ionizable positions than actually titrate.",
       "EACH VALUE IS THE ACIDITY OF THAT RUNG — the pKa of one proton leaving one atom, at the charge " +
         "state named by that row. A microscopic pKa for one transition, not a molecule-wide figure. " +
         "The values are computed on a CANONICAL PROTOMER rather than on the structure as drawn, so " +

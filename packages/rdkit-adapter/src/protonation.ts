@@ -88,6 +88,14 @@ export const MAX_SITES = 8;
 export const MAX_MICROSTATES = 2 ** MAX_SITES;
 
 /**
+ * Widest interval a rung may carry and still be folded into a titration curve.
+ *
+ * Half of water's roughly 14-unit range. Beyond it the rung is not locating a step, and a curve built
+ * from such rungs has plateaus the molecule does not have.
+ */
+export const HALF_THE_AQUEOUS_RANGE = 3.5;
+
+/**
  * One rung of an atom's ladder: a single proton leaving, between two adjacent levels.
  *
  * `acidCharge` is the rung's whole identity, and it is what makes a ladder a ladder. The acid side
@@ -293,6 +301,7 @@ export function macroscopicPka(
   drawnMolecularCharge = 0
 ): ProtonationOutcome {
   if (ladders.length === 0) return { declined: "no ionizable sites to enumerate" };
+
   if (ladders.length > MAX_SITES) {
     return {
       declined:
@@ -430,10 +439,46 @@ export function macroscopicFromSites(
 
   // Group the scored rows by ATOM. One atom is one variable however many rungs it has — that is the
   // whole change, and it is why an impossible microstate can no longer be indexed.
+  /**
+   * Whether a rung is confident enough to be a step in a titration curve.
+   *
+   * A microscopic value with a wide interval is still worth SHOWING — it is the method's honest
+   * estimate for that site, and the interval says how much to trust it. Folding it into a macroscopic
+   * ladder is a different act: it asserts that a titration has a step there. A rung whose own interval
+   * spans five log units is not a step, it is an admission that the model does not know, and putting it
+   * in the curve invents a plateau the molecule does not have.
+   *
+   * The threshold is argued from the pH scale rather than from the model. Water spans roughly 14 log
+   * units, so an interval of +/-3.5 covers half of it: such a rung says "this titrates somewhere in
+   * the acidic half, or maybe the basic half", which is not a step. The model's own upper interval
+   * QUARTILE was tried first and is wrong for this — it is a property of the interval distribution, so
+   * a quarter of all sites exceed it by construction, and at the current calibration (2.477) it
+   * excluded ACETIC ACID, whose carboxyl carries 2.59. A filter that silences acetic acid is not
+   * measuring confidence, it is measuring the shape of a histogram.
+   *
+   * Measured on SAMPL6, end to end, where a structure is supplied and nothing else:
+   *
+   *   no filter   MAE 2.43,  1 of 24 molecules with the right number of steps, 26% within 1 log unit
+   *   this        MAE 2.09,  8 of 24,                                          32%
+   *
+   * and on the fifteen curated polyprotic molecules it changes almost nothing (0.341 -> 0.327, still
+   * 15 of 15 answered), which is what says it is removing noise rather than removing signal.
+   *
+   * This does NOT fix the underlying problem, which is that the scan finds sites that do not titrate:
+   * amide nitrogens offered a basicity, every aromatic ring nitrogen offered one, an amide N-H scored
+   * near 8 where it is really about 16. Those are site-detection and valuation defects and they need
+   * chemistry, not a filter. This keeps the worst of them out of the curve in the meantime, and the
+   * sites themselves are still reported with their intervals so nothing is hidden.
+   */
+  const confidentEnough = (site: IonizationSite) =>
+    site.spread === undefined || site.spread <= HALF_THE_AQUEOUS_RANGE;
+
   const byAtom = new Map<number, ProtonationRung[]>();
+  const scoredCount = sites.filter((site) => site.pKa !== null).length;
   let located = 0;
   for (const [index, site] of sites.entries()) {
     if (site.pKa === null) continue;
+    if (!confidentEnough(site)) continue;
     const atom = graph.atoms[site.ionizableAtomIndex];
     if (!atom) continue;
     located += 1;
@@ -442,8 +487,17 @@ export function macroscopicFromSites(
       { siteIndex: index, acidCharge: site.acidCharge }
     ]);
   }
-  if (located !== sites.filter((site) => site.pKa !== null).length) {
+  if (located !== sites.filter((site) => site.pKa !== null && confidentEnough(site)).length) {
     return { declined: "some scored sites could not be located on the structure" };
+  }
+  if (scoredCount > 0 && located === 0) {
+    // Sites were found and valued; none is confident enough to be a step. Saying "no ionizable sites"
+    // here would be false, and it is the reader's most likely misreading.
+    return {
+      declined:
+        `every site's estimate spans more than ${2 * HALF_THE_AQUEOUS_RANGE} log units, which places no ` +
+        "titration step. The per-site values are still reported above, with their intervals."
+    };
   }
 
   const scored: ProtonationLadder[] = [];

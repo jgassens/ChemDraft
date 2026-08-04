@@ -1,0 +1,262 @@
+{
+ "benchmark": "SAMPL6 pKa challenge, experimental macroscopic values",
+ "source": "https://github.com/samplchallenges/SAMPL6 (MIT), physical_properties/pKa/experimental_data/pKa_experimental_values_stacked.csv",
+ "measurement": "UV-metric and potentiometric, 25 C, ionic strength 0.15 M NaCl, Isik et al. J Comput Aided Mol Des (2018)",
+ "policy": "NEVER TRAINED ON. Checked against the corpus: 0 of 24 molecules share a skeleton with a training row and 1 shares a Bemis-Murcko scaffold.",
+ "molecules": [
+  {
+   "id": "SM01",
+   "smiles": "c1cc2c(cc1O)c3c(o2)C(=O)NCCC3",
+   "pKa": [
+    9.53
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM02",
+   "smiles": "c1ccc2c(c1)c(ncn2)Nc3cccc(c3)C(F)(F)F",
+   "pKa": [
+    5.03
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM03",
+   "smiles": "c1ccc(cc1)Cc2nnc(s2)NC(=O)c3cccs3",
+   "pKa": [
+    7.02
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM04",
+   "smiles": "c1ccc2c(c1)c(ncn2)NCc3ccc(cc3)Cl",
+   "pKa": [
+    6.02
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM05",
+   "smiles": "c1ccc(c(c1)NC(=O)c2ccc(o2)Cl)N3CCCCC3",
+   "pKa": [
+    4.59
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM06",
+   "smiles": "c1cc2cccnc2c(c1)NC(=O)c3cc(cnc3)Br",
+   "pKa": [
+    3.03,
+    11.74
+   ],
+   "sem": [
+    0.04,
+    0.01
+   ]
+  },
+  {
+   "id": "SM07",
+   "smiles": "c1ccc(cc1)CNc2c3ccccc3ncn2",
+   "pKa": [
+    6.08
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM08",
+   "smiles": "Cc1ccc2c(c1)c(c(c(=O)[nH]2)CC(=O)O)c3ccccc3",
+   "pKa": [
+    4.22
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM09",
+   "smiles": "COc1cccc(c1)Nc2c3ccccc3ncn2.Cl",
+   "pKa": [
+    5.37
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM10",
+   "smiles": "c1ccc(cc1)C(=O)NCC(=O)Nc2nc3ccccc3s2",
+   "pKa": [
+    9.02
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM11",
+   "smiles": "c1ccc(cc1)n2c3c(cn2)c(ncn3)N",
+   "pKa": [
+    3.89
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM12",
+   "smiles": "c1ccc2c(c1)c(ncn2)Nc3cccc(c3)Cl.Cl",
+   "pKa": [
+    5.28
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM13",
+   "smiles": "Cc1cccc(c1)Nc2c3cc(c(cc3ncn2)OC)OC",
+   "pKa": [
+    5.77
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM14",
+   "smiles": "c1ccc(cc1)n2cnc3c2ccc(c3)N",
+   "pKa": [
+    2.58,
+    5.3
+   ],
+   "sem": [
+    0.01,
+    0.01
+   ]
+  },
+  {
+   "id": "SM15",
+   "smiles": "c1ccc2c(c1)ncn2c3ccc(cc3)O",
+   "pKa": [
+    4.7,
+    8.94
+   ],
+   "sem": [
+    0.01,
+    0.01
+   ]
+  },
+  {
+   "id": "SM16",
+   "smiles": "c1cc(c(c(c1)Cl)C(=O)Nc2ccncc2)Cl",
+   "pKa": [
+    5.37,
+    10.65
+   ],
+   "sem": [
+    0.01,
+    0.01
+   ]
+  },
+  {
+   "id": "SM17",
+   "smiles": "c1ccc(cc1)CSc2nnc(o2)c3ccncc3",
+   "pKa": [
+    3.16
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM18",
+   "smiles": "c1ccc2c(c1)c(=O)[nH]c(n2)CCC(=O)Nc3ncc(s3)Cc4ccc(c(c4)F)F",
+   "pKa": [
+    2.15,
+    9.58,
+    11.02
+   ],
+   "sem": [
+    0.02,
+    0.03,
+    0.04
+   ]
+  },
+  {
+   "id": "SM19",
+   "smiles": "CCOc1ccc2c(c1)sc(n2)NC(=O)Cc3ccc(c(c3)Cl)Cl",
+   "pKa": [
+    9.56
+   ],
+   "sem": [
+    0.02
+   ]
+  },
+  {
+   "id": "SM20",
+   "smiles": "c1cc(cc(c1)OCc2ccc(cc2Cl)Cl)/C=C/3\\C(=O)NC(=O)S3",
+   "pKa": [
+    5.7
+   ],
+   "sem": [
+    0.03
+   ]
+  },
+  {
+   "id": "SM21",
+   "smiles": "c1cc(cc(c1)Br)Nc2c(cnc(n2)Nc3cccc(c3)Br)F",
+   "pKa": [
+    4.1
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM22",
+   "smiles": "c1cc2c(cc(c(c2nc1)O)I)I",
+   "pKa": [
+    2.4,
+    7.43
+   ],
+   "sem": [
+    0.02,
+    0.01
+   ]
+  },
+  {
+   "id": "SM23",
+   "smiles": "CCOC(=O)c1ccc(cc1)Nc2cc(nc(n2)Nc3ccc(cc3)C(=O)OCC)C",
+   "pKa": [
+    5.45
+   ],
+   "sem": [
+    0.01
+   ]
+  },
+  {
+   "id": "SM24",
+   "smiles": "COc1ccc(cc1)c2c3c(ncnc3oc2c4ccc(cc4)OC)NCCO",
+   "pKa": [
+    2.6
+   ],
+   "sem": [
+    0.01
+   ]
+  }
+ ]
+}

@@ -564,6 +564,40 @@ than a field — the method reports acidity of the site as drawn and says so in 
 amines that is not the number most people want — solvent and temperature fixed at aqueous/room and
 declared, and provenance recorded per value.
 
+**End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
+the site and its direction supplied, so what was measured was how well a known site is valued. That is
+the field's convention, and it also cannot describe what a user gets, because a user supplies a
+structure and nothing else. `sampl6.real.test.ts` supplies a structure and nothing else, on the SAMPL6
+blind challenge — 24 drug-like molecules, 31 measured macroscopic values, checked to share no skeleton
+with any training row and one Murcko scaffold.
+
+| | oracle-site | end to end (SAMPL6) |
+|---|---:|---:|
+| MAE | 1.02 | **2.22** |
+| right number of titration steps | — | 5 of 24 |
+| within 2 log units | — | 58% |
+
+The gap is the honest measure of what is left, and it is not valuation — SM22's phenol reads 7.48
+against a measured 7.43. It is **over-detection**: the scan offers a basicity to every aromatic ring
+nitrogen and to amide nitrogens, and scores an amide N-H near 8 where it is really about 16, so a
+molecule with one real pKa can come back with five. Fixing that needs chemistry in the site table, not
+another filter.
+
+What was done meanwhile is narrow: a rung whose interval spans more than half the aqueous range is not
+folded into the macroscopic curve, since such a rung locates no step. It is still reported with its
+interval — nothing is hidden — but urea no longer gets a curve drawn through four values the model
+cannot stand behind. End-to-end MAE 2.43 to 2.22, right-step-count 1 to 5, curated fifteen unchanged.
+
+An earlier threshold taken from the model's own upper interval quartile was tried and REJECTED: it is a
+property of the interval distribution, so a quarter of all sites exceed it by construction, and it
+silenced acetic acid. A filter that silences acetic acid is measuring a histogram, not confidence.
+
+**The benchmark found a crash on its first run.** `CIP_bonds` entries are flat triples
+`[atom, atom, descriptor]`, not `[atoms[], descriptor]`, so the filter read an atom index as the
+descriptor — never `"(?)"`, so always passing — and then called `.join` on a number. Every molecule with
+an assigned double-bond stereocentre threw out of the entire analysis run; `C/C=C/C` was enough. It had
+been wrong since it was written, and no chosen test molecule had an E/Z bond.
+
 **Macroscopic pKa: done.** `protonation.ts` enumerates every protonation microstate, scores each edge
 with the microscopic model, and folds the ladder into what a titration measures —
 `pKa(n) = log10(Z(n)/Z(n-1))`, exact rather than fitted, verified against the analytic statistical

@@ -499,7 +499,7 @@ export async function rdkitAnalysisEngine(): Promise<RdkitAnalysisEngine> {
 
 /** CIP descriptors as RDKit perceived them, plus a note for centres the drawing left unassigned. */
 export function stereochemistryLabels(stereoTagsJson: string, unspecifiedCentres: number): string[] {
-  let tags: { CIP_atoms?: [number, string][]; CIP_bonds?: [number[], string][] } = {};
+  let tags: { CIP_atoms?: [number, string][]; CIP_bonds?: [number, number, string][] } = {};
   try {
     tags = JSON.parse(stereoTagsJson) as typeof tags;
   } catch {
@@ -512,9 +512,15 @@ export function stereochemistryLabels(stereoTagsJson: string, unspecifiedCentres
     ...(tags.CIP_atoms ?? [])
       .filter(([, descriptor]) => assigned(descriptor))
       .map(([atom, descriptor]) => `atom ${atom} ${descriptor}`),
+    // A CIP_bonds entry is a FLAT triple — `[16, 17, "(E)"]` — not `[atoms[], descriptor]` the way a
+    // CIP_atoms entry is `[atom, descriptor]`. Read as a pair it took atom 17 for the descriptor,
+    // which is never "(?)" so it always passed the filter, and then called `.join` on a number.
+    // Every molecule with an assigned double-bond stereocentre threw out of the whole analysis run;
+    // `C/C=C/C` was enough. Found by the SAMPL6 end-to-end benchmark, which is the first thing here
+    // that fed the pipeline arbitrary drug-like structures instead of chosen ones.
     ...(tags.CIP_bonds ?? [])
-      .filter(([, descriptor]) => assigned(descriptor))
-      .map(([atoms, descriptor]) => `bond ${atoms.join("-")} ${descriptor}`)
+      .filter(([, , descriptor]) => assigned(descriptor))
+      .map(([begin, end, descriptor]) => `bond ${begin}-${end} ${descriptor}`)
   ];
   if (unspecifiedCentres > 0) {
     labels.push(`${unspecifiedCentres} unspecified stereocentre${unspecifiedCentres === 1 ? "" : "s"}`);

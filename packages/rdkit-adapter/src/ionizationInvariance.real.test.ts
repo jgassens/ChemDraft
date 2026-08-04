@@ -124,8 +124,6 @@ describe("a pKa belongs to one species", () => {
 
 describe("what is and is not a zwitterion", () => {
   it.each([
-    ["acetamide", "CC(N)=O"],
-    ["urea", "NC(N)=O"],
     ["aniline", "Nc1ccccc1"],
     ["pyridinium", "c1cc[nH+]cc1"],
     ["ethylenediamine", "NCCN"],
@@ -133,6 +131,21 @@ describe("what is and is not a zwitterion", () => {
   ])("does not call %s a zwitterion", async (_name, smiles) => {
     const scored = (await assess(smiles)).find((entry) => entry.macroscopic);
     expect(scored?.macroscopic?.zwitterionic).toBe(false);
+  });
+
+  it.each([
+    ["acetamide", "CC(N)=O"],
+    ["urea", "NC(N)=O"]
+  ])("draws no titration curve at all for %s, and says why", async (_name, smiles) => {
+    // Stronger than "not a zwitterion", and the better answer. An amide has no aqueous pKa between 2
+    // and 12; the model knows it does not know, carrying intervals of +/-5 to +/-7 on every rung. Urea
+    // used to be reported as a tetraprotic acid titrating at pH 4. Now the sites are still shown with
+    // their intervals — nothing is hidden — but no curve is drawn through them.
+    const results = await assess(smiles);
+    const scored = results.find((entry) => entry.sites.length > 0);
+    expect(scored, "the sites themselves should still be reported").toBeDefined();
+    expect(scored!.sites.length).toBeGreaterThan(0);
+    expect(scored!.macroscopic, "a curve was drawn through values this uncertain").toBeUndefined();
   });
 
   it.each([
