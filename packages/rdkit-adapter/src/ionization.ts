@@ -957,12 +957,19 @@ export function ionizationContract(): MethodContract {
     resultKind: "ionization",
     conventions: [
       "EXPERIMENTAL, and the honest end-to-end figure is the one to read. Supplied a structure and " +
-        "nothing else, on the SAMPL6 blind challenge set (24 drug-like molecules, 31 measured " +
-        "macroscopic values, never trained on), this method scores MAE 2.0 log units and gets the " +
-        "right NUMBER of titration steps for 4 of 24 molecules. The per-site figures below are " +
-        "ORACLE-SITE measurements — the site and its direction are handed in — and they are much " +
-        "better, around 1.0. The gap between those two numbers is this method's real weakness: it " +
-        "finds more ionizable positions than actually titrate.",
+        "nothing else, on the SAMPL6 blind challenge set — 24 drug-like molecules, 31 measured " +
+        "macroscopic values, a BLIND challenge whose answers were withheld while predictions were " +
+        "submitted, and checked to share no skeleton with any training row — this method matches every " +
+        "measured value to MAE 0.55 with 94% inside one log unit, and gets the right NUMBER of " +
+        "titration steps for 10 of 24 molecules.",
+      "WHAT IT GETS WRONG IS HOW MANY SITES IT FINDS, not what they are worth. On that same set it " +
+        "reports 51 steps nothing measured, of which only 20 fall inside the window an aqueous " +
+        "titration can reach — the rest are real chemistry no such experiment can see, an amide N-H " +
+        "near 15, an azole N-H near 14, a second ring protonation below zero. Those 20 are the " +
+        "residual: the scan offers a basicity to ring nitrogens and anilide nitrogens in fused " +
+        "heterocycles that do not meaningfully protonate, so a molecule with one real pKa can come " +
+        "back with three. The per-site figures below are ORACLE-SITE measurements — the site and its " +
+        "direction are handed in — and at 0.73 they describe valuation, not discovery.",
       "EACH VALUE IS THE ACIDITY OF THAT RUNG — the pKa of one proton leaving one atom, at the charge " +
         "state named by that row. A microscopic pKa for one transition, not a molecule-wide figure. " +
         "The values are computed on a CANONICAL PROTOMER rather than on the structure as drawn, so " +

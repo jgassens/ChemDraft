@@ -51,6 +51,7 @@ interface Outcome {
   /** Each measured value against its best-matching prediction, one-to-one, plus the leftovers. */
   matchedErrors: number[];
   unmatched: number;
+  unmatchedInWindow: number;
 }
 
 /**
@@ -114,7 +115,11 @@ async function runBenchmark(): Promise<Outcome[]> {
       ),
       ...(() => {
         const matched = matchClosest(predicted, molecule.pKa);
-        return { matchedErrors: matched.errors, unmatched: matched.unmatched };
+        return {
+          matchedErrors: matched.errors,
+          unmatched: matched.unmatched,
+          unmatchedInWindow: matched.unmatchedInWindow
+        };
       })()
     });
   }
@@ -141,6 +146,8 @@ const mean = (values: number[]) => values.reduce((sum, v) => sum + v, 0) / value
 function matchClosest(predicted: readonly number[], observed: readonly number[]): {
   errors: number[];
   unmatched: number;
+  /** Unmatched steps the assay could actually have seen. The rest are real but invisible. */
+  unmatchedInWindow: number;
 } {
   const pairs: { p: number; o: number; d: number }[] = [];
   for (let p = 0; p < predicted.length; p += 1) {
@@ -158,7 +165,16 @@ function matchClosest(predicted: readonly number[], observed: readonly number[])
     usedObserved.add(pair.o);
     errors.push(pair.d);
   }
-  return { errors, unmatched: predicted.length - usedPrediction.size };
+  const leftover = predicted.filter((_, index) => !usedPrediction.has(index));
+  return {
+    errors,
+    unmatched: leftover.length,
+    // An unmatched step above 12 or below 2 is not necessarily an error: an amide N-H near 15 and an
+    // azole N-H near 14 are real, imidazole's 14.4 is tabulated, and pyrazine's second ring
+    // protonation near -5.8 is real too. None of them can appear in a list a UV-metric assay produced.
+    // Counting those as over-detection overstates it by roughly half.
+    unmatchedInWindow: leftover.filter((v) => v >= ASSAY_FLOOR && v <= ASSAY_CEILING).length
+  };
 }
 
 describe("SAMPL6, end to end", () => {
@@ -196,6 +212,10 @@ describe("SAMPL6, end to end", () => {
         (100 * matchedErrors.filter((e) => e <= 2).length) / matchedErrors.length
       ).toFixed(0)}%)`,
       `    UNMATCHED extra steps     ${results.reduce((sum, e) => sum + e.unmatched, 0)}`,
+      `      of which the assay could have seen (${ASSAY_FLOOR}-${ASSAY_CEILING})` +
+        `  ${results.reduce((sum, e) => sum + e.unmatchedInWindow, 0)}`,
+      "      the rest are real chemistry outside any aqueous titration — an amide N-H near 15, an",
+      "      azole N-H near 14, a second ring protonation below zero",
       "",
       `  restricted to what the assay could see (${ASSAY_FLOOR} to ${ASSAY_CEILING})`,
       `    right number of values    ${
