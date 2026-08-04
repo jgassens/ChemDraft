@@ -203,6 +203,7 @@ const site = (atom: number, pKa: number, spread: number): IonizationSite => ({
     ionizableAtomIndex: atom,
     siteType: "Carboxyl",
     transition: "acidic",
+    acidCharge: 0,
     pKa,
     spread,
     basis: "site-type-average"
@@ -325,6 +326,7 @@ describe("what a reader actually sees", () => {
       ionizableAtomIndex: 0,
       siteType: "Phenol",
       transition: "acidic",
+      acidCharge: 0,
       pKa: 7.12,
       spread: 0.16,
       basis: "linear-free-energy-relationship",
@@ -449,17 +451,36 @@ describe("acidic and basic are reported separately", () => {
     expect(Math.abs(site!.pKa! - (expected as number))).toBeLessThan(2);
   });
 
-  it("never merges an acidic and a basic value for the same atom", async () => {
+  it("never merges two different rungs of the same atom", async () => {
     // They describe opposite reactions. Averaging them would be arithmetic on two different questions.
+    // The two rungs are distinguished by the charge of their ACID — 0 for the neutral form losing its
+    // proton, +1 for the cation losing one — and not by the direction word, which is only how each
+    // method chose to describe its own rung.
     const merged = combineSiteEstimates({
       model: [
-        { ...site(3, 4.0, 0.5), transition: "acidic" },
-        { ...site(3, 9.0, 0.5), transition: "basic" }
+        { ...site(3, 4.0, 0.5), acidCharge: 0, transition: "acidic" },
+        { ...site(3, 9.0, 0.5), acidCharge: 1, transition: "basic" }
       ]
     });
     expect(merged).toHaveLength(2);
     expect(merged.map((entry) => entry.transition).sort()).toEqual(["acidic", "basic"]);
     for (const entry of merged) expect(entry.basis).not.toBe("consensus");
+  });
+
+  it("DOES merge two methods that describe one rung from opposite sides", async () => {
+    // The defect this key exists to fix. The forest reads pyridinium's N-H as an acid losing its proton
+    // and labels it acidic; the Hammett pyridinium series reads the same equilibrium as a conjugate
+    // acid and labels it basic. Both sentences are true of one rung. Keyed on the direction word they
+    // survived as two sites on one nitrogen, which then read as an acid and a base in the same
+    // molecule — and pyridinium was flagged a zwitterion for it.
+    const merged = combineSiteEstimates({
+      model: [{ ...site(3, 5.04, 0.5), acidCharge: 1, transition: "acidic" }],
+      hammett: [{ ...site(3, 5.25, 0.2), acidCharge: 1, transition: "basic" }]
+    });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.basis).toBe("consensus");
+    // Derived from the rung, so one equilibrium gets one answer rather than the last writer's.
+    expect(merged[0]!.transition).toBe("basic");
   });
 
   it("does not offer a basic value on a pyrrole-type ring nitrogen", async () => {

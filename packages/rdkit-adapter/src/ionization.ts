@@ -274,9 +274,10 @@ export function scanIonizableSites(
       atomIndices: candidates[0]!.atoms,
       ionizableAtomIndex: atom,
       siteType: typeNames.join(" / "),
-      // Placeholder: the scan only LOCATES. `scoreSiteTransitions` decides which transitions this atom
-      // actually has and emits one site per transition.
+      // Placeholder: the scan only LOCATES. `scoreSiteTransitions` decides which rungs this atom
+      // actually has and emits one site per rung.
       transition: "acidic",
+      acidCharge: 0,
       pKa: null,
       basis: "site-type-average",
       ...(typeNames.length > 1
@@ -327,7 +328,12 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
   const byKey = new Map<string, { method: string; site: IonizationSite }[]>();
   for (const [method, list] of Object.entries(perMethod)) {
     for (const site of list) {
-      const key = `${site.ionizableAtomIndex}:${site.transition}`;
+      // Keyed on the RUNG, not on the direction. Direction is each method's description of the rung,
+      // and two methods legitimately describe one equilibrium from opposite sides — the forest reads
+      // pyridinium's N-H as an acid losing its proton, the Hammett pyridinium series reads the same
+      // edge as a conjugate acid. Keyed on direction those became two sites on one nitrogen, and the
+      // molecule was flagged a zwitterion for it.
+      const key = `${site.ionizableAtomIndex}:${site.acidCharge}`;
       const bucket = byKey.get(key) ?? [];
       bucket.push({ method, site });
       byKey.set(key, bucket);
@@ -363,7 +369,10 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
       atomIndices: scored[0]!.site.atomIndices,
       ionizableAtomIndex: atom,
       siteType: scored[0]!.site.siteType,
-      transition: scored[0]!.site.transition,
+      // Both inputs describe the SAME rung — that is what the key guarantees — so the identity is
+      // carried across unchanged and `transition` is derived from it rather than picked from a winner.
+      acidCharge: scored[0]!.site.acidCharge,
+      transition: transitionFor(scored[0]!.site.acidCharge),
       pKa: combined,
       // Never narrower than the disagreement, nor than the tightest input claimed on its own: exact
       // agreement between two methods is not evidence that both are right.
@@ -588,8 +597,11 @@ export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularG
       atomIndices: site.atomIndices,
       ionizableAtomIndex: site.ionizableAtomIndex,
       siteType: site.siteType,
-      // The series decides the direction: benzoic and phenol are acidic, anilinium and pyridinium
-      // report their conjugate acid.
+      // The series decides the rung, and it does so independently of the drawing: benzoic and phenol
+      // describe a NEUTRAL acid losing a proton, anilinium and pyridinium a CATIONIC one. Pyridine and
+      // pyridinium therefore name the same +1 rung, which is what lets the model's estimate and this
+      // one merge instead of appearing as two sites on one nitrogen.
+      acidCharge: outcome.transition === "basic" ? 1 : 0,
       transition: outcome.transition,
       pKa: outcome.pKa,
       // The method's measured in-domain error, not a per-site figure: an LFER has one residual for the
@@ -626,6 +638,19 @@ export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularG
  * for histidine's amine — near enough to its ammonium's measured 9.25 to read as correct while
  * describing a different reaction. Nothing in the output invited a check. That is what this splits.
  */
+/**
+ * Which direction a rung reads as, derived from the charge of its acid rather than from the drawing.
+ *
+ * "Does this number describe a CATIONIC acid — in which case it is a conjugate acid's pKa, and a
+ * chemist calls it a basicity — or a neutral or anionic one?" That question has an answer for every
+ * rung of any ladder. The old definition, "relative to the form as drawn", has none for a rung that
+ * touches neither drawn level, and it is what let two methods label one equilibrium from opposite
+ * sides.
+ */
+export function transitionFor(acidCharge: number): "acidic" | "basic" {
+  return acidCharge > 0 ? "basic" : "acidic";
+}
+
 export function scoreSiteTransitions(
   scan: IonizationScan,
   graph: PkaMolecularGraph,
@@ -646,7 +671,9 @@ export function scoreSiteTransitions(
         const prediction = predictSitePkaWithSpread(siteFeatures(graph, site.ionizableAtomIndex, ring));
         sites.push({
           ...site,
-          transition: "acidic",
+          // The acid of this rung is the atom as drawn — it is the form still holding the proton.
+          acidCharge: atom.charge,
+          transition: transitionFor(atom.charge),
           pKa: prediction.value,
           spread: prediction.spread,
           basis: "experimentally-trained-model"
@@ -666,7 +693,10 @@ export function scoreSiteTransitions(
           );
           sites.push({
             ...site,
-            transition: "basic",
+            // The acid of this rung is the microstate just built, one charge above the drawn atom —
+            // which is the same rung the Hammett anilinium and pyridinium series describe.
+            acidCharge: atom.charge + 1,
+            transition: transitionFor(atom.charge + 1),
             pKa: prediction.value,
             spread: prediction.spread,
             basis: "experimentally-trained-model"

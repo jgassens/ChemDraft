@@ -216,6 +216,22 @@ export interface IonizationSite {
    */
   transition: "acidic" | "basic";
   /**
+   * Formal charge on `ionizableAtomIndex` in the ACID of this transition; the base carries one less.
+   *
+   * This is the transition's identity, and it is what makes several rows on one atom an ordered LADDER
+   * rather than a bag of independent switches. Two rows on one atom are adjacent rungs exactly when
+   * their `acidCharge` values differ by one, so "this nitrogen is -1 and +1 at once" is not a state that
+   * can be described, rather than one that happens not to be built.
+   *
+   * It is also the one identity both estimators compute the same way, which is why `transition` could
+   * not be the key. The trained model called pyridinium's N-H acidic — it is drawn holding a proton —
+   * while the Hammett pyridinium series called the same edge basic, because the number it produces is a
+   * conjugate acid's pKa. Both sentences are true of one rung. Keyed on direction they became two rows
+   * for one physical equilibrium and a molecule flagged as a zwitterion that is not one; keyed on
+   * `acidCharge` they are one row with two opinions, which is what a consensus is for.
+   */
+  acidCharge: number;
+  /**
    * The estimate, or `null` for a site recognised but not titratable in any accessible range.
    *
    * Null rather than a sentinel number: Dimorphite encodes that case as -1000, and passing it through
@@ -468,6 +484,7 @@ const IonizationSiteSchema = z
     ionizableAtomIndex: z.number().int().nonnegative(),
     siteType: z.string().min(1),
     transition: z.enum(["acidic", "basic"]),
+    acidCharge: z.number().int(),
     pKa: z.number().finite().nullable(),
     spread: z.number().finite().nonnegative().optional(),
     basis: z.enum([
@@ -698,6 +715,35 @@ export const AnalysisResultSchema = z
         path: ["status"],
         message: 'Status "ok" requires a payload; use "partial", "unsupported", or "not-applicable".'
       });
+    }
+    // One atom's transitions must form a contiguous ladder. This lives here, at the union level, and
+    // not on `IonizationResultSchema`, because that schema is a `discriminatedUnion` member: attaching
+    // `.superRefine` to it turns it into a `ZodEffects`, which `discriminatedUnion` rejects at module
+    // construction — an import-time crash in every package, not a test failure.
+    if (typed.kind === "ionization") {
+      const byAtom = new Map<number, number[]>();
+      for (const site of typed.sites) {
+        byAtom.set(site.ionizableAtomIndex, [
+          ...(byAtom.get(site.ionizableAtomIndex) ?? []),
+          site.acidCharge
+        ]);
+      }
+      for (const [atom, charges] of byAtom) {
+        const rungs = [...new Set(charges)].sort((a, b) => a - b);
+        if (rungs.length !== charges.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["sites"],
+            message: `Atom ${atom} carries two transitions at the same acid charge.`
+          });
+        } else if (rungs.length > 1 && rungs[rungs.length - 1]! - rungs[0]! !== rungs.length - 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["sites"],
+            message: `Atom ${atom}'s transitions are not a contiguous ladder: ${rungs.join(", ")}.`
+          });
+        }
+      }
     }
     // Silence is the thing to forbid. Every non-ok outcome names itself.
     if (typed.status !== "ok" && typed.warnings.length === 0) {

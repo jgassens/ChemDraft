@@ -47,6 +47,7 @@ const aceticAcid = {
       ionizableAtomIndex: 3,
       siteType: "Carboxylic acid",
       transition: "acidic" as const,
+      acidCharge: 0,
       pKa: 4.5,
       spread: 0.4,
       basis: "experimentally-trained-model" as const
