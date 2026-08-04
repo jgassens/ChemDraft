@@ -78,24 +78,85 @@ const COUPLING = couplingJson as unknown as { W: number; appliesTo: string };
  */
 export const MAX_SITES = 8;
 
-export interface MicrostateSite {
+/**
+ * Most microstates the enumeration will build.
+ *
+ * The count is a PRODUCT of ladder heights, not 2^n — an amphoteric nitrogen contributes three levels
+ * rather than two. 2^8 is exactly the budget the boolean version had, kept so that no molecule which
+ * used to be answered starts declining.
+ */
+export const MAX_MICROSTATES = 2 ** MAX_SITES;
+
+/**
+ * One rung of an atom's ladder: a single proton leaving, between two adjacent levels.
+ *
+ * `acidCharge` is the rung's whole identity, and it is what makes a ladder a ladder. The acid side
+ * carries that formal charge; the base side carries one less. Two rungs on one atom are adjacent
+ * exactly when their `acidCharge` values differ by one — so "this nitrogen is -1 and +1 at the same
+ * time" is not a state the enumeration can reach, rather than a state it happens not to build.
+ */
+export interface ProtonationRung {
   /** Index into the caller's site list, so results can be mapped back. */
   siteIndex: number;
+  /** Formal charge the ionizable atom carries in the ACID of this rung. */
+  acidCharge: number;
+}
+
+/**
+ * One ionizable ATOM's ordered ladder — the variable the enumeration moves.
+ *
+ * Levels are contiguous formal charges, ascending: level `k` carries `rungs[0].acidCharge - 1 + k`, so
+ * level 0 is the most deprotonated form and `rungs.length` the most protonated. Rung `r` connects
+ * level `r` (its base) to level `r + 1` (its acid).
+ *
+ * There is no per-atom "transition" here any more. A direction is a property of a RUNG, and an atom
+ * that both loses and gains a proton is ONE variable with two rungs rather than two variables. That is
+ * the difference between describing aniline and describing a nitrogen that is simultaneously an anion
+ * and a cation, which is what the previous representation allowed.
+ */
+export interface ProtonationLadder {
   atomIndex: number;
-  /** How the atom is drawn: an acidic site carries its proton, a basic one does not. */
-  transition: "acidic" | "basic";
-  /** Formal charge the atom has in the structure as drawn. */
+  /** Formal charge the atom carries as drawn. Always one of the ladder's levels. */
   drawnCharge: number;
+  /** Ascending in `acidCharge`, contiguous, at least one. */
+  rungs: ProtonationRung[];
 }
 
 export interface Microstate {
-  /** Which sites hold a proton, in `sites` order. */
-  protonated: boolean[];
+  /** Level index per ladder, in `ladders` order. */
+  levels: number[];
+  /** Protons held above the fully deprotonated reference: the sum of the level indices. */
   protonCount: number;
-  /** Summed microscopic pKa from the fully deprotonated reference. Undefined if unreachable. */
+  /** Summed microscopic pKa from that reference. Undefined if no route reaches this state. */
   logBinding?: number;
-  /** Net formal charge relative to the fully deprotonated state. */
-  relativeCharge: number;
+  /** Total molecular formal charge in this state — absolute, not relative to the drawing. */
+  charge: number;
+}
+
+/** Where a ladder's drawn level sits, which is all the old per-site `transition` ever meant. */
+export type LadderRole = "acid" | "base" | "amphoteric";
+
+export const levelCount = (ladder: ProtonationLadder): number => ladder.rungs.length + 1;
+
+/** The formal charge the ionizable atom carries at a given level. Linear, with no direction branch. */
+export const chargeAtLevel = (ladder: ProtonationLadder, level: number): number =>
+  ladder.rungs[0]!.acidCharge - 1 + level;
+
+/** The level the atom actually sits at in the structure as drawn. */
+export const drawnLevel = (ladder: ProtonationLadder): number =>
+  ladder.drawnCharge - (ladder.rungs[0]!.acidCharge - 1);
+
+/**
+ * Whether a ladder can only lose a proton, only gain one, or both.
+ *
+ * `amphoteric` is the case the boolean model could not express at all: an atom whose drawn form sits
+ * between two rungs, so it is genuinely both an acid and a base. Aniline's nitrogen is one.
+ */
+export function ladderRole(ladder: ProtonationLadder): LadderRole {
+  const drawn = drawnLevel(ladder);
+  if (drawn === levelCount(ladder) - 1) return "acid";
+  if (drawn === 0) return "base";
+  return "amphoteric";
 }
 
 export interface MacroscopicResult {
@@ -132,40 +193,83 @@ export function macroscopicApplies(outcome: ProtonationOutcome): outcome is Macr
 }
 
 /**
- * The charge an atom carries in a microstate, relative to how it was drawn.
+ * The charge an atom carries at a level, relative to how it was drawn.
  *
- * An acidic site is drawn holding its proton, so losing it costs a charge. A basic site is drawn
- * without one, so gaining it adds a charge. The two conventions meet here and nowhere else.
+ * This used to branch on whether the site was acidic or basic, because a boolean cannot say where a
+ * proton went without knowing which convention it was drawn under. A level index can, so the charge is
+ * now linear in it and the branch is gone.
  */
-export function chargeDelta(site: MicrostateSite, protonated: boolean): number {
-  if (site.transition === "acidic") return protonated ? 0 : -1;
-  return protonated ? 1 : 0;
+export function chargeDelta(ladder: ProtonationLadder, level: number): number {
+  return chargeAtLevel(ladder, level) - ladder.drawnCharge;
 }
 
-/** Every combination of protonated sites, ordered by proton count. */
-export function enumerateMicrostates(siteCount: number): Microstate[] {
+/**
+ * Every combination of ladder levels, ordered by proton count.
+ *
+ * Mixed radix rather than a bitmask: ladders have different heights, so the state space is a product
+ * and not a power. That is the whole reason an impossible microstate can no longer be indexed.
+ */
+export function enumerateMicrostates(
+  ladders: readonly ProtonationLadder[],
+  drawnMolecularCharge = 0
+): Microstate[] {
+  const radices = ladders.map(levelCount);
+  const total = radices.reduce((product, n) => product * n, 1);
   const out: Microstate[] = [];
-  for (let mask = 0; mask < 1 << siteCount; mask += 1) {
-    const protonated = Array.from({ length: siteCount }, (_, i) => (mask & (1 << i)) !== 0);
+  for (let index = 0; index < total; index += 1) {
+    let rest = index;
+    const levels = radices.map((n) => {
+      const level = rest % n;
+      rest = Math.floor(rest / n);
+      return level;
+    });
     out.push({
-      protonated,
-      protonCount: protonated.filter(Boolean).length,
-      relativeCharge: 0
+      levels,
+      protonCount: levels.reduce((sum, level) => sum + level, 0),
+      charge:
+        drawnMolecularCharge +
+        levels.reduce((sum, level, i) => sum + chargeDelta(ladders[i]!, level), 0)
     });
   }
   return out.sort((a, b) => a.protonCount - b.protonCount);
 }
 
 /**
+ * Whether a molecule's dominant species carries opposite charges on different atoms.
+ *
+ * NOT "it has an acidic site and a basic site". That sentence is a claim about site TYPES, and it is
+ * true of acetamide — whose single nitrogen is merely amphoteric — and of pyridinium, where two
+ * methods described one rung from opposite sides. Both were flagged; neither is a zwitterion. What the
+ * flag exists for is the case where the electrostatic coupling carries the answer, and that case is
+ * defined by CHARGES IN A STATE.
+ */
+export function zwitterionic(
+  ladders: readonly ProtonationLadder[],
+  states: readonly Microstate[]
+): boolean {
+  const reachable = states.filter((state) => state.logBinding !== undefined);
+  if (reachable.length === 0) return false;
+  // The state nearest neutral, most stable among ties. Nearest rather than exactly zero so that a
+  // molecule with a permanent charge — betaine's quaternary nitrogen — is still judged on a species
+  // that exists rather than on one that does not.
+  const dominant = reachable.reduce((best, state) => {
+    const closer = Math.abs(state.charge) - Math.abs(best.charge);
+    return closer < 0 || (closer === 0 && state.logBinding! > best.logBinding!) ? state : best;
+  });
+  const charges = ladders.map((ladder, i) => chargeAtLevel(ladder, dominant.levels[i]!));
+  return charges.some((q) => q > 0) && charges.some((q) => q < 0);
+}
+
+/**
  * Build the ladder of microscopic pKa values and fold it into macroscopic ones.
  *
- * `microPka(state, siteIndex)` must return the pKa of `siteIndex` losing its proton IN THAT
- * microstate — the acid form. Returning undefined drops that edge, and a microstate reachable by no
- * edge is left out of its partition sum rather than guessed at.
+ * `microPka(state, ladderIndex)` must return the pKa of that ladder dropping ONE LEVEL from where it
+ * sits in `state` — the acid form. Returning undefined drops that edge, and a microstate reachable by
+ * no edge is left out of its partition sum rather than guessed at.
  */
 export function macroscopicPka(
-  sites: readonly MicrostateSite[],
-  microPka: (state: Microstate, siteIndex: number) => number | undefined,
+  ladders: readonly ProtonationLadder[],
+  microPka: (state: Microstate, ladderIndex: number) => number | undefined,
   /**
    * Pairs (acidic, basic) whose combined flip is a TAUTOMER rather than a distinct species.
    *
@@ -185,54 +289,69 @@ export function macroscopicPka(
    * protonation state, so the cost is a degeneracy factor of at most log10(2), well inside the
    * method's error.
    */
-  tautomerPairs: readonly (readonly [number, number])[] = []
+  tautomerPairs: readonly (readonly [number, number])[] = [],
+  drawnMolecularCharge = 0
 ): ProtonationOutcome {
-  if (sites.length === 0) return { declined: "no ionizable sites to enumerate" };
-  if (sites.length > MAX_SITES) {
+  if (ladders.length === 0) return { declined: "no ionizable sites to enumerate" };
+  if (ladders.length > MAX_SITES) {
     return {
       declined:
-        `${sites.length} ionizable sites would need ${2 ** sites.length} microstates, above the ` +
-        `${MAX_SITES}-site limit this enumeration accepts. No macroscopic value is reported rather ` +
+        `${ladders.length} ionizable atoms is above the ${MAX_SITES} this enumeration accepts; each ` +
+        "carries its own ladder of microstates. No macroscopic value is reported rather " +
         "than a truncated one."
     };
   }
+  const stateCount = ladders.map(levelCount).reduce((product, n) => product * n, 1);
+  if (stateCount > MAX_MICROSTATES) {
+    return {
+      declined:
+        `these ladders would need ${stateCount} microstates, above the ${MAX_MICROSTATES} this ` +
+        "enumeration accepts. No macroscopic value is reported rather than a truncated one."
+    };
+  }
 
-  const states = enumerateMicrostates(sites.length);
-  const key = (protonated: readonly boolean[]) => protonated.map((p) => (p ? "1" : "0")).join("");
-  const byKey = new Map(states.map((state) => [key(state.protonated), state]));
+  const states = enumerateMicrostates(ladders, drawnMolecularCharge);
+  // Dot-separated, not digits joined: a level index can in principle exceed 9, and a joined-digit key
+  // would silently collide two different states onto one entry.
+  const key = (levels: readonly number[]) => levels.join(".");
+  const byKey = new Map(states.map((state) => [key(state.levels), state]));
 
   // Only an acid/base pair can be tautomer-related: the proton has to have somewhere to go. Two acidic
   // sites deprotonating one at a time are two genuinely different microstates, and dropping one of
   // them would delete a real rung, so such a pair is ignored rather than trusted.
-  const pairs = tautomerPairs.filter(([a, b]) => {
-    const first = sites[a];
-    const second = sites[b];
-    return first !== undefined && second !== undefined && first.transition !== second.transition;
-  });
+  // No role filter here, deliberately. An earlier version required an acid paired with a base, which
+  // excluded urea — whose two nitrogens are both amphoteric and are exactly the pair that needs
+  // excluding. The state test below is what actually distinguishes a moved proton from a lost one, and
+  // it is already safe for same-role pairs: two carboxyls are both drawn at the top of their ladders,
+  // so neither can ever be ABOVE its drawn level and no real rung is ever dropped.
+  const pairs = tautomerPairs.filter(
+    ([a, b]) => ladders[a] !== undefined && ladders[b] !== undefined
+  );
 
-  /** The acidic partner deprotonated while the basic one is protonated: a proton that moved. */
+  /** One partner below its drawn level while the other is above it: a proton that moved, not one that left. */
   const isTautomerState = (state: Microstate): boolean =>
     pairs.some(([a, b]) => {
-      const acid = sites[a]!.transition === "acidic" ? a : b;
-      const base = acid === a ? b : a;
-      return state.protonated[acid] === false && state.protonated[base] === true;
+      const gaveUp = state.levels[a]! < drawnLevel(ladders[a]!) && state.levels[b]! > drawnLevel(ladders[b]!);
+      const tookOn = state.levels[b]! < drawnLevel(ladders[b]!) && state.levels[a]! > drawnLevel(ladders[a]!);
+      return gaveUp || tookOn;
     });
 
   // Reference: the fully deprotonated state, L = 0 by definition.
-  const reference = byKey.get("0".repeat(sites.length))!;
+  const reference = byKey.get(key(ladders.map(() => 0)))!;
   reference.logBinding = 0;
 
   // Walk outward by proton count. Each state's L is reached from every state one proton lighter, and
   // where those routes disagree the spread is recorded — it is the thermodynamic inconsistency.
   let inconsistency = 0;
-  for (let n = 1; n <= sites.length; n += 1) {
+  const maxProtons = ladders.reduce((sum, ladder) => sum + levelCount(ladder) - 1, 0);
+  for (let n = 1; n <= maxProtons; n += 1) {
     for (const state of states.filter((s) => s.protonCount === n)) {
       if (isTautomerState(state)) continue;
       const routes: number[] = [];
-      for (let i = 0; i < sites.length; i += 1) {
-        if (!state.protonated[i]) continue;
+      for (let i = 0; i < ladders.length; i += 1) {
+        if (state.levels[i] === 0) continue;
         const lighter = byKey.get(
-          key(state.protonated.map((p, j) => (j === i ? false : p)))
+          key(state.levels.map((level, j) => (j === i ? level - 1 : level)))
         );
         if (!lighter || lighter.logBinding === undefined || isTautomerState(lighter)) continue;
         // The edge's pKa belongs to the ACID — the state that still holds the proton.
@@ -252,7 +371,7 @@ export function macroscopicPka(
 
   // Partition sums per proton count, in log space — 10^L overflows for a strongly basic polyamine.
   const partitions: (number | undefined)[] = [];
-  for (let n = 0; n <= sites.length; n += 1) {
+  for (let n = 0; n <= maxProtons; n += 1) {
     const bound = states
       .filter((s) => s.protonCount === n && s.logBinding !== undefined)
       .map((s) => s.logBinding!);
@@ -260,7 +379,7 @@ export function macroscopicPka(
   }
 
   const pKa: number[] = [];
-  for (let n = sites.length; n >= 1; n -= 1) {
+  for (let n = maxProtons; n >= 1; n -= 1) {
     const upper = partitions[n];
     const lower = partitions[n - 1];
     if (upper === undefined || lower === undefined) continue;
@@ -274,10 +393,8 @@ export function macroscopicPka(
     pKa,
     inconsistency,
     microstateCount: states.filter((s) => s.logBinding !== undefined).length,
-    siteCount: sites.length,
-    zwitterionic:
-      sites.some((site) => site.transition === "acidic") &&
-      sites.some((site) => site.transition === "basic")
+    siteCount: ladders.length,
+    zwitterionic: zwitterionic(ladders, states)
   };
 }
 
@@ -310,54 +427,94 @@ export function macroscopicFromSites(
   graphFor: (deltas: ReadonlyMap<number, number>) => PkaMolecularGraph | undefined
 ): ProtonationOutcome {
   const adjacency = siteContext(graph).adjacency;
-  const scored: MicrostateSite[] = [];
+
+  // Group the scored rows by ATOM. One atom is one variable however many rungs it has — that is the
+  // whole change, and it is why an impossible microstate can no longer be indexed.
+  const byAtom = new Map<number, ProtonationRung[]>();
+  let located = 0;
   for (const [index, site] of sites.entries()) {
     if (site.pKa === null) continue;
     const atom = graph.atoms[site.ionizableAtomIndex];
     if (!atom) continue;
-    scored.push({
-      siteIndex: index,
-      atomIndex: site.ionizableAtomIndex,
-      transition: site.transition,
-      drawnCharge: atom.charge
-    });
+    located += 1;
+    byAtom.set(site.ionizableAtomIndex, [
+      ...(byAtom.get(site.ionizableAtomIndex) ?? []),
+      { siteIndex: index, acidCharge: site.acidCharge }
+    ]);
   }
-  if (scored.length !== sites.filter((site) => site.pKa !== null).length) {
+  if (located !== sites.filter((site) => site.pKa !== null).length) {
     return { declined: "some scored sites could not be located on the structure" };
+  }
+
+  const scored: ProtonationLadder[] = [];
+  for (const [atomIndex, rungs] of [...byAtom.entries()].sort((a, b) => a[0] - b[0])) {
+    const ordered = [...rungs].sort((a, b) => a.acidCharge - b.acidCharge);
+    // Contiguity is enforced at the result contract too, but a hole here would silently produce a
+    // ladder whose levels do not mean what `chargeAtLevel` says they mean, so it declines instead.
+    const span = ordered[ordered.length - 1]!.acidCharge - ordered[0]!.acidCharge;
+    if (span !== ordered.length - 1) {
+      return { declined: `atom ${atomIndex}'s transitions do not form a contiguous ladder` };
+    }
+    const drawnCharge = graph.atoms[atomIndex]!.charge;
+    const ladder = { atomIndex, drawnCharge, rungs: ordered };
+    // The atom as drawn must BE one of the ladder's levels, or every charge on it is off by a constant
+    // and the coupling term would read the wrong sign.
+    const level = drawnLevel(ladder);
+    if (level < 0 || level >= levelCount(ladder)) {
+      return { declined: `atom ${atomIndex} is drawn at a charge its own ladder does not contain` };
+    }
+    scored.push(ladder);
   }
 
   // One structure per microstate, built once and reused across every edge that needs it.
   const cache = new Map<string, PkaMolecularGraph | null>();
   const graphOf = (state: Microstate): PkaMolecularGraph | undefined => {
-    const key = state.protonated.map((p) => (p ? "1" : "0")).join("");
-    if (!cache.has(key)) {
+    const cacheKey = state.levels.join(".");
+    if (!cache.has(cacheKey)) {
       const deltas = new Map<number, number>();
-      for (const [i, site] of scored.entries()) {
-        const delta = chargeDelta(site, state.protonated[i] === true);
-        if (delta !== 0) deltas.set(site.atomIndex, (deltas.get(site.atomIndex) ?? 0) + delta);
+      for (const [i, ladder] of scored.entries()) {
+        const delta = chargeDelta(ladder, state.levels[i]!);
+        if (delta !== 0) deltas.set(ladder.atomIndex, (deltas.get(ladder.atomIndex) ?? 0) + delta);
       }
-      cache.set(key, graphFor(deltas) ?? null);
+      cache.set(cacheKey, graphFor(deltas) ?? null);
     }
-    return cache.get(key) ?? undefined;
+    return cache.get(cacheKey) ?? undefined;
   };
 
-  // The microstate that IS the structure as drawn: acidic sites holding their proton, basic ones not.
-  // Its edges already have a scored value — possibly a consensus with the Hammett relationship — and
-  // reusing it is what makes a one-site molecule's macroscopic pKa equal the site value shown beside
-  // it. Rebuilding it from the model alone put phenol at 10.24 against its own displayed 9.99.
-  const drawnKey = scored.map((site) => (site.transition === "acidic" ? "1" : "0")).join("");
+  /**
+   * Whether every OTHER ladder sits where it is drawn.
+   *
+   * When it does, the scored value for this rung already describes exactly this environment — it is
+   * what the site table shows beside the structure, possibly a consensus with the Hammett relationship
+   * — so it is reused rather than recomputed. Rebuilding it from the model alone put phenol's
+   * macroscopic pKa at 10.24 against its own displayed 9.99.
+   *
+   * This replaces a check against one hard-coded "as drawn" state, and it is strictly wider: it now
+   * covers BASIC rungs too, which were silently recomputed from the model even when the row beside them
+   * showed a consensus. It is also self-consistent — if every other ladder is at its drawn level then
+   * every neighbouring charge is the drawn charge, so the coupling correction is zero and the reused
+   * value is not double-counting anything.
+   */
+  const othersAsDrawn = (state: Microstate, i: number): boolean =>
+    state.levels.every((level, j) => j === i || level === drawnLevel(scored[j]!));
 
   // Through-bond distances between the sites, for the coupling term.
-  const distanceBetween = scored.map((site) => distancesFrom(adjacency, site.atomIndex));
+  const distanceBetween = scored.map((ladder) => distancesFrom(adjacency, ladder.atomIndex));
 
   /** How much every OTHER site's charge shifts this one, in this microstate. */
   const coupling = (state: Microstate, i: number): number => {
     let shift = 0;
+    const roleI = ladderRole(scored[i]!);
     for (let j = 0; j < scored.length; j += 1) {
       if (j === i) continue;
-      // Acid/base pairs only — see COUPLING. Like charges the model already handles.
-      if (scored[j]!.transition === scored[i]!.transition) continue;
-      const q = chargeDelta(scored[j]!, state.protonated[j] === true);
+      // Acid/base pairs only — see COUPLING. Like charges the model already handles. An amphoteric
+      // ladder has no single role and is never excluded: which face it presents depends on the state.
+      const roleJ = ladderRole(scored[j]!);
+      if (roleI === roleJ && roleI !== "amphoteric") continue;
+      // The ABSOLUTE charge at this level, not the delta from the drawing. Identical on every molecule
+      // W was fitted against — their drawn forms are neutral — and correct for one whose canonical
+      // protomer is not, which is a case protomer canonicalization is about to make reachable.
+      const q = chargeAtLevel(scored[j]!, state.levels[j]!);
       if (q === 0) continue;
       const d = distanceBetween[i]!.get(scored[j]!.atomIndex);
       if (d === undefined || d === 0) continue;
@@ -367,37 +524,73 @@ export function macroscopicFromSites(
   };
 
   // Site pairs sharing an aromatic ring: an azole's two nitrogens, whose combined flip is a tautomer.
-  const tautomerPairs: [number, number][] = [];
+  // Ladder pairs between which a proton MOVES rather than leaves. Per-atom ladders do not subsume this
+  // — imidazole's ylide is two DIFFERENT atoms, each at a level its own ladder allows — so the
+  // exclusion stays, now expressed in ladder coordinates and no longer limited to aromatic rings.
+  //
+  // Two heteroatoms attached to one CONJUGATED centre are the general case. Urea's nitrogens are the
+  // example that forced the generalisation: the model placed its ylide, one nitrogen at -1 and the
+  // other at +1, 1.7 log units BELOW neutral urea in free energy and so declared urea a zwitterion.
+  // That is the coupling term doing what it was fitted to do for glycine — stabilising opposite
+  // charges — applied to two nitrogens 2 bonds apart across a carbonyl, where the charges annihilate
+  // through the pi system instead of persisting. Moving urea's proton from one nitrogen to the other
+  // gives urea back.
+  //
+  // Glycine is the case that must NOT be caught, and is not: its amine hangs off an sp3 carbon and its
+  // carboxyl off a different one, so the two share no neighbour and its zwitterion is a real species.
   const context = siteContext(graph);
+  const doubleBonded = new Set<number>();
+  for (const bond of graph.bonds) {
+    if (bond.order >= 2) {
+      doubleBonded.add(bond.atoms[0]);
+      doubleBonded.add(bond.atoms[1]);
+    }
+  }
+  // Per ATOM, never per bond: which bond of an aromatic ring carries the double bond depends on the
+  // Kekule structure chosen, and this project has shipped that bug four times.
+  const conjugated = (atom: number) => context.aromatic[atom] === true || doubleBonded.has(atom);
+
+  const tautomerPairs: [number, number][] = [];
   for (let a = 0; a < scored.length; a += 1) {
     for (let b = a + 1; b < scored.length; b += 1) {
-      if (scored[a]!.transition === scored[b]!.transition) continue;
-      if (!context.aromatic[scored[a]!.atomIndex] || !context.aromatic[scored[b]!.atomIndex]) continue;
-      if (shareARing(adjacency, scored[a]!.atomIndex, scored[b]!.atomIndex)) tautomerPairs.push([a, b]);
+      const first = scored[a]!.atomIndex;
+      const second = scored[b]!.atomIndex;
+      const sharedRing =
+        context.aromatic[first] === true &&
+        context.aromatic[second] === true &&
+        shareARing(adjacency, first, second);
+      const sharedCentre = (adjacency[first] ?? []).some(
+        (neighbour) => conjugated(neighbour) && (adjacency[second] ?? []).includes(neighbour)
+      );
+      if (sharedRing || sharedCentre) tautomerPairs.push([a, b]);
     }
   }
 
+  const drawnMolecularCharge = graph.atoms.reduce((sum, atom) => sum + atom.charge, 0);
+
   return macroscopicPka(scored, (state, i) => {
-    if (state.protonated.map((p) => (p ? "1" : "0")).join("") === drawnKey) {
-      const known = sites[scored[i]!.siteIndex]?.pKa;
-      // The drawn microstate's value already reflects the charges actually present in it, so it takes
-      // no correction — adding one would count the same interaction twice.
+    // The rung being descended: this ladder dropping from its current level to the one below.
+    const rung = scored[i]!.rungs[state.levels[i]! - 1];
+    if (rung && othersAsDrawn(state, i)) {
+      const known = sites[rung.siteIndex]?.pKa;
+      // Its environment is the drawn one, so the value takes no coupling correction — adding one would
+      // count the same interaction twice.
       if (known !== null && known !== undefined) return known;
     }
     // The edge belongs to the ACID: the microstate that still holds this proton.
     const acid = graphOf(state);
     if (!acid) return undefined;
-    const site = scored[i]!;
-    const atom = acid.atoms[site.atomIndex];
+    const ladder = scored[i]!;
+    const atom = acid.atoms[ladder.atomIndex];
     // The proton has to actually be there, or the value would describe a different reaction.
     if (!atom || atom.hydrogens === 0) return undefined;
     try {
       const base = predictSitePkaWithSpread(
-        siteFeatures(acid, site.atomIndex, ringMembership(acid))
+        siteFeatures(acid, ladder.atomIndex, ringMembership(acid))
       ).value;
       return base + coupling(state, i);
     } catch {
       return undefined;
     }
-  }, tautomerPairs);
+  }, tautomerPairs, drawnMolecularCharge);
 }

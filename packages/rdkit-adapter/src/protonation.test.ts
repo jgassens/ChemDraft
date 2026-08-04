@@ -12,12 +12,22 @@ import {
   logSumExp10,
   macroscopicApplies,
   macroscopicPka,
-  type MicrostateSite
+  chargeAtLevel,
+  enumerateMicrostates,
+  type ProtonationLadder
 } from "./protonation";
 
-const acidic = (n: number): MicrostateSite[] =>
+/**
+ * `n` independent neutral acids: each one atom with a single rung, drawn holding its proton.
+ *
+ * `acidCharge: 0` says the acid side is neutral, so the ladder's two levels are -1 (the anion) and 0
+ * (the acid), and `drawnCharge: 0` puts the drawing on the upper one.
+ */
+const acidic = (n: number): ProtonationLadder[] =>
   Array.from({ length: n }, (_, i) => ({
-    siteIndex: i, atomIndex: i, transition: "acidic" as const, drawnCharge: 0
+    atomIndex: i,
+    drawnCharge: 0,
+    rungs: [{ siteIndex: i, acidCharge: 0 }]
   }));
 
 describe("folding microscopic pKa into macroscopic", () => {
@@ -71,7 +81,7 @@ describe("folding microscopic pKa into macroscopic", () => {
     // 6+4=10, and the 3-unit gap is a thermodynamic impossibility the model produced anyway.
     const outcome = macroscopicPka(acidic(2), (state, i) => {
       if (i === 0) return 4;
-      return state.protonated[0] ? 9 : 6;
+      return state.levels[0] === 1 ? 9 : 6;
     });
     if (!macroscopicApplies(outcome)) throw new Error("declined");
     expect(outcome.inconsistency).toBeCloseTo(3, 9);
@@ -151,9 +161,11 @@ describe("a proton that moved rather than left", () => {
   // separate species -- it is the same molecule with the proton on the other nitrogen. Enumeration
   // cannot build it, because reaching the tautomer needs the ring's double bonds rearranged and all
   // the enumeration does is assign charges; what it builds instead is `c1c[nH+]c[n-]1`, an ylide.
-  const azole: MicrostateSite[] = [
-    { atomIndex: 2, siteIndex: 0, transition: "acidic", drawnCharge: 0 },
-    { atomIndex: 4, siteIndex: 1, transition: "basic", drawnCharge: 0 }
+  // Two ring nitrogens: one drawn holding a proton (a neutral acid, rung at 0) and one drawn without
+  // (a base whose conjugate acid is a cation, rung at +1).
+  const azole: ProtonationLadder[] = [
+    { atomIndex: 2, drawnCharge: 0, rungs: [{ siteIndex: 0, acidCharge: 0 }] },
+    { atomIndex: 4, drawnCharge: 0, rungs: [{ siteIndex: 1, acidCharge: 1 }] }
   ];
 
   it("drops the state where the acid gave up a proton and the base took one", () => {
@@ -161,7 +173,7 @@ describe("a proton that moved rather than left", () => {
     macroscopicPka(
       azole,
       (state) => {
-        seen.push(state.protonated.map((p) => (p ? "1" : "0")).join(""));
+        seen.push(state.levels.join(""));
         return 7;
       },
       [[0, 1]]
@@ -188,9 +200,9 @@ describe("a proton that moved rather than left", () => {
   it("ignores same-transition pairs, which are never tautomers of each other", () => {
     // Two acidic sites cannot be related by a proton moving between them in this sense -- there is no
     // acceptor. Passing such a pair must not silently delete a real microstate.
-    const diacid: MicrostateSite[] = [
-      { atomIndex: 1, siteIndex: 0, transition: "acidic", drawnCharge: 0 },
-      { atomIndex: 5, siteIndex: 1, transition: "acidic", drawnCharge: 0 }
+    const diacid: ProtonationLadder[] = [
+      { atomIndex: 1, drawnCharge: 0, rungs: [{ siteIndex: 0, acidCharge: 0 }] },
+      { atomIndex: 5, drawnCharge: 0, rungs: [{ siteIndex: 1, acidCharge: 0 }] }
     ];
     const paired = macroscopicPka(diacid, () => 4, [[0, 1]]);
     const plain = macroscopicPka(diacid, () => 4, []);
@@ -199,5 +211,76 @@ describe("a proton that moved rather than left", () => {
     if (!macroscopicApplies(paired) || !macroscopicApplies(plain)) return;
     expect(paired.pKa).toEqual(plain.pKa);
     expect(paired.microstateCount).toBe(plain.microstateCount);
+  });
+});
+
+describe("an amphoteric atom, which the boolean model could not describe", () => {
+  // Aniline's nitrogen loses a proton (to the anilide anion) AND gains one (to anilinium). Two rungs,
+  // three levels, ONE variable. Under independent booleans this was two switches, and the state where
+  // both were thrown put the same nitrogen at -1 and +1 at once.
+  const aniline: ProtonationLadder[] = [
+    { atomIndex: 0, drawnCharge: 0, rungs: [{ siteIndex: 0, acidCharge: 0 }, { siteIndex: 1, acidCharge: 1 }] }
+  ];
+
+  it("gives one atom three levels rather than two independent switches", () => {
+    const states = enumerateMicrostates(aniline, 0);
+    expect(states).toHaveLength(3);
+    expect(states.map((state) => chargeAtLevel(aniline[0]!, state.levels[0]!)).sort()).toEqual([-1, 0, 1]);
+  });
+
+  it("cannot place one atom at two charges at once", () => {
+    // The property the whole refactor exists for. Every state assigns each atom exactly one charge,
+    // because a level index IS one charge — there is no combination of bits to get wrong.
+    for (const state of enumerateMicrostates(aniline, 0)) {
+      expect(state.levels).toHaveLength(aniline.length);
+      expect(Number.isInteger(state.levels[0])).toBe(true);
+    }
+  });
+
+  it("titrates its two rungs in order", () => {
+    // The callback is asked for the pKa of the rung being DESCENDED from the current level: at level 2
+    // that is anilinium losing its proton (4.6), at level 1 it is neutral aniline losing one (30.7).
+    const outcome = macroscopicPka(aniline, (state) => (state.levels[0] === 2 ? 4.6 : 30.7));
+    expect(macroscopicApplies(outcome)).toBe(true);
+    if (!macroscopicApplies(outcome)) return;
+    expect(outcome.pKa).toHaveLength(2);
+    expect(outcome.pKa[0]!).toBeCloseTo(4.6, 9);
+    expect(outcome.pKa[1]!).toBeCloseTo(30.7, 9);
+  });
+});
+
+describe("what counts as a zwitterion", () => {
+  // A statement about the CHARGES IN THE DOMINANT SPECIES, not about which site types are present.
+  // The old rule — "there is an acidic site and a basic site" — flagged acetamide, urea, pyridinium
+  // and aniline, none of which is a zwitterion.
+  const amphoteric = (atomIndex: number, siteIndex: number): ProtonationLadder => ({
+    atomIndex,
+    drawnCharge: 0,
+    rungs: [{ siteIndex, acidCharge: 0 }, { siteIndex: siteIndex + 1, acidCharge: 1 }]
+  });
+
+  it("does not flag a single amphoteric atom", () => {
+    // Acetamide: one nitrogen that both loses and gains a proton. One atom cannot be a zwitterion.
+    const outcome = macroscopicPka([amphoteric(2, 0)], (state) => (state.levels[0] === 2 ? 8.6 : 11.6));
+    if (!macroscopicApplies(outcome)) throw new Error("declined");
+    expect(outcome.zwitterionic).toBe(false);
+  });
+
+  it("flags an acid and a base that are genuinely both charged at once", () => {
+    // Glycine's shape: an amine whose conjugate acid is a cation, and a carboxyl whose base is an
+    // anion. The neutral-charge state that dominates carries +1 and -1 on different atoms.
+    const glycine: ProtonationLadder[] = [
+      { atomIndex: 0, drawnCharge: 0, rungs: [{ siteIndex: 0, acidCharge: 1 }] },
+      { atomIndex: 4, drawnCharge: 0, rungs: [{ siteIndex: 1, acidCharge: 0 }] }
+    ];
+    const outcome = macroscopicPka(glycine, (_state, i) => (i === 0 ? 9.6 : 2.4));
+    if (!macroscopicApplies(outcome)) throw new Error("declined");
+    expect(outcome.zwitterionic).toBe(true);
+  });
+
+  it("does not flag two acids", () => {
+    const outcome = macroscopicPka(acidic(2), () => 4.5);
+    if (!macroscopicApplies(outcome)) throw new Error("declined");
+    expect(outcome.zwitterionic).toBe(false);
   });
 });
