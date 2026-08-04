@@ -115,15 +115,22 @@
  * OVER-DETECTION — a molecule with one real pKa comes back with several — and the causes were pursued
  * one at a time, each gated on what the corpus actually contains.
  *
- * FIXED: an N-substituted pyrrole-type ring nitrogen was treated as basic. See `acceptsAProton`. One
- * training label in 11,472 argues otherwise, so it shipped.
+ * FIXED: an N-substituted pyrrole-type ring nitrogen was treated as basic. One training label in
+ * 11,472 argues otherwise, so it shipped. N-methylindole had been reporting a titration curve at
+ * pH 4.75, confidently.
  *
- * NOT FIXED, twice measured and twice declined: amide-nitrogen basicity. The obvious rule is that an
- * amide's lone pair is delocalised into the carbonyl so it cannot be protonated, and urea and
- * acetamide both need it. But the corpus holds 35 measured basic pKa values on plain amide nitrogens
- * and 22 more on amidine-like ones — acylaminothiazoles near 8.9, acylsulfonamides near 4.9 — so the
- * model has learned real chemistry there and the rule would suppress it. Distinguishing an activated
- * amide from acetamide needs chemistry this method does not have yet.
+ * FIXED: an UNACTIVATED amide nitrogen was offered a basicity. The blanket version of that rule was
+ * measured twice and declined twice — the corpus holds 35 basic pKa values on plain amide nitrogens
+ * and 22 on amidine-like ones, all real. Narrowed to a nitrogen carrying one carbonyl and nothing else
+ * but saturated carbon and hydrogen, the count is 1 of 11,472, and acetamide, urea, N-methylacetamide
+ * and formamide stop inventing a basicity while acetanilide, acylaminothiazoles, acylsulfonamides and
+ * amidines keep theirs. End to end this is MAE 2.22 -> 2.14 with a sixth molecule getting the right
+ * number of steps.
+ *
+ * STILL WRONG: the remaining over-detection is aromatic ring nitrogens and anilide nitrogens in
+ * acylaminoheterocycles — SM03, SM10 and SM19 each report three or four steps against one measured.
+ * Those are exactly the contexts where the corpus says the basicity is real, so the next move is not
+ * another rule; it is being able to tell which ring nitrogen in a fused heterocycle actually titrates.
  *
  * ALSO CONSIDERED AND REJECTED: gating on the model's measured per-class accuracy, which ranges from
  * 0.51 for carboxyls to 4.65 for sulfonyl oxygens. It would not help — every class involved in the
@@ -465,6 +472,9 @@ function acceptsAProton(graph: PkaMolecularGraph, atomIndex: number, ring: reado
   }
   // Already at four bonds' worth of valence: nothing left to protonate.
   if (neighbours.length + ownDoubleBonds + atom.hydrogens >= 4) return false;
+  // An amide's lone pair is in the carbonyl, not on the nitrogen. Acetamide and urea protonate on
+  // OXYGEN; offering the nitrogen a basicity is what made urea a tetraprotic acid.
+  if (isUnactivatedAmide(graph, atomIndex)) return false;
   // Outside a ring there is no sextet to donate into, so a lone pair is available.
   if (!ring[atomIndex]) return true;
   // Pyridine-type: the nitrogen carries the ring's double bond itself, so its lone pair sits in the
@@ -786,6 +796,75 @@ export function scoreSiteTransitions(
   }
 
   return { sites, unassessed };
+}
+
+/**
+ * An amide nitrogen with nothing activating it but its own carbonyl.
+ *
+ * Such a nitrogen's lone pair is delocalised into the C=O and is not available to a proton: acetamide
+ * and urea protonate on OXYGEN, near -0.5 and 0.1, not on nitrogen. Offering them a nitrogen basicity
+ * is what let urea be reported as a tetraprotic acid, and it put a step near pH 6 into acetamide's
+ * curve where the molecule has none in water at all.
+ *
+ * The word doing the work is UNACTIVATED, and it is the same idea as `isUnactivatedAmine`. A blanket
+ * "amide nitrogens are not basic" rule was measured twice and declined twice — the corpus holds 35
+ * basic pKa values on plain amide nitrogens and 22 more on amidine-like ones, because an aryl, a
+ * sulfonyl, a second carbonyl or a heteroatom on the nitrogen all change the picture:
+ * acylaminothiazoles near 8.9 and acylsulfonamides near 4.9 are real measurements.
+ *
+ * So this requires the nitrogen to carry exactly ONE carbonyl and nothing else but saturated carbon
+ * and hydrogen. Narrowed that way the count is **1 of 11,472** — a bridged bicyclic lactam,
+ * `CC1(C)CC2CC[NH+]1C(=O)C2`, whose ring geometry pyramidalises the nitrogen and genuinely does keep
+ * its lone pair out of conjugation. One anti-Bredt amide is the price of not inventing a basicity for
+ * every acetamide.
+ *
+ * A urea-like second nitrogen on the carbonyl is allowed, and that is measured too rather than
+ * assumed: permitting it suppresses no additional label. It is also the chemically consistent choice,
+ * since a second nitrogen delocalises the carbonyl further rather than less.
+ *
+ * Double bonds are counted PER ATOM, which is Kekule-invariant — every aromatic carbon carries exactly
+ * one whichever structure is chosen — so "this neighbour has a non-carbonyl double bond" reliably means
+ * aryl, vinyl or imine without reading an aromaticity flag that RDKit's JSON does not carry.
+ *
+ * This suppresses only the BASIC half. An activated amide's N-H acidity is well within range and is
+ * still reported.
+ */
+function isUnactivatedAmide(graph: PkaMolecularGraph, atomIndex: number): boolean {
+  const bondsAt = (index: number) =>
+    graph.bonds.filter((bond) => bond.atoms[0] === index || bond.atoms[1] === index);
+  const other = (bond: { atoms: [number, number] }, index: number) =>
+    bond.atoms[0] === index ? bond.atoms[1] : bond.atoms[0];
+
+  // A nitrogen carrying its own double bond is an imine or amidine nitrogen, a different site.
+  if (bondsAt(atomIndex).some((bond) => bond.order > 1)) return false;
+
+  let carbonyls = 0;
+  for (const bond of bondsAt(atomIndex)) {
+    const neighbour = other(bond, atomIndex);
+    if (graph.atoms[neighbour]?.element !== "C") return false;
+
+    const doubles = bondsAt(neighbour).filter((edge) => edge.order > 1);
+    const toChalcogen = doubles.filter((edge) => {
+      const element = graph.atoms[other(edge, neighbour)]?.element;
+      return element === "O" || element === "S";
+    });
+    if (toChalcogen.length === 0) {
+      // Any other double bond on the neighbour means aryl, vinyl or imine — all activating.
+      if (doubles.length > 0) return false;
+      continue;
+    }
+    carbonyls += 1;
+    for (const edge of bondsAt(neighbour)) {
+      const substituent = other(edge, neighbour);
+      if (substituent === atomIndex) continue;
+      const element = graph.atoms[substituent]?.element;
+      if (element === "O" || element === "S" || element === "C") continue;
+      // A urea/carbamate nitrogen is fine; an amidine one is not.
+      if (element === "N" && !bondsAt(substituent).some((e) => e.order > 1)) continue;
+      return false;
+    }
+  }
+  return carbonyls === 1;
 }
 
 /**

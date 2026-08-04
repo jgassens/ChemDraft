@@ -585,7 +585,8 @@ rule would suppress?
 | candidate rule | corpus labels against it | shipped |
 |---|---:|---|
 | an N-substituted pyrrole-type ring N is not basic | 1 of 11,472 | **yes** |
-| an amide N is not basic | 35 of 11,472 (+22 amidine-like) | no |
+| an amide N is not basic (blanket) | 35 of 11,472 (+22 amidine-like) | no |
+| an UNACTIVATED amide N is not basic | 1 of 11,472 | **yes** |
 | gate on the model's measured per-class accuracy | — | no, would not help |
 
 The pyrrole one matters more than its SAMPL6 effect suggests, which is nil: the interval filter already
@@ -594,9 +595,12 @@ reporting a titration curve at pH 4.75 with an interval of 2.40, well inside the
 with no basic nitrogen at all. Pyrrole protonates on carbon, near −3.8. N-substituted azoles are
 everywhere in drug chemistry and no curated test had one.
 
-The amide rule failed its gate twice, the second time on a corpus 63% larger. Acylaminothiazoles near
-8.9 and acylsulfonamides near 4.9 are real measurements; telling those from acetamide needs chemistry
-this method does not have. The per-class gate was rejected on measurement rather than principle — every
+The amide rule failed its gate twice as stated, and then passed once narrowed. "Unactivated" means the
+nitrogen carries ONE carbonyl and nothing else but saturated carbon and hydrogen — the same idea as
+`isUnactivatedAmine`. Acylaminothiazoles near 8.9 and acylsulfonamides near 4.9 keep their basicity;
+acetamide, urea, N-methylacetamide and formamide stop inventing one. The single label it does suppress
+is a bridged anti-Bredt lactam whose geometry really does pyramidalise the nitrogen. End to end:
+MAE 2.22 → **2.14**, right-step-count 5 → 6, within 2 log units 58% → 61%, still answering all 24. The per-class gate was rejected on measurement rather than principle — every
 class involved in the over-detection is one the model is decent at (1.1–1.4), and the badly calibrated
 classes (sulfonyl oxygens at 4.65) never appear. The residual is site LOCATION, and no confidence gate
 reaches it.

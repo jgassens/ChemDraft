@@ -493,6 +493,33 @@ describe("acidic and basic are reported separately", () => {
   });
 
   it.each([
+    ["acetamide", "CC(N)=O"],
+    ["urea", "NC(N)=O"],
+    ["N-methylacetamide", "CNC(C)=O"],
+    ["formamide", "NC=O"]
+  ])("offers no basic value on %s, whose lone pair is in the carbonyl", async (_n, smiles) => {
+    // These protonate on OXYGEN — acetamide near -0.5, urea near 0.1 — not on nitrogen. Offering the
+    // nitrogen a basicity put a step near pH 6 into acetamide's curve, where in water it has none, and
+    // was half of what made urea report as a tetraprotic acid.
+    const { result } = await ionization(smiles);
+    expect(result.sites.filter((site) => site.acidCharge > 0)).toEqual([]);
+  });
+
+  it.each([
+    ["acetanilide", "CC(=O)Nc1ccccc1"],
+    ["an acylaminothiazole", "CC(=O)Nc1nnc(-c2ccccc2)s1"],
+    ["an acylsulfonamide", "CCC(=O)NS(=O)(=O)c1ccccc1"],
+    ["acetamidine", "CC(N)=N"]
+  ])("still offers one on %s, where the nitrogen is activated", async (_n, smiles) => {
+    // The blanket rule was measured twice and declined twice: the corpus holds 35 basic pKa values on
+    // plain amide nitrogens and 22 on amidine-like ones. An aryl, a sulfonyl, a second carbonyl or an
+    // sp2 nitrogen all change the chemistry, and those are real measurements — acylaminothiazoles near
+    // 8.9, acylsulfonamides near 4.9. Only an UNACTIVATED amide is suppressed.
+    const { result } = await ionization(smiles);
+    expect(result.sites.filter((site) => site.acidCharge > 0).length).toBeGreaterThan(0);
+  });
+
+  it.each([
     ["N-methylpyrrole", "Cn1cccc1"],
     ["N-methylindole", "Cn1ccc2c1cccc2"]
   ])("offers no basic value on %s, whose nitrogen is substituted but still pyrrole-type", async (_n, smiles) => {
