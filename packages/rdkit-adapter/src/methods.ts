@@ -69,7 +69,7 @@ export const DESCRIPTOR_DETAILS_INCLUDE_SANDP = '{"includeSandP":true}';
 export const INCLUDE_SANDP_PROBE_SMILES = "CS(=O)(=O)C";
 
 /** Elements the Wildman–Crippen atom-contribution tables and the Ertl TPSA fragments actually cover. */
-const ORGANIC_PARAMETER_SET = ["H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"];
+export const ORGANIC_PARAMETER_SET = ["H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"];
 
 const CITATIONS = {
   rdkit: {

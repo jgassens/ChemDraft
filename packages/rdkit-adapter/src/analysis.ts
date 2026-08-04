@@ -46,6 +46,9 @@ import {
   fragmentTransformation,
   largestOrganicFragmentPlan,
   neutralizeTransformation,
+  referenceProtomerMolblock,
+  referenceProtomerTransformation,
+  REFERENCE_PROTOMER_POLICY,
   stripMolblockCharges,
   subsetRdkitJson,
   type DerivedInterpretationId
@@ -417,9 +420,51 @@ function declineForElements(context: ResultContext, outside: string[]): Analysis
     warnings: [warning("method.unparameterized_element", message, "warning", [base.id])]
   };
 
-  return context.contract.resultKind === "identifier"
-    ? { ...shared, kind: "identifier", identifierType: "smiles", value: null }
-    : { ...shared, kind: "scalar", value: null, unit: context.contract.unit ?? "dimensionless" };
+  if (context.contract.resultKind === "identifier") {
+    return { ...shared, kind: "identifier", identifierType: "smiles", value: null };
+  }
+  // An ionization result declines in its own shape rather than as a bare scalar. Empty `sites` and
+  // `unassessed` is what `payloadIsAbsent` reads as "no payload", which is what a non-ok status
+  // requires — and a consumer that switched on `kind` would otherwise be handed a scalar where it
+  // expects a site list.
+  if (context.contract.resultKind === "ionization") {
+    return { ...shared, kind: "ionization", sites: [], unassessed: [] };
+  }
+  return { ...shared, kind: "scalar", value: null, unit: context.contract.unit ?? "dimensionless" };
+}
+
+/**
+ * Declined because the input is more than one molecule.
+ *
+ * A pKa belongs to a species, and two species drawn side by side are not one. Co-drawn phenol and
+ * acetic acid produced a macroscopic ladder of 4.99 and 10.93 — a two-step titration curve for
+ * something that does not exist — and `CC(=O)O.CC(=O)O` came out as a diprotic acid. Even a bare
+ * counterion moves the answer, because the model reads whole-molecule descriptors: acetic acid alone
+ * scores 4.50, with sodium 4.62, with iron 4.57.
+ *
+ * The fallback ladder then offers the largest organic fragment, so a salt still gets its answer, the
+ * way `rdkit.crippen-logp` already behaves on sodium benzoate.
+ */
+function declineForComponents(context: ResultContext, componentCount: number): AnalysisResult {
+  const message =
+    `This structure is ${componentCount} separate components, and a pKa belongs to one species. ` +
+    "Zero of the model's 7,053 training labels is multi-component, and the descriptors it reads " +
+    "(mass, polar surface area, logP, charge) are computed over everything drawn — so a counterion " +
+    "or a second molecule shifts the answer without appearing in it.";
+  const base = resultBase(context);
+  return {
+    ...base,
+    kind: "ionization",
+    status: "unsupported",
+    applicability: {
+      status: "out-of-domain",
+      reasons: [message],
+      unsupportedFeatures: ["multi-component structure"]
+    },
+    warnings: [warning("ionization.multi_component", message, "warning", [base.id])],
+    sites: [],
+    unassessed: []
+  };
 }
 
 function failedIdentifier(context: ResultContext, identifierType: "inchi" | "inchikey" | "canonical-smiles", reason: string): AnalysisResult {
@@ -695,42 +740,77 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         continue;
       }
 
-      // Joback shares the envelope's shape: driven by a fragmentation of the whole molecule rather
-      // than by a per-element parameterisation check, and declining on its own terms when an atom
-      // falls outside its 41 groups. The fragmentation is computed once and reused across all four
-      // properties — SMARTS matching over 41 patterns is the expensive part, not the arithmetic.
-      // Like the envelope and Joback: driven by a scan of the whole structure, declining on its own
-      // terms rather than through the per-element parameterisation check.
-      if (contract.id === IONIZATION_SITES_METHOD_ID) {
-        results.push(ionizationResultFor(contract, primary, module));
-        continue;
-      }
-
       if (JOBACK_METHOD_IDS.has(contract.id)) {
         jobackFragmentation ??= fragmentationFor(primary, module);
         results.push(jobackResultFor(contract, primary, jobackFragmentation));
         continue;
       }
 
-      const outside = elementsOutsideParameterization(contract, primary.composition.presentElements);
+      // Every method's own computation, so the fallback ladder below can re-run whichever one declined.
+      //
+      // pKa alone is routed away from the structure as drawn, to the canonical protomer named by its
+      // own `defaultInterpretationId` — a field that has been on `MethodContract` since the ledger was
+      // written and that nothing read until now. A pKa is a property of a molecular FAMILY, and the
+      // four drawings of glycine gave four different answers, the pH-7 zwitterion giving none at all.
+      // The element and component checks still run on the structure AS DRAWN, so a salt still declines
+      // in its own right rather than being silently absorbed by the canonicalization.
+      const computeFor = (context: DerivedContext): AnalysisResult => {
+        if (contract.id !== IONIZATION_SITES_METHOD_ID) {
+          return resultFor(contract, context, module, ionMasses);
+        }
+        // An explicit override wins: a caller who asked to see a particular form gets that form,
+        // canonicalization included. Silently substituting a different one would make the panel's
+        // disclosure line a lie.
+        const canonical = request.interpretationOverride ? undefined : derive("reference-protomer");
+        if (!canonical || canonical === context) return ionizationResultFor(contract, context, module);
+        registry.assertRunnable(contract.id, canonical.interpretation);
+        return withProtomerNotice(
+          ionizationResultFor(contract, canonical, module),
+          canonical.interpretation
+        );
+      };
 
-      if (outside.length === 0) {
-        results.push(resultFor(contract, primary, module, ionMasses));
+      const outside = elementsOutsideParameterization(contract, primary.composition.presentElements);
+      // Multi-component input is out of domain for pKa specifically, and the evidence is the same shape
+      // as the element rule: ZERO of the 7,053 training labels has more than one component. The element
+      // check does not catch it — `CCN.Cl` and `Oc1ccccc1.CC(=O)O` are all in-set elements — and the
+      // whole-molecule descriptors the model is fed (mass, TPSA, logP, charge) include every component,
+      // so co-drawn phenol and acetic acid returned a fabricated two-step ladder for a species that does
+      // not exist. Multiplicity, not `components.length`: identical components collapse into one entry
+      // with a count, so `CC(=O)O.CC(=O)O` has length 1.
+      const componentCount = primary.composition.components.reduce(
+        (total, component) => total + component.multiplicity,
+        0
+      );
+      const multiComponent =
+        contract.id === IONIZATION_SITES_METHOD_ID && componentCount > 1 ? componentCount : 0;
+
+      if (outside.length === 0 && multiComponent === 0) {
+        results.push(computeFor(primary));
         continue;
       }
 
       // Declined as given. Keep that result — nothing is silently substituted — and then look for an
       // interpretation that brings the method into its domain, so the run can carry both.
-      results.push(declineForElements({ contract, interpretation: primary.interpretation, composition: primary.composition }, outside));
+      const context = { contract, interpretation: primary.interpretation, composition: primary.composition };
+      results.push(
+        outside.length > 0 ? declineForElements(context, outside) : declineForComponents(context, multiComponent)
+      );
       if (primary !== sourceContext) continue;
 
       for (const fallbackId of fallbacks) {
         const candidate = derive(fallbackId);
         if (!candidate) continue;
         if (elementsOutsideParameterization(contract, candidate.composition.presentElements).length > 0) continue;
+        if (
+          contract.id === IONIZATION_SITES_METHOD_ID &&
+          candidate.composition.components.reduce((total, component) => total + component.multiplicity, 0) > 1
+        ) {
+          continue;
+        }
         registry.assertRunnable(contract.id, candidate.interpretation);
         results.push(
-          withDerivationNotice(resultFor(contract, candidate, module, ionMasses), candidate.interpretation, outside)
+          withDerivationNotice(computeFor(candidate), candidate.interpretation, outside)
         );
         break;
       }
@@ -1161,6 +1241,27 @@ function envelopeResultFor(
  * An `info` warning rather than a `warning`: the derivation is not a problem, it is a fact the reader
  * must have. Naming the element that forced it keeps the two results legible as a pair.
  */
+/** The disclosure that a pKa was computed on the canonical protomer rather than on the drawing. */
+function withProtomerNotice(
+  result: AnalysisResult,
+  interpretation: MolecularInterpretation
+): AnalysisResult {
+  return {
+    ...result,
+    warnings: [
+      ...result.warnings,
+      warning(
+        "interpretation.derived",
+        `Computed on the ${describeInterpretation(interpretation)}. A pKa describes a molecular ` +
+          "family rather than one drawing of it, so every protonation state of this structure is " +
+          "assessed from the same reference form and returns the same values.",
+        "info",
+        [result.id]
+      )
+    ]
+  };
+}
+
 function withDerivationNotice(
   result: AnalysisResult,
   interpretation: MolecularInterpretation,
@@ -1215,6 +1316,41 @@ function resolveDerivedContext(
       fragmentMol,
       descriptorDetails
     );
+    cache.set(id, context);
+    return context;
+  }
+
+  if (id === "reference-protomer") {
+    // Stacks on the fragment for the same reason neutralisation does: a drawn salt should reach its
+    // canonical protomer in one step.
+    const start =
+      resolveDerivedContext("largest-organic-fragment", module, source, sourceJson, cache, descriptorDetails) ??
+      source;
+    const built = referenceProtomerMolblock(start.mol.get_v2Kmolblock(), (candidate) => {
+      const trial = module.get_mol(candidate) as AnalysisMol | null;
+      if (!trial) return false;
+      trial.delete();
+      return true;
+    });
+    if (!built) return undefined;
+    const protomerMol = module.get_mol(built.molblock) as AnalysisMol | null;
+    if (!protomerMol) return undefined;
+
+    const canonical = contextFor(start.interpretation, protomerMol, descriptorDetails);
+    const step = referenceProtomerTransformation({
+      atomCount: start.composition.atomCount,
+      formula: canonical.composition.formula,
+      chargesRemoved: built.chargesRemoved,
+      // Read back off the derived molecule, never predicted: RDKit decided the hydrogen count.
+      hydrogenChanges: hydrogenCount(canonical.composition) - hydrogenCount(start.composition)
+    });
+    const context: DerivedContext = {
+      ...canonical,
+      interpretation: {
+        ...deriveInterpretation({ id, base: start.interpretation, step }),
+        protomerPolicy: REFERENCE_PROTOMER_POLICY
+      }
+    };
     cache.set(id, context);
     return context;
   }

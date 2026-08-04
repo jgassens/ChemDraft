@@ -111,6 +111,7 @@ import type {
 
 import { estimateHammettPka, hammettApplies } from "./hammett";
 import { IONIZATION_SITE_TYPES, SENTINEL_PKA_MAGNITUDE } from "./ionizationSites";
+import { ORGANIC_PARAMETER_SET } from "./methods";
 import consensusJson from "../vendor/pka-model/consensus-calibration.json";
 import {
   PKA_MODEL_CALIBRATION,
@@ -779,7 +780,16 @@ export function ionizationContract(): MethodContract {
       symbol: "site_substructures.smarts",
       parameters: { siteTypes: IONIZATION_SITE_TYPES.length }
     },
-    defaultInterpretationId: "source",
+    // The pKa ladder is built outward from a canonical protomer, so the answer does not depend on
+    // which member of the family was drawn. Four drawings of glycine used to give four answers, and
+    // the zwitterion — the form a chemist draws at pH 7 — gave none at all.
+    defaultInterpretationId: "reference-protomer",
+    // The same set the Crippen and TPSA methods use, and independently right here: it is exactly the
+    // model's own one-hot `ELEMENTS` plus hydrogen. An element outside it one-hots to all zeros, which
+    // the forest reads as "none of the above" rather than as unknown. The whole-molecule descriptors
+    // are the transmission path — `baseSiteFeatures` feeds the model a Crippen logP that
+    // `rdkit.crippen-logp` refuses to report for the same structure.
+    parameterizedElements: ORGANIC_PARAMETER_SET,
     resultKind: "ionization",
     conventions: [
       "EACH VALUE IS THE ACIDITY OF THAT SITE AS DRAWN — the pKa of it losing a proton. A microscopic " +

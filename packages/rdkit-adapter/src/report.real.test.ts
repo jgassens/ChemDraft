@@ -195,7 +195,11 @@ describe("sodium benzoate — what the report exists for", () => {
 
   it("offers the derived interpretation as an alternative, with its ledger", async () => {
     const report = buildAnalysisReport(await analyze(SALT));
-    expect(report.interpretations).toHaveLength(2);
+    // Three, not two: the descriptors decline on Na and fall back to the fragment, while pKa builds
+    // its ladder from the canonical protomer — benzoic acid rather than the drawn benzoate. A run that
+    // used three interpretations says so, because the panel's whole job is naming what produced what.
+    expect(report.interpretations).toHaveLength(3);
+    expect(report.interpretations.map((entry) => entry.id)).toContain("reference-protomer");
 
     const fragment = report.interpretations.find((entry) => entry.id === "largest-organic-fragment")!;
     expect(fragment.label).toBe("largest organic fragment · Na removed");

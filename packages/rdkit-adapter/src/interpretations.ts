@@ -30,11 +30,15 @@ import {
 import { connectedComponents, elementSymbol, hillFormula, type RdkitJson } from "./composition";
 import type { ElementCount } from "@chemdraft/analysis-core";
 
-export type DerivedInterpretationId = "largest-organic-fragment" | "neutralized";
+export type DerivedInterpretationId =
+  | "largest-organic-fragment"
+  | "neutralized"
+  | "reference-protomer";
 
 export const DERIVED_INTERPRETATION_IDS: readonly DerivedInterpretationId[] = [
   "largest-organic-fragment",
-  "neutralized"
+  "neutralized",
+  "reference-protomer"
 ];
 
 const TRANSFORMATION_VERSION = "1.0.0";
@@ -212,6 +216,159 @@ export function stripMolblockCharges(molblock: string): ChargeStripResult {
   return { molblock: kept.join("\n"), chargedAtomCount, netChargeRemoved };
 }
 
+/** The bonded atom pairs a V2000 molblock's bond block carries. Atom numbers are 1-based. */
+export function molblockBonds(molblock: string): [number, number][] {
+  const lines = molblock.split("\n");
+  const counts = lines[3];
+  if (!counts) return [];
+  const atomCount = Number.parseInt(counts.slice(0, 3), 10);
+  const bondCount = Number.parseInt(counts.slice(3, 6), 10);
+  if (!Number.isFinite(atomCount) || !Number.isFinite(bondCount)) return [];
+  const out: [number, number][] = [];
+  for (let i = 0; i < bondCount; i += 1) {
+    const line = lines[4 + atomCount + i];
+    if (!line) break;
+    const from = Number.parseInt(line.slice(0, 3), 10);
+    const to = Number.parseInt(line.slice(3, 6), 10);
+    if (Number.isFinite(from) && Number.isFinite(to)) out.push([from, to]);
+  }
+  return out;
+}
+
+/** The `(atom, charge)` pairs a V2000 molblock's `M  CHG` records carry. Atom numbers are 1-based. */
+export function molblockCharges(molblock: string): { atom: number; charge: number }[] {
+  const out: { atom: number; charge: number }[] = [];
+  for (const line of molblock.split("\n")) {
+    if (!line.startsWith("M  CHG")) continue;
+    const fields = line.slice(6).trim().split(/\s+/).map(Number);
+    const pairCount = fields[0] ?? 0;
+    for (let pair = 0; pair < pairCount; pair += 1) {
+      const atom = fields[1 + pair * 2];
+      const charge = fields[2 + pair * 2];
+      if (typeof atom === "number" && typeof charge === "number" && Number.isFinite(charge) && charge !== 0) {
+        out.push({ atom, charge });
+      }
+    }
+  }
+  return out.sort((a, b) => a.atom - b.atom);
+}
+
+/** The same molblock carrying exactly `charges` and no others. */
+export function withMolblockCharges(
+  molblock: string,
+  charges: readonly { atom: number; charge: number }[]
+): string {
+  const lines = molblock.split("\n").filter((line) => !line.startsWith("M  CHG"));
+  if (charges.length === 0) return lines.join("\n");
+  // Eight pairs per record is the V2000 limit.
+  const records: string[] = [];
+  for (let start = 0; start < charges.length; start += 8) {
+    const chunk = charges.slice(start, start + 8);
+    records.push(
+      `M  CHG${String(chunk.length).padStart(3)}` +
+        chunk.map((entry) => `${String(entry.atom).padStart(4)}${String(entry.charge).padStart(4)}`).join("")
+    );
+  }
+  const end = lines.findIndex((line) => line.startsWith("M  END"));
+  const at = end === -1 ? lines.length : end;
+  return [...lines.slice(0, at), ...records, ...lines.slice(at)].join("\n");
+}
+
+/**
+ * The protomer this molecule's pKa ladder is built outward from, independent of how it was drawn.
+ *
+ * A pKa is a property of a molecular FAMILY, not of one member of it, so four drawings of glycine must
+ * give one answer. They did not: the neutral form gave 2.13/9.07, the zwitterion — the form a chemist
+ * actually draws at pH 7 — gave nothing at all, and each singly-charged form gave one of the two
+ * values. Acetate likewise gave nothing while acetic acid gave 4.50.
+ *
+ * `stripMolblockCharges` cannot serve here. It is whole-molecule and all-or-nothing by design, so on
+ * p-nitrobenzoate it removes the nitro charges along with the carboxylate, RDKit rejects the result,
+ * and the molecule gets no canonicalization at all — which lands precisely on the substituted
+ * benzoates and phenolates the Hammett series exists for.
+ *
+ * So charges come off ONE AT A TIME, in atom order, and a strip is kept only if what remains is still a
+ * molecule. No table of which charges are "real" is involved: a lone nitro nitrogen is five-valent, a
+ * lone nitro oxygen leaves a five-valent nitrogen, and a quaternary ammonium is five-valent, so RDKit
+ * refuses all three and those charges stay. A carboxylate oxygen alone parses, so it goes. The result
+ * for p-nitrobenzoate is p-nitrobenzoic acid with its nitro group intact.
+ *
+ * Returns `undefined` when there was nothing to strip, which the caller reads as "already canonical".
+ */
+export function referenceProtomerMolblock(
+  molblock: string,
+  parses: (candidate: string) => boolean
+): { molblock: string; chargesRemoved: number; netChargeRemoved: number } | undefined {
+  const charges = molblockCharges(molblock);
+  if (charges.length === 0) return undefined;
+
+  // A charge balanced by an opposite charge on a BONDED neighbour is not a protonation state at all —
+  // it is what the valence requires. Nitro, N-oxides, azides and diazo groups are all drawn this way,
+  // and none of them has a protonation state to canonicalize toward.
+  //
+  // RDKit alone does not catch this, which is how 4-nitrophenol found the hole: removing the nitro
+  // oxygen's charge yields `O=[N+](O)Ar`, a perfectly valid molecule that is simply a different
+  // compound. The Hammett phenol series then saw a substituent that was no longer a nitro group and
+  // stopped firing. The parse test stays as the second gate — it is what refuses a lone quaternary
+  // ammonium — but this local check runs first.
+  const byAtom = new Map(charges.map((entry) => [entry.atom, entry.charge]));
+  const dipolar = new Set<number>();
+  for (const [from, to] of molblockBonds(molblock)) {
+    const a = byAtom.get(from);
+    const b = byAtom.get(to);
+    if (a !== undefined && b !== undefined && Math.sign(a) === -Math.sign(b)) {
+      dipolar.add(from);
+      dipolar.add(to);
+    }
+  }
+
+  let kept = charges;
+  for (const entry of charges) {
+    if (dipolar.has(entry.atom)) continue;
+    const trial = kept.filter((other) => other.atom !== entry.atom);
+    if (trial.length === kept.length) continue;
+    if (parses(withMolblockCharges(molblock, trial))) kept = trial;
+  }
+
+  const removed = charges.length - kept.length;
+  if (removed === 0) return undefined;
+  return {
+    molblock: withMolblockCharges(molblock, kept),
+    chargesRemoved: removed,
+    netChargeRemoved: charges.reduce((sum, entry) => sum + entry.charge, 0) -
+      kept.reduce((sum, entry) => sum + entry.charge, 0)
+  };
+}
+
+/** The ledger entry for building the reference protomer. */
+export function referenceProtomerTransformation(input: {
+  atomCount: number;
+  formula: string;
+  chargesRemoved: number;
+  hydrogenChanges: number;
+}): Transformation {
+  return transformation({
+    name: "reference-protomer",
+    atomMapping: identityMapping(input.atomCount),
+    componentsNeutralized: [input.formula],
+    componentsRetained: [input.formula],
+    chargeChanges: input.chargesRemoved,
+    hydrogenChanges: input.hydrogenChanges
+  });
+}
+
+/**
+ * What `protomerPolicy` says, for the ledger a reader actually sees.
+ *
+ * The field has existed on `MolecularInterpretation` since the ledger was written and nothing has ever
+ * populated it. `hashInterpretation` already folds it into the cache key, so setting it separates the
+ * cache entries correctly with no further work.
+ */
+export const REFERENCE_PROTOMER_POLICY =
+  "reference-protomer — every formal charge RDKit accepts removing is removed, one atom at a time; a " +
+  "charge whose removal leaves no valid molecule (nitro, quaternary ammonium, N-oxide) stays. The pKa " +
+  "ladder is built outward from this form, so every drawing of one molecular family gives one answer.";
+
 // --- ledger construction -------------------------------------------------------------------------
 
 function identityMapping(count: number): Transformation["atomMapping"] {
@@ -326,6 +483,12 @@ export function describeInterpretation(interpretation: MolecularInterpretation):
         if (removed.length === 0) return "largest organic fragment";
         const list = removed.length <= 2 ? removed.join(" and ") : `${removed.length} components`;
         return `largest organic fragment · ${list} removed`;
+      }
+      if (step.name === "reference-protomer") {
+        const magnitude = Math.abs(step.chargeChanges);
+        return magnitude === 0
+          ? "reference protomer"
+          : `reference protomer · ${magnitude} charge${magnitude === 1 ? "" : "s"} removed`;
       }
       if (step.name === "neutralize") {
         const magnitude = Math.abs(step.chargeChanges);
