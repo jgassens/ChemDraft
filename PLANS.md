@@ -588,6 +588,7 @@ rule would suppress?
 | an amide N is not basic (blanket) | 35 of 11,472 (+22 amidine-like) | no |
 | an UNACTIVATED amide N is not basic | 1 of 11,472 | **yes** |
 | gate on the model's measured per-class accuracy | — | no, would not help |
+| score only within the assay's 2–12 window | — | no difference, question closed |
 
 The pyrrole one matters more than its SAMPL6 effect suggests, which is nil: the interval filter already
 suppressed those particular rungs. What it fixes is **confident** fabrication — N-methylindole was
@@ -604,6 +605,19 @@ MAE 2.22 → **2.14**, right-step-count 5 → 6, within 2 log units 58% → 61%,
 class involved in the over-detection is one the model is decent at (1.1–1.4), and the badly calibrated
 classes (sulfonyl oxygens at 4.65) never appear. The residual is site LOCATION, and no confidence gate
 reaches it.
+
+A fairness worry about the benchmark itself was also checked and dismissed. Pyrazine's second ring
+protonation is genuinely near −5.8, the fold predicts it correctly at −2.4, and no UV-metric assay could
+ever list it — so counting it as an "extra value" would penalise correct chemistry. Scored inside the
+assay's own 2–12 window the figures are IDENTICAL, because the interval filter already removes every
+out-of-window step. The extras are real over-detection.
+
+**What the residual actually is.** Of 1,348 aromatic-nitrogen basic labels in the corpus, only 5.2% sit
+below pH 2 — but most ring nitrogens in a real fused heterocycle do. The labels are selected for
+measurability, so the model has seen very few examples of a nitrogen that barely protonates and pulls
+them toward the mode near 5. SM11's four ring nitrogens all score 4–6 where one is 3.89 and three are
+unmeasurable. That is a training-distribution problem, not a rule problem, and no suppression rule
+reaches it — which is why the two attempts above were declined rather than forced.
 
 What was done meanwhile is narrow: a rung whose interval spans more than half the aqueous range is not
 folded into the macroscopic curve, since such a rung locates no step. It is still reported with its

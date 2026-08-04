@@ -45,7 +45,27 @@ interface Outcome {
   errors: number[];
   status: string;
   declined: boolean;
+  /** Predictions inside the assay's accessible window, and the errors from pairing only those. */
+  inWindow: number[];
+  windowErrors: number[];
 }
+
+/**
+ * The window a UV-metric / potentiometric titration can actually reach.
+ *
+ * Reported alongside the raw figure to close a fair-comparison question, and the answer turned out to
+ * be "no difference". The worry was real: pyrazine's second ring protonation is genuinely near -5.8,
+ * the fold predicts it correctly at -2.4, and SAMPL6 could never have listed it — so counting it as an
+ * extra value would penalise correct chemistry. Measured, the two figures are IDENTICAL, because the
+ * interval filter already removes every out-of-window step before it reaches a curve. The extras are
+ * therefore real over-detection and not invisible chemistry, which is worth knowing before writing
+ * another rule.
+ *
+ * Kept rather than deleted: if a future change starts emitting steps outside the window, these two
+ * numbers diverge and say so.
+ */
+const ASSAY_FLOOR = 2;
+const ASSAY_CEILING = 12;
 
 let cached: Outcome[] | undefined;
 
@@ -71,13 +91,24 @@ async function runBenchmark(): Promise<Outcome[]> {
     // Pair in titration order and only where both exist: an unpaired prediction is a site-count
     // disagreement, counted separately below rather than scored as if it were a value error.
     const pairs = Math.min(predicted.length, molecule.pKa.length);
+    // A UV-metric or potentiometric assay can only see roughly 2 to 12, and SAMPL6's own values span
+    // 2.15 to 11.74. Predictions outside that are not errors — pyrazine's second ring protonation is
+    // REAL at about -5.8 and simply invisible to the experiment — so comparing them against a list
+    // that could never contain them counts correct chemistry as an extra value. Both figures are
+    // reported: the raw one is what a user sees, the windowed one is what the experiment could judge.
+    const inWindow = predicted.filter((value) => value >= ASSAY_FLOOR && value <= ASSAY_CEILING);
+    const windowPairs = Math.min(inWindow.length, molecule.pKa.length);
     out.push({
       id: molecule.id,
       observed: molecule.pKa,
       predicted,
       errors: Array.from({ length: pairs }, (_, i) => Math.abs(predicted[i]! - molecule.pKa[i]!)),
       status: results[0]?.status ?? "missing",
-      declined: predicted.length === 0
+      declined: predicted.length === 0,
+      inWindow,
+      windowErrors: Array.from({ length: windowPairs }, (_, i) =>
+        Math.abs(inWindow[i]! - molecule.pKa[i]!)
+      )
     });
   }
   cached = out;
@@ -90,6 +121,7 @@ describe("SAMPL6, end to end", () => {
   it("reports what the whole pipeline scores on a blind set", async () => {
     const results = await runBenchmark();
     const errors = results.flatMap((entry) => entry.errors);
+    const windowErrors = results.flatMap((entry) => entry.windowErrors);
     const answered = results.filter((entry) => !entry.declined);
     const rightCount = results.filter((entry) => entry.predicted.length === entry.observed.length);
 
@@ -108,6 +140,19 @@ describe("SAMPL6, end to end", () => {
         (100 * errors.filter((e) => e <= 2).length) / errors.length
       ).toFixed(0)}%)`,
       `    worst                     ${Math.max(...errors).toFixed(2)}`,
+      "",
+      `  restricted to what the assay could see (${ASSAY_FLOOR} to ${ASSAY_CEILING})`,
+      `    right number of values    ${
+        results.filter((entry) => entry.inWindow.length === entry.observed.length).length
+      }`,
+      `    values paired             ${windowErrors.length}`,
+      `    MAE                       ${mean(windowErrors).toFixed(3)}`,
+      `    within 1 log unit         ${windowErrors.filter((e) => e <= 1).length} (${(
+        (100 * windowErrors.filter((e) => e <= 1).length) / windowErrors.length
+      ).toFixed(0)}%)`,
+      `    within 2 log units        ${windowErrors.filter((e) => e <= 2).length} (${(
+        (100 * windowErrors.filter((e) => e <= 2).length) / windowErrors.length
+      ).toFixed(0)}%)`,
       ""
     ];
     for (const entry of results) {
