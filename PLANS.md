@@ -619,6 +619,35 @@ them toward the mode near 5. SM11's four ring nitrogens all score 4–6 where on
 unmeasurable. That is a training-distribution problem, not a rule problem, and no suppression rule
 reaches it — which is why the two attempts above were declined rather than forced.
 
+**The data that fixes it was fetched, ingested, and measured — and does not ship.** The IUPAC
+Dissociation-Constants compilation (Zenodo 21533589) is the right source: after filtering to neat water
+at 20–30 °C, 11.5% of its basic labels are below pH 2 against our 5.2%, and it reaches −9.44. Its
+inferred sites are sound — 2,509 of 2,510 match a trusted site — and its values agree with the existing
+corpus on 79.6% exactly and 99% within one log unit. It also does what it was fetched to do: SAMPL6 gets
+the right number of titration steps on 6 of 24 molecules instead of 4, and azole macroscopic error falls
+0.62 → 0.42.
+
+Every other held-out measure gets worse:
+
+| corpus | cvMAE | external (398) | macro (32) | SAMPL6 MAE | right count |
+|---|---:|---:|---:|---:|---:|
+| core, 12,096 | **1.023** | **1.239** | **0.354** | **2.033** | 4 |
+| + IUPAC basic, 13,565 | 1.083 | 1.264 | 0.583 | 2.119 | **6** |
+| + all IUPAC, 15,194 | 1.114 | 1.262 | 0.493 | 2.262 | **6** |
+
+A 65% rise in error on the macroscopic set — amino acids and diacids, the commonest chemistry there is —
+does not buy two molecules on a step-count metric.
+
+**The cause is capacity, and that was measured too.** cvMAE falls monotonically as the forest grows —
+1.114 at 60 trees, 1.108 at 120, 1.080 at 200, 1.054 at 300 with unlimited depth — and the artifact goes
+roughly 10 MB, 33 MB, 58 MB, 208 MB. This forest ships inside a desktop app and is parsed in a worker,
+so 60 trees is near the practical limit. **The corpus has outgrown the model class**, which is the wall
+`pkaModel.ts` already names: "a GNN would score better and could not ship."
+
+`iupac_labels.py` stays in the tree, working, with the measurement in its header and its output off by
+default. It is the first thing to revisit the moment inference is not a JSON forest parsed in a browser
+— which is now the single highest-value change available to this method.
+
 What was done meanwhile is narrow: a rung whose interval spans more than half the aqueous range is not
 folded into the macroscopic curve, since such a rung locates no step. It is still reported with its
 interval — nothing is hidden — but urea no longer gets a curve drawn through four values the model

@@ -18,12 +18,12 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 |---|---:|---|
 | `calibration.json` | 2,031 | `a361085c2ed1dd274f630f5266a94a2b6411cd915d815bad937f24aaf6666abc` |
 | `consensus-calibration.json` | 615 | `f440fe2b9e4eb1a26dcd2f2ec1724bcc2a4a6225aada4616f99cd664e4f9ec8a` |
-| `coupling.json` | 1,406 | `7a81389a32a4c5fbeeb031a516e0681812f2c4669d82950a70ac0f2c69fd3118` |
+| `coupling.json` | 1,406 | `e2288dd3f3f6bbc71b306dd441500a0d1507ca478501b4d10a428c105c57f40a` |
 | `external-validation.json` | 445 | `a97a7e5036e15dd9f3615335b393489dfcf6ab412186fefdbeecbb3f46c5ae7b` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
 | `site-pka-forest.json` | 6,027,550 | `3bf2cba69596ff7f0e9b4b35e73dc7ac40780e93266c3202666a5933c35bfa04` |
 
-**Manifest:** `23579c5df4e74cd9ce95737ac3fe36894cb274c1c58b9639777c230aa8e29c16`
+**Manifest:** `1e857f7c15de1a2855d4404e868f1e9c3f8e78e6ec7437d17d3f5808e87732fd`
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.

@@ -254,10 +254,37 @@ def sites_of(mol):
         )
         if hs > 0 and activated and not atom.GetIsAromatic():
             found.append((i, "acidic")); continue
-        # Basic unless it is a pyrrole-type ring N-H, whose lone pair is in the sextet.
-        pyrrole = atom.GetIsAromatic() and hs > 0 and not any(
-            b.GetBondTypeAsDouble() > 1.0 for b in atom.GetBonds())
-        if not pyrrole and len(atom.GetNeighbors()) + hs < 4:
+        # Basic unless the lone pair is spoken for. Kept in step with `acceptsAProton` in
+        # ionization.ts, which is what these labels will be scored against.
+        #
+        # Pyrrole-type is decided by BONDING, not by whether the third substituent is a hydrogen:
+        # N-methylpyrrole's nitrogen is exactly as unavailable as pyrrole's.
+        in_ring = atom.IsInRing()
+        own_double = any(b.GetBondTypeAsDouble() > 1.0 for b in atom.GetBonds())
+        ring_nbrs_with_double = sum(
+            1 for nb in atom.GetNeighbors()
+            if nb.IsInRing() and any(
+                b.GetBondTypeAsDouble() > 1.0 and b.GetOtherAtom(nb).IsInRing() for b in nb.GetBonds()))
+        pyrrole = in_ring and not own_double and ring_nbrs_with_double >= 2
+        if pyrrole: continue
+        # An UNACTIVATED amide's lone pair is in the carbonyl: one carbonyl neighbour and nothing
+        # else but saturated carbon.
+        if not own_double:
+            carbonyls, activated = 0, False
+            for nb in atom.GetNeighbors():
+                if nb.GetSymbol() != "C" or nb.GetIsAromatic(): activated = True; break
+                dbl = [b for b in nb.GetBonds() if b.GetBondTypeAsDouble() == 2.0]
+                het = [b for b in dbl if b.GetOtherAtom(nb).GetSymbol() in ("O", "S")]
+                if het:
+                    carbonyls += 1
+                    for x in nb.GetNeighbors():
+                        if x.GetIdx() == i or x.GetSymbol() in ("O", "S", "C"): continue
+                        if x.GetSymbol() == "N" and not any(
+                            b.GetBondTypeAsDouble() > 1.0 for b in x.GetBonds()): continue
+                        activated = True
+                elif dbl: activated = True
+            if carbonyls == 1 and not activated: continue
+        if len(atom.GetNeighbors()) + hs < 4:
             found.append((i, "basic"))
     return found
 

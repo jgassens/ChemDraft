@@ -27,12 +27,14 @@
 # TypeScript still computes what was just trained. A green suite here is the actual acceptance gate.
 set -euo pipefail
 
-LABELS="${1:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv]}"
-DATASET="${2:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv]}"
+LABELS="${1:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv] [iupac.csv]}"
+DATASET="${2:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv] [iupac.csv]}"
 # Optional third source. Omitted, the corpus is just the first two and everything below still runs.
 PKACHU="${3:-}"
 # Optional fourth source. AQUEOUS ROWS ONLY -- see d2a_labels.py; the file is eight solvents deep.
 D2A="${4:-}"
+# Optional fifth source. CC BY-NC 4.0 -- see iupac_labels.py; neat water and 20-30 C only.
+IUPAC="${5:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python3}"
 cd "$HERE"
@@ -64,6 +66,24 @@ fi
 if [ -n "$D2A" ]; then
   "$PYTHON" d2a_labels.py "$D2A" ./merged-labels.json ./d2a-labels.json
   "$PYTHON" - ./merged-labels.json ./d2a-labels.json <<'MERGE'
+import json, sys
+base = json.load(open(sys.argv[1]))
+extra = json.load(open(sys.argv[2]))
+json.dump(base + extra, open(sys.argv[1], "w"))
+print(f"   {len(base)} + {len(extra)} = {len(base) + len(extra)} labels")
+MERGE
+fi
+
+# IUPAC last: it is the only source whose site has to be INFERRED rather than read, so it should see
+# every other source's labels first and defer to them wherever they already cover a site.
+#
+# OFF BY DEFAULT, and measured rather than assumed -- see the header of iupac_labels.py. The labels are
+# clean and they fix the weak-base gap, but a 60-tree forest cannot absorb them without giving up
+# common-case accuracy, and the capacity that could (120+ trees) costs 33 MB or more in an artifact
+# that ships inside a desktop app.
+if [ -n "$IUPAC" ]; then
+  "$PYTHON" iupac_labels.py "$IUPAC" ./merged-labels.json ./iupac-labels.json
+  "$PYTHON" - ./merged-labels.json ./iupac-labels.json <<'MERGE'
 import json, sys
 base = json.load(open(sys.argv[1]))
 extra = json.load(open(sys.argv[2]))
