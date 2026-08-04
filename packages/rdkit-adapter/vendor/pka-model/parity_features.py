@@ -142,6 +142,52 @@ def kekulized(smiles):
     return mol
 
 
+def written_smiles_with_site(mol, idx):
+    """Write `mol` to SMILES and carry `idx` to the atom it still refers to. `(None, None)` on failure.
+
+    An atom index does NOT survive `MolToSmiles`. RDKit writes atoms in its own traversal order, and it
+    DROPS explicit hydrogens -- so a molecule read with `removeHs=False`, indexed, and then written out
+    has every index past the first hydrogen shifted. That is not hypothetical: it silently mis-sited
+    1,462 of the 5,286 QupKake training labels, putting a "basic" pKa on a carbon 1,137 times and an
+    "acidic" one on an atom with no hydrogen 325 times. The offsets are a scattered permutation
+    (-1: 349, -2: 259, -3: 150, -4: 72), which is exactly the signature of "some hydrogens before the
+    site were dropped" rather than a constant shift.
+
+    `_smilesAtomOutputOrder` is the permutation RDKit actually used: `order[i]` is the original index of
+    the i-th atom written. An atom missing from it was not written at all, which is the honest reason to
+    drop a row rather than guess at it.
+    """
+    try:
+        smiles = Chem.MolToSmiles(mol)
+    except Exception:
+        return None, None
+    if not mol.HasProp("_smilesAtomOutputOrder"):
+        return None, None
+    raw = mol.GetProp("_smilesAtomOutputOrder")
+    try:
+        order = [int(token) for token in raw.strip("[]").split(",") if token.strip() != ""]
+    except ValueError:
+        return None, None
+    if idx not in order:
+        return None, None
+    return smiles, order.index(idx)
+
+
+def kekulized_with_site(mol, idx):
+    """Re-parse `mol` the way inference sees it, carrying `idx` with it. `(None, None)` on failure.
+
+    The pairing is the point: every caller that re-parses a molecule and keeps using an old atom index
+    is reading features off the wrong atom. Both callers here had that bug.
+    """
+    smiles, moved = written_smiles_with_site(mol, idx)
+    if smiles is None:
+        return None, None
+    out = kekulized(smiles)
+    if out is None or moved >= out.GetNumAtoms():
+        return None, None
+    return out, moved
+
+
 def build(path):
     data = json.load(open(path))
     X, y, groups, keep = [], [], [], []

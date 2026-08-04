@@ -142,9 +142,11 @@ describe("the calibration behind the interval", () => {
     // The figures the app shows must be the ones the measurement produced. Editing the summary by
     // hand — to round a number up, or to keep a stale figure after retraining — fails here.
     expect(pairs).toHaveLength(PKA_MODEL_CALIBRATION.samples);
-    // Slack of two samples, not an arbitrary decimal place: the pairs are stored rounded to 4 dp, so
-    // a site sitting exactly on the coverage boundary can round to the other side of it.
-    const slack = 2 / pairs.length;
+    // Slack of three samples, not an arbitrary decimal place: the pairs are stored rounded to 4 dp, so
+    // a site sitting exactly on the coverage boundary can round to the other side of it. Three rather
+    // than two because the corrected corpus lands 2.1 sites on a boundary where the old one landed
+    // under 2 — a property of which sites are in the set, not of the calibration.
+    const slack = 3 / pairs.length;
     for (const [multiplier, published] of Object.entries(PKA_MODEL_CALIBRATION.coverage)) {
       const covered =
         pairs.filter(([sd, error]) => error <= Number(multiplier) * sd).length / pairs.length;
@@ -212,7 +214,11 @@ describe("the model itself", () => {
   });
 
   it("carries the training provenance its results will cite", () => {
-    expect(PKA_MODEL_TRAINING.samples).toBeGreaterThan(8000);
+    // 7,053, not the 8,317 this once asserted. The corpus SHRANK on purpose: 1,590 QupKake rows turned
+    // out to duplicate a Dwar-iBond site once the site index was corrected, and 93.3% of those pairs
+    // are byte-identical in value — the same measurement reaching us through two datasets, not two
+    // measurements. Training on both double-weighted them.
+    expect(PKA_MODEL_TRAINING.samples).toBeGreaterThan(7000);
     // 45 site/molecule + 3 aromaticity + 44 local environment.
     expect(PKA_MODEL_FEATURE_NAMES).toHaveLength(92);
     expect(PKA_MODEL_FEATURE_NAMES).toContain("pyrrole_type");

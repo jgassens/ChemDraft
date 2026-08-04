@@ -2,25 +2,44 @@
  * The trained per-site pKa model: features, forest evaluation, and the parity rule that keeps them
  * honest.
  *
- * **Provenance.** Trained here on 8,317 per-site labels from two experimental sources, and the
+ * **Provenance.** Trained here on 7,053 per-site labels from two experimental sources, and the
  * two are not equally clean.
  *
  * 3,031 come from the open Dwar-iBond set (DataWarrior + iBond) that Uni-pKa distributes under
  * Apache-2.0, where each label is an acid/base microstate pair differing at exactly one atom — the
  * site comes from the DATA, with no predictor involved.
  *
- * 5,286 come from the QupKake experimental set (BSD-3-Clause, originally Baltruschat & Czodrowski).
+ * 4,022 come from the QupKake experimental set (BSD-3-Clause, originally Baltruschat & Czodrowski).
  * Its VALUES are measurements, but its SITE INDEX is ChemAxon's Marvin, which is a predictor
  * annotation sitting inside the label. `vendor/pka-model/qupkake_labels.py` checks it rather than
- * trusting it and records the provenance per row. Where the two sources describe the same site they
- * agree to 0.035 log units on average, with none differing by more than 2.
+ * trusting it and records the provenance per row.
+ *
+ * **1,462 of those labels were once sited on the wrong atom.** The SDF is read with `removeHs=False`,
+ * so the Marvin index is taken with explicit hydrogens present; writing the molecule back out drops
+ * them and shifts every index that followed one. The chemistry gates ran BEFORE the write and passed,
+ * so the corruption shipped: 1,137 "basic" labels landed on a carbon and 325 "acidic" ones on an atom
+ * holding no hydrogen — 27.7% of the set, at offsets forming a scattered permutation rather than a
+ * constant shift. `parity_features.written_smiles_with_site` now carries the index across the write and
+ * the gates run again on the atom actually stored. Both counts are zero.
+ *
+ * Fixing it also made the DEDUPLICATION work for the first time, which is why the corpus shrank rather
+ * than grew: the key paired a canonical SMILES with a pre-canonical index, so it never recognised a
+ * shared site. 1,590 QupKake rows duplicate a Dwar-iBond one, and **93.3% of those pairs are identical
+ * to the stored precision** (median difference 0.000, 99.5% within 0.5, two above 1.0). That is one
+ * measurement reaching us through two datasets, not two measurements, so it is counted once.
  *
  * No pKa VALUE is inherited from another predictor — the supervised signal is measured throughout — so
  * results carry `basis: "experimentally-trained-model"`.
  *
- * **Accuracy: MAE 1.19 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation
- * (2,944 scaffolds), against 2.36 for predicting the dataset mean. On 398 external rows
- * it has never seen — QupKake's Novartis and literature sets — it scores 1.24 +/- 0.06.
+ * **Accuracy: MAE 1.04 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation
+ * (2,887 scaffolds), against 2.37 for predicting the dataset mean — down from 1.19 on the mis-sited
+ * corpus. On 398 external rows it has never seen — QupKake's Novartis and literature sets — it scores
+ * 1.28 +/- 0.07.
+ *
+ * The external figure did NOT improve, and the honest reading is that it did not move: the evaluator
+ * had the same index bug, so the old 1.24 was itself measured partly at the wrong atoms. Correcting the
+ * evaluator alone scores the OLD forest at 1.23; the new forest scores 1.28. That difference is smaller
+ * than the standard error on either. The internal 0.16 improvement is the one that is real.
  *
  * Read the grouping before the number. It was once 1.18 on folds grouped by CANONICAL SMILES, which
  * reads like a scaffold split and is not one — it separates identical molecules and nothing else,
@@ -32,11 +51,15 @@
  * context measured outward from the site rather than over the whole molecule (+0.21), a forest shape
  * swept for 92 features rather than 45 (+0.14), and the second label source.
  *
- * That last one is worth stating carefully, because internally it looks like a loss. On the ORIGINAL
- * test rows, judged on identical folds, adding it moves MAE from 1.219 to 1.273 — the model shifts
- * toward ChEMBL-like drug chemistry and pays for it on DataWarrior. On 398 external rows neither
- * version has seen it moves from 1.40 to 1.27. The external figure is the one that means
- * generalisation, so the data ships.
+ * That last one used to come with a caveat that turned out to be a bug report. Adding the second source
+ * moved MAE on the original test rows from 1.219 to 1.273, and the note here explained it as the model
+ * shifting toward ChEMBL-like drug chemistry and paying for it on DataWarrior. It was not. Over a
+ * quarter of what was being added pointed at the wrong atom, so the model was being taught, at scale,
+ * that a carbon in a drug scaffold has a basic pKa. The corpus fix removes the anomaly rather than
+ * explaining it, and the number it was measured against — the internal MAE — is what improved.
+ *
+ * The lesson worth keeping: an unexplained regression that gets rationalised is a defect that gets
+ * shipped. The rationalisation was plausible, written down, and wrong for eight months.
  *
  * A fifth candidate was measured and REJECTED: recovering labels from multi-microstate Dwar-iBond
  * rows. Only 95 are unambiguous and they score MAE 1.91 against 1.17 for the rest, because a

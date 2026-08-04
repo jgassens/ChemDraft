@@ -23,7 +23,7 @@ import sys
 import numpy as np
 from rdkit import Chem, RDLogger
 
-from parity_features import full_features, kekulized
+from parity_features import full_features, kekulized_with_site
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -73,11 +73,13 @@ def evaluate(forest_path, dataset_dir):
     for name in SETS:
         errors = []
         for acid, atom, observed in sdf_sites(f"{dataset_dir}/{name}"):
-            mol = kekulized(Chem.MolToSmiles(acid))
-            if mol is None or atom >= mol.GetNumAtoms():
+            # Carry the site across the re-parse. Reusing the pre-write index scored 9 of these 398
+            # rows at the wrong atom; the same mistake, uncaught, mis-sited 28% of the training corpus.
+            mol, site = kekulized_with_site(acid, atom)
+            if mol is None:
                 continue
             try:
-                errors.append(abs(predict(full_features(mol, atom)) - observed))
+                errors.append(abs(predict(full_features(mol, site)) - observed))
             except Exception:
                 continue
         if errors:

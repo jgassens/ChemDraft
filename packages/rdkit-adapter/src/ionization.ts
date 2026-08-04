@@ -25,7 +25,7 @@
  * so a number here would be wrong by up to 20 log units with a confident label on it.
  *
  * A pKa value belongs to a method trained on measured values per site, so that is what the values come
- * from: `pkaModel.ts`, MAE 1.21 over Murcko-scaffold-held-out folds, with a per-site interval taken
+ * from: `pkaModel.ts`, MAE 1.04 over Murcko-scaffold-held-out folds, with a per-site interval taken
  * from how much its trees disagreed rather than one global error figure stamped on every row.
  *
  * **A second opinion, where one is available.** The obvious candidate was the table, and measuring it
@@ -34,23 +34,23 @@
  * whose constants come from the physical-organic literature rather than from this project's training
  * set — so its agreement with the model carries information instead of being circular.
  *
- * It reaches 5.1% of sites and declines on the rest, which is what an LFER should do. Four series
- * ship — benzoic, phenol, anilinium, pyridinium — and over the 155 sites they reach:
+ * It reaches a small fraction of sites and declines on the rest, which is what an LFER should do. Four
+ * series ship — benzoic, phenol, anilinium, pyridinium — and over the 199 sites they reach:
  *
  * | | MAE (log units) |
  * |---|---|
  * | the model alone | 0.56 |
- * | the relationship alone | 0.19 |
- * | their plain average | 0.33 |
- * | weighted by measured accuracy | 0.21 |
+ * | the relationship alone | 0.22 |
+ * | their plain average | 0.29 |
+ * | weighted by measured accuracy | 0.20 |
  *
  * The third row is the one that shaped the code: averaging is the obvious rule and it is worse than the
  * better method alone, so `combineSiteEstimates` weights by each method's own measured error.
  *
  * The fourth row does not beat the relationship on its own, and the contract says so rather than
  * claiming otherwise. What the pair buys is the INTERVAL. Their disagreement tracks actual error at
- * r = 0.87, where the forest's own tree variance manages 0.52, and the resulting interval is 6.5x
- * tighter than the model's while covering 89% of the real error.
+ * r = 0.87, where the forest's own tree variance manages 0.52, and the resulting interval covers 94%
+ * of the real error.
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
@@ -71,24 +71,31 @@
  * labelled basic and computed properly.
  *
  * **What still gets no acidic value: a plain amine's N-H.** Near 35, outside water, and zero of the
- * 3,031 training labels is an unactivated amine — a count, not a chemical opinion, and the rule was
- * checked the other way too (applied to the training set it rejects 0 rows). The amine still reports
- * its basic pKa, which is the one anybody wanted.
+ * 7,053 training labels is an unactivated amine — a count, not a chemical opinion, re-counted on the
+ * corrected corpus: of 636 acidic labels on a neutral N-H, none has only saturated carbon around it.
+ * The rule was checked the other way too (applied to the training set it rejects 0 rows). The amine
+ * still reports its basic pKa, which is the one anybody wanted.
  *
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
  * fit. `vendor/pka-model/macro_validate.py` measures it against fifteen polyprotic molecules with
- * tabulated constants — 32 values, mean error **0.44** log units. It lands within 0.38 where the sites
- * are independent (piperazine 0.05, ethylenediamine 0.07, oxalic acid the worst at 1.22) and within
- * 0.53 for zwitterions, which carry an electrostatic correction the microscopic model could not learn
+ * tabulated constants — 32 values, mean error **0.52** log units. It lands within 0.49 where the sites
+ * are independent (piperazine 0.13, ethylenediamine 0.25, oxalic acid the worst at 1.97) and within
+ * 0.60 for zwitterions, which carry an electrostatic correction the microscopic model could not learn
  * from labels that never contain an amino acid's neutral form. Zwitterions stay flagged: still the
  * weakest case, and worst where several acid/base pairs act at once.
+ *
+ * That is WORSE than the 0.44 the mis-sited corpus produced, while the per-site model improved from
+ * 1.19 to 1.04. The two are not in conflict — this is 32 values over fifteen hand-picked molecules,
+ * mostly simple diacids, against 7,053 sites — but it is not explained either, and the fold itself is
+ * being rebuilt. It is recorded here rather than smoothed over, because the last unexplained
+ * regression in this model was rationalised and turned out to be a corrupted corpus.
  *
  * **Azoles, where one proton has two homes.** Imidazole's ring nitrogens scan as two sites, and
  * flipping both at once is the proton MOVING — the tautomer, the same molecule redrawn. Enumeration
  * only assigns charges, so it built `c1c[nH+]c[n-]1`, an ylide the model scores at 6.95 where real
- * neutral imidazole is 13.84. Those microstates are excluded, which took the azoles from 1.77 to 0.49
- * and histidine's imidazolium from 2.82 to 6.45 against a measured 6.00.
+ * neutral imidazole is 13.84. Those microstates are excluded, which takes the azoles from 1.04 to 0.51
+ * and gives histidine's imidazolium 6.01 against a measured 6.00.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing
@@ -711,7 +718,7 @@ function unscorableReason(graph: PkaMolecularGraph, site: IonizationSite): strin
   if (isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
     return (
       "Drawn neutral, this amine's only acidity is that N-H losing a proton — a pKa near 35, which " +
-      "water cannot hold and no aqueous dataset records; zero of the model's 3,031 training labels is " +
+      "water cannot hold and no aqueous dataset records; zero of the model's 7,053 training labels is " +
       "an unactivated amine. Its basic pKa could not be built for this structure either."
     );
   }
@@ -754,7 +761,7 @@ export function ionizationContract(): MethodContract {
         "neutral form; against ChemAxon it lands within 0.5-0.8 on histidine's two nitrogens.",
       "A PLAIN AMINE GETS NO ACIDIC VALUE, only a basic one. A PLAIN AMINE " +
         "drawn neutral has an N-H acidity near 35, which water cannot hold and no aqueous dataset " +
-        "records — zero of the 3,031 training labels is an unactivated amine — so that half is " +
+        "records — zero of the 7,053 training labels is an unactivated amine — so that half is " +
         "withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
         "sulfonamides and thioamides keep their acidic values too: their N-H acidity IS " +
         "aqueous-measurable and IS in the data.",
@@ -764,7 +771,7 @@ export function ionizationContract(): MethodContract {
         `${PKA_MODEL_TRAINING.cvMae.toFixed(2)} log units, against ` +
         `${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)} for predicting the dataset mean. ` +
         "Against external data it has never seen (Novartis + SAMPL, 38 single-site rows) it scores " +
-        "1.24. That figure describes the method overall; the interval printed beside each value is " +
+        "1.28. That figure describes the method overall; the interval printed beside each value is " +
         "the one that describes that site.",
       "aqueous, room temperature, and drug-like organic chemistry. The training set contains no metals " +
         "at all, which is why a metal-adjacent site is reported without a value.",

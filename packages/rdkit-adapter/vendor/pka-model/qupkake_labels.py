@@ -28,6 +28,8 @@ import sys
 
 from rdkit import Chem, RDLogger
 
+from parity_features import written_smiles_with_site
+
 RDLogger.DisableLog("rdApp.*")
 
 
@@ -61,8 +63,13 @@ def extract(sdf_path, existing_path):
     known = {}
     for row in existing:
         mol = Chem.MolFromSmiles(row["acid"])
-        if mol:
-            known[(Chem.MolToSmiles(mol), row["acidAtomIdx"])] = row["pKa"]
+        if mol is None or row["acidAtomIdx"] >= mol.GetNumAtoms():
+            continue
+        # Through the same mapping as the rows below, or the key pairs a canonical SMILES with an index
+        # in the pre-canonical numbering and the two label sets never recognise a shared site.
+        smiles, site = written_smiles_with_site(mol, row["acidAtomIdx"])
+        if smiles is not None:
+            known[(smiles, site)] = row["pKa"]
 
     kept, stats = [], {}
     def drop(reason):
@@ -97,12 +104,26 @@ def extract(sdf_path, existing_path):
         else:
             drop(f"unknown pKa type {kind}"); continue
 
-        try:
-            smiles = Chem.MolToSmiles(acid)
-        except Exception:
-            drop("unwritable"); continue
-        # The index must survive canonicalisation, so store the form the index belongs to.
-        key = (smiles, idx)
+        # Writing the molecule REORDERS its atoms and drops explicit hydrogens, so the index has to be
+        # carried across rather than reused. Reusing it is what mis-sited 1,462 of these labels: the
+        # gates above passed on the SDF's numbering, and the stored index then pointed somewhere else.
+        smiles, site = written_smiles_with_site(acid, idx)
+        if smiles is None:
+            drop("site atom is not written to SMILES"); continue
+
+        # The gates again, on the atom actually stored. The pair above validates the SDF's own
+        # annotation; this validates what ships. A row that only passes one of them is a row whose
+        # index moved, and it is dropped rather than corrected by guesswork.
+        written = Chem.MolFromSmiles(smiles)
+        if written is None or site >= written.GetNumAtoms():
+            drop("stored form does not re-parse"); continue
+        stored_atom = written.GetAtomWithIdx(site)
+        if kind == "acidic" and stored_atom.GetTotalNumHs() == 0:
+            drop("acidic site has no proton once written"); continue
+        if kind == "basic" and stored_atom.GetSymbol() != "N":
+            drop("basic site is not nitrogen once written"); continue
+
+        key = (smiles, site)
 
         if key in known:
             drop("already covered by the Dwar-iBond labels"); continue
@@ -117,8 +138,8 @@ def extract(sdf_path, existing_path):
         seen[key] = pka
 
         kept.append({
-            "acid": Chem.MolToSmiles(acid, canonical=False),
-            "acidAtomIdx": idx,
+            "acid": smiles,
+            "acidAtomIdx": site,
             "pKa": pka,
             "transition": kind,
             "ref": mol.GetProp("original_dataset") if mol.HasProp("original_dataset") else "",

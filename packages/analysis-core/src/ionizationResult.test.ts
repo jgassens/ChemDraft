@@ -1,0 +1,221 @@
+/**
+ * The ionization result contract and its rendering — the two paths nothing was testing.
+ *
+ * `AnalysisResultSchema` is `.strict()` and is never parsed at runtime; only tests exercise it. So a
+ * field added to the `IonizationSite` interface but not to `IonizationSiteSchema` (or the reverse)
+ * produced no failure anywhere, and `report.ts`'s ionization block had no coverage at all. That is the
+ * gap this file closes, and it is written BEFORE the state-model change so the change has a net under
+ * it rather than beside it.
+ */
+import { describe, expect, it } from "vitest";
+
+import type { Classification } from "./classification";
+import { buildAnalysisReport } from "./report";
+import { AnalysisResultSchema, AnalysisRunSchema, AnalysisSchemaVersion } from "./results";
+
+const trained: Classification = {
+  derivation: "statistical-model",
+  claim: "prediction",
+  determinism: "deterministic",
+  flags: { conventionDependent: false, experimentallyCalibrated: true, trainedOnExperimentalData: true }
+};
+
+const base = {
+  id: "dimorphite.ionizable-sites",
+  label: "Ionizable sites",
+  methodId: "dimorphite.ionizable-sites",
+  methodVersion: "1.0.0",
+  interpretationId: "source",
+  classification: trained,
+  applicability: { status: "in-domain" as const, reasons: [], unsupportedFeatures: [] },
+  uncertainties: [],
+  conventions: [],
+  citations: [],
+  datasets: [],
+  warnings: [],
+  rawArtifacts: []
+};
+
+/** Acetic acid: one carboxyl oxygen, one value. The smallest result that is not empty. */
+const aceticAcid = {
+  ...base,
+  kind: "ionization" as const,
+  status: "ok" as const,
+  sites: [
+    {
+      atomIndices: [1, 2, 3],
+      ionizableAtomIndex: 3,
+      siteType: "Carboxylic acid",
+      transition: "acidic" as const,
+      pKa: 4.5,
+      spread: 0.4,
+      basis: "experimentally-trained-model" as const
+    }
+  ],
+  unassessed: [],
+  depiction: {
+    atoms: [
+      { index: 0, x: 0, y: 0, element: "C", charge: 0, hydrogens: 3 },
+      { index: 1, x: 1, y: 0, element: "C", charge: 0, hydrogens: 0 },
+      { index: 2, x: 1.5, y: 0.9, element: "O", charge: 0, hydrogens: 0 },
+      { index: 3, x: 1.5, y: -0.9, element: "O", charge: 0, hydrogens: 1 }
+    ],
+    bonds: [
+      { from: 0, to: 1, order: 1 },
+      { from: 1, to: 2, order: 2 },
+      { from: 1, to: 3, order: 1 }
+    ]
+  },
+  confidenceBands: { good: 0.6, poor: 1.5 },
+  macroscopic: { pKa: [4.5], inconsistency: 0, microstates: 2, zwitterionic: false }
+};
+
+const sourceInterpretation = {
+  id: "source",
+  label: "as drawn",
+  sourceHash: "fnv1a64:aaaaaaaaaaaaaaaa",
+  interpretationHash: "fnv1a64:bbbbbbbbbbbbbbbb",
+  componentPolicy: "whole-input" as const,
+  explicitHydrogenPolicy: "as-drawn",
+  isotopePolicy: "preserve-labels",
+  aromaticityModel: "rdkit-default",
+  transformations: []
+};
+
+function runWith(result: unknown) {
+  return AnalysisRunSchema.parse({
+    schemaVersion: AnalysisSchemaVersion,
+    runId: "run-1",
+    sourceHash: "fnv1a64:aaaaaaaaaaaaaaaa",
+    interpretations: [sourceInterpretation],
+    engines: [],
+    startedAt: "2026-08-03T00:00:00.000Z",
+    status: "ok",
+    results: [result],
+    warnings: [],
+    fingerprint: "fnv1a64:cccccccccccccccc"
+  });
+}
+
+describe("the ionization result schema", () => {
+  it("accepts a scored site", () => {
+    const parsed = AnalysisResultSchema.parse(aceticAcid);
+    expect(parsed.kind).toBe("ionization");
+    if (parsed.kind !== "ionization") return;
+    expect(parsed.sites).toHaveLength(1);
+    expect(parsed.sites[0]!.pKa).toBe(4.5);
+  });
+
+  it("rejects a value with no spread, and a spread with no value", () => {
+    // The pair is the estimate. A bare number reads as though it were measured.
+    const noSpread = { ...aceticAcid, sites: [{ ...aceticAcid.sites[0]!, spread: undefined }] };
+    expect(() => AnalysisResultSchema.parse(noSpread)).toThrow();
+    const noValue = { ...aceticAcid, sites: [{ ...aceticAcid.sites[0]!, pKa: null }] };
+    expect(() => AnalysisResultSchema.parse(noValue)).toThrow();
+  });
+
+  it("rejects an unknown field on a site", () => {
+    // `.strict()` is what keeps the interface and the schema from drifting apart silently.
+    const extra = { ...aceticAcid, sites: [{ ...aceticAcid.sites[0]!, madeUp: 1 }] };
+    expect(() => AnalysisResultSchema.parse(extra)).toThrow();
+  });
+
+  it("treats a result with neither sites nor gaps as carrying no payload", () => {
+    // `ok` requires a payload; an empty ionization result must declare itself not-applicable.
+    const empty = { ...aceticAcid, sites: [], unassessed: [], macroscopic: undefined, depiction: undefined };
+    expect(() => AnalysisResultSchema.parse(empty)).toThrow();
+    const declared = {
+      ...empty,
+      status: "not-applicable" as const,
+      warnings: [
+        {
+          code: "ionization.no_sites",
+          severity: "info" as const,
+          message: "Nothing in this structure ionizes in water.",
+          affectedResultIds: []
+        }
+      ]
+    };
+    expect(() => AnalysisResultSchema.parse(declared)).not.toThrow();
+  });
+
+  it("keeps an unassessed gap as a payload in its own right", () => {
+    // "There is a site here I cannot judge" is an answer, so `partial` is legitimate with zero sites.
+    const gapOnly = {
+      ...aceticAcid,
+      status: "partial" as const,
+      sites: [],
+      macroscopic: undefined,
+      depiction: undefined,
+      unassessed: [{ atomIndices: [3], reason: "adjacent to Fe" }],
+      warnings: [
+        {
+          code: "ionization.unassessed_site",
+          severity: "warning" as const,
+          message: "adjacent to Fe",
+          affectedResultIds: []
+        }
+      ]
+    };
+    expect(() => AnalysisResultSchema.parse(gapOnly)).not.toThrow();
+  });
+});
+
+describe("rendering an ionization result", () => {
+  it("draws the structure, the macroscopic values and the site table", () => {
+    const report = buildAnalysisReport(runWith(aceticAcid));
+    const kinds = report.sections.map((section) => section.kind);
+    expect(kinds).toContain("svg");
+    expect(kinds).toContain("keyValue");
+    expect(kinds).toContain("table");
+  });
+
+  it("puts the pKa into the figure rather than only the table", () => {
+    const report = buildAnalysisReport(runWith(aceticAcid));
+    const svg = report.sections.find((section) => section.kind === "svg");
+    expect(svg, "no figure was rendered").toBeDefined();
+    if (svg?.kind !== "svg") return;
+    expect(svg.svg).toContain("4.50");
+  });
+
+  it("names every site in the table", () => {
+    const report = buildAnalysisReport(runWith(aceticAcid));
+    const table = report.sections.find((section) => section.kind === "table");
+    expect(table, "no site table was rendered").toBeDefined();
+    if (table?.kind !== "table") return;
+    expect(table.rows).toHaveLength(1);
+    expect(table.rows[0]!.join(" ")).toContain("Carboxylic acid");
+  });
+
+  it("renders a partial result's values instead of dropping them", () => {
+    // The failure this guards is real: filtering on `status === "ok"` once removed a partial result's
+    // content entirely, so a molecule with one unjudgeable site lost the sites that WERE scored.
+    const partial = {
+      ...aceticAcid,
+      status: "partial" as const,
+      unassessed: [{ atomIndices: [0], reason: "adjacent to Na" }],
+      warnings: [
+        {
+          code: "ionization.unassessed_site",
+          severity: "warning" as const,
+          message: "adjacent to Na",
+          affectedResultIds: []
+        }
+      ]
+    };
+    const report = buildAnalysisReport(runWith(partial));
+    const table = report.sections.find((section) => section.kind === "table");
+    expect(table?.kind === "table" && table.rows.length).toBe(1);
+  });
+
+  it("says why no macroscopic value was folded, rather than showing nothing", () => {
+    const declined = {
+      ...aceticAcid,
+      macroscopic: undefined,
+      macroscopicDeclined: "9 ionizable sites would need 512 microstates."
+    };
+    const report = buildAnalysisReport(runWith(declined));
+    const text = report.sections.filter((section) => section.kind === "text");
+    expect(text.some((section) => section.kind === "text" && /microstates/.test(section.body))).toBe(true);
+  });
+});
