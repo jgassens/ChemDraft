@@ -7,23 +7,23 @@
   1.0,
   2.0
  ],
- "fitMae": 2.4372,
- "fitMaeUncorrected": 2.4743,
+ "fitMae": 2.7498,
+ "fitMaeUncorrected": 2.7754,
  "molecules": 186,
  "scaffoldSplit": {
   "halfA": {
    "n": 204,
-   "bestW": 2.0,
-   "mae": 2.0276,
-   "maeAtZero": 2.0813
+   "bestW": 1.0,
+   "mae": 2.3492,
+   "maeAtZero": 2.3864
   },
   "halfB": {
    "n": 191,
-   "bestW": 3.0,
-   "mae": 1.3623,
-   "maeAtZero": 1.3889
+   "bestW": 2.0,
+   "mae": 1.4869,
+   "maeAtZero": 1.5022
   }
  },
  "appliesTo": "acid/base site pairs only",
- "note": "THE EFFECT HAS COLLAPSED. Fitted against the Dwar-iBond-only corpus this term was worth 1.36 log units on zwitterions and both scaffold halves independently chose W = 7. Refitted after pKaCHU was added it is worth 0.037, the halves choose 2.0 and 3.0 against 1.0 for the whole set, and the old W = 6 is now WORSE than no correction at all. The reason is that the correction was never really physics the model could not learn -- it was physics the LABELS did not contain. Dwar-iBond records only microstates a titration populates, never an amino acid's neutral form; pKaCHU does, so the model learns the contrast directly and the hand-fitted term has almost nothing left to add."
+ "note": "THE EFFECT HAS COLLAPSED. Fitted against the Dwar-iBond-only corpus this term was worth 1.36 log units on zwitterions and both scaffold halves independently chose W = 7. Refitted after pKaCHU was added it is worth 0.026, the halves choose 1.0 and 2.0 against 1.0 for the whole set, and the old W = 6 is now WORSE than no correction at all. The reason is that the correction was never really physics the model could not learn -- it was physics the LABELS did not contain. Dwar-iBond records only microstates a titration populates, never an amino acid's neutral form; pKaCHU does, so the model learns the contrast directly and the hand-fitted term has almost nothing left to add."
 }

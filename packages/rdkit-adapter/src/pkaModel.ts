@@ -2,7 +2,7 @@
  * The trained per-site pKa model: features, forest evaluation, and the parity rule that keeps them
  * honest.
  *
- * **Provenance.** Trained here on 11,472 per-site labels from three experimental sources, and they
+ * **Provenance.** Trained here on 12,096 per-site labels from four experimental sources, and they
  * are not equally clean.
  *
  * 3,031 come from the open Dwar-iBond set (DataWarrior + iBond) that Uni-pKa distributes under
@@ -39,15 +39,20 @@
  * else here has ever had a second opinion on where the proton is.
  *
  * It is windowed: 2.0 to 12.0, with one value below and none above. That is the pharmaceutically
- * interesting range rather than the whole of chemistry, and it is why the corpus is now denser in the
- * middle than at the extremes.
+ * interesting range rather than the whole of chemistry.
+ *
+ * 624 come from the AQUEOUS rows of D2A-pKa (Zenodo 15277342, CC BY 4.0), which is what widens the
+ * range back out: -3.88 to 16.90, plus 252 carbon-centred and 141 sulfur-centred sites, the classes
+ * measured worst here. Only water is taken and that is a hard filter — the other 4,445 rows are DMSO,
+ * acetonitrile, DMF and alcohols, where the same molecule's pKa differs by more than ten log units.
+ * Every aqueous row is a neutral acid losing a proton, so it adds nothing to the basic side.
  *
  * No pKa VALUE is inherited from another predictor — the supervised signal is measured throughout — so
  * results carry `basis: "experimentally-trained-model"`.
  *
  * **Accuracy: MAE 1.02 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation
- * (4,415 scaffolds), against 2.34 for predicting the dataset mean. On 398 external rows it has never
- * seen — QupKake's Novartis and literature sets — it scores **1.21 +/- 0.07**.
+ * (4,626 scaffolds), against 2.48 for predicting the dataset mean. On 398 external rows it has never
+ * seen — QupKake's Novartis and literature sets — it scores **1.24 +/- 0.07**.
  *
  * Both moved the right way this time, which the previous retrain did not manage: correcting the
  * mis-sited labels took the internal figure 1.19 -> 1.04 while the external stayed put, and adding
@@ -91,6 +96,16 @@
  * membership is likewise recomputed, by pruning degree-1 atoms.
  * `vendor/pka-model/parity-fixture.json` pins ten molecules' features, predictions and tree
  * disagreement against the Python that trained the model, so drift in either direction fails a test.
+ *
+ * It has now earned its keep twice. The second time, a retrain happened to select a quinolinium as a
+ * fixture molecule and the fixture failed on `r2_aromatic`: 4 in TypeScript, 5 in Python. The cause was
+ * the aromaticity rule's "C=O drains the ring" clause rejecting ANY exocyclic double bond to a
+ * heteroatom, including a bond to a FUSED partner. Quinoline's benzo ring has a fusion atom whose
+ * double bond points at the ring nitrogen, so both sides called that ring non-aromatic — and Python
+ * then rescued it through a ten-membered perimeter cycle while TypeScript did not. Every fused
+ * heteroaromatic was therefore being featurised differently at inference than in training: quinoline,
+ * quinoxaline, purine, benzothiazole, benzimidazole. Degree is the discriminator — a carbonyl oxygen
+ * has one neighbour, a fused ring atom has two or more — and no fixture molecule had exposed it before.
  */
 import { localEnvironmentFeatures, siteContext } from "./pkaAromaticity";
 import calibrationJson from "../vendor/pka-model/calibration.json";

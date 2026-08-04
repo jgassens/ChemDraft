@@ -102,8 +102,19 @@ function ringIsAromatic(
     const hasOwnDouble = adjacency[i]!.some((j) => order(i, j) > 1);
     // sp3 centre: not part of a flat system.
     if (adjacency[i]!.length + atom.hydrogens >= 4 && !hasOwnDouble) return false;
-    // C=O / C=S draining the ring.
-    if (adjacency[i]!.some((j) => order(i, j) > 1 && !ring.has(j) && graph.atoms[j]!.element !== "C")) {
+    // A TERMINAL =O / =S draining the ring — not a fused partner. Rejecting on "the partner is not
+    // carbon" alone declared quinoline's benzo ring non-aromatic, because its fusion atom's double
+    // bond points at the ring nitrogen. Degree separates the two: a carbonyl oxygen has one
+    // neighbour, a fused ring atom has two or more.
+    if (
+      adjacency[i]!.some(
+        (j) =>
+          order(i, j) > 1 &&
+          !ring.has(j) &&
+          graph.atoms[j]!.element !== "C" &&
+          adjacency[j]!.length === 1
+      )
+    ) {
       return false;
     }
     if (hasOwnDouble) pi += 1;

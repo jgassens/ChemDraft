@@ -61,9 +61,14 @@ def ring_is_aromatic(atoms, bonds, adj, cycle):
 
     Benzene 6, pyridine 6, pyrrole 4+2, imidazole 4+2, tetrazole 4+2, naphthalene 6 either way.
 
-    The exocyclic clause rejects only a double bond to a HETEROATOM. That is what disqualifies
-    p-benzoquinone, whose carbonyls drain the ring; a double bond to a fused carbon partner is
-    ordinary aromatic chemistry and must not be rejected with it.
+    The exocyclic clause rejects a double bond to a TERMINAL heteroatom. That is what disqualifies
+    p-benzoquinone, whose carbonyls drain the ring. It must not reject a double bond to a fused
+    partner, of either element: quinoline's benzo ring has a fusion atom whose double bond points at
+    the ring NITROGEN, and rejecting on "the partner is not carbon" declared that ring non-aromatic.
+    Python happened to rescue it through a ten-membered perimeter cycle and TypeScript did not, so the
+    two disagreed on every fused heteroaromatic -- quinoline, quinoxaline, purine, benzothiazole,
+    benzimidazole. Degree is the discriminator: a carbonyl oxygen has one neighbour, a fused ring atom
+    has two or more.
     """
     ring = set(cycle)
     pi = 0
@@ -72,8 +77,9 @@ def ring_is_aromatic(atoms, bonds, adj, cycle):
         own_double = any(bonds.get((i, j), 1) > 1 for j in adj[i])
         if len(adj[i]) + a["h"] >= 4 and not own_double:
             return False   # sp3 centre: not part of a flat system
-        if any(bonds.get((i, j), 1) > 1 and j not in ring and atoms[j]["el"] != "C" for j in adj[i]):
-            return False   # C=O / C=S draining the ring
+        if any(bonds.get((i, j), 1) > 1 and j not in ring and atoms[j]["el"] != "C" and len(adj[j]) == 1
+               for j in adj[i]):
+            return False   # a TERMINAL =O / =S draining the ring, not a fused partner
         if own_double:
             pi += 1
         elif a["el"] in ("N", "O", "S"):

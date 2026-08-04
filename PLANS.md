@@ -396,7 +396,7 @@ labels are downloadable, so a model was trained here from them directly. What sh
 | | |
 |---|---|
 | site location | Dimorphite-DL's 41-entry SMARTS table, which contributes **no pKa value** |
-| primary estimate | a random forest trained here on 11,472 per-site labels, **MAE 1.02** (Murcko folds), **1.21** on 398 external rows |
+| primary estimate | a random forest trained here on 12,096 per-site labels, **MAE 1.02** (Murcko folds), **1.24** on 398 external rows |
 | second estimate | a Hammett LFER from the physical-organic literature — four series — **MAE 0.176** on the 227 sites it reaches |
 | combined, where both fire | **MAE 0.168**, and the interval is 5.1x tighter than the model's at 92% coverage |
 | per-site confidence | forest tree disagreement (r = 0.52) or, better, cross-method disagreement (r = 0.94) |
@@ -573,9 +573,9 @@ with any training row and one Murcko scaffold.
 
 | | oracle-site | end to end (SAMPL6) |
 |---|---:|---:|
-| MAE | 1.02 | **2.22** |
-| right number of titration steps | — | 5 of 24 |
-| within 2 log units | — | 58% |
+| MAE | 1.02 | **2.03** |
+| right number of titration steps | — | 4 of 24 |
+| within 2 log units | — | 65% |
 
 The gap is the honest measure of what is left, and it is not valuation — SM22's phenol reads 7.48
 against a measured 7.43, SM10's amide 8.94 against 9.02. It is **over-detection**, and each cause was

@@ -5,27 +5,27 @@
  "byClass": {
   "independent": {
    "values": 18,
-   "raw_ladder": 0.3305,
-   "+_coupling": 0.3305,
-   "+_tautomer_exclusion": 0.3305
+   "raw_ladder": 0.2638,
+   "+_coupling": 0.2638,
+   "+_tautomer_exclusion": 0.2638
   },
   "zwitterionic": {
    "values": 10,
-   "raw_ladder": 0.4467,
-   "+_coupling": 0.3728,
-   "+_tautomer_exclusion": 0.2807
+   "raw_ladder": 0.5695,
+   "+_coupling": 0.4914,
+   "+_tautomer_exclusion": 0.4106
   },
   "azole": {
    "values": 4,
-   "raw_ladder": 1.6931,
-   "+_coupling": 1.6931,
-   "+_tautomer_exclusion": 0.5407
+   "raw_ladder": 1.3922,
+   "+_coupling": 1.3922,
+   "+_tautomer_exclusion": 0.6201
   },
   "ALL": {
    "values": 32,
-   "raw_ladder": 0.5371,
-   "+_coupling": 0.514,
-   "+_tautomer_exclusion": 0.3412
+   "raw_ladder": 0.5004,
+   "+_coupling": 0.476,
+   "+_tautomer_exclusion": 0.3542
   }
  }
 }

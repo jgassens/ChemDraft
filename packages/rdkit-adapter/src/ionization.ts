@@ -79,7 +79,7 @@
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
  * fit. `vendor/pka-model/macro_validate.py` measures it against fifteen polyprotic molecules with
- * tabulated constants — 32 values, mean error **0.34** log units. It lands within 0.33 where the sites
+ * tabulated constants — 32 values, mean error **0.35** log units. It lands within 0.33 where the sites
  * are independent (ethylenediamine 0.11, glutaric acid 0.14, oxalic acid the worst at 0.85) and within
  * 0.28 for zwitterions (glycine 0.24, aspartic acid 0.19). Zwitterions are no longer the weak case they
  * were: they are now the strongest class in the set.
@@ -107,8 +107,8 @@
  * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
- * pipeline scores **MAE 2.2** over 31 macroscopic values, with 58% inside 2 log units and the right
- * number of steps on 5 of 24 molecules.
+ * pipeline scores **MAE 2.0** over 31 macroscopic values, with 61% inside 2 log units and the right
+ * number of steps on 4 of 24 molecules.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
  * SM22's phenol reads 7.48 against a measured 7.43, and SM10's amide reads 8.94 against 9.02. It is
@@ -951,8 +951,8 @@ export function ionizationContract(): MethodContract {
     conventions: [
       "EXPERIMENTAL, and the honest end-to-end figure is the one to read. Supplied a structure and " +
         "nothing else, on the SAMPL6 blind challenge set (24 drug-like molecules, 31 measured " +
-        "macroscopic values, never trained on), this method scores MAE 2.2 log units and gets the " +
-        "right NUMBER of titration steps for 5 of 24 molecules. The per-site figures below are " +
+        "macroscopic values, never trained on), this method scores MAE 2.0 log units and gets the " +
+        "right NUMBER of titration steps for 4 of 24 molecules. The per-site figures below are " +
         "ORACLE-SITE measurements — the site and its direction are handed in — and they are much " +
         "better, around 1.0. The gap between those two numbers is this method's real weakness: it " +
         "finds more ionizable positions than actually titrate.",

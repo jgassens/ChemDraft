@@ -27,10 +27,12 @@
 # TypeScript still computes what was just trained. A green suite here is the actual acceptance gate.
 set -euo pipefail
 
-LABELS="${1:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv]}"
-DATASET="${2:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv]}"
+LABELS="${1:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv]}"
+DATASET="${2:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv]}"
 # Optional third source. Omitted, the corpus is just the first two and everything below still runs.
 PKACHU="${3:-}"
+# Optional fourth source. AQUEOUS ROWS ONLY -- see d2a_labels.py; the file is eight solvents deep.
+D2A="${4:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python3}"
 cd "$HERE"
@@ -51,6 +53,17 @@ MERGE
 if [ -n "$PKACHU" ]; then
   "$PYTHON" pkachu_labels.py "$PKACHU" ./merged-labels.json ./pkachu-labels.json
   "$PYTHON" - ./merged-labels.json ./pkachu-labels.json <<'MERGE'
+import json, sys
+base = json.load(open(sys.argv[1]))
+extra = json.load(open(sys.argv[2]))
+json.dump(base + extra, open(sys.argv[1], "w"))
+print(f"   {len(base)} + {len(extra)} = {len(base) + len(extra)} labels")
+MERGE
+fi
+
+if [ -n "$D2A" ]; then
+  "$PYTHON" d2a_labels.py "$D2A" ./merged-labels.json ./d2a-labels.json
+  "$PYTHON" - ./merged-labels.json ./d2a-labels.json <<'MERGE'
 import json, sys
 base = json.load(open(sys.argv[1]))
 extra = json.load(open(sys.argv[2]))
