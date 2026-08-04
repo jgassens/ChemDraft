@@ -492,6 +492,32 @@ describe("acidic and basic are reported separately", () => {
     expect(merged[0]!.transition).toBe("basic");
   });
 
+  it.each([
+    ["N-methylpyrrole", "Cn1cccc1"],
+    ["N-methylindole", "Cn1ccc2c1cccc2"]
+  ])("offers no basic value on %s, whose nitrogen is substituted but still pyrrole-type", async (_n, smiles) => {
+    // A pyrrole-type nitrogen donates its lone pair to the sextet because of its BONDING. The methyl
+    // replaces the hydrogen, not the lone pair. The rule used to short-circuit to "basic" for any ring
+    // nitrogen with no hydrogen, so N-methylindole reported a pKa of 4.75 with an interval of 2.40 —
+    // confident enough to be drawn as a titration curve, for a molecule that has no basic nitrogen at
+    // all. Pyrrole protonates on CARBON, near -3.8.
+    const { result } = await ionization(smiles);
+    expect(result.sites.filter((site) => site.acidCharge > 0)).toEqual([]);
+  });
+
+  it.each([
+    ["pyridine", "c1ccncc1", 1],
+    ["piperidine", "C1CCNCC1", 1],
+    ["morpholine", "C1COCCN1", 1],
+    ["N-methylpiperazine", "CN1CCNCC1", 2],
+    ["N-methylimidazole", "Cn1ccnc1", 1]
+  ])("still gives %s its basic nitrogen(s)", async (_n, smiles, expected) => {
+    // The rule must not have been bought by suppressing real basicity. A saturated ring nitrogen has
+    // no sextet to donate into, and a pyridine-type one carries the ring's double bond itself.
+    const { result } = await ionization(smiles as string);
+    expect(result.sites.filter((site) => site.acidCharge > 0)).toHaveLength(expected as number);
+  });
+
   it("does not offer a basic value on a pyrrole-type ring nitrogen", async () => {
     // Imidazole's N-H has its lone pair in the aromatic sextet — it is not available, and protonating
     // it would describe a species that does not form. Piperidine, which looks similar to a naive test

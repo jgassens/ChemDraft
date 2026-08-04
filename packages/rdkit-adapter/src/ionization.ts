@@ -111,10 +111,25 @@
  * number of steps on 5 of 24 molecules.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
- * SM22's phenol reads 7.48 against a measured 7.43. It is OVER-DETECTION. The scan offers a basicity
- * to every aromatic ring nitrogen and to amide nitrogens, and scores an amide N-H near 8 where it is
- * really about 16, so a molecule with one real pKa can come back with five. Those are chemistry
- * defects in the site table and the model, and they need chemistry to fix.
+ * SM22's phenol reads 7.48 against a measured 7.43, and SM10's amide reads 8.94 against 9.02. It is
+ * OVER-DETECTION — a molecule with one real pKa comes back with several — and the causes were pursued
+ * one at a time, each gated on what the corpus actually contains.
+ *
+ * FIXED: an N-substituted pyrrole-type ring nitrogen was treated as basic. See `acceptsAProton`. One
+ * training label in 11,472 argues otherwise, so it shipped.
+ *
+ * NOT FIXED, twice measured and twice declined: amide-nitrogen basicity. The obvious rule is that an
+ * amide's lone pair is delocalised into the carbonyl so it cannot be protonated, and urea and
+ * acetamide both need it. But the corpus holds 35 measured basic pKa values on plain amide nitrogens
+ * and 22 more on amidine-like ones — acylaminothiazoles near 8.9, acylsulfonamides near 4.9 — so the
+ * model has learned real chemistry there and the rule would suppress it. Distinguishing an activated
+ * amide from acetamide needs chemistry this method does not have yet.
+ *
+ * ALSO CONSIDERED AND REJECTED: gating on the model's measured per-class accuracy, which ranges from
+ * 0.51 for carboxyls to 4.65 for sulfonyl oxygens. It would not help — every class involved in the
+ * over-detection above is one the model is decent at (1.1 to 1.4), and the badly calibrated classes do
+ * not appear. The residual is site LOCATION, not valuation confidence, and a confidence gate cannot
+ * reach it.
  *
  * What is done in the meantime is narrow and stated: a rung whose interval spans more than half the
  * aqueous range is not folded into the macroscopic curve, because such a rung locates no step. It is
@@ -450,7 +465,10 @@ function acceptsAProton(graph: PkaMolecularGraph, atomIndex: number, ring: reado
   }
   // Already at four bonds' worth of valence: nothing left to protonate.
   if (neighbours.length + ownDoubleBonds + atom.hydrogens >= 4) return false;
-  if (atom.hydrogens === 0 || !ring[atomIndex]) return true;
+  // Outside a ring there is no sextet to donate into, so a lone pair is available.
+  if (!ring[atomIndex]) return true;
+  // Pyridine-type: the nitrogen carries the ring's double bond itself, so its lone pair sits in the
+  // sigma plane and is free. This is the basic ring nitrogen.
   if (ownDoubleBonds > 0) return true;
 
   const ringNeighboursWithDoubleBond = neighbours.filter((neighbour) => {
@@ -460,7 +478,25 @@ function acceptsAProton(graph: PkaMolecularGraph, atomIndex: number, ring: reado
       return bond.order > 1 && (a === neighbour || b === neighbour) && ring[a === neighbour ? b : a];
     });
   });
-  // Pyrrole-type: an N-H in a ring whose neighbours carry the ring's double bonds.
+  /**
+   * Pyrrole-type: a ring nitrogen with no double bond of its own, whose neighbours carry the ring's.
+   * Its lone pair is IN the aromatic sextet and is not available to a proton.
+   *
+   * This deliberately does not ask whether the third substituent is a hydrogen. It used to — a
+   * nitrogen with no hydrogen returned "basic" before reaching this test at all — and that is a
+   * statement about drawing rather than about chemistry. N-methylpyrrole's nitrogen is exactly as
+   * unavailable as pyrrole's; the methyl replaces the hydrogen, not the lone pair. The consequences
+   * were not subtle: N-methylpyrrole was given a basic pKa of 5.6 and N-methylindole 4.7, when neither
+   * nitrogen is basic at all (pyrrole protonates on CARBON, near -3.8), and N-methylimidazole and
+   * 1-phenylpyrazole each reported two basic sites where they have one. N-substituted azoles are
+   * everywhere in drug molecules, which is why the SAMPL6 blind set surfaced this and no curated test
+   * had.
+   *
+   * Evidence, on the same standard as the unactivated-amine rule: of 11,472 training labels, exactly
+   * ONE is a basic pKa on an N-substituted pyrrole-type ring nitrogen — a bridged diarylamine whose
+   * geometry keeps its lone pair out of conjugation. One row is the price of not inventing a basicity
+   * for every N-alkyl azole.
+   */
   return ringNeighboursWithDoubleBond.length < 2;
 }
 

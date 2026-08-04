@@ -578,10 +578,28 @@ with any training row and one Murcko scaffold.
 | within 2 log units | — | 58% |
 
 The gap is the honest measure of what is left, and it is not valuation — SM22's phenol reads 7.48
-against a measured 7.43. It is **over-detection**: the scan offers a basicity to every aromatic ring
-nitrogen and to amide nitrogens, and scores an amide N-H near 8 where it is really about 16, so a
-molecule with one real pKa can come back with five. Fixing that needs chemistry in the site table, not
-another filter.
+against a measured 7.43, SM10's amide 8.94 against 9.02. It is **over-detection**, and each cause was
+chased with the same evidence gate the unactivated-amine rule set: does the corpus contain labels the
+rule would suppress?
+
+| candidate rule | corpus labels against it | shipped |
+|---|---:|---|
+| an N-substituted pyrrole-type ring N is not basic | 1 of 11,472 | **yes** |
+| an amide N is not basic | 35 of 11,472 (+22 amidine-like) | no |
+| gate on the model's measured per-class accuracy | — | no, would not help |
+
+The pyrrole one matters more than its SAMPL6 effect suggests, which is nil: the interval filter already
+suppressed those particular rungs. What it fixes is **confident** fabrication — N-methylindole was
+reporting a titration curve at pH 4.75 with an interval of 2.40, well inside the filter, for a molecule
+with no basic nitrogen at all. Pyrrole protonates on carbon, near −3.8. N-substituted azoles are
+everywhere in drug chemistry and no curated test had one.
+
+The amide rule failed its gate twice, the second time on a corpus 63% larger. Acylaminothiazoles near
+8.9 and acylsulfonamides near 4.9 are real measurements; telling those from acetamide needs chemistry
+this method does not have. The per-class gate was rejected on measurement rather than principle — every
+class involved in the over-detection is one the model is decent at (1.1–1.4), and the badly calibrated
+classes (sulfonyl oxygens at 4.65) never appear. The residual is site LOCATION, and no confidence gate
+reaches it.
 
 What was done meanwhile is narrow: a rung whose interval spans more than half the aqueous range is not
 folded into the macroscopic curve, since such a rung locates no step. It is still reported with its
