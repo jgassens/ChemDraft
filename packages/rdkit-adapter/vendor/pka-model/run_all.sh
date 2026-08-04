@@ -27,8 +27,10 @@
 # TypeScript still computes what was just trained. A green suite here is the actual acceptance gate.
 set -euo pipefail
 
-LABELS="${1:?usage: ./run_all.sh <labels.json> <uni-pka-dataset-dir>}"
-DATASET="${2:?usage: ./run_all.sh <labels.json> <uni-pka-dataset-dir>}"
+LABELS="${1:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv]}"
+DATASET="${2:?usage: ./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv]}"
+# Optional third source. Omitted, the corpus is just the first two and everything below still runs.
+PKACHU="${3:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python3}"
 cd "$HERE"
@@ -43,6 +45,20 @@ json.dump(base + extra, open(sys.argv[3], "w"))
 print(f"   {len(base)} + {len(extra)} = {len(base) + len(extra)} labels")
 MERGE
 
+# pKaCHU last, so it deduplicates against BOTH earlier sources rather than only the first. Nearly half
+# of it is already covered by them -- 94% of the overlapping values are identical to the stored
+# precision, so those are one measurement arriving twice rather than two measurements.
+if [ -n "$PKACHU" ]; then
+  "$PYTHON" pkachu_labels.py "$PKACHU" ./merged-labels.json ./pkachu-labels.json
+  "$PYTHON" - ./merged-labels.json ./pkachu-labels.json <<'MERGE'
+import json, sys
+base = json.load(open(sys.argv[1]))
+extra = json.load(open(sys.argv[2]))
+json.dump(base + extra, open(sys.argv[1], "w"))
+print(f"   {len(base)} + {len(extra)} = {len(base) + len(extra)} labels")
+MERGE
+fi
+
 echo "==> training (also emits the feature matrix and the parity fixture)"
 "$PYTHON" pka_train.py ./merged-labels.json .
 
@@ -51,6 +67,11 @@ echo "==> interval calibration"
 
 echo "==> consensus with the Hammett relationship"
 "$PYTHON" consensus_calibrate.py ./merged-labels.json . >/dev/null
+
+# The coupling refit. Left out of this script originally, so the shipped W stayed fitted to a corpus
+# that had since been corrected and retrained under it -- and turned out to be actively harmful.
+echo "==> electrostatic coupling refit"
+"$PYTHON" coupling_fit.py "$LABELS" ./macro-reference.json 400
 
 echo "==> external validation"
 "$PYTHON" external_eval.py "$DATASET" . >/dev/null

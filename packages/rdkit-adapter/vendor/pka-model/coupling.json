@@ -1,35 +1,29 @@
 {
  "measurement": "fitted against observed MACROSCOPIC pKa, an aggregate the microscopic training labels do not contain",
- "source": "Dwar-iBond rows grouped by parent molecule; 186 polyprotic molecules whose ladder produced exactly as many steps as were observed",
+ "source": "Dwar-iBond rows grouped by parent molecule; polyprotic molecules whose ladder produced exactly as many steps as were observed",
  "form": "dpKa_i = -W * sum over OTHER sites j of q_j / d_ij, with d the through-bond distance",
- "W": 6.0,
+ "W": 1.0,
  "flatRegion": [
-  6.0,
-  8.0
+  1.0,
+  2.0
  ],
- "note": "1/d, plain Coulomb. Fitting 1/d^1.5 and 1/d^2 as well moved the fitting-set MAE the wrong way (2.326 -> 2.351 -> 2.422) for a marginal gain on four validation molecules, so no exponent was added.",
- "fitMae": 2.326,
- "fitMaeUncorrected": 2.753,
+ "fitMae": 2.4372,
+ "fitMaeUncorrected": 2.4743,
+ "molecules": 186,
  "scaffoldSplit": {
   "halfA": {
-   "n": 77,
-   "bestW": 7.0,
-   "mae": 2.197,
-   "maeAtZero": 2.636
+   "n": 204,
+   "bestW": 2.0,
+   "mae": 2.0276,
+   "maeAtZero": 2.0813
   },
   "halfB": {
-   "n": 109,
-   "bestW": 7.0,
-   "mae": 2.404,
-   "maeAtZero": 2.836
+   "n": 191,
+   "bestW": 3.0,
+   "mae": 1.3623,
+   "maeAtZero": 1.3889
   }
  },
  "appliesTo": "acid/base site pairs only",
- "validation": {
-  "set": "twelve polyprotic molecules with trusted reference values",
-  "zwitterionicMaeBefore": 2.06,
-  "zwitterionicMaeAfter": 0.7,
-  "independentMaeBefore": 0.28,
-  "independentMaeAfter": 0.28
- }
+ "note": "THE EFFECT HAS COLLAPSED. Fitted against the Dwar-iBond-only corpus this term was worth 1.36 log units on zwitterions and both scaffold halves independently chose W = 7. Refitted after pKaCHU was added it is worth 0.037, the halves choose 2.0 and 3.0 against 1.0 for the whole set, and the old W = 6 is now WORSE than no correction at all. The reason is that the correction was never really physics the model could not learn -- it was physics the LABELS did not contain. Dwar-iBond records only microstates a titration populates, never an amino acid's neutral form; pKaCHU does, so the model learns the contrast directly and the hand-fitted term has almost nothing left to add."
 }

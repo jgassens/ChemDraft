@@ -25,7 +25,7 @@
  * so a number here would be wrong by up to 20 log units with a confident label on it.
  *
  * A pKa value belongs to a method trained on measured values per site, so that is what the values come
- * from: `pkaModel.ts`, MAE 1.04 over Murcko-scaffold-held-out folds, with a per-site interval taken
+ * from: `pkaModel.ts`, MAE 1.02 over Murcko-scaffold-held-out folds, with a per-site interval taken
  * from how much its trees disagreed rather than one global error figure stamped on every row.
  *
  * **A second opinion, where one is available.** The obvious candidate was the table, and measuring it
@@ -79,23 +79,30 @@
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
  * fit. `vendor/pka-model/macro_validate.py` measures it against fifteen polyprotic molecules with
- * tabulated constants — 32 values, mean error **0.52** log units. It lands within 0.49 where the sites
- * are independent (piperazine 0.13, ethylenediamine 0.25, oxalic acid the worst at 1.97) and within
- * 0.60 for zwitterions, which carry an electrostatic correction the microscopic model could not learn
- * from labels that never contain an amino acid's neutral form. Zwitterions stay flagged: still the
- * weakest case, and worst where several acid/base pairs act at once.
+ * tabulated constants — 32 values, mean error **0.34** log units. It lands within 0.33 where the sites
+ * are independent (ethylenediamine 0.11, glutaric acid 0.14, oxalic acid the worst at 0.85) and within
+ * 0.28 for zwitterions (glycine 0.24, aspartic acid 0.19). Zwitterions are no longer the weak case they
+ * were: they are now the strongest class in the set.
  *
- * That is WORSE than the 0.44 the mis-sited corpus produced, while the per-site model improved from
- * 1.19 to 1.04. The two are not in conflict — this is 32 values over fifteen hand-picked molecules,
- * mostly simple diacids, against 7,053 sites — but it is not explained either, and the fold itself is
- * being rebuilt. It is recorded here rather than smoothed over, because the last unexplained
- * regression in this model was rationalised and turned out to be a corrupted corpus.
+ * The previous corpus produced 0.52 here, and the one before that 0.44 while being measurably wrong —
+ * the number moved the wrong way when the labels were corrected, which was recorded rather than
+ * smoothed over and has now resolved on its own. Adding pKaCHU, which contains the amino-acid
+ * microstates the earlier sources never recorded, took it to 0.34.
  *
  * **Azoles, where one proton has two homes.** Imidazole's ring nitrogens scan as two sites, and
  * flipping both at once is the proton MOVING — the tautomer, the same molecule redrawn. Enumeration
  * only assigns charges, so it built `c1c[nH+]c[n-]1`, an ylide the model scores at 6.95 where real
- * neutral imidazole is 13.84. Those microstates are excluded, which takes the azoles from 1.04 to 0.51
- * and gives histidine's imidazolium 6.01 against a measured 6.00.
+ * neutral imidazole is 13.84. Those microstates are excluded, which takes the azoles from 1.69 to 0.54.
+ * The exclusion is no longer limited to aromatic rings: urea's two nitrogens across a carbonyl are the
+ * same case, and the model placed their ylide 1.7 log units BELOW neutral urea.
+ *
+ * **The electrostatic coupling has almost nothing left to do, and that is the interesting part.** It
+ * was introduced because zwitterions scored 2.06 against 0.28 for everything else, and a one-parameter
+ * Coulomb term across acid/base pairs closed most of it — both halves of a scaffold split independently
+ * choosing W = 7. Refitted after pKaCHU, the optimum is W = 1, it is worth 0.037 log units, and the old
+ * W = 6 is WORSE than switching the term off. The correction was never physics the model could not
+ * learn; it was physics the LABELS did not contain, and a corpus that contains it makes the hand-fitted
+ * term redundant.
  *
  * **Why it declines on metals rather than guessing.** Measured across every training and test set the
  * open pKa models ship — 1.57M molecules — the count of metal-containing structures is zero. Nothing

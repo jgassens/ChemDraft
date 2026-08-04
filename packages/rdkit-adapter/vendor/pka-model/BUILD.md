@@ -16,14 +16,14 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 
 | file | bytes | sha256 |
 |---|---:|---|
-| `calibration.json` | 1,793 | `89cc2246d68166a3e1b0549554a3af01cdb9edc437ed6f87541bc5bd35a3227b` |
-| `consensus-calibration.json` | 612 | `1892f17ab1800ba672926689f467c59914647dc93a7e4c35856fcddaef3846b1` |
-| `coupling.json` | 1,119 | `a054f749b30f8b3636ade37eac26842bbe321bd79c81906e0a6007e34d3b970e` |
-| `external-validation.json` | 445 | `2d8cb8cd06110c5ec915e95db698bdc19ec6954c8ccb9ab34265abb7747f27b0` |
+| `calibration.json` | 2,033 | `97e22ad18533a8751fa46ca8dd00b4e4923bde517f7016032c99d8093031de01` |
+| `consensus-calibration.json` | 612 | `4a77156b7521f6b5961bd1c6d37e5362ac7bb832f58eaeadbcf7aa3b1f8b9035` |
+| `coupling.json` | 1,406 | `e8510371ceb9e6c3ded4b55395743b41f398f9ceba6654e802ffc7fa433d7fa4` |
+| `external-validation.json` | 445 | `781574f901ece3214ad2602fc46ba8171452866d70237065eda65115c3576c64` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
-| `site-pka-forest.json` | 3,642,881 | `9fbef9a6dbd30c936b7f85ddd2ad6d79f80e5b8bc791d03ffaf21e9462aaade3` |
+| `site-pka-forest.json` | 5,776,765 | `3b23f40af468e32243b1457c6b757e1592216bffb0e988df449f4944aee84bc2` |
 
-**Manifest:** `68ea7c7335ac644060112526c858ad665444b04921efeff85cc7874ed8bde8b9`
+**Manifest:** `4196aad4ecfb3ed008bf5042c943462e2011f37892cd5e80516d8632511fe884`
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.

@@ -16,6 +16,7 @@ molecule has more sites than tabulated values, only the tabulated ones are compa
 predictions are reported but not scored, because there is nothing to score them against.
 """
 
+import json
 import sys
 
 import numpy as np
@@ -47,7 +48,9 @@ SET = [
     ("pyrazole", "c1cc[nH]n1", [2.49, 14.2], "azole"),
 ]
 
-W = 6.0
+# Read from the artifact, never typed in: this was 6.0 here long after the fit had moved, so the
+# published table was measured with a coupling the shipped code did not use.
+W = json.load(open("coupling.json"))["W"]
 
 
 def run(drop_tautomer_states=True, w=W):
@@ -97,6 +100,20 @@ def main():
             errors = [e for r in rows for e in r[4]]
             line += f" {np.mean(errors):>22.2f}"
         print(line)
+
+    # Written out so the published table is an artifact a test can read rather than prose someone has
+    # to retype. `protonation.test.ts` asserts the coupling's worth from this file.
+    summary = {"measurement": "macroscopic pKa against tabulated titration constants",
+               "molecules": len(SET), "W": W, "byClass": {}}
+    for kind in ("independent", "zwitterionic", "azole", "ALL"):
+        rows = [r for r in final if kind in ("ALL", r[1])]
+        summary["byClass"][kind] = {
+            "values": sum(len(r[4]) for r in rows),
+            **{name.replace(" ", "_"): round(float(np.mean(
+                [e for r in both[name] if kind in ("ALL", r[1]) for e in r[4]])), 4)
+               for name, _ in VARIANTS},
+        }
+    json.dump(summary, open("macro-validation.json", "w"), indent=1)
 
     # The fold must not silently lose a titration step for the molecules it excludes states from.
     for name, kind, got, observed, errors, pairs in final:

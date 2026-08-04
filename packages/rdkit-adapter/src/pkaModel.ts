@@ -2,8 +2,8 @@
  * The trained per-site pKa model: features, forest evaluation, and the parity rule that keeps them
  * honest.
  *
- * **Provenance.** Trained here on 7,053 per-site labels from two experimental sources, and the
- * two are not equally clean.
+ * **Provenance.** Trained here on 11,472 per-site labels from three experimental sources, and they
+ * are not equally clean.
  *
  * 3,031 come from the open Dwar-iBond set (DataWarrior + iBond) that Uni-pKa distributes under
  * Apache-2.0, where each label is an acid/base microstate pair differing at exactly one atom — the
@@ -28,18 +28,31 @@
  * to the stored precision** (median difference 0.000, 99.5% within 0.5, two above 1.0). That is one
  * measurement reaching us through two datasets, not two measurements, so it is counted once.
  *
+ * 4,419 come from pKaCHU (Zenodo 20089807, CC BY 4.0), which ships 9,000 experimental aqueous values
+ * already as acid/base microstate PAIRS — the same shape as Dwar-iBond, so the same site-diffing code
+ * reads it. Nearly half of it, 4,342 rows, was already covered by the other two, and 94.4% of those
+ * overlapping values are identical to the stored precision: one measurement arriving twice.
+ *
+ * pKaCHU also carries the first INDEPENDENT check this model has had on site identity. Its `prefix`
+ * column says whether the ionizing group is a protonated cation or a neutral acid, which must agree
+ * with the changed atom's formal charge in the acid. It agrees on **8,764 of 8,764** rows. Nothing
+ * else here has ever had a second opinion on where the proton is.
+ *
+ * It is windowed: 2.0 to 12.0, with one value below and none above. That is the pharmaceutically
+ * interesting range rather than the whole of chemistry, and it is why the corpus is now denser in the
+ * middle than at the extremes.
+ *
  * No pKa VALUE is inherited from another predictor — the supervised signal is measured throughout — so
  * results carry `basis: "experimentally-trained-model"`.
  *
- * **Accuracy: MAE 1.04 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation
- * (2,887 scaffolds), against 2.37 for predicting the dataset mean — down from 1.19 on the mis-sited
- * corpus. On 398 external rows it has never seen — QupKake's Novartis and literature sets — it scores
- * 1.28 +/- 0.07.
+ * **Accuracy: MAE 1.02 log units** under Bemis-Murcko-scaffold-grouped 5-fold cross-validation
+ * (4,415 scaffolds), against 2.34 for predicting the dataset mean. On 398 external rows it has never
+ * seen — QupKake's Novartis and literature sets — it scores **1.21 +/- 0.07**.
  *
- * The external figure did NOT improve, and the honest reading is that it did not move: the evaluator
- * had the same index bug, so the old 1.24 was itself measured partly at the wrong atoms. Correcting the
- * evaluator alone scores the OLD forest at 1.23; the new forest scores 1.28. That difference is smaller
- * than the standard error on either. The internal 0.16 improvement is the one that is real.
+ * Both moved the right way this time, which the previous retrain did not manage: correcting the
+ * mis-sited labels took the internal figure 1.19 -> 1.04 while the external stayed put, and adding
+ * pKaCHU took it to 1.02 and the external from 1.28 to 1.21. Scaffold count is the number worth
+ * watching — 2,887 -> 4,415 — because a held-out fold is only as honest as the diversity it holds out.
  *
  * Read the grouping before the number. It was once 1.18 on folds grouped by CANONICAL SMILES, which
  * reads like a scaffold split and is not one — it separates identical molecules and nothing else,

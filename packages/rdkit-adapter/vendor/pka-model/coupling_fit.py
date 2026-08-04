@@ -29,6 +29,7 @@ scaffold, same as everything else here.
 
     python coupling_fit.py <dwar-ibond-labels.json> <macro-reference.json>
 """
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -285,11 +286,71 @@ def evaluate(reference, predict, W, limit=None, power=1.0):
     return (float(np.mean(errors)) if errors else float("nan")), len(errors), per_molecule
 
 
+SWEEP = (0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0)
+
+
+def fit(reference, predict, limit):
+    """Sweep W on the whole set and on each half of a scaffold split, and write `coupling.json`.
+
+    This used to be a printout that somebody transcribed by hand, and `run_all.sh` never called it --
+    so the shipped W stayed fitted to a corpus that had since been corrected and retrained under it.
+    It is now part of the pipeline and writes the artifact itself.
+    """
+    halves = {0: {}, 1: {}}
+    for smiles, observed in reference.items():
+        mol = kekulized(smiles)
+        if mol is None: continue
+        # md5, NOT the builtin hash: Python salts string hashing per process, so `hash()` here put a
+        # molecule in a different half on every run and the published split could not be reproduced.
+        digest = hashlib.md5(scaffold_of(mol).encode()).hexdigest()
+        halves[int(digest, 16) % 2][smiles] = observed
+
+    sweep, best = {}, {}
+    print(f"{'W':>6} {'halfA':>8} {'halfB':>8} {'all':>8}")
+    for W in SWEEP:
+        a, na, _ = evaluate(halves[0], predict, W, limit)
+        h, nb, _ = evaluate(halves[1], predict, W, limit)
+        c, nc, _ = evaluate(reference, predict, W, limit)
+        sweep[W] = (a, h, c, na, nb, nc)
+        print(f"{W:>6.1f} {a:>8.3f} {h:>8.3f} {c:>8.3f}")
+    for name, i in (("halfA", 0), ("halfB", 1), ("all", 2)):
+        best[name] = min(SWEEP, key=lambda W: sweep[W][i])
+
+    W = best["all"]
+    flat = [w for w in SWEEP if sweep[w][2] <= sweep[W][2] + 0.02]
+    artifact = {
+        "measurement": "fitted against observed MACROSCOPIC pKa, an aggregate the microscopic training "
+                       "labels do not contain",
+        "source": "Dwar-iBond rows grouped by parent molecule; polyprotic molecules whose ladder "
+                  "produced exactly as many steps as were observed",
+        "form": "dpKa_i = -W * sum over OTHER sites j of q_j / d_ij, with d the through-bond distance",
+        "W": W,
+        "flatRegion": [min(flat), max(flat)],
+        "fitMae": round(sweep[W][2], 4),
+        "fitMaeUncorrected": round(sweep[0.0][2], 4),
+        "molecules": sweep[W][5],
+        "scaffoldSplit": {
+            "halfA": {"n": sweep[best["halfA"]][3], "bestW": best["halfA"],
+                      "mae": round(sweep[best["halfA"]][0], 4), "maeAtZero": round(sweep[0.0][0], 4)},
+            "halfB": {"n": sweep[best["halfB"]][4], "bestW": best["halfB"],
+                      "mae": round(sweep[best["halfB"]][1], 4), "maeAtZero": round(sweep[0.0][1], 4)},
+        },
+        "appliesTo": "acid/base site pairs only",
+        "note": "THE EFFECT HAS COLLAPSED. Fitted against the Dwar-iBond-only corpus this term was "
+                "worth 1.36 log units on zwitterions and both scaffold halves independently chose "
+                f"W = 7. Refitted after pKaCHU was added it is worth {round(sweep[0.0][2] - sweep[W][2], 3)}, "
+                f"the halves choose {best['halfA']} and {best['halfB']} against {W} for the whole set, "
+                "and the old W = 6 is now WORSE than no correction at all. The reason is that the "
+                "correction was never really physics the model could not learn -- it was physics the "
+                "LABELS did not contain. Dwar-iBond records only microstates a titration populates, "
+                "never an amino acid's neutral form; pKaCHU does, so the model learns the contrast "
+                "directly and the hand-fitted term has almost nothing left to add.",
+    }
+    json.dump(artifact, open("coupling.json", "w"), indent=1)
+    print(f"\n   wrote coupling.json: W = {W}, worth "
+          f"{sweep[0.0][2] - sweep[W][2]:.3f} log units against no correction")
+    return artifact
+
+
 if __name__ == "__main__":
-    reference = json.load(open(sys.argv[2]))
-    predict = load_forest()
-    limit = int(sys.argv[3]) if len(sys.argv) > 3 else 220
-    print(f"{'W':>6} {'MAE':>8} {'n':>5}")
-    for W in (0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0):
-        mae, n, _ = evaluate(reference, predict, W, limit)
-        print(f"{W:>6.1f} {mae:>8.3f} {n:>5}")
+    fit(json.load(open(sys.argv[2])), load_forest(), int(sys.argv[3]) if len(sys.argv) > 3 else 400)
