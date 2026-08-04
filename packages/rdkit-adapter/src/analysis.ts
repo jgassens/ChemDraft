@@ -71,6 +71,7 @@ import {
   UNPATCHED_CAPABILITIES,
   descriptorBindings,
   PINNED_RDKIT_VERSION,
+  PINNED_PKA_MODEL_SHA256,
   PINNED_RDKIT_WASM_SHA256,
   rdkitMethodContracts,
   type RdkitEngineCapabilities
@@ -604,7 +605,16 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         {
           name: "rdkit-minimallib-wasm",
           version: engineVersion,
-          artifactHashes: [`sha256:${PINNED_RDKIT_WASM_SHA256}`]
+          artifactHashes: [
+            `sha256:${PINNED_RDKIT_WASM_SHA256}`,
+            // The pKa artifacts are evaluated in-process by this adapter rather than by a second
+            // engine, so they belong on this entry's artifact list — which `EngineEnvironment` already
+            // documents as "the executable, model, and data artifacts the run depended on". Only when
+            // the run actually produced a pKa, mirroring how IsoSpec is named only when it ran.
+            ...(results.some((result) => result.methodId === IONIZATION_SITES_METHOD_ID)
+              ? [`sha256:${PINNED_PKA_MODEL_SHA256}`]
+              : [])
+          ]
         },
         ...(isospec
           ? [
@@ -634,8 +644,14 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
           // salt and on its organic fragment are two different computations.
           return `${key}#${result.interpretationId}`;
         }),
-        // Both artifacts, so rebuilding either invalidates every cached number that depended on it.
-        engineHashes: isospec ? [PINNED_RDKIT_WASM_SHA256, PINNED_ISOSPEC_WASM_SHA256] : [PINNED_RDKIT_WASM_SHA256]
+        // Every artifact that decided a number here, so rebuilding any of them invalidates the cache.
+        engineHashes: [
+          PINNED_RDKIT_WASM_SHA256,
+          ...(isospec ? [PINNED_ISOSPEC_WASM_SHA256] : []),
+          ...(results.some((result) => result.methodId === IONIZATION_SITES_METHOD_ID)
+            ? [PINNED_PKA_MODEL_SHA256]
+            : [])
+        ]
       })
     }
   });

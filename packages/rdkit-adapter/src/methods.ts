@@ -32,6 +32,28 @@ export const PINNED_RDKIT_VERSION = "2026.03.3";
  * cached numbers. `methods.test.ts` pins it against BUILD.md *and* against the bytes on disk, so
  * neither the prose nor this constant can drift from the artifact they describe.
  */
+/**
+ * SHA-256 over the vendored pKa artifacts the RUNTIME loads.
+ *
+ * Defined as sha256 of the lines `${filename}  ${sha256hex}\n`, filenames sorted — so one constant
+ * covers the whole set, and the test that checks it can name whichever file moved. Test fixtures are
+ * deliberately absent: they gate the build, they do not produce a number.
+ *
+ * These five files decide every pKa the app reports — the trained forest, its interval calibration,
+ * the consensus weighting, the electrostatic coupling constant, and the Hammett sigma table — and none
+ * of them reached any run fingerprint. Two builds could differ numerically and report identical
+ * provenance, which is the one thing a fingerprint exists to prevent.
+ *
+ * Hashed at build time rather than at load: `analysisHash` is a BigInt-multiply-per-character FNV-1a
+ * and the forest is 3.6 MB, and `node:crypto` does not exist in the worker this runs in.
+ *
+ * Recorded three ways on purpose, matching the wasm pin: this constant, the prose in
+ * `vendor/pka-model/BUILD.md`, and the bytes on disk. `methods.test.ts` checks all three against each
+ * other, so no two can drift without failing.
+ */
+export const PINNED_PKA_MODEL_SHA256 =
+  "68ea7c7335ac644060112526c858ad665444b04921efeff85cc7874ed8bde8b9";
+
 export const PINNED_RDKIT_WASM_SHA256 = "48b725a2e80af7f9792cd56abf65f16cea402f1cfe4f3f6c32a71669f1d848aa";
 
 const ENGINE = "rdkit-minimallib-wasm";

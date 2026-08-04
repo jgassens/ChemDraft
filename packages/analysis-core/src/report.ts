@@ -395,16 +395,36 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
     // to map "atom 7" onto a structure in their head has been handed a number without its subject.
     if (ionization.depiction && ionization.sites.length > 0) {
       const bands = ionization.confidenceBands;
-      const annotations = ionization.sites
-        .filter((site) => site.pKa !== null)
-        .map((site) => ({
-          atomIndex: site.ionizableAtomIndex,
-          text: site.spread === undefined
-            ? formatNumber(site.pKa!, 2)
-            : `${formatNumber(site.pKa!, 2)} ± ${formatNumber(site.spread, 2)}`,
-          band: bands ? ionizationBand(site.spread, bands) : ("unknown" as const),
-          transition: site.transition
-        }));
+      // One annotation per ATOM, carrying every rung it has. An amphoteric nitrogen has two values at
+      // very different pH, and drawing one of them beside a structure while the table below shows both
+      // is worse than drawing neither — the reader has no way to know something is missing.
+      const byAtom = new Map<number, typeof ionization.sites>();
+      for (const site of ionization.sites) {
+        if (site.pKa === null) continue;
+        byAtom.set(site.ionizableAtomIndex, [...(byAtom.get(site.ionizableAtomIndex) ?? []), site]);
+      }
+      const annotations = [...byAtom.entries()].map(([atomIndex, rungs]) => {
+        // Most acidic rung first, which is titration order: the highest acid charge loses its proton
+        // at the lowest pH.
+        const ordered = [...rungs].sort((a, b) => b.acidCharge - a.acidCharge);
+        const widest = Math.max(...ordered.map((site) => site.spread ?? 0));
+        return {
+          atomIndex,
+          text: ordered
+            .map((site) =>
+              site.spread === undefined
+                ? formatNumber(site.pKa!, 2)
+                : `${formatNumber(site.pKa!, 2)} ± ${formatNumber(site.spread, 2)}`
+            )
+            .join(" / "),
+          // The widest rung's band, so a confident value never hides an unreliable one beside it.
+          band: bands ? ionizationBand(widest === 0 ? undefined : widest, bands) : ("unknown" as const),
+          tone:
+            ordered.length > 1
+              ? ("both" as const)
+              : ordered[0]!.transition
+        };
+      });
       const svg = ionizationFigureSvg({
         structure: ionization.depiction,
         annotations,

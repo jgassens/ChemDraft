@@ -27,11 +27,16 @@ export interface IonizationFigureAnnotation {
   /** Measured confidence band. `unknown` draws neutral rather than guessing at a colour. */
   band: "good" | "fair" | "poor" | "unknown";
   /**
-   * Which equilibrium the number describes. Carries the figure's most important distinction, so it is
+   * Which equilibria the annotation covers. Carries the figure's most important distinction, so it is
    * encoded in the colour every pKa tool uses for it: red for an acid losing a proton, blue for a base
    * gaining one.
+   *
+   * `both` is an AMPHOTERIC atom, which carries two rungs of one ladder — aniline's nitrogen loses a
+   * proton and gains one, at very different pH. Before this existed the figure keyed annotations by
+   * atom index into a Map, so the second annotation on an atom overwrote the first and aniline's
+   * higher value was silently dropped from the drawing while the table beside it showed both.
    */
-  transition: "acidic" | "basic";
+  tone: "acidic" | "basic" | "both";
 }
 
 export interface IonizationFigureStructure {
@@ -57,6 +62,8 @@ export interface IonizationFigureThresholds {
 const COLOURS = {
   acidic: "#cf222e",
   basic: "#1f4fd8",
+  /** An atom that is both. Purple reads as the mix of the two rather than as a third category. */
+  both: "#8250df",
   good: "#1a7f37",
   fair: "#bf8700",
   poor: "#cf222e",
@@ -188,7 +195,13 @@ export function ionizationFigureSvg(options: {
 
   const view = layout(structure, annotations);
   const byIndex = new Map(view.atoms.map((atom) => [atom.index, atom]));
-  const annotated = new Map(annotations.map((entry) => [entry.atomIndex, entry]));
+  // First annotation per atom wins rather than the last, and callers are expected to have already
+  // merged an atom's rungs into one entry. Keeping the Map keyed by atom is still right — one atom gets
+  // one label — but silently discarding a second entry is what lost aniline's value.
+  const annotated = new Map<number, IonizationFigureAnnotation>();
+  for (const entry of annotations) {
+    if (!annotated.has(entry.atomIndex)) annotated.set(entry.atomIndex, entry);
+  }
   const parts: string[] = [];
 
   // --- bonds ---
@@ -231,7 +244,7 @@ export function ionizationFigureSvg(options: {
     // Carbons stay implicit vertices unless they carry a value, which is how a structure is read.
     if (atom.element === "C" && atom.charge === 0 && !isSite) continue;
 
-    const colour = isSite ? COLOURS[annotation.transition] : COLOURS.atom;
+    const colour = isSite ? COLOURS[annotation.tone] : COLOURS.atom;
     if (isSite) {
       const confidence = COLOURS[annotation.band];
       parts.push(

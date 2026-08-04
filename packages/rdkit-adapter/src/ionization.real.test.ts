@@ -82,7 +82,7 @@ describe("finding the ionizable atom", () => {
     expect(site!.pKa!).toBeGreaterThan(8);
     expect(site!.pKa!).toBeLessThan(12);
 
-    // The acidic half is still absent: it is near 35, and zero of the 3,031 training labels is an
+    // The acidic half is still absent: it is near 35, and zero of the 7,053 training labels is an
     // unactivated amine.
     expect(result.sites.filter((entry) => entry.transition === "acidic")).toEqual([]);
   });
@@ -277,7 +277,13 @@ describe("the contract", () => {
   it("states the limits a reader would otherwise have to guess", async () => {
     const contract = ionizationContract();
     const conventions = contract.conventions.join(" ");
-    expect(conventions).toMatch(/ACIDITY OF THAT SITE AS DRAWN/);
+    // "As drawn" is no longer the right sentence: the ladder is built from a canonical protomer, so
+    // the row names its rung's charge state instead. The limit the reader most needs is that these
+    // figures are oracle-site ones.
+    expect(conventions).toMatch(/EXPERIMENTAL/);
+    expect(conventions).toMatch(/ORACLE-SITE/);
+    expect(conventions).toMatch(/ACIDITY OF THAT RUNG/);
+    expect(conventions).toMatch(/CANONICAL PROTOMER/);
     expect(conventions).toMatch(/EVERY VALUE SAYS WHICH DIRECTION IT DESCRIBES/);
     expect(conventions).toMatch(/THE SITE TABLE ITSELF REPORTS NO pKa/);
     expect(contract.accuracyClaims[0]!.metric).toBe("mae");
@@ -286,7 +292,10 @@ describe("the contract", () => {
     // separates identical molecules and nothing else.
     expect(contract.accuracyClaims[0]!.basis).toMatch(/Murcko/);
     expect(conventions).toMatch(/Bemis-Murcko scaffold/);
+    // BOTH sources, named. QupKake supplies 4,022 of the 7,053 labels and appeared nowhere in the
+    // contract a user reads while Dwar-iBond was named five times.
     expect(contract.datasets.some((entry) => entry.id === "dwar-ibond")).toBe(true);
+    expect(contract.datasets.some((entry) => entry.id === "qupkake-exp")).toBe(true);
     expect(conventions).toMatch(/aqueous only/i);
     // The one most likely to mislead: a missing site is not evidence of absence.
     expect(conventions).toMatch(/Absence of a site is not evidence that there is none/);

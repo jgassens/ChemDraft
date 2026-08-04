@@ -6,6 +6,7 @@ import { MethodRegistry, elementsOutsideParameterization, methodKey } from "@che
 
 import {
   descriptorBindings,
+  PINNED_PKA_MODEL_SHA256,
   PINNED_RDKIT_VERSION,
   PINNED_RDKIT_WASM_SHA256,
   rdkitMethodContracts
@@ -31,6 +32,63 @@ describe("the vendored artifact pin", () => {
 
   it("matches the RDKit release recorded in vendor/BUILD.md", () => {
     expect(buildDoc).toContain(`Release_${PINNED_RDKIT_VERSION.replace(/\./g, "_")}`);
+  });
+});
+
+/**
+ * The pKa artifacts, pinned the same three ways.
+ *
+ * They decide every pKa the app reports and reached no run fingerprint at all until now, so two builds
+ * could produce different numbers under identical provenance.
+ */
+describe("the vendored pKa model pin", () => {
+  const RUNTIME_ARTIFACTS = [
+    "calibration.json",
+    "consensus-calibration.json",
+    "coupling.json",
+    "external-validation.json",
+    "hammett-sigma.json",
+    "site-pka-forest.json"
+  ];
+
+  /** sha256 over `${name}  ${sha256hex}\n` per file, names sorted. */
+  function manifest(): { digest: string; perFile: Map<string, string> } {
+    const perFile = new Map<string, string>();
+    let lines = "";
+    for (const name of [...RUNTIME_ARTIFACTS].sort()) {
+      const bytes = readFileSync(new URL(`../vendor/pka-model/${name}`, import.meta.url));
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      perFile.set(name, digest);
+      lines += `${name}  ${digest}\n`;
+    }
+    return { digest: createHash("sha256").update(lines).digest("hex"), perFile };
+  }
+
+  const pkaBuildDoc = readFileSync(new URL("../vendor/pka-model/BUILD.md", import.meta.url), "utf8");
+
+  it("matches the manifest recorded in vendor/pka-model/BUILD.md", () => {
+    expect(pkaBuildDoc).toContain(PINNED_PKA_MODEL_SHA256);
+  });
+
+  it("matches the bytes actually committed under vendor/pka-model/", () => {
+    // Prose and constant can agree with each other and both be wrong about the files, which is exactly
+    // what a retrain invites. On failure, name the artifact that moved rather than just the manifest.
+    const { digest, perFile } = manifest();
+    if (digest !== PINNED_PKA_MODEL_SHA256) {
+      const drifted = [...perFile].filter(([name, hash]) => !pkaBuildDoc.includes(hash)).map(([name]) => name);
+      expect.fail(
+        `pKa artifact manifest is ${digest}, pinned as ${PINNED_PKA_MODEL_SHA256}. ` +
+          (drifted.length > 0
+            ? `Regenerated: ${drifted.join(", ")}. Update BUILD.md and PINNED_PKA_MODEL_SHA256.`
+            : "Every per-file hash still matches BUILD.md, so the manifest rule itself changed.")
+      );
+    }
+  });
+
+  it("records every runtime artifact's own hash in BUILD.md, so a failure can name one", () => {
+    for (const [name, digest] of manifest().perFile) {
+      expect(pkaBuildDoc, `${name} is not listed in BUILD.md`).toContain(digest);
+    }
   });
 });
 

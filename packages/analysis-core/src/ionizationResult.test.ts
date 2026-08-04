@@ -220,3 +220,59 @@ describe("rendering an ionization result", () => {
     expect(text.some((section) => section.kind === "text" && /microstates/.test(section.body))).toBe(true);
   });
 });
+
+describe("an amphoteric atom in the figure", () => {
+  // Aniline's nitrogen carries two rungs: it loses a proton near 12.9 and gains one near 4.6. The
+  // figure keyed annotations into a Map by atom index and took the LAST, so the drawing showed 4.60
+  // and silently dropped 12.90 while the table beside it listed both. A reader had no way to tell.
+  const aniline = {
+    ...base,
+    kind: "ionization" as const,
+    status: "ok" as const,
+    unassessed: [],
+    confidenceBands: { good: 1.0, poor: 2.6 },
+    sites: [
+      {
+        atomIndices: [0], ionizableAtomIndex: 0, siteType: "Aniline",
+        transition: "acidic" as const, acidCharge: 0,
+        pKa: 12.9, spread: 0.5, basis: "experimentally-trained-model" as const
+      },
+      {
+        atomIndices: [0], ionizableAtomIndex: 0, siteType: "Aniline",
+        transition: "basic" as const, acidCharge: 1,
+        pKa: 4.6, spread: 0.3, basis: "experimentally-trained-model" as const
+      }
+    ],
+    depiction: {
+      atoms: [
+        { index: 0, x: 0, y: 0, element: "N", charge: 0, hydrogens: 2 },
+        { index: 1, x: 1, y: 0, element: "C", charge: 0, hydrogens: 0 },
+        { index: 2, x: 2, y: 0, element: "C", charge: 0, hydrogens: 1 }
+      ],
+      bonds: [{ from: 0, to: 1, order: 1 }, { from: 1, to: 2, order: 2 }]
+    }
+  };
+
+  it("draws BOTH of the atom's values", () => {
+    const report = buildAnalysisReport(runWith(aniline));
+    const svg = report.sections.find((section) => section.kind === "svg");
+    expect(svg, "no figure was rendered").toBeDefined();
+    if (svg?.kind !== "svg") return;
+    expect(svg.svg, "the basic value is missing").toContain("4.60");
+    expect(svg.svg, "the acidic value was dropped, which is the bug this guards").toContain("12.90");
+  });
+
+  it("orders them most acidic first, which is titration order", () => {
+    const report = buildAnalysisReport(runWith(aniline));
+    const svg = report.sections.find((section) => section.kind === "svg");
+    if (svg?.kind !== "svg") return;
+    expect(svg.svg.indexOf("4.60")).toBeLessThan(svg.svg.indexOf("12.90"));
+  });
+
+  it("still lists each rung as its own table row", () => {
+    // The figure merges; the table must not. Two rungs are two equilibria.
+    const report = buildAnalysisReport(runWith(aniline));
+    const table = report.sections.find((section) => section.kind === "table");
+    expect(table?.kind === "table" && table.rows.length).toBe(2);
+  });
+});

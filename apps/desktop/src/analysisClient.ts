@@ -20,7 +20,8 @@ import {
   type ScheduleOptions
 } from "@chemdraft/analysis-core";
 import { PINNED_ISOSPEC_WASM_SHA256 } from "@chemdraft/isospec-adapter";
-import { PINNED_RDKIT_WASM_SHA256, sourceInterpretation } from "@chemdraft/rdkit-adapter";
+import { PINNED_PKA_MODEL_SHA256,
+  PINNED_RDKIT_WASM_SHA256, sourceInterpretation } from "@chemdraft/rdkit-adapter";
 
 import type { AnalysisWorkRequest, AnalysisWorkResponse } from "./analysisWorker";
 
@@ -99,7 +100,14 @@ export function createAnalysisClient(workerFactory?: () => Worker): AnalysisClie
 
   // Both engines: a run can carry an isotope envelope, so rebuilding IsoSpec has to invalidate the
   // session cache exactly as rebuilding RDKit does.
-  const engineHashes = [`sha256:${PINNED_RDKIT_WASM_SHA256}`, `sha256:${PINNED_ISOSPEC_WASM_SHA256}`];
+  const engineHashes = [
+  `sha256:${PINNED_RDKIT_WASM_SHA256}`,
+  `sha256:${PINNED_ISOSPEC_WASM_SHA256}`,
+  // Unconditional here, unlike in the run's own fingerprint: this key is computed before any method
+  // runs, so whether a pKa will be produced is not yet known. Including it always costs a cache miss
+  // after a retrain for structures that would not have used the model — which is the safe direction.
+  `sha256:${PINNED_PKA_MODEL_SHA256}`
+];
 
   const scheduler = new AnalysisScheduler({
     interpretationFor: (spec) => sourceInterpretation(spec.format, spec.value),

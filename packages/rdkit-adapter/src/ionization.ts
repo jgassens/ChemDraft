@@ -111,8 +111,9 @@ import type {
 
 import { estimateHammettPka, hammettApplies } from "./hammett";
 import { IONIZATION_SITE_TYPES, SENTINEL_PKA_MAGNITUDE } from "./ionizationSites";
-import { ORGANIC_PARAMETER_SET } from "./methods";
+import { ORGANIC_PARAMETER_SET, PINNED_PKA_MODEL_SHA256 } from "./methods";
 import consensusJson from "../vendor/pka-model/consensus-calibration.json";
+import externalJson from "../vendor/pka-model/external-validation.json";
 import {
   PKA_MODEL_CALIBRATION,
   PKA_MODEL_TRAINING,
@@ -121,6 +122,16 @@ import {
   siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
+
+/**
+ * The held-out figure, read from the artifact the measurement wrote.
+ *
+ * Typed in by hand it went stale twice — the contract still claimed a 38-row figure long after the
+ * evaluation had grown to 398 rows.
+ */
+export const EXTERNAL_VALIDATION = externalJson as unknown as {
+  samples: number; mae: number; standardError: number;
+};
 
 /** What combining the two methods was measured to be worth. Read, not asserted. */
 export const CONSENSUS_CALIBRATION = consensusJson as unknown as {
@@ -773,12 +784,18 @@ export function ionizationContract(): MethodContract {
   return {
     id: IONIZATION_SITES_METHOD_ID,
     publicName: "Ionizable sites",
-    version: "1.0.0",
+    // 2.0.0: the state model changed from independent per-(atom, transition) switches to ordered
+    // per-atom ladders, the corpus was corrected and the model retrained, and the values are now
+    // computed on a canonical protomer rather than on the drawing. Every number a caller cached under
+    // 1.x describes a different computation.
+    version: "2.0.0",
     implementation: {
       engine: IONIZATION_ENGINE,
       engineVersion: IONIZATION_ENGINE_VERSION,
       symbol: "site_substructures.smarts",
-      parameters: { siteTypes: IONIZATION_SITE_TYPES.length }
+      // The forest IS what changes the number, so its identity belongs in the method key. This moves
+      // the cache key on a retrain without anyone having to remember to bump `version`.
+      parameters: { siteTypes: IONIZATION_SITE_TYPES.length, model: PINNED_PKA_MODEL_SHA256 }
     },
     // The pKa ladder is built outward from a canonical protomer, so the answer does not depend on
     // which member of the family was drawn. Four drawings of glycine used to give four answers, and
@@ -792,8 +809,15 @@ export function ionizationContract(): MethodContract {
     parameterizedElements: ORGANIC_PARAMETER_SET,
     resultKind: "ionization",
     conventions: [
-      "EACH VALUE IS THE ACIDITY OF THAT SITE AS DRAWN — the pKa of it losing a proton. A microscopic " +
-        "pKa for one transition, not a molecule-wide figure.",
+      "EXPERIMENTAL. Every accuracy figure below is an ORACLE-SITE measurement: the site and its " +
+        "direction are supplied, so what is measured is how well a known site is valued. Nothing here " +
+        "yet measures whether the right sites were found, whether their directions were classified " +
+        "correctly, or how the whole pipeline behaves end to end. Treat the macroscopic and consensus " +
+        "numbers as indicative until those exist.",
+      "EACH VALUE IS THE ACIDITY OF THAT RUNG — the pKa of one proton leaving one atom, at the charge " +
+        "state named by that row. A microscopic pKa for one transition, not a molecule-wide figure. " +
+        "The values are computed on a CANONICAL PROTOMER rather than on the structure as drawn, so " +
+        "every protonation state of one molecule returns the same answer.",
       "EVERY VALUE SAYS WHICH DIRECTION IT DESCRIBES, and the two are not comparable. An ACIDIC pKa is " +
         "that atom losing the proton it is drawn with. A BASIC pKa is that atom GAINING one, so the " +
         "number is the pKa of its conjugate acid — which is what is meant by an amine's or a " +
@@ -810,8 +834,10 @@ export function ionizationContract(): MethodContract {
         `(${PKA_MODEL_TRAINING.groups} groups), MEAN ABSOLUTE ERROR ` +
         `${PKA_MODEL_TRAINING.cvMae.toFixed(2)} log units, against ` +
         `${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)} for predicting the dataset mean. ` +
-        "Against external data it has never seen (Novartis + SAMPL, 38 single-site rows) it scores " +
-        "1.28. That figure describes the method overall; the interval printed beside each value is " +
+        `Against external data it has never seen (QupKake's Novartis and literature sets, ` +
+        `${EXTERNAL_VALIDATION.samples} rows) it scores ${EXTERNAL_VALIDATION.mae.toFixed(2)} +/- ` +
+        `${EXTERNAL_VALIDATION.standardError.toFixed(2)}. ` +
+        "That figure describes the method overall; the interval printed beside each value is " +
         "the one that describes that site.",
       "aqueous, room temperature, and drug-like organic chemistry. The training set contains no metals " +
         "at all, which is why a metal-adjacent site is reported without a value.",
@@ -926,11 +952,15 @@ export function ionizationContract(): MethodContract {
         value: PKA_MODEL_TRAINING.cvMae,
         unit: "log10-unit",
         basis:
-          `5-fold cross-validation over ${PKA_MODEL_TRAINING.samples} sites from the Dwar-iBond ` +
-          `experimental set, folds held out by ${PKA_MODEL_TRAINING.grouping}. An earlier version of ` +
-          "this figure said 1.18; it was grouped by canonical SMILES, which separates identical " +
-          "molecules and nothing else and so left every congeneric series straddling the folds. " +
-          `Predicting the dataset mean scores ${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)}.`,
+          `5-fold cross-validation over ${PKA_MODEL_TRAINING.samples} sites from TWO experimental ` +
+          "sets — 3,031 Dwar-iBond and 4,022 QupKake — with folds held out by " +
+          `${PKA_MODEL_TRAINING.grouping}. An earlier version of this figure said 1.18; it was ` +
+          "grouped by canonical SMILES, which separates identical molecules and nothing else and so " +
+          "left every congeneric series straddling the folds. " +
+          `Predicting the dataset mean scores ${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)}. ` +
+          "THIS IS AN ORACLE-SITE FIGURE: the site and its direction are supplied, so it measures how " +
+          "well a known site is valued and says nothing about whether the right sites were found. No " +
+          "end-to-end number is published yet, which is why the method is marked experimental.",
         citationId: "dwar-ibond"
       },
       {
@@ -938,7 +968,7 @@ export function ionizationContract(): MethodContract {
         value: CONSENSUS_CALIBRATION.hammettMae,
         unit: "log10-unit",
         basis:
-          `The Hammett relationship over the ${CONSENSUS_CALIBRATION.samples} Dwar-iBond sites it ` +
+          `The Hammett relationship over the ${CONSENSUS_CALIBRATION.samples} labelled sites it ` +
           `applies to, across four series. Its constants were not fitted to this ` +
           "dataset, so this is a held-out figure for the phenols; for the benzoic acids it is partly " +
           "circular, sigma having been defined by benzoic acid ionisation in the first place.",
@@ -990,11 +1020,31 @@ export function ionizationContract(): MethodContract {
         source: "https://github.com/dptech-corp/Uni-pKa",
         license: "Apache-2.0",
         redistributable: true,
-        recordCount: PKA_MODEL_TRAINING.samples,
+        recordCount: 3031,
         obligations: [
           "Measured values, attributed per row in the source (predominantly DataWarrior, with " +
             "literature DOIs for the remainder). The shipped model's weights are trained on these " +
-            "and on nothing derived from another predictor."
+            "and on nothing derived from another predictor.",
+          "The DataWarrior author has stated that the original literature references for part of " +
+            "this set were lost, so these rows cannot all be audited back to a measurement. A " +
+            "software licence is also not automatically a licence for an associated dataset."
+        ]
+      },
+      {
+        id: "qupkake-exp",
+        title: "QupKake experimental pKa set (Novartis, ChEMBL and literature)",
+        version: "as distributed in qupkake/data",
+        source: "https://github.com/Shualdon/QupKake",
+        license: "BSD-3-Clause",
+        redistributable: true,
+        recordCount: 4022,
+        obligations: [
+          "Originally Baltruschat & Czodrowski. The VALUES are measurements; the SITE INDEX is " +
+            "ChemAxon Marvin's assignment, which is a predictor annotation sitting inside the label " +
+            "and is recorded as such on every row rather than presented as measured.",
+          "1,462 of these rows were once sited on the wrong atom, because the index was read while " +
+            "explicit hydrogens were present and then written out without them. The index now travels " +
+            "with the molecule and the chemistry gates run again on the atom actually stored."
         ]
       },
       {
@@ -1015,7 +1065,10 @@ export function ionizationContract(): MethodContract {
     versionIncrementTriggers: [
       "any change to a site substructure, its tabulated mean, or its spread",
       "a change to which sites are reported as unassessed",
-      "adding a second estimator, which changes what `basis` a site can carry"
+      "adding a second estimator, which changes what `basis` a site can carry",
+      "retraining the forest or regenerating any vendored pKa artifact — the hash in " +
+        "`implementation.parameters` moves the method key on its own; the version says so to a reader",
+      "a change to the protonation state model, or to which protomer the ladder is built from"
     ],
     tautomerSensitive: true
   };

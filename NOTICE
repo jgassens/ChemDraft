@@ -71,3 +71,19 @@ under different terms states them separately in its own package metadata — see
 AGENTS.md section 8c. Most notably, the NMR predictor plugin's shift database is
 derived from nmrshiftdb2 and carries that database's own attribution and share-alike
 obligations; describing such a package by its code licence alone is incorrect.
+
+The pKa model's weights are trained in this repository and carry this repo's licence,
+but the DATA they were trained on does not. Two sets are used, neither vendored:
+
+  Dwar-iBond experimental pKa set, as distributed with Uni-pKa
+  https://github.com/dptech-corp/Uni-pKa -- Apache-2.0
+  Values are measurements attributed per row in the source, predominantly
+  DataWarrior with literature DOIs for the remainder. RECORDED AS UNRESOLVED: the
+  DataWarrior author has stated that the original literature references for part of
+  this set were lost, and a software licence is not automatically a licence for an
+  associated dataset. This must be settled before public redistribution.
+
+  QupKake experimental pKa set
+  https://github.com/Shualdon/QupKake -- BSD-3-Clause
+  Originally Baltruschat & Czodrowski. The values are measurements; the per-site
+  index is ChemAxon Marvin's assignment and is recorded as such on every row.
