@@ -2,28 +2,28 @@
  "measurement": "fitted against observed MACROSCOPIC pKa, an aggregate the microscopic training labels do not contain",
  "source": "Dwar-iBond rows grouped by parent molecule; polyprotic molecules whose ladder produced exactly as many steps as were observed",
  "form": "dpKa_i = -W * sum over OTHER sites j of q_j / d_ij, with d the through-bond distance",
- "W": 1.0,
+ "W": 0.0,
  "flatRegion": [
-  1.0,
+  0.0,
   2.0
  ],
- "fitMae": 2.6508,
- "fitMaeUncorrected": 2.6752,
+ "fitMae": 2.8187,
+ "fitMaeUncorrected": 2.8187,
  "molecules": 209,
  "scaffoldSplit": {
   "halfA": {
    "n": 221,
-   "bestW": 1.0,
-   "mae": 2.2884,
-   "maeAtZero": 2.3225
+   "bestW": 0.0,
+   "mae": 2.491,
+   "maeAtZero": 2.491
   },
   "halfB": {
    "n": 207,
-   "bestW": 2.0,
-   "mae": 1.5195,
-   "maeAtZero": 1.5331
+   "bestW": 0.0,
+   "mae": 1.5898,
+   "maeAtZero": 1.5898
   }
  },
  "appliesTo": "acid/base site pairs only",
- "note": "THE EFFECT HAS COLLAPSED. Fitted against the Dwar-iBond-only corpus this term was worth 1.36 log units on zwitterions and both scaffold halves independently chose W = 7. Refitted after pKaCHU was added it is worth 0.024, the halves choose 1.0 and 2.0 against 1.0 for the whole set, and the old W = 6 is now WORSE than no correction at all. The reason is that the correction was never really physics the model could not learn -- it was physics the LABELS did not contain. Dwar-iBond records only microstates a titration populates, never an amino acid's neutral form; pKaCHU does, so the model learns the contrast directly and the hand-fitted term has almost nothing left to add."
+ "note": "THE EFFECT HAS COLLAPSED. Fitted against the Dwar-iBond-only corpus this term was worth 1.36 log units on zwitterions and both scaffold halves independently chose W = 7. Refitted after pKaCHU was added it is worth 0.0, the halves choose 0.0 and 0.0 against 0.0 for the whole set, and the old W = 6 is now WORSE than no correction at all. The reason is that the correction was never really physics the model could not learn -- it was physics the LABELS did not contain. Dwar-iBond records only microstates a titration populates, never an amino acid's neutral form; pKaCHU does, so the model learns the contrast directly and the hand-fitted term has almost nothing left to add."
 }

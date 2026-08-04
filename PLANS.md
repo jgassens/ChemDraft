@@ -396,7 +396,7 @@ labels are downloadable, so a model was trained here from them directly. What sh
 | | |
 |---|---|
 | site location | Dimorphite-DL's 41-entry SMARTS table, which contributes **no pKa value** |
-| primary estimate | a random forest trained here on 12,096 per-site labels, **MAE 1.02** (Murcko folds), **1.24** on 398 external rows |
+| primary estimate | a 4-member message-passing network trained here on 12,096 per-site labels, **MAE 0.73** (Murcko folds), **1.13** on 398 external rows |
 | second estimate | a Hammett LFER from the physical-organic literature — four series — **MAE 0.176** on the 227 sites it reaches |
 | combined, where both fire | **MAE 0.168**, and the interval is 5.1x tighter than the model's at 92% coverage |
 | per-site confidence | forest tree disagreement (r = 0.52) or, better, cross-method disagreement (r = 0.94) |
@@ -563,6 +563,72 @@ transition on one atom, never a molecule-wide figure), acidic-vs-basic stated as
 than a field — the method reports acidity of the site as drawn and says so in capitals, because for
 amines that is not the number most people want — solvent and temperature fixed at aqueous/room and
 declared, and provenance recorded per value.
+
+**The forest is gone; a graph network ships instead.** `pkaModel.ts` had said for months that "a GNN
+would score better and could not ship", and the data reached the same wall from the other side: the
+IUPAC weak-base labels are clean and they made every held-out figure worse, because a 60-tree forest
+has nowhere to put them. Growing it recovers the accuracy and destroys the artifact — 1.114 cvMAE at 60
+trees and 10 MB, 1.054 at 300 trees and 208 MB.
+
+**"Could not ship" was about the RUNTIME, not the weights.** Importing PyTorch into a desktop app is
+out; a network is not. The shipped model is 426k parameters in **4.5 MB** — smaller than the 6.0 MB
+forest — and its inference is gather, scatter-add, matmul and ReLU, which is ~150 lines of TypeScript in
+`pkaGnn.ts` with no framework and no second runtime.
+
+| | forest | **network** |
+|---|---:|---:|
+| cvMAE, Murcko-grouped, same 12,096 labels | 1.023 | **0.728** |
+| external, 398 rows never trained on | 1.239 | **1.129** |
+| SAMPL6 matched one-to-one | 0.786 | **0.553** |
+| — within 1 log unit of measured | 71% | **94%** |
+| SAMPL6, right step count (assay window) | 4 | **10** of 24 |
+| macroscopic, azoles | 0.620 | **0.21** |
+| macroscopic, all 32 values | 0.354 | **0.330** |
+| artifact | 6.0 MB | **4.5 MB** |
+
+Two things fall out rather than being designed in. The network reads the graph, so `descriptors` is
+empty — the whole-molecule mass/TPSA/logP channel through which a sodium counterion moved acetic acid's
+answer no longer exists. And it learned amide N-H acidity at **14.97 ± 0.46** where the forest said
+10.64 ± 5; the real value is 15–17.
+
+**The parity fixture caught a design error of mine immediately**, which is the fifth Kekulé-dependence
+in this model and the first caught before shipping. My bond features used bond ORDER, which is not
+Kekulé-invariant: RDKit-python and MinimalLib choose different structures, so the same aromatic ring is
+featurised differently. It failed on a quinolinium, TypeScript 4.284 against PyTorch 4.914. Aromatic
+bonds now carry a flag with their order withheld; a non-aromatic order is invariant and kept. Bond-in-
+ring uses the shared bounded cycle walk, not RDKit's ring perception, because biphenyl's central bond
+joins two ring atoms and lies in no ring.
+
+The interval comes from a 4-member ensemble — the same semantics as the forest's tree disagreement, so
+the confidence rings, the titration-curve filter and the Hammett weighting read it unchanged. It tracks
+error slightly less well than the forest's did, r = 0.42 against 0.52, and that is worth knowing.
+
+**The electrostatic coupling has switched itself off.** Fitted against Dwar-iBond alone it chose W = 7
+and was worth 1.36 log units on zwitterions; pKaCHU took it to W = 1 and 0.037; the network takes it to
+zero, and every W above that makes the validation zwitterions monotonically worse — 0.32, 0.36, 0.44,
+0.69 at W = 0, 0.5, 1, 2. The fit now switches the term off itself below a floor of 0.05 log units
+rather than being hand-set, so if a future corpus makes it worth something again the fit will say so.
+It was never physics the model could not learn: it was physics the LABELS did not contain, and then
+physics the FOREST could not represent.
+
+**The SAMPL6 metric was wrong and is fixed.** Pairing predictions to measurements by titration ORDER
+stops being meaningful once a model reports a step the assay cannot see, and this one does: SM19
+predicts 9.43 against a measured 9.56 while index-pairing scores its FIRST value, 2.11, against it and
+records 7.45. That is the metric misaligning, not the model failing. Scoring is now one-to-one closest
+matching with unmatched predictions counted separately, so a model cannot buy accuracy by emitting more
+values. It reframes the residual cleanly: **valuation is excellent (0.52 MAE, 97% within 1) and
+over-detection is the entire remaining problem** — 48 unmatched extra steps against the forest's 38.
+
+**The IUPAC data was re-tested and is still out — for a different reason, which is the point.** The
+capacity objection is gone: the network pays 0.003 cvMAE to hold those rows where the forest paid
+0.060, against a harder baseline, and it gets BETTER on held-out external data (1.131 → 1.080) and finds
+the right step count on 12 of 24 SAMPL6 molecules instead of 9. And it wrecks amino acids — glycine's
+first macroscopic step reads **−0.55** against a measured 2.35, alanine −0.49 against 2.34, histidine
+−3.32 against 1.85, taking the macroscopic zwitterion error from 0.46 to 1.65. A model that puts
+glycine's carboxyl three log units under water is not shippable however good its average looks. The
+likeliest cause is BALANCE rather than capacity — only the basic rows were taken, moving the corpus from
+5,125/6,971 basic/acidic to 6,594/6,971 — and taking the acidic rows too is the obvious next experiment,
+recorded in `iupac_labels.py` rather than left as a hunch.
 
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is

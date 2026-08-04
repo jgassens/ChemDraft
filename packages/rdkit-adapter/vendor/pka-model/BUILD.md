@@ -10,6 +10,8 @@ and then run `python3 macro_validate.py` for the macroscopic yardstick.
 
 ## Pinned artifacts
 
+Five of these are loaded at RUNTIME. `site-pka-forest.json` is NOT among them any more and is not pinned: the network replaced it, and the forest stays committed only as the baseline the comparison is made against.
+
 Five of these are loaded at RUNTIME; `external-validation.json` is read by the contract so its figure
 cannot go stale. Everything else in this directory is a build input or a test fixture and is excluded
 from the pin deliberately: fixtures gate the build, they do not produce a number.
@@ -17,13 +19,13 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 | file | bytes | sha256 |
 |---|---:|---|
 | `calibration.json` | 2,031 | `a361085c2ed1dd274f630f5266a94a2b6411cd915d815bad937f24aaf6666abc` |
-| `consensus-calibration.json` | 615 | `f440fe2b9e4eb1a26dcd2f2ec1724bcc2a4a6225aada4616f99cd664e4f9ec8a` |
-| `coupling.json` | 1,406 | `e2288dd3f3f6bbc71b306dd441500a0d1507ca478501b4d10a428c105c57f40a` |
-| `external-validation.json` | 445 | `a97a7e5036e15dd9f3615335b393489dfcf6ab412186fefdbeecbb3f46c5ae7b` |
+| `consensus-calibration.json` | 615 | `f917afc008c9ab22e546dca84e4ef02c7478d7be685a1b8092a7537c8bb2ed93` |
+| `coupling.json` | 1,402 | `66623b2147fdcce6f9507436dcf721a3f5fe5bf8f936ff98aedef94421a468a6` |
+| `external-validation.json` | 443 | `011ae99537605834a3acc8f074308a16e033fe23dbc1a01157ab4a695f2df418` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
-| `site-pka-forest.json` | 6,027,550 | `3bf2cba69596ff7f0e9b4b35e73dc7ac40780e93266c3202666a5933c35bfa04` |
+| `site-pka-gnn.json` | 4,468,866 | `79061c4d3b4e11753c865088e5bb38d0c7e689e6e394af4fdf99c0dcfcfca688` |
 
-**Manifest:** `1e857f7c15de1a2855d4404e868f1e9c3f8e78e6ec7437d17d3f5808e87732fd`
+**Manifest:** `6e4ad1e0cddb9700888b43ece368ac74300c3a7e4b78841e8663c97591a01cfb`
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.
@@ -39,7 +41,7 @@ run fingerprint at all: two builds could produce different numbers and report id
 
 | file | what it decides |
 |---|---|
-| `site-pka-forest.json` | the trained random forest — every per-site value |
+| `site-pka-gnn.json` | the trained message-passing ensemble — every per-site value |
 | `calibration.json` | how tree disagreement maps to a reported interval |
 | `consensus-calibration.json` | how the model and the Hammett relationship are weighted against each other |
 | `coupling.json` | `W`, the electrostatic term across acid/base site pairs |

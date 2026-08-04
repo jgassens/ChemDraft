@@ -1,4 +1,4 @@
-"""Score the shipped forest against data it has never seen.
+"""Score the shipped MODEL against data it has never seen.
 
 Every other figure in this directory is cross-validation on Dwar-iBond. This one is not, and it is the
 only check that the fold grouping is honest -- it is what exposed the canonical-SMILES split, which had
@@ -56,18 +56,9 @@ def sdf_sites(path):
     return out
 
 
-def evaluate(forest_path, dataset_dir):
-    forest = json.load(open(forest_path))
-    trees = forest["trees"]
-
-    def predict(features):
-        votes = []
-        for tree in trees:
-            node = 0
-            while tree["f"][node] >= 0:
-                node = tree["l"][node] if features[tree["f"][node]] <= tree["t"][node] else tree["r"][node]
-            votes.append(tree["v"][node])
-        return float(np.mean(votes))
+def evaluate(model_path, dataset_dir):
+    from gnn_infer import load_ensemble, predict_site
+    members, multiplier = load_ensemble(model_path)
 
     per_set, all_errors = {}, []
     for name in SETS:
@@ -79,7 +70,7 @@ def evaluate(forest_path, dataset_dir):
             if mol is None:
                 continue
             try:
-                errors.append(abs(predict(full_features(mol, site)) - observed))
+                errors.append(abs(predict_site(members, multiplier, mol, site)[0] - observed))
             except Exception:
                 continue
         if errors:
@@ -89,7 +80,7 @@ def evaluate(forest_path, dataset_dir):
 
 
 if __name__ == "__main__":
-    per_set, errors = evaluate("site-pka-forest.json", sys.argv[1])
+    per_set, errors = evaluate("site-pka-gnn.json", sys.argv[1])
     summary = {
         "measurement": "held-out external data, never used in training or fold selection",
         "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), qupkake/data/ — Novartis and literature "

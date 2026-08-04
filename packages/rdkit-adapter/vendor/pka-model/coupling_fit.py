@@ -44,10 +44,22 @@ RDLogger.DisableLog("rdApp.*")
 MAX_SITES = 8
 
 
+def load_network(path="site-pka-gnn.json"):
+    """The shipped ensemble, wrapped as `predict(mol, atom) -> pKa`.
+
+    `macro_validate.py` and the coupling fit both judge the fold, and the fold has to be scored with
+    whatever actually ships. Leaving them on the forest would have published a macroscopic table for a
+    model the app no longer uses.
+    """
+    from gnn_infer import load_ensemble, predict_site
+    members, multiplier = load_ensemble(path)
+    return lambda mol, atom: predict_site(members, multiplier, mol, atom)[0]
+
+
 def load_forest(path="site-pka-forest.json"):
     forest = json.load(open(path))["trees"]
 
-    def predict(features):
+    def predict_from_features(features):
         total = 0.0
         for tree in forest:
             node = 0
@@ -56,7 +68,9 @@ def load_forest(path="site-pka-forest.json"):
             total += tree["v"][node]
         return total / len(forest)
 
-    return predict
+    # Kept, and no longer what the fold is scored with: the network ships. This remains so the forest
+    # baseline can still be folded for comparison.
+    return lambda mol, atom: predict_from_features(full_features(mol, atom))
 
 
 def distances(mol):
@@ -203,7 +217,7 @@ def macroscopic(mol, sites, predict, W, dist, power=1.0, drop_tautomer_states=Tr
                 if atom_idx >= acid.GetNumAtoms(): continue
                 if acid.GetAtomWithIdx(atom_idx).GetTotalNumHs() == 0: continue
                 try:
-                    base = predict(full_features(acid, atom_idx))
+                    base = predict(acid, atom_idx)
                 except Exception:
                     continue
                 # The correction: every OTHER site's charge in this microstate, over its distance.
@@ -343,7 +357,18 @@ def fit(reference, predict, limit):
     for name, i in (("halfA", 0), ("halfB", 1), ("all", 2)):
         best[name] = min(SWEEP, key=lambda W: sweep[W][i])
 
-    W = best["all"]
+    # A one-parameter physical correction has to EARN its place. The sweep will always name some
+    # minimum, and on a 186-molecule set a gain of a few thousandths is noise -- so below a floor the
+    # answer is zero, and the term switches itself off rather than being kept alive by rounding.
+    #
+    # It has switched itself off. The forest fitted against Dwar-iBond alone chose W = 7 and the term
+    # was worth 1.36 log units on zwitterions; adding pKaCHU took it to W = 1 and 0.037; the
+    # message-passing network reduces it to nothing, and every W above 0 makes the validation
+    # zwitterions monotonically worse (0.32, 0.36, 0.44, 0.69 at W = 0, 0.5, 1, 2). The electrostatics
+    # this term supplied were never physics the model could not learn -- they were physics the LABELS
+    # did not contain, and then physics the FOREST could not represent.
+    WORTH_KEEPING = 0.05
+    W = best["all"] if (sweep[0.0][2] - sweep[best["all"]][2]) >= WORTH_KEEPING else 0.0
     flat = [w for w in SWEEP if sweep[w][2] <= sweep[W][2] + 0.02]
     artifact = {
         "measurement": "fitted against observed MACROSCOPIC pKa, an aggregate the microscopic training "
@@ -380,4 +405,4 @@ def fit(reference, predict, limit):
 
 
 if __name__ == "__main__":
-    fit(json.load(open(sys.argv[2])), load_forest(), int(sys.argv[3]) if len(sys.argv) > 3 else 400)
+    fit(json.load(open(sys.argv[2])), load_network(), int(sys.argv[3]) if len(sys.argv) > 3 else 400)

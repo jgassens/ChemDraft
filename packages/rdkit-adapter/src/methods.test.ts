@@ -48,7 +48,7 @@ describe("the vendored pKa model pin", () => {
     "coupling.json",
     "external-validation.json",
     "hammett-sigma.json",
-    "site-pka-forest.json"
+    "site-pka-gnn.json"
   ];
 
   /** sha256 over `${name}  ${sha256hex}\n` per file, names sorted. */

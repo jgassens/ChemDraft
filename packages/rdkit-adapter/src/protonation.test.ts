@@ -142,18 +142,34 @@ describe("the electrostatic coupling", () => {
     expect(coupling.note).toMatch(/COLLAPSED/);
   });
 
-  it("still helps zwitterions rather than merely not hurting them", async () => {
-    // Read from the artifact the measurement writes, not retyped. If a future refit makes the term
-    // useless or harmful on the validation set, this fails instead of the claim quietly going stale.
+  it("has switched itself off, and the artifact says so", async () => {
+    // This test has tracked the term's whole life. It once asserted the correction HALVED the
+    // zwitterion error, and it did: fitted against Dwar-iBond alone, both scaffold halves independently
+    // chose W = 7 and the term was worth 1.36 log units. Adding pKaCHU — which contains the amino-acid
+    // neutral forms Dwar-iBond never recorded — took it to W = 1 and 0.037. Replacing the forest with a
+    // message-passing network takes it to nothing: every W above 0 makes the validation zwitterions
+    // monotonically worse (0.32, 0.36, 0.44, 0.69 at W = 0, 0.5, 1, 2).
+    //
+    // The electrostatics were never physics the model could not learn. They were physics the LABELS
+    // did not contain, and then physics the FOREST could not represent.
+    //
+    // The fit switches the term off itself rather than being hand-set: below a floor of 0.05 log units
+    // on its own fitting set, W is zero. If a future model or corpus makes it worth something again,
+    // the fit will say so and this test will fail — which is the point of asserting it here.
+    const coupling = (await import("../vendor/pka-model/coupling.json")).default as unknown as {
+      W: number; fitMae: number; fitMaeUncorrected: number;
+    };
+    expect(coupling.W).toBe(0);
+    expect(coupling.fitMaeUncorrected - coupling.fitMae).toBeLessThan(0.05);
+
     const macro = (await import("../vendor/pka-model/macro-validation.json")).default as unknown as {
       byClass: Record<string, { raw_ladder: number; "+_coupling": number }>;
     };
-    const zwitterion = macro.byClass.zwitterionic!;
-    expect(zwitterion["+_coupling"]).toBeLessThanOrEqual(zwitterion.raw_ladder);
-    // And it must not have been bought by degrading everything else: the term touches acid/base pairs
-    // only, so molecules without one must be untouched to the last decimal.
-    const independent = macro.byClass.independent!;
-    expect(independent["+_coupling"]).toBeCloseTo(independent.raw_ladder, 6);
+    // With W = 0 the correction is the identity, so every class must be untouched to the last decimal.
+    for (const kind of ["independent", "zwitterionic", "azole", "ALL"]) {
+      const cls = macro.byClass[kind]!;
+      expect(cls["+_coupling"], `${kind} moved with W = 0`).toBeCloseTo(cls.raw_ladder, 6);
+    }
   });
 
   it("was fitted on a different observable than the model was trained on", async () => {
@@ -163,7 +179,10 @@ describe("the electrostatic coupling", () => {
       measurement: string; fitMae: number; fitMaeUncorrected: number;
     };
     expect(coupling.measurement).toMatch(/MACROSCOPIC/);
-    expect(coupling.fitMae).toBeLessThan(coupling.fitMaeUncorrected);
+    // Less than OR EQUAL: at W = 0 the correction is the identity and the two are the same number.
+    // The claim being pinned is that fitting it never made its own fitting set worse, which stays
+    // meaningful whether or not the term is currently doing anything.
+    expect(coupling.fitMae).toBeLessThanOrEqual(coupling.fitMaeUncorrected);
   });
 });
 

@@ -34,12 +34,8 @@
 import type { IonizationSite } from "@chemdraft/analysis-core";
 
 import { distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
-import {
-  predictSitePkaWithSpread,
-  ringMembership,
-  siteFeatures,
-  type PkaMolecularGraph
-} from "./pkaModel";
+import { type PkaMolecularGraph } from "./pkaModel";
+import { predictSitePka } from "./pkaGnn";
 import couplingJson from "../vendor/pka-model/coupling.json";
 
 /**
@@ -639,9 +635,7 @@ export function macroscopicFromSites(
     // The proton has to actually be there, or the value would describe a different reaction.
     if (!atom || atom.hydrogens === 0) return undefined;
     try {
-      const base = predictSitePkaWithSpread(
-        siteFeatures(acid, ladder.atomIndex, ringMembership(acid))
-      ).value;
+      const base = predictSitePka(acid, ladder.atomIndex).value;
       return base + coupling(state, i);
     } catch {
       return undefined;

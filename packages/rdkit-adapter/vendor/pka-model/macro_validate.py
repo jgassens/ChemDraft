@@ -21,7 +21,7 @@ import sys
 
 import numpy as np
 
-from coupling_fit import conjugated_pairs, distances, load_forest, macroscopic, sites_of
+from coupling_fit import conjugated_pairs, distances, load_network, macroscopic, sites_of
 from parity_features import kekulized
 
 # (name, SMILES, tabulated macroscopic pKa, class)
@@ -54,7 +54,7 @@ W = json.load(open("coupling.json"))["W"]
 
 
 def run(drop_tautomer_states=True, w=W):
-    predict = load_forest()
+    predict = load_network()
     rows = []
     for name, smiles, observed, kind in SET:
         mol = kekulized(smiles)

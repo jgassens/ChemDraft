@@ -10,7 +10,34 @@ selected for measurability — of its aromatic-nitrogen basic labels only 5.2% s
 ring nitrogens in a real fused heterocycle do. After the filters below, 11.5% of this set's basic labels
 are below pH 2 and it reaches -9.44. That is the distribution the model has never seen.
 
-**IT IS NOT IN THE SHIPPED CORPUS, and the reason is measured rather than assumed.** The data is
+**STILL NOT IN THE SHIPPED CORPUS — but for a different reason than before, and that difference is the
+point.** The capacity objection is gone: the network absorbs these rows where the forest could not.
+
+    corpus                     cvMAE   baseline   external   macro ALL   macro zwitterion
+    forest,  12,096            1.023      2.480      1.239       0.354              0.411
+    forest, +IUPAC 13,565      1.083      2.537      1.264       0.583                  —
+    network, 12,096            0.726      2.480      1.131       0.350              0.460
+    network,+IUPAC 13,565      0.729      2.537      1.080       0.750              1.650
+
+The forest paid 0.060 cvMAE to hold them; the network pays 0.003, against a harder baseline, so its
+relative skill improves. It also gets BETTER on held-out external data (1.131 -> 1.080) and finds the
+right number of measurable titration steps on 12 of 24 SAMPL6 molecules instead of 9.
+
+And it wrecks zwitterions. Glycine's first macroscopic step reads -0.55 against a measured 2.35;
+alanine -0.49 against 2.34; histidine -3.32 against 1.85. Amino acids are the commonest polyprotic
+chemistry there is, and a model that puts glycine's carboxyl three log units under water is not
+shippable however good its held-out average looks.
+
+The likeliest cause is not capacity but BALANCE: only the basic rows are taken here (see
+`IUPAC_BASIC_ONLY`), which moves the corpus from 5,125 basic / 6,971 acidic to 6,594 / 6,971 and shifts
+what the model believes about an acidic site sitting next to a protonated amine. Taking the acidic rows
+as well is the obvious next experiment and has not been run.
+
+The paragraphs that follow describe the forest era and are left standing, because a dataset rejected
+for one reason and later rejected for a different one is exactly the decision that rots into folklore
+if only the outcome is recorded.
+
+**WHY IT WAS NOT IN THE SHIPPED CORPUS UNDER THE FOREST, measured rather than assumed.** The data is
 clean: its inferred sites match a trusted site on 2,509 of 2,510 shared molecules, and its values agree
 with the existing corpus on 79.6% exactly and 99% within one log unit. It also does what it was
 fetched to do — SAMPL6 gets the right NUMBER of titration steps on 6 of 24 molecules instead of 4, and

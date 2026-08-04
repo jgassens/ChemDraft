@@ -1,31 +1,31 @@
 {
  "measurement": "macroscopic pKa against tabulated titration constants",
  "molecules": 15,
- "W": 1.0,
+ "W": 0.0,
  "byClass": {
   "independent": {
    "values": 18,
-   "raw_ladder": 0.2638,
-   "+_coupling": 0.2638,
-   "+_tautomer_exclusion": 0.2638
+   "raw_ladder": 0.3533,
+   "+_coupling": 0.3533,
+   "+_tautomer_exclusion": 0.3533
   },
   "zwitterionic": {
    "values": 10,
-   "raw_ladder": 0.5695,
-   "+_coupling": 0.4914,
-   "+_tautomer_exclusion": 0.4106
+   "raw_ladder": 0.3955,
+   "+_coupling": 0.3955,
+   "+_tautomer_exclusion": 0.3201
   },
   "azole": {
    "values": 4,
-   "raw_ladder": 1.3922,
-   "+_coupling": 1.3922,
-   "+_tautomer_exclusion": 0.6201
+   "raw_ladder": 1.0218,
+   "+_coupling": 1.0218,
+   "+_tautomer_exclusion": 0.2115
   },
   "ALL": {
    "values": 32,
-   "raw_ladder": 0.5004,
-   "+_coupling": 0.476,
-   "+_tautomer_exclusion": 0.3542
+   "raw_ladder": 0.4501,
+   "+_coupling": 0.4501,
+   "+_tautomer_exclusion": 0.3252
   }
  }
 }

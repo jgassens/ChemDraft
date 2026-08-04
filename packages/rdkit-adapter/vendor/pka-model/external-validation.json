@@ -4,14 +4,14 @@
  "perSet": {
   "novartis_qupkake_pka.sdf": {
    "n": 276,
-   "mae": 1.3649
+   "mae": 1.193
   },
   "literature_qupkake_pka.sdf": {
    "n": 122,
-   "mae": 0.9556
+   "mae": 0.983
   }
  },
  "samples": 398,
- "mae": 1.2394,
- "standardError": 0.0701
+ "mae": 1.1286,
+ "standardError": 0.0792
 }

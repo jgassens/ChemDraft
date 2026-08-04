@@ -87,3 +87,22 @@ but the DATA they were trained on does not. Two sets are used, neither vendored:
   https://github.com/Shualdon/QupKake -- BSD-3-Clause
   Originally Baltruschat & Czodrowski. The values are measurements; the per-site
   index is ChemAxon Marvin's assignment and is recorded as such on every row.
+
+  pKaCHU
+  https://zenodo.org/records/20089807 -- CC BY 4.0
+  Experimental aqueous values as acid/base microstate pairs. Attribution required.
+
+  D2A-pKa (AQUEOUS ROWS ONLY)
+  https://zenodo.org/records/15277342 -- CC BY 4.0
+  Attribution required. Only the neat-water rows are used; the DMSO, acetonitrile,
+  DMF and alcohol rows are a different measurement scale and are excluded.
+
+  IUPAC Dissociation-Constants v2.3e
+  https://zenodo.org/records/21533589 -- CC BY-NC 4.0, NON-COMMERCIAL
+  NOT USED BY ANY SHIPPED WEIGHT. The ingest is vendored and the data was evaluated;
+  it is the only source carrying weakly basic nitrogens in the numbers this model
+  needs, and it degrades the macroscopic fold on amino acids, so it is out. Recorded
+  here because that decision could be revisited: were it ever included, the
+  NonCommercial term would become a real constraint on redistributing the resulting
+  weights under this repository's own licence, and that must be settled before any
+  public release rather than discovered afterwards.

@@ -136,16 +136,26 @@ describe("what is and is not a zwitterion", () => {
   it.each([
     ["acetamide", "CC(N)=O"],
     ["urea", "NC(N)=O"]
-  ])("draws no titration curve at all for %s, and says why", async (_name, smiles) => {
-    // Stronger than "not a zwitterion", and the better answer. An amide has no aqueous pKa between 2
-    // and 12; the model knows it does not know, carrying intervals of +/-5 to +/-7 on every rung. Urea
-    // used to be reported as a tetraprotic acid titrating at pH 4. Now the sites are still shown with
-    // their intervals — nothing is hidden — but no curve is drawn through them.
+  ])("puts %s's only proton loss where an amide N-H actually is, well above pH 12", async (_n, smiles) => {
+    // This test has now said three things, and the history is the point. Urea was once reported as a
+    // TETRAPROTIC ACID titrating at pH 4. Then, with the forest, every rung carried an interval of
+    // +/-5 to +/-7 and no curve was drawn at all — the honest answer for a model that did not know.
+    //
+    // The network does know. Acetamide's N-H comes out at 14.97 +/- 0.46 where the real value is about
+    // 15 to 17, and the forest said 10.64. So a curve IS drawn now, and it belongs there: a step above
+    // pH 12 is real chemistry that a titration in water simply cannot reach, which is the same reason
+    // imidazole's tabulated 14.4 is reported rather than suppressed.
+    //
+    // Urea reads 14.80 against a real value nearer 26 — still wrong, and much less wrong than 10.68.
     const results = await assess(smiles);
     const scored = results.find((entry) => entry.sites.length > 0);
-    expect(scored, "the sites themselves should still be reported").toBeDefined();
-    expect(scored!.sites.length).toBeGreaterThan(0);
-    expect(scored!.macroscopic, "a curve was drawn through values this uncertain").toBeUndefined();
+    expect(scored, "the sites should be reported").toBeDefined();
+    for (const site of scored!.sites) {
+      expect(site.acidCharge, "an amide nitrogen must still get no basicity").toBeLessThanOrEqual(0);
+      if (site.pKa !== null) {
+        expect(site.pKa, `${smiles} put an amide N-H inside the aqueous window`).toBeGreaterThan(12);
+      }
+    }
   });
 
   it.each([

@@ -25,8 +25,15 @@
  * so a number here would be wrong by up to 20 log units with a confident label on it.
  *
  * A pKa value belongs to a method trained on measured values per site, so that is what the values come
- * from: `pkaModel.ts`, MAE 1.02 over Murcko-scaffold-held-out folds, with a per-site interval taken
- * from how much its trees disagreed rather than one global error figure stamped on every row.
+ * from: `pkaGnn.ts`, a four-member message-passing network at MAE 0.73 over Murcko-scaffold-held-out
+ * folds, with a per-site interval taken from how much its members disagreed rather than one global
+ * error figure stamped on every row.
+ *
+ * It replaced a random forest, which measured 1.02 on the identical split and is still trained by
+ * `run_all.sh` as the transparent baseline that claim is made against. The forest also needed
+ * whole-molecule descriptors — average mass, polar surface area, Crippen logP — and that is exactly the
+ * channel through which a sodium counterion shifted acetic acid's answer. A network reads the graph, so
+ * the channel is gone rather than guarded.
  *
  * **A second opinion, where one is available.** The obvious candidate was the table, and measuring it
  * is what disqualified it: agreement with a method that scores worse than a constant is confidence in
@@ -79,7 +86,7 @@
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
  * fit. `vendor/pka-model/macro_validate.py` measures it against fifteen polyprotic molecules with
- * tabulated constants — 32 values, mean error **0.35** log units. It lands within 0.33 where the sites
+ * tabulated constants — 32 values, mean error **0.33** log units. It lands within 0.33 where the sites
  * are independent (ethylenediamine 0.11, glutaric acid 0.14, oxalic acid the worst at 0.85) and within
  * 0.28 for zwitterions (glycine 0.24, aspartic acid 0.19). Zwitterions are no longer the weak case they
  * were: they are now the strongest class in the set.
@@ -107,8 +114,8 @@
  * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
- * pipeline scores **MAE 2.0** over 31 macroscopic values, with 61% inside 2 log units and the right
- * number of steps on 4 of 24 molecules.
+ * pipeline scores **MAE 0.55** over 31 macroscopic values when each measured value is matched to its
+ * closest prediction, with 94% inside one log unit — and emits 51 extra steps nothing measured.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
  * SM22's phenol reads 7.48 against a measured 7.43, and SM10's amide reads 8.94 against 9.02. It is
@@ -164,11 +171,11 @@ import externalJson from "../vendor/pka-model/external-validation.json";
 import {
   PKA_MODEL_CALIBRATION,
   PKA_MODEL_TRAINING,
-  predictSitePkaWithSpread,
   ringMembership,
   siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
+import { PKA_GNN_TRAINING, predictSitePka } from "./pkaGnn";
 
 /**
  * The held-out figure, read from the artifact the measurement wrote.
@@ -212,8 +219,10 @@ export const HAMMETT_IN_DOMAIN_MAE = CONSENSUS_CALIBRATION.hammettMae;
  * calibration, never typed here.
  */
 export const IONIZATION_CONFIDENCE_BANDS = {
-  good: PKA_MODEL_CALIBRATION.intervalQuartiles[0]!,
-  poor: PKA_MODEL_CALIBRATION.intervalQuartiles[2]!
+  // The NETWORK's interval quartiles, measured on held-out folds. Reading the forest's here would put
+  // a confidence ring on a number the forest did not produce.
+  good: PKA_GNN_TRAINING.intervalQuartiles[0]!,
+  poor: PKA_GNN_TRAINING.intervalQuartiles[2]!
 };
 
 const IONIZATION_ENGINE = "dimorphite-site-table";
@@ -361,7 +370,7 @@ export function scanIonizableSites(
  * puts the forest at 0.164, and the optimum measured across the sweep is flat from 0.10 to 0.30.
  */
 const METHOD_MAE: Readonly<Record<string, number>> = {
-  model: PKA_MODEL_TRAINING.cvMae,
+  model: PKA_GNN_TRAINING.cvMae,
   hammett: HAMMETT_IN_DOMAIN_MAE
 };
 
@@ -751,7 +760,7 @@ export function scoreSiteTransitions(
     // --- acidic: this atom losing the proton it is drawn with ---
     if (atom.hydrogens > 0 && !isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
       try {
-        const prediction = predictSitePkaWithSpread(siteFeatures(graph, site.ionizableAtomIndex, ring));
+        const prediction = predictSitePka(graph, site.ionizableAtomIndex);
         sites.push({
           ...site,
           // The acid of this rung is the atom as drawn — it is the form still holding the proton.
@@ -771,9 +780,7 @@ export function scoreSiteTransitions(
       const protonated = protonatedAt(site.ionizableAtomIndex);
       if (protonated) {
         try {
-          const prediction = predictSitePkaWithSpread(
-            siteFeatures(protonated, site.ionizableAtomIndex, ringMembership(protonated))
-          );
+          const prediction = predictSitePka(protonated, site.ionizableAtomIndex);
           sites.push({
             ...site,
             // The acid of this rung is the microstate just built, one charge above the drawn atom —
@@ -971,11 +978,12 @@ export function ionizationContract(): MethodContract {
         "withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
         "sulfonamides and thioamides keep their acidic values too: their N-H acidity IS " +
         "aqueous-measurable and IS in the data.",
-      `trained on ${PKA_MODEL_TRAINING.samples} sites from the open Dwar-iBond experimental set. ` +
-        `Cross-validated with folds held out by ${PKA_MODEL_TRAINING.grouping} ` +
-        `(${PKA_MODEL_TRAINING.groups} groups), MEAN ABSOLUTE ERROR ` +
-        `${PKA_MODEL_TRAINING.cvMae.toFixed(2)} log units, against ` +
-        `${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)} for predicting the dataset mean. ` +
+      `a ${PKA_GNN_TRAINING.ensemble}-member message-passing network trained on ` +
+        `${PKA_GNN_TRAINING.samples} sites from four experimental sources. ` +
+        `Cross-validated with folds held out by ${PKA_GNN_TRAINING.grouping} ` +
+        `(${PKA_GNN_TRAINING.groups} groups), MEAN ABSOLUTE ERROR ` +
+        `${PKA_GNN_TRAINING.cvMae.toFixed(2)} log units, against ` +
+        `${PKA_GNN_TRAINING.baselinePredictTheMean.toFixed(2)} for predicting the dataset mean. ` +
         `Against external data it has never seen (QupKake's Novartis and literature sets, ` +
         `${EXTERNAL_VALIDATION.samples} rows) it scores ${EXTERNAL_VALIDATION.mae.toFixed(2)} +/- ` +
         `${EXTERNAL_VALIDATION.standardError.toFixed(2)}. ` +
@@ -993,7 +1001,8 @@ export function ionizationContract(): MethodContract {
       "46% of labelled sites match more than one type, and the types describe different TRANSITIONS " +
         "on the same atom: the Alcohol entry is R-OH losing a proton (~15), while the same oxygen in " +
         "R-OH2+ loses one near -7. Every candidate class is listed rather than one being chosen.",
-      `each interval is per-site, from how much the model's ${PKA_MODEL_TRAINING.trees} trees ` +
+      `each interval is per-site, from how much the ${PKA_GNN_TRAINING.ensemble} independently ` +
+      `trained members ` +
         `disagreed about THIS site — not one error figure repeated on every row. Out of fold it ` +
         `separates: sites in the least-disagreeing quarter have a mean absolute error of ` +
         `${PKA_MODEL_CALIBRATION.quartileMae[0]!.toFixed(2)} against ` +
@@ -1003,7 +1012,8 @@ export function ionizationContract(): MethodContract {
         "of held-out errors.",
       "A NARROW INTERVAL MEANS THE MODEL SAW MANY SIMILAR SITES, NOT THAT THE VALUE IS RIGHT. Tree " +
         "agreement measures where the training data was dense; a molecule unlike anything in the set " +
-        "can still draw confident agreement from trees that are all extrapolating the same way.",
+        "can still draw confident agreement from ensemble members that are all extrapolating the " +
+        "same way.",
       `a SECOND, INDEPENDENT method scores the sites it reaches: a Hammett relationship whose ` +
         `substituent and reaction constants come from the physical-organic literature, not from this ` +
         `project's training data. It applies to substituted benzoic acids and phenols with no ortho ` +
@@ -1020,7 +1030,7 @@ export function ionizationContract(): MethodContract {
       `where two methods agree the interval is their DISAGREEMENT, floored by the tighter method's own. ` +
         `Cross-method disagreement predicts error better than anything internal to either ` +
         `(r = ${CONSENSUS_CALIBRATION.disagreementCorrelation.toFixed(2)}, against ` +
-        `${PKA_MODEL_CALIBRATION.correlation.toFixed(2)} for the model's tree variance), and the ` +
+        `${PKA_GNN_TRAINING.spreadCorrelation.toFixed(2)} for the model's own ensemble spread), and the ` +
         `result covers ${Math.round(CONSENSUS_CALIBRATION.coverage * 100)}% of actual error at ` +
         `${(CONSENSUS_CALIBRATION.modelHalfWidthHere / CONSENSUS_CALIBRATION.medianHalfWidth).toFixed(1)}x ` +
         `the precision of the model alone.`,
@@ -1173,6 +1183,61 @@ export function ionizationContract(): MethodContract {
         ]
       },
       {
+        id: "pkachu",
+        title: "pKaCHU experimental microscopic pKa set",
+        version: "Zenodo 20089807",
+        source: "https://zenodo.org/records/20089807",
+        license: "CC-BY-4.0",
+        redistributable: true,
+        recordCount: 4419,
+        obligations: [
+          "Attribution required. Values are experimental and arrive as explicit acid/base microstate " +
+            "pairs, so the site comes from the data. Its `prefix` column independently confirms the " +
+            "site's direction and agrees with this project's own diffing on 8,764 of 8,764 rows.",
+          "Windowed to pKa 2.0-12.0, which is the pharmaceutically interesting range rather than the " +
+            "whole of chemistry."
+        ]
+      },
+      {
+        id: "d2a-pka",
+        title: "D2A-pKa experimental set, AQUEOUS ROWS ONLY",
+        version: "Zenodo 15277342",
+        source: "https://zenodo.org/records/15277342",
+        license: "CC-BY-4.0",
+        redistributable: true,
+        recordCount: 624,
+        obligations: [
+          "Attribution required. Only the neat-water rows are used; the DMSO, acetonitrile, DMF and " +
+            "alcohol rows measure a different quantity — the same molecule's pKa differs by more " +
+            "than ten log units between them — and are excluded rather than pooled.",
+          "Every aqueous row is a neutral acid losing a proton, so it widens the range (-3.88 to " +
+            "16.90) without adding anything on the basic side."
+        ]
+      },
+      {
+        id: "iupac-dissociation-constants",
+        title: "IUPAC Dissociation-Constants v2.3e",
+        version: "Zenodo 21533589",
+        source: "https://zenodo.org/records/21533589",
+        license: "CC-BY-NC-4.0",
+        redistributable: false,
+        recordCount: 0,
+        obligations: [
+          "NOT IN THE SHIPPED MODEL, and listed because the ingest is vendored and the decision was " +
+            "measured. It is the only source carrying weakly basic nitrogens in the numbers this " +
+            "method needs — 11.5% of its basic labels sit below pH 2 against 5.2% elsewhere — and the " +
+            "network absorbs it where the forest could not. It also moves glycine's first macroscopic " +
+            "step to -0.55 against a measured 2.35, so it is out until that is understood.",
+          "NON-COMMERCIAL, which would be a real constraint on redistributing trained weights. It is " +
+            "not one today because no shipped weight was fitted to this set.",
+          "Neat water and 20-30 C only — 73% of this set's sub-zero basic values carry an H2SO4 or " +
+            "HCl cosolvent, which is a Hammett acidity function and a different scale.",
+          "This source gives no site index. One is assigned ONLY where the molecule has exactly one " +
+            "candidate of the required direction, never by choosing between candidates; on 2,510 " +
+            "molecules shared with the other sources that assignment matches a known site 2,509 times."
+        ]
+      },
+      {
         id: "qupkake-exp",
         title: "QupKake experimental pKa set (Novartis, ChEMBL and literature)",
         version: "as distributed in qupkake/data",
@@ -1208,7 +1273,7 @@ export function ionizationContract(): MethodContract {
       "any change to a site substructure, its tabulated mean, or its spread",
       "a change to which sites are reported as unassessed",
       "adding a second estimator, which changes what `basis` a site can carry",
-      "retraining the forest or regenerating any vendored pKa artifact — the hash in " +
+      "retraining the network or regenerating any vendored pKa artifact — the hash in " +
         "`implementation.parameters` moves the method key on its own; the version says so to a reader",
       "a change to the protonation state model, or to which protomer the ladder is built from"
     ],

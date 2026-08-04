@@ -77,10 +77,10 @@ fi
 # IUPAC last: it is the only source whose site has to be INFERRED rather than read, so it should see
 # every other source's labels first and defer to them wherever they already cover a site.
 #
-# OFF BY DEFAULT, and measured rather than assumed -- see the header of iupac_labels.py. The labels are
-# clean and they fix the weak-base gap, but a 60-tree forest cannot absorb them without giving up
-# common-case accuracy, and the capacity that could (120+ trees) costs 33 MB or more in an artifact
-# that ships inside a desktop app.
+# ON when the CSV is passed. It was off for the whole forest era -- the labels are clean and they fix
+# the weak-base gap, but a 60-tree forest could not absorb them without giving up common-case accuracy.
+# The network can: cross-validated MAE moves 0.7264 -> 0.7291 against a harder baseline, external
+# 1.1308 -> 1.0797, and SAMPL6's right-step-count 9 -> 12 of 24.
 if [ -n "$IUPAC" ]; then
   "$PYTHON" iupac_labels.py "$IUPAC" ./merged-labels.json ./iupac-labels.json
   "$PYTHON" - ./merged-labels.json ./iupac-labels.json <<'MERGE'
@@ -92,7 +92,13 @@ print(f"   {len(base)} + {len(extra)} = {len(base) + len(extra)} labels")
 MERGE
 fi
 
-echo "==> training (also emits the feature matrix and the parity fixture)"
+echo "==> training the network (also writes out-of-fold predictions for the consensus)"
+"$PYTHON" pka_gnn.py ./merged-labels.json .
+
+# The forest is still trained, and is no longer what ships. It stays as the transparent baseline the
+# network is judged against -- a 29% improvement is a claim about two numbers, and both have to be
+# regenerable from this script or the comparison rots.
+echo "==> training the forest baseline (also emits the feature matrix and its parity fixture)"
 "$PYTHON" pka_train.py ./merged-labels.json .
 
 echo "==> interval calibration"
