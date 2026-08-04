@@ -626,9 +626,33 @@ the right step count on 12 of 24 SAMPL6 molecules instead of 9. And it wrecks am
 first macroscopic step reads **−0.55** against a measured 2.35, alanine −0.49 against 2.34, histidine
 −3.32 against 1.85, taking the macroscopic zwitterion error from 0.46 to 1.65. A model that puts
 glycine's carboxyl three log units under water is not shippable however good its average looks. The
-likeliest cause is BALANCE rather than capacity — only the basic rows were taken, moving the corpus from
-5,125/6,971 basic/acidic to 6,594/6,971 — and taking the acidic rows too is the obvious next experiment,
-recorded in `iupac_labels.py` rather than left as a hunch.
+**balance hypothesis was tested, and is half right — the other half matters more.** Taking the acidic
+rows too brings the ratio to 0.767 against the core's 0.735 and halves the damage (zwitterions
+1.65 → 0.89) while external accuracy improves again, 1.129 → 1.060. Still out at 0.89 against 0.32, but
+the reason is no longer about this dataset.
+
+Compare the two models site by site and they agree on everything an experiment can measure — acetic acid
+4.30 both, glycine's CATION 2.29 against 2.19 (measured 2.35), phenol 9.92 against 9.96. They differ on
+one thing: glycine's NEUTRAL form, **4.33 against 8.56**, where the real value is near 4.4.
+
+That species does not exist in water. Glycine is a zwitterion, so nothing labels its neutral form and
+nothing could have corrected the rebalanced model about it. **The fold builds it anyway** —
+`pKa(n) = log10(Z(n)/Z(n-1))` sums over every microstate, populated or not — so macroscopic accuracy
+rests on predictions no training set constrains, and adding well-labelled data can move them arbitrarily
+while every labelled figure improves. External MAE got BETTER in the same run that made amino acids
+worse, and that is not a contradiction: external tests labelled microstates, the fold requires unlabelled
+ones.
+
+This is what the electrostatic coupling term was introduced for years ago — "Dwar-iBond records only
+microstates a titration can populate, never an amino acid's neutral form" — but as a standing fragility
+of the METHOD rather than a gap in one corpus. The term is now zero because the network learned the
+electrostatics; the exposure underneath it did not go away.
+
+So the next lever is not another dataset. It is either labels for unpopulated microstates, which QM can
+supply and experiment cannot, or a fold that does not need them. Two hypotheses were checked and
+discarded on the way, recorded in `iupac_labels.py` so they are not retried: that the ingest selects for
+mono-protic molecules (38.5% polyprotic against the corpus's 47.2% — too small), and that its acidic
+labels drag predictions down (median 7.49 against 6.23, so they would push the other way).
 
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is
