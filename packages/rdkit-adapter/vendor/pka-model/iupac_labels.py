@@ -28,10 +28,40 @@ alanine -0.49 against 2.34; histidine -3.32 against 1.85. Amino acids are the co
 chemistry there is, and a model that puts glycine's carboxyl three log units under water is not
 shippable however good its held-out average looks.
 
-The likeliest cause is not capacity but BALANCE: only the basic rows are taken here (see
-`IUPAC_BASIC_ONLY`), which moves the corpus from 5,125 basic / 6,971 acidic to 6,594 / 6,971 and shifts
-what the model believes about an acidic site sitting next to a protonated amine. Taking the acidic rows
-as well is the obvious next experiment and has not been run.
+**The balance hypothesis was tested and is only half the story.** Taking the acidic rows as well brings
+the corpus to 6,594 / 8,600 -- a ratio of 0.767 against the core's 0.735, where basic-only was 0.946 --
+and it halves the damage without removing it:
+
+    corpus                       cvMAE   external   macro ALL   macro zwitterion
+    network, 12,096 (shipped)    0.728      1.129       0.330              0.320
+    network, +IUPAC basic only   0.729      1.080       0.750              1.650
+    network, +IUPAC both ways    0.741      1.060       0.500              0.890
+
+**What is actually happening is more interesting, and it is a property of the macroscopic fold rather
+than of this dataset.** Compare the two models site by site and they agree on everything an experiment
+can measure:
+
+    site                              shipped   rebalanced   measured
+    acetic acid                          4.30         4.30       4.76
+    glycine, CATION form                 2.29         2.19       2.35
+    alanine, CATION form                 2.28         2.22       2.34
+    phenol                               9.92         9.96       9.95
+    glycine, NEUTRAL form                4.33         8.56          -
+
+The last row is the whole difference. Glycine's neutral form does not exist in water -- the molecule is
+a zwitterion -- so no dataset labels it, and the real microscopic value is near 4.4. The shipped model
+says 4.33; the rebalanced one says 8.56 and is simply wrong, on a species nothing could have corrected
+it about.
+
+The macroscopic fold has to build that species anyway: `pKa(n) = log10(Z(n)/Z(n-1))` sums over EVERY
+microstate, populated or not. So the fold's accuracy rests on predictions no training set constrains,
+and adding well-labelled data can move them arbitrarily while every labelled figure improves. That is
+exactly the observation the electrostatic coupling term was introduced for -- "Dwar-iBond records only
+microstates a titration can populate, never an amino acid's neutral form" -- and it turns out to be a
+standing fragility rather than a fixable gap in one corpus.
+
+Which means the next lever is not another dataset. It is either labels for unpopulated microstates
+(which QM could supply and experiment cannot), or a fold that does not need them.
 
 The paragraphs that follow describe the forest era and are left standing, because a dataset rejected
 for one reason and later rejected for a different one is exactly the decision that rots into folklore
