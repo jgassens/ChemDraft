@@ -72,12 +72,33 @@ configuration:
 | longer `H96 L3 E150` | 0.7759 | 1.2852 | 106,561 |
 | big `H160 L5 E150` | 0.7777 | 1.2922 | 446,081 |
 
-Width is worth 6.6% for 2.7x the parameters. Depth buys almost nothing, a longer schedule buys half of
-what width does, and all three together are *worse* than width alone — so the big configuration is
-overfitting rather than short of capacity, which is what says this is an optimum and not "bigger is
-better".
+Width is the axis that pays. Depth buys almost nothing, a longer schedule buys half of what width does,
+and all three together are *worse* than width alone — so the big configuration is overfitting rather
+than short of capacity, which is what says this is an optimum and not "bigger is better".
 
-**It is not applied because one artifact cannot be regenerated here.** `external-validation.json` is the
+**The single-fold figure overstates it, and the full run was done rather than assumed.** `HIDDEN = 160`
+was cross-validated properly, five scaffold-grouped folds and four members, and it is a smaller and more
+mixed result than 0.8190 → 0.7650 suggests — most of what extra width buys, a four-member ensemble was
+already buying:
+
+| measure | shipped `H96` | `H160` |
+|---|---|---|
+| cvMAE | 0.7281 | **0.7156** |
+| curated 16 molecules | 0.295 | **0.246** |
+| curated zwitterions | **0.165** | 0.232 |
+| `macro_validate` zwitterionic | **0.130** | 0.22 |
+| `macro_validate` azole | 0.212 | **0.15** |
+| SAMPL6 matched | 0.491 | **0.480** |
+| SAMPL6 within one log unit | **94%** | 90% |
+| SAMPL6 extra steps | 49 | 49 |
+| artifact | **4.5 MB** | 12.2 MB |
+
+So: 1.7% on cross-validation rather than 6.6%, a genuine 17% on the curated macroscopic set, a 40%
+REGRESSION on zwitterions, no effect at all on over-detection, and 2.7x the bytes to parse at startup.
+Worth having, not obviously worth taking — and the choice belongs to whoever is weighing the download
+size, which is why the numbers are here rather than a recommendation.
+
+**It is also not applied because one artifact cannot be regenerated here.** `external-validation.json` is the
 only figure in this directory not measured on the training corpus, and it needs the Novartis and
 literature SDFs that ship with QupKake (`Shualdon/QupKake`, BSD-3-Clause, `qupkake/data/`). Those are not
 vendored and are not on the machine this was measured on. Shipping a wider model without regenerating it

@@ -10,6 +10,7 @@ import os
 import numpy as np
 import torch
 
+import pka_gnn
 from pka_gnn import SitePkaNet, featurise, collate
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,8 +41,19 @@ def load_interval_calibration(path=None):
 
 
 def load_ensemble(path="site-pka-gnn.json"):
-    """The ensemble, plus the calibration that turns member disagreement into a reported interval."""
+    """The ensemble, plus the calibration that turns member disagreement into a reported interval.
+
+    The artifact's OWN architecture decides the shape, not this module's constants. `pkaGnn.ts` has
+    always read `architecture.hidden` off the file, so it loads any width; this side built
+    `SitePkaNet()` from whatever `pka_gnn.HIDDEN` happened to be and threw a wall of size-mismatch
+    errors the moment the two differed. That asymmetry meant a candidate model could only be scored by
+    a checkout already edited to match it -- which is the one situation where a parity check is worth
+    least.
+    """
     artifact = json.load(open(path))
+    architecture = artifact.get("architecture", {})
+    pka_gnn.HIDDEN = architecture.get("hidden", pka_gnn.HIDDEN)
+    pka_gnn.LAYERS = architecture.get("layers", pka_gnn.LAYERS)
     members = []
     for weights in artifact["members"]:
         model = SitePkaNet()
