@@ -63,6 +63,54 @@ standing fragility rather than a fixable gap in one corpus.
 Which means the next lever is not another dataset. It is either labels for unpopulated microstates
 (which QM could supply and experiment cannot), or a fold that does not need them.
 
+**THE FOLD WAS BUILT, AND IT DID NOT RESCUE THESE ROWS. Rejected a third time, and now the mechanism is
+a single rung rather than a hypothesis.** The macroscopic fold now solves every microstate's free energy
+at once by weighted least squares, weighting each rung by its calibrated interval, which was exactly the
+"fold that does not need them" this file called for. Retrained under it:
+
+    measure                                   shipped   +IUPAC
+    cvMAE                                      0.7281   0.7260
+    MAE on the 12,096 rows both share          0.7281   0.7173
+    MAE on labels below pH 2                   1.6669   1.5510
+    macro_validate zwitterionic                 0.130     1.28
+    macro_validate ALL                          0.266     0.63
+    curated 16 molecules                        0.295    0.861
+    SAMPL6 matched                              0.491    0.538
+    SAMPL6 extra steps                             49       49
+
+Every per-site figure improves. It is a better model of everything an experiment can measure -- and the
+site-by-site comparison shows that is not a summary artifact:
+
+    species                                  shipped   +IUPAC   measured
+    glycine COOH next to NH3+                   2.29     2.29       2.35
+    glycine NH3+ next to COO-                   9.71     9.93       9.78
+    acetic acid                                 4.30     4.46       4.76
+    methylamine                                10.41    10.65      10.66
+    pyridine                                    5.11     5.23       5.23
+    glycine NH3+ next to COOH  (CATION)         7.91     2.07       7.70
+
+One rung, wrong by 5.85 log units, and it is the rung no titration can populate: deprotonating that
+ammonium gives glycine's neutral form. Teaching the model that nitrogens are weaker bases than its
+corpus suggested is CORRECT for the sub-pH-2 heterocycles these rows are full of, and it is applied to
+an aliphatic ammonium where it is wrong by six log units.
+
+**Why the weighted solve could not save it, which is the transferable part.** The bad rung reported an
+interval of 0.46 -- the second TIGHTEST of glycine's four. The ensemble is confidently wrong, so the
+weighting gave it near-full say. A spread fitted on labelled data cannot flag a species the labels do
+not contain, and this is the second place that has now been measured; the confidence filter is blind to
+over-detection for the same reason.
+
+What DOES catch it needs no reference value: the thermodynamic cycle. Two protons leaving in either
+order must cost the same, and glycine's square closes to 0.35 under the shipped model against 6.51 under
+this one. That is a 19x signal available before anyone measures a macroscopic curve, and it is now a
+test -- `macroscopicFold.real.test.ts`, "the cycle defect as a corpus gate". Any future candidate gets
+screened by it.
+
+So the conclusion inverts: it is not that this corpus is bad, nor that the fold was. Per-site accuracy
+and macroscopic accuracy are measuring different populations, and a corpus can improve one while
+destroying the other. Shipping these rows needs labels for the unpopulated microstates -- QM, since no
+experiment can reach them -- and nothing in the fold substitutes for that.
+
 The paragraphs that follow describe the forest era and are left standing, because a dataset rejected
 for one reason and later rejected for a different one is exactly the decision that rots into folklore
 if only the outcome is recorded.

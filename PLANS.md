@@ -745,6 +745,55 @@ and costs 9% on the tercile where the model is least sure, which is where a cons
 The two cannot be put on one footing: the Hammett relationship's RMSE is 0.556 against an MAE of 0.259,
 so it is usually excellent and occasionally terrible, and both RMSE variants are worse than what ships.
 
+**The IUPAC weak-base corpus, retrained under the new fold, and rejected a third time — with the
+mechanism finally isolated to a single rung.** The hypothesis was clean: those rows were rejected twice
+because the FOLD leaned on unlabelled microstates, so a fold that weights each rung by its own
+confidence should make them shippable. It was wrong, and the way it was wrong is the most useful thing
+this stretch produced.
+
+    measure                                   shipped   +IUPAC
+    cvMAE                                      0.7281   0.7260
+    MAE on the 12,096 rows both share          0.7281   0.7173
+    MAE on labels below pH 2                   1.6669   1.5510
+    macro_validate zwitterionic                 0.130     1.28
+    curated 16 molecules                        0.295    0.861
+    SAMPL6 matched                              0.491    0.538
+    SAMPL6 extra steps                             49       49
+
+Every per-site figure improves. It is genuinely the better model of everything an experiment can measure,
+and that is not a summary artifact — species by species:
+
+    species                                  shipped   +IUPAC   measured
+    glycine COOH next to NH3+                   2.29     2.29       2.35
+    glycine NH3+ next to COO-                   9.71     9.93       9.78
+    acetic acid                                 4.30     4.46       4.76
+    methylamine                                10.41    10.65      10.66
+    pyridine                                    5.11     5.23       5.23
+    glycine NH3+ next to COOH  (CATION)         7.91     2.07       7.70
+
+**One rung, wrong by 5.85 log units, and it is the rung no titration can populate** — deprotonating that
+ammonium gives glycine's neutral form. Teaching the model that nitrogens are weaker bases is CORRECT for
+the sub-pH-2 heterocycles these rows are full of, and catastrophic when applied to an aliphatic ammonium.
+It also did not fix over-detection, which was the whole reason for fetching the data: 49 extra steps
+either way, though the ones it reports are less wrong (in-window MAE 2.01 → 1.63, within-one 55% → 71%).
+
+**Why the weighted solve could not save it, which is the part that transfers.** The bad rung reported an
+interval of 0.46 — the second TIGHTEST of glycine's four. The ensemble is confidently wrong, so the
+weighting gave it near-full say. That is now the second measured instance of the same blindness: a spread
+fitted on labelled data cannot flag a species the labels do not contain, exactly as it cannot flag a site
+that should not exist.
+
+What does catch it needs no reference value at all. Glycine's thermodynamic square closes to 0.35 under
+the shipped model and 6.51 under the rejected one — a 19x signal, available before anyone measures a
+macroscopic curve. That is now a test rather than an anecdote: "the cycle defect as a corpus gate" in
+`macroscopicFold.real.test.ts` screens any future candidate.
+
+So the conclusion inverts. It is not that this corpus is bad, nor that the fold was. **Per-site accuracy
+and macroscopic accuracy measure different populations, and a corpus can improve one while destroying the
+other.** Shipping these rows needs labels for the unpopulated microstates — QM, since no experiment can
+reach them — and no amount of fold engineering substitutes for that. The licence question these rows
+also carry never had to be decided.
+
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is
 the field's convention, and it also cannot describe what a user gets, because a user supplies a

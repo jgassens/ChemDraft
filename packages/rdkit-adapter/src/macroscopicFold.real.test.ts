@@ -166,3 +166,50 @@ describe("the macroscopic fold on curated titration curves", () => {
     expect(histidine!.inconsistency).toBeGreaterThan(glycine!.inconsistency);
   }, 1_800_000);
 });
+
+/**
+ * The gate that would have stopped a corpus three separate measurements did not.
+ *
+ * The IUPAC weak-base ingest was rejected twice on macroscopic accuracy, then retrained a third time
+ * once the fold solved its ladders by weighted least squares — on the hypothesis that the fold was what
+ * made those rows unshippable. It was not. Every species an experiment can measure got BETTER:
+ *
+ *     species                                  shipped   +IUPAC   measured
+ *     glycine COOH next to NH3+                   2.29     2.29       2.35
+ *     glycine NH3+ next to COO-                   9.71     9.93       9.78
+ *     acetic acid                                 4.30     4.46       4.76
+ *     methylamine                                10.41    10.65      10.66
+ *     pyridine                                    5.11     5.23       5.23
+ *     glycine NH3+ next to COOH  (CATION)         7.91     2.07       7.70
+ *
+ * The last row is the whole difference: a five-and-a-half log unit collapse on the one rung no
+ * titration can populate, because deprotonating that ammonium gives glycine's neutral form, which does
+ * not exist in water. Cross-validated per-site error IMPROVED — 0.7281 to 0.7173 on the rows both
+ * corpora share — while the curated macroscopic set went 0.295 to 0.861 and zwitterions 0.165 to 1.285.
+ *
+ * **Neither statistical signal caught it.** The bad rung reported an interval of 0.46, the second
+ * TIGHTEST of the four: the ensemble was confidently wrong, so the weighted solve gave it near-full
+ * weight. The same blindness the confidence filter shows against over-detection, for the same reason —
+ * a spread fitted on labelled data says nothing about species the labels do not contain.
+ *
+ * What did catch it is the thermodynamic cycle, which needs no reference value at all. Two protons
+ * leaving in either order must cost the same; the shipped model misses that by 0.35 on glycine and the
+ * rejected one by 6.51. So this is a gate rather than an anecdote: any future corpus can be screened
+ * against it before anyone measures a macroscopic curve.
+ */
+describe("the cycle defect as a corpus gate", () => {
+  it("keeps the amino acids physically possible", async () => {
+    // A rejected corpus scored 6.51 here on glycine. The bound is loose enough to survive a retrain
+    // that moves site values and tight enough that losing an unlabelled microstate fails it.
+    for (const [name, smiles] of [
+      ["glycine", "NCC(=O)O"],
+      ["alanine", "CC(N)C(=O)O"],
+      ["serine", "NC(CO)C(=O)O"],
+      ["lysine", "NCCCCC(N)C(=O)O"]
+    ] as const) {
+      const folded = await fold(smiles, `gate-${name}`);
+      expect(folded, name).toBeDefined();
+      expect(folded!.inconsistency, `${name} contradicts itself`).toBeLessThan(2.5);
+    }
+  }, 1_800_000);
+});
