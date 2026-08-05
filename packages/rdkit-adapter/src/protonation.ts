@@ -319,6 +319,8 @@ export function ladderRole(ladder: ProtonationLadder): LadderRole {
 export interface MacroscopicResult {
   /** Macroscopic pKa values, in titration order (first proton lost first). */
   pKa: number[];
+  /** Which species the molecule is in at physiological pH. See `speciesDistribution`. */
+  distribution?: SpeciesDistribution;
   /** Largest disagreement between two routes to the same microstate, in log units. */
   inconsistency: number;
   microstateCount: number;
@@ -678,8 +680,10 @@ export function macroscopicPka(
   // to leave it is the most acidic one.
 
   if (pKa.length === 0) return { declined: "no microstate ladder could be built from the site values" };
+  const distribution = speciesDistribution(ladders, states);
   return {
     pKa,
+    ...(distribution ? { distribution } : {}),
     inconsistency,
     microstateCount: states.filter((s) => s.logBinding !== undefined).length,
     siteCount: ladders.length,
@@ -698,6 +702,132 @@ export function logSumExp10(values: readonly number[]): number {
   const max = Math.max(...values);
   const sum = values.reduce((total, value) => total + 10 ** (value - max), 0);
   return max + Math.log10(sum);
+}
+
+/** The pH a distribution is reported at unless another is asked for: blood, and the usual reference. */
+export const PHYSIOLOGICAL_PH = 7.4;
+
+/** What fraction of the molecule carries each net charge, at one pH. */
+export interface ChargeFraction {
+  charge: number;
+  fraction: number;
+  /** Protons held, relative to the fully deprotonated form. Two charges can share a proton count. */
+  protonCount: number;
+}
+
+export interface SpeciesDistribution {
+  pH: number;
+  /** Every net charge with a non-negligible population, most abundant first. */
+  charges: ChargeFraction[];
+  /** The single most abundant net charge. */
+  dominantCharge: number;
+  /**
+   * Population at net charge zero — which for an amino acid is the ZWITTERION, not the uncharged form.
+   *
+   * Reported under this name rather than "neutral" deliberately. Glycine is 99.5% net-neutral at pH 7.4
+   * and essentially none of it is uncharged: the population is a zwitterion carrying +1 on nitrogen and
+   * -1 on oxygen. A reader who saw "99.5% neutral" and reached for a permeability argument would be
+   * wrong by five orders of magnitude, so the two quantities are reported separately and neither is
+   * called neutral.
+   */
+  fractionNetNeutral: number;
+  /**
+   * Population carrying no formal charge anywhere — the species a partition or permeability argument
+   * actually means.
+   *
+   * For an ordinary acid or base this equals `fractionNetNeutral`. For a zwitterion it is smaller, and
+   * for glycine at pH 7.4 it is around 1e-5 of it.
+   */
+  fractionUncharged: number;
+}
+
+/**
+ * Which species the molecule is actually in, at a given pH.
+ *
+ * This is the question a macroscopic pKa is usually a proxy for. "The pKa is 4.76" answers it only for
+ * someone willing to do the arithmetic; "at pH 7.4 this is 99.8% anionic" answers it directly, and it is
+ * the form that matters for solubility, permeability and which species a partition coefficient refers
+ * to.
+ *
+ * It costs nothing new. The fold already solves every microstate's free energy relative to the fully
+ * deprotonated reference, and mass action gives the population straight from it:
+ *
+ *     population(s) proportional to 10^( L(s) - n(s) * pH )
+ *
+ * where `n(s)` is the protons that microstate holds. Normalised over every microstate the fold reached,
+ * then summed by NET CHARGE, because that is the quantity a reader acts on — two microstates of the same
+ * charge are one species as far as a solubility argument is concerned, and glycine's zwitterion and its
+ * neutral form are both charge 0 and belong together.
+ *
+ * **This is less exposed to the unlabelled-microstate problem than the pKa ladder, and the reason is the
+ * Boltzmann factor rather than anything clever.** A species the fold had to invent because no experiment
+ * can populate it enters with weight `10^(L - n*pH)`, and being unpopulated is exactly what makes that
+ * weight tiny. Glycine's neutral form sits about five log units above its zwitterion and contributes
+ * around 10^-5 of the charge-0 population. A macroscopic pKa is a RATIO of two partition sums, so a
+ * spurious microstate shifts the reported number; here it shows up as its own small fraction and dilutes
+ * the rest proportionally. Being wrong is more visible and less contagious.
+ *
+ * The `inconsistency` on the same result still applies, and for the same reason: these fractions are
+ * built from the same rung values, so a molecule whose thermodynamic cycles do not close has a
+ * distribution no more trustworthy than its ladder.
+ */
+export function speciesDistribution(
+  ladders: readonly ProtonationLadder[],
+  states: readonly Microstate[],
+  pH: number = PHYSIOLOGICAL_PH
+): SpeciesDistribution | undefined {
+  const reachable = states.filter((state) => state.logBinding !== undefined);
+  if (reachable.length === 0) return undefined;
+
+  // log10 of the unnormalised population, per microstate. Kept in log space to the last moment: a
+  // strongly basic polyamine at low pH overflows 10^x long before it overflows a log.
+  const logWeights = reachable.map((state) => state.logBinding! - state.protonCount * pH);
+  const total = logSumExp10(logWeights);
+
+  const byCharge = new Map<number, { fraction: number; protonCount: number; largest: number }>();
+  let uncharged = 0;
+  for (const [i, state] of reachable.entries()) {
+    const perLadder = ladders.map((ladder, j) => chargeAtLevel(ladder, state.levels[j]!));
+    const charge = perLadder.reduce((sum, q) => sum + q, 0);
+    const fraction = 10 ** (logWeights[i]! - total);
+    // No formal charge on ANY site, not merely a net of zero. This is the clause that separates
+    // glycine's uncharged form from its zwitterion, and they differ by five orders of magnitude.
+    if (perLadder.every((q) => q === 0)) uncharged += fraction;
+    const seen = byCharge.get(charge);
+    if (seen === undefined) {
+      byCharge.set(charge, { fraction, protonCount: state.protonCount, largest: fraction });
+      continue;
+    }
+    seen.fraction += fraction;
+    // Named after its most populated microstate, compared against the previous MAXIMUM rather than the
+    // running sum — against the sum, several small microstates outweigh any later single one and the
+    // proton count silently freezes on whichever happened to arrive first.
+    if (fraction > seen.largest) {
+      seen.largest = fraction;
+      seen.protonCount = state.protonCount;
+    }
+  }
+
+  const charges = [...byCharge.entries()]
+    .map(([charge, entry]) => ({ charge, fraction: entry.fraction, protonCount: entry.protonCount }))
+    // A hundredth of a percent is below anything a reader would act on and below this method's accuracy
+    // by orders of magnitude. Dropped rather than printed as 0.00%.
+    .filter((entry) => entry.fraction >= 1e-4)
+    .sort((a, b) => b.fraction - a.fraction || a.charge - b.charge);
+  if (charges.length === 0) return undefined;
+
+  return {
+    pH,
+    charges,
+    dominantCharge: charges[0]!.charge,
+    // Read from the UNFILTERED map, not from `charges`. The 1e-4 filter exists so a reader is not shown
+    // a row of 0.00%, and taking these two numbers from different sides of it made them inconsistent:
+    // citric acid at pH 7.4 has a net-zero population below the threshold, so the filtered list dropped
+    // it and reported 0 net-neutral while still reporting a positive uncharged fraction — a subset
+    // larger than its superset.
+    fractionNetNeutral: byCharge.get(0)?.fraction ?? 0,
+    fractionUncharged: uncharged
+  };
 }
 
 /**

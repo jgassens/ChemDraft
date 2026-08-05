@@ -1011,7 +1011,7 @@ export function ionizationContract(): MethodContract {
     // per-atom ladders, the corpus was corrected and the model retrained, and the values are now
     // computed on a canonical protomer rather than on the drawing. Every number a caller cached under
     // 1.x describes a different computation.
-    version: "2.1.0",
+    version: "2.2.0",
     implementation: {
       engine: IONIZATION_ENGINE,
       engineVersion: IONIZATION_ENGINE_VERSION,
@@ -1155,6 +1155,16 @@ export function ionizationContract(): MethodContract {
         "Those microstates are excluded rather than scored, which is why imidazole reads near 6.8 " +
         "against a measured 6.95. What is NOT done is computing the tautomer’s own stability: for " +
         "an azole both tautomers are the same protonation state, so the cost is at most log10(2).",
+      "the fold also reports WHICH SPECIES the molecule is in at pH 7.4, as the fraction carrying each " +
+        "net charge. It costs nothing extra — the fold already solves every microstate's free energy, " +
+        "and mass action gives the population as 10^(L - n*pH), normalised and summed by charge — and it " +
+        "is the question a macroscopic pKa is usually a proxy for. TWO quantities are reported where a " +
+        "zwitterion makes them differ, because conflating them is a five-order-of-magnitude error: " +
+        "glycine at pH 7.4 is 99.5% NET-neutral and 0.0004% UNCHARGED, since the net-zero population " +
+        "carries +1 on nitrogen and -1 on oxygen and does not cross a membrane. Their ratio is the " +
+        "tautomerization constant, and at 10^5.4 against a literature 10^5.3 it is a check on the one " +
+        "microstate no titration can populate. The fractions inherit every caveat the pKa values carry, " +
+        "being built from the same rungs.",
       "the macroscopic fold also reports its own THERMODYNAMIC INCONSISTENCY: the largest closed cycle " +
         "the model failed to close, in log units. Two protons leaving in either order must cost the " +
         "same, each rung is predicted independently, and they do not agree. It is measured on the " +
@@ -1373,6 +1383,8 @@ export function ionizationContract(): MethodContract {
       "retraining the network or regenerating any vendored pKa artifact — the hash in " +
         "`implementation.parameters` moves the method key on its own; the version says so to a reader",
       "a change to the protonation state model, or to which protomer the ladder is built from",
+      "a change to the pH the species distribution is reported at, or to how charge states are " +
+        "aggregated — the fractions move without any pKa moving",
       "a change to HOW the ladder is reconciled — the fold solves every microstate's free energy at " +
         "once by weighted least squares, and both the solve and `edge-variance.json`'s weighting move " +
         "every polyprotic answer while leaving every per-site value untouched"

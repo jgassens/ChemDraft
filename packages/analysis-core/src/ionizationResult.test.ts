@@ -276,3 +276,91 @@ describe("an amphoteric atom in the figure", () => {
     expect(table?.kind === "table" && table.rows.length).toBe(2);
   });
 });
+
+/**
+ * The species distribution, through the schema and the renderer.
+ *
+ * `AnalysisResultSchema` is `.strict()` and is not parsed at runtime, so a field added to the interface
+ * and forgotten in the schema is invisible until something else parses a run. That is the divergence
+ * this file exists to catch, and a new nested object is exactly the shape it catches.
+ */
+describe("the species distribution", () => {
+  const glycine = {
+    ...aceticAcid,
+    macroscopic: {
+      pKa: [2.31, 9.73],
+      inconsistency: 0.25,
+      microstates: 4,
+      zwitterionic: true,
+      distribution: {
+        pH: 7.4,
+        charges: [
+          { charge: 0, fraction: 0.9954, protonCount: 1 },
+          { charge: -1, fraction: 0.0046, protonCount: 0 }
+        ],
+        dominantCharge: 0,
+        fractionNetNeutral: 0.9954,
+        fractionUncharged: 3.8e-6
+      }
+    }
+  };
+
+  it("passes the strict schema", () => {
+    expect(() => AnalysisResultSchema.parse(glycine)).not.toThrow();
+  });
+
+  it("rejects a fraction outside zero to one", () => {
+    const broken = {
+      ...glycine,
+      macroscopic: {
+        ...glycine.macroscopic,
+        distribution: { ...glycine.macroscopic.distribution, fractionNetNeutral: 1.4 }
+      }
+    };
+    expect(() => AnalysisResultSchema.parse(broken)).toThrow();
+  });
+
+  it("renders each charge state as a percentage", () => {
+    const report = buildAnalysisReport(runWith(glycine));
+    const rendered = JSON.stringify(report);
+    expect(rendered).toContain("Species at pH 7.4");
+    expect(rendered).toContain("no net charge");
+    expect(rendered).toContain("99.5%");
+  });
+
+  it("splits out the uncharged fraction for a zwitterion, and says the rest is charged at both ends", () => {
+    // The distinction the interface exists to make. Glycine's net-zero population is a zwitterion, and
+    // a reader who read "99.5% neutral" and reached for a permeability argument would be wrong by five
+    // orders of magnitude.
+    const report = buildAnalysisReport(runWith(glycine));
+    const rendered = JSON.stringify(report);
+    expect(rendered).toContain("of which carries no charge at all");
+    expect(rendered).toContain("<0.1%");
+    expect(rendered).toContain("zwitterionic");
+  });
+
+  it("does not split it out for a plain acid, where the two coincide", () => {
+    const acid = {
+      ...aceticAcid,
+      macroscopic: {
+        pKa: [4.3],
+        inconsistency: 0,
+        microstates: 2,
+        zwitterionic: false,
+        distribution: {
+          pH: 7.4,
+          charges: [
+            { charge: -1, fraction: 0.9992, protonCount: 0 },
+            { charge: 0, fraction: 0.0008, protonCount: 1 }
+          ],
+          dominantCharge: -1,
+          fractionNetNeutral: 0.0008,
+          fractionUncharged: 0.0008
+        }
+      }
+    };
+    const rendered = JSON.stringify(buildAnalysisReport(runWith(acid)));
+    expect(rendered).toContain("Species at pH 7.4");
+    expect(rendered).not.toContain("of which carries no charge at all");
+  });
+});

@@ -883,9 +883,42 @@ both N-H acidities and both correctly outside water.
 All seven phases are complete and every gate in the verification table has a test. Of the four items the
 plan put out of scope, three are done: pKaCHU is in the shipped corpus (4,419 of 12,096 labels), the
 graph-model comparison happened when the network replaced the forest, and conformal calibration is
-`interval_calibrate.py`. **Species-distribution outputs remain unbuilt** — the fold computes every
-microstate's free energy, so the fraction of each species at a given pH is arithmetic away, and it is
-the one piece of Codex's original scope never attempted.
+`interval_calibrate.py`. **Species distribution is now built**, which closes the last piece of the
+original scope.
+
+It costs nothing new. The fold already solves every microstate's free energy relative to the fully
+deprotonated reference, and mass action gives the population straight from it — `10^(L(s) - n(s)*pH)`,
+normalised, summed by NET CHARGE because that is the quantity a reader acts on. Measured at pH 7.4:
+
+    molecule        distribution                    net-neutral   uncharged
+    acetic acid     -1: 99.92%   0: 0.08%                 0.08%      0.08%
+    ibuprofen       -1: 99.84%   0: 0.16%                 0.16%      0.16%
+    phenol           0: 99.71%  -1: 0.29%                99.71%     99.71%
+    caffeine         0: 99.99%                           99.99%     99.99%
+    methylamine     +1: 99.90%   0: 0.10%                 0.10%      0.10%
+    glycine          0: 99.54%  -1: 0.46%                99.54%    3.8e-4%
+    lysine          +1: 98.09%   0: 1.91%                 1.91%    7.7e-7%
+    aspartic acid   -1: 99.77%  -2: 0.21%   0: 0.02%      0.02%    2.0e-5%
+    histidine        0: 93.14%  +1: 5.06%  -1: 1.80%     93.14%    1.2e-3%
+
+**Two quantities, reported separately, because conflating them is a five-order-of-magnitude error.**
+Glycine is 99.5% NET-neutral at pH 7.4 and 0.0004% UNCHARGED: the net-zero population is a zwitterion
+carrying +1 on nitrogen and −1 on oxygen, and it does not cross a membrane. A field called
+`fractionNeutral` would have invited exactly that mistake, so neither is called neutral, and the report
+splits the two out only when they differ — which is precisely when it matters.
+
+**Their ratio is a check on the part of the fold nothing can label.** Those two numbers ARE the
+tautomerization constant: 99.537 / 3.8e-4 = 10^5.42, against a literature K_z near 10^5.3. That constant
+depends entirely on glycine's neutral form — the microstate no titration can populate, the one the
+rejected corpus put at 2.07 instead of 7.70 — so landing within a decade of the literature is evidence
+the shipped model's unlabelled microstates are sane rather than merely unmeasured. It is the first
+positive check on them this method has had.
+
+Two bugs found while building it, both by tests rather than inspection: the charge state was named after
+its most populated microstate by comparing against the running SUM rather than the previous maximum, so
+the proton count froze on whichever microstate arrived first; and `fractionNetNeutral` was read from the
+display-filtered list while `fractionUncharged` was not, so citric acid at pH 7.4 — whose net-zero
+population falls below the 0.01% display threshold — reported a subset larger than its superset.
 
 The other open item is a decision rather than work: Phase 7 says to lift the EXPERIMENTAL flag "on
 evidence". The evidence now exists and it argues for keeping the flag. Valuation is competitive —

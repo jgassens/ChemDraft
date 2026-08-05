@@ -1212,6 +1212,7 @@ function ionizationResultFor(
     ...(macroscopicApplies(macroscopic)
       ? { macroscopic: { pKa: macroscopic.pKa, inconsistency: macroscopic.inconsistency,
                          microstates: macroscopic.microstateCount,
+                         ...(macroscopic.distribution ? { distribution: macroscopic.distribution } : {}),
                          zwitterionic: macroscopic.zwitterionic } }
       : { macroscopicDeclined: macroscopic.declined }),
     unassessed: scan.unassessed,

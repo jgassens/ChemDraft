@@ -325,6 +325,22 @@ export interface IonizationResult extends AnalysisResultBase {
    * independently and they do not. The largest disagreement found bounds what these values are worth.
    */
   macroscopic?: {
+    /**
+     * Which species the molecule is in at one pH, summed by net charge.
+     *
+     * The question a macroscopic pKa is usually a proxy for. Derived from the same microstate free
+     * energies the ladder is, so it inherits `inconsistency` — a molecule whose thermodynamic cycles
+     * do not close has a distribution no more trustworthy than its pKa values.
+     */
+    distribution?: {
+      pH: number;
+      charges: { charge: number; fraction: number; protonCount: number }[];
+      dominantCharge: number;
+      /** Net charge zero — for an amino acid this is the ZWITTERION, not the uncharged form. */
+      fractionNetNeutral: number;
+      /** No formal charge anywhere: the species a permeability argument means. */
+      fractionUncharged: number;
+    };
     pKa: number[];
     inconsistency: number;
     microstates: number;
@@ -551,6 +567,26 @@ const IonizationResultSchema = z
     macroscopic: z
       .object({
         pKa: z.array(z.number().finite()),
+        distribution: z
+          .object({
+            pH: z.number().finite(),
+            charges: z
+              .array(
+                z
+                  .object({
+                    charge: z.number().int(),
+                    fraction: z.number().finite().min(0).max(1),
+                    protonCount: z.number().int().nonnegative()
+                  })
+                  .strict()
+              )
+              .min(1),
+            dominantCharge: z.number().int(),
+            fractionNetNeutral: z.number().finite().min(0).max(1),
+            fractionUncharged: z.number().finite().min(0).max(1)
+          })
+          .strict()
+          .optional(),
         inconsistency: z.number().finite().nonnegative(),
         microstates: z.number().int().positive(),
         zwitterionic: z.boolean()

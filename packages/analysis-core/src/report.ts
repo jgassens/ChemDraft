@@ -486,6 +486,39 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
           macroCategory
         )
       );
+      // The distribution goes BEFORE the caveat text, so the caveat sits under both and applies to
+      // both — it is derived from the same microstate energies and is no more trustworthy than they are.
+      if (macro.distribution && macro.distribution.charges.length > 0) {
+        const distribution = macro.distribution;
+        const percent = (fraction: number): string =>
+          fraction >= 0.001 ? `${formatNumber(100 * fraction, 1)}%` : "<0.1%";
+        sections.push(
+          keyValueSection(
+            `Species at pH ${formatNumber(distribution.pH, 1)}`,
+            [
+              ...distribution.charges.map((entry) => ({
+                label:
+                  entry.charge === 0
+                    ? "no net charge"
+                    : `${entry.charge > 0 ? "+" : "−"}${Math.abs(entry.charge)}`,
+                value: percent(entry.fraction)
+              })),
+              // Spelled out only when it differs, which is exactly when it matters: for a zwitterion the
+              // net-zero population carries charges on both ends and does not behave like a neutral
+              // molecule. Glycine is 99.5% net-neutral and 0.0004% uncharged.
+              ...(distribution.fractionNetNeutral - distribution.fractionUncharged > 0.001
+                ? [
+                    {
+                      label: "of which carries no charge at all",
+                      value: percent(distribution.fractionUncharged)
+                    }
+                  ]
+                : [])
+            ],
+            macroCategory
+          )
+        );
+      }
       sections.push({
         kind: "text",
         title: "About these values",
@@ -493,7 +526,14 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
         body:
           "What a titration would measure, folded from the per-site values below. Those are " +
           "microscopic — one proton on one atom — and a reference table's figure equals no single " +
-          "one of them." + (caveats.length > 0 ? ` Treat with care: ${caveats.join("; ")}.` : "")
+          "one of them." +
+          (macro.distribution
+            ? " The species fractions come from the same microstate free energies by mass action, so " +
+              "they carry the same uncertainty as the values above. Where a net-zero population is " +
+              "split out, the remainder is zwitterionic — charged at both ends rather than uncharged, " +
+              "which is the difference a permeability argument turns on."
+            : "") +
+          (caveats.length > 0 ? ` Treat with care: ${caveats.join("; ")}.` : "")
       });
     } else if (ionization.macroscopicDeclined) {
       sections.push({
