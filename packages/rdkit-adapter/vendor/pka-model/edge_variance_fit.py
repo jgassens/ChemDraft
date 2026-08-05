@@ -30,7 +30,15 @@ calibrated to within 1.31x everywhere, which is what a weight has to be to be wo
 blind spots, so zero disagreement is not zero error, and a weight of 1/0 would let a single confident
 rung dictate every microstate around it.
 
-    python3 edge_variance_fit.py gnn-oof.json edge-variance.json
+**Fitted on the quantity the fold actually receives, which is not what the out-of-fold file stores.**
+`cross_validate` writes the raw ensemble standard deviation; `predictSitePka` and `predict_site` both
+return that TIMES `spreadMultiplier`, the factor that turns member disagreement into a reported
+interval. Fitting on the raw number and applying the result to the scaled one inflates the spread term
+by the square of the multiplier -- 2.25x at the current 1.5 -- which leaves the weighting far more
+aggressive than the calibration behind it justifies. The multiplier is read from the model artifact
+rather than assumed, so a recalibration cannot silently desynchronise the two.
+
+    python3 edge_variance_fit.py gnn-oof.json site-pka-gnn.json edge-variance.json
 """
 import json
 import math
@@ -114,15 +122,21 @@ def spearman(rows):
     return num / math.sqrt(sum((si - ms) ** 2 for si in s) * sum((ei - me) ** 2 for ei in e))
 
 
-def main(oof_path, out_path):
-    rows = [r for r in json.load(open(oof_path)) if "spread" in r]
+def main(oof_path, model_path, out_path):
+    multiplier = json.load(open(model_path))["training"]["spreadMultiplier"]
+    rows = [dict(r, spread=r["spread"] * multiplier)
+            for r in json.load(open(oof_path)) if "spread" in r]
     a, b = fit(rows)
     deciles = calibration(rows, a, b)
     worst = max(abs(math.log(d["ratio"])) for d in deciles)
     artifact = {
         "measurement": "Gaussian MLE of sigma^2 = floor + perSpread * spread^2 on out-of-fold "
-                       "predictions; the fold weights each rung by 1/sigma^2",
+                       "predictions; the fold weights each rung by 1/sigma^2. Spread is the REPORTED "
+                       "interval -- the ensemble's standard deviation times spreadMultiplier -- "
+                       "because that is what the fold is handed, not the raw deviation gnn-oof.json "
+                       "stores",
         "samples": len(rows),
+        "spreadMultiplier": multiplier,
         "floor": round(a, 4),
         "perSpread": round(b, 4),
         "unknownSpread": round(st.median(r["spread"] for r in rows), 4),
@@ -139,4 +153,4 @@ def main(oof_path, out_path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3])

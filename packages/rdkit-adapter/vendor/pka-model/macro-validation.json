@@ -11,20 +11,20 @@
   },
   "zwitterionic": {
    "values": 10,
-   "raw_ladder": 0.1228,
-   "+_coupling": 0.1228,
-   "+_tautomer_exclusion": 0.1296
+   "raw_ladder": 0.119,
+   "+_coupling": 0.119,
+   "+_tautomer_exclusion": 0.1297
   },
   "azole": {
    "values": 4,
-   "raw_ladder": 0.2926,
-   "+_coupling": 0.2926,
+   "raw_ladder": 0.3557,
+   "+_coupling": 0.3557,
    "+_tautomer_exclusion": 0.2115
   },
   "ALL": {
    "values": 32,
-   "raw_ladder": 0.2737,
-   "+_coupling": 0.2737,
+   "raw_ladder": 0.2804,
+   "+_coupling": 0.2804,
    "+_tautomer_exclusion": 0.2657
   }
  }

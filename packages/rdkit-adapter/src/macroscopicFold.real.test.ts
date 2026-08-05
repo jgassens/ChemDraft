@@ -14,8 +14,8 @@
  *
  * Measured against the forward sweep it replaced, on these sixteen molecules:
  *
- *     all sixteen       0.380 -> 0.293
- *     the eight zwitterions   0.336 -> 0.160
+ *     all sixteen       0.380 -> 0.302
+ *     the eight zwitterions   0.336 -> 0.178
  *
  * and every molecule with no cycle to close is bit-identical, which is the property that says the
  * change is a reconciliation and not a retuning.
@@ -118,7 +118,7 @@ describe("the macroscopic fold on curated titration curves", () => {
           .join("\n")
     );
 
-    // Measured 0.293 and 0.160 at the fold's introduction. The bound is loose enough not to fail on a
+    // Measured 0.302 and 0.178 at the fold's introduction. The bound is loose enough not to fail on a
     // retrain that moves a site value, and tight enough that losing the weighted solve fails it: the
     // forward sweep it replaced scored 0.380 and 0.336 on this exact set.
     expect(all).toBeLessThan(0.35);

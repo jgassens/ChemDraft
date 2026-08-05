@@ -682,12 +682,12 @@ free energy at once by weighted least squares over the whole ladder, weighting e
 closes by construction because `L` is a potential.
 
     measure                                   sweep    solve
-    curated set, all 16 molecules             0.380    0.293
-    curated set, the 8 zwitterions            0.336    0.160
+    curated set, all 16 molecules             0.380    0.302
+    curated set, the 8 zwitterions            0.336    0.178
     macro_validate.py, zwitterionic           0.320    0.130
     macro_validate.py, ALL                    0.325    0.266
-    SAMPL6 matched, end to end                0.553    0.514
-    coupling fit's own 400-molecule set       2.819    2.810
+    SAMPL6 matched, end to end                0.553    0.515
+    coupling fit's own 400-molecule set       2.819    2.816
 
 Every molecule whose ladder has no cycle to close is bit-identical, which is what says this reconciles
 contradictions rather than retuning agreements — and TypeScript and Python, two independent

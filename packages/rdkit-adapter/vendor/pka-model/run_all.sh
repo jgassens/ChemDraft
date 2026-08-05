@@ -108,7 +108,7 @@ echo "==> interval calibration"
 # weights every rung by this. Fitted on the out-of-fold predictions the training step just wrote, so
 # it re-derives itself whenever the model changes rather than staying pinned to a retired one.
 echo "==> per-rung weighting for the macroscopic fold"
-"$PYTHON" edge_variance_fit.py ./gnn-oof.json ./edge-variance.json
+"$PYTHON" edge_variance_fit.py ./gnn-oof.json ./site-pka-gnn.json ./edge-variance.json
 
 echo "==> consensus with the Hammett relationship"
 "$PYTHON" consensus_calibrate.py ./merged-labels.json . >/dev/null

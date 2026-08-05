@@ -7,21 +7,21 @@
   0.0,
   1.0
  ],
- "fitMae": 2.8101,
- "fitMaeUncorrected": 2.8101,
+ "fitMae": 2.8156,
+ "fitMaeUncorrected": 2.8156,
  "molecules": 209,
  "scaffoldSplit": {
   "halfA": {
    "n": 221,
    "bestW": 0.0,
-   "mae": 2.4773,
-   "maeAtZero": 2.4773
+   "mae": 2.4807,
+   "maeAtZero": 2.4807
   },
   "halfB": {
    "n": 212,
    "bestW": 0.0,
-   "mae": 1.5643,
-   "maeAtZero": 1.5643
+   "mae": 1.5666,
+   "maeAtZero": 1.5666
   }
  },
  "appliesTo": "acid/base site pairs only",

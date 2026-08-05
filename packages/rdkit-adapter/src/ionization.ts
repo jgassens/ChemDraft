@@ -86,7 +86,7 @@
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
  * fit. `macroscopicFold.real.test.ts` measures the SHIPPED path on sixteen molecules with tabulated
- * constants: mean error **0.29** log units, and **0.16** across the eight zwitterions. Zwitterions are
+ * constants: mean error **0.30** log units, and **0.18** across the eight zwitterions. Zwitterions are
  * no longer the weak case they were — they are now the strongest class in the set.
  *
  * The fold solves every microstate's free energy at once, by weighted least squares over the whole
@@ -98,7 +98,7 @@
  * every species an experiment CAN measure. Weighting each rung by the ensemble's own disagreement
  * (`EDGE_VARIANCE`, fitted on 12,096 out-of-fold predictions) lets the labelled chemistry pin the
  * unlabelled species instead of averaging them in as equals. Measured against the sweep it replaced:
- * 0.380 to 0.293 overall, 0.336 to 0.160 on zwitterions, SAMPL6's matched figure 0.553 to 0.514, and
+ * 0.380 to 0.302 overall, 0.336 to 0.178 on zwitterions, SAMPL6's matched figure 0.553 to 0.515, and
  * every molecule whose ladder has no cycle to close is bit-identical.
  *
  * The previous corpus produced 0.52 here, and the one before that 0.44 while being measurably wrong —

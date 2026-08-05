@@ -274,7 +274,7 @@ def macroscopic(mol, sites, predict, W, dist, power=1.0, drop_tautomer_states=Tr
     # routes into each state. The normal equations are a weighted graph Laplacian, and pinning the
     # reference at zero makes them positive-definite. The thermodynamic cycle then closes by
     # construction, and a rung the ensemble was unsure of no longer carries the same weight as one it
-    # was certain of. Measured on the curated set: 0.380 -> 0.293 overall, 0.336 -> 0.160 on
+    # was certain of. Measured on the curated set: 0.380 -> 0.302 overall, 0.336 -> 0.178 on
     # zwitterions, with every molecule that has no cycle to close bit-identical.
     order = sorted(node for node in reachable if node != reference)
     slot = {node: k for k, node in enumerate(order)}
