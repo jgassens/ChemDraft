@@ -654,6 +654,54 @@ discarded on the way, recorded in `iupac_labels.py` so they are not retried: tha
 mono-protic molecules (38.5% polyprotic against the corpus's 47.2% — too small), and that its acidic
 labels drag predictions down (median 7.49 against 6.23, so they would push the other way).
 
+**It was the fold, and it cost no new data at all.** The choice above was settled by measurement rather
+than by preference. When `W` was a fitted bilinear function of the charges it closed every thermodynamic
+cycle BY CONSTRUCTION, which is why the code recorded that alanine's `inconsistency` read 0.00 while its
+error was 2.18 — the signal was structurally dead, not uninformative. `W` is zero now and each rung is an
+independent prediction, so the cycles stopped closing on their own and the signal came back:
+
+    molecule     cycle defect   macroscopic MAE
+    glycine             0.25              0.06
+    alanine             0.97              0.28
+    citric              1.28              1.76
+    aspartic            1.36              0.29
+    histidine           3.23              0.56
+    acetic / phenol / ethylenediamine — no cycle, exactly 0.00
+
+Spearman 0.70 across the five with a real cycle. **The molecule now says it is wrong without being told
+the answer.** And the ensemble's own spread turned out to be a real signal too, on 12,096 out-of-fold
+predictions: MAE rises 0.332 → 1.313 monotonically across its quintiles, and the rate of a two-log-unit
+miss rises 1.4% → 19.6%.
+
+What was broken was the reconciliation. The fold walked outward by proton count and set each microstate's
+energy to the UNWEIGHTED MEAN of the routes into it — forward only, so a well-constrained rung could never
+correct a bad one upstream of it; unweighted, so a garbage prediction on an unpopulated species had equal
+say with a labelled one; and it discarded the disagreement it measured. It now solves every microstate's
+free energy at once by weighted least squares over the whole ladder, weighting each rung by
+`1/sigma^2` from `edge-variance.json`. The normal equations are a weighted graph Laplacian; the cycle
+closes by construction because `L` is a potential.
+
+    measure                                   sweep    solve
+    curated set, all 16 molecules             0.380    0.293
+    curated set, the 8 zwitterions            0.336    0.160
+    macro_validate.py, zwitterionic           0.320    0.130
+    macro_validate.py, ALL                    0.325    0.266
+    SAMPL6 matched, end to end                0.553    0.514
+    coupling fit's own 400-molecule set       2.819    2.810
+
+Every molecule whose ladder has no cycle to close is bit-identical, which is what says this reconciles
+contradictions rather than retuning agreements — and TypeScript and Python, two independent
+implementations, agree to the last decimal on all fifteen curated molecules. The coupling refit was re-run
+against the new fold and `W` stays 0, now with every non-zero value strictly worse.
+
+`inconsistency` is now measured on the EDGE VALUES rather than on the solved energies, because the solve
+spreads a contradiction over every rung around it and its residuals understate it — the 4/9-against-6/4
+square in `protonation.test.ts` leaves residuals of 1.5 apiece for a defect of 3.
+
+QM is still the answer for absolute labels on unpopulated species, but it is second: its own error is
+1–2 log units without careful cycle work, and mixing QM rungs with experimental ones needs this weighted
+solve anyway. The fold was the cheap half and it is done.
+
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is
 the field's convention, and it also cannot describe what a user gets, because a user supplies a

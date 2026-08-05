@@ -46,6 +46,9 @@ describe("the vendored pKa model pin", () => {
     "calibration.json",
     "consensus-calibration.json",
     "coupling.json",
+    // Weights every rung of the macroscopic fold. It moves polyprotic answers without moving a single
+    // per-site value, so it is exactly the kind of artifact that could drift unnoticed.
+    "edge-variance.json",
     "external-validation.json",
     "hammett-sigma.json",
     "site-pka-gnn.json"

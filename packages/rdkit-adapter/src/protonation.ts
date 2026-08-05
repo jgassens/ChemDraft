@@ -37,6 +37,7 @@ import { distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
 import { type PkaMolecularGraph } from "./pkaModel";
 import { predictSitePka } from "./pkaGnn";
 import couplingJson from "../vendor/pka-model/coupling.json";
+import edgeVarianceJson from "../vendor/pka-model/edge-variance.json";
 
 /**
  * The electrostatic coupling the microscopic model could not learn.
@@ -90,6 +91,107 @@ export const MAX_MICROSTATES = 2 ** MAX_SITES;
  * from such rungs has plateaus the molecule does not have.
  */
 export const HALF_THE_AQUEOUS_RANGE = 3.5;
+
+/**
+ * How far a predicted rung is likely to be wrong, as a variance, given the ensemble's own disagreement.
+ *
+ * Fitted on the 12,096 out-of-fold predictions in `gnn-oof.json` — every one held out of the fold that
+ * produced it — by Gaussian maximum likelihood on `sigma^2 = floor + perSpread * spread^2`. MLE rather
+ * than least squares on purpose: regressing squared error on squared spread is dominated by the heavy
+ * tail and comes back over-confident about nothing and under-confident about the easy rungs, missing
+ * by 1.69x on the tightest decile against this fit's 1.31x worst case anywhere.
+ *
+ * The spread is a real signal, which had to be established before any of this was worth building:
+ *
+ *     spread quintile     n      MAE    RMSE   > 2 log units
+ *     0.01 - 0.11      2416    0.332   0.559       1.4%
+ *     0.11 - 0.19      2419    0.501   0.798       2.7%
+ *     0.19 - 0.28      2420    0.651   0.961       5.2%
+ *     0.28 - 0.44      2421    0.843   1.263       8.8%
+ *     0.44 - 3.68      2420    1.313   1.905      19.6%
+ *
+ * Monotone, 4x in MAE and 14x in the rate of a two-log-unit miss, Spearman 0.42. So the model does
+ * know which of its answers to distrust, and `reconcile` below spends that knowledge.
+ *
+ * `floor` is what remains when the ensemble agrees completely: members trained on the same corpus share
+ * its blind spots, so zero disagreement is not zero error and a weight of 1/0 would let one confident
+ * rung dictate every microstate around it.
+ *
+ * SCALE CAVEAT, since three different quantities reach this function. A model-scored site carries the
+ * raw ensemble spread and is exactly what was fitted. A consensus site carries
+ * `max(method disagreement, tightest member's spread)`, so agreeing methods land near the member spread
+ * and disagreeing ones are down-weighted — the right direction, not the fitted quantity. A
+ * Hammett-only site carries that relationship's in-domain MAE. All three are error scales in log units
+ * and none is silently treated as certain, which is what matters here.
+ */
+export const EDGE_VARIANCE = edgeVarianceJson as unknown as {
+  measurement: string;
+  samples: number;
+  floor: number;
+  perSpread: number;
+  /** Median spread over the training corpus, used when a rung reports none at all. */
+  unknownSpread: number;
+  spearmanSpreadVersusError: number;
+  worstDecileMiscalibration: number;
+};
+
+const varianceFor = (spread: number | undefined): number => {
+  const s = spread === undefined || !Number.isFinite(spread) ? EDGE_VARIANCE.unknownSpread : spread;
+  return EDGE_VARIANCE.floor + EDGE_VARIANCE.perSpread * s * s;
+};
+
+/**
+ * Solve `A x = b` for a symmetric positive-definite `A`, by Gaussian elimination with partial pivoting.
+ *
+ * Small and dense by construction: `A` is one row per reachable microstate, so at most
+ * MAX_MICROSTATES - 1. Returns undefined if the system is singular, which happens when a microstate is
+ * connected to the rest of the ladder by no edge the model could value.
+ */
+function solveSymmetric(A: number[][], b: number[]): number[] | undefined {
+  const n = b.length;
+  if (n === 0) return [];
+  const m = A.map((row, i) => [...row, b[i]!]);
+  for (let col = 0; col < n; col += 1) {
+    let pivot = col;
+    for (let row = col + 1; row < n; row += 1) {
+      if (Math.abs(m[row]![col]!) > Math.abs(m[pivot]![col]!)) pivot = row;
+    }
+    if (Math.abs(m[pivot]![col]!) < 1e-12) return undefined;
+    [m[col], m[pivot]] = [m[pivot]!, m[col]!];
+    for (let row = col + 1; row < n; row += 1) {
+      const factor = m[row]![col]! / m[col]![col]!;
+      if (factor === 0) continue;
+      for (let k = col; k <= n; k += 1) m[row]![k]! -= factor * m[col]![k]!;
+    }
+  }
+  const x = new Array<number>(n).fill(0);
+  for (let row = n - 1; row >= 0; row -= 1) {
+    let sum = m[row]![n]!;
+    for (let k = row + 1; k < n; k += 1) sum -= m[row]![k]! * x[k]!;
+    x[row] = sum / m[row]![row]!;
+  }
+  return x;
+}
+
+/**
+ * One rung's value, with the model's own confidence in it.
+ *
+ * A bare number is accepted and means "no confidence information": every such rung is weighted alike,
+ * which is what the textbook degeneracy checks want and what they assert.
+ */
+export type MicroscopicEdge = number | { pKa: number; spread?: number };
+
+/**
+ * One rung of the microstate graph: an acid, the base one proton lighter, and the value between them.
+ */
+interface LadderEdge {
+  acid: number;
+  base: number;
+  /** Which ladder loses the proton across this edge — the coordinate the cycle check closes over. */
+  ladder: number;
+  pKa: number;
+  weight: number;
+}
 
 /**
  * One rung of an atom's ladder: a single proton leaving, between two adjacent levels.
@@ -178,10 +280,18 @@ export interface MacroscopicResult {
    * electrostatic term in `COUPLING` closes most of that: 2.06 to 0.70, with the other molecules
    * untouched at 0.30.
    *
-   * The flag stays because the remaining error is still twice the rest, and because it concentrates
-   * where several acid/base pairs act at once: glycine 0.38 and alanine 0.18, but histidine 1.73 with
-   * four sites. Nothing else in the result catches it — alanine's `inconsistency` was 0.00 while its
-   * error was 2.18.
+   * The flag no longer marks the weak class. Once the fold solved the ladder by weighted least squares
+   * these became the STRONGEST class in the curated set — 0.16 against 0.29 overall — because a
+   * zwitterion is precisely the molecule whose fold leans on a species no experiment can label, and
+   * that is what the weighting fixes. It stays as a description of the chemistry, which is true
+   * regardless, and because the reader still wants to know a zwitterion when they have one.
+   *
+   * The claim that used to sit here — that nothing else in the result catches this, alanine's
+   * `inconsistency` reading 0.00 against an error of 2.18 — was true of a fold whose coupling term was
+   * a fitted bilinear function of the charges. Such a term closes every thermodynamic cycle BY
+   * CONSTRUCTION, so the signal was structurally dead rather than uninformative. `W` is zero now, each
+   * rung is an independent prediction, and the cycles no longer close on their own: alanine reports
+   * 0.97, histidine 2.03, and monoprotic molecules still report zero because they have no cycle at all.
    */
   zwitterionic: boolean;
 }
@@ -269,11 +379,12 @@ export function zwitterionic(
  *
  * `microPka(state, ladderIndex)` must return the pKa of that ladder dropping ONE LEVEL from where it
  * sits in `state` — the acid form. Returning undefined drops that edge, and a microstate reachable by
- * no edge is left out of its partition sum rather than guessed at.
+ * no edge is left out of its partition sum rather than guessed at. Returning `{ pKa, spread }` rather
+ * than a bare number lets the fold weigh that rung against the others; see `EDGE_VARIANCE`.
  */
 export function macroscopicPka(
   ladders: readonly ProtonationLadder[],
-  microPka: (state: Microstate, ladderIndex: number) => number | undefined,
+  microPka: (state: Microstate, ladderIndex: number) => MicroscopicEdge | undefined,
   /**
    * Pairs (acidic, basic) whose combined flip is a TAUTOMER rather than a distinct species.
    *
@@ -342,37 +453,159 @@ export function macroscopicPka(
     });
 
   // Reference: the fully deprotonated state, L = 0 by definition.
-  const reference = byKey.get(key(ladders.map(() => 0)))!;
-  reference.logBinding = 0;
+  const referenceIndex = states.findIndex((state) => state.protonCount === 0);
+  if (referenceIndex < 0) return { declined: "no fully deprotonated microstate to reference against" };
 
-  // Walk outward by proton count. Each state's L is reached from every state one proton lighter, and
-  // where those routes disagree the spread is recorded — it is the thermodynamic inconsistency.
-  let inconsistency = 0;
-  const maxProtons = ladders.reduce((sum, ladder) => sum + levelCount(ladder) - 1, 0);
-  for (let n = 1; n <= maxProtons; n += 1) {
-    for (const state of states.filter((s) => s.protonCount === n)) {
-      if (isTautomerState(state)) continue;
-      const routes: number[] = [];
-      for (let i = 0; i < ladders.length; i += 1) {
-        if (state.levels[i] === 0) continue;
-        const lighter = byKey.get(
-          key(state.levels.map((level, j) => (j === i ? level - 1 : level)))
-        );
-        if (!lighter || lighter.logBinding === undefined || isTautomerState(lighter)) continue;
-        // The edge's pKa belongs to the ACID — the state that still holds the proton.
-        const pKa = microPka(state, i);
-        if (pKa === undefined) continue;
-        routes.push(lighter.logBinding + pKa);
-      }
-      if (routes.length === 0) continue;
-      const min = Math.min(...routes);
-      const max = Math.max(...routes);
-      inconsistency = Math.max(inconsistency, max - min);
-      // The mean over routes: with no reason to prefer one path, averaging is the least arbitrary
-      // reconciliation, and the spread is reported separately rather than buried by it.
-      state.logBinding = routes.reduce((sum, value) => sum + value, 0) / routes.length;
+  // Every rung the model can value, as an edge between two microstates. Collected before anything is
+  // solved: which of them the answer can USE is decided by connectivity below, not by the order they
+  // happen to be visited in.
+  const indexOf = new Map(states.map((state, i) => [key(state.levels), i]));
+  const edges: LadderEdge[] = [];
+  for (const [acid, state] of states.entries()) {
+    if (isTautomerState(state)) continue;
+    for (let i = 0; i < ladders.length; i += 1) {
+      if (state.levels[i] === 0) continue;
+      const base = indexOf.get(key(state.levels.map((level, j) => (j === i ? level - 1 : level))));
+      if (base === undefined || isTautomerState(states[base]!)) continue;
+      // The edge's pKa belongs to the ACID — the state that still holds the proton.
+      const edge = microPka(state, i);
+      if (edge === undefined) continue;
+      const pKa = typeof edge === "number" ? edge : edge.pKa;
+      if (!Number.isFinite(pKa)) continue;
+      const spread = typeof edge === "number" ? undefined : edge.spread;
+      edges.push({ acid, base, ladder: i, pKa, weight: 1 / varianceFor(spread) });
     }
   }
+
+  // Only what the reference can actually reach. A microstate joined to the rest by no valued rung is
+  // left out of its partition sum rather than guessed at, exactly as before.
+  const touching = new Map<number, LadderEdge[]>();
+  for (const edge of edges) {
+    for (const node of [edge.acid, edge.base]) {
+      const list = touching.get(node);
+      if (list) list.push(edge);
+      else touching.set(node, [edge]);
+    }
+  }
+  const reachable = new Set([referenceIndex]);
+  const queue = [referenceIndex];
+  while (queue.length > 0) {
+    const at = queue.shift()!;
+    for (const edge of touching.get(at) ?? []) {
+      const other = edge.acid === at ? edge.base : edge.acid;
+      if (!reachable.has(other)) {
+        reachable.add(other);
+        queue.push(other);
+      }
+    }
+  }
+
+  /**
+   * Solve every microstate's free energy at once, weighted by how much each rung is worth believing.
+   *
+   * This replaces walking outward by proton count and averaging the routes into each state. That sweep
+   * had three defects and this has none of them.
+   *
+   * It was FORWARD ONLY, so a badly predicted microstate could never be corrected by the well-predicted
+   * rungs on the far side of it. That is not an abstract worry: the fold has to build species that do
+   * not exist in water — glycine's neutral form, which no titration can populate and so no corpus can
+   * label — and it is exactly those that the surrounding chemistry has to pin down.
+   *
+   * It was UNWEIGHTED, so a rung the ensemble disagreed violently about got the same say as one it was
+   * certain of. Against `EDGE_VARIANCE` above, the confident end of the corpus earns roughly 300x the
+   * weight of the doubtful end.
+   *
+   * And it DISCARDED the disagreement it measured. Here the same quantity is the residual of a fit, so
+   * a rung that cannot be reconciled is pushed on by every path that reaches it rather than averaged
+   * once and forgotten.
+   *
+   * Minimising `sum_e w_e (L_acid - L_base - pKa_e)^2` over the free energies makes the normal
+   * equations a weighted graph Laplacian, symmetric positive-definite once the reference is pinned at
+   * zero. The thermodynamic cycle then closes BY CONSTRUCTION — L is a potential, so every route
+   * between two microstates agrees by definition, which is the property the sweep could only report the
+   * violation of.
+   */
+  const variables = [...reachable].filter((node) => node !== referenceIndex).sort((a, b) => a - b);
+  const slotOf = new Map(variables.map((node, slot) => [node, slot]));
+  const size = variables.length;
+  const normal = Array.from({ length: size }, () => new Array<number>(size).fill(0));
+  const rhs = new Array<number>(size).fill(0);
+  for (const edge of edges) {
+    if (!reachable.has(edge.acid) || !reachable.has(edge.base)) continue;
+    const a = slotOf.get(edge.acid);
+    const b = slotOf.get(edge.base);
+    if (a !== undefined) {
+      normal[a]![a]! += edge.weight;
+      rhs[a]! += edge.weight * edge.pKa;
+    }
+    if (b !== undefined) {
+      normal[b]![b]! += edge.weight;
+      rhs[b]! -= edge.weight * edge.pKa;
+    }
+    if (a !== undefined && b !== undefined) {
+      normal[a]![b]! -= edge.weight;
+      normal[b]![a]! -= edge.weight;
+    }
+  }
+
+  const solution = solveSymmetric(normal, rhs);
+  if (solution === undefined) {
+    return { declined: "the microstate ladder is not connected enough to solve for its free energies" };
+  }
+  states[referenceIndex]!.logBinding = 0;
+  for (const [slot, node] of variables.entries()) states[node]!.logBinding = solution[slot]!;
+
+  /**
+   * The largest thermodynamic cycle the model failed to close, in log units.
+   *
+   * Two protons leaving in either order must cost the same — the free energies are a state function,
+   * so `pKa(drop i) + pKa(then drop j)` has to equal `pKa(drop j) + pKa(then drop i)`. Each such square
+   * is one closed cycle, and any gap is the model contradicting itself about a molecule it was given.
+   *
+   * Measured on the EDGE VALUES, never on the solved energies. That is the whole point: the solve
+   * distributes a defect over every rung around it, so a fitted residual understates it — the 4/9
+   * against 6/4 square in `protonation.test.ts` leaves residuals of 1.5 apiece for a defect of 3. The
+   * quantity a reader needs is how far the predictions are from being physically possible, which is
+   * a property of the predictions alone and survives any choice of reconciliation.
+   *
+   * It is also a LABEL-FREE error signal, and measured to be a live one — on the curated polyprotic
+   * set it ranks glycine 0.25, alanine 0.97, aspartic 1.36, histidine 3.23 against macroscopic errors
+   * of 0.06, 0.28, 0.29, 0.56. Monoprotic molecules have no square and so report exactly zero.
+   */
+  let inconsistency = 0;
+  const valueOf = new Map<string, number>();
+  for (const edge of edges) {
+    if (reachable.has(edge.acid) && reachable.has(edge.base)) {
+      valueOf.set(`${edge.acid}:${edge.ladder}`, edge.pKa);
+    }
+  }
+  const stepDown = (node: number, i: number): number | undefined => {
+    const levels = states[node]!.levels;
+    return indexOf.get(key(levels.map((level, j) => (j === i ? level - 1 : level))));
+  };
+  for (const node of reachable) {
+    const levels = states[node]!.levels;
+    for (let i = 0; i < ladders.length; i += 1) {
+      for (let j = i + 1; j < ladders.length; j += 1) {
+        if (levels[i] === 0 || levels[j] === 0) continue;
+        const viaI = stepDown(node, i);
+        const viaJ = stepDown(node, j);
+        if (viaI === undefined || viaJ === undefined) continue;
+        const first = valueOf.get(`${node}:${i}`);
+        const second = valueOf.get(`${viaI}:${j}`);
+        const alsoFirst = valueOf.get(`${node}:${j}`);
+        const alsoSecond = valueOf.get(`${viaJ}:${i}`);
+        if (first === undefined || second === undefined) continue;
+        if (alsoFirst === undefined || alsoSecond === undefined) continue;
+        inconsistency = Math.max(
+          inconsistency,
+          Math.abs(first + second - alsoFirst - alsoSecond)
+        );
+      }
+    }
+  }
+
+  const maxProtons = ladders.reduce((sum, ladder) => sum + levelCount(ladder) - 1, 0);
 
   // Partition sums per proton count, in log space — 10^L overflows for a strongly basic polyamine.
   const partitions: (number | undefined)[] = [];
@@ -625,7 +858,11 @@ export function macroscopicFromSites(
       const known = sites[rung.siteIndex]?.pKa;
       // Its environment is the drawn one, so the value takes no coupling correction — adding one would
       // count the same interaction twice.
-      if (known !== null && known !== undefined) return known;
+      if (known !== null && known !== undefined) {
+        // The interval beside it on the site table is this rung's weight in the fold. A consensus that
+        // two methods agreed on is worth more than a lone model guess, and now says so.
+        return { pKa: known, spread: sites[rung.siteIndex]?.spread };
+      }
     }
     // The edge belongs to the ACID: the microstate that still holds this proton.
     const acid = graphOf(state);
@@ -635,8 +872,11 @@ export function macroscopicFromSites(
     // The proton has to actually be there, or the value would describe a different reaction.
     if (!atom || atom.hydrogens === 0) return undefined;
     try {
-      const base = predictSitePka(acid, ladder.atomIndex).value;
-      return base + coupling(state, i);
+      const prediction = predictSitePka(acid, ladder.atomIndex);
+      // These are the rungs no experiment can label — a microstate a titration cannot populate, built
+      // because the partition sum needs it. The ensemble's disagreement is the only thing that knows
+      // how far out on its own the model is here, so it is carried rather than dropped.
+      return { pKa: prediction.value + coupling(state, i), spread: prediction.spread };
     } catch {
       return undefined;
     }

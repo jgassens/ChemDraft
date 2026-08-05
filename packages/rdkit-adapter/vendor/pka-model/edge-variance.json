@@ -1,0 +1,81 @@
+{
+  "measurement": "Gaussian MLE of sigma^2 = floor + perSpread * spread^2 on out-of-fold predictions; the fold weights each rung by 1/sigma^2",
+  "samples": 12096,
+  "floor": 0.3599,
+  "perSpread": 8.2408,
+  "unknownSpread": 0.2273,
+  "spearmanSpreadVersusError": 0.4246,
+  "worstDecileMiscalibration": 1.3125,
+  "calibration": [
+    {
+      "decile": 1,
+      "meanSpread": 0.0536,
+      "predictedSigma": 0.6212,
+      "actualRmse": 0.4898,
+      "ratio": 0.7884
+    },
+    {
+      "decile": 2,
+      "meanSpread": 0.0964,
+      "predictedSigma": 0.6613,
+      "actualRmse": 0.6193,
+      "ratio": 0.9365
+    },
+    {
+      "decile": 3,
+      "meanSpread": 0.1322,
+      "predictedSigma": 0.7105,
+      "actualRmse": 0.758,
+      "ratio": 1.0668
+    },
+    {
+      "decile": 4,
+      "meanSpread": 0.1684,
+      "predictedSigma": 0.771,
+      "actualRmse": 0.8366,
+      "ratio": 1.0851
+    },
+    {
+      "decile": 5,
+      "meanSpread": 0.2064,
+      "predictedSigma": 0.8437,
+      "actualRmse": 0.9137,
+      "ratio": 1.0829
+    },
+    {
+      "decile": 6,
+      "meanSpread": 0.2516,
+      "predictedSigma": 0.9398,
+      "actualRmse": 1.0065,
+      "ratio": 1.071
+    },
+    {
+      "decile": 7,
+      "meanSpread": 0.3097,
+      "predictedSigma": 1.074,
+      "actualRmse": 1.2036,
+      "ratio": 1.1207
+    },
+    {
+      "decile": 8,
+      "meanSpread": 0.3907,
+      "predictedSigma": 1.2744,
+      "actualRmse": 1.3214,
+      "ratio": 1.0369
+    },
+    {
+      "decile": 9,
+      "meanSpread": 0.5198,
+      "predictedSigma": 1.6155,
+      "actualRmse": 1.5078,
+      "ratio": 0.9333
+    },
+    {
+      "decile": 10,
+      "meanSpread": 0.9411,
+      "predictedSigma": 2.9304,
+      "actualRmse": 2.2326,
+      "ratio": 0.7619
+    }
+  ]
+}

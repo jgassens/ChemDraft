@@ -104,6 +104,12 @@ echo "==> training the forest baseline (also emits the feature matrix and its pa
 echo "==> interval calibration"
 "$PYTHON" pka_calibrate.py ./pka .
 
+# Must come after the network and before the coupling refit: the refit folds ladders, and the fold
+# weights every rung by this. Fitted on the out-of-fold predictions the training step just wrote, so
+# it re-derives itself whenever the model changes rather than staying pinned to a retired one.
+echo "==> per-rung weighting for the macroscopic fold"
+"$PYTHON" edge_variance_fit.py ./gnn-oof.json ./edge-variance.json
+
 echo "==> consensus with the Hammett relationship"
 "$PYTHON" consensus_calibrate.py ./merged-labels.json . >/dev/null
 

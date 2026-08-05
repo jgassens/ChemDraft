@@ -5,23 +5,23 @@
  "W": 0.0,
  "flatRegion": [
   0.0,
-  2.0
+  1.0
  ],
- "fitMae": 2.8187,
- "fitMaeUncorrected": 2.8187,
+ "fitMae": 2.8101,
+ "fitMaeUncorrected": 2.8101,
  "molecules": 209,
  "scaffoldSplit": {
   "halfA": {
    "n": 221,
    "bestW": 0.0,
-   "mae": 2.491,
-   "maeAtZero": 2.491
+   "mae": 2.4773,
+   "maeAtZero": 2.4773
   },
   "halfB": {
-   "n": 207,
+   "n": 212,
    "bestW": 0.0,
-   "mae": 1.5898,
-   "maeAtZero": 1.5898
+   "mae": 1.5643,
+   "maeAtZero": 1.5643
   }
  },
  "appliesTo": "acid/base site pairs only",

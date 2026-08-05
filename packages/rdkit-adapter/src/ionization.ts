@@ -85,11 +85,21 @@
  *
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
- * fit. `vendor/pka-model/macro_validate.py` measures it against fifteen polyprotic molecules with
- * tabulated constants — 32 values, mean error **0.33** log units. It lands within 0.33 where the sites
- * are independent (ethylenediamine 0.11, glutaric acid 0.14, oxalic acid the worst at 0.85) and within
- * 0.28 for zwitterions (glycine 0.24, aspartic acid 0.19). Zwitterions are no longer the weak case they
- * were: they are now the strongest class in the set.
+ * fit. `macroscopicFold.real.test.ts` measures the SHIPPED path on sixteen molecules with tabulated
+ * constants: mean error **0.29** log units, and **0.16** across the eight zwitterions. Zwitterions are
+ * no longer the weak case they were — they are now the strongest class in the set.
+ *
+ * The fold solves every microstate's free energy at once, by weighted least squares over the whole
+ * ladder, rather than walking outward by proton count and averaging the routes into each state. That
+ * matters because of a defect no per-site number can show: `pKa(n) = log10(Z(n)/Z(n-1))` sums over
+ * every microstate at a proton count, populated or not, so the answer depends on species a titration
+ * cannot reach and no corpus can label. Glycine's neutral form is the standing example — the model was
+ * measured saying 4.33 for it under one corpus and 8.56 under another while agreeing to within 0.1 on
+ * every species an experiment CAN measure. Weighting each rung by the ensemble's own disagreement
+ * (`EDGE_VARIANCE`, fitted on 12,096 out-of-fold predictions) lets the labelled chemistry pin the
+ * unlabelled species instead of averaging them in as equals. Measured against the sweep it replaced:
+ * 0.380 to 0.293 overall, 0.336 to 0.160 on zwitterions, SAMPL6's matched figure 0.553 to 0.514, and
+ * every molecule whose ladder has no cycle to close is bit-identical.
  *
  * The previous corpus produced 0.52 here, and the one before that 0.44 while being measurably wrong —
  * the number moved the wrong way when the labels were corrected, which was recorded rather than
@@ -114,8 +124,9 @@
  * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
- * pipeline scores **MAE 0.55** over 31 macroscopic values when each measured value is matched to its
- * closest prediction, with 94% inside one log unit — and emits 51 extra steps nothing measured.
+ * pipeline scores **MAE 0.51** over 31 macroscopic values when each measured value is matched to its
+ * closest prediction, with 94% inside one log unit and 100% inside two — and emits 51 extra steps
+ * nothing measured.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
  * SM22's phenol reads 7.48 against a measured 7.43, and SM10's amide reads 8.94 against 9.02. It is
@@ -935,7 +946,7 @@ export function ionizationContract(): MethodContract {
     // per-atom ladders, the corpus was corrected and the model retrained, and the values are now
     // computed on a canonical protomer rather than on the drawing. Every number a caller cached under
     // 1.x describes a different computation.
-    version: "2.0.0",
+    version: "2.1.0",
     implementation: {
       engine: IONIZATION_ENGINE,
       engineVersion: IONIZATION_ENGINE_VERSION,
@@ -960,8 +971,8 @@ export function ionizationContract(): MethodContract {
         "nothing else, on the SAMPL6 blind challenge set — 24 drug-like molecules, 31 measured " +
         "macroscopic values, a BLIND challenge whose answers were withheld while predictions were " +
         "submitted, and checked to share no skeleton with any training row — this method matches every " +
-        "measured value to MAE 0.55 with 94% inside one log unit, and gets the right NUMBER of " +
-        "titration steps for 10 of 24 molecules.",
+        "measured value to MAE 0.51 with 94% inside one log unit and 100% inside two, and gets the " +
+        "right NUMBER of titration steps for 10 of 24 molecules.",
       "WHAT IT GETS WRONG IS HOW MANY SITES IT FINDS, not what they are worth. On that same set it " +
         "reports 51 steps nothing measured, of which only 20 fall inside the window an aqueous " +
         "titration can reach — the rest are real chemistry no such experiment can see, an amide N-H " +
@@ -1070,10 +1081,15 @@ export function ionizationContract(): MethodContract {
         "Those microstates are excluded rather than scored, which is why imidazole reads near 6.8 " +
         "against a measured 6.95. What is NOT done is computing the tautomer’s own stability: for " +
         "an azole both tautomers are the same protonation state, so the cost is at most log10(2).",
-      "the macroscopic fold also reports its own THERMODYNAMIC INCONSISTENCY. pKa is a state function, " +
-        "so every route to a microstate should sum to the same binding constant; each edge is predicted " +
-        "independently and they do not. A large disagreement means the values cannot be trusted however " +
-        "confident each step looked — though it does not catch the zwitterion case, which the flag does.",
+      "the macroscopic fold also reports its own THERMODYNAMIC INCONSISTENCY: the largest closed cycle " +
+        "the model failed to close, in log units. Two protons leaving in either order must cost the " +
+        "same, each rung is predicted independently, and they do not agree. It is measured on the " +
+        "predicted values rather than on the solved energies, because the fold distributes a " +
+        "contradiction over every rung around it and its residuals would understate it. This is the " +
+        "only signal here that needs no reference value to compute, and it tracks the error it cannot " +
+        "see — glycine 0.25, alanine 0.97, aspartic 1.36, histidine 2.03 against macroscopic errors of " +
+        "0.06, 0.11, 0.20, 0.13. A molecule with one ionizable site reports exactly zero and that says " +
+        "nothing about its accuracy.",
       "aqueous only, at room temperature. No value here says anything about DMSO, acetonitrile, or " +
         "any mixed solvent.",
       "sites are found by substructure match, so a genuinely ionizable group the table has no pattern " +
@@ -1282,7 +1298,10 @@ export function ionizationContract(): MethodContract {
       "adding a second estimator, which changes what `basis` a site can carry",
       "retraining the network or regenerating any vendored pKa artifact — the hash in " +
         "`implementation.parameters` moves the method key on its own; the version says so to a reader",
-      "a change to the protonation state model, or to which protomer the ladder is built from"
+      "a change to the protonation state model, or to which protomer the ladder is built from",
+      "a change to HOW the ladder is reconciled — the fold solves every microstate's free energy at " +
+        "once by weighted least squares, and both the solve and `edge-variance.json`'s weighting move " +
+        "every polyprotic answer while leaving every per-site value untouched"
     ],
     tautomerSensitive: true
   };
