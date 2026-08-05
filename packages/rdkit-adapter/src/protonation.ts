@@ -33,7 +33,7 @@
  */
 import type { IonizationSite } from "@chemdraft/analysis-core";
 
-import { distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
+import { cyclesThrough, distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
 import { type PkaMolecularGraph } from "./pkaModel";
 import { predictSitePka } from "./pkaGnn";
 import couplingJson from "../vendor/pka-model/coupling.json";
@@ -171,6 +171,57 @@ function solveSymmetric(A: number[][], b: number[]): number[] | undefined {
     x[row] = sum / m[row]![row]!;
   }
   return x;
+}
+
+/**
+ * Whether protonating this ring nitrogen would build a species water cannot hold.
+ *
+ * An azinium ring — a pyrimidine, quinazoline or pyrazine with one nitrogen already protonated — is
+ * strongly electron-poor, and its SECOND nitrogen is not basic in any accessible range. Pyrazine's
+ * second pKa is near -6. The model does not know this, because nothing could have taught it: a
+ * diprotonated pyrazine cannot be titrated in water either, so the corpus holds four such labels in
+ * 12,096 and it fills the gap with a plausible-looking number. Measured on its own out-of-fold
+ * predictions, those four come back at MAE 4.98 with a bias of +4.98 — every one over-predicted, and
+ * every one over-predicted from below zero to INSIDE the aqueous window, where it becomes a titration
+ * step the molecule does not have.
+ *
+ * **The discriminator is charge compensation, and it was measured rather than assumed.** Twenty-one
+ * corpus labels protonate a ring nitrogen whose ring already carries one. They separate exactly:
+ *
+ *     ring bears no negative charge   n= 4   MAE 4.98   bias +4.98    0 of 4 inside pH 2-12
+ *     ring bears a negative charge    n=17   MAE 1.31   bias +0.39   16 of 17 inside pH 2-12
+ *
+ * The second group is uracil, thiouracil and cytosine chemistry — `[nH+]c([O-])[nH+]`,
+ * `[nH+]c([S-])[nH+]` — where an anionic exocyclic oxygen or sulfur leaves the ring at net +1 rather
+ * than +2, and the second protonation is real, measurable and predicted well. A blanket "no second ring
+ * protonation" rule would have deleted all sixteen of those. This one suppresses four, all of them
+ * measured below -2.7, all of them predictions that are already wrong about a species no experiment can
+ * reach.
+ *
+ * Ring membership and formal charge only — both properties of the graph rather than of the resonance
+ * structure written, so the answer cannot depend on which Kekulé form the engine chose.
+ */
+export function isUncompensatedAzinium(
+  graph: PkaMolecularGraph,
+  atomIndex: number,
+  context: ReturnType<typeof siteContext>
+): boolean {
+  if (context.aromatic[atomIndex] !== true) return false;
+  if (graph.atoms[atomIndex]?.element !== "N") return false;
+  for (const ring of cyclesThrough(context.adjacency, atomIndex)) {
+    const alreadyCationic = ring.some(
+      (j) => j !== atomIndex && graph.atoms[j]?.element === "N" && (graph.atoms[j]?.charge ?? 0) > 0
+    );
+    if (!alreadyCationic) continue;
+    // Anything anionic ON the ring or hanging off it: the uracil/thiouracil exocyclic O- or S-.
+    const compensated = ring.some(
+      (j) =>
+        (graph.atoms[j]?.charge ?? 0) < 0 ||
+        (context.adjacency[j] ?? []).some((n) => (graph.atoms[n]?.charge ?? 0) < 0)
+    );
+    if (!compensated) return true;
+  }
+  return false;
 }
 
 /**
@@ -895,6 +946,10 @@ export function macroscopicFromSites(
     const atom = acid.atoms[ladder.atomIndex];
     // The proton has to actually be there, or the value would describe a different reaction.
     if (!atom || atom.hydrogens === 0) return undefined;
+    // A second ring nitrogen protonated on an already-cationic, uncharge-compensated ring. Water does
+    // not hold that species, so the edge is dropped and the microstate leaves the partition sum —
+    // the same treatment an azole's ylide gets, and for the same reason.
+    if (isUncompensatedAzinium(acid, ladder.atomIndex, siteContext(acid))) return undefined;
     try {
       const prediction = predictSitePka(acid, ladder.atomIndex);
       // These are the rungs no experiment can label — a microstate a titration cannot populate, built

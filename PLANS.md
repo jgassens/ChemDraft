@@ -810,12 +810,36 @@ predicted at 0.10, with an ensemble deviation of 0.24. Confidently wrong, for th
 stretch.
 
 The cause is the same one this method keeps meeting. A diprotonated pyrazine cannot be titrated in water,
-so the corpus holds **21 such labels in 12,096** and the model had nothing to learn from. No correction
-is offered: those 21 split across two ring geometries that behave oppositely — 2 bonds apart, bias +0.39
-over 17 rows; 3 bonds apart, +4.98 over 4 — and one parameter cannot be fitted to that. The old coupling
-term excluded like-charge pairs on the grounds that "the model already handles like charges", which was
-measured on DIAMINES, sp3 and far apart, and over-generalised to ring nitrogens two bonds apart through
-an aromatic system.
+so the corpus holds **21 such labels in 12,096** and the model had nothing to learn from.
+
+**The first attempt to act on this stopped one measurement short, and the measurement reversed it.** The
+21 were counted, split by geometry — 2 bonds apart, bias +0.39 over 17 rows; 3 bonds apart, +4.98 over
+4 — and declared unfittable, which was true of a fitted correction and irrelevant to a DOMAIN RULE. This
+codebase already ships three of those and none is fitted. What the evidence actually needed was not "how
+many labels exist" but "how many would a rule suppress that are inside the aqueous window and predicted
+well", and that number is different:
+
+    ring bears no negative charge   n= 4   MAE 4.98   bias +4.98    0 of 4 inside pH 2-12
+    ring bears a negative charge    n=17   MAE 1.31   bias +0.39   16 of 17 inside pH 2-12
+
+The discriminator is CHARGE COMPENSATION and it separates them exactly. The second group is uracil,
+thiouracil and cytosine chemistry — `[nH+]c([O-])[nH+]` — where an anionic exocyclic oxygen or sulfur
+leaves the ring at net +1 rather than +2, so the second protonation is real, measurable and predicted
+well. A blanket rule would have deleted all sixteen. The shipped rule suppresses four, every one measured
+below −2.7 and over-predicted by about five log units into the window.
+
+    measure                     before   after
+    SAMPL6 extra steps              49      37
+    of which in-window              22      19
+    right number of values       10/24   12/24
+    index-paired MAE             3.135   2.219
+    index-paired within one        39%     65%
+    matched MAE                  0.491   0.496
+
+The largest single defect this method had, moved for the first time — and the geometry split that looked
+like an obstacle was the wrong axis to look at. The old coupling term excluded like-charge pairs on the
+grounds that "the model already handles like charges", which was measured on DIAMINES, sp3 and far
+apart, and over-generalised to ring nitrogens sharing an aromatic ring.
 
 **And the cycle-defect gate does not catch this one, which bounds what it can claim.** Molecules with no
 extra steps average a defect of 1.69; those with extra steps average 1.24 — if anything inverted. The

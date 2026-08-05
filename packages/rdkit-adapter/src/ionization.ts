@@ -124,8 +124,8 @@
  * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
- * pipeline scores **MAE 0.51** over 31 macroscopic values when each measured value is matched to its
- * closest prediction, with 94% inside one log unit and 100% inside two — and emits 51 extra steps
+ * pipeline scores **MAE 0.50** over 31 macroscopic values when each measured value is matched to its
+ * closest prediction, with 90% inside one log unit and 100% inside two — and emits 37 extra steps
  * nothing measured.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
@@ -1020,25 +1020,25 @@ export function ionizationContract(): MethodContract {
         "nothing else, on the SAMPL6 blind challenge set — 24 drug-like molecules, 31 measured " +
         "macroscopic values, a BLIND challenge whose answers were withheld while predictions were " +
         "submitted, and checked to share no skeleton with any training row — this method matches every " +
-        "measured value to MAE 0.51 with 94% inside one log unit and 100% inside two, and gets the " +
-        "right NUMBER of titration steps for 10 of 24 molecules.",
+        "measured value to MAE 0.50 with 90% inside one log unit and 100% inside two, and gets the " +
+        "right NUMBER of titration steps for 12 of 24 molecules.",
       "WHAT IT GETS WRONG IS HOW MANY SITES IT FINDS, not what they are worth. On that same set it " +
-        "reports 49 steps nothing measured, of which 22 fall inside the window an aqueous titration " +
+        "reports 37 steps nothing measured, of which 19 fall inside the window an aqueous titration " +
         "can reach — the rest are real chemistry no such experiment can see, an amide N-H near 15, an " +
-        "azole N-H near 14, a second ring protonation below zero. Those 22 are the residual, and the " +
-        "largest part of it is now a measured mechanism rather than a description. Six of the " +
-        "molecules carry TWO nitrogens in one aromatic ring — a quinazoline, a pyrimidine — and both " +
-        "are offered a basicity at similar values, where protonating the first leaves the ring " +
-        "cationic and the second inaccessible in water. The model's own out-of-fold error on such a " +
-        "SECOND protonation is MAE 2.01 with a bias of +1.27, against 0.73 corpus-wide, and it " +
-        "reaches +5.65: diprotonated pyrazine measures -5.55 and is predicted at 0.10. The cause is " +
-        "the one this method keeps meeting — a diprotonated pyrazine cannot be titrated in water " +
-        "either, so the corpus holds 21 such labels in 12,096 and the model had nothing to learn " +
-        "from. No correction is offered, because those 21 split across two ring geometries that " +
-        "behave oppositely (2 bonds apart, bias +0.39 over 17 rows; 3 bonds apart, +4.98 over 4) and " +
-        "one parameter cannot be fitted to that. The per-site figures below are ORACLE-SITE " +
-        "measurements — the site and its direction are handed in — and at 0.73 they describe " +
-        "valuation, not discovery.",
+        "azole N-H near 14, a second ring protonation below zero. The largest single cause of the " +
+        "in-window ones was found and removed. Six of these molecules carry TWO nitrogens in one " +
+        "aromatic ring — a quinazoline, a pyrimidine — and both were offered a basicity, where " +
+        "protonating the first leaves the ring electron-poor and the second unprotonatable in any " +
+        "accessible range. Nothing could have taught the model that, since a diprotonated pyrazine " +
+        "cannot be titrated either: it scored those four corpus labels at MAE 4.98 with a bias of " +
+        "+4.98, moving every one from below zero to inside the window. Such a rung is now declined " +
+        "UNLESS the ring carries a compensating negative charge, which separates the evidence " +
+        "exactly — 4 uncompensated labels, all outside pH 2-12 and all mispredicted, against 17 " +
+        "compensated ones (uracil, thiouracil) of which 16 are inside it and predicted to 1.31. That " +
+        "took the extra steps from 49 to 37, the in-window ones from 22 to 19, and the right step " +
+        "count from 10 of 24 to 12, while leaving matched accuracy where it was. The per-site " +
+        "figures below are ORACLE-SITE measurements — the site and its direction are handed in — and " +
+        "at 0.73 they describe valuation, not discovery.",
       "EACH VALUE IS THE ACIDITY OF THAT RUNG — the pKa of one proton leaving one atom, at the charge " +
         "state named by that row. A microscopic pKa for one transition, not a molecule-wide figure. " +
         "The values are computed on a CANONICAL PROTOMER rather than on the structure as drawn, so " +

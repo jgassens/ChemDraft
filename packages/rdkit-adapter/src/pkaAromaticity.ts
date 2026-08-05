@@ -54,7 +54,7 @@ function adjacencyOf(graph: PkaMolecularGraph): number[][] {
 }
 
 /** Every simple cycle through `start`, up to `MAX_RING` atoms. */
-function cyclesThrough(adjacency: number[][], start: number): number[][] {
+export function cyclesThrough(adjacency: number[][], start: number): number[][] {
   const out: number[][] = [];
   const seen = new Set<string>();
   const walk = (path: number[]): void => {

@@ -213,3 +213,55 @@ describe("the cycle defect as a corpus gate", () => {
     }
   }, 1_800_000);
 });
+
+/**
+ * The second protonation of an azinium ring, which water does not hold.
+ *
+ * Six of SAMPL6's twenty-four molecules carry two nitrogens in one aromatic ring — a quinazoline, a
+ * pyrimidine — and both were offered a basicity at similar values. Protonating the first leaves the
+ * ring strongly electron-poor and the second nitrogen unprotonatable in any accessible range: pyrazine's
+ * second pKa is near -6. Nothing taught the model that, because a diprotonated pyrazine cannot be
+ * titrated either, so it filled the gap with a plausible number and a titration step appeared where the
+ * molecule has none.
+ *
+ * The discriminator is CHARGE COMPENSATION, and the twenty-one corpus labels separate exactly on it:
+ *
+ *     ring bears no negative charge   n= 4   MAE 4.98   bias +4.98    0 of 4 inside pH 2-12
+ *     ring bears a negative charge    n=17   MAE 1.31   bias +0.39   16 of 17 inside pH 2-12
+ *
+ * So a blanket rule would have deleted sixteen real, well-predicted uracil and thiouracil values. This
+ * one suppresses four, every one measured below -2.7 and over-predicted by about five log units.
+ */
+describe("a second ring protonation the assay could never see", () => {
+  it("stops offering one on an uncompensated diazine", async () => {
+    // Pyrazine: first protonation 0.65, second near -5.8. Only the first is a titration step.
+    for (const [name, smiles] of [
+      ["pyrazine", "c1cnccn1"],
+      ["pyrimidine", "c1cncnc1"],
+      ["quinazoline", "c1ccc2ncncc2c1"]
+    ] as const) {
+      const folded = await fold(smiles, `azinium-${name}`);
+      expect(folded, name).toBeDefined();
+      const inWindow = folded!.pKa.filter((v) => v >= 2 && v <= 12);
+      expect(inWindow.length, `${name} reports ${inWindow.length} steps inside pH 2-12`).toBeLessThan(2);
+    }
+  }, 1_800_000);
+
+  it("leaves a single-nitrogen ring alone", async () => {
+    // Pyridine and imidazole protonate once and that IS a titration step. The rule turns on a second
+    // nitrogen in the SAME ring, so neither may be touched — and the charge-compensated exception,
+    // which is what stops this deleting sixteen real uracil values, is pinned directly against the
+    // predicate in `protonation.test.ts` rather than through a molecule whose neutral form does not
+    // even reach the clause.
+    for (const [name, smiles, expected] of [
+      ["pyridine", "c1ccncc1", 5.23],
+      ["imidazole", "c1c[nH]cn1", 6.95]
+    ] as const) {
+      const folded = await fold(smiles, `single-n-${name}`);
+      expect(folded, name).toBeDefined();
+      const inWindow = folded!.pKa.filter((v) => v >= 2 && v <= 12);
+      expect(inWindow.length, `${name} lost its titration step`).toBe(1);
+      expect(inWindow[0]!).toBeCloseTo(expected, 0);
+    }
+  }, 1_800_000);
+});

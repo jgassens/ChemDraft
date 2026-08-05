@@ -11,11 +11,13 @@ import {
   MAX_SITES,
   logSumExp10,
   macroscopicApplies,
+  isUncompensatedAzinium,
   macroscopicPka,
   chargeAtLevel,
   enumerateMicrostates,
   type ProtonationLadder
 } from "./protonation";
+import { siteContext } from "./pkaAromaticity";
 
 /**
  * `n` independent neutral acids: each one atom with a single rung, drawn holding its proton.
@@ -313,5 +315,74 @@ describe("what counts as a zwitterion", () => {
     const outcome = macroscopicPka(acidic(2), () => 4.5);
     if (!macroscopicApplies(outcome)) throw new Error("declined");
     expect(outcome.zwitterionic).toBe(false);
+  });
+});
+
+/**
+ * The azinium rule, tested on the discriminator itself rather than through the fold.
+ *
+ * Graphs are written out literally: the property under test is about ring membership and formal charge,
+ * so building them by hand states exactly what is being claimed and needs no engine to agree with.
+ */
+describe("a second ring protonation water cannot hold", () => {
+  /** A six-membered aromatic ring, elements and charges given per position. */
+  const ring = (spec: { element: string; charge: number; hydrogens: number }[],
+                exocyclic: { on: number; element: string; charge: number }[] = []) => {
+    const atoms = [...spec];
+    const bonds: { atoms: [number, number]; order: number }[] = [];
+    for (let i = 0; i < spec.length; i += 1) {
+      bonds.push({ atoms: [i, (i + 1) % spec.length], order: i % 2 === 0 ? 2 : 1 });
+    }
+    for (const e of exocyclic) {
+      atoms.push({ element: e.element, charge: e.charge, hydrogens: 0 });
+      bonds.push({ atoms: [e.on, atoms.length - 1], order: e.charge < 0 ? 1 : 2 });
+    }
+    return { atoms, bonds, descriptors: {} };
+  };
+  const C = { element: "C", charge: 0, hydrogens: 1 };
+  const N = { element: "N", charge: 0, hydrogens: 0 };
+  const NH = { element: "N", charge: 1, hydrogens: 1 };
+
+  it("fires on a pyrazinium whose ring carries nothing negative", () => {
+    // The second nitrogen of an already-protonated pyrazine. Measured near -6; the model says 0.10.
+    const graph = ring([NH, C, C, N, C, C]);
+    expect(isUncompensatedAzinium(graph, 3, siteContext(graph))).toBe(true);
+  });
+
+  it("does NOT fire when an anionic substituent pays for the charge", () => {
+    // Uracil and thiouracil chemistry: the exocyclic O- or S- leaves the ring at net +1, and sixteen
+    // corpus labels say the second protonation is then real and measurable. A blanket rule deletes
+    // them; this is the clause that does not.
+    const graph = ring([NH, C, C, N, C, C], [{ on: 4, element: "O", charge: -1 }]);
+    expect(isUncompensatedAzinium(graph, 3, siteContext(graph))).toBe(false);
+  });
+
+  it("does not fire on a ring with only one nitrogen", () => {
+    // Pyridine protonates once and that is a real step. Nothing here should touch it.
+    const graph = ring([C, C, C, N, C, C]);
+    expect(isUncompensatedAzinium(graph, 3, siteContext(graph))).toBe(false);
+  });
+
+  it("does not fire when the other nitrogen is still neutral", () => {
+    // A neutral pyrazine's FIRST protonation is ordinary chemistry — the rule is about the second.
+    const graph = ring([N, C, C, N, C, C]);
+    expect(isUncompensatedAzinium(graph, 3, siteContext(graph))).toBe(false);
+  });
+
+  it("does not fire across two different rings of a fused system", () => {
+    // Two nitrogens in separate rings do not share the ring whose electron density is being drained,
+    // and both can genuinely protonate. Ring MEMBERSHIP is what the rule turns on, not distance.
+    const atoms = [
+      NH, C, C, C, C, C,          // ring A, 0-5, nitrogen at 0
+      C, C, N, C                  // ring B fused across 3-4, nitrogen at 8
+    ];
+    const bonds: { atoms: [number, number]; order: number }[] = [
+      { atoms: [0, 1], order: 2 }, { atoms: [1, 2], order: 1 }, { atoms: [2, 3], order: 2 },
+      { atoms: [3, 4], order: 1 }, { atoms: [4, 5], order: 2 }, { atoms: [5, 0], order: 1 },
+      { atoms: [3, 6], order: 1 }, { atoms: [6, 7], order: 2 }, { atoms: [7, 8], order: 1 },
+      { atoms: [8, 9], order: 2 }, { atoms: [9, 4], order: 1 }
+    ];
+    const graph = { atoms, bonds, descriptors: {} };
+    expect(isUncompensatedAzinium(graph, 8, siteContext(graph))).toBe(false);
   });
 });
