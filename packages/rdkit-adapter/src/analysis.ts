@@ -51,7 +51,9 @@ import {
   REFERENCE_PROTOMER_POLICY,
   stripMolblockCharges,
   subsetRdkitJson,
-  type DerivedInterpretationId
+  type DerivedInterpretationId,
+  referenceTautomerTransformation,
+  REFERENCE_TAUTOMER_POLICY
 } from "./interpretations";
 import {
   ADDUCTS,
@@ -74,7 +76,8 @@ import {
   PINNED_PKA_MODEL_SHA256,
   PINNED_RDKIT_WASM_SHA256,
   rdkitMethodContracts,
-  type RdkitEngineCapabilities
+  type RdkitEngineCapabilities,
+  CANONICAL_TAUTOMER_PROBE_SMILES
 } from "./methods";
 import {
   DEFAULT_ENVELOPE_RELATIVE_THRESHOLD,
@@ -226,6 +229,82 @@ function assertAnalysisSurface(module: RdkitMinimalModule, mol: RdkitJsMol): ass
  */
 const CAPABILITY_CACHE = new WeakMap<object, RdkitEngineCapabilities>();
 
+/**
+ * Whether the canonical tautomer differs from its input ONLY by moving a hydrogen between nitrogens.
+ *
+ * This is the clause that keeps the canonicalisation to the case it was built for. An azole 1,3-H shift
+ * makes 4- and 5-methylimidazole one substance sharing one tabulated pKa, and nobody means anything by
+ * drawing one rather than the other. Keto/enol is NOT that: acetylacetone's enol is a species a chemist
+ * means to draw, its O-H is the site the model can score, and RDKit canonicalises it to the diketone
+ * whose acidic proton is a CARBON acid this site table does not cover — so canonicalising it silently
+ * deleted the molecule's only answer. Measured: the enol went from one macroscopic value to none.
+ *
+ * Decided on the multiset of (element, charge, hydrogens) over every atom, which needs no atom mapping
+ * and so cannot be fooled by `canonicalize` renumbering the molecule. An azole shift changes only
+ * NITROGEN entries; keto/enol changes an oxygen and a carbon; 2-hydroxypyridine to 2-pyridone changes an
+ * oxygen and a nitrogen. Only the first is accepted, and the other two are left exactly as drawn — the
+ * separation `tautomerPolicy` has always claimed and until now only asserted.
+ */
+function onlyNitrogensMovedHydrogen(before: AnalysisMol, after: AnalysisMol): boolean {
+  const tally = (mol: AnalysisMol): Map<string, number> | undefined => {
+    let parsed: { molecules?: { atoms?: { z?: number; chg?: number; impHs?: number }[] }[] };
+    try {
+      parsed = JSON.parse(mol.get_json()) as typeof parsed;
+    } catch {
+      return undefined;
+    }
+    const atoms = parsed.molecules?.[0]?.atoms;
+    if (!atoms) return undefined;
+    const counts = new Map<string, number>();
+    for (const atom of atoms) {
+      const key = `${atom.z ?? 6}:${atom.chg ?? 0}:${atom.impHs ?? 0}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const a = tally(before);
+  const b = tally(after);
+  if (!a || !b) return false;
+  const NITROGEN = 7;
+  for (const key of new Set([...a.keys(), ...b.keys()])) {
+    if ((a.get(key) ?? 0) === (b.get(key) ?? 0)) continue;
+    // An entry moved. That is only allowed for nitrogen.
+    if (Number(key.split(":")[0]) !== NITROGEN) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether the loaded artifact can actually canonicalise a tautomer (vendor patch #7).
+ *
+ * Probed BY VALUE, never by whether the method exists. Acetylacetone's enol form has the diketone as its
+ * canonical tautomer, so a binding that ran MolStandardize returns a DIFFERENT structure and one that
+ * did not returns the input, an empty string, or nothing at all. "The call succeeded" would report the
+ * patch present while silently canonicalising nothing — the exact failure patch #6 documents.
+ */
+function probeCanonicalTautomer(module: AnalysisModule): boolean {
+  const probe = module.get_mol(CANONICAL_TAUTOMER_PROBE_SMILES) as AnalysisMol | null;
+  if (!probe) return false;
+  try {
+    if (typeof probe.get_canonical_tautomer_molblock !== "function") return false;
+    const molblock = probe.get_canonical_tautomer_molblock();
+    if (!molblock) return false;
+    const rebuilt = module.get_mol(molblock) as AnalysisMol | null;
+    if (!rebuilt) return false;
+    try {
+      const before = probe.get_smiles?.();
+      const after = rebuilt.get_smiles?.();
+      return typeof before === "string" && typeof after === "string" && before !== after;
+    } finally {
+      rebuilt.delete();
+    }
+  } catch {
+    return false;
+  } finally {
+    probe.delete();
+  }
+}
+
 export function detectEngineCapabilities(module: AnalysisModule): RdkitEngineCapabilities {
   const cached = CAPABILITY_CACHE.get(module);
   if (cached) return cached;
@@ -240,7 +319,8 @@ export function detectEngineCapabilities(module: AnalysisModule): RdkitEngineCap
         descriptorIncludeSandP:
           typeof withFlag.tpsa === "number" &&
           typeof withoutFlag.tpsa === "number" &&
-          withFlag.tpsa !== withoutFlag.tpsa
+          withFlag.tpsa !== withoutFlag.tpsa,
+        canonicalTautomer: probeCanonicalTautomer(module)
       };
     } catch {
       // A binding that rejects the argument outright is simply unpatched.
@@ -783,7 +863,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         // An explicit override wins: a caller who asked to see a particular form gets that form,
         // canonicalization included. Silently substituting a different one would make the panel's
         // disclosure line a lie.
-        const canonical = request.interpretationOverride ? undefined : derive("reference-protomer");
+        // The canonical TAUTOMER when the loaded artifact can produce one, and the canonical protomer
+        // otherwise. The tautomer derivation stacks on the protomer, so asking for it gets both; it
+        // returns undefined when vendor patch #7 is absent or when the drawn tautomer was already
+        // canonical, and the protomer form is then exactly what shipped before.
+        const canonical = request.interpretationOverride
+          ? undefined
+          : derive("reference-tautomer") ?? derive("reference-protomer");
         if (!canonical || canonical === context) return ionizationResultFor(contract, context, module);
         registry.assertRunnable(contract.id, canonical.interpretation);
         return withProtomerNotice(
@@ -1277,7 +1363,11 @@ function withProtomerNotice(
         "interpretation.derived",
         `Computed on the ${describeInterpretation(interpretation)}. A pKa describes a molecular ` +
           "family rather than one drawing of it, so every protonation state of this structure is " +
-          "assessed from the same reference form and returns the same values.",
+          "assessed from the same reference form and returns the same values." +
+          (interpretation.tautomerPolicy
+            ? " The drawn tautomer was not the one scored either: an azole 1,3-H shift is faster than " +
+              "any titration, so two such drawings are one substance and now give one answer."
+            : ""),
         "info",
         [result.id]
       )
@@ -1372,6 +1462,51 @@ function resolveDerivedContext(
       interpretation: {
         ...deriveInterpretation({ id, base: start.interpretation, step }),
         protomerPolicy: REFERENCE_PROTOMER_POLICY
+      }
+    };
+    cache.set(id, context);
+    return context;
+  }
+
+  if (id === "reference-tautomer") {
+    // Stacks on the reference PROTOMER, in that order deliberately. Canonicalising the tautomer of a
+    // charged species is territory MolStandardize was not built for and the answer would depend on which
+    // ion was drawn; stripping the charges first means the tautomer choice is made on one neutral form.
+    const start =
+      resolveDerivedContext("reference-protomer", module, source, sourceJson, cache, descriptorDetails) ??
+      source;
+    if (typeof start.mol.get_canonical_tautomer_molblock !== "function") return undefined;
+    let molblock: string;
+    try {
+      molblock = start.mol.get_canonical_tautomer_molblock();
+    } catch {
+      return undefined;
+    }
+    if (!molblock) return undefined;
+    const tautomerMol = module.get_mol(molblock) as AnalysisMol | null;
+    if (!tautomerMol) return undefined;
+    // Nothing moved: report no derivation rather than an identity step the ledger would have to explain.
+    if (tautomerMol.get_smiles?.() === start.mol.get_smiles?.()) {
+      tautomerMol.delete();
+      return undefined;
+    }
+    // Something moved, but only an N-to-N hydrogen shift is one substance — see the helper.
+    if (!onlyNitrogensMovedHydrogen(start.mol, tautomerMol)) {
+      tautomerMol.delete();
+      return undefined;
+    }
+
+    const canonical = contextFor(start.interpretation, tautomerMol, descriptorDetails);
+    const step = referenceTautomerTransformation({
+      atomCount: start.composition.atomCount,
+      formula: canonical.composition.formula,
+      hydrogenChanges: hydrogenCount(canonical.composition) - hydrogenCount(start.composition)
+    });
+    const context: DerivedContext = {
+      ...canonical,
+      interpretation: {
+        ...deriveInterpretation({ id, base: start.interpretation, step }),
+        tautomerPolicy: REFERENCE_TAUTOMER_POLICY
       }
     };
     cache.set(id, context);

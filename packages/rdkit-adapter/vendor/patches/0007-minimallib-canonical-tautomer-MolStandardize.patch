@@ -1,0 +1,70 @@
+--- a/Code/MinimalLib/CMakeLists.txt	2026-08-05 11:47:00
++++ b/Code/MinimalLib/CMakeLists.txt	2026-08-05 11:47:00
+@@ -6,7 +6,8 @@
+         "Descriptors;SubstructMatch;FileParsers;"
+         "SmilesParse;GraphMol;RDGeometryLib;"
+         "RDGeneral;RGroupDecomposition;Fingerprints;"
+-        "DistGeomHelpers;ForceFieldHelpers;DistGeometry;ForceField;Alignment")
++        "DistGeomHelpers;ForceFieldHelpers;DistGeometry;ForceField;Alignment;"
++        "MolStandardize")
+     if(RDK_BUILD_INCHI_SUPPORT)
+         add_definitions(-DRDK_BUILD_INCHI_SUPPORT)
+         set(MINIMAL_LIB_LIBRARIES "${MINIMAL_LIB_LIBRARIES};RDInchiLib")
+--- a/Code/MinimalLib/minilib.h	2026-08-05 11:47:00
++++ b/Code/MinimalLib/minilib.h	2026-08-05 11:47:00
+@@ -163,6 +163,15 @@
+   bool add_hs_in_place();
+   // ChemDraft: 3D conformer embedding + force-field refinement (returns a
+   // structured-clone-safe JSON payload of raw coordinate + atom-map arrays).
++  /**
++   * The canonical tautomer's molblock, or an empty string if canonicalisation fails.
++   *
++   * RDKit's MolStandardize::TautomerEnumerator with its default scoring (Sitzmann et al., JCAMD 24:521)
++   * — a deterministic, published choice of which tautomer represents the family. Returned as a molblock
++   * rather than a JSMol so the caller re-parses it, which is how the protomer canonicalisation on the
++   * TypeScript side already works.
++   */
++  std::string get_canonical_tautomer_molblock() const;
+   std::string generate_3d_embed(const std::string &details_json);
+   std::string optimize_3d_conformer(const std::string &details_json);
+   double normalize_depiction(int canonicalize, double scaleFactor);
+--- a/Code/MinimalLib/minilib.cpp	2026-08-05 11:47:00
++++ b/Code/MinimalLib/minilib.cpp	2026-08-05 11:47:00
+@@ -20,6 +20,7 @@
+ #include <GraphMol/SmilesParse/SmilesJSONParsers.h>
+ #include <GraphMol/SmilesParse/SmartsWrite.h>
+ #include <GraphMol/FileParsers/FileParsers.h>
++#include <GraphMol/MolStandardize/Tautomer.h>
+ #include <GraphMol/MolDraw2D/MolDraw2D.h>
+ #include <GraphMol/MolDraw2D/MolDraw2DSVG.h>
+ #include <GraphMol/MolDraw2D/MolDraw2DUtils.h>
+@@ -146,6 +147,19 @@
+   return MolToInchi(get(), rv, !options.empty() ? options.c_str() : nullptr);
+ }
+ #endif
++std::string JSMolBase::get_canonical_tautomer_molblock() const {
++  try {
++    RDKit::MolStandardize::TautomerEnumerator te;
++    std::unique_ptr<RDKit::ROMol> canonical(te.canonicalize(get()));
++    if (!canonical) {
++      return "";
++    }
++    RDKit::RWMol out(*canonical);
++    return MinimalLib::molblock_helper(out, "{}", MinimalLib::MDLVersion::V2000);
++  } catch (...) {
++    return "";
++  }
++}
+ std::string JSMolBase::get_molblock(const std::string &details) const {
+   return MinimalLib::molblock_helper(get(), details.c_str(),
+                                      MinimalLib::MDLVersion::AUTO);
+--- a/Code/MinimalLib/jswrapper.cpp	2026-08-05 11:47:00
++++ b/Code/MinimalLib/jswrapper.cpp	2026-08-05 11:47:00
+@@ -751,6 +751,7 @@
+                     &JSMolBase::condense_abbreviations))
+       .function("add_hs", &JSMolBase::add_hs)
+       .function("add_hs_in_place", &JSMolBase::add_hs_in_place)
++      .function("get_canonical_tautomer_molblock", &JSMolBase::get_canonical_tautomer_molblock)
+       .function("generate_3d_embed", &JSMolBase::generate_3d_embed)
+       .function("optimize_3d_conformer", &JSMolBase::optimize_3d_conformer)
+       .function("remove_hs",

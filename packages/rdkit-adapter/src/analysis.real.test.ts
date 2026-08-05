@@ -450,7 +450,13 @@ describe("method selection", () => {
 describe("engine capability detection (vendor patch #6)", () => {
   it("reports the committed artifact as patched, because it is", async () => {
     const module = (await ensureRdkit()) as never as Parameters<typeof detectEngineCapabilities>[0];
-    expect(detectEngineCapabilities(module)).toEqual({ descriptorIncludeSandP: true });
+    // Both patches, asserted exactly. `canonicalTautomer` flips to true with the artifact that carries
+    // vendor patch #7 — and until it does, this line is what says the binding is genuinely absent
+    // rather than present-but-silent.
+    expect(detectEngineCapabilities(module)).toEqual({
+      descriptorIncludeSandP: true,
+      canonicalTautomer: true
+    });
   });
 
   it("detects by value, not by whether the call succeeded", async () => {

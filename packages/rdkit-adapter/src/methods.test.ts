@@ -228,8 +228,8 @@ describe("rdkitMethodContracts", () => {
 });
 
 describe("vendor patch #6 — TPSA includeSandP", () => {
-  const unpatched = rdkitMethodContracts(PINNED_RDKIT_VERSION, { descriptorIncludeSandP: false });
-  const patched = rdkitMethodContracts(PINNED_RDKIT_VERSION, { descriptorIncludeSandP: true });
+  const unpatched = rdkitMethodContracts(PINNED_RDKIT_VERSION, { descriptorIncludeSandP: false, canonicalTautomer: false });
+  const patched = rdkitMethodContracts(PINNED_RDKIT_VERSION, { descriptorIncludeSandP: true, canonicalTautomer: false });
   const tpsaOf = (contracts: ReturnType<typeof rdkitMethodContracts>) =>
     contracts.find((contract) => contract.id === "rdkit.tpsa")!;
 

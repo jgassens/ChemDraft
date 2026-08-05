@@ -1022,7 +1022,7 @@ export function ionizationContract(): MethodContract {
     // per-atom ladders, the corpus was corrected and the model retrained, and the values are now
     // computed on a canonical protomer rather than on the drawing. Every number a caller cached under
     // 1.x describes a different computation.
-    version: "2.2.0",
+    version: "2.3.0",
     implementation: {
       engine: IONIZATION_ENGINE,
       engineVersion: IONIZATION_ENGINE_VERSION,
@@ -1167,6 +1167,19 @@ export function ionizationContract(): MethodContract {
         "Those microstates are excluded rather than scored, which is why imidazole reads near 6.8 " +
         "against a measured 6.95. What is NOT done is computing the tautomer’s own stability: for " +
         "an azole both tautomers are the same protonation state, so the cost is at most log10(2).",
+      "TAUTOMERS: an azole 1,3-H shift is canonicalised, everything else is read AS DRAWN, and the " +
+        "line between them is where a hydrogen moves. 4-methylimidazole and 5-methylimidazole are one " +
+        "substance — the shift is faster than any titration and they share a tabulated pKa of 7.5 — yet " +
+        "as drawn they scored 7.48 and 7.69 with their N-H values 0.39 apart, and methylpyrazole's 1.05 " +
+        "apart. The ladder is now built from the tautomer RDKit's MolStandardize scores as canonical " +
+        "(Sitzmann et al. 2010), a published deterministic heuristic that picks a representative rather " +
+        "than averaging a population: it buys one substance one answer, not a better answer. Accepted " +
+        "ONLY when the canonical form differs by moving a hydrogen between NITROGENS. Keto/enol is not " +
+        "that — acetylacetone's enol is a species a chemist means to draw, and canonicalising it to the " +
+        "diketone deleted the molecule's only answer, since that proton sits on carbon and this site " +
+        "table covers O, N and S. So the enol keeps its 8.72 against a measured 8.9, dimedone its 5.00 " +
+        "against 5.23, and 2-hydroxypyridine is not answered as 2-pyridone. Needed the vendored WASM " +
+        "rebuilt: MinimalLib ships no tautomer support, so this is vendor patch #7.",
       "the fold also reports WHICH SPECIES the molecule is in at pH 7.4, as the fraction carrying each " +
         "net charge. It costs nothing extra — the fold already solves every microstate's free energy, " +
         "and mass action gives the population as 10^(L - n*pH), normalised and summed by charge — and it " +
@@ -1397,6 +1410,8 @@ export function ionizationContract(): MethodContract {
       "a change to the protonation state model, or to which protomer the ladder is built from",
       "a change to the pH the species distribution is reported at, or to how charge states are " +
         "aggregated — the fractions move without any pKa moving",
+      "a change to which tautomers are canonicalised rather than read as drawn, or to the rebuilt " +
+        "MinimalLib artifact that makes canonicalisation possible at all",
       "a change to HOW the ladder is reconciled — the fold solves every microstate's free energy at " +
         "once by weighted least squares, and both the solve and `edge-variance.json`'s weighting move " +
         "every polyprotic answer while leaving every per-site value untouched"

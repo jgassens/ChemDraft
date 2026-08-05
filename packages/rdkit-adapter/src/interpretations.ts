@@ -33,12 +33,14 @@ import type { ElementCount } from "@chemdraft/analysis-core";
 export type DerivedInterpretationId =
   | "largest-organic-fragment"
   | "neutralized"
-  | "reference-protomer";
+  | "reference-protomer"
+  | "reference-tautomer";
 
 export const DERIVED_INTERPRETATION_IDS: readonly DerivedInterpretationId[] = [
   "largest-organic-fragment",
   "neutralized",
-  "reference-protomer"
+  "reference-protomer",
+  "reference-tautomer"
 ];
 
 const TRANSFORMATION_VERSION = "1.0.0";
@@ -357,6 +359,40 @@ export function referenceProtomerTransformation(input: {
   });
 }
 
+/** The ledger entry for canonicalising the tautomer. */
+export function referenceTautomerTransformation(input: {
+  atomCount: number;
+  formula: string;
+  hydrogenChanges: number;
+}): Transformation {
+  return transformation({
+    name: "reference-tautomer",
+    atomMapping: identityMapping(input.atomCount),
+    componentsRetained: [input.formula],
+    // A tautomer shift moves a hydrogen between heavy atoms; the molecular formula is unchanged, so
+    // this is normally zero and is read back off the derived molecule rather than assumed.
+    hydrogenChanges: input.hydrogenChanges
+  });
+}
+
+/**
+ * What `tautomerPolicy` says once the tautomer is canonicalised rather than taken as drawn.
+ *
+ * The axis this closes is narrower than "tautomerism" and worth stating precisely. 4-methylimidazole and
+ * 5-methylimidazole are ONE substance — the 1,3-H shift is faster than any titration, and they share a
+ * single tabulated pKa — yet as-drawn scoring gave them 7.48 and 7.69, with their N-H values 0.39 apart.
+ * That is the same defect the protomer canonicalisation exists to prevent, on a different axis: an answer
+ * that depends on which of two equivalent drawings a chemist happened to pick.
+ *
+ * RDKit's MolStandardize picks the representative, scored by Sitzmann et al. (JCAMD 24:521, 2010). It is
+ * a published heuristic rather than a free-energy calculation, and it is DETERMINISTIC, which is the
+ * property being bought here: one substance, one answer.
+ */
+export const REFERENCE_TAUTOMER_POLICY =
+  "reference-tautomer — the tautomer RDKit's MolStandardize scores as canonical (Sitzmann et al. 2010), " +
+  "so two drawings of one tautomeric family give one answer. A published heuristic, not a free-energy " +
+  "weighting: it chooses a representative rather than averaging over the population.";
+
 /**
  * What `protomerPolicy` says, for the ledger a reader actually sees.
  *
@@ -490,6 +526,9 @@ export function describeInterpretation(interpretation: MolecularInterpretation):
           ? "reference protomer"
           : `reference protomer · ${magnitude} charge${magnitude === 1 ? "" : "s"} removed`;
       }
+      // A canonical tautomer usually leaves the formula untouched, so there is no count worth showing —
+      // the useful disclosure is simply that the drawn tautomer was not the one scored.
+      if (step.name === "reference-tautomer") return "canonical tautomer";
       if (step.name === "neutralize") {
         const magnitude = Math.abs(step.chargeChanges);
         return magnitude === 0

@@ -54,7 +54,7 @@ export const PINNED_RDKIT_VERSION = "2026.03.3";
 export const PINNED_PKA_MODEL_SHA256 =
   "e52766f5cf959549f8ad849e31a97fbc6f827af8af12242ad389db87237ec233";
 
-export const PINNED_RDKIT_WASM_SHA256 = "48b725a2e80af7f9792cd56abf65f16cea402f1cfe4f3f6c32a71669f1d848aa";
+export const PINNED_RDKIT_WASM_SHA256 = "66dab556e9d55708ce67afbf71e9853ed5fda217a9330961722f838f38836bf0";
 
 const ENGINE = "rdkit-minimallib-wasm";
 
@@ -72,6 +72,8 @@ const ENGINE = "rdkit-minimallib-wasm";
 export interface RdkitEngineCapabilities {
   /** True when the loaded artifact honours the TPSA `includeSandP` details flag (vendor patch #6). */
   descriptorIncludeSandP: boolean;
+  /** True when the loaded artifact can canonicalise a tautomer (vendor patch #7, MolStandardize). */
+  canonicalTautomer: boolean;
 }
 
 /**
@@ -79,7 +81,10 @@ export interface RdkitEngineCapabilities {
  * before `detectEngineCapabilities` has run, and as the fallback when the probe itself throws — never
  * as a claim about what the currently committed artifact can do.
  */
-export const UNPATCHED_CAPABILITIES: RdkitEngineCapabilities = { descriptorIncludeSandP: false };
+export const UNPATCHED_CAPABILITIES: RdkitEngineCapabilities = {
+  descriptorIncludeSandP: false,
+  canonicalTautomer: false
+};
 
 /** The details JSON patch #6 adds to `get_descriptors`. */
 export const DESCRIPTOR_DETAILS_INCLUDE_SANDP = '{"includeSandP":true}';
@@ -89,6 +94,16 @@ export const DESCRIPTOR_DETAILS_INCLUDE_SANDP = '{"includeSandP":true}';
  * a patched binding from one that ignored the argument. A structure without S or P could not.
  */
 export const INCLUDE_SANDP_PROBE_SMILES = "CS(=O)(=O)C";
+
+/**
+ * Acetylacetone drawn as its ENOL, whose canonical tautomer is the diketone.
+ *
+ * Probed by VALUE for the same reason patch #6 is: an artifact without the binding does not necessarily
+ * fail loudly, and "the call returned something" would report the patch present while the answer was the
+ * input unchanged. The check is that the returned structure DIFFERS from the input — which it can only do
+ * if MolStandardize actually ran.
+ */
+export const CANONICAL_TAUTOMER_PROBE_SMILES = "CC(O)=CC(=O)C";
 
 /** Elements the Wildman–Crippen atom-contribution tables and the Ertl TPSA fragments actually cover. */
 export const ORGANIC_PARAMETER_SET = ["H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"];
