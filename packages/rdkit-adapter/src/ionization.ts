@@ -187,6 +187,7 @@ import {
   type PkaMolecularGraph
 } from "./pkaModel";
 import { PKA_GNN_TRAINING, predictSitePka } from "./pkaGnn";
+import { siteContext } from "./pkaAromaticity";
 
 /**
  * The held-out figure, read from the artifact the measurement wrote.
@@ -478,7 +479,12 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
  * ring's double bonds. Piperidine fails the last clause and stays basic; aniline is not a ring atom at
  * all and stays basic.
  */
-function acceptsAProton(graph: PkaMolecularGraph, atomIndex: number, ring: readonly boolean[]): boolean {
+function acceptsAProton(
+  graph: PkaMolecularGraph,
+  atomIndex: number,
+  ring: readonly boolean[],
+  carbocyclicAromatic: readonly boolean[]
+): boolean {
   const atom = graph.atoms[atomIndex];
   if (!atom || atom.element !== "N" || atom.charge !== 0) return false;
 
@@ -494,7 +500,7 @@ function acceptsAProton(graph: PkaMolecularGraph, atomIndex: number, ring: reado
   if (neighbours.length + ownDoubleBonds + atom.hydrogens >= 4) return false;
   // An amide's lone pair is in the carbonyl, not on the nitrogen. Acetamide and urea protonate on
   // OXYGEN; offering the nitrogen a basicity is what made urea a tetraprotic acid.
-  if (isUnactivatedAmide(graph, atomIndex)) return false;
+  if (isUnactivatedAmide(graph, atomIndex, carbocyclicAromatic)) return false;
   // Outside a ring there is no sextet to donate into, so a lone pair is available.
   if (!ring[atomIndex]) return true;
   // Pyridine-type: the nitrogen carries the ring's double bond itself, so its lone pair sits in the
@@ -760,6 +766,9 @@ export function scoreSiteTransitions(
   protonatedAt: (atomIndex: number) => PkaMolecularGraph | undefined
 ): IonizationScan {
   const ring = ringMembership(graph);
+  // Which aromatic positions are plain benzene ones. Kekulé-invariant, and the discriminator the
+  // anilide rule in `isUnactivatedAmide` turns on.
+  const { carbocyclicAromatic } = siteContext(graph);
   const sites: IonizationSite[] = [];
   const unassessed = [...scan.unassessed];
 
@@ -787,7 +796,7 @@ export function scoreSiteTransitions(
     }
 
     // --- basic: this atom gaining one, scored on the microstate where it has ---
-    if (acceptsAProton(graph, site.ionizableAtomIndex, ring)) {
+    if (acceptsAProton(graph, site.ionizableAtomIndex, ring, carbocyclicAromatic)) {
       const protonated = protonatedAt(site.ionizableAtomIndex);
       if (protonated) {
         try {
@@ -847,7 +856,11 @@ export function scoreSiteTransitions(
  * This suppresses only the BASIC half. An activated amide's N-H acidity is well within range and is
  * still reported.
  */
-function isUnactivatedAmide(graph: PkaMolecularGraph, atomIndex: number): boolean {
+function isUnactivatedAmide(
+  graph: PkaMolecularGraph,
+  atomIndex: number,
+  carbocyclicAromatic: readonly boolean[]
+): boolean {
   const bondsAt = (index: number) =>
     graph.bonds.filter((bond) => bond.atoms[0] === index || bond.atoms[1] === index);
   const other = (bond: { atoms: [number, number] }, index: number) =>
@@ -867,7 +880,16 @@ function isUnactivatedAmide(graph: PkaMolecularGraph, atomIndex: number): boolea
       return element === "O" || element === "S";
     });
     if (toChalcogen.length === 0) {
-      // Any other double bond on the neighbour means aryl, vinyl or imine — all activating.
+      // A plain benzene position is NOT activating, and that is a count rather than an opinion: an
+      // anilide nitrogen — one carbonyl, one carbocyclic aryl, nothing else — holds **0 basic labels
+      // of 12,096**, where the amidine-like neighbours below hold 8 that are real (isocytosine at 8.20,
+      // triazolinone at 9.43). Withholding it costs nothing measurable and removes 6 of the 23
+      // in-window extra steps SAMPL6 reports. Chemically it is the direction the ring pushes anyway:
+      // an aryl group WITHDRAWS from the nitrogen, so an anilide is less basic than the acetamide this
+      // rule already covers, not more.
+      if (carbocyclicAromatic[neighbour] === true) continue;
+      // Any other double bond on the neighbour means a heteroaryl, vinyl or imine carbon — an amidine
+      // or a vinylogous amide, where the nitrogen really can take a proton.
       if (doubles.length > 0) return false;
       continue;
     }

@@ -33,6 +33,8 @@ export interface SiteContextGraph {
   aromatic: boolean[];
   /** Aromatic, carries a hydrogen, and has no double bond of its own — the pyrrole-type nitrogen. */
   pyrroleType: boolean[];
+  /** Aromatic and in no ring carrying a heteroatom: a benzene position, not a pyridine one. */
+  carbocyclicAromatic: boolean[];
 }
 
 function bondOrderLookup(graph: PkaMolecularGraph): (i: number, j: number) => number {
@@ -145,7 +147,19 @@ export function siteContext(graph: PkaMolecularGraph): SiteContextGraph {
     return aromatic[i] === true && atom.hydrogens > 0 && !hasOwnDouble;
   });
 
-  return { adjacency, bondOrder: order, aromatic, pyrroleType };
+  // Aromatic and belonging to no ring that carries a heteroatom: a benzene or naphthalene position, as
+  // opposed to a pyridine or thiazole one. Decided by ring MEMBERSHIP and ELEMENT, both of which are
+  // properties of the graph rather than of the resonance structure that happened to be written — the
+  // alternative, reading which atom a carbon's double bond points at, gives different answers for the
+  // same pyridine depending on the Kekule assignment, and this project has shipped that bug five times.
+  const carbocyclicAromatic = graph.atoms.map((_atom, i) => {
+    if (!aromatic[i]) return false;
+    const cycles = cyclesThrough(adjacency, i);
+    if (cycles.length === 0) return false;
+    return cycles.every((cycle) => cycle.every((j) => graph.atoms[j]?.element === "C"));
+  });
+
+  return { adjacency, bondOrder: order, aromatic, pyrroleType, carbocyclicAromatic };
 }
 
 /**

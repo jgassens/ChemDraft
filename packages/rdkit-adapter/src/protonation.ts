@@ -698,6 +698,18 @@ export function macroscopicFromSites(
    * near 8 where it is really about 16. Those are site-detection and valuation defects and they need
    * chemistry, not a filter. This keeps the worst of them out of the curve in the meantime, and the
    * sites themselves are still reported with their intervals so nothing is hidden.
+   *
+   * **TIGHTENING THIS CANNOT FIX OVER-DETECTION, and that was measured rather than assumed.** The
+   * obvious next move is to lower the threshold until the spurious steps fall out. On SAMPL6 the sites
+   * blamed for in-window extra steps are indistinguishable from every other scored site by spread —
+   * median 1.203 against 1.203, mean 1.343 against 1.302 — so every threshold removes real sites at the
+   * same rate as spurious ones, and at 1.0 it is fractionally WORSE than random (57% of spurious, 60%
+   * of all). At the shipped 3.5 it drops nothing at all on that set.
+   *
+   * The model is CONFIDENTLY WRONG about these sites, which is a different failure from being unsure.
+   * The same ensemble spread predicts VALUATION error well — Spearman 0.42 over 12,096 held-out rows,
+   * and it is what `EDGE_VARIANCE` weights the fold by — and carries no signal about whether a site
+   * should exist at all. Two failure modes, one number, and it only speaks to one of them.
    */
   const confidentEnough = (site: IonizationSite) =>
     site.spread === undefined || site.spread <= HALF_THE_AQUEOUS_RANGE;

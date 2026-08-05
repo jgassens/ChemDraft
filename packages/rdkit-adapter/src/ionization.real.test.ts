@@ -496,25 +496,36 @@ describe("acidic and basic are reported separately", () => {
     ["acetamide", "CC(N)=O"],
     ["urea", "NC(N)=O"],
     ["N-methylacetamide", "CNC(C)=O"],
-    ["formamide", "NC=O"]
+    ["formamide", "NC=O"],
+    ["acetanilide", "CC(=O)Nc1ccccc1"],
+    ["4-acetamidophenol", "CC(=O)Nc1ccc(O)cc1"]
   ])("offers no basic value on %s, whose lone pair is in the carbonyl", async (_n, smiles) => {
     // These protonate on OXYGEN — acetamide near -0.5, urea near 0.1 — not on nitrogen. Offering the
     // nitrogen a basicity put a step near pH 6 into acetamide's curve, where in water it has none, and
     // was half of what made urea report as a tetraprotic acid.
+    //
+    // ACETANILIDE MOVED HERE, and the reason it was ever in the list below is worth keeping. It sat
+    // among four molecules asserted to be "activated", and it was the only one of them with no
+    // measurement quoted beside it — the acylaminothiazole has 8.9 and the acylsulfonamide 4.9, and
+    // acetanilide had a rule's implementation standing in for a number. It has none in water: it
+    // protonates on oxygen near -1, and its class holds **0 basic labels of 12,096** where the amidine
+    // and heteroaryl cases below hold 8 that are real. An aryl group WITHDRAWS from the nitrogen, so an
+    // anilide is less basic than the acetamide directly above it, never more.
     const { result } = await ionization(smiles);
     expect(result.sites.filter((site) => site.acidCharge > 0)).toEqual([]);
   });
 
   it.each([
-    ["acetanilide", "CC(=O)Nc1ccccc1"],
     ["an acylaminothiazole", "CC(=O)Nc1nnc(-c2ccccc2)s1"],
     ["an acylsulfonamide", "CCC(=O)NS(=O)(=O)c1ccccc1"],
-    ["acetamidine", "CC(N)=N"]
+    ["acetamidine", "CC(N)=N"],
+    ["an isocytosine", "CCOC1=NC=CC(=O)N1"]
   ])("still offers one on %s, where the nitrogen is activated", async (_n, smiles) => {
     // The blanket rule was measured twice and declined twice: the corpus holds 35 basic pKa values on
-    // plain amide nitrogens and 22 on amidine-like ones. An aryl, a sulfonyl, a second carbonyl or an
-    // sp2 nitrogen all change the chemistry, and those are real measurements — acylaminothiazoles near
-    // 8.9, acylsulfonamides near 4.9. Only an UNACTIVATED amide is suppressed.
+    // plain amide nitrogens and 22 on amidine-like ones. A sulfonyl, a second carbonyl or an sp2
+    // nitrogen all change the chemistry, and those are real measurements — acylaminothiazoles near
+    // 8.9, acylsulfonamides near 4.9, isocytosine at 8.20. Only an UNACTIVATED amide is suppressed,
+    // and a plain benzene ring does not activate.
     const { result } = await ionization(smiles);
     expect(result.sites.filter((site) => site.acidCharge > 0).length).toBeGreaterThan(0);
   });
