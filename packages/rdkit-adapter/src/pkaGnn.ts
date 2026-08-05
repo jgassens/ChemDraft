@@ -23,6 +23,7 @@
  */
 import { ringMembership, type PkaMolecularGraph } from "./pkaModel";
 import gnnJson from "../vendor/pka-model/site-pka-gnn.json";
+import intervalJson from "../vendor/pka-model/interval-calibration.json";
 import { shareARing, siteContext } from "./pkaAromaticity";
 
 /** Element one-hot order. Shared with the trainer; reordering silently rebinds every first-layer weight. */
@@ -174,8 +175,57 @@ export function predictWithGnn(
   const votes = model.members.map((member) => forward(member, model.architecture, features, site));
   const mean = votes.reduce((sum, v) => sum + v, 0) / votes.length;
   const variance = votes.reduce((sum, v) => sum + (v - mean) ** 2, 0) / votes.length;
-  return { value: mean, spread: Math.sqrt(variance) * model.training.spreadMultiplier };
+  return { value: mean, spread: intervalFor(Math.sqrt(variance)) };
 }
+
+/**
+ * The interval for one ensemble deviation, read off the calibration curve.
+ *
+ * This replaces multiplying the deviation by one constant. That constant was chosen so the interval
+ * covers 68% of errors across the whole corpus, and it does — but conditionally it was wrong in both
+ * directions, which is the way that matters, because a reader looks at one molecule and not at a
+ * corpus. Measured by decile of the reported interval, coverage ran 50.1% at the confident end to
+ * 85.6% at the loose end against a claimed 68%: too tight exactly where a reader trusts it most.
+ *
+ * No multiplier can fix that, because the relationship is CONCAVE. Doubling the ensemble's
+ * disagreement does not double the error — there is a floor, since members trained on one corpus share
+ * its blind spots and perfect agreement is not zero error, and a ceiling, since a wildly disagreeing
+ * ensemble is saying "no idea" rather than being wrong by that much.
+ *
+ * `interval-calibration.json` holds the empirical quantile of |error| within equal-count bins of the
+ * deviation, measured out-of-fold. Every bin lands at 68.0% by construction. Linear interpolation
+ * between bin centres, clamped outside them — conservative at the top, honest at the bottom.
+ */
+export function intervalFor(deviation: number): number {
+  const points = INTERVAL_CALIBRATION.points;
+  const first = points[0]!;
+  const last = points[points.length - 1]!;
+  if (!Number.isFinite(deviation) || deviation <= first.spread) return first.interval;
+  if (deviation >= last.spread) return last.interval;
+  for (let i = 1; i < points.length; i += 1) {
+    const above = points[i]!;
+    if (deviation <= above.spread) {
+      const below = points[i - 1]!;
+      const span = above.spread - below.spread;
+      const t = span === 0 ? 0 : (deviation - below.spread) / span;
+      return below.interval + t * (above.interval - below.interval);
+    }
+  }
+  return last.interval;
+}
+
+/** How an ensemble deviation becomes a reported interval. See `intervalFor`. */
+const INTERVAL_CALIBRATION = intervalJson as unknown as {
+  targetCoverage: number;
+  achievedCoverage: number;
+  worstBinDeviation: number;
+  samples: number;
+  /** Quartiles of the calibrated interval over the corpus — the figure's confidence bands. */
+  intervalQuartiles: number[];
+  points: { spread: number; interval: number; samples: number; coverage: number }[];
+};
+
+export const PKA_INTERVAL_CALIBRATION = INTERVAL_CALIBRATION;
 
 /** The shipped model. */
 const GNN = gnnJson as unknown as GnnWeights;

@@ -3,72 +3,72 @@
   "smiles": "CC(=O)O",
   "site": 2,
   "prediction": 4.860977,
-  "spread": 4.565616
+  "spread": 1.843316
  },
  {
   "smiles": "Oc1ccccc1",
   "site": 0,
   "prediction": 9.923726,
-  "spread": 0.337539
+  "spread": 0.425031
  },
  {
   "smiles": "c1ccncc1",
   "site": 3,
   "prediction": 10.413078,
-  "spread": 5.304156
+  "spread": 1.843316
  },
  {
-  "smiles": "NCC(=O)O",
-  "site": 0,
-  "prediction": 8.498227,
-  "spread": 4.484027
+  "smiles": "c1cc[nH]c1",
+  "site": 3,
+  "prediction": 16.537669,
+  "spread": 0.57785
  },
  {
   "smiles": "c1c[nH]cn1",
-  "site": 2,
-  "prediction": 13.87876,
-  "spread": 0.601403
+  "site": 3,
+  "prediction": 10.127056,
+  "spread": 1.785812
  },
  {
-  "smiles": "Cc1ccc2ccc[nH+]c2c1",
-  "site": 8,
-  "prediction": 5.1428,
-  "spread": 0.239812
- },
- {
-  "smiles": "NC(Cc1c[nH]cn1)C(=O)O",
-  "site": 0,
-  "prediction": 8.315582,
-  "spread": 3.875494
- },
- {
-  "smiles": "O=[N+]([O-])c1ccc(O)cc1",
-  "site": 0,
-  "prediction": 1.435986,
-  "spread": 6.640403
- },
- {
-  "smiles": "CCN",
-  "site": 2,
-  "prediction": 9.822698,
-  "spread": 0.259504
+  "smiles": "c1ccc2[nH]ccc2c1",
+  "site": 4,
+  "prediction": 15.423057,
+  "spread": 1.07057
  },
  {
   "smiles": "c1ccc2ncccc2c1",
   "site": 4,
   "prediction": 10.306136,
-  "spread": 4.04734
+  "spread": 1.843316
  },
  {
-  "smiles": "c1ccccc1-c1ccccc1",
+  "smiles": "C[NH3+]",
+  "site": 1,
+  "prediction": 10.406368,
+  "spread": 0.376669
+ },
+ {
+  "smiles": "c1ccc(-c2ccccc2)cc1",
   "site": 0,
-  "prediction": 11.590771,
-  "spread": 3.51307
+  "prediction": 13.321203,
+  "spread": 1.484788
  },
  {
-  "smiles": "CC(N)=O",
-  "site": 2,
-  "prediction": 14.969242,
-  "spread": 0.712656
+  "smiles": "NC(=O)N",
+  "site": 0,
+  "prediction": 15.040735,
+  "spread": 1.164342
+ },
+ {
+  "smiles": "CS(=O)(=O)N",
+  "site": 4,
+  "prediction": 10.304741,
+  "spread": 0.607171
+ },
+ {
+  "smiles": "OC(=O)c1ccccc1",
+  "site": 1,
+  "prediction": 8.12192,
+  "spread": 1.843316
  }
 ]

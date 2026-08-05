@@ -51,6 +51,9 @@ describe("the vendored pKa model pin", () => {
     "edge-variance.json",
     "external-validation.json",
     "hammett-sigma.json",
+    // Decides every reported interval, and through the interval every confidence ring, every rung's
+    // weight in the fold, and which sites the consensus trusts.
+    "interval-calibration.json",
     "site-pka-gnn.json"
   ];
 

@@ -1,0 +1,99 @@
+{
+  "measurement": "empirical quantile of |error| within equal-count bins of the ensemble's raw standard deviation, on out-of-fold predictions; linearly interpolated between bin centres and clamped outside them",
+  "targetCoverage": 0.68,
+  "samples": 12096,
+  "bins": 12,
+  "achievedCoverage": 0.6762,
+  "worstBinDeviation": 0.0004,
+  "intervalQuartiles": [
+    0.492,
+    0.6662,
+    0.975
+  ],
+  "points": [
+    {
+      "spread": 0.049349,
+      "interval": 0.266832,
+      "samples": 1008,
+      "rawQuantile": 0.266832,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.087098,
+      "interval": 0.35826,
+      "samples": 1008,
+      "rawQuantile": 0.35826,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.117589,
+      "interval": 0.436704,
+      "samples": 1008,
+      "rawQuantile": 0.436704,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.147169,
+      "interval": 0.547908,
+      "samples": 1008,
+      "rawQuantile": 0.547908,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.177459,
+      "interval": 0.560908,
+      "samples": 1008,
+      "rawQuantile": 0.560908,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.209692,
+      "interval": 0.641676,
+      "samples": 1008,
+      "rawQuantile": 0.641676,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.247128,
+      "interval": 0.693876,
+      "samples": 1008,
+      "rawQuantile": 0.693876,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.293433,
+      "interval": 0.787128,
+      "samples": 1008,
+      "rawQuantile": 0.787128,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.353433,
+      "interval": 0.929012,
+      "samples": 1008,
+      "rawQuantile": 0.929012,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.433384,
+      "interval": 1.032836,
+      "samples": 1008,
+      "rawQuantile": 1.032836,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.56985,
+      "interval": 1.279876,
+      "samples": 1008,
+      "rawQuantile": 1.279876,
+      "coverage": 0.6796
+    },
+    {
+      "spread": 0.998646,
+      "interval": 1.843316,
+      "samples": 1008,
+      "rawQuantile": 1.843316,
+      "coverage": 0.6796
+    }
+  ]
+}

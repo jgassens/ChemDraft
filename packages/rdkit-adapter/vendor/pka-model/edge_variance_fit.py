@@ -38,7 +38,7 @@ by the square of the multiplier -- 2.25x at the current 1.5 -- which leaves the 
 aggressive than the calibration behind it justifies. The multiplier is read from the model artifact
 rather than assumed, so a recalibration cannot silently desynchronise the two.
 
-    python3 edge_variance_fit.py gnn-oof.json site-pka-gnn.json edge-variance.json
+    python3 edge_variance_fit.py gnn-oof.json interval-calibration.json edge-variance.json
 """
 import json
 import math
@@ -122,9 +122,28 @@ def spearman(rows):
     return num / math.sqrt(sum((si - ms) ** 2 for si in s) * sum((ei - me) ** 2 for ei in e))
 
 
-def main(oof_path, model_path, out_path):
-    multiplier = json.load(open(model_path))["training"]["spreadMultiplier"]
-    rows = [dict(r, spread=r["spread"] * multiplier)
+def interval_lookup(calibration_path):
+    """The same curve `intervalFor` interpolates in TypeScript, so both fit and fold see one scale."""
+    points = json.load(open(calibration_path))["points"]
+
+    def at(deviation):
+        if deviation <= points[0]["spread"]:
+            return points[0]["interval"]
+        if deviation >= points[-1]["spread"]:
+            return points[-1]["interval"]
+        for below, above in zip(points, points[1:]):
+            if deviation <= above["spread"]:
+                span = above["spread"] - below["spread"]
+                t = 0.0 if span == 0 else (deviation - below["spread"]) / span
+                return below["interval"] + t * (above["interval"] - below["interval"])
+        return points[-1]["interval"]
+
+    return at
+
+
+def main(oof_path, calibration_path, out_path):
+    at = interval_lookup(calibration_path)
+    rows = [dict(r, spread=at(r["spread"]))
             for r in json.load(open(oof_path)) if "spread" in r]
     a, b = fit(rows)
     deciles = calibration(rows, a, b)
@@ -136,7 +155,6 @@ def main(oof_path, model_path, out_path):
                        "because that is what the fold is handed, not the raw deviation gnn-oof.json "
                        "stores",
         "samples": len(rows),
-        "spreadMultiplier": multiplier,
         "floor": round(a, 4),
         "perSpread": round(b, 4),
         "unknownSpread": round(st.median(r["spread"] for r in rows), 4),

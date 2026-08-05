@@ -18,6 +18,7 @@ import { elementSymbol } from "./composition";
 import type { PkaMolecularGraph } from "./pkaModel";
 import gnnJson from "../vendor/pka-model/site-pka-gnn.json";
 import fixtureJson from "../vendor/pka-model/gnn-parity-fixture.json";
+import { PKA_INTERVAL_CALIBRATION, intervalFor } from "./pkaGnn";
 
 const MODEL = gnnJson as unknown as GnnWeights;
 const FIXTURE = fixtureJson as unknown as
@@ -131,5 +132,55 @@ describe("what the network is worth", () => {
     // measured on held-out folds, never on rows the members were fitted to.
     expect(MODEL.training.ensemble).toBeGreaterThan(1);
     expect(MODEL.architecture.ensemble).toBe(MODEL.members.length);
+  });
+});
+
+/**
+ * The interval has to mean what it says, and it did not.
+ *
+ * It was the ensemble's deviation times one constant, chosen so the interval covers 68% of errors over
+ * the whole corpus. It does — and conditionally it ran from 50.1% coverage at the confident end to
+ * 85.6% at the loose end, which is the way that matters, because a reader looks at one molecule and not
+ * at a corpus. Too tight exactly where it is trusted most.
+ */
+describe("the reported interval is calibrated, not scaled", () => {
+  it("lands within a point of its target in every bin", () => {
+    for (const point of PKA_INTERVAL_CALIBRATION.points) {
+      expect(
+        Math.abs(point.coverage - PKA_INTERVAL_CALIBRATION.targetCoverage),
+        `bin at spread ${point.spread} covers ${point.coverage}`
+      ).toBeLessThan(0.01);
+    }
+    expect(PKA_INTERVAL_CALIBRATION.worstBinDeviation).toBeLessThan(0.01);
+  });
+
+  it("is monotone, because a wider disagreement can never buy a tighter interval", () => {
+    const points = PKA_INTERVAL_CALIBRATION.points;
+    for (let i = 1; i < points.length; i += 1) {
+      expect(points[i]!.spread).toBeGreaterThan(points[i - 1]!.spread);
+      expect(points[i]!.interval).toBeGreaterThanOrEqual(points[i - 1]!.interval);
+    }
+  });
+
+  it("interpolates between bin centres and clamps outside them", () => {
+    const points = PKA_INTERVAL_CALIBRATION.points;
+    const first = points[0]!;
+    const last = points[points.length - 1]!;
+    // Clamped: a perfectly agreeing ensemble does not earn a zero-width interval. Members share one
+    // corpus and its blind spots, so agreement is not proof.
+    expect(intervalFor(0)).toBeCloseTo(first.interval, 9);
+    expect(intervalFor(-1)).toBeCloseTo(first.interval, 9);
+    expect(intervalFor(1e6)).toBeCloseTo(last.interval, 9);
+    expect(intervalFor(Number.NaN)).toBeCloseTo(first.interval, 9);
+    // Interpolated: the midpoint of two bin centres is the midpoint of their intervals.
+    const a = points[3]!;
+    const b = points[4]!;
+    expect(intervalFor((a.spread + b.spread) / 2)).toBeCloseTo((a.interval + b.interval) / 2, 9);
+  });
+
+  it("never reports a zero-width interval, whatever the ensemble does", () => {
+    for (const deviation of [0, 1e-12, 0.001, 0.5, 3, 100]) {
+      expect(intervalFor(deviation)).toBeGreaterThan(0.2);
+    }
   });
 });

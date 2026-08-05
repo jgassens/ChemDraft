@@ -107,8 +107,19 @@ echo "==> interval calibration"
 # Must come after the network and before the coupling refit: the refit folds ladders, and the fold
 # weights every rung by this. Fitted on the out-of-fold predictions the training step just wrote, so
 # it re-derives itself whenever the model changes rather than staying pinned to a retired one.
+# The reported interval, calibrated per bin rather than by one multiplier. Must precede the weighting
+# fit below, which is fitted on the interval the fold actually receives.
+echo "==> interval calibration for the reported spread"
+"$PYTHON" interval_calibrate.py ./gnn-oof.json ./interval-calibration.json
+
+# Emitted from the ROUNDED weights that ship, and only after the interval calibration, since the
+# fixture pins the reported spread too. It had no generator until now, which is how it came to pin
+# arithmetic nothing regenerated.
+echo "==> TypeScript/PyTorch parity fixture"
+"$PYTHON" gnn_parity.py ./site-pka-gnn.json ./gnn-parity-fixture.json >/dev/null
+
 echo "==> per-rung weighting for the macroscopic fold"
-"$PYTHON" edge_variance_fit.py ./gnn-oof.json ./site-pka-gnn.json ./edge-variance.json
+"$PYTHON" edge_variance_fit.py ./gnn-oof.json ./interval-calibration.json ./edge-variance.json
 
 echo "==> consensus with the Hammett relationship"
 "$PYTHON" consensus_calibrate.py ./merged-labels.json . >/dev/null

@@ -21,12 +21,13 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 | `calibration.json` | 2,031 | `a361085c2ed1dd274f630f5266a94a2b6411cd915d815bad937f24aaf6666abc` |
 | `consensus-calibration.json` | 615 | `f917afc008c9ab22e546dca84e4ef02c7478d7be685a1b8092a7537c8bb2ed93` |
 | `coupling.json` | 1,404 | `1bc2015011408924f2fee6cc17785032766bf64be9d8fa3ac4c22bd1a607bcac` |
-| `edge-variance.json` | 1,958 | `d0985edd5ea1d43e61371d5f35ddbe73e44fccd64372b86358216d78bbeb5656` |
+| `edge-variance.json` | 1,933 | `9ea690378841c9cb7f6103c164a3c96f4b46809df7a722d2fe549aaa2afb84e8` |
 | `external-validation.json` | 443 | `011ae99537605834a3acc8f074308a16e033fe23dbc1a01157ab4a695f2df418` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
+| `interval-calibration.json` | 2,164 | `b6134a801bd1aed1e18d355f9b8c36dab4a91acfd9b0239d6da01fe5076c481a` |
 | `site-pka-gnn.json` | 4,468,866 | `79061c4d3b4e11753c865088e5bb38d0c7e689e6e394af4fdf99c0dcfcfca688` |
 
-**Manifest:** `409dce57e24c0994c19b49dba0c01284f8fffa60eaeac300c995e85edace1c2d`
+**Manifest:** `5fb8c6fd1be673cfe549a6263a06f9a946178595614a201f70052210ee879cf9`
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.
@@ -47,6 +48,7 @@ run fingerprint at all: two builds could produce different numbers and report id
 | `consensus-calibration.json` | how the model and the Hammett relationship are weighted against each other |
 | `coupling.json` | `W`, the electrostatic term across acid/base site pairs |
 | `edge-variance.json` | how much each rung is believed when the microstate ladder is solved |
+| `interval-calibration.json` | how ensemble disagreement becomes the reported interval |
 | `hammett-sigma.json` | rho and every sigma for the four series |
 | `external-validation.json` | the held-out figure the contract quotes |
 

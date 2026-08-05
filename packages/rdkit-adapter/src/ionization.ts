@@ -186,7 +186,7 @@ import {
   siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
-import { PKA_GNN_TRAINING, predictSitePka } from "./pkaGnn";
+import { PKA_GNN_TRAINING, PKA_INTERVAL_CALIBRATION, predictSitePka } from "./pkaGnn";
 import { siteContext } from "./pkaAromaticity";
 
 /**
@@ -231,10 +231,11 @@ export const HAMMETT_IN_DOMAIN_MAE = CONSENSUS_CALIBRATION.hammettMae;
  * calibration, never typed here.
  */
 export const IONIZATION_CONFIDENCE_BANDS = {
-  // The NETWORK's interval quartiles, measured on held-out folds. Reading the forest's here would put
-  // a confidence ring on a number the forest did not produce.
-  good: PKA_GNN_TRAINING.intervalQuartiles[0]!,
-  poor: PKA_GNN_TRAINING.intervalQuartiles[2]!
+  // Quartiles of the CALIBRATED interval, not of the raw ensemble deviation. The ring is sized by the
+  // calibrated number, so colouring it by the raw one would grade a ring against a scale it is not
+  // drawn on. Reading the forest's here would be the same mistake one model further back.
+  good: PKA_INTERVAL_CALIBRATION.intervalQuartiles[0]!,
+  poor: PKA_INTERVAL_CALIBRATION.intervalQuartiles[2]!
 };
 
 const IONIZATION_ENGINE = "dimorphite-site-table";

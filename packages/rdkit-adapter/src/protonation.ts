@@ -710,6 +710,18 @@ export function macroscopicFromSites(
    * The same ensemble spread predicts VALUATION error well — Spearman 0.42 over 12,096 held-out rows,
    * and it is what `EDGE_VARIANCE` weights the fold by — and carries no signal about whether a site
    * should exist at all. Two failure modes, one number, and it only speaks to one of them.
+   *
+   * **This is now a backstop rather than the working filter, and the reason is worth stating.** Since
+   * the interval became a calibrated 68% quantile rather than a multiple of the ensemble's deviation,
+   * the widest a model-scored rung can report is 1.84 — so against a threshold of 3.5 this can no
+   * longer fire for one. It still can for a CONSENSUS rung, where the interval is the disagreement
+   * between two methods and has no such ceiling, which is the case worth keeping it for.
+   *
+   * What replaced it is better than it was. A hard cutoff answers "is this rung allowed in the curve"
+   * with yes or no; the weighted solve answers "how much should it move the curve" with a number, so a
+   * doubtful rung is discounted rather than deleted. Measured across that change the numbers moved the
+   * right way — curated set 0.302 to 0.295, zwitterions 0.178 to 0.165, SAMPL6 matched 0.494 to
+   * 0.491 — while every rung stayed in the fold.
    */
   const confidentEnough = (site: IonizationSite) =>
     site.spread === undefined || site.spread <= HALF_THE_AQUEOUS_RANGE;
