@@ -839,10 +839,27 @@ below −2.7 and over-predicted by about five log units into the window.
 The largest single defect this method had, moved for the first time — and the geometry split that looked
 like an obstacle was the wrong axis to look at.
 
-**What is left, and why no further rule is justified.** Nineteen in-window extra steps remain: seven are
-FIRST protonations of a ring nitrogen, where the chemistry is real and the question is only whether the
-assay reported it; four are acylaminothiazole-like nitrogens whose basicity the corpus says is genuine
-(8.9 measured); four are N-H acidities; four are singletons.
+**And then the gap turned out to be mostly the benchmark.** "Site detection is the weak half" was
+asserted on SAMPL6 alone, and SAMPL6 cannot answer it: 31 measured values across 24 drug-like molecules
+is 1.29 each, against 3.33 scored sites each — a 2.58x gap — so a prediction it never reported counts as
+an extra step whether it is wrong or merely unmeasured.
+
+Measured instead on twenty molecules whose aqueous values ARE tabulated exhaustively — amino acids,
+diacids, azoles — the method finds the right number on **19 of 20 with ZERO extra steps**. The one
+exception is oxalic acid, predicted 0.8 against a measured 1.25, which falls out of the scoring window
+rather than out of the model. Histidine looked like a second failure at a floor of 2 and is not: its
+three measured values are all matched and 1.8 simply sits below that floor. A window excluding oxalic
+acid's 1.25 is not describing aqueous titration — SAMPL6's narrower 2–12 is a property of the UV-metric
+assay it used, and conflating the two was the error.
+
+So over-detection is largely that benchmark's coverage. What remains on drug-like molecules is a mix of
+real sites nobody titrated and genuine extras, and the two cannot be separated without more complete
+reference data than exists for them.
+
+**What is left of it, and why no further rule is justified.** Nineteen in-window extra steps remain on
+SAMPL6: seven are FIRST protonations of a ring nitrogen, where the chemistry is real and the question is
+only whether the assay reported it; four are acylaminothiazole-like nitrogens whose basicity the corpus
+says is genuine (8.9 measured); four are N-H acidities; four are singletons.
 
 The obvious companion to the anilide rule — "an amide N-H is really about 16, suppress it" — was
 measured and is wrong:

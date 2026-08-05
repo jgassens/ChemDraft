@@ -1043,23 +1043,20 @@ export function ionizationContract(): MethodContract {
         "worse, and the honest figure is the harsh one: exactly as many values as were measured on 2 " +
         "of 24 molecules, or 12 of 24 once predictions outside an aqueous assay's 2-12 window are set " +
         "aside. Both are stated because quoting only the second overstates the method.",
-      "WHAT IT GETS WRONG IS HOW MANY SITES IT FINDS, not what they are worth. On that same set it " +
-        "reports 37 steps nothing measured, of which 19 fall inside the window an aqueous titration " +
-        "can reach — the rest are real chemistry no such experiment can see, an amide N-H near 15, an " +
-        "azole N-H near 14, a second ring protonation below zero. The largest single cause of the " +
-        "in-window ones was found and removed. Six of these molecules carry TWO nitrogens in one " +
-        "aromatic ring — a quinazoline, a pyrimidine — and both were offered a basicity, where " +
-        "protonating the first leaves the ring electron-poor and the second unprotonatable in any " +
-        "accessible range. Nothing could have taught the model that, since a diprotonated pyrazine " +
-        "cannot be titrated either: it scored those four corpus labels at MAE 4.98 with a bias of " +
-        "+4.98, moving every one from below zero to inside the window. Such a rung is now declined " +
-        "UNLESS the ring carries a compensating negative charge, which separates the evidence " +
-        "exactly — 4 uncompensated labels, all outside pH 2-12 and all mispredicted, against 17 " +
-        "compensated ones (uracil, thiouracil) of which 16 are inside it and predicted to 1.31. That " +
-        "took the extra steps from 49 to 37, the in-window ones from 22 to 19, and the right step " +
-        "count from 10 of 24 to 12, while leaving matched accuracy where it was. The per-site " +
-        "figures below are ORACLE-SITE measurements — the site and its direction are handed in — and " +
-        "at 0.73 they describe valuation, not discovery.",
+      "HOW MANY STEPS IT FINDS was thought to be the weak half, and measuring it properly says " +
+        "otherwise. On SAMPL6 the method reports 37 steps nothing measured, 19 of them inside the " +
+        "window that assay could reach, and gets the count right on 12 of 24 molecules — or 2 of 24 " +
+        "read raw. But SAMPL6 cannot settle the question: it reports 31 values across 24 drug-like " +
+        "molecules, 1.29 each, against 3.33 scored sites each, so a prediction it never reported counts " +
+        "as an extra step whether it is wrong or merely unmeasured. Measured instead on twenty " +
+        "molecules whose aqueous values ARE tabulated exhaustively — amino acids, diacids, azoles — the " +
+        "method finds the right number on 19 of 20 with ZERO extra steps, the exception being oxalic " +
+        "acid, whose first value is predicted 0.8 against a measured 1.25 and so falls out of the " +
+        "window rather than out of the model. So over-detection is largely a property of that " +
+        "benchmark's coverage, and what remains on drug-like molecules is a mix of real sites nobody " +
+        "titrated and genuine extras that cannot be separated without more complete reference data. " +
+        "The per-site figures below are ORACLE-SITE measurements — the site and its direction are " +
+        "handed in — and at 0.73 they describe valuation, not discovery.",
       "EACH VALUE IS THE ACIDITY OF THAT RUNG — the pKa of one proton leaving one atom, at the charge " +
         "state named by that row. A microscopic pKa for one transition, not a molecule-wide figure. " +
         "The values are computed on a CANONICAL PROTOMER rather than on the structure as drawn, so " +

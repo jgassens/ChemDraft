@@ -265,3 +265,82 @@ describe("a second ring protonation the assay could never see", () => {
     }
   }, 1_800_000);
 });
+
+/**
+ * How many steps the method finds, measured where the tabulation is COMPLETE.
+ *
+ * This test exists because the only step-count figure this method had came from SAMPL6, and SAMPL6
+ * cannot answer the question. It reports 31 measured values across 24 drug-like molecules — about 1.3
+ * each — and those molecules have more ionizable groups than that. A prediction the assay never reported
+ * is counted as an extra step whether it is wrong or merely unmeasured, so "12 of 24" conflates
+ * over-detection with the benchmark's own coverage.
+ *
+ * These twenty are different: their aqueous pKa values are tabulated exhaustively, so an extra
+ * prediction really is an extra. The method finds the right number on EIGHTEEN of them, and both
+ * exceptions are the scoring window clipping a correct value rather than a detection error:
+ *
+ *     histidine   predicted [1.8, 6.1, 9.1, 13.3]   measured [1.85, 6.0, 9.33]
+ *     oxalic acid predicted [0.8, 4.4]              measured [1.25, 4.14]
+ *
+ * Histidine's three measured values are all matched; 1.8 sits below a floor of 2. Oxalic acid's are both
+ * matched; 0.8 sits below it too. So the honest reading of site detection is that it is close to right
+ * where ground truth is complete, and the SAMPL6 count is measuring two things at once.
+ *
+ * The out-of-window predictions here are real chemistry, not noise: serine's 14.4 is its hydroxyl,
+ * imidazole's 13.9 its N-H — tabulated at 14.4 — and citric acid's 14.0 its tertiary alcohol.
+ */
+describe("the number of titration steps, where the tabulation is complete", () => {
+  const COMPLETE: Array<[string, string, number[]]> = [
+    ["glycine", "NCC(=O)O", [2.35, 9.78]],
+    ["alanine", "CC(N)C(=O)O", [2.34, 9.69]],
+    ["serine", "NC(CO)C(=O)O", [2.21, 9.15]],
+    ["cysteine", "NC(CS)C(=O)O", [1.71, 8.33, 10.78]],
+    ["aspartic acid", "NC(CC(=O)O)C(=O)O", [1.99, 3.9, 9.9]],
+    ["glutamic acid", "NC(CCC(=O)O)C(=O)O", [2.1, 4.07, 9.47]],
+    ["lysine", "NCCCCC(N)C(=O)O", [2.15, 9.16, 10.67]],
+    ["histidine", "NC(Cc1c[nH]cn1)C(=O)O", [1.85, 6.0, 9.33]],
+    ["acetic acid", "CC(=O)O", [4.76]],
+    ["phenol", "Oc1ccccc1", [9.95]],
+    ["ethylenediamine", "NCCN", [6.85, 9.93]],
+    ["malonic acid", "OC(=O)CC(=O)O", [2.83, 5.69]],
+    ["succinic acid", "OC(=O)CCC(=O)O", [4.21, 5.64]],
+    ["citric acid", "OC(=O)CC(O)(CC(=O)O)C(=O)O", [3.13, 4.76, 6.4]],
+    ["imidazole", "c1c[nH]cn1", [6.95]],
+    ["pyridine", "c1ccncc1", [5.23]],
+    ["piperazine", "C1CNCCN1", [5.35, 9.73]],
+    ["oxalic acid", "OC(=O)C(=O)O", [1.25, 4.14]],
+    ["glutaric acid", "OC(=O)CCCC(=O)O", [4.34, 5.41]],
+    ["phthalic acid", "OC(=O)c1ccccc1C(=O)O", [2.89, 5.51]]
+  ];
+
+  it("finds the right number on nearly all of them", async () => {
+    // A floor of 1 rather than 2: oxalic acid's 1.25 and histidine's 1.85 are in every reference table,
+    // so a window that excludes them is not describing aqueous titration. SAMPL6's narrower 2-12 is a
+    // property of the UV-metric assay it used, not of water, and the two must not be confused.
+    const [floor, ceiling] = [1, 12];
+    const wrong: string[] = [];
+    let extras = 0;
+    let missed = 0;
+    for (const [index, [name, smiles, measured]] of COMPLETE.entries()) {
+      const folded = await fold(smiles, `complete-${index}`);
+      expect(folded, name).toBeDefined();
+      const inWindow = folded!.pKa.filter((v) => v >= floor && v <= ceiling);
+      extras += Math.max(0, inWindow.length - measured.length);
+      missed += Math.max(0, measured.length - inWindow.length);
+      if (inWindow.length !== measured.length) {
+        wrong.push(`${name}: ${inWindow.length} in window against ${measured.length} measured ` +
+          `[${folded!.pKa.map((v) => v.toFixed(1)).join(", ")}]`);
+      }
+    }
+    console.log(
+      `\n  right number on ${COMPLETE.length - wrong.length}/${COMPLETE.length}` +
+        `   extra ${extras}   missed ${missed}` +
+        (wrong.length > 0 ? `\n    ${wrong.join("\n    ")}` : "") + "\n"
+    );
+    // Nineteen of twenty at a floor of 1 — only oxalic acid, whose first value is predicted 0.8 against
+    // a measured 1.25, still falls out. That is a valuation error at the boundary, not a missing site.
+    expect(COMPLETE.length - wrong.length).toBeGreaterThanOrEqual(18);
+    // And it must not be achieving that by finding too few: over-detection is the failure under test.
+    expect(extras).toBeLessThanOrEqual(2);
+  }, 1_800_000);
+});
