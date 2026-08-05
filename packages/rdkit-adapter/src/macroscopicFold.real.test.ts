@@ -344,3 +344,66 @@ describe("the number of titration steps, where the tabulation is complete", () =
     expect(extras).toBeLessThanOrEqual(2);
   }, 1_800_000);
 });
+
+/**
+ * Carbon acids, a whole compound class this method could not see at all.
+ *
+ * The site table is transcribed from Dimorphite-DL and covers O, N and S. So a 1,3-diketone reported
+ * NOTHING — acetylacetone's pKa is 8.9 and the acidic proton is its central CH2 — while the same compound
+ * drawn as its enol reported 8.72 off the O-H. Nitroalkanes, malonates, cyanoacetates, β-ketoesters and
+ * Meldrum's acid were all invisible the same way.
+ *
+ * The model was ALREADY TRAINED on them, which is what made this a detection fix rather than a new
+ * prediction: 445 of 12,096 labels sit on a carbon. The only question was which to offer, answered by
+ * activation count — at least one nitro, or at least two carbanion stabilisers:
+ *
+ *     admitted   n=350   MAE 1.15   bias +0.01   97% inside pH 1-14
+ *     excluded   n= 95   MAE 2.63   bias -0.22   79% inside pH 1-14
+ *
+ * The excluded set is the lone ketones and unactivated carbons, whose real values run to 18, 19 and 30.9
+ * where the model says 11.6, 18.7 and 16.4. Offering those would be the carbon-acid version of scoring an
+ * amide N-H near 8 when it is really 16.
+ */
+describe("carbon acids", () => {
+  it("matches literature on the classes it now offers", async () => {
+    const known: Array<[string, string, number]> = [
+      ["acetylacetone", "CC(=O)CC(=O)C", 8.9],
+      ["dimedone", "CC1(C)CC(=O)CC(=O)C1", 5.23],
+      ["Meldrum's acid", "CC1(C)OC(=O)CC(=O)O1", 4.97],
+      ["ethyl acetoacetate", "CCOC(=O)CC(C)=O", 10.7],
+      ["malononitrile", "N#CCC#N", 11.2],
+      ["nitromethane", "C[N+](=O)[O-]", 10.2],
+      ["nitroethane", "CC[N+](=O)[O-]", 8.5],
+      ["2-nitropropane", "CC(C)[N+](=O)[O-]", 7.7]
+    ];
+    const errors: number[] = [];
+    for (const [index, [name, smiles, literature]] of known.entries()) {
+      const folded = await fold(smiles, `carbon-${index}`);
+      expect(folded, `${name} reported no value`).toBeDefined();
+      const closest = Math.min(...folded!.pKa.map((v) => Math.abs(v - literature)));
+      errors.push(closest);
+      expect(closest, `${name} against literature ${literature}`).toBeLessThan(1.5);
+    }
+    const mae = errors.reduce((a, b) => a + b, 0) / errors.length;
+    console.log(`\n  carbon acids: MAE ${mae.toFixed(3)} over ${errors.length} literature values\n`);
+    // Measured 0.20 over these eight at introduction, against a corpus-wide 0.73.
+    expect(mae).toBeLessThan(0.6);
+  }, 1_800_000);
+
+  it("declines the ones the corpus cannot support", async () => {
+    // A lone ketone's alpha proton is near 20 and an unactivated C-H near 50; the model puts them in the
+    // teens, so offering them would invent a titration step. And a carbon flanked by CARBOXYLS is
+    // excluded separately: diethyl malonate's CH is 13.3 because its esters cannot ionise, malonic acid's
+    // is far less acidic, and the corpus holds one label of 350 that could teach the difference. Offering
+    // it gave malonic acid a third rung, doubled its error and made its thermodynamic cycle miss by 3.07.
+    for (const smiles of ["CC(C)=O", "O=C1CCCCC1", "CC", "Cc1ccccc1", "CCO"]) {
+      const folded = await fold(smiles, `no-carbon-${smiles}`);
+      const values = folded?.pKa ?? [];
+      expect(values.filter((v) => v >= 1 && v <= 14), smiles).toHaveLength(0);
+    }
+    // Malonic acid keeps exactly its two carboxyl steps, and no cycle defect.
+    const malonic = await fold("OC(=O)CC(=O)O", "malonic-carbon");
+    expect(malonic!.pKa).toHaveLength(2);
+    expect(malonic!.inconsistency).toBeCloseTo(0, 6);
+  }, 1_800_000);
+});

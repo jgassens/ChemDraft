@@ -860,7 +860,135 @@ export function scoreSiteTransitions(
     }
   }
 
+  // Carbon acids, which the located sites cannot contain because Dimorphite's table covers O, N and S.
+  // Added here rather than as a SMARTS entry so that table stays what its header says it is, and because
+  // the gate is structural — an activation COUNT — which is the same shape as `acceptsAProton`.
+  const alreadyScored = new Set(sites.map((entry) => entry.ionizableAtomIndex));
+  const aromatic = siteContext(graph).aromatic;
+  for (let atomIndex = 0; atomIndex < graph.atoms.length; atomIndex += 1) {
+    if (alreadyScored.has(atomIndex)) continue;
+    if (!isActivatedCarbonAcid(graph, atomIndex, aromatic)) continue;
+    try {
+      const prediction = predictSitePka(graph, atomIndex);
+      sites.push({
+        atomIndices: [atomIndex],
+        ionizableAtomIndex: atomIndex,
+        siteType: "Activated_carbon_acid",
+        acidCharge: graph.atoms[atomIndex]!.charge,
+        transition: transitionFor(graph.atoms[atomIndex]!.charge),
+        pKa: prediction.value,
+        spread: prediction.spread,
+        basis: "experimentally-trained-model"
+      });
+    } catch {
+      // A carbon the model cannot feature-ise contributes nothing, same as any other site.
+    }
+  }
+
   return { sites, unassessed };
+}
+
+/**
+ * How many groups on this carbon can delocalise a carbanion, split by whether any is a nitro.
+ *
+ * Counted PER NEIGHBOUR and per ATOM — "this neighbour carries a multiple bond to oxygen or sulfur" and
+ * "this neighbour is aromatic" — never per bond of a ring, so the answer does not depend on which Kekulé
+ * structure the engine chose. That distinction has been shipped wrong five times in this file's history.
+ */
+function carbanionStabilisers(
+  graph: PkaMolecularGraph,
+  atomIndex: number,
+  aromatic: readonly boolean[]
+): { nitro: number; other: number } {
+  const bondsAt = (index: number) =>
+    graph.bonds.filter((bond) => bond.atoms[0] === index || bond.atoms[1] === index);
+  const other = (bond: { atoms: [number, number] }, index: number) =>
+    bond.atoms[0] === index ? bond.atoms[1] : bond.atoms[0];
+
+  let nitro = 0;
+  let stabilisers = 0;
+  for (const bond of bondsAt(atomIndex)) {
+    const neighbour = other(bond, atomIndex);
+    const element = graph.atoms[neighbour]?.element;
+    const edges = bondsAt(neighbour);
+    if (
+      element === "N" &&
+      (graph.atoms[neighbour]?.charge ?? 0) > 0 &&
+      edges.some((edge) => graph.atoms[other(edge, neighbour)]?.element === "O")
+    ) {
+      nitro += 1;
+      continue;
+    }
+    if (
+      element === "S" &&
+      edges.filter((edge) => edge.order > 1 && graph.atoms[other(edge, neighbour)]?.element === "O").length >= 2
+    ) {
+      stabilisers += 1;
+      continue;
+    }
+    if (element !== "C") continue;
+    if (edges.some((edge) => edge.order > 1 && ["O", "S"].includes(graph.atoms[other(edge, neighbour)]?.element ?? ""))) {
+      // A carbonyl that is itself part of a CARBOXYL does not count, and that exclusion is measured.
+      // Diethyl malonate's central CH is 13.3 because its esters cannot ionise; malonic acid's is far
+      // less acidic, because by the time both carboxyls have gone the carbanion would sit between two
+      // negative charges. The corpus cannot teach that difference — moving this clause changes the
+      // admitted set by ONE label of 350, so every carbon acid it holds is flanked by esters, ketones
+      // or nitro groups and none by a carboxylic acid. Counting them anyway offered malonic acid a
+      // third rung, doubled its macroscopic error from 0.305 to 0.500, and made its thermodynamic
+      // cycle miss by 3.07 log units — the diagnostic naming an unlabelled region, as it did for the
+      // second ring protonation and for glycine's neutral form.
+      const ionisable = edges.some((edge) => {
+        const partner = other(edge, neighbour);
+        if (partner === atomIndex) return false;
+        const carried = graph.atoms[partner];
+        return carried?.element === "O" && (carried.hydrogens > 0 || carried.charge < 0);
+      });
+      if (!ionisable) stabilisers += 1; // ester, ketone, amide or thiocarbonyl
+    } else if (edges.some((edge) => edge.order > 2)) {
+      stabilisers += 1; // nitrile or alkyne
+    } else if (aromatic[neighbour] === true) {
+      stabilisers += 1; // aryl
+    }
+  }
+  return { nitro, other: stabilisers };
+}
+
+/**
+ * A carbon acidic enough to titrate in water, which this method could not see at all until now.
+ *
+ * The site table is transcribed from Dimorphite-DL and covers O, N and S. So a 1,3-diketone reported
+ * NOTHING — acetylacetone's pKa is 8.9 and its acidic proton is the central CH2 — while the same
+ * molecule drawn as its enol reported 8.72 off the O-H. One compound, two drawings, and one of them
+ * silently had no answer. Nitroalkanes, malonates, cyanoacetates and β-ketoesters were all invisible
+ * the same way.
+ *
+ * **The model was already trained on them**, which is what makes this a detection fix rather than a new
+ * prediction: 445 of the 12,096 labels sit on a carbon. So the only question was which of them to offer,
+ * and it is answered by activation count rather than by opinion:
+ *
+ *     admitted (>=1 nitro, or >=2 stabilisers)   n=350   MAE 1.15   bias +0.01   97% inside pH 1-14
+ *     excluded                                   n= 95   MAE 2.63   bias -0.22   79% inside pH 1-14
+ *
+ * The admitted set is UNBIASED at 1.15, which is worse than the corpus-wide 0.73 and squarely in the
+ * range of classes already reported — anilide N-H is 1.07 and plain amide N-H 1.39. The excluded set is
+ * where the damage would be: it holds the lone ketones and unactivated carbons whose real values run to
+ * 18, 19 and 30.9, and the model puts them at 11.6, 18.7 and 16.4. Offering those would be the
+ * carbon-acid version of scoring an amide N-H near 8 when it is really 16.
+ *
+ * ONE nitro is enough on its own (n=29, MAE 0.96): nitromethane is 10.2 and nitroethane 8.5, both
+ * genuinely in water. One carbonyl is not (n=60, MAE 2.68): acetone's alpha proton is near 20.
+ */
+function isActivatedCarbonAcid(
+  graph: PkaMolecularGraph,
+  atomIndex: number,
+  aromatic: readonly boolean[]
+): boolean {
+  const atom = graph.atoms[atomIndex];
+  if (!atom || atom.element !== "C" || atom.charge !== 0 || atom.hydrogens === 0) return false;
+  // An aromatic ring carbon's C-H is not this chemistry — benzene is not a carbon acid in water.
+  if (aromatic[atomIndex] === true) return false;
+  const { nitro, other } = carbanionStabilisers(graph, atomIndex, aromatic);
+  return nitro >= 1 || nitro + other >= 2;
 }
 
 /**
@@ -1022,7 +1150,7 @@ export function ionizationContract(): MethodContract {
     // per-atom ladders, the corpus was corrected and the model retrained, and the values are now
     // computed on a canonical protomer rather than on the drawing. Every number a caller cached under
     // 1.x describes a different computation.
-    version: "2.3.0",
+    version: "2.4.0",
     implementation: {
       engine: IONIZATION_ENGINE,
       engineVersion: IONIZATION_ENGINE_VERSION,
@@ -1167,19 +1295,29 @@ export function ionizationContract(): MethodContract {
         "Those microstates are excluded rather than scored, which is why imidazole reads near 6.8 " +
         "against a measured 6.95. What is NOT done is computing the tautomer’s own stability: for " +
         "an azole both tautomers are the same protonation state, so the cost is at most log10(2).",
-      "TAUTOMERS: an azole 1,3-H shift is canonicalised, everything else is read AS DRAWN, and the " +
-        "line between them is where a hydrogen moves. 4-methylimidazole and 5-methylimidazole are one " +
-        "substance — the shift is faster than any titration and they share a tabulated pKa of 7.5 — yet " +
-        "as drawn they scored 7.48 and 7.69 with their N-H values 0.39 apart, and methylpyrazole's 1.05 " +
-        "apart. The ladder is now built from the tautomer RDKit's MolStandardize scores as canonical " +
-        "(Sitzmann et al. 2010), a published deterministic heuristic that picks a representative rather " +
-        "than averaging a population: it buys one substance one answer, not a better answer. Accepted " +
-        "ONLY when the canonical form differs by moving a hydrogen between NITROGENS. Keto/enol is not " +
-        "that — acetylacetone's enol is a species a chemist means to draw, and canonicalising it to the " +
-        "diketone deleted the molecule's only answer, since that proton sits on carbon and this site " +
-        "table covers O, N and S. So the enol keeps its 8.72 against a measured 8.9, dimedone its 5.00 " +
-        "against 5.23, and 2-hydroxypyridine is not answered as 2-pyridone. Needed the vendored WASM " +
-        "rebuilt: MinimalLib ships no tautomer support, so this is vendor patch #7.",
+      "TAUTOMERS are CANONICALISED, so the answer describes the DOMINANT form rather than whichever was " +
+        "drawn. 4-methylimidazole and 5-methylimidazole are one substance sharing a tabulated 7.5, yet as " +
+        "drawn they scored 7.48 and 7.69; acetylacetone's keto and enol drawings gave nothing and 8.72. " +
+        "Both pairs now agree — 7.48/13.85 and 9.13 against a measured 8.9 — as do dimedone at 5.18 " +
+        "against 5.23 and 2-pyridone/2-hydroxypyridine at 6.36/11.51. The representative is the one " +
+        "RDKit's MolStandardize scores as canonical (Sitzmann et al. 2010): a published deterministic " +
+        "heuristic, not a free-energy weighting. It needed the vendored WASM rebuilt, MinimalLib shipping " +
+        "no tautomer support at all — vendor patch #7. This is a CORRECTNESS gain, not only a consistency " +
+        "one: cyclohexanone now reports nothing from either drawing, which is right, because its alpha " +
+        "C-H is near 26 and the enol whose O-H the drawn form used to be answered on is about a millionth " +
+        "of the population. Phenol, formally an enol, keeps its 9.94 because its aromatic form IS stable.",
+      "CARBON ACIDS are reported, which they were not before: the site table is Dimorphite's and covers " +
+        "O, N and S, so a 1,3-diketone returned NOTHING while the same compound drawn as its enol " +
+        "returned a value. The model was already trained on them — 445 of 12,096 labels sit on a " +
+        "carbon — so this located sites rather than predicting anything new. Offered when the carbon " +
+        "carries at least one nitro or at least two carbanion stabilisers (carbonyl, nitro, sulfonyl, " +
+        "nitrile, aryl), which splits the evidence: admitted 350 labels at MAE 1.15 and bias +0.01 with " +
+        "97% inside pH 1-14, excluded 95 at MAE 2.63 whose real values run to 30.9 where the model says " +
+        "16.4. Against literature it reads 0.19 over eight — acetylacetone 9.13/8.9, dimedone 5.18/5.23, " +
+        "Meldrum's acid 5.11/4.97, nitroethane 8.74/8.5. A carbonyl belonging to a CARBOXYL does not " +
+        "count toward the two: malonic acid's central carbon is not diethyl malonate's, the corpus holds " +
+        "one label of 350 that could teach the difference, and counting it gave malonic acid a third rung " +
+        "and a thermodynamic cycle that missed by 3.07.",
       "the fold also reports WHICH SPECIES the molecule is in at pH 7.4, as the fraction carrying each " +
         "net charge. It costs nothing extra — the fold already solves every microstate's free energy, " +
         "and mass action gives the population as 10^(L - n*pH), normalised and summed by charge — and it " +

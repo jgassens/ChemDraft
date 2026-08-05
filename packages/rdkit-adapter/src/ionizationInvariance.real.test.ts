@@ -231,26 +231,36 @@ describe("azole tautomers, one substance and one answer", () => {
     }
   }, 1_800_000);
 
-  it("leaves keto/enol alone, because those two forms are not one substance", async () => {
-    // The clause that keeps this narrow. Canonicalising EVERY tautomer was tried first and silently
-    // deleted acetylacetone's only answer: RDKit's canonical form is the diketone, whose acidic proton is
-    // a CARBON acid the site table does not cover, so the enol went from one macroscopic value to none.
-    // A chemist drawing the enol means the enol. Only an N-to-N hydrogen shift is accepted, so these
-    // keep the values they had — and they are good ones.
-    const enols: Array<[string, string, number]> = [
-      ["acetylacetone enol", "CC(O)=CC(=O)C", 8.9],
-      ["dimedone enol", "CC1(C)CC(O)=CC(=O)C1", 5.23]
+  it("gives keto and enol drawings one answer too, now that carbon acids are covered", async () => {
+    // This was the clause that kept the canonicalisation narrow, and covering carbon acids removed the
+    // need for it. Canonicalising keto/enol used to delete acetylacetone's only answer: RDKit's canonical
+    // form is the diketone, whose acidic proton is on CARBON, and the site table covered O, N and S. Now
+    // the diketone has its own answer and both drawings agree.
+    const pairs: Array<[string, string, string, number]> = [
+      ["acetylacetone", "CC(=O)CC(=O)C", "CC(O)=CC(=O)C", 8.9],
+      ["dimedone", "CC1(C)CC(=O)CC(=O)C1", "CC1(C)CC(O)=CC(=O)C1", 5.23],
+      ["2-pyridone / 2-hydroxypyridine", "O=c1cccc[nH]1", "Oc1ccccn1", 11.6]
     ];
-    for (const [name, smiles, literature] of enols) {
-      const got = await values(smiles);
-      expect(got.length, `${name} lost its site`).toBe(1);
-      expect(got[0]!, `${name} against literature ${literature}`).toBeCloseTo(literature, 0);
+    for (const [name, keto, enol, literature] of pairs) {
+      const a = await values(keto);
+      const b = await values(enol);
+      expect(a.length, `${name} produced no values`).toBeGreaterThan(0);
+      expect(close(a, b), `${name}: [${a.join(", ")}] vs [${b.join(", ")}]`).toBe(true);
+      expect(Math.min(...a.map((v) => Math.abs(v - literature)))).toBeLessThan(1.2);
     }
-    // The diketone itself has neither an O-H nor an N-H — its acidic proton is on carbon — so it
-    // reports nothing, and always did. That is the site table's documented limit, not a regression.
-    expect(await values("CC(=O)CC(=O)C")).toHaveLength(0);
-    // An O-to-N shift is the same category and is likewise refused: 2-hydroxypyridine keeps its own
-    // ladder rather than being answered as 2-pyridone.
-    expect((await values("Oc1ccccn1")).length).toBeGreaterThan(0);
+  }, 1_800_000);
+
+  it("reports nothing for a ketone whose enol is a millionth of the population", async () => {
+    // The case that makes unrestricted canonicalisation correct rather than merely convenient.
+    // Cyclohexanone's alpha C-H is near 26, so the compound has no aqueous pKa — and before this, the
+    // enol DRAWING answered about its O-H, describing a species that is barely in the flask. Both
+    // drawings now decline. Phenol is the control: formally an enol, but its aromatic form is the stable
+    // tautomer, so it keeps its value.
+    for (const smiles of ["O=C1CCCCC1", "OC1=CCCCC1", "CC(C)=O", "CC(O)=C"]) {
+      expect(await values(smiles), smiles).toHaveLength(0);
+    }
+    const phenol = await values("Oc1ccccc1");
+    expect(phenol).toHaveLength(1);
+    expect(phenol[0]!).toBeCloseTo(9.95, 0);
   }, 1_800_000);
 });

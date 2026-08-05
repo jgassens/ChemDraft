@@ -230,51 +230,6 @@ function assertAnalysisSurface(module: RdkitMinimalModule, mol: RdkitJsMol): ass
 const CAPABILITY_CACHE = new WeakMap<object, RdkitEngineCapabilities>();
 
 /**
- * Whether the canonical tautomer differs from its input ONLY by moving a hydrogen between nitrogens.
- *
- * This is the clause that keeps the canonicalisation to the case it was built for. An azole 1,3-H shift
- * makes 4- and 5-methylimidazole one substance sharing one tabulated pKa, and nobody means anything by
- * drawing one rather than the other. Keto/enol is NOT that: acetylacetone's enol is a species a chemist
- * means to draw, its O-H is the site the model can score, and RDKit canonicalises it to the diketone
- * whose acidic proton is a CARBON acid this site table does not cover — so canonicalising it silently
- * deleted the molecule's only answer. Measured: the enol went from one macroscopic value to none.
- *
- * Decided on the multiset of (element, charge, hydrogens) over every atom, which needs no atom mapping
- * and so cannot be fooled by `canonicalize` renumbering the molecule. An azole shift changes only
- * NITROGEN entries; keto/enol changes an oxygen and a carbon; 2-hydroxypyridine to 2-pyridone changes an
- * oxygen and a nitrogen. Only the first is accepted, and the other two are left exactly as drawn — the
- * separation `tautomerPolicy` has always claimed and until now only asserted.
- */
-function onlyNitrogensMovedHydrogen(before: AnalysisMol, after: AnalysisMol): boolean {
-  const tally = (mol: AnalysisMol): Map<string, number> | undefined => {
-    let parsed: { molecules?: { atoms?: { z?: number; chg?: number; impHs?: number }[] }[] };
-    try {
-      parsed = JSON.parse(mol.get_json()) as typeof parsed;
-    } catch {
-      return undefined;
-    }
-    const atoms = parsed.molecules?.[0]?.atoms;
-    if (!atoms) return undefined;
-    const counts = new Map<string, number>();
-    for (const atom of atoms) {
-      const key = `${atom.z ?? 6}:${atom.chg ?? 0}:${atom.impHs ?? 0}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    return counts;
-  };
-  const a = tally(before);
-  const b = tally(after);
-  if (!a || !b) return false;
-  const NITROGEN = 7;
-  for (const key of new Set([...a.keys(), ...b.keys()])) {
-    if ((a.get(key) ?? 0) === (b.get(key) ?? 0)) continue;
-    // An entry moved. That is only allowed for nitrogen.
-    if (Number(key.split(":")[0]) !== NITROGEN) return false;
-  }
-  return true;
-}
-
-/**
  * Whether the loaded artifact can actually canonicalise a tautomer (vendor patch #7).
  *
  * Probed BY VALUE, never by whether the method exists. Acetylacetone's enol form has the diketone as its
@@ -1472,6 +1427,20 @@ function resolveDerivedContext(
     // Stacks on the reference PROTOMER, in that order deliberately. Canonicalising the tautomer of a
     // charged species is territory MolStandardize was not built for and the answer would depend on which
     // ion was drawn; stripping the charges first means the tautomer choice is made on one neutral form.
+    //
+    // EVERY tautomer, and that took two attempts. The first restricted this to hydrogens moving between
+    // NITROGENS, because canonicalising keto/enol deleted acetylacetone's only answer: RDKit's canonical
+    // form is the diketone, whose acidic proton is on CARBON, and the site table covered O, N and S. Once
+    // activated carbon acids were added — see `isActivatedCarbonAcid` — the diketone has an answer of its
+    // own, and the restriction became unnecessary.
+    //
+    // Removing it is a correctness gain rather than a convenience. The method now answers about the
+    // DOMINANT tautomer instead of whichever was drawn: acetylacetone reads 9.13 either way against a
+    // measured 8.9, dimedone 5.18 against 5.23, 2-hydroxypyridine and 2-pyridone both 6.36/11.51. And
+    // cyclohexanone reports NOTHING from either drawing, which is correct — its alpha C-H is near 26 and
+    // its enol is about a millionth of the population, so the O-H answer the enol drawing used to give
+    // described a species that is barely in the flask. Phenol, formally an enol, keeps its 9.94 because
+    // its aromatic form is the stable tautomer and canonicalisation leaves it alone.
     const start =
       resolveDerivedContext("reference-protomer", module, source, sourceJson, cache, descriptorDetails) ??
       source;
@@ -1487,11 +1456,6 @@ function resolveDerivedContext(
     if (!tautomerMol) return undefined;
     // Nothing moved: report no derivation rather than an identity step the ledger would have to explain.
     if (tautomerMol.get_smiles?.() === start.mol.get_smiles?.()) {
-      tautomerMol.delete();
-      return undefined;
-    }
-    // Something moved, but only an N-to-N hydrogen shift is one substance — see the helper.
-    if (!onlyNitrogensMovedHydrogen(start.mol, tautomerMol)) {
       tautomerMol.delete();
       return undefined;
     }
