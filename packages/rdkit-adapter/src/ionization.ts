@@ -467,7 +467,17 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
     // consensus earns its keep. The cause is that the two methods cannot be put on one footing: the
     // Hammett relationship's RMSE is 0.556 against an MAE of 0.259, so it is usually excellent and
     // occasionally terrible, and any variance-based weight either over-penalises its typical case or
-    // under-penalises its tail. Declined until Hammett has a per-prediction interval of its own.
+    // under-penalises its tail.
+    //
+    // PER-SERIES weighting was tried too, and is the most promising of the three because Hammett's own
+    // accuracy varies 4.5x across them — benzoic 0.119, phenol 0.272, anilinium 0.312, pyridinium
+    // 0.532, and it beats the model on all four. Scaffold-grouped out-of-fold it scores 0.2491 against
+    // 0.2494. Nothing.
+    //
+    // Three attempts, one explanation, recorded so there is not a fourth: the consensus is INSENSITIVE
+    // to its weight. Each series' own optimum is 0.245, 0.354, 0.313 and 0.430 against the global
+    // 0.338, and a weighted mean's error is quadratic and therefore flat near the optimum, so being
+    // 0.09 off on a class costs almost nothing. The weight is not where the remaining error lives.
     const weights = scored.map((entry) => 1 / (METHOD_MAE[entry.method] ?? 1));
     const total = weights.reduce((sum, weight) => sum + weight, 0);
     const combined = scored.reduce((sum, entry, i) => sum + entry.site.pKa! * weights[i]!, 0) / total;
