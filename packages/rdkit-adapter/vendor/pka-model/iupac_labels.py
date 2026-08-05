@@ -72,13 +72,22 @@ at once by weighted least squares, weighting each rung by its calibrated interva
     cvMAE                                      0.7281   0.7260
     MAE on the 12,096 rows both share          0.7281   0.7173
     MAE on labels below pH 2                   1.6669   1.5510
+    EXTERNAL, 398 rows never trained on        1.1286   1.0817
     macro_validate zwitterionic                 0.130     1.28
     macro_validate ALL                          0.266     0.63
     curated 16 molecules                        0.295    0.861
     SAMPL6 matched                              0.491    0.538
     SAMPL6 extra steps                             49       49
 
-Every per-site figure improves. It is a better model of everything an experiment can measure -- and the
+Every per-site figure improves, INCLUDING THE HELD-OUT ONE, and that fourth row is what makes this
+conclusive. Overfitting is the obvious explanation for a model that looks better in cross-validation and
+behaves worse, and it is ruled out here: on 398 rows from a different source, never trained on and never
+used for fold selection, this model is 4.2% BETTER. It genuinely generalises better per site.
+
+The contrast with the width experiment is exact and worth keeping side by side. HIDDEN = 160 scored
+cvMAE 0.7156 against 0.7281 and external 1.1691 against 1.1286 -- better on the folds, worse on unseen
+data, which is overfitting. This corpus is better on both and still destroys the macroscopic answer.
+Two different failure modes, distinguishable only because both measurements exist. It is a better model of everything an experiment can measure -- and the
 site-by-site comparison shows that is not a summary artifact:
 
     species                                  shipped   +IUPAC   measured

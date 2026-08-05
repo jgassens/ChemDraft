@@ -755,12 +755,16 @@ this stretch produced.
     cvMAE                                      0.7281   0.7260
     MAE on the 12,096 rows both share          0.7281   0.7173
     MAE on labels below pH 2                   1.6669   1.5510
+    EXTERNAL, 398 rows never trained on        1.1286   1.0817
     macro_validate zwitterionic                 0.130     1.28
     curated 16 molecules                        0.295    0.861
     SAMPL6 matched                              0.491    0.538
     SAMPL6 extra steps                             49       49
 
-Every per-site figure improves. It is genuinely the better model of everything an experiment can measure,
+Every per-site figure improves, **including the held-out one**, and that is what makes this conclusive
+rather than suggestive. Overfitting is the obvious explanation for a model that looks better in
+cross-validation and behaves worse, and it is ruled out: on 398 rows from a different source, never
+trained on and never used for fold selection, this model is 4.2% better. It is genuinely the better model of everything an experiment can measure,
 and that is not a summary artifact — species by species:
 
     species                                  shipped   +IUPAC   measured
@@ -819,6 +823,32 @@ diagnostic detects self-CONTRADICTION, and a model can be perfectly consistent a
 reality: it believes both ring nitrogens are basic, and believes the second is 2.9 once the first is
 protonated, and those beliefs agree with each other. It caught the weak-base corpus because that failure
 happened to make the model contradict itself. It is a corpus gate, not a general error detector.
+
+**The width experiment, and why the held-out set is the one that decides.** `capacity_sweep.py` found
+the network is width-limited — one held-out fold per configuration, `H160` at 0.7650 against `H96` at
+0.8190, while depth bought nothing and all three axes together were worse than width alone. Trained
+properly it cross-validated at 0.7156 against 0.7281, and the curated macroscopic set improved 17%.
+
+Then the QupKake evaluation data was fetched, and the picture reversed: **external 1.1691 against
+1.1286**, a 3.6% regression on the only figure not measured against the training corpus. Better on every
+scaffold-grouped fold, worse on data it has never seen — overfitting of exactly the kind scaffold
+grouping is supposed to prevent. With a 40% zwitterion regression and 12.2 MB against 4.5 MB, rejected.
+
+Two of the three figures that favoured it are measured on molecules related to the corpus. **Shipping on
+the cvMAE would have shipped a worse model under a better-looking number**, and nothing else in the
+directory would have caught it.
+
+Set beside the weak-base corpus the contrast is exact, and it is why both measurements have to exist:
+
+    candidate      cvMAE    external   macro zwitterions   verdict
+    shipped H96   0.7281      1.1286               0.130   —
+    H160 wider    0.7156      1.1691                0.22   overfits: better folds, worse unseen
+    +IUPAC        0.7260      1.0817                1.28   generalises better, macroscopically broken
+
+The pipeline was validated before either was trusted: against the shipped model `external_eval.py`
+reproduces `external-validation.json` byte for byte. Worth recording that the data is at `data/` in the
+QupKake repository root — this directory said `qupkake/data/`, which holds a cookiecutter README, and
+nobody had noticed because nobody had fetched it.
 
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is
