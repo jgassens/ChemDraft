@@ -702,6 +702,49 @@ QM is still the answer for absolute labels on unpopulated species, but it is sec
 1–2 log units without careful cycle work, and mixing QM rungs with experimental ones needs this weighted
 solve anyway. The fold was the cheap half and it is done.
 
+**The interval was covering 68% of the corpus and 50% of the confident half.** The reported spread was
+the ensemble's deviation times one constant, chosen so it covers 68% of errors across the whole corpus.
+It does. Conditionally it ran 50.1% at the confident end to 85.6% at the loose end — too tight exactly
+where a reader trusts it most, and a reader looks at one molecule rather than at a corpus.
+
+No multiplier fixes that, because the relationship is concave: doubling the disagreement does not double
+the error. There is a floor, since members trained on one corpus share its blind spots, and a ceiling,
+since a wildly disagreeing ensemble is saying "no idea" rather than being wrong by that much.
+`interval_calibrate.py` replaces it with the empirical quantile of |error| within equal-count bins of the
+deviation — Mondrian conformal prediction with the deviation as the taxonomy. Every bin lands at 68.0%,
+worst deviation 0.000. It improved the numbers as well as the honesty, which was not why it was done:
+curated 0.302 → 0.295, zwitterions 0.178 → 0.165, SAMPL6 matched 0.494 → 0.491, and the fold's own
+weighting fit went from 1.31x to 1.08x worst-decile miscalibration, because a calibrated interval
+predicts error better than a raw deviation.
+
+It also exposed that `gnn-parity-fixture.json` had NO GENERATOR — produced by hand once, so every later
+change to inference left it pinning arithmetic nothing regenerated. `gnn_parity.py` is that generator.
+
+**Over-detection: one rule shipped, one idea killed.** The residual SAMPL6 defect is 49 steps nothing
+measured, 22 of them inside the window an aqueous titration can reach. Attributed to the site that
+produced them, 65% are two buckets and both are basic nitrogen: ring nitrogens at 2.1–4.8, and
+amide/aniline nitrogens at 2.8–7.2.
+
+The obvious lever — tighten the confidence filter until they fall out — cannot work, and that is now
+measured rather than assumed. The blamed sites are indistinguishable from every other scored site by
+spread: median 1.203 against 1.203. Every threshold removes real sites at the same rate as spurious
+ones, and at 1.0 it is fractionally worse than random. **The model is confidently wrong about these
+sites**, which is a different failure from being unsure, and the spread speaks only to the other one.
+
+What did work was chemistry, gated on a count as every rule here is. An anilide nitrogen — one carbonyl,
+one carbocyclic aryl, nothing else — holds **0 basic labels of 12,096**, against 8 real ones for the
+amidine and heteroaryl neighbours the rule still excludes. `isUnactivatedAmide` had rejected any
+non-carbonyl double bond as "activating", which is true for N-H acidity and backwards for basicity: an
+aryl group withdraws, so an anilide is less basic than the acetamide already covered. SAMPL6 matched
+0.515 → 0.494, extra steps 51 → 49. Acetanilide moved in the tests from "still offers one" to "offers no
+basic value" — it had been the only molecule in that group of four with no measurement quoted beside it.
+
+**Declined, with numbers.** Weighting the consensus per prediction rather than per method is the obvious
+upgrade once a calibrated interval exists. On the 342 sites where both methods fire it gains 1% overall
+and costs 9% on the tercile where the model is least sure, which is where a consensus earns its keep.
+The two cannot be put on one footing: the Hammett relationship's RMSE is 0.556 against an MAE of 0.259,
+so it is usually excellent and occasionally terrible, and both RMSE variants are worse than what ships.
+
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is
 the field's convention, and it also cannot describe what a user gets, because a user supplies a
