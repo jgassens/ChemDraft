@@ -66,6 +66,25 @@ BOND_FEATURES = 5                     # aromatic, then order 1/2/3 for non-aroma
 # the spread is the disagreement, and the existing calibration pipeline reads it unchanged. Smaller
 # members keep the whole ensemble near the artifact size of the single forest it replaces.
 ENSEMBLE = 4
+# 96, and that is a measured choice rather than a default. One scaffold-grouped held-out fold, one
+# member per configuration, so the ranking is comparable and the absolute numbers are not the published
+# cvMAE (no ensemble averaging, one fold):
+#
+#     configuration                  MAE    RMSE     params  minutes
+#     predict the mean            2.4262
+#     baseline  H96  L3  E60      0.8190  1.3476    106,561      3.0
+#     wider     H160 L3  E60      0.7650  1.2673    290,241      6.0
+#     deeper    H96  L5  E60      0.8099  1.3298    163,201      3.6
+#     longer    H96  L3  E150     0.7759  1.2852    106,561      6.2
+#     big       H160 L5  E150     0.7777  1.2922    446,081      9.1
+#
+# WIDTH is the axis that pays: 6.6% for 2.7x the parameters. Depth buys almost nothing, a longer
+# schedule buys half of what width does, and combining all three is WORSE than width alone -- 0.7777
+# against 0.7650 -- so the big configuration is overfitting rather than short of capacity.
+#
+# Reproduce with `capacity_sweep.py`. The reason this still says 96 is not the sweep: shipping 160 means
+# regenerating every dependent artifact, and `external-validation.json` needs the QupKake SDFs, which
+# are not vendored. Raise it in a checkout that has them.
 HIDDEN = 96
 LAYERS = 3
 EPOCHS = 60
