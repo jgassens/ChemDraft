@@ -1,6 +1,6 @@
 {
  "measurement": "held-out external data, never used in training or fold selection",
- "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), qupkake/data/ \u2014 Novartis and literature sets, originally from Baltruschat & Czodrowski",
+ "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), data/ at the repository root \u2014 Novartis and literature sets, originally from Baltruschat & Czodrowski",
  "perSet": {
   "novartis_qupkake_pka.sdf": {
    "n": 276,

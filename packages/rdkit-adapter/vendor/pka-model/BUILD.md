@@ -22,12 +22,12 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 | `consensus-calibration.json` | 645 | `4ae25e83d82b639d4c27371154fd6571aad135a485fc208f2ee4e1032f1cd62d` |
 | `coupling.json` | 1,404 | `1bc2015011408924f2fee6cc17785032766bf64be9d8fa3ac4c22bd1a607bcac` |
 | `edge-variance.json` | 1,933 | `9ea690378841c9cb7f6103c164a3c96f4b46809df7a722d2fe549aaa2afb84e8` |
-| `external-validation.json` | 443 | `011ae99537605834a3acc8f074308a16e033fe23dbc1a01157ab4a695f2df418` |
+| `external-validation.json` | 458 | `37981664695db5486231d884cb2ee8394640ac0c60a6e93fd20852040decaeb8` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
 | `interval-calibration.json` | 2,164 | `b6134a801bd1aed1e18d355f9b8c36dab4a91acfd9b0239d6da01fe5076c481a` |
 | `site-pka-gnn.json` | 4,468,866 | `79061c4d3b4e11753c865088e5bb38d0c7e689e6e394af4fdf99c0dcfcfca688` |
 
-**Manifest:** `13757541703304372bf2aaf0ccba19e14bf62bbc98e9bd92878e6aa5cfa18ac5`
+**Manifest:** `e52766f5cf959549f8ad849e31a97fbc6f827af8af12242ad389db87237ec233`
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.
@@ -58,7 +58,7 @@ Not vendored — the corpus is rebuilt from its two upstream sources by `run_all
 with their licences and obligations, in the method contract's `datasets` and in
 `docs/architecture/dependency-inventory.md`.
 
-## A measured improvement that is not applied here
+## A measured improvement, measured again, and rejected
 
 `capacity_sweep.py` measured what the network's size is worth, one scaffold-grouped held-out fold per
 configuration:
@@ -72,18 +72,16 @@ configuration:
 | longer `H96 L3 E150` | 0.7759 | 1.2852 | 106,561 |
 | big `H160 L5 E150` | 0.7777 | 1.2922 | 446,081 |
 
-Width is the axis that pays. Depth buys almost nothing, a longer schedule buys half of what width does,
-and all three together are *worse* than width alone — so the big configuration is overfitting rather
-than short of capacity, which is what says this is an optimum and not "bigger is better".
+Width is the axis that pays; depth buys almost nothing, and all three together are *worse* than width
+alone, so the big configuration is overfitting rather than short of capacity.
 
-**The single-fold figure overstates it, and the full run was done rather than assumed.** `HIDDEN = 160`
-was cross-validated properly, five scaffold-grouped folds and four members, and it is a smaller and more
-mixed result than 0.8190 → 0.7650 suggests — most of what extra width buys, a four-member ensemble was
-already buying:
+**Then `HIDDEN = 160` was cross-validated properly, and then measured on data it had never seen, and the
+second measurement reversed the first.**
 
 | measure | shipped `H96` | `H160` |
 |---|---|---|
-| cvMAE | 0.7281 | **0.7156** |
+| cvMAE (5 scaffold folds, 4 members) | 0.7281 | **0.7156** |
+| **external, 398 held-out rows** | **1.1286** | 1.1691 |
 | curated 16 molecules | 0.295 | **0.246** |
 | curated zwitterions | **0.165** | 0.232 |
 | `macro_validate` zwitterionic | **0.130** | 0.22 |
@@ -93,32 +91,46 @@ already buying:
 | SAMPL6 extra steps | 49 | 49 |
 | artifact | **4.5 MB** | 12.2 MB |
 
-So: 1.7% on cross-validation rather than 6.6%, a genuine 17% on the curated macroscopic set, a 40%
-REGRESSION on zwitterions, no effect at all on over-detection, and 2.7x the bytes to parse at startup.
-Worth having, not obviously worth taking — and the choice belongs to whoever is weighing the download
-size, which is why the numbers are here rather than a recommendation.
+Better on every scaffold-grouped fold and **worse on data it has never seen** — 1.1286 to 1.1691, a 3.6%
+regression on the only figure in this directory not measured against the training corpus. That is the
+signature of overfitting which scaffold grouping is supposed to prevent and evidently does not fully.
+Add a 40% regression on zwitterions and 2.7x the bytes to parse at startup, and it is a clear no.
 
-**It is also not applied because one artifact cannot be regenerated here.** `external-validation.json` is the
-only figure in this directory not measured on the training corpus, and it needs the Novartis and
-literature SDFs that ship with QupKake (`Shualdon/QupKake`, BSD-3-Clause, `qupkake/data/`). Those are not
-vendored and are not on the machine this was measured on. Shipping a wider model without regenerating it
-would leave the contract quoting a held-out figure belonging to a different model — precisely the silent
-wrong-provenance failure the manifest above exists to prevent.
+**Rejected, and the rejection is the point.** Two of the three figures that favoured it —
+cross-validation and the curated macroscopic set — are measured on molecules related to the training
+corpus. The external set is not, and it is the one that decides. Nothing else here would have caught it:
+shipping on the cvMAE would have shipped a worse model under a better-looking number.
 
-To apply it, in a checkout that has the QupKake data:
+`HIDDEN` stays 96. To re-examine the question, edit one line, run `run_all.sh`, and read
+`external-validation.json` before anything else.
+
+## Regenerating the external figure
+
+`external-validation.json` is the only artifact here whose input is not vendored. The Novartis and
+literature sets ship with QupKake (`Shualdon/QupKake`, BSD-3-Clause) in `data/` at the repository
+**root** — *not* `qupkake/data/`, which holds only a cookiecutter template README, and which this
+directory pointed at until it was actually fetched. Three files, about 10 MB:
 
 ```bash
-# 1. one line
-sed -i '' 's/^HIDDEN = 96$/HIDDEN = 160/' pka_gnn.py
+mkdir -p qupkake-data && cd qupkake-data
+for f in novartis_qupkake_pka.sdf literature_qupkake_pka.sdf exp_training_data.sdf; do
+  curl -sSL -o "$f" "https://raw.githubusercontent.com/Shualdon/QupKake/main/data/$f"
+done
+```
 
-# 2. every dependent artifact, in order
-./run_all.sh <dwar-labels.json> <qupkake>/qupkake/data [pkachu.csv] [D2A-pKa.csv]
+Then `python3 external_eval.py <that-dir> .`. Against the shipped model it reproduces 1.1286 over 398
+rows byte for byte, which is the check that the environment and the data are the ones the figure was
+measured with.
 
-# 3. the manifest moves; the test names which file and prints the new digest
-pnpm vitest run packages/rdkit-adapter/src/methods.test.ts
+## Applying a retrained model
+
+```bash
+./run_all.sh <dwar-labels.json> <qupkake-data-dir> [pkachu.csv] [D2A-pKa.csv]
+pnpm vitest run packages/rdkit-adapter/src/methods.test.ts   # names the moved file, prints the digest
 ```
 
 Then update `PINNED_PKA_MODEL_SHA256`, the per-file rows above, and the figures the contract quotes.
-The gate to check before believing the result is `macroscopicFold.real.test.ts` — in particular "the
-cycle defect as a corpus gate", which is what caught the last candidate that improved every per-site
-number while destroying the macroscopic ones.
+Two gates to read before believing any candidate: `external-validation.json`, which overruled
+cross-validation on the width question above, and `macroscopicFold.real.test.ts` — in particular "the
+cycle defect as a corpus gate", which caught a corpus that improved every per-site number while
+destroying the macroscopic ones.

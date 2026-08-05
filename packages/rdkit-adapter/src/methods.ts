@@ -52,7 +52,7 @@ export const PINNED_RDKIT_VERSION = "2026.03.3";
  * other, so no two can drift without failing.
  */
 export const PINNED_PKA_MODEL_SHA256 =
-  "13757541703304372bf2aaf0ccba19e14bf62bbc98e9bd92878e6aa5cfa18ac5";
+  "e52766f5cf959549f8ad849e31a97fbc6f827af8af12242ad389db87237ec233";
 
 export const PINNED_RDKIT_WASM_SHA256 = "48b725a2e80af7f9792cd56abf65f16cea402f1cfe4f3f6c32a71669f1d848aa";
 

@@ -82,12 +82,16 @@ ENSEMBLE = 4
 # schedule buys half of what width does, and combining all three is WORSE than width alone -- 0.7777
 # against 0.7650 -- so the big configuration is overfitting rather than short of capacity.
 #
-# Reproduce with `capacity_sweep.py`. The single-fold figure OVERSTATES it: cross-validated properly at
-# HIDDEN = 160, five folds and four members, cvMAE is 0.7156 against 0.7281 -- 1.7%, not 6.6%, because
-# most of what extra width buys a four-member ensemble was already buying. End to end it is mixed: the
-# curated macroscopic set improves 17% (0.295 -> 0.246) and SAMPL6's matched figure 2% (0.491 -> 0.480),
-# zwitterions REGRESS 40% (0.165 -> 0.232), over-detection is untouched at 49 extra steps, and the
-# artifact goes 4.5 MB to 12.2 MB. See BUILD.md for the full table and how to apply it.
+# Reproduce with `capacity_sweep.py`. HIDDEN = 160 was then cross-validated properly and REJECTED, and
+# the reason is worth more than the 6.6% was. It is better on every scaffold-grouped fold -- cvMAE
+# 0.7156 against 0.7281 -- and WORSE on data it has never seen: external 1.1691 against 1.1286, over
+# 398 held-out rows. Better on the folds, worse on the held-out set, which is the signature of
+# overfitting that scaffold grouping is supposed to prevent and evidently does not fully.
+#
+# Two of the three figures that favoured it, cross-validation and the curated macroscopic set, are
+# measured on molecules related to the training corpus. The external set is not, and it decides.
+# Shipping on the cvMAE would have shipped a worse model under a better-looking number. Add a 40%
+# zwitterion regression and 12.2 MB against 4.5 MB and it is a clear no. Full table in BUILD.md.
 HIDDEN = 96
 LAYERS = 3
 EPOCHS = 60

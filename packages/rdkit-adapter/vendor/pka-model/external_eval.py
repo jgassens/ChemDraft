@@ -5,11 +5,24 @@ only check that the fold grouping is honest -- it is what exposed the canonical-
 been reporting MAE 1.18 for a model that scores 1.62 on real scaffold folds and 1.24 here.
 
 The DATA IS NOT VENDORED, only this script. The Novartis and literature sets ship with QupKake
-(Shualdon/QupKake, BSD-3-Clause, `qupkake/data/`), which took them from Baltruschat & Czodrowski's
+(Shualdon/QupKake, BSD-3-Clause, `data/` at the repository ROOT -- not `qupkake/data/`, which holds
+only the cookiecutter template README), which took them from Baltruschat & Czodrowski's
 Machine-learning-meets-pKa. The repository ships model weights rather than anyone's dataset. Point this
 at a checkout:
 
-    python external_eval.py <qupkake>/qupkake/data <out-dir>
+    python external_eval.py <qupkake>/data <out-dir>
+
+Or without a checkout, since only three files are wanted:
+
+    for f in novartis_qupkake_pka.sdf literature_qupkake_pka.sdf exp_training_data.sdf; do
+      curl -sSL -o "$f" "https://raw.githubusercontent.com/Shualdon/QupKake/main/data/$f"
+    done
+
+**This figure is what settles a retrain, and it has now overruled cross-validation once.** A wider
+network (HIDDEN 160 against 96) scored cvMAE 0.7156 against 0.7281 -- better on every scaffold-grouped
+fold -- and 1.1691 here against 1.1286. Better on the folds, worse on data it has never seen, which is
+what scaffold grouping is supposed to prevent and evidently does not fully. Nothing but this set would
+have caught it.
 
 An earlier version of this script used the Uni-pKa Novartis and SAMPL TSVs and could only use rows with
 one microstate per side -- 38 of them, with a standard error near 0.2, enough to say the error's LEVEL
@@ -83,7 +96,7 @@ if __name__ == "__main__":
     per_set, errors = evaluate("site-pka-gnn.json", sys.argv[1])
     summary = {
         "measurement": "held-out external data, never used in training or fold selection",
-        "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), qupkake/data/ — Novartis and literature "
+        "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), data/ at the repository root — Novartis and literature "
                   "sets, originally from Baltruschat & Czodrowski",
         "perSet": per_set,
         "samples": len(errors),
