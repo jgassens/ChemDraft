@@ -57,3 +57,47 @@ run fingerprint at all: two builds could produce different numbers and report id
 Not vendored — the corpus is rebuilt from its two upstream sources by `run_all.sh`. Both are named,
 with their licences and obligations, in the method contract's `datasets` and in
 `docs/architecture/dependency-inventory.md`.
+
+## A measured improvement that is not applied here
+
+`capacity_sweep.py` measured what the network's size is worth, one scaffold-grouped held-out fold per
+configuration:
+
+| configuration | MAE | RMSE | params |
+|---|---|---|---|
+| predict the mean | 2.4262 | | |
+| baseline `H96 L3 E60` | 0.8190 | 1.3476 | 106,561 |
+| **wider `H160 L3 E60`** | **0.7650** | **1.2673** | 290,241 |
+| deeper `H96 L5 E60` | 0.8099 | 1.3298 | 163,201 |
+| longer `H96 L3 E150` | 0.7759 | 1.2852 | 106,561 |
+| big `H160 L5 E150` | 0.7777 | 1.2922 | 446,081 |
+
+Width is worth 6.6% for 2.7x the parameters. Depth buys almost nothing, a longer schedule buys half of
+what width does, and all three together are *worse* than width alone — so the big configuration is
+overfitting rather than short of capacity, which is what says this is an optimum and not "bigger is
+better".
+
+**It is not applied because one artifact cannot be regenerated here.** `external-validation.json` is the
+only figure in this directory not measured on the training corpus, and it needs the Novartis and
+literature SDFs that ship with QupKake (`Shualdon/QupKake`, BSD-3-Clause, `qupkake/data/`). Those are not
+vendored and are not on the machine this was measured on. Shipping a wider model without regenerating it
+would leave the contract quoting a held-out figure belonging to a different model — precisely the silent
+wrong-provenance failure the manifest above exists to prevent.
+
+To apply it, in a checkout that has the QupKake data:
+
+```bash
+# 1. one line
+sed -i '' 's/^HIDDEN = 96$/HIDDEN = 160/' pka_gnn.py
+
+# 2. every dependent artifact, in order
+./run_all.sh <dwar-labels.json> <qupkake>/qupkake/data [pkachu.csv] [D2A-pKa.csv]
+
+# 3. the manifest moves; the test names which file and prints the new digest
+pnpm vitest run packages/rdkit-adapter/src/methods.test.ts
+```
+
+Then update `PINNED_PKA_MODEL_SHA256`, the per-file rows above, and the figures the contract quotes.
+The gate to check before believing the result is `macroscopicFold.real.test.ts` — in particular "the
+cycle defect as a corpus gate", which is what caught the last candidate that improved every per-site
+number while destroying the macroscopic ones.
