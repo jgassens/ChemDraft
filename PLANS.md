@@ -895,6 +895,44 @@ Urea is better than this plan predicted. Phase 2 expected it to become "coherent
 macroscopic values"; the amide-basicity rule removed the nitrogen protonations, so it now reports two,
 both N-H acidities and both correctly outside water.
 
+## Closing the gaps: five attempts, two kept
+
+The gaps named after the competitive review were attacked in turn, each with a decision rule set before
+the measurement and each kept or dropped on the result.
+
+**Site detection — mostly dissolved rather than fixed.** The claim rested on SAMPL6 alone, which cannot
+support it: 1.29 measured values per molecule against 3.33 scored sites. Measured where tabulation is
+exhaustive, the method finds the right number on 19 of 20 with ZERO extra steps. Kept: the corrected
+claim and a new benchmark test. The one failure, oxalic acid at 0.8 against 1.25, traces to the corpus
+holding no 3-bond second-deprotonation labels at all.
+
+**Tautomers — a real defect, bounded rather than closed.** Azole 1,3-H shifts are one substance and give
+two answers: 4- vs 5-methylimidazole differ by 0.21 and 0.39, methylpyrazole by 1.05. The vendored
+MinimalLib has no tautomer enumerator — checked against the loaded module, not assumed — so closing it
+means rebuilding the WASM, and no benchmark here could judge a fix since SAMPL6 supplies fixed SMILES.
+Kept: a guard asserting the step count IS invariant and capping the value disagreement just above its
+measured worst case.
+
+**Per-series consensus weighting — rejected.** The most promising weighting variant, since Hammett's own
+accuracy varies 4.5x across its series and it beats the model on all four. Scaffold-grouped out-of-fold:
+0.2491 against 0.2494. Third variant tried; the explanation is that a weighted mean's error is quadratic
+near its optimum, so the weight is simply not where the error lives.
+
+**Like-charge coupling — diagnosed, not fitted.** A carboxyl deprotonating 4 bonds from an existing anion
+scores MAE 0.874 with bias −0.663 against 0.421 and +0.022 for the unperturbed case, which is exactly
+malonic and phthalic acid's second values. But 22 rows, non-monotone in distance, and no 3-bond labels at
+all. Fitting a 1/d law to that would be a fudge.
+
+**Doubling the ensemble — rejected.** Eight members score external MAE 1.1282 against 1.1286, a
+difference 200x smaller than that figure's own standard error of 0.081, for an artifact of 8.9 MB against
+4.5 MB. Four members are already at the variance-reduction plateau — the same conclusion the width sweep
+reached from the other side.
+
+Three of the five say the same thing: **the model and the fold are not the bottleneck; the corpus is.**
+Capacity does not help, more members do not help, reweighting does not help, and the two defects that
+remain — oxalic acid's first value and the second protonation of anything — are both regions where the
+corpus holds almost no labels.
+
 ## Where this plan stands
 
 All seven phases are complete and every gate in the verification table has a test. Of the four items the

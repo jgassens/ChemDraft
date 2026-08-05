@@ -65,6 +65,11 @@ BOND_FEATURES = 5                     # aromatic, then order 1/2/3 for non-aroma
 # Independent seeds reproduce the same semantics exactly: several models, the mean is the estimate and
 # the spread is the disagreement, and the existing calibration pipeline reads it unchanged. Smaller
 # members keep the whole ensemble near the artifact size of the single forest it replaces.
+# 4, and doubling it was measured and rejected. Eight members trained on the same corpus score external
+# MAE 1.1282 against the four-member 1.1286 -- a difference of 0.0004 where the standard error of that
+# figure is 0.081, so 200x smaller than the noise -- while the artifact goes 4.5 MB to 8.9 MB. Averaging
+# more members reduces variance and four is already at that plateau, which is the same conclusion the
+# width sweep reached from the other direction: the model is not the bottleneck, the corpus is.
 ENSEMBLE = 4
 # 96, and that is a measured choice rather than a default. One scaffold-grouped held-out fold, one
 # member per configuration, so the ranking is comparable and the absolute numbers are not the published
