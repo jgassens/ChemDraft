@@ -89,6 +89,12 @@ def main(labels_path, out_dir):
         "forestWeight": round(float(weight), 4),
         "forestWeightRule": "inverse of each method's own measured MAE",
         "hammettMae": round(hammett_mae, 4),
+        # The 68th percentile of |error|, which is what "interval" means everywhere else here since
+        # `interval_calibrate.py` -- the model's spread is a calibrated 68% quantile, and a Hammett
+        # site reporting its MAE instead was quietly claiming a different thing on the same axis. Its
+        # MAE covers 74.6%, so the interval was too wide by six points rather than wrong, but two
+        # numbers on one axis have to mean one thing.
+        "hammettInterval68": round(float(np.percentile(np.abs(ham - observed), 68)), 4),
         "hammettMaePhenol": round(float(np.abs(ham - observed)[phenol].mean()), 4),
         "hammettMaeBenzoic": round(float(np.abs(ham - observed)[~phenol].mean()), 4),
         "forestMaeHere": round(float(np.abs(model_here - observed).mean()), 4),

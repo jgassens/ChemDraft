@@ -202,7 +202,8 @@ export const EXTERNAL_VALIDATION = externalJson as unknown as {
 /** What combining the two methods was measured to be worth. Read, not asserted. */
 export const CONSENSUS_CALIBRATION = consensusJson as unknown as {
   samples: number; phenolSamples: number; benzoicSamples: number;
-  forestWeight: number; hammettMae: number; hammettMaePhenol: number; hammettMaeBenzoic: number;
+  forestWeight: number; hammettMae: number; hammettInterval68: number;
+  hammettMaePhenol: number; hammettMaeBenzoic: number;
   forestMaeHere: number; consensusMae: number; consensusMaePhenol: number;
   /** MAE of the plain average of the two, kept because it is why the code does not average. */
   meanMae: number;
@@ -221,6 +222,17 @@ export const IONIZATION_SITES_METHOD_ID = "dimorphite.ionizable-sites";
  * applies to -- see `hammett.ts` for why the benzoic half of that number is partly circular.
  */
 export const HAMMETT_IN_DOMAIN_MAE = CONSENSUS_CALIBRATION.hammettMae;
+
+/**
+ * The Hammett relationship's own 68% interval, on the sites where it applies.
+ *
+ * Its MAE was reported here as the spread, which is a different quantity on the same axis: since the
+ * model's spread became a calibrated 68% quantile, the MAE's 74.6% coverage was quietly claiming more
+ * confidence than the number next to it. Six points too wide rather than wrong, and now the same thing
+ * either way. The MAE above is kept, because the consensus WEIGHT is argued from mean error and should
+ * not silently change with this.
+ */
+export const HAMMETT_IN_DOMAIN_INTERVAL = CONSENSUS_CALIBRATION.hammettInterval68;
 
 /**
  * Where the model's interval stops meaning "trust this" and starts meaning "check this".
@@ -730,7 +742,7 @@ export function scoreSitesWithHammett(scan: IonizationScan, graph: PkaMolecularG
       pKa: outcome.pKa,
       // The method's measured in-domain error, not a per-site figure: an LFER has one residual for the
       // whole series it was fitted to and does not claim to know which members it fits best.
-      spread: HAMMETT_IN_DOMAIN_MAE,
+      spread: HAMMETT_IN_DOMAIN_INTERVAL,
       basis: "linear-free-energy-relationship",
       derivation:
         `${outcome.series} series, rho applied to ` +
