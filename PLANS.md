@@ -856,7 +856,42 @@ measured and is wrong:
 
 These are ordinary aqueous acidities, the commonest N-H the corpus holds, predicted with essentially no
 bias. Suppressing anilide N-H alone would delete 184 real measurements. The "amide N-H near 15" among
-the out-of-window extras is the tail of the plain-amide row, not a class the method mishandles. The old coupling term excluded like-charge pairs on the
+the out-of-window extras is the tail of the plain-amide row, not a class the method mishandles.
+
+**Probed in the running app, which the plan asked for and nothing had done.** Every figure above comes
+from vitest, which exercises the real RDKit through `analyzeStructure` but runs in node. Two things only
+the browser can answer: whether `interval-calibration.json` and `edge-variance.json` — new imports into
+code that runs in a WORKER — actually bundle, and whether the four headline cases behave for a user.
+Through the dev server, the real WASM and the real module graph, no console errors:
+
+    case                                      at the start of this work        now
+    glycine zwitterion [NH3+]CC(=O)[O-]       returned NOTHING                 [2.31, 9.73] zw=true
+    glycine as drawn   NCC(=O)O               a different answer               [2.31, 9.73] identical
+    acetate            CC(=O)[O-]             returned NOTHING                 4.30
+    urea                                      tetraprotic 3.70/5.49/13.45/     [14.74, 17.46] zw=false
+                                              14.27, falsely zwitterionic
+    sodium acetate     CC(=O)[O-].[Na+]       silently answered 4.62           declines, "unsupported"
+    aniline                                   drew 4.61, discarded 11.95       [4.59, 16.42], both kept
+    quinazoline                               two macroscopic steps            [3.35], one step
+
+Urea is better than this plan predicted. Phase 2 expected it to become "coherent but still report four
+macroscopic values"; the amide-basicity rule removed the nitrogen protonations, so it now reports two,
+both N-H acidities and both correctly outside water.
+
+## Where this plan stands
+
+All seven phases are complete and every gate in the verification table has a test. Of the four items the
+plan put out of scope, three are done: pKaCHU is in the shipped corpus (4,419 of 12,096 labels), the
+graph-model comparison happened when the network replaced the forest, and conformal calibration is
+`interval_calibrate.py`. **Species-distribution outputs remain unbuilt** — the fold computes every
+microstate's free energy, so the fraction of each species at a given pH is arithmetic away, and it is
+the one piece of Codex's original scope never attempted.
+
+The other open item is a decision rather than work: Phase 7 says to lift the EXPERIMENTAL flag "on
+evidence". The evidence now exists and it argues for keeping the flag. Valuation is competitive —
+matched MAE 0.50 with 90% inside one log unit — but the method still reports 37 steps nothing measured,
+19 of them where an assay could have seen them, and gets the step count right on 12 of 24 molecules. A
+reader who trusts the values should still not trust the count, and the flag is what says so. The old coupling term excluded like-charge pairs on the
 grounds that "the model already handles like charges", which was measured on DIAMINES, sp3 and far
 apart, and over-generalised to ring nitrogens sharing an aromatic ring.
 
