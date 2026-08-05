@@ -61,6 +61,27 @@ import edgeVarianceJson from "../vendor/pka-model/edge-variance.json";
  * the term to like pairs as well pushed the eight independent molecules from 0.28 to 0.95 while
  * helping nothing.
  *
+ * **The like-charge case is not uniformly fine, though, and the exception was measured rather than left
+ * as an assumption.** A carboxyl deprotonating while the molecule is ALREADY anionic, split by how far
+ * away that charge sits:
+ *
+ *     nothing charged yet        n=2074   MAE 0.421   bias +0.022
+ *     anion 4 bonds away         n=  22   MAE 0.874   bias -0.663
+ *     anion 5 bonds away         n=  44   MAE 0.427   bias +0.204
+ *     anion 6 bonds away         n=  49   MAE 0.559   bias -0.015
+ *     anion further than 6       n=  63   MAE 0.425   bias -0.287
+ *
+ * At four bonds the error doubles and the model under-predicts by two thirds of a log unit, which is
+ * exactly malonic acid's second value (-0.99) and phthalic acid's (-1.11). So the repulsion IS missed
+ * where the two groups are close.
+ *
+ * No term is fitted for it, for the same reason none is fitted for the second ring protonation: 22 rows,
+ * and the bias is NOT monotone in distance — five bonds runs the other way at +0.204 — so a 1/d law has
+ * nothing to stand on. And the shortest case is worse than thin: there is no 3-bond bucket at all,
+ * because oxalate's second deprotonation is 3 bonds and the corpus holds ZERO such labels. That is why
+ * oxalic acid comes out at 0.8 against a measured 1.25, and it is the same unlabelled-microstate story
+ * this method keeps meeting rather than a defect in the fold.
+ *
  * **W is fitted against MACROSCOPIC values**, an aggregate the per-site labels do not contain, so this
  * is not a second model fitted to the same data. Both halves of a Murcko-scaffold split of the 186
  * fitting molecules independently choose 7, with a flat optimum from 6 to 8.
