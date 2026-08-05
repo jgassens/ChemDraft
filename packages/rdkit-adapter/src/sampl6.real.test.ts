@@ -191,7 +191,10 @@ describe("SAMPL6, end to end", () => {
       "  SAMPL6 — supplied a structure and nothing else",
       `    molecules                 ${results.length}`,
       `    answered                  ${answered.length}`,
-      `    right number of values    ${rightCount.length}`,
+      // The RAW count, which is the harsh reading and the one a user meets: every predicted value,
+      // including the ones outside any aqueous assay. It is 2 of 24 and the windowed figure further
+      // down is 12 — quoting only the second overstates what this method does.
+      `    right number of values    ${rightCount.length}   (raw; see the windowed figure below)`,
       `    values paired             ${errors.length}`,
       `    MAE                       ${mean(errors).toFixed(3)}`,
       `    within 1 log unit         ${errors.filter((e) => e <= 1).length} (${(

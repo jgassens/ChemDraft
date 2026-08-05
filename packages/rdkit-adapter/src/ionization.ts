@@ -124,9 +124,10 @@
  * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
- * pipeline scores **MAE 0.50** over 31 macroscopic values when each measured value is matched to its
- * closest prediction, with 90% inside one log unit and 100% inside two — and emits 37 extra steps
- * nothing measured.
+ * pipeline scores **MAE 0.50 and RMSE 0.60** over 31 macroscopic values when each measured value is
+ * matched to its closest prediction, with 90% inside one log unit, 100% inside two, and a largest single
+ * error of 1.35 — and emits 37 extra steps nothing measured. RMSE is quoted alongside because it is what
+ * the challenge itself reported, and because MAE alone flatters a method with a long tail.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
  * SM22's phenol reads 7.48 against a measured 7.43, and SM10's amide reads 8.94 against 9.02. It is
@@ -1036,8 +1037,12 @@ export function ionizationContract(): MethodContract {
         "nothing else, on the SAMPL6 blind challenge set — 24 drug-like molecules, 31 measured " +
         "macroscopic values, a BLIND challenge whose answers were withheld while predictions were " +
         "submitted, and checked to share no skeleton with any training row — this method matches every " +
-        "measured value to MAE 0.50 with 90% inside one log unit and 100% inside two, and gets the " +
-        "right NUMBER of titration steps for 12 of 24 molecules.",
+        "measured value to MAE 0.50, RMSE 0.60, with 90% inside one log unit, 100% inside two, a " +
+        "largest single error of 1.35 and a bias of -0.03. RMSE is quoted because that is what the " +
+        "SAMPL6 challenge itself reported and MAE alone flatters. On COUNTING the steps it does far " +
+        "worse, and the honest figure is the harsh one: exactly as many values as were measured on 2 " +
+        "of 24 molecules, or 12 of 24 once predictions outside an aqueous assay's 2-12 window are set " +
+        "aside. Both are stated because quoting only the second overstates the method.",
       "WHAT IT GETS WRONG IS HOW MANY SITES IT FINDS, not what they are worth. On that same set it " +
         "reports 37 steps nothing measured, of which 19 fall inside the window an aqueous titration " +
         "can reach — the rest are real chemistry no such experiment can see, an amide N-H near 15, an " +
