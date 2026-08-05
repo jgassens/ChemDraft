@@ -1023,13 +1023,22 @@ export function ionizationContract(): MethodContract {
         "measured value to MAE 0.51 with 94% inside one log unit and 100% inside two, and gets the " +
         "right NUMBER of titration steps for 10 of 24 molecules.",
       "WHAT IT GETS WRONG IS HOW MANY SITES IT FINDS, not what they are worth. On that same set it " +
-        "reports 51 steps nothing measured, of which only 20 fall inside the window an aqueous " +
-        "titration can reach — the rest are real chemistry no such experiment can see, an amide N-H " +
-        "near 15, an azole N-H near 14, a second ring protonation below zero. Those 20 are the " +
-        "residual: the scan offers a basicity to ring nitrogens and anilide nitrogens in fused " +
-        "heterocycles that do not meaningfully protonate, so a molecule with one real pKa can come " +
-        "back with three. The per-site figures below are ORACLE-SITE measurements — the site and its " +
-        "direction are handed in — and at 0.73 they describe valuation, not discovery.",
+        "reports 49 steps nothing measured, of which 22 fall inside the window an aqueous titration " +
+        "can reach — the rest are real chemistry no such experiment can see, an amide N-H near 15, an " +
+        "azole N-H near 14, a second ring protonation below zero. Those 22 are the residual, and the " +
+        "largest part of it is now a measured mechanism rather than a description. Six of the " +
+        "molecules carry TWO nitrogens in one aromatic ring — a quinazoline, a pyrimidine — and both " +
+        "are offered a basicity at similar values, where protonating the first leaves the ring " +
+        "cationic and the second inaccessible in water. The model's own out-of-fold error on such a " +
+        "SECOND protonation is MAE 2.01 with a bias of +1.27, against 0.73 corpus-wide, and it " +
+        "reaches +5.65: diprotonated pyrazine measures -5.55 and is predicted at 0.10. The cause is " +
+        "the one this method keeps meeting — a diprotonated pyrazine cannot be titrated in water " +
+        "either, so the corpus holds 21 such labels in 12,096 and the model had nothing to learn " +
+        "from. No correction is offered, because those 21 split across two ring geometries that " +
+        "behave oppositely (2 bonds apart, bias +0.39 over 17 rows; 3 bonds apart, +4.98 over 4) and " +
+        "one parameter cannot be fitted to that. The per-site figures below are ORACLE-SITE " +
+        "measurements — the site and its direction are handed in — and at 0.73 they describe " +
+        "valuation, not discovery.",
       "EACH VALUE IS THE ACIDITY OF THAT RUNG — the pKa of one proton leaving one atom, at the charge " +
         "state named by that row. A microscopic pKa for one transition, not a molecule-wide figure. " +
         "The values are computed on a CANONICAL PROTOMER rather than on the structure as drawn, so " +

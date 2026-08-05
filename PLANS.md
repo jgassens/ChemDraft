@@ -794,6 +794,32 @@ other.** Shipping these rows needs labels for the unpopulated microstates — QM
 reach them — and no amount of fold engineering substitutes for that. The licence question these rows
 also carry never had to be decided.
 
+**The over-detection residual, traced to a mechanism.** Attributing every in-window extra step to the
+site that produced it, the dominant bucket is ring nitrogens, and the molecules behind it share one
+motif: SM04, SM07, SM13, SM21, SM23 and SM24 each carry TWO nitrogens in one aromatic ring — a
+quinazoline, a pyrimidine — and both are offered a basicity at similar values. Protonating the first
+leaves the ring cationic and the second inaccessible in water, so one measured step comes back as two.
+
+Measured on the model's own out-of-fold predictions, a SECOND ring protonation scores MAE 2.01 with a
+bias of **+1.27** against 0.73 corpus-wide, reaching +5.65: diprotonated pyrazine measures −5.55 and is
+predicted at 0.10, with an ensemble deviation of 0.24. Confidently wrong, for the third time in this
+stretch.
+
+The cause is the same one this method keeps meeting. A diprotonated pyrazine cannot be titrated in water,
+so the corpus holds **21 such labels in 12,096** and the model had nothing to learn from. No correction
+is offered: those 21 split across two ring geometries that behave oppositely — 2 bonds apart, bias +0.39
+over 17 rows; 3 bonds apart, +4.98 over 4 — and one parameter cannot be fitted to that. The old coupling
+term excluded like-charge pairs on the grounds that "the model already handles like charges", which was
+measured on DIAMINES, sp3 and far apart, and over-generalised to ring nitrogens two bonds apart through
+an aromatic system.
+
+**And the cycle-defect gate does not catch this one, which bounds what it can claim.** Molecules with no
+extra steps average a defect of 1.69; those with extra steps average 1.24 — if anything inverted. The
+diagnostic detects self-CONTRADICTION, and a model can be perfectly consistent and still wrong about
+reality: it believes both ring nitrogens are basic, and believes the second is 2.9 once the first is
+protonated, and those beliefs agree with each other. It caught the weak-base corpus because that failure
+happened to make the model contradict itself. It is a corpus gate, not a general error detector.
+
 **End-to-end accuracy, measured at last.** Every figure this method published was an ORACLE-SITE one:
 the site and its direction supplied, so what was measured was how well a known site is valued. That is
 the field's convention, and it also cannot describe what a user gets, because a user supplies a
