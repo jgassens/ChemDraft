@@ -957,6 +957,50 @@ Capacity does not help, more members do not help, reweighting does not help, and
 remain — oxalic acid's first value and the second protonation of anything — are both regions where the
 corpus holds almost no labels.
 
+## Carbon acids, and the tautomer axis closing behind them
+
+Two of the gaps named in the competitive assessment, and the second fell out of the first.
+
+**Carbon acids were invisible, and it was a detection gap rather than a prediction one.** The site table
+is Dimorphite's and covers O, N and S, so a 1,3-diketone reported NOTHING while the same compound drawn
+as its enol reported 8.72 off the O-H. Nitroalkanes, malonates, cyanoacetates, β-ketoesters and Meldrum's
+acid were all invisible the same way. The model was already trained on them — 445 of 12,096 labels sit on
+a carbon — so the only question was which to offer, and activation count answers it:
+
+    admitted (≥1 nitro, or ≥2 stabilisers)   n=350   MAE 1.15   bias +0.01   97% inside pH 1–14
+    excluded                                 n= 95   MAE 2.63   bias −0.22   79% inside pH 1–14
+
+Against literature the admitted classes read **MAE 0.19 over eight values** — acetylacetone 9.13/8.9,
+dimedone 5.18/5.23, Meldrum's acid 5.11/4.97, nitroethane 8.74/8.5. Acetone, cyclohexanone, toluene and
+ethane correctly report nothing; the excluded set is where the real values reach 30.9 and the model says
+16.4.
+
+**One refinement was forced by measurement.** Counting a CARBOXYL's carbonyl toward the two gave malonic
+acid a third rung, doubled its error from 0.305 to 0.500, and made its thermodynamic cycle miss by 3.07.
+Diethyl malonate's CH is 13.3 because its esters cannot ionise; malonic acid's is far less acidic once
+both carboxyls have gone. Excluding it moves the admitted set by ONE label of 350 — so every carbon acid
+the corpus holds is flanked by esters, ketones or nitro groups, and the carboxyl case is unlabelled. The
+cycle defect named it, as it named the second ring protonation and glycine's neutral form.
+
+**And that removed the tautomer restriction.** Canonicalisation had been limited to hydrogens moving
+between nitrogens *because* keto/enol deleted acetylacetone's only answer. With carbon acids covered the
+diketone has its own, so the limit is gone and every class converges: acetylacetone 9.13 either way,
+dimedone 5.18, 2-pyridone/2-hydroxypyridine 6.36/11.51, methylimidazole 7.48/13.85.
+
+Removing it is a **correctness** gain rather than a consistency one. Cyclohexanone and acetone now report
+nothing from either drawing, which is right — their α-C-H is near 26 and the enol whose O-H the drawn form
+used to be answered on is about a millionth of the population. Phenol, formally an enol, keeps its 9.94
+because its aromatic form is the stable tautomer. The method answers about the DOMINANT tautomer instead
+of whichever was drawn.
+
+Nothing regressed: curated 16 at 0.2950, zwitterions 0.1652, right count 19/20 with zero extras, glycine
+K_z 10^5.42, malonic acid's cycle defect back to zero. SAMPL6 matched 0.499 → 0.505 with extras 36 → 39,
+both confined to the benchmark already shown unable to separate new real sites from its own coverage.
+
+**What remains of the gap list.** Corpus size is still the binding constraint and is unchanged — width
+overfits, more members buy 0.0004, reweighting buys nothing. No QM fallback, aqueous 25 °C, organic
+elements only. Those are declared limits rather than open work.
+
 ## Where this plan stands
 
 All seven phases are complete and every gate in the verification table has a test. Of the four items the
