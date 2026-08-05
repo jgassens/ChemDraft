@@ -441,6 +441,20 @@ export function combineSiteEstimates(perMethod: Readonly<Record<string, readonly
     const values = scored.map((entry) => entry.site.pKa!);
     const methods = scored.map((entry) => entry.method);
     const span = Math.max(...values) - Math.min(...values);
+    // Per METHOD, not per prediction, and that was re-examined once a calibrated per-prediction
+    // interval existed. Weighting each estimate by its own variance is the obvious upgrade and it was
+    // measured on the 342 sites where both methods fire:
+    //
+    //   fixed per-method weight (this)             0.2494    terciles 0.158 / 0.239 / 0.351
+    //   per-prediction, Hammett as MAE^2           0.2467    terciles 0.146 / 0.213 / 0.382
+    //   per-prediction, Hammett as RMSE^2          0.2560
+    //   per-prediction, Hammett RMSE per series    0.2614
+    //
+    // A 1% overall gain that costs 9% on the tercile where the model is least sure, which is where a
+    // consensus earns its keep. The cause is that the two methods cannot be put on one footing: the
+    // Hammett relationship's RMSE is 0.556 against an MAE of 0.259, so it is usually excellent and
+    // occasionally terrible, and any variance-based weight either over-penalises its typical case or
+    // under-penalises its tail. Declined until Hammett has a per-prediction interval of its own.
     const weights = scored.map((entry) => 1 / (METHOD_MAE[entry.method] ?? 1));
     const total = weights.reduce((sum, weight) => sum + weight, 0);
     const combined = scored.reduce((sum, entry, i) => sum + entry.site.pKa! * weights[i]!, 0) / total;
