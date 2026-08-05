@@ -906,12 +906,36 @@ exhaustive, the method finds the right number on 19 of 20 with ZERO extra steps.
 claim and a new benchmark test. The one failure, oxalic acid at 0.8 against 1.25, traces to the corpus
 holding no 3-bond second-deprotonation labels at all.
 
-**Tautomers — a real defect, bounded rather than closed.** Azole 1,3-H shifts are one substance and give
-two answers: 4- vs 5-methylimidazole differ by 0.21 and 0.39, methylpyrazole by 1.05. The vendored
-MinimalLib has no tautomer enumerator — checked against the loaded module, not assumed — so closing it
-means rebuilding the WASM, and no benchmark here could judge a fix since SAMPL6 supplies fixed SMILES.
-Kept: a guard asserting the step count IS invariant and capping the value disagreement just above its
-measured worst case.
+**Tautomers — bounded first, then CLOSED by rebuilding the WASM.** Azole 1,3-H shifts are one substance
+and gave two answers: 4- vs 5-methylimidazole differed by 0.21 and 0.39, methylpyrazole by 1.05. The
+vendored MinimalLib had no tautomer enumerator at all — checked against the loaded module rather than
+assumed — so this was capped with a guard and left open.
+
+It is now closed. **Vendor patch #7** links MolStandardize and adds
+`get_canonical_tautomer_molblock()`, running `TautomerEnumerator::canonicalize` with the default Sitzmann
+scoring. Both pairs now give one answer: `[7.48, 13.85]` and `[3.71, 13.89]` whichever way they are drawn.
+
+**And the first attempt at it demonstrated why the scope has to be narrow.** Canonicalising EVERY
+tautomer silently deleted acetylacetone's only answer — RDKit's canonical form is the diketone, whose
+acidic proton is on CARBON, which this site table does not cover, so the enol went from one macroscopic
+value to none. A chemist drawing the enol means the enol. The derivation is now accepted only when the
+canonical form differs by moving a hydrogen between NITROGENS, decided on the multiset of
+(element, charge, hydrogens) so it needs no atom mapping and cannot be fooled by `canonicalize`
+renumbering the molecule. Keto/enol moves an oxygen's hydrogen to a carbon; 2-hydroxypyridine to
+2-pyridone moves it to a nitrogen from an oxygen; both are refused, and the enol keeps 8.72 against a
+measured 8.9 while dimedone keeps 5.00 against 5.23. That is the separation `tautomerPolicy` always
+claimed and, until now, only asserted.
+
+Nothing else moved: curated 16 at 0.2950, zwitterions 0.1652, right count 19/20 with zero extras, glycine
+K_z 10^5.42, SAMPL6 matched 0.496 → 0.499 with extra steps 37 → 36. Artifact 7.52 → 7.66 MB.
+
+Two build findings are recorded in `vendor/BUILD.md` rather than left as folklore. Upstream's `tests.js`
+gate fails at line 441 on BOTH artifacts — it requires `get_pattern_fp_as_uint8array` to throw at
+`numBits === 0` and then requires the array it would have filled to be full — so it cannot pass on the
+previously shipped binary either, verified directly against it. And the Emscripten glue moved for the
+first time since 2026-06-15, which BUILD.md said to understand before vendoring: `___syscall_ioctl` is
+newly emitted because MolStandardize needs it, and the import letters shifted by index. Adding C++
+methods does not alter the glue; linking a library that needs a new syscall does.
 
 **Per-series consensus weighting — rejected.** The most promising weighting variant, since Hammett's own
 accuracy varies 4.5x across its series and it beats the model on all four. Scaffold-grouped out-of-fold:
