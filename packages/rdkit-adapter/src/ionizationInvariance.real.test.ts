@@ -191,3 +191,52 @@ describe("no atom holds two charges at once", () => {
     }
   });
 });
+
+/**
+ * Azole tautomers, which are ONE substance and do not yet give one answer.
+ *
+ * The protomer axis is closed: every drawing of glycine gives the same pair, because the ladder is built
+ * from a canonical protomer. The TAUTOMER axis is not, and `tautomerPolicy: "as-drawn"` says so — but
+ * that policy was written with keto/enol in mind, where the two forms are arguably different compounds a
+ * chemist chose between. An azole 1,3-H shift is not that. 4-methylimidazole and 5-methylimidazole
+ * interconvert far faster than any titration, have one tabulated pKa of 7.5 between them, and no chemist
+ * means anything by drawing one rather than the other.
+ *
+ * Measured:
+ *
+ *     4- vs 5-methylimidazole    [7.48, 13.85]   [7.69, 13.46]    differ by 0.21 and 0.39
+ *     4- vs 5-methylpyrazole     [3.71, 13.89]   [3.72, 14.94]    differ by 0.01 and 1.05
+ *     benzimidazole N1 vs N3     [5.47, 12.75]   [5.47, 12.75]    identical
+ *     1,2,4-triazole             [2.56, 10.36]   [2.56, 10.36]    identical
+ *
+ * The last two agree because their two forms are the same graph once canonicalised; the first two are
+ * genuinely different graphs, and the model is right to score them differently. The correct answer is the
+ * population-weighted average over both, which needs their relative free energies — and the vendored
+ * MinimalLib has no tautomer enumerator at all (no `TautomerEnumerator`, no MolStandardize), so building
+ * this means rebuilding the WASM. It is not attempted here.
+ *
+ * What this test does instead is BOUND the disagreement so it cannot grow unnoticed. A fix makes it pass
+ * trivially; a regression makes it fail.
+ */
+describe("azole tautomers, a gap that is bounded rather than closed", () => {
+  const PAIRS: Array<[string, string, string]> = [
+    ["4- vs 5-methylimidazole", "Cc1c[nH]cn1", "Cc1cnc[nH]1"],
+    ["4- vs 5-methylpyrazole", "Cc1cc[nH]n1", "Cc1ccn[nH]1"],
+    ["benzimidazole N1 vs N3", "c1ccc2[nH]cnc2c1", "c1ccc2nc[nH]c2c1"],
+    ["1,2,4-triazole", "c1nc[nH]n1", "c1n[nH]cn1"]
+  ];
+
+  it("keeps the two drawings within a bounded distance of each other", async () => {
+    for (const [name, a, b] of PAIRS) {
+      const first = await values(a);
+      const second = await values(b);
+      expect(first.length, `${name} produced no values`).toBeGreaterThan(0);
+      // Same number of steps either way — that much IS invariant, and losing it would be a worse bug
+      // than the values disagreeing.
+      expect(second.length, `${name} step COUNT is not invariant`).toBe(first.length);
+      const worst = Math.max(...first.map((value, i) => Math.abs(value - second[i]!)));
+      // Measured worst case is 1.05, on methylpyrazole's N-H. The bound is deliberately just above it.
+      expect(worst, `${name} drawings differ by ${worst.toFixed(2)}`).toBeLessThan(1.2);
+    }
+  }, 1_800_000);
+});
