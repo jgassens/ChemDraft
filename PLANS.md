@@ -837,7 +837,26 @@ below −2.7 and over-predicted by about five log units into the window.
     matched MAE                  0.491   0.496
 
 The largest single defect this method had, moved for the first time — and the geometry split that looked
-like an obstacle was the wrong axis to look at. The old coupling term excluded like-charge pairs on the
+like an obstacle was the wrong axis to look at.
+
+**What is left, and why no further rule is justified.** Nineteen in-window extra steps remain: seven are
+FIRST protonations of a ring nitrogen, where the chemistry is real and the question is only whether the
+assay reported it; four are acylaminothiazole-like nitrogens whose basicity the corpus says is genuine
+(8.9 measured); four are N-H acidities; four are singletons.
+
+The obvious companion to the anilide rule — "an amide N-H is really about 16, suppress it" — was
+measured and is wrong:
+
+    class                            n    observed range   median    MAE    bias   inside pH 2-12
+    sulfonamide N-H                559     -2.00..11.80     7.54   0.64   +0.02        557 / 559
+    anilide N-H (carbonyl + aryl)  192      3.50..16.00     9.89   1.07   +0.03        184 / 192
+    imide N-H (two carbonyls)      175      1.20..13.15     8.45   0.89   +0.09        170 / 175
+    amide N-H, other substituent   152      2.55..13.17     8.61   0.77   -0.06        134 / 152
+    plain amide N-H                 46      3.38..15.10    11.51   1.39   -0.34         29 /  46
+
+These are ordinary aqueous acidities, the commonest N-H the corpus holds, predicted with essentially no
+bias. Suppressing anilide N-H alone would delete 184 real measurements. The "amide N-H near 15" among
+the out-of-window extras is the tail of the plain-amide row, not a class the method mishandles. The old coupling term excluded like-charge pairs on the
 grounds that "the model already handles like charges", which was measured on DIAMINES, sp3 and far
 apart, and over-generalised to ring nitrogens sharing an aromatic ring.
 

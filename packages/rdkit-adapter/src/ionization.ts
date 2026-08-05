@@ -882,6 +882,22 @@ export function scoreSiteTransitions(
  *
  * This suppresses only the BASIC half. An activated amide's N-H acidity is well within range and is
  * still reported.
+ *
+ * **AND THE ACID HALF MUST STAY, which is worth a count because the opposite sounds so reasonable.**
+ * "An amide N-H is really about 16, so suppress it too" is the obvious companion rule and it is wrong.
+ * Measured on the model's own out-of-fold predictions, by what the nitrogen carries:
+ *
+ *     class                            n    observed range   median    MAE    bias   inside pH 2-12
+ *     sulfonamide N-H                559     -2.00..11.80     7.54   0.64   +0.02        557 / 559
+ *     anilide N-H (carbonyl + aryl)  192      3.50..16.00     9.89   1.07   +0.03        184 / 192
+ *     imide N-H (two carbonyls)      175      1.20..13.15     8.45   0.89   +0.09        170 / 175
+ *     amide N-H, other substituent   152      2.55..13.17     8.61   0.77   -0.06        134 / 152
+ *     plain amide N-H                 46      3.38..15.10    11.51   1.39   -0.34         29 /  46
+ *
+ * These are ordinary aqueous acidities, they are the commonest N-H the corpus holds, and the model
+ * predicts them with essentially no bias. Suppressing anilide N-H alone would delete 184 real
+ * measurements. The "amide N-H near 15" that shows up among SAMPL6's out-of-window extra steps is the
+ * tail of the plain-amide row, not a class the method mishandles.
  */
 function isUnactivatedAmide(
   graph: PkaMolecularGraph,
