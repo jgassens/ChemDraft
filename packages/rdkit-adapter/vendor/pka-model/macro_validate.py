@@ -53,8 +53,8 @@ SET = [
 W = json.load(open("coupling.json"))["W"]
 
 
-def run(drop_tautomer_states=True, w=W):
-    predict = load_network()
+def run(drop_tautomer_states=True, w=W, model="site-pka-gnn.json"):
+    predict = load_network(model)
     rows = []
     for name, smiles, observed, kind in SET:
         mol = kekulized(smiles)
@@ -76,8 +76,11 @@ VARIANTS = [
 ]
 
 
-def main():
-    both = {name: run(**kwargs) for name, kwargs in VARIANTS}
+def main(model="site-pka-gnn.json"):
+    # The model is an argument so a CANDIDATE artifact can be held to the same macroscopic gate as the
+    # shipped one. Codex requires macroscopic validation to worsen by no more than 0.03, and that cannot
+    # be checked for a candidate the yardstick refuses to load.
+    both = {name: run(model=model, **kwargs) for name, kwargs in VARIANTS}
 
     final = both["+ tautomer exclusion"]
     print(f"{'molecule':20s} {'class':13s} {'predicted':>22s} {'tabulated':>20s} {'MAE':>6s}")
@@ -123,4 +126,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "site-pka-gnn.json"))

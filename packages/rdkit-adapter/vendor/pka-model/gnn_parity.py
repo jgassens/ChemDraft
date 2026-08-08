@@ -42,11 +42,26 @@ CASES = [
     ("OC(=O)c1ccccc1", 1),               # benzoic acid
 ]
 
+# Appended only for an artifact that declares site shells, because for the acid-only architecture these
+# molecules exercise nothing the twelve above do not -- there are no distance or ring-size features to
+# diverge. Each one targets a specific way the two runtimes could disagree about the NEW features:
+SHELL_CASES = [
+    ("OC(=O)CCCCCCCCCC", 0),             # 11 carbons: atoms past the 7-bond clip, on both sides
+    ("OC(=O)C1CCCCCC1", 0),              # 7-ring, an interior ring-size bucket
+    ("OC(=O)C1CCCCCCC1", 0),             # 8-ring, the last bucket and MAX_RING's exact boundary
+    ("OC(=O)C1CCCCCCCC1", 0),            # 9-ring: past MAX_RING, so BOTH sides must see no ring at all
+    ("OC(=O)C(F)(Cl)Br", 0),             # three different halogens: real electronegativity entries
+    ("OC(=O)CB(O)O", 0),                 # boron: absent from the table AND from the element one-hot
+    ("OC(=O)C.CCCC", 0),                 # a detached fragment: atoms the site cannot reach at all
+    ("OC(=O)c1ccc2ccccc2c1", 0),         # naphthalene: two rings through one atom, smallest wins
+]
+
 
 def main(model_path, out_path):
     members, interval_at = load_ensemble(model_path)
+    cases = CASES + (SHELL_CASES if getattr(members[0], "site_shells", False) else [])
     out = []
-    for smiles, site in CASES:
+    for smiles, site in cases:
         mol = kekulized(smiles)
         if mol is None or site >= mol.GetNumAtoms():
             raise SystemExit(f"unusable parity case: {smiles} at {site}")

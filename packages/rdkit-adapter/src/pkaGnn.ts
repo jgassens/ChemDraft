@@ -24,7 +24,7 @@
 import { ringMembership, type PkaMolecularGraph } from "./pkaModel";
 import gnnJson from "../vendor/pka-model/site-pka-gnn.json";
 import intervalJson from "../vendor/pka-model/interval-calibration.json";
-import { shareARing, siteContext } from "./pkaAromaticity";
+import { cyclesThrough, distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
 
 /** Element one-hot order. Shared with the trainer; reordering silently rebinds every first-layer weight. */
 const ELEMENTS = ["N", "O", "C", "S", "P", "F", "Cl", "Br", "I"] as const;
@@ -38,6 +38,21 @@ export interface GnnWeights {
   architecture: {
     elements: string[]; atomFeatures: number; bondFeatures: number;
     hidden: number; layers: number; ensemble: number;
+    /**
+     * Site-relative features and radial pooling, and everything needed to rebuild them.
+     *
+     * Absent or false means the acid-only architecture this file shipped first, so an older artifact
+     * still loads unchanged. Present means the trainer wrote the partition it pooled by, rather than
+     * this file guessing — `gnn_infer.py` used to build its network from whatever module constant
+     * happened to be in the checkout, and threw size mismatches the moment an artifact disagreed. An
+     * artifact that describes its own shape can be scored by a runtime nobody edited to match it.
+     */
+    siteShells?: boolean;
+    readsConjugateBase?: boolean;
+    distanceBuckets?: number | null;
+    ringSizeBuckets?: number | null;
+    shellBounds?: number[][] | null;
+    electronegativity?: Record<string, number> | null;
   };
   /** One weight set per ensemble member. Their mean is the estimate; their spread is the interval. */
   members: Record<string, number[][] | number[]>[];
@@ -53,16 +68,50 @@ function oneHot(into: number[], value: number, slots: number): void {
   for (let i = 0; i < slots; i += 1) into.push(i === value ? 1 : 0);
 }
 
+/**
+ * The site-relative feature set, as the artifact declares it.
+ *
+ * Resolved once per prediction rather than read field-by-field, so a half-written artifact fails loudly
+ * here instead of silently producing a feature vector of the wrong width — which the readout would
+ * happily consume as though the columns meant something else.
+ */
+interface ShellConfig {
+  distanceBuckets: number;
+  ringSizeBuckets: number;
+  shellBounds: number[][];
+  electronegativity: Record<string, number>;
+}
+
+/** Pauling's value for an element the table does not carry. Mirrors Python's `.get(symbol, 2.20)`. */
+const DEFAULT_ELECTRONEGATIVITY = 2.2;
+
+function shellConfigOf(architecture: GnnWeights["architecture"]): ShellConfig | undefined {
+  if (architecture.siteShells !== true) return undefined;
+  const { distanceBuckets, ringSizeBuckets, shellBounds, electronegativity } = architecture;
+  if (
+    typeof distanceBuckets !== "number" || typeof ringSizeBuckets !== "number" ||
+    !Array.isArray(shellBounds) || electronegativity == null
+  ) {
+    throw new Error("pKa artifact declares siteShells but omits the shape it pools by");
+  }
+  return { distanceBuckets, ringSizeBuckets, shellBounds, electronegativity };
+}
+
 /** Atom features, bond features and the directed edge list — the trainer's `featurise`, exactly. */
-export function gnnFeatures(graph: PkaMolecularGraph, site: number): {
+export function gnnFeatures(graph: PkaMolecularGraph, site: number, shells?: ShellConfig): {
   atoms: number[][];
   bonds: number[][];
   src: number[];
   dst: number[];
+  /** Which radial shell each atom pools into. Empty when the architecture pools globally. */
+  shellOfAtom: number[];
 } {
   const context = siteContext(graph);
   const adjacency = context.adjacency;
   const inRing = ringMembership(graph);
+
+  const chiOf = (i: number): number =>
+    shells?.electronegativity[graph.atoms[i]?.element ?? ""] ?? DEFAULT_ELECTRONEGATIVITY;
 
   const bonds: number[][] = [];
   const src: number[] = [];
@@ -79,10 +128,22 @@ export function gnnFeatures(graph: PkaMolecularGraph, site: number): {
     if (aromaticBond) feature.push(0, 0, 0);
     else oneHot(feature, Math.round(bond.order) - 1, 3);
     feature.push(inRingBond ? 1 : 0);
+    // Bond polarisation, appended ONCE before both pushes. The two directions share this array by
+    // reference, which is exactly what the trainer does: it walks its already-doubled edge list and
+    // writes the same |Δχ| for each direction. Appending after the pushes would land it twice.
+    if (shells) feature.push(Math.abs(chiOf(a) - chiOf(b)) / 2);
     // Both directions, in the trainer's order: messages flow each way.
     src.push(a); dst.push(b); bonds.push(feature);
     src.push(b); dst.push(a); bonds.push(feature);
   }
+
+  // BFS hop count to the site, and the trap that comes with reusing `distancesFrom`: it neither clips
+  // nor names the unreachable. The trainer initialises every atom to `far` and stops walking there, so
+  // an atom eight bonds out and an atom in a detached fragment BOTH read `far`. A Map that simply omits
+  // the unreachable would read `undefined`, and `undefined` one-hots to all zeros — a fifth state the
+  // trained weights have never seen.
+  const far = shells ? shells.distanceBuckets - 1 : 0;
+  const reached = shells ? distancesFrom(adjacency, site) : undefined;
 
   const atoms: number[][] = [];
   for (let i = 0; i < graph.atoms.length; i += 1) {
@@ -96,9 +157,36 @@ export function gnnFeatures(graph: PkaMolecularGraph, site: number): {
     oneHot(row, (adjacency[i] ?? []).length, DEGREE_SLOTS);
     row.push(context.aromatic[i] === true ? 1 : 0, inRing[i] === true ? 1 : 0);
     row.push(i === site ? 1 : 0);
+    if (shells) {
+      oneHot(row, Math.min(reached!.get(i) ?? far, far), shells.distanceBuckets);
+      // Smallest cycle THROUGH this atom, from the same bounded walk the trainer uses — so a ring
+      // larger than `MAX_RING` is invisible to both sides rather than to one. Acyclic one-hots to all
+      // zeros, which is the trainer's `-1` index.
+      const cycles = cyclesThrough(adjacency, i);
+      const smallest = cycles.length === 0
+        ? 0
+        : cycles.reduce((least, cycle) => Math.min(least, cycle.length), Infinity);
+      oneHot(
+        row,
+        smallest === 0 ? -1 : Math.max(0, Math.min(smallest - 3, shells.ringSizeBuckets - 1)),
+        shells.ringSizeBuckets
+      );
+      row.push(chiOf(i) / 4);
+    }
     atoms.push(row);
   }
-  return { atoms, bonds, src, dst };
+
+  // One scatter target per shell, in the trainer's order, so the readout receives position rather
+  // than one undifferentiated global sum.
+  const shellOfAtom: number[] = [];
+  if (shells) {
+    for (let i = 0; i < graph.atoms.length; i += 1) {
+      const d = Math.min(reached!.get(i) ?? far, far);
+      const found = shells.shellBounds.findIndex(([lo, hi]) => d >= lo! && d <= hi!);
+      shellOfAtom.push(found < 0 ? shells.shellBounds.length - 1 : found);
+    }
+  }
+  return { atoms, bonds, src, dst, shellOfAtom };
 }
 
 /** `y = x W^T + b`, the layout `nn.Linear` stores. */
@@ -150,8 +238,16 @@ function forward(
     h = h.map((node, i) => relu(linear([...node, ...gathered[i]!], updateWeight, updateBias)));
   }
 
-  const pooled = new Array<number>(hidden).fill(0);
-  for (const node of h) for (let k = 0; k < hidden; k += 1) pooled[k] += node[k]!;
+  // Radial pooling when the artifact declares it: one sum per shell, concatenated in shell order,
+  // which is what `index_add_` into a (graphs x shells, hidden) buffer viewed as (graphs, shells*hidden)
+  // produces. Otherwise the single global sum this file shipped with.
+  const shellCount = features.shellOfAtom.length > 0 ? architecture.shellBounds!.length : 1;
+  const pooled = new Array<number>(hidden * shellCount).fill(0);
+  for (let i = 0; i < h.length; i += 1) {
+    const base = shellCount === 1 ? 0 : features.shellOfAtom[i]! * hidden;
+    const node = h[i]!;
+    for (let k = 0; k < hidden; k += 1) pooled[base + k] += node[k]!;
+  }
 
   const joined = [...h[site]!, ...pooled];
   const first = relu(linear(joined, matrix("readout.0.weight"), vector("readout.0.bias")));
@@ -171,7 +267,7 @@ export function predictWithGnn(
   graph: PkaMolecularGraph,
   site: number
 ): { value: number; spread: number } {
-  const features = gnnFeatures(graph, site);
+  const features = gnnFeatures(graph, site, shellConfigOf(model.architecture));
   const votes = model.members.map((member) => forward(member, model.architecture, features, site));
   const mean = votes.reduce((sum, v) => sum + v, 0) / votes.length;
   const variance = votes.reduce((sum, v) => sum + (v - mean) ** 2, 0) / votes.length;

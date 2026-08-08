@@ -93,9 +93,17 @@ def evaluate(model_path, dataset_dir):
 
 
 if __name__ == "__main__":
-    per_set, errors = evaluate("site-pka-gnn.json", sys.argv[1])
+    # The model is an ARGUMENT, defaulting to the shipped artifact. Scoring a candidate used to require a
+    # checkout already edited to match it, which is the one situation where this check is worth least.
+    #
+    #     python external_eval.py <dataset-dir> [out-dir] [--model <path>] [--tag <name>]
+    argv = sys.argv
+    model = argv[argv.index("--model") + 1] if "--model" in argv else "site-pka-gnn.json"
+    tag = argv[argv.index("--tag") + 1] if "--tag" in argv else None
+    per_set, errors = evaluate(model, argv[1])
     summary = {
         "measurement": "held-out external data, never used in training or fold selection",
+        "model": model,
         "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), data/ at the repository root — Novartis and literature "
                   "sets, originally from Baltruschat & Czodrowski",
         "perSet": per_set,
@@ -103,6 +111,7 @@ if __name__ == "__main__":
         "mae": round(float(np.mean(errors)), 4),
         "standardError": round(float(np.std(errors) / np.sqrt(len(errors))), 4),
     }
-    out = sys.argv[2] if len(sys.argv) > 2 else "."
-    json.dump(summary, open(f"{out}/external-validation.json", "w"), indent=1)
+    out = argv[2] if len(argv) > 2 and not argv[2].startswith("--") else "."
+    name = f"external-validation-{tag}.json" if tag else "external-validation.json"
+    json.dump(summary, open(f"{out}/{name}", "w"), indent=1)
     print(json.dumps(summary, indent=1))
