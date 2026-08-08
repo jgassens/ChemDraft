@@ -1,396 +1,360 @@
-# ChemDraft pKa Prediction System: Code Review and Recommendations
+# ChemDraft pKa Predictor: Current Scientific Audit and Predictive-Power Plan
 
-**Review date:** 2026-08-03  
-**Worktree:** `chemdraft-analyzers`  
-**Reviewed commit:** `4e1527b8` (`fix: the enumeration was building a species that does not exist`)  
-**Review mode:** Read-only code, model, validation, dataset, dependency, and literature assessment
+**Review date:** 2026-08-07
+
+**Worktree:** `chemdraft-analyzers`
+
+**Reviewed commit:** `715a544f`, plus Claude's uncommitted pKa experiments present in the worktree
+
+**Scope:** code, artifacts, Claude's supplied analysis, datasets, dependencies, literature, licensing, evaluation design, and end-to-end chemistry
+
+**Change made by this review:** this report only; the in-progress implementation files were not edited
 
 ## Executive conclusion
 
-The branch is not yet a first-in-class pKa predictor. It has unusually strong reporting and provenance architecture, but the underlying chemistry-state model can generate impossible species, changes its answer based on how a molecule is drawn, and has an invalid external-validation path.
+Yes. There is meaningful predictive power left to extract, but Claude's proposed priority order is wrong.
 
-The highest-priority change is therefore not a larger random forest or additional tuning. ChemDraft first needs a representation-invariant, atom-mapped protonation and tautomer state graph. Model improvements and larger datasets should be built on top of that corrected scientific foundation.
+The highest-value missed signal is already in the repository: **8,074 of the 12,096 training rows contain an explicit acid-to-conjugate-base structure pair, but the GNN loader discards the base structure.** It trains on only the acid graph, a marked atom, and the pKa label. A shared-encoder acid/base-pair model would expose the charge redistribution, bond-order changes, and resonance stabilization that define deprotonation. That is a more direct and legally cleaner experiment than first teaching the model 1.55 million ChemAxon predictions.
 
-Until those changes are complete, the current pKa feature should be described as experimental, and the macroscopic/consensus accuracy claims should be suppressed or clearly qualified.
+The second major lever is site-relative representation. The current model has three message-passing layers and a global sum, so it has a weak description of where a substituent lies relative to the ionizing atom. Add topological distance-to-site encodings, radial shell pooling, and chemically relevant bond/atom features before adding width or depth.
 
-## Current architecture
+The third requirement is statistical rather than architectural: the current 398-row external set has repeatedly selected models, so it is now a development set. Protonation/tautomer relatives also cross current folds. A new family-aware split and a fresh locked test are prerequisites for believing any claimed gain.
 
-The current user-facing path is approximately:
+The recommended immediate experiment is therefore:
 
 ```text
-submitted structure
-  -> Dimorphite SMARTS site scan
-  -> random-forest site prediction
-  -> optional Hammett estimate and consensus
-  -> independent binary site enumeration
-  -> microscopic and macroscopic pKa report
+frozen protonation/tautomer-family splits
+  -> current acid-only GNN baseline
+  -> + site-distance shells and chemistry features
+  -> + shared acid/base encoder
+  -> + both
+  -> regularization and class balancing
+  -> cross-fitted diverse ensemble
+  -> fresh, never-touched external test
 ```
 
-Important entry points include:
+This can plausibly improve the site-level model. It will not by itself make the full product first-in-class: chemically valid protomer/tautomer state generation, representation invariance, site detection, and thermodynamic consistency remain separate release gates.
 
-- [`packages/rdkit-adapter/src/analysis.ts`](packages/rdkit-adapter/src/analysis.ts)
-- [`packages/rdkit-adapter/src/ionization.ts`](packages/rdkit-adapter/src/ionization.ts)
-- [`packages/rdkit-adapter/src/pkaModel.ts`](packages/rdkit-adapter/src/pkaModel.ts)
-- [`packages/rdkit-adapter/src/protonation.ts`](packages/rdkit-adapter/src/protonation.ts)
-- [`packages/analysis-core/src/results.ts`](packages/analysis-core/src/results.ts)
-- [`packages/analysis-core/src/report.ts`](packages/analysis-core/src/report.ts)
+## What the current system actually is
 
-## Confirmed high-priority findings
+The shipped artifact is not one 426,244-parameter network. It is an ensemble of **four independent 106,561-parameter members**, each with 96 hidden units and three message-passing layers. The ensemble total is 426,244 parameters.
 
-### P0-1: Predictions depend on how the same compound is drawn
+The model's current inputs are sparse:
 
-Direct RDKit-backed probes produced the following results:
+- atom element, formal charge, hydrogen count, degree, aromatic/ring flags, and one site flag;
+- bond aromaticity, bond order, and ring membership;
+- a three-bond learned receptive field; and
+- a final concatenation of the site embedding with a global sum over atom embeddings.
 
-| Drawing | Result |
-|---|---|
-| Neutral glycine, `NCC(=O)O` | Two sites; macro pKas approximately 2.125 and 9.070 |
-| Zwitterionic glycine, `[NH3+]CC(=O)[O-]` | `not-applicable`; zero sites |
-| Protonated-amine/neutral-acid glycine | Only the carboxyl transition |
-| Neutral-amine/deprotonated-acid glycine | Only the amine transition |
-| Acetic acid | Predicted |
-| Acetate | No tabulated site; not predicted |
+The relevant implementation is [`pka_gnn.py`](packages/rdkit-adapter/vendor/pka-model/pka_gnn.py). Its `load` function reads `acid`, `acidAtomIdx`, and `pKa`; it does not read the row's `base` structure. Its training loop uses Adam, OneCycle scheduling, fixed 60 epochs, and L1 loss, with no weight decay, dropout, validation-based early stopping, gradient clipping, or residual/normalization path.
 
-The scanner operates on the submitted protonation form rather than first constructing the complete protonation/tautomer family. Relevant paths are [`analysis.ts`](packages/rdkit-adapter/src/analysis.ts) and the site scan beginning in [`ionization.ts`](packages/rdkit-adapter/src/ionization.ts).
+### Current numerical picture
 
-This violates a basic pKa requirement: equivalent drawings of the same molecular family must lead to the same state graph and equilibrium predictions.
+| Measurement | Current result | Interpretation |
+|---|---:|---|
+| Training rows | 12,096 | pKaCHU 4,419; QupKake experimental 4,022; Dwar-iBond 3,031; D2A aqueous 624 |
+| Rows with explicit conjugate-base structure | 8,074 | 66.7% of all labels; currently unused by the GNN |
+| Scaffold-grouped out-of-fold MAE | 0.7281 | Useful development result, not end-to-end product accuracy |
+| Dense pKa 2-12 subset | 11,350 rows; MAE 0.6665 | Explains the approximately 0.66 figure; it excludes difficult tails |
+| Current 398-row external MAE | 1.1286 | Harder distribution; no longer a blind test because it has selected models |
+| Carbon-centered rows | 449; MAE 1.456 | Only 3.7% of training and the clearest weak class |
+| Nitrogen-centered rows | 6,789; MAE 0.726 | Dominates the corpus |
+| Oxygen-centered rows | 4,669; MAE 0.663 | Better-supported class |
+| Sulfur-centered rows | 189; MAE 0.669 | Small sample; estimate is unstable |
+| Macro validation | 32 values on 15 molecules; MAE 0.2635 | Encouraging fixture result, much too small for a broad claim |
 
-### P0-2: Independent site bits generate impossible state ladders
+The tails are genuinely difficult: 95 observations below pKa 0 and 105 above 14 have very large errors. Reporting only 2-12 changes the question and makes the score look better; it does not improve the predictor.
 
-The current scorer can emit acidic and basic transitions for the same physical atom. The macroscopic layer then treats every emitted transition as an independent Boolean variable.
+## Review of Claude's six proposals
 
-Direct reproductions included:
+### 1. Pretrain on 1.55 million ChemAxon-labelled ChEMBL/QupKake structures
 
-- Acetamide emitted one nitrogen as separate acidic and basic sites, produced four microstates, two macro pKas, and a false zwitterion classification.
-- Urea emitted four transition records over two physical nitrogen atoms and enumerated 16 microstates.
-- Pyridinium produced acidic and basic entries on the same ring nitrogen.
-- Aniline and imidazole were also incorrectly flagged as zwitterionic under portions of this state model.
+**Verdict: plausible research A/B, but not the first or cleanest experiment. The claimed 20-40% gain is unsupported.**
 
-The independent transition emission is in [`ionization.ts`](packages/rdkit-adapter/src/ionization.ts), while binary enumeration occurs in [`protonation.ts`](packages/rdkit-adapter/src/protonation.ts).
+Large teacher-labelled pretraining has precedent. For example, pkasolver reported improvement after pretraining on hundreds of thousands of Epik-generated values and fine-tuning on experimental data. That establishes plausibility, not a transferable effect size, and the authors could not distribute the Epik-trained model because of licensing. See the [pkasolver study](https://www.frontiersin.org/journals/chemistry/articles/10.3389/fchem.2022.866585/full).
 
-A physical atom may participate in several protonation levels, but those levels are mutually constrained. They cannot be represented as unrelated on/off switches.
+QupKake's large corpus contains ChemAxon-predicted strongest-acid/strongest-base values over ChEMBL structures. Fine-tuning does not erase the teacher's systematic bias or the provenance of the learned signal. ChEMBL itself is [CC BY-SA 3.0](https://www.ebi.ac.uk/chembl/), while ChemAxon's terms separately govern bulk calculated output; the QupKake software's BSD license is not evidence that those calculated labels are freely redistributable. The official [ChemAxon licensing material](https://docs.chemaxon.com/lts-krypton/reactor-licensing.html) is restrictive enough that redistributed weights should not be assumed clear without written permission.
 
-### P0-3: Counterions and metals alter predictions without triggering the declared domain guard
+Run this only after the clean experiments below, remove all benchmark-family overlap, label it as inherited-predictor pretraining, and obtain permission before distributing resulting weights.
 
-Direct results were:
+### 2. Learn a residual against Hammett
 
-| Structure | Predicted pKa |
-|---|---:|
-| Acetic acid | 4.5030 |
-| Sodium plus acetic acid | 4.6164 |
-| Iron plus acetic acid | 4.5747 |
+**Verdict: very low remaining headroom. Keep Hammett as a specialist.**
 
-All returned `ok` without the promised unsupported-metal warning. The metal check only examines atoms inside a SMARTS match, while whole-molecule mass, TPSA, logP, charge, and heavy-atom descriptors include the counterion or metal.
+Claude's numbers are stale. The current overlap is 342 sites, not 94. Hammett MAE is 0.2594, GNN MAE on those same sites is 0.5086, and the current consensus is 0.2394. The overlap is still only 2.8% of the 12,096-row corpus.
 
-The system needs an interpretation-level domain check before prediction. At minimum, a covalently connected metal-bearing component should decline. Disconnected salts need an explicit parent/counterion policy, with the selected interpretation shown to the user.
+A cross-fitted per-series residual stack reached approximately 0.237 in this audit—only about 0.002 better than the existing consensus and well inside sampling/model noise. Extending chemically defensible Hammett/Taft series could broaden a transparent specialist method, but it is not the route to a large global gain.
 
-### P0-4: The claimed external MAE can be calculated at the wrong atom
+### 3. Use “40,000+ DMSO pKas” as an auxiliary task
 
-[`external_eval.py`](packages/rdkit-adapter/vendor/pka-model/external_eval.py) reads a site index from an SDF record, converts the molecule to canonical SMILES, reparses it, and then reuses the original atom index. RDKit canonicalization can reorder atoms.
+**Verdict: the stated data count is wrong; a smaller solvent-aware experiment is still worthwhile.**
 
-Consequently, the committed 398-row external MAE of 1.2414 is not trustworthy until the evaluator preserves atom maps or remaps the site through graph isomorphism and regenerates the artifact.
+The approximately 40,000 iBonD figure describes measurements across solvents, not 40,000 DMSO labels. The concrete source already integrated here is [D2A-pKa](https://zenodo.org/records/15277342): 8,241 values over eight solvents. This tree currently uses 624 aqueous rows and has 4,445 usable nonaqueous rows across seven solvents available to its ingestion path.
 
-This atom-identity weakness also appears in portions of the QupKake deduplication path, which combine canonical SMILES with indices originating in a pre-canonical molecule.
+If the D2A authors confirm that downstream model redistribution is compatible with its incorporated iBonD/IUPAC material, train a solvent embedding or separate solvent heads and keep every molecule family in one fold across all solvents. This is most likely to help neutral and carbon acids. It will not supply the missing weak-base nitrogen chemistry.
 
-### P1-1: Headline accuracy measures an oracle-site model rather than the shipped feature
+### 4. Build an architecturally diverse ensemble
 
-Training cross-validation and external evaluation receive the correct acid microstate and site index in advance. They do not measure:
+**Verdict: yes, but select weights inside cross-validation rather than on the external set.**
 
-- site-detection precision and recall;
-- acidic-versus-basic transition classification;
-- charged/protomer representation invariance;
-- validity and completeness of generated microstates;
-- macroscopic pKa assignment;
-- salt and counterion handling; or
-- the behavior of the complete user-facing pipeline.
+The GNN and forest have signed residual correlation of approximately 0.692, so some complementary error exists. A fixed 10% forest blend changed OOF MAE from 0.7281 to 0.7249 and the current external score from 1.1286 to 1.1034. That is a small but consistent signal.
 
-Therefore, the current MAE values cannot describe the accuracy of the feature a user actually receives.
+The apparent optimum on the external set is closer to 30%, but choosing it there would overfit the test. A stronger design is two acid-only/site-shell members plus two acid/base-pair members, with any blending rule learned only on inner folds.
 
-### P1-2: Training and runtime do not use identical feature conventions
+### 5. Use quantile regression
 
-Training uses RDKit's default TPSA convention, which excludes sulfur and phosphorus contributions. One runtime path explicitly enables sulfur and phosphorus, while other runtime microstate paths use the default. A sulfur-containing fixture changed by approximately 0.07 pKa solely because of this mismatch.
+**Verdict: useful for uncertainty, not a likely point-accuracy improvement.**
 
-Training, calibration, testing, and production inference need one shared, versioned feature implementation. Parity tests must invoke the exact production path rather than a similar descriptor call.
+The median quantile loss is the L1 loss the model already uses. Additional quantile heads can estimate asymmetry, but they do not repair representation, labels, or chemistry. They also still require grouped conformal calibration under scaffold shift. Judge this experiment on interval coverage and sharpness, not lower point MAE.
 
-### P1-3: The deployed site locator cannot reach important training chemistry
+### 6. Purge extreme labels and audit scales
 
-The training corpus contains approximately 2,001 carbon-centered labels out of 8,317 total labels, but the deployed 41-entry Dimorphite-derived locator has no carbon-centered ionization target.
+**Verdict: audit conditions aggressively; do not delete rows merely because the pKa is extreme.**
 
-The model has therefore learned a substantial class of chemistry that its production site generator cannot invoke. This is another reason that simply enlarging or retuning the forest will not solve the end-to-end problem.
+There are roughly 100 values on each side of the ordinary aqueous 0-14 range. Blind removal lowers the reported MAE because the hardest cases vanish, not because the model improves. Retain chemically legitimate strong-acid/base measurements. Quarantine only rows proven to use another solvent, acidity function, temperature/convention, or erroneous structure/site mapping.
 
-### P1-4: Dataset and model provenance is materially inaccurate
+Claude's current `carbon_prune.py` experiment reached the same broader lesson. Removing 100 carbon labels the deployed locator could not present made both the shared OOF set and the external score worse. Those labels were useful auxiliary chemistry even when they were not direct product queries.
 
-The implementation states that the model contains:
+## Highest-value experiments Claude missed
 
-- 3,031 Dwar-iBond labels; and
-- 5,286 QupKake labels.
+### 1. Shared acid/base-pair encoder
 
-The user-facing contract instead describes all 8,317 labels as Dwar-iBond and omits QupKake, including its ChemAxon-derived site annotations. It also contains stale external-validation descriptions and record counts.
+This is the best immediate bet.
 
-Dwar-iBond needs a new provenance and reuse audit. The DataWarrior author has stated that original literature references were lost, and a software license does not automatically establish a license for an associated dataset: [DataWarrior source discussion](https://openmolecules.org/forum/pdf.php?th=96).
+For each mapped transition `HA -> A- + H+`, encode both structures with the same graph network and predict from:
 
-The pKa artifacts and datasets are also absent from [`docs/architecture/dependency-inventory.md`](docs/architecture/dependency-inventory.md).
+```text
+site state in HA
+site state in A-
+difference between those site embeddings
+difference between pooled molecular embeddings
+explicit changes in charge, hydrogen count, and local bond order
+```
 
-### P1-5: Prediction artifacts are absent from run fingerprints
+Conceptually:
 
-The random forest, Hammett constants, consensus calibration, interval calibration, and macroscopic coupling values all affect numerical results. Nevertheless, run and cache fingerprints currently record RDKit and optional IsoSpec artifacts but not the pKa artifacts.
+```text
+h_acid = encoder(acid graph, mapped site)
+h_base = encoder(base graph, mapped site)
+pKa = readout(h_acid, h_base, h_base - h_acid, transition features)
+```
 
-Two builds can therefore generate different pKas while presenting the same method version and run fingerprint. Every executable model/data artifact needs a checksum in the method environment and cache identity, followed by a method-version increment.
+This directly represents the response to deprotonation. It should learn resonance and charge delocalization more readily than asking an acid-only network to infer a missing product state.
 
-### P1-6: Macroscopic validation and uncertainty are not sufficiently reproducible
+Implementation constraints:
 
-The macroscopic validation currently uses 15 hand-entered compounds and 32 values, with generic source descriptions. The fitting script and committed coupling artifact do not fully reproduce one another, and the standard regeneration script does not refit the coupling value.
+- use one shared encoder, not separate acid/base networks;
+- preserve atom mapping through normalization;
+- add a reverse-pair/antisymmetry consistency test where chemically defined;
+- keep the 4,022 acid-only QupKake experimental rows through an auxiliary acid-only head or generate only validated conjugate states—do not discard them;
+- compare against a [Chemprop v2](https://github.com/chemprop/chemprop) reaction/multicomponent model offline as an MIT-licensed research baseline; and
+- export or distill only a compact parity-tested model for the TypeScript runtime.
 
-The current tree-spread interval is also not a calibrated prediction interval. Consensus weights and claimed disagreement/error relationships were evaluated on overlapping calibration material rather than an untouched nested calibration set.
+### 2. Site-distance encoding and radial pooling
 
-### P2: Reporting cannot yet express the state-level scientific result
+The current one-hot site flag plus three message-passing layers communicates local chemistry only about three bonds. Global sum pooling says which atoms exist, but weakly says where a remote substituent sits relative to the ionizing site.
 
-The core result exposes an unlabeled macro-pKa array, microstate count, inconsistency measure, and a zwitterion Boolean. It cannot express:
+Add:
 
-- the structure and charge of each microstate;
-- the specific proton-transfer edge associated with each microscopic pKa;
-- tautomer relationships;
-- dominant species versus pH;
-- population or charge-state curves;
-- per-transition applicability and uncertainty; or
-- the exact dataset/model artifacts responsible for an estimate.
+- shortest-path distance from every atom to the site, clipped at seven bonds;
+- learned distance embeddings;
+- pooled shells such as 0-1, 2-3, 4-5, and 6-7 bonds;
+- electronegativity or directed bond-polarization features;
+- hybridization and valence state;
+- ring size rather than only a ring Boolean;
+- molecular and local formal charge; and
+- a parity-safe, task-specific conjugation definition.
 
-These should become first-class analysis outputs rather than prose reconstructed after prediction.
+The 2026 [pKaLearn paper](https://www.nature.com/articles/s42004-026-01983-y) is the strongest open architecture donor for these ideas. It reports that chemically relevant effects can extend to roughly seven bonds and emphasizes bond polarization, revised conjugation, and ring features. Use its design ideas; do not ingest its entire 12,817-row CSV without a row-level audit because it mixes DataWarrior/F1000Res lineage, Epik-generated rows, and SAMPL/euroSAMPL benchmark molecules.
 
-## Recommended scientific architecture
+Do not simply increase the message-passing depth to seven. The current depth sweep already showed little benefit, and deeper undifferentiated propagation risks oversmoothing. Distance features and shell pooling preserve location explicitly.
 
-ChemDraft should replace the current independent-site enumeration with the following model:
+### 3. Regularization and training control
+
+The wider H160 model improved every current CV fold but worsened the 398-row external score from 1.1286 to 1.1691. That is evidence that capacity is not the first bottleneck. The negative result is documented in [`BUILD.md`](packages/rdkit-adapter/vendor/pka-model/BUILD.md).
+
+Run a small factorial screen before another capacity sweep:
+
+- AdamW with modest weight decay;
+- training-only dropout in the readout/message path;
+- residual message updates and LayerNorm if TypeScript parity remains simple;
+- an inner validation group for early stopping;
+- gradient clipping; and
+- L1 versus Huber loss.
+
+Use the exact same frozen family folds and seeds. Stop any configuration that is already at least 0.02 MAE worse after two paired folds.
+
+### 4. Class-balanced learning and specialist heads
+
+Carbon is only 449 rows and has MAE 1.456. Test square-root inverse-frequency sampling or a shared trunk with element/transition-class heads. Do not use full inverse-frequency weighting; tiny classes would dominate training.
+
+Also carry source quality into the loss. Traceable experimental pairs, software-assigned sites, and unresolved DataWarrior labels should not automatically receive identical trust. Preserve replicates and use their disagreement as label uncertainty rather than averaging away the evidence.
+
+The in-progress carbon locator is valuable end-to-end work, but it does not solve the regression weakness by itself. Judge carbon experiments on the subset the product can actually locate as well as on all carbon labels.
+
+### 5. Cross-fitted diverse ensemble
+
+If the pair and shell models win independently, keep four runtime members but make them structurally diverse:
+
+- two acid-only/site-shell members; and
+- two acid/base-pair members.
+
+Alternatively, retain a small forest contribution if its weight wins nested grouped validation. Require a paired, molecular-family-clustered confidence interval excluding zero before calling the blend better.
+
+### 6. Clean pretraining and auxiliary physics
+
+Before commercial teacher labels, pretrain on structures or clearly licensed physical targets:
+
+- masked atom, charge, and bond reconstruction;
+- local graph-context prediction around the eventual ionization site;
+- contrastive learning across equivalent SMILES, Kekule forms, and allowed tautomers;
+- deterministic RDKit descriptor auxiliary tasks; and
+- quantum auxiliary targets such as partial charges, bond orders, or orbital/energy descriptors from an openly reusable corpus.
+
+[Uni-pKa](https://pubs.acs.org/doi/10.1021/jacsau.4c00271) is a useful reference for microstate-free-energy learning and self-supervised atom/charge/3D tasks. Borrow the self-supervised ideas without importing its weak teacher-labelled target as experimental truth.
+
+[QMugs](https://pmc.ncbi.nlm.nih.gov/articles/PMC9174255/) provides quantum-mechanical properties for roughly 665,000 drug-like molecules and about two million conformers under a CC BY 4.0 release. It is a defensible candidate for representation pretraining or auxiliary supervision, followed by experimental pKa fine-tuning. A practical goal is to distill any 3D/QM benefit into the existing 2D runtime representation rather than shipping a quantum engine.
+
+D2A also contains gas-phase acidity and anion-solvation information. If its downstream rights are clarified, a multitask decomposition closer to
+
+```text
+gas-phase deprotonation energy + solvent stabilization -> solution pKa
+```
+
+is more chemically grounded than treating solvent identity as an arbitrary categorical label.
+
+Claude's `qm_microstate.py` is an important negative result: B3LYP/6-31+G** with electrostatic continuum solvent badly under-stabilized glycine's zwitterion and would have selected the wrong model. Do not turn that level of theory into a gate. Better-solvation or cluster-continuum QM is a separate research project, not a parameter tweak.
+
+### 7. Joint site detection and pKa learning
+
+All current headline MAEs assume the correct ionizing atom is supplied. The product must locate the site first. A stronger end-to-end system should add a site-existence/transition-class head trained with:
+
+- positive changed atoms from explicit acid/base pairs;
+- chemically plausible hard-negative atoms in the same molecule;
+- censored handling for records where only the strongest site is known; and
+- invariant labels across atom ordering, equivalent protomers, and tautomers.
+
+This may improve the user-visible answer even if oracle-site MAE stays unchanged. Report site precision/recall and full-pipeline pKa accuracy separately.
+
+## Evaluation reset required before model selection
+
+### The 398-row set is now development data
+
+[`external_eval.py`](packages/rdkit-adapter/vendor/pka-model/external_eval.py) explicitly states that this figure settles retraining decisions and documents its use to reject H160. The atom-index remapping bug from the earlier audit has been repaired, but repeated model selection means the set is no longer “never used for fold selection” in the statistical sense. Rename it a development/external-check set and reserve a new final test.
+
+Before using any new external source, deduplicate it against pKaCHU, D2A, Dwar-iBond, QupKake experimental data, all calibration material, and all pretraining structures by normalized molecular family—not only raw SMILES.
+
+### Current folds leak molecular families
+
+A HetAtomTautomer-family audit found 287 protonation/tautomer families, covering 590 rows, split across the current stable scaffold folds. The stable scaffold hash is reproducible, but it is not balanced: fold sizes range from approximately 1,637 to 4,314 because a single benzene scaffold contains 2,617 labels.
+
+Build one frozen assignment that:
+
+- groups protonation states, tautomers, resonance-normalized forms, equivalent SMILES, and all solvent measurements for a molecule family;
+- keeps large scaffolds intact while balancing total rows and key site classes across folds;
+- carries source and publication identifiers for leave-one-source-out checks;
+- creates a distinct calibration partition for ensemble weights and intervals; and
+- never changes when rows are added or removed.
+
+Use paired, molecular-family-clustered bootstrap intervals. A per-row standard error treats highly related measurements as independent and will overstate certainty.
+
+### Fresh final test
+
+SAMPL6/8 and euroSAMPL are useful components only if their families are removed from every training and pretraining source. Because pKaLearn and other public compilations contain some of these molecules, “we did not load the SAMPL CSV” is not enough. A publication-time or source-held-out set of newly curated experimental values would be even stronger.
+
+## Staged experiment matrix for Claude
+
+| Stage | Experiment | Promotion rule |
+|---:|---|---|
+| 0 | Freeze balanced protonation/tautomer-family folds; audit source and benchmark overlap | Mandatory prerequisite |
+| 1 | Current baseline vs `+distance shells` vs `+acid/base pair` vs `+both` | Promote if overall MAE improves at least 0.01 or a predeclared target class at least 0.05 on 4 of 5 paired folds |
+| 2 | AdamW, dropout, early stopping, residual/normalization, L1 vs Huber | Stop candidates at least 0.02 worse after the first two frozen folds |
+| 3 | Square-root class balancing and element/transition heads | Require carbon MAE improvement at least 0.10 with overall regression below 0.01 |
+| 4 | Diverse four-member ensemble or inner-CV forest blend | Require clustered paired 95% confidence interval to exclude zero |
+| 5 | Structure-only or QM-auxiliary pretraining | Require at least 0.02 overall gain in nested CV and on the fresh external test |
+| 6 | Solvent-aware D2A multitask model | Require at least 0.05 carbon/neutral-acid gain with no aqueous or source-held-out regression |
+| 7 | ChemAxon pseudo-label pretraining | Research-only last arm; remove benchmark overlap and disclose inherited predictor signal |
+| 8 | Quantile heads plus conformalization | Judge coverage and interval width, not point MAE |
+
+### Final shipping gates
+
+Do not ship a new “more accurate” model unless it achieves all applicable gates:
+
+- at least 0.02 absolute MAE improvement on a fresh locked microscopic-pKa test, or at least 0.10 on a predeclared weak class;
+- molecular-family-clustered 95% confidence interval for the paired improvement excludes zero;
+- no critical site class or source worsens by more than 0.05 MAE;
+- macroscopic validation worsens by no more than 0.03;
+- site-detection precision/recall does not regress;
+- protonation/tautomer representation invariance does not regress;
+- calibrated interval coverage does not regress; and
+- artifact size and desktop inference latency remain inside a declared budget.
+
+## Dataset and licensing recommendations
+
+| Resource | What it can add | Recommendation |
+|---|---|---|
+| [pKaCHU](https://zenodo.org/records/20089807) | Explicit acid/base pairs, citations, replicates | Already contributes 4,419 rows. Exploit its pair and provenance fields; do not describe it as a new corpus lever. CC BY 4.0. |
+| [D2A-pKa](https://zenodo.org/records/15277342) | Multi-solvent pKa, gas-phase acidity, solvation targets | Already contributes 624 aqueous rows; conditionally use 4,445 nonaqueous rows with solvent-aware heads after author/license clarification. |
+| QupKake experimental subset / [Machine-learning-meets-pKa](https://github.com/czodrowskilab/Machine-learning-meets-pKa) | 4,022 current experimental labels | Keep, but record the upstream dataset's CC BY 4.0 rather than QupKake's BSD software license. Continue disclosing Marvin-derived site assignments. |
+| Dwar-iBond | 3,031 current paired labels | Retain for research while resolving original citations and downstream reuse terms; use source-aware weighting and sensitivity tests. |
+| [pKaLearn](https://github.com/MoitessierLab/pKaLearn) | Strong feature and architecture ideas | Use as an MIT code/design donor. Do not ingest all labels or weights without row-level provenance and benchmark-overlap audit. |
+| [G-pKa](https://zenodo.org/records/15257975) | Tautomer-aware pairs and QM features | Contact the authors; the public record does not appear to contain all advertised artifacts. High value if complete and clearly licensed. |
+| [QMugs](https://pmc.ncbi.nlm.nih.gov/articles/PMC9174255/) | Large open QM auxiliary corpus | Strong clean-pretraining candidate; CC BY 4.0. |
+| [IUPAC Dissociation Constants](https://github.com/IUPAC/Dissociation-Constants) | Broad, condition-rich research evaluation | CC BY-NC: use for research analysis unless separate permission covers redistributed commercial-compatible weights. |
+| QupKake 1.55M ChemAxon-labelled corpus | Broad pseudo-labelled chemical space | Last research arm only. Obtain written clearance before distributing weights and disclose teacher provenance. |
+| SAMPL/euroSAMPL | High-quality challenge measurements | Reserve as never-train tests after exhaustive family-overlap removal. |
+
+The root `NOTICE` and method contract currently need a data-license correction for the 4,022 QupKake experimental rows: the upstream dataset is CC BY 4.0; QupKake's BSD grant is a software license. Dwar-iBond remains unresolved. These are provenance corrections, not merely paperwork—the license and experimental/computational origin must follow the model artifact.
+
+## The end-to-end chemistry remains a separate P0
+
+At the start of this review, direct RDKit probes still showed that equivalent drawings could produce different state graphs, and that independent transition bits could create nonphysical combinations. Examples included neutral versus zwitterionic glycine, same-atom acid/basic transitions, and spectator fragments changing whole-molecule descriptors. Claude now has uncommitted edits targeting several of these paths; rerun the probes after those edits settle before treating them as fixed.
+
+A better site regressor cannot repair an invalid thermodynamic graph. The long-term first-class architecture should be:
 
 ```text
 submitted drawing
-  -> canonical molecular family
-  -> atom-mapped, chemically valid protonation/tautomer states
+  -> canonical atom-mapped molecular family
+  -> chemically valid protomer/tautomer states
   -> explicit single-proton transition graph
-  -> state or edge free-energy prediction
-  -> thermodynamic reconciliation
-  -> microscopic pKas, macroscopic pKas, populations, and dominant species
+  -> learned scalar free energy per state
+     or edge energies projected onto consistent node energies
+  -> partition functions
+  -> microscopic pKas, macroscopic pKas, populations, and charge curves
 ```
 
-### State model requirements
-
-- Generate protonation and tautomer states independently of the submitted protomer.
-- Preserve atom mapping through every transformation.
-- Represent a microscopic pKa as an edge between explicit protonated and deprotonated structures.
-- Deduplicate resonance- and symmetry-equivalent states.
-- Record transformations in the existing interpretation ledger.
-- Organize states by total proton count and formal charge.
-- Decline if required portions of the state graph cannot be constructed or validated.
-- Treat salts, disconnected components, and metals through explicit interpretation/domain policies.
-
-### Thermodynamic model requirements
-
-The preferred learned object is a scalar free energy for each state. A second acceptable approach is to predict edge free energies and project them onto consistent node energies through weighted least squares.
-
-Either approach should enforce:
-
-- thermodynamic cycle closure;
-- symmetry equivalence;
-- tautomer-equivalent-state constraints;
-- consistency between microscopic and macroscopic predictions; and
-- one common state ensemble for pKa, species populations, charge curves, and dominant structures.
-
-This architecture would naturally support valuable analytical capabilities beyond a single pKa number:
+This enforces cycle closure and makes macro-pKa a consequence of one state ensemble rather than a set of independent atom scores. It also unlocks the analytical capabilities that could genuinely distinguish ChemDraft:
 
 - dominant microspecies versus pH;
-- complete species-distribution curves;
-- average molecular charge versus pH;
+- species-distribution and average-charge curves;
 - isoelectric points;
 - tautomer contributions;
-- buffer regions;
-- site-specific and macro-level uncertainty; and
-- solvent- and condition-specific predictions where supported.
+- explicit microscopic transition structures;
+- condition- and solvent-aware estimates; and
+- uncertainty at both state-transition and macroscopic levels.
 
-## Recommended datasets
+## What Claude should do next
 
-The guiding rule should be: a public download is not necessarily redistributable training data, and a paper's license is not automatically the database's license.
+1. Stop widening the current model and stop pruning labels by apparent product reachability.
+2. Freeze the family-aware benchmark and demote the 398-row set to development status.
+3. Modify the training loader to consume the mapped conjugate base and build the four-way Stage 1 comparison.
+4. Add distance-to-site shells and the pKaLearn-style parity-safe chemistry features.
+5. Run the small regularization/class-balance screen on identical folds and seeds.
+6. Build a diverse four-member ensemble only from independently winning models.
+7. Use structure/QM self-supervision next; test ChemAxon pseudo-labels last and separately.
+8. Keep repairing and measuring the full site/state pipeline, because oracle-site MAE is not product accuracy.
 
-| Priority | Resource | Coverage and reuse status | Recommended use |
-|---:|---|---|---|
-| 1 | [pKaCHU](https://zenodo.org/records/20089807) and the [T5pKa paper](https://doi.org/10.1021/acs.jcim.6c00556) | 9,000 experimentally derived aqueous values represented as explicit protonated-to-deprotonated pairs; 2,118 Murcko scaffolds; CC BY 4.0 | Best immediate training addition. Preserve replicate measurements and citations instead of training only on supplied averages. Retrain from clean experimental data rather than automatically adopting checkpoints containing calculated-label pretraining. |
-| 2 | [D2A-pKa](https://zenodo.org/records/15277342) and its [paper](https://doi.org/10.1021/jacs.5c07357) | 8,241 experimental values across eight solvents, with reaction and solvent SMILES; CC BY 4.0 | Build a distinct solvent-aware neutral-acid contract. Do not silently use it for unsupported bases or as an aqueous fallback. |
-| 3 | [pKaLearn](https://github.com/MoitessierLab/pKaLearn) and its [paper](https://doi.org/10.1038/s42004-026-01983-y) | Approximately 13,000 site-associated values; MIT repository and artifacts; iterative polyprotic design | Strong open comparator and architecture donor. Audit the row-level provenance of its upstream data before adopting weights. |
-| 4 | [G-pKa](https://zenodo.org/records/15257975) and its [paper](https://doi.org/10.1021/acs.jcim.6c00255) | 6,379 experimental pKas, more than 39,000 conformer/tautomer structures, and QM-derived features; Zenodo record says CC BY 4.0 | Scientifically valuable for tautomer-dependent equilibria. The currently published record appears incomplete, so obtain the full graph/checkpoint artifacts from the authors before integration. |
-| 5 | [SAMPL6](https://github.com/samplchallenges/SAMPL6), [SAMPL7](https://github.com/samplchallenges/SAMPL7), [SAMPL8](https://github.com/samplchallenges/SAMPL8), and [euroSAMPL1](https://radar4chem.radar-service.eu/radar/en/dataset/dfqzn3tat216pyzy) | Small, well-characterized challenge sets with permissive or CC BY reuse terms | Freeze as never-train external benchmarks. Version corrected or remeasured values explicitly. |
-| 6 | [IUPAC aqueous pKa dataset](https://zenodo.org/records/21533589) | More than 24,000 rows and 10,000 structures, with unusually rich method, temperature, pressure, cosolvent, reliability, and source metadata; CC BY-NC 4.0 | Excellent research, overlap analysis, and condition-aware error corpus. Do not bundle it or train a generally redistributable Apache model without permission. |
-| 7 | [IUPAC dipolar non-hydrogen-bond-donor solvent dataset](https://zenodo.org/records/19518593) | More than 9,500 values for nearly 5,000 neutral acids across seven solvents; CC BY-NC 4.0 | Research foundation for a later nonaqueous predictor. Never pool directly with aqueous values. |
-| 8 | [pKaHub](https://github.com/keserulab/pkahub) and its [paper](https://doi.org/10.1021/acs.jcim.6c00107) | More than 90,000 reported aqueous values and more than 31,000 molecules; bulk database has no explicit data license | Lookup or internal benchmark only pending written reuse terms. Its proposed microspecies assignments are computational, not measured microscopic labels. |
-| 9 | [Tautobase](https://github.com/WahlOya/Tautobase) | 1,680 tautomer pairs with measured or estimated preferences; no explicit repository license | Tautomer-invariance diagnostics only unless reuse permission is clarified. It is not a primary pKa corpus. |
+## Verification performed
 
-### Corpus requirements
+- Re-read the current GNN feature, loader, architecture, split, training, inference, external-evaluation, calibration, and build-history code.
+- Recomputed corpus pair counts and reviewed current model/external/macro/Hammett artifacts.
+- Audited errors by pKa range, ionizing element, and source.
+- Audited current scaffold assignments for protonation/tautomer-family leakage and imbalance.
+- Reviewed Claude's supplied proposal and current negative experiments (`carbon_prune.py` and `qm_microstate.py`).
+- Re-ran the focused RDKit-backed pKa suites: **330 of 330 tests passed**.
 
-Every retained observation should carry:
+Green tests show that the in-progress implementation is internally consistent with its current fixtures. They do not prove a new model is more accurate, that the 398-row set is blind, or that all chemically equivalent drawings produce the same end-to-end result.
 
-- source dataset and original record ID;
-- original literature citation;
-- license and redistribution status;
-- experimental or computational origin;
-- solvent, temperature, ionic strength, and measurement method;
-- macro/micro designation;
-- measured, curator-assigned, or computationally reconstructed site identity;
-- explicit protonated and deprotonated structures;
-- atom mapping and molecular-family identifier;
-- replicate values and disagreement; and
-- checksums for source and normalized records.
+## Bottom line
 
-An explicit structure pair should not automatically be described as an experimentally resolved microscopic equilibrium. The provenance must distinguish a measured microscopic assignment from a curator or software reconstruction.
-
-## Recommended dependencies and model comparisons
-
-### Chemprop v2
-
-[Chemprop v2](https://github.com/chemprop/chemprop) is MIT licensed and supports reaction-plus-solvent multicomponent message-passing. It is a strong offline training framework for explicit acid/base pairs.
-
-It should not introduce Python and PyTorch into the core desktop runtime. Train offline, then export or distill a compact versioned inference artifact if the resulting accuracy, license, and performance are acceptable.
-
-### pKaLearn-style site-centered graph network
-
-[pKaLearn](https://github.com/MoitessierLab/pKaLearn) is the most actionable open comparator for a site-centered graph model. Its design suggests testing:
-
-- a chemically local radius of roughly seven bonds;
-- directed bond polarization and electronegativity features;
-- explicit ring size and hydrogen count; and
-- a task-specific conjugation definition rather than relying uncritically on RDKit's generic conjugation flag.
-
-### Uni-pKa and free-energy models
-
-[Uni-pKa](https://github.com/dptech-corp/Uni-pKa) is a useful architectural reference for microstate free energies and thermodynamic consistency. Its approach should inform the state/free-energy design even if ChemDraft does not adopt its complete model or runtime.
-
-### Optional physics-assisted path
-
-[xTB](https://github.com/grimme-lab/xtb) plus [LightGBM](https://github.com/microsoft/LightGBM) could support a slower, optional sidecar for carbon acids or difficult out-of-domain structures. This should be a separately named method with its own domain, licensing, performance, and uncertainty contract.
-
-### Required baseline comparison
-
-Three deliberately different models should be evaluated on identical leakage-free splits:
-
-1. the existing random forest and Hammett methods as transparent baselines;
-2. a Chemprop reaction-pair model; and
-3. a pKaLearn-style site-centered graph network.
-
-They should only be ensembled if a frozen validation set demonstrates genuinely complementary errors. Hammett should remain an independently reported specialist method unless separate held-out calibration proves that combining it improves both accuracy and calibration.
-
-## Uncertainty, domain, and validation strategy
-
-### Data splitting and leakage control
-
-Use several simultaneous identity checks:
-
-- atom-mapped protonated/deprotonated pair;
-- tautomer/protomer-normalized molecular family;
-- parent InChIKey;
-- Bemis-Murcko scaffold;
-- source dataset; and
-- publication or temporal origin where available.
-
-Required evaluations include nested grouped cross-validation, leave-one-source-out testing, and frozen external challenge sets. The final interval-calibration set must not also be used to select model hyperparameters or consensus weights.
-
-### Calibrated uncertainty
-
-Replace tree spread with conformal calibration on an untouched grouped calibration set. Where enough data exist, calibrate separately by site class, charge transition, and solvent.
-
-Display several distinct signals rather than one generic `±` number:
-
-- calibrated prediction interval;
-- distance to the nearest supported training chemistry;
-- number and diversity of relevant training examples;
-- disagreement among experimental replicates;
-- disagreement among generated tautomers;
-- disagreement among independently trained model families; and
-- explicit out-of-domain or unsupported status.
-
-### End-to-end acceptance gates
-
-A first-class release should report at least:
-
-- protonation/tautomer state-generation precision and recall;
-- correct identification of proton-transfer edges;
-- representation invariance across protomers, tautomers, atom ordering, Kekule forms, explicit hydrogens, and salts;
-- microscopic pKa MAE/RMSE and calibrated coverage;
-- macroscopic pKa matching accuracy;
-- species-population or charge-curve accuracy where reference data exist;
-- performance stratified by functional class, charge, molecular size, source, and applicability domain; and
-- explicit decline rates and reasons.
-
-## Proposed implementation sequence
-
-### Phase 0: Correct unsafe behavior and claims
-
-1. Mark the current predictor experimental.
-2. Suppress or qualify macroscopic and consensus accuracy claims.
-3. Fix atom mapping in external validation and regenerate its results.
-4. Unify training and production descriptor implementations.
-5. Apply interpretation-level metal and component domain checks.
-6. Prevent duplicated same-atom transitions and invalid independent states.
-7. Correct dataset counts, licenses, citations, and provenance.
-8. Hash and fingerprint every model, data, calibration, and constants artifact.
-9. Split Dimorphite location, random-forest regression, Hammett LFER, consensus, and macroscopic computation into separately versioned components or one explicit composite contract.
-
-### Phase 1: Build the reproducible corpus
-
-1. Implement the row-level corpus registry.
-2. Ingest pKaCHU first.
-3. Audit and either repair or quarantine Dwar-iBond and QupKake records.
-4. Detect overlaps across all training, calibration, and benchmark sources.
-5. Pin the Python/RDKit/NumPy/scikit-learn training environment.
-6. Add source fetch/checksum scripts where redistribution permits.
-7. Preserve measurements, conditions, citations, and replicates rather than only normalized averages.
-
-### Phase 2: Replace the state engine
-
-1. Create atom-mapped protomer/tautomer graph contracts in `analysis-core`.
-2. Implement chemically valid state enumeration in the RDKit adapter.
-3. Deduplicate symmetry-, resonance-, and tautomer-equivalent states.
-4. Validate every state and single-proton transition.
-5. Add invariant end-to-end fixtures for glycine, acetate/acetic acid, pyridine/pyridinium, aniline, amides, urea, azoles, salts, metals, carbon acids, and reordered atoms.
-
-### Phase 3: Train and compare models
-
-1. Retain the forest as a baseline.
-2. Train a pKaCHU reaction-pair Chemprop model.
-3. Train a pKaLearn-style site-centered graph model.
-4. Evaluate state-energy and edge-energy formulations.
-5. Enforce or reconcile thermodynamic cycles.
-6. Add condition inputs only where supported by an explicitly separate dataset and method contract.
-
-### Phase 4: Calibrate and validate
-
-1. Lock never-train SAMPL/euroSAMPL benchmarks.
-2. Run molecular-family, scaffold, source, and temporal leakage audits.
-3. Calibrate conformal intervals on untouched grouped data.
-4. Measure the complete state-generation-to-reporting pipeline.
-5. Establish release thresholds by chemistry class and domain, not only a global MAE.
-
-### Phase 5: Deliver first-class analytical outputs
-
-Expose:
-
-- explicit microstate structures and charge states;
-- mapped microscopic transitions;
-- macroscopic pKas with step identities;
-- species-distribution and average-charge curves versus pH;
-- dominant states and isoelectric point where defined;
-- solvent, temperature, and measurement convention;
-- calibrated intervals and applicability evidence; and
-- complete model, dataset, artifact, and transformation provenance.
-
-## Verification performed during this review
-
-- Focused pKa suites: **281 of 281 tests passed**.
-- Analysis result/report suites: **56 of 56 tests passed**.
-- Total focused passing tests: **337**.
-- Direct real-RDKit probes covered glycine protomers, acetic acid/acetate, sodium and iron components, acetamide, urea, sulfonamide, imide, aniline, pyridine/pyridinium, imidazole, and descriptor-convention differences.
-- Static inspection covered training, calibration, external validation, coupling, provenance, fingerprints, result contracts, reports, and dependency inventory.
-
-The green tests demonstrate component-level regression coverage, but they do not currently exercise the highest-impact end-to-end scientific failures described above.
-
-## Recommended near-term product claim
-
-The most defensible target claim is:
-
-> Trained on explicitly licensed, reaction-pair aqueous data; evaluated on frozen blind-challenge sets; representation-, condition-, provenance-, applicability-, and tautomer-aware.
-
-That is a substantially stronger and more scientifically meaningful standard than increasing the size of the present forest while retaining the current state-generation and validation assumptions.
+The branch can still gain predictive power. The best near-term chance is **paired acid/base learning plus explicit site-relative chemistry**, evaluated on frozen molecular-family splits and followed by modest regularization, class balancing, and a genuinely diverse ensemble. Clean self-supervised or QM-auxiliary pretraining is the next escalation. ChemAxon-labelled pretraining is a potentially informative but legally and scientifically encumbered last experiment—not the foundation of an open first-in-class predictor.
