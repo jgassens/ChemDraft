@@ -156,6 +156,44 @@ describe("what it refuses to score", () => {
       else expect(site.spread).toBeUndefined();
     }
   });
+
+  it("calls a sulfonic acid fully dissociated instead of giving it a pKa", async () => {
+    // It has no aqueous pKa: all 15 such labels in the corpus fall between -7.15 and -1.25, measured by
+    // Hammett acidity function in concentrated acid rather than as an aqueous constant. The number this
+    // used to report was the corpus's worst-predicted class (out-of-fold MAE 3.64) AND biased toward
+    // zero, so it could land inside the window and assert a titration that does not happen.
+    const { result } = await ionization("CS(=O)(=O)O");
+    expect(result.sites.filter((site) => site.pKa !== null)).toEqual([]);
+    expect(result.unassessed.map((entry) => entry.reason).join(" ")).toMatch(
+      /fully dissociated across the entire aqueous range/
+    );
+  });
+
+  it("withholds only the sulfonate, and leaves its molecule's real titration alone", async () => {
+    // MES buffer. Its morpholine nitrogen measures 6.15 and must survive; its sulfonate was reported at
+    // 0.29 — inside the window the buffer is actually used in, which is the misreading that matters.
+    const { result } = await ionization("OS(=O)(=O)CCN1CCOCC1");
+    const scored = result.sites.filter((site) => site.pKa !== null);
+    expect(scored).toHaveLength(1);
+    expect(scored[0]!.siteType).toMatch(/Amines/);
+    expect(scored[0]!.pKa!).toBeCloseTo(5.74, 1);
+    // One rung, so the cycle closes exactly. Carrying the sulfonate at a declared bound instead was
+    // tried and drove this to 3.03 — see `isFullyDissociatedSulfonic`.
+    expect(result.macroscopic!.pKa).toHaveLength(1);
+    expect(result.macroscopic!.inconsistency).toBeCloseTo(0, 6);
+  });
+
+  it("keeps the values of the sulfur acids that DO titrate in water", async () => {
+    // The rule tests for two sulfonyl oxygens. One is a sulfinic acid, which titrates near 1.8 and is
+    // predicted to MAE 0.39; a sulfonamide keys on nitrogen. Neither may be caught.
+    const sulfinic = await ionization("CS(=O)O");
+    expect(sulfinic.result.sites.filter((site) => site.pKa !== null).length).toBeGreaterThan(0);
+
+    const sulfonamide = await ionization("NS(=O)(=O)c1ccccc1");
+    const scored = sulfonamide.result.sites.filter((site) => site.pKa !== null);
+    expect(scored.length).toBeGreaterThan(0);
+    expect(scored.some((site) => /Sulfonamide/.test(site.siteType))).toBe(true);
+  });
 });
 
 describe("the second method, end to end", () => {

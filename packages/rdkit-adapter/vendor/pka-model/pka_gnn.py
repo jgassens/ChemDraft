@@ -32,6 +32,7 @@ already written twice and checked against each other. Nothing new has to be trus
 
     python3 pka_gnn.py <labels.json> <out-dir>
 """
+import hashlib
 import json
 import math
 import sys
@@ -215,6 +216,11 @@ def load(path):
             "atoms": atoms, "bonds": bonds, "edges": edges,
             "site": row["acidAtomIdx"], "y": float(row["pKa"]),
             "scaffold": scaffold_of(mol), "acid": row["acid"],
+            # Carried into gnn-oof.json so the interval calibration can stratify on it without
+            # importing RDKit. `interval_calibrate.py` and `edge_variance_fit.py` are deliberately
+            # dependency-light -- they run wherever run_all.sh runs -- and re-deriving the element
+            # there would mean parsing SMILES by hand or pulling in the toolkit.
+            "element": mol.GetAtomWithIdx(row["acidAtomIdx"]).GetSymbol(),
         })
     print(f"   featurised {len(rows)} rows, skipped {skipped}")
     return rows
@@ -287,9 +293,24 @@ def cross_validate(rows, device, folds=5):
     The ensemble is trained INSIDE the fold, so the reported figure is the ensemble's, and the spread
     it reports is measured on data no member saw. Calibrating a spread on rows the models were fitted
     to would make it look far tighter than it is.
+
+    **THE SPLIT IS KEYED ON THE SCAFFOLD ITSELF, NOT ON ITS POSITION IN THE SORTED LIST.** It used to be
+    `i % folds` over `enumerate(scaffolds)`, which makes every scaffold's fold depend on how many
+    scaffolds sort before it -- so changing the CORPUS reshuffles the SPLIT. Measured while testing a
+    prune of 100 rows: 47 scaffold groups disappeared, and 96.3% of the 11,996 surviving rows landed in
+    a different held-out fold. The comparison then conflates the corpus change with a wholly different
+    train/test partition, and the partition is the larger effect by far. Retraining on identical data
+    moves cvMAE by 0.0017; re-splitting moves individual class figures by ten times that.
+
+    Hashing the scaffold string makes each group's fold independent of every other group, so removing
+    rows leaves every surviving row in the fold it was already in and a corpus experiment becomes a
+    controlled one. `hashlib` rather than `hash()`: the builtin is salted per process, so it would give
+    a different split on every run and no figure here would reproduce.
     """
     scaffolds = sorted({row["scaffold"] for row in rows})
-    assignment = {s: i % folds for i, s in enumerate(scaffolds)}
+    assignment = {
+        s: int(hashlib.sha1(s.encode("utf-8")).hexdigest(), 16) % folds for s in scaffolds
+    }
     errors, spreads = [], []
     # Out-of-fold predictions, saved so the consensus calibration can use them. Fitting the weighting
     # against in-sample predictions would make the network look better than it is exactly where it is
@@ -358,7 +379,8 @@ def main(labels_path, out_dir):
           f"(predicting the mean: {baseline:.4f})")
     json.dump(
         [{"acid": row["acid"], "acidAtomIdx": row["site"], "observed": row["y"],
-          "predicted": round(pair[0], 4), "spread": round(pair[1], 4)}
+          "predicted": round(pair[0], 4), "spread": round(pair[1], 4),
+          "element": row["element"]}
          for row, pair in zip(rows, oof) if pair is not None],
         open(f"{out_dir}/gnn-oof.json", "w"),
     )

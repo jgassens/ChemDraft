@@ -61,6 +61,12 @@ interface Folded {
 }
 
 async function fold(smiles: string, runId: string): Promise<Folded | undefined> {
+  const { result } = await ionizationOf(smiles, runId);
+  return (result as unknown as { macroscopic?: Folded }).macroscopic;
+}
+
+/** The whole ionization result, for the gates that read per-SITE values rather than the folded ladder. */
+async function ionizationOf(smiles: string, runId: string) {
   const run = await analyzeStructure({
     format: "smiles",
     value: smiles,
@@ -68,8 +74,8 @@ async function fold(smiles: string, runId: string): Promise<Folded | undefined> 
     startedAt: "2026-08-02T00:00:00.000Z"
   } as never);
   const result = run.results.find((entry) => entry.methodId === IONIZATION_SITES_METHOD_ID);
-  if (!result || result.kind !== "ionization") return undefined;
-  return (result as { macroscopic?: Folded }).macroscopic;
+  if (!result || result.kind !== "ionization") throw new Error(`no ionization result for ${smiles}`);
+  return { run, result };
 }
 
 /**
@@ -211,6 +217,78 @@ describe("the cycle defect as a corpus gate", () => {
       expect(folded, name).toBeDefined();
       expect(folded!.inconsistency, `${name} contradicts itself`).toBeLessThan(2.5);
     }
+  }, 1_800_000);
+});
+
+/**
+ * Unpopulated rungs against their BLOCKED ANALOGUES — a second label-free gate, orthogonal to the cycle.
+ *
+ * An amino acid's NH3+ -> neutral rung is the one no titration can populate, and it is where a corpus that
+ * improved every labelled figure put glycine at 2.07 against ~7.7. The cycle defect caught that; this
+ * catches it a different way, and the difference matters because the cycle only says a molecule
+ * contradicts ITSELF. Here the model is checked against its own answer for a molecule where the same
+ * question IS measurable.
+ *
+ * Esterify the carboxyl and it can no longer ionise: glycine methyl ester's amine titrates in the
+ * environment glycine's amine only ever sees on an unpopulated microstate. That value is experimentally
+ * accessible — commonly quoted near 7.7, though the sourcing this was checked against is secondary, so
+ * the ASSERTION here is the label-free one and the experimental figure is context. -COOH and -COOCH3 have
+ * nearly equal inductive constants, which is what makes the substitution legitimate rather than
+ * convenient.
+ *
+ * Measured scatter of the comparison, which is what sets the bound:
+ *
+ *     molecule          unpopulated rung   methyl ester   difference
+ *     glycine                       7.91           7.77        +0.14
+ *     alanine                       8.43           7.81        +0.62
+ *     beta-alanine                  8.91           9.34        -0.43
+ *     serine                        7.89           7.17        +0.72
+ *     GABA                          9.69          10.14        -0.45
+ *     phenylalanine                 8.09           7.08        +1.01
+ *
+ * Mean 0.56, worst 1.01 — against the ~5.7 it has to catch. That scatter is the ester approximation plus
+ * the model's own noise and is not something to tighten away; the bound is set to 2.0 so a legitimate
+ * substituent effect cannot fail it while the failure mode misses by a factor of three.
+ *
+ * **QM WAS TRIED FOR THIS AND WAS WORSE THAN USELESS.** B3LYP/6-31+G(d,p) with ddCOSMO put glycine's
+ * rung at 3.74 — nearer the rejected model's 2.07 than the shipped 7.91, so it would have endorsed the
+ * regression. `qm_microstate.py` records why: an electrostatic continuum under-stabilises a zwitterion by
+ * about 5.4 kcal/mol, and the conformer search is not the problem.
+ */
+describe("unpopulated rungs against their blocked analogues", () => {
+  it("agrees with itself about a rung no titration can reach", async () => {
+    const PAIRS = [
+      ["glycine", "NCC(=O)O", "COC(=O)CN"],
+      ["alanine", "C[C@@H](N)C(=O)O", "COC(=O)[C@@H](C)N"],
+      ["beta-alanine", "NCCC(=O)O", "COC(=O)CCN"],
+      ["serine", "N[C@@H](CO)C(=O)O", "COC(=O)[C@@H](N)CO"],
+      ["GABA", "NCCCC(=O)O", "COC(=O)CCCN"],
+      ["phenylalanine", "N[C@@H](Cc1ccccc1)C(=O)O", "COC(=O)[C@@H](N)Cc1ccccc1"]
+    ] as const;
+
+    /** The amine's basic rung: for the acid it is unpopulated, for the ester it is what titrates. */
+    const amineRung = async (smiles: string, runId: string) => {
+      const { result } = await ionizationOf(smiles, runId);
+      const basic = result.sites.filter((site) => site.acidCharge === 1 && site.pKa !== null);
+      expect(basic, `${smiles} offers no protonated amine rung`).toHaveLength(1);
+      return basic[0]!.pKa!;
+    };
+
+    const gaps: number[] = [];
+    for (const [name, acid, ester] of PAIRS) {
+      const rung = await amineRung(acid, `analogue-acid-${name}`);
+      const blocked = await amineRung(ester, `analogue-ester-${name}`);
+      const gap = rung - blocked;
+      gaps.push(Math.abs(gap));
+      expect(
+        Math.abs(gap),
+        `${name}: unpopulated rung ${rung.toFixed(2)} contradicts its blocked analogue ${blocked.toFixed(2)}`
+      ).toBeLessThan(2);
+    }
+    // The mean is asserted too, so a corpus that degrades every pair a little cannot pass by staying
+    // under the per-pair bound on each one.
+    const mean = gaps.reduce((sum, g) => sum + g, 0) / gaps.length;
+    expect(mean, "the analogue comparison has degraded across the board").toBeLessThan(1.2);
   }, 1_800_000);
 });
 

@@ -1,81 +1,81 @@
 {
   "measurement": "Gaussian MLE of sigma^2 = floor + perSpread * spread^2 on out-of-fold predictions; the fold weights each rung by 1/sigma^2. Spread is the REPORTED interval -- the ensemble's standard deviation times spreadMultiplier -- because that is what the fold is handed, not the raw deviation gnn-oof.json stores",
   "samples": 12096,
-  "floor": 0.1137,
-  "perSpread": 1.7762,
-  "unknownSpread": 0.6662,
-  "spearmanSpreadVersusError": 0.4245,
-  "worstDecileMiscalibration": 1.0752,
+  "floor": 0.1131,
+  "perSpread": 1.7342,
+  "unknownSpread": 0.6636,
+  "spearmanSpreadVersusError": 0.4258,
+  "worstDecileMiscalibration": 1.0716,
   "calibration": [
     {
       "decile": 1,
-      "meanSpread": 0.2902,
-      "predictedSigma": 0.5141,
-      "actualRmse": 0.4898,
-      "ratio": 0.9528
+      "meanSpread": 0.2896,
+      "predictedSigma": 0.5094,
+      "actualRmse": 0.4903,
+      "ratio": 0.9626
     },
     {
       "decile": 2,
-      "meanSpread": 0.3823,
-      "predictedSigma": 0.612,
-      "actualRmse": 0.6193,
-      "ratio": 1.0119
+      "meanSpread": 0.3834,
+      "predictedSigma": 0.6079,
+      "actualRmse": 0.6214,
+      "ratio": 1.0221
     },
     {
       "decile": 3,
-      "meanSpread": 0.4916,
-      "predictedSigma": 0.7385,
-      "actualRmse": 0.758,
-      "ratio": 1.0263
+      "meanSpread": 0.4958,
+      "predictedSigma": 0.7358,
+      "actualRmse": 0.7885,
+      "ratio": 1.0716
     },
     {
       "decile": 4,
-      "meanSpread": 0.5594,
-      "predictedSigma": 0.8183,
-      "actualRmse": 0.8366,
-      "ratio": 1.0224
+      "meanSpread": 0.5561,
+      "predictedSigma": 0.806,
+      "actualRmse": 0.7589,
+      "ratio": 0.9416
     },
     {
       "decile": 5,
-      "meanSpread": 0.6293,
-      "predictedSigma": 0.9046,
-      "actualRmse": 0.9137,
-      "ratio": 1.0101
+      "meanSpread": 0.6272,
+      "predictedSigma": 0.8922,
+      "actualRmse": 0.9095,
+      "ratio": 1.0193
     },
     {
       "decile": 6,
-      "meanSpread": 0.7056,
-      "predictedSigma": 0.9996,
-      "actualRmse": 1.0065,
-      "ratio": 1.0069
+      "meanSpread": 0.7144,
+      "predictedSigma": 1.0001,
+      "actualRmse": 1.0346,
+      "ratio": 1.0345
     },
     {
       "decile": 7,
-      "meanSpread": 0.8263,
-      "predictedSigma": 1.1533,
-      "actualRmse": 1.2036,
-      "ratio": 1.0436
+      "meanSpread": 0.8223,
+      "predictedSigma": 1.1343,
+      "actualRmse": 1.1467,
+      "ratio": 1.0109
     },
     {
       "decile": 8,
-      "meanSpread": 0.9772,
-      "predictedSigma": 1.3462,
-      "actualRmse": 1.3214,
-      "ratio": 0.9816
+      "meanSpread": 0.9472,
+      "predictedSigma": 1.2936,
+      "actualRmse": 1.2567,
+      "ratio": 0.9715
     },
     {
       "decile": 9,
-      "meanSpread": 1.1862,
-      "predictedSigma": 1.6211,
-      "actualRmse": 1.5078,
-      "ratio": 0.9301
+      "meanSpread": 1.2167,
+      "predictedSigma": 1.6423,
+      "actualRmse": 1.5454,
+      "ratio": 0.941
     },
     {
       "decile": 10,
-      "meanSpread": 1.6385,
-      "predictedSigma": 2.2224,
-      "actualRmse": 2.2326,
-      "ratio": 1.0046
+      "meanSpread": 1.6624,
+      "predictedSigma": 2.2384,
+      "actualRmse": 2.2791,
+      "ratio": 1.0182
     }
   ]
 }

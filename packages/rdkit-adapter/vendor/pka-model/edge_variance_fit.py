@@ -123,10 +123,23 @@ def spearman(rows):
 
 
 def interval_lookup(calibration_path):
-    """The same curve `intervalFor` interpolates in TypeScript, so both fit and fold see one scale."""
-    points = json.load(open(calibration_path))["points"]
+    """The same curve `intervalFor` interpolates in TypeScript, so both fit and fold see one scale.
 
-    def at(deviation):
+    STRATUM-AWARE, because `intervalFor` is. Carbon sites read their own curve there, so fitting the
+    variance model against the pooled curve would fit one scale and apply it to another — the exact
+    mistake this file's header records having made once already with the raw deviation.
+    """
+    artifact = json.load(open(calibration_path))
+    strata = artifact.get("strata")
+    pooled = artifact["points"]
+
+    def curve_for(element):
+        if not strata or element is None:
+            return pooled
+        return strata.get("carbon" if element == "C" else "other", pooled)
+
+    def at(deviation, element=None):
+        points = curve_for(element)
         if deviation <= points[0]["spread"]:
             return points[0]["interval"]
         if deviation >= points[-1]["spread"]:
@@ -143,7 +156,7 @@ def interval_lookup(calibration_path):
 
 def main(oof_path, calibration_path, out_path):
     at = interval_lookup(calibration_path)
-    rows = [dict(r, spread=at(r["spread"]))
+    rows = [dict(r, spread=at(r["spread"], r.get("element")))
             for r in json.load(open(oof_path)) if "spread" in r]
     a, b = fit(rows)
     deciles = calibration(rows, a, b)

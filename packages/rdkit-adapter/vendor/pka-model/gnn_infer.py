@@ -22,10 +22,20 @@ def load_interval_calibration(path=None):
     The same file `pkaGnn.ts` imports and the same interpolation `intervalFor` performs. It used to be
     one multiplier on both sides; the moment it stopped being that, the parity fixture failed, which is
     what it is for.
-    """
-    points = json.load(open(path or os.path.join(_HERE, "interval-calibration.json")))["points"]
 
-    def at(deviation):
+    STRATIFIED, matching `intervalFor(deviation, element)`. Carbon reads its own curve because pooling it
+    with nitrogen and oxygen under-covered it by nine points; `interval_calibrate.py` records the table.
+    `element=None` reads the pooled curve, exactly as omitting the argument does in TypeScript.
+    """
+    artifact = json.load(open(path or os.path.join(_HERE, "interval-calibration.json")))
+    strata = artifact.get("strata")
+    pooled = artifact["points"]
+
+    def at(deviation, element=None):
+        if not strata or element is None:
+            points = pooled
+        else:
+            points = strata.get("carbon" if element == "C" else "other", pooled)
         if not np.isfinite(deviation) or deviation <= points[0]["spread"]:
             return points[0]["interval"]
         if deviation >= points[-1]["spread"]:
@@ -70,4 +80,5 @@ def predict_site(members, interval_at, mol, site):
     a, b, s, d, g, si, n, _ = collate(rows, torch.device("cpu"))
     with torch.no_grad():
         votes = np.array([float(m(a, b, s, d, g, si, n)[0]) for m in members])
-    return float(votes.mean()), float(interval_at(float(votes.std())))
+    element = mol.GetAtomWithIdx(site).GetSymbol()
+    return float(votes.mean()), float(interval_at(float(votes.std()), element))

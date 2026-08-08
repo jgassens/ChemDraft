@@ -816,7 +816,11 @@ export function scoreSiteTransitions(
     const before = sites.length;
 
     // --- acidic: this atom losing the proton it is drawn with ---
-    if (atom.hydrogens > 0 && !isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
+    if (
+      atom.hydrogens > 0 &&
+      !isUnactivatedAmine(graph, site.ionizableAtomIndex) &&
+      !isFullyDissociatedSulfonic(graph, site.ionizableAtomIndex)
+    ) {
       try {
         const prediction = predictSitePka(graph, site.ionizableAtomIndex);
         sites.push({
@@ -978,6 +982,17 @@ function carbanionStabilisers(
  * ONE nitro is enough on its own (n=29, MAE 0.96): nitromethane is 10.2 and nitroethane 8.5, both
  * genuinely in water. One carbonyl is not (n=60, MAE 2.68): acetone's alpha proton is near 20.
  */
+/**
+ * **TRAINING ON ONLY WHAT THIS GATE DETECTS WAS MEASURED AND REJECTED.** The corpus holds 449
+ * carbon-ionizing labels and this fires on 349; the other 100 are sites the product will never present,
+ * they are the worst-fit rows in the class (out-of-fold MAE 2.552 against 1.142), and 20 sit outside the
+ * aqueous window. Removing them from TRAINING makes the 349 it does present WORSE by 0.0278 — twice the
+ * same-split noise floor of 0.0164, and every larger class regresses too. On 398 held-out external rows
+ * the pruned model is worse on the total and on both sub-sets (1.1287 to 1.1667). They are auxiliary
+ * signal: carbanion chemistry learned from a site nobody asks about still transfers to one they do.
+ *
+ * So this gate decides what is REPORTED, never what is trained on. `carbon_prune.py` holds the table.
+ */
 function isActivatedCarbonAcid(
   graph: PkaMolecularGraph,
   atomIndex: number,
@@ -1116,9 +1131,85 @@ function isUnactivatedAmine(graph: PkaMolecularGraph, atomIndex: number): boolea
   return true;
 }
 
+/**
+ * The -OH of a sulfonic acid, a sulfuric-acid ester, or sulfuric acid itself.
+ *
+ * These do not have an aqueous pKa. Every one of the corpus's 15 such labels lies BELOW pH 0 — the range
+ * is -7.15 (4-nitrobenzenesulfonic) to -1.25 (methanesulfonic) — so they are measured by Hammett acidity
+ * functions in concentrated acid, which is a different thermodynamic scale from the aqueous constant this
+ * method reports. `iupac_labels.py` already refuses to pool that scale on the basic side, for the same
+ * reason, and these rows predate that filter.
+ *
+ * The count argument is the same shape as `isUnactivatedAmine`'s, and it runs the other way: applied to
+ * the training set this rule withholds 15 of 12,096 labels, and not one of them is inside the aqueous
+ * window the contract declares. They are also the worst-predicted class in the corpus — out-of-fold MAE
+ * 3.64 against a corpus mean of 0.73, biased systematically toward zero (observations of -7.15 to -1.25
+ * are predicted between -1.00 and +0.79). So the number withheld is both off-scale and wrong.
+ *
+ * What replaces it is a statement, not a silence: fully dissociated across the whole aqueous range. That
+ * is what a chemist needs from a sulfonate, and reporting +0.29 for MES — as this did before the rule —
+ * asserts a titration inside the measurable window that does not happen.
+ *
+ * **THE OBVIOUS ALTERNATIVE WAS BUILT AND THE CYCLE DEFECT REFUTED IT.** Removing the rung also removes a
+ * charge the molecule really carries, so a neighbouring base is scored next to a neutral sulfonic acid
+ * instead of the anion. Keeping the rung at a declared bound of -2 was tried to hold that charge, and it
+ * recovers part of the base's value while destroying the fold's self-consistency:
+ *
+ *     molecule          expt    model rung        bound -2         withheld
+ *     taurine           8.74    8.72  d 0.00     8.52  d 1.60     8.27  d 0.00
+ *     MES               6.15    6.12  d 0.74     5.91  d 3.03     5.74  d 0.00
+ *     sulfanilic acid   3.23    3.95  d 2.03     3.96  d 1.24     2.36  d 0.00
+ *     homotaurine      10.1        -            9.71  d 1.81     9.64  d 0.00
+ *     cysteic acid      8.7         -            8.55  d 1.97     8.24  d 0.83
+ *
+ * `d` is the cycle defect — two protons leaving in either order must cost the same. A hand-placed edge
+ * does not agree with the model's other edges, so the square stops closing, and the defect is detecting
+ * the fabrication rather than merely disliking it. The 0.25 it buys on the base is bought with an answer
+ * that contradicts itself by up to 3 log units. Note the first column: the ORIGINAL behaviour carried the
+ * same disease in milder form (MES 0.74, sulfanilic 2.03) and its apparently good 6.12 was a fold
+ * distortion cancelling a 2.3-log-unit error, not skill.
+ *
+ * Withholding leaves the reported value equal to the model's own site prediction with no fold correction
+ * at all, which is why the defect is 0. Holding the charge properly means canonicalising the sulfonate to
+ * its anion in `reference-protomer` — the reference state at every aqueous pH — and that is a change to
+ * the interpretation layer, not to this rule.
+ *
+ * **One =O is a sulfinic acid, not a sulfonic one**, and those titrate near 1.8 and are predicted well
+ * (16 labels, MAE 0.392), so the test is for at least TWO. Sulfonamides key on nitrogen and are untouched.
+ */
+function isFullyDissociatedSulfonic(graph: PkaMolecularGraph, atomIndex: number): boolean {
+  const atom = graph.atoms[atomIndex];
+  if (!atom || atom.element !== "O" || atom.charge !== 0 || atom.hydrogens === 0) return false;
+  const neighbours = graph.bonds
+    .filter((bond) => bond.atoms[0] === atomIndex || bond.atoms[1] === atomIndex)
+    .map((bond) => (bond.atoms[0] === atomIndex ? bond.atoms[1] : bond.atoms[0]));
+  if (neighbours.length !== 1) return false;
+  const sulfur = neighbours[0]!;
+  if (graph.atoms[sulfur]?.element !== "S") return false;
+  // Count per ATOM rather than per bond: a double bond is one bond, but counting bonds here would be
+  // the Kekule-invariance trap this codebase has shipped five times. Sulfonyl oxygens are terminal, so
+  // the set of doubly-bonded oxygen NEIGHBOURS is the quantity that matters.
+  const sulfonylOxygens = new Set<number>();
+  for (const bond of graph.bonds) {
+    if (bond.order < 2) continue;
+    const [a, b] = bond.atoms;
+    if (a !== sulfur && b !== sulfur) continue;
+    const partner = a === sulfur ? b : a;
+    if (graph.atoms[partner]?.element === "O") sulfonylOxygens.add(partner);
+  }
+  return sulfonylOxygens.size >= 2;
+}
+
 /** Why a located site produced no value at all — always specific, never a bare absence. */
 function unscorableReason(graph: PkaMolecularGraph, site: IonizationSite): string {
   const atom = graph.atoms[site.ionizableAtomIndex]!;
+  if (isFullyDissociatedSulfonic(graph, site.ionizableAtomIndex)) {
+    return (
+      "A sulfonic acid, fully dissociated across the entire aqueous range — no pKa is reported because " +
+      "it has none in water. All 15 such labels in the training corpus fall below pH 0 (-7.15 to -1.25), " +
+      "where the measurement is a Hammett acidity function rather than an aqueous dissociation constant."
+    );
+  }
   if (isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
     return (
       "Drawn neutral, this amine's only acidity is that N-H losing a proton — a pKa near 35, which " +
@@ -1150,7 +1241,12 @@ export function ionizationContract(): MethodContract {
     // per-atom ladders, the corpus was corrected and the model retrained, and the values are now
     // computed on a canonical protomer rather than on the drawing. Every number a caller cached under
     // 1.x describes a different computation.
-    version: "2.4.0",
+    // 2.5.0: a sulfonic acid no longer reports a pKa. It has none in water, and the number it used to
+    // report could land inside the measurable window — MES buffer at 0.29 — asserting a titration that
+    // does not occur.
+    // 2.6.0: the interval taxonomy gained a carbon stratum. Every carbon-acid interval widens and every
+    // macroscopic value shifts, because the fold weights each rung by its interval.
+    version: "2.6.0",
     implementation: {
       engine: IONIZATION_ENGINE,
       engineVersion: IONIZATION_ENGINE_VERSION,
@@ -1210,6 +1306,15 @@ export function ionizationContract(): MethodContract {
         "withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
         "sulfonamides and thioamides keep their acidic values too: their N-H acidity IS " +
         "aqueous-measurable and IS in the data.",
+      "A SULFONIC ACID GETS NO NUMBER, because it has none in water: it is reported as fully " +
+        "dissociated across the whole aqueous range. All 15 such labels in the training corpus fall " +
+        "below pH 0, from -7.15 to -1.25, where the measurement is a Hammett acidity function in " +
+        "concentrated acid rather than an aqueous dissociation constant — a different thermodynamic " +
+        "scale, and the one this method's other filters already refuse to pool. They are also the " +
+        "worst-predicted class in the corpus, out-of-fold MAE 3.64 against a corpus mean of 0.73, and " +
+        "biased toward zero, so before this rule MES buffer's sulfonate was reported at pH 0.29 — a " +
+        "titration inside the measurable window that does not happen. Sulfinic acids keep their values " +
+        "(they titrate near 1.8 and are predicted to MAE 0.39), and sulfonamides are untouched.",
       `a ${PKA_GNN_TRAINING.ensemble}-member message-passing network trained on ` +
         `${PKA_GNN_TRAINING.samples} sites from four experimental sources. ` +
         `Cross-validated with folds held out by ${PKA_GNN_TRAINING.grouping} ` +
@@ -1238,14 +1343,25 @@ export function ionizationContract(): MethodContract {
         `disagreed about THIS site — not one error figure repeated on every row. Out of fold it ` +
         `separates: sites in the least-disagreeing quarter have a mean absolute error of ` +
         `${PKA_MODEL_CALIBRATION.quartileMae[0]!.toFixed(2)} against ` +
-        `${PKA_MODEL_CALIBRATION.quartileMae[3]!.toFixed(2)} for the most, and the interval as drawn ` +
-        `(${PKA_MODEL_CALIBRATION.spreadMultiplier} x that disagreement) contains ` +
-        `${Math.round(PKA_MODEL_CALIBRATION.coverage[PKA_MODEL_CALIBRATION.spreadMultiplier.toFixed(1)]! * 100)}% ` +
-        "of held-out errors.",
+        `${PKA_MODEL_CALIBRATION.quartileMae[3]!.toFixed(2)} for the most. The disagreement is not ` +
+        `reported as the interval, nor scaled by a constant into one: it is the empirical quantile of ` +
+        `held-out |error| among sites that disagreed by a similar amount, which contains ` +
+        `${Math.round(PKA_INTERVAL_CALIBRATION.achievedCoverage * 100)}% of held-out errors and is ` +
+        `calibrated to ${Math.round(PKA_INTERVAL_CALIBRATION.targetCoverage * 100)}% within one point ` +
+        `in every bin. One multiplier could not do that — coverage under it ran 50.1% among the most ` +
+        `confident sites and 85.6% among the least, against the same claimed figure.`,
       "A NARROW INTERVAL MEANS THE MODEL SAW MANY SIMILAR SITES, NOT THAT THE VALUE IS RIGHT. Tree " +
         "agreement measures where the training data was dense; a molecule unlike anything in the set " +
         "can still draw confident agreement from ensemble members that are all extrapolating the " +
         "same way.",
+      "CARBON ACIDS ARE CALIBRATED SEPARATELY, because one pooled interval under-covered them. The " +
+        "interval is an empirical quantile binned by ensemble disagreement, and conditioned on the " +
+        "ionizing atom that taxonomy was not enough: carbon sites were covered 59.2% against a claimed " +
+        "68%, where nitrogen ran 68.1% and oxygen 68.5%. A carbon acid is simply harder than a nitrogen " +
+        "at the same disagreement — mean error 1.46 against 0.73 corpus-wide — so pooling handed it an " +
+        "interval fitted on molecules unlike it. Carbon now reads its own curve and lands at 67.0%, " +
+        "measured on held-out folds at 67.5%. Sulfur stays pooled: 189 rows would make its own curve " +
+        "noisier than the 4 points of over-coverage it already carries.",
       `a SECOND, INDEPENDENT method scores the sites it reaches: a Hammett relationship whose ` +
         `substituent and reaction constants come from the physical-organic literature, not from this ` +
         `project's training data. It applies to substituted benzoic acids and phenols with no ortho ` +
@@ -1552,7 +1668,10 @@ export function ionizationContract(): MethodContract {
         "MinimalLib artifact that makes canonicalisation possible at all",
       "a change to HOW the ladder is reconciled — the fold solves every microstate's free energy at " +
         "once by weighted least squares, and both the solve and `edge-variance.json`'s weighting move " +
-        "every polyprotic answer while leaving every per-site value untouched"
+        "every polyprotic answer while leaving every per-site value untouched",
+      "a change to the interval TAXONOMY — which sites share a calibration curve. It moves every " +
+        "interval in an affected stratum, and because the fold weights each rung by its interval, every " +
+        "macroscopic value in that stratum moves with it"
     ],
     tautomerSensitive: true
   };

@@ -145,13 +145,55 @@ describe("what the network is worth", () => {
  */
 describe("the reported interval is calibrated, not scaled", () => {
   it("lands within a point of its target in every bin", () => {
-    for (const point of PKA_INTERVAL_CALIBRATION.points) {
-      expect(
-        Math.abs(point.coverage - PKA_INTERVAL_CALIBRATION.targetCoverage),
-        `bin at spread ${point.spread} covers ${point.coverage}`
-      ).toBeLessThan(0.01);
+    const curves = [
+      ["pooled", PKA_INTERVAL_CALIBRATION.points] as const,
+      ...Object.entries(PKA_INTERVAL_CALIBRATION.strata ?? {})
+    ];
+    for (const [name, points] of curves) {
+      for (const point of points) {
+        expect(
+          Math.abs(point.coverage - PKA_INTERVAL_CALIBRATION.targetCoverage),
+          `${name} bin at spread ${point.spread} covers ${point.coverage}`
+        ).toBeLessThan(0.01);
+      }
     }
     expect(PKA_INTERVAL_CALIBRATION.worstBinDeviation).toBeLessThan(0.01);
+  });
+
+  it("gives carbon its own curve, because one pooled curve under-covered it by nine points", () => {
+    // Deviation alone was the whole taxonomy, and conditioned on the ionizing element it ran 59.2% on
+    // carbon against 68.1% for nitrogen and 68.5% for oxygen — a carbon acid is harder than a nitrogen
+    // at the same ensemble disagreement. Mondrian conformal prediction allows any partition, so carbon
+    // gets its own. Held-out folds put it at 67.5%.
+    const strata = PKA_INTERVAL_CALIBRATION.strata;
+    expect(strata, "the calibration is not stratified").toBeDefined();
+    expect(Object.keys(strata!).sort()).toEqual(["carbon", "other"]);
+
+    const byElement = PKA_INTERVAL_CALIBRATION.coverageByElement;
+    expect(byElement, "coverage is not reported per element").toBeDefined();
+    for (const [element, coverage] of Object.entries(byElement!)) {
+      expect(
+        Math.abs(coverage - PKA_INTERVAL_CALIBRATION.targetCoverage),
+        `${element} sites are covered ${(coverage * 100).toFixed(1)}%`
+      ).toBeLessThan(0.05);
+    }
+
+    // A carbon site must read WIDER than a non-carbon one at the same disagreement, or the stratum is
+    // not doing the thing it exists for.
+    for (const deviation of [0.2, 0.4, 0.8]) {
+      expect(intervalFor(deviation, "C")).toBeGreaterThan(intervalFor(deviation, "N"));
+    }
+  });
+
+  it("falls back to the pooled curve when the element is unknown", () => {
+    // Not to carbon's curve: a caller who cannot say what the atom is gets what the whole corpus
+    // agreed on, which is the honest reading rather than the widest one.
+    const points = PKA_INTERVAL_CALIBRATION.points;
+    for (const deviation of [0.05, 0.2, 0.6]) {
+      const pooled = intervalFor(deviation);
+      expect(pooled).not.toBeCloseTo(intervalFor(deviation, "C"), 6);
+      expect(pooled).toBeGreaterThanOrEqual(points[0]!.interval);
+    }
   });
 
   it("is monotone, because a wider disagreement can never buy a tighter interval", () => {

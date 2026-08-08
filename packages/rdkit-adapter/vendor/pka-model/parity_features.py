@@ -203,6 +203,90 @@ def build(path):
     return np.array(X, float), np.array(y, float), groups, keep
 
 
+def deprotonated(mol, idx):
+    """The conjugate base formed by removing a proton from `idx`, or None. Mirrors `protonated`.
+
+    **Atom order is preserved**, which is the whole reason this edits an `RWMol` rather than round-tripping
+    through SMILES: a pair model has to read the SAME site index in both graphs, and `MolToSmiles`
+    permutes. `kekulized_with_site` exists for the cases where a re-parse is unavoidable; this is not one.
+
+    KEKULISED on the way out, for the same reason `kekulized` exists. Sanitising the edited molecule can
+    hand back an aromatic-flagged base while the acid it is paired with is kekulised, and then
+    `int(bond.GetBondTypeAsDouble())` reads 1 for a bond that reads 2 on the other side of the pair --
+    a silent feature skew between the two halves of one training example.
+
+    **Verified against the corpus rather than assumed.** Of the 8,056 rows that both construct and carry a
+    recorded `base`, this reproduces it on 8,051 (99.94%). Four of the five differences are rows whose
+    RECORDED base had lost stereochemistry that this preserves; one is a genuine miss, an imidazolium
+    whose deprotonation should re-aromatise. That is why training constructs the base for every row
+    instead of reading the recorded one: inference has no recorded base to read, so consuming one during
+    training would be the train/serve skew the parity fixture exists to catch.
+    """
+    atom = mol.GetAtomWithIdx(idx)
+    if atom.GetTotalNumHs() < 1:
+        return None
+    edit = Chem.RWMol(mol)
+    target = edit.GetAtomWithIdx(idx)
+    target.SetFormalCharge(target.GetFormalCharge() - 1)
+    target.SetNoImplicit(False)
+    target.SetNumExplicitHs(max(0, atom.GetTotalNumHs() - 1))
+    try:
+        out = edit.GetMol()
+        Chem.SanitizeMol(out)
+        Chem.Kekulize(out, clearAromaticFlags=True)
+    except Exception:
+        return None
+    after = out.GetAtomWithIdx(idx)
+    if after.GetFormalCharge() != atom.GetFormalCharge() - 1:
+        return None
+    if after.GetTotalNumHs() != atom.GetTotalNumHs() - 1:
+        return None
+    return out
+
+
+def family_key(mol):
+    """A protonation- and tautomer-INSENSITIVE identity for one molecule, or None.
+
+    The first block of the standard InChIKey is the skeleton hash: InChI's mobile-hydrogen layer means
+    glycine, its zwitterion and its anion all reduce to the same block, as do keto and enol tautomers.
+    That is exactly the equivalence a fold assignment has to respect -- putting glycine in one fold and
+    its zwitterion in another leaks the answer.
+    """
+    try:
+        key = Chem.MolToInchiKey(mol)
+    except Exception:
+        return None
+    return key.split("-")[0] if key else None
+
+
+def neutral_scaffold(mol):
+    """Bemis-Murcko scaffold of the CHARGE-STRIPPED molecule, so a protomer pair shares one.
+
+    `scaffold_of` keeps formal charges, so pyridine scaffolds to `C1=CC=NC=C1` and pyridinium to
+    `C1=CC=[NH+]C=C1` -- two groups, two folds, one molecule. Stripping charge first merged 273 of the
+    642 split families on its own; the union pass in `pka_folds.py` closes the rest, which are tautomers
+    whose ring bond orders differ.
+    """
+    edit = Chem.RWMol(mol)
+    for atom in edit.GetAtoms():
+        if atom.GetFormalCharge() != 0:
+            atom.SetFormalCharge(0)
+            atom.SetNoImplicit(False)
+            atom.SetNumExplicitHs(0)
+    try:
+        out = edit.GetMol()
+        Chem.SanitizeMol(out)
+    except Exception:
+        return scaffold_of(mol)
+    # Canonicalise the ring form: sanitisation can return `c1ccccc1` for one row and `C1=CC=CC=C1` for
+    # another, which would split benzene into two groups that are the same scaffold.
+    try:
+        Chem.Kekulize(out, clearAromaticFlags=True)
+    except Exception:
+        pass
+    return scaffold_of(out) or scaffold_of(mol)
+
+
 if __name__ == "__main__":
     X, y, g, keep = build(sys.argv[1])
     assert X.shape[1] == len(FEATURE_NAMES), (X.shape[1], len(FEATURE_NAMES))
