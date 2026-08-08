@@ -21,13 +21,13 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 | `calibration.json` | 2,031 | `a361085c2ed1dd274f630f5266a94a2b6411cd915d815bad937f24aaf6666abc` |
 | `consensus-calibration.json` | 645 | `4ae25e83d82b639d4c27371154fd6571aad135a485fc208f2ee4e1032f1cd62d` |
 | `coupling.json` | 1,404 | `1bc2015011408924f2fee6cc17785032766bf64be9d8fa3ac4c22bd1a607bcac` |
-| `edge-variance.json` | 1,933 | `9ea690378841c9cb7f6103c164a3c96f4b46809df7a722d2fe549aaa2afb84e8` |
+| `edge-variance.json` | 1,933 | `b11d3385bab3f412349f2e271ccbde555638dbbc217cae0b33e69e502aa10f42` |
 | `external-validation.json` | 458 | `37981664695db5486231d884cb2ee8394640ac0c60a6e93fd20852040decaeb8` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
-| `interval-calibration.json` | 2,164 | `b6134a801bd1aed1e18d355f9b8c36dab4a91acfd9b0239d6da01fe5076c481a` |
+| `interval-calibration.json` | 5,002 | `2bf20919222ec71fb6a6564cc1e0405b14f595ddfd030670ffe6872067108444` |
 | `site-pka-gnn.json` | 4,468,866 | `79061c4d3b4e11753c865088e5bb38d0c7e689e6e394af4fdf99c0dcfcfca688` |
 
-**Manifest:** `e52766f5cf959549f8ad849e31a97fbc6f827af8af12242ad389db87237ec233`
+**Manifest:** `81cf1fca8155b5702c85d4d7561bf07778458b8a768846b62c6ef2bee196218c`
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.
@@ -103,6 +103,36 @@ shipping on the cvMAE would have shipped a worse model under a better-looking nu
 
 `HIDDEN` stays 96. To re-examine the question, edit one line, run `run_all.sh`, and read
 `external-validation.json` before anything else.
+
+## The fold split changed, and the committed artifacts predate it
+
+`cross_validate` assigned folds by `i % folds` over the sorted scaffold list, which makes a scaffold's
+fold depend on **how many scaffolds sort before it** — so changing the corpus reshuffles the split. It
+now hashes the scaffold string instead, so each group's fold is independent of every other and a corpus
+experiment compares like with like.
+
+This was found the hard way. Testing a prune of 100 labels, 47 scaffold groups disappeared and **96.3% of
+the 11,996 surviving rows landed in a different held-out fold**; the prune measured 0.0402 *better* on its
+target metric under the old split and 0.0278 *worse* under the stable one. A 0.068 swing from the
+partition alone, against a retrain noise floor of 0.0017 overall. See `carbon_prune.py`.
+
+**Every figure quoted above and in the method contract was measured under the OLD split, and the
+committed artifacts were trained under it.** Nothing recomputes them, so nothing is inconsistent today —
+but the next `run_all.sh` will produce a model cross-validated on the stable split, where the full corpus
+scores **cvMAE 0.7356** rather than 0.7281.
+
+**That 0.0075 is a partition artifact and not a regression, and the external set proves it rather than
+asserting it.** The same full corpus trained under each split scores, on the 398 held-out rows:
+
+| split | cvMAE | external MAE |
+|---|---|---|
+| old, `i % folds` (shipped) | 0.7281 | 1.1286 |
+| stable, hashed scaffold | 0.7356 | **1.1287** |
+
+Paired over the same rows the external difference is +0.0001, t = 0.00, 197 rows worse against 201
+better — statistically indistinguishable. So the stable split reports a slightly harder number for the
+same real-world accuracy, which is what a split that cannot be reshuffled by the corpus costs. Update the
+figures on the next regeneration and read the cvMAE change as a change of yardstick.
 
 ## Regenerating the external figure
 
