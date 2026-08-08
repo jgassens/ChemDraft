@@ -832,6 +832,30 @@ A command should be invokable from menu, quick-action toolbar, floating/dockable
 
 Do not hard-code important actions only inside button click handlers.
 
+## 9a. A quantity validated conditional on one partition is not validated conditional on another
+
+**Uncertainty calibration is part of a model's applicability domain.** An interval fitted on internal folds
+is not a validated interval on a new chemical family, and reporting it as one is the strongest false claim
+a predictor can make — a wrong number invites checking, a wrong error bar suppresses it.
+
+This repository has now made the same mistake twice, at two different conditioning levels:
+
+| fixed conditional on | still broken conditional on | how it showed up |
+|---|---|---|
+| **element** — carbon got its own interval curve, 58.8% → 67.0% coverage | **distribution** | 67.6% coverage on the OOF calibration corpus against 57.3% on the external development set, 44% for N-acidic |
+| **scaffold** — folds hashed by Bemis-Murcko scaffold | **molecular family** | 642 protonation/tautomer families spanning 1,344 rows straddled folds; closing it moved the honest baseline 0.7281 → 0.7482 |
+
+The pattern to watch for: a stratified fix reports a healthy number *within* the strata it was fitted on,
+which reads as "solved" and hides that some other partition is now the leak. Conformal validity rests on
+the calibration set and the query being exchangeable; a structurally different molecule breaks that
+assumption rather than merely straining it.
+
+**So, in practice.** State the partition alongside any coverage or accuracy figure — "OOF calibration
+corpus", "external development set" — never a bare percentage. Before claiming a stratified fix worked,
+name the next partition it could be leaking through and measure that one too. And never derive an
+abstention threshold or interval width from the same molecules that revealed the problem: the rule must be
+written before the set it will be judged on is opened, or it is fitted to its own test.
+
 ## 10. Chemistry invariants
 
 Every chemistry conversion path should preserve these unless explicitly warned:

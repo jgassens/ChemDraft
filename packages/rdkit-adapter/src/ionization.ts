@@ -798,6 +798,40 @@ export function transitionFor(acidCharge: number): "acidic" | "basic" {
   return acidCharge > 0 ? "basic" : "acidic";
 }
 
+/**
+ * Protonated carbonyl or thiocarbonyl oxygens/sulfurs IN THE STRUCTURE BEING SCORED.
+ *
+ * The site set has no entry for carbonyl or thiocarbonyl basicity, so such a state gets no rung and
+ * would otherwise be silently absent. This reports it as unassessed instead — but ONLY when that state is
+ * the one presented, which is the whole design constraint.
+ *
+ * **Why not flag every carbonyl.** 45.8% of the 12,062 corpus molecules contain a neutral C=O against
+ * 0.2% drawn protonated. Warning on the group would attach to nearly half of all results; warning on the
+ * protonated STATE attaches to the case where the method is actually being asked a question it cannot
+ * answer. Where the drawing is a neutral carbonyl, the method-scope limitation in the contract covers it
+ * once and this stays quiet.
+ *
+ * Kekulé-safe: the C=O of a protonated carbonyl is exocyclic even when the carbon is aromatic, so its
+ * order is 2 in either Kekulé structure. Counted per ATOM, never per bond.
+ */
+export function protonatedCarbonylSites(graph: PkaMolecularGraph): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < graph.atoms.length; i += 1) {
+    const atom = graph.atoms[i]!;
+    if ((atom.element !== "O" && atom.element !== "S") || atom.charge !== 1 || atom.hydrogens < 1) {
+      continue;
+    }
+    const doubleToCarbon = graph.bonds.some((bond) => {
+      if (Math.round(bond.order) < 2) return false;
+      const [a, b] = bond.atoms;
+      const other = a === i ? b : b === i ? a : undefined;
+      return other !== undefined && graph.atoms[other]?.element === "C";
+    });
+    if (doubleToCarbon) out.push(i);
+  }
+  return out;
+}
+
 export function scoreSiteTransitions(
   scan: IonizationScan,
   graph: PkaMolecularGraph,
@@ -1350,6 +1384,22 @@ export function ionizationContract(): MethodContract {
         `calibrated to ${Math.round(PKA_INTERVAL_CALIBRATION.targetCoverage * 100)}% within one point ` +
         `in every bin. One multiplier could not do that — coverage under it ran 50.1% among the most ` +
         `confident sites and 85.6% among the least, against the same claimed figure.`,
+      // THE NOMINAL COVERAGE IS NOT A VALIDATED COVERAGE ON NEW CHEMISTRY, and saying otherwise was the
+      // strongest claim this method made. Both figures are measured; only the first is measured where the
+      // curve was fitted.
+      `THE ${Math.round(PKA_INTERVAL_CALIBRATION.targetCoverage * 100)}% FIGURE IS MEASURED ON THE ` +
+        `OOF CALIBRATION CORPUS, WHICH IS WHERE THE CURVE WAS FITTED, AND IT DOES NOT CARRY OVER. ` +
+        `Measured: ${Math.round(PKA_INTERVAL_CALIBRATION.achievedCoverage * 1000) / 10}% on the OOF ` +
+        `calibration corpus against 57.3% on the 398-row external development set — 53.6% of its ` +
+        `Novartis rows, 65.6% of its literature rows — and an end-to-end audit of the whole state path ` +
+        `puts it at 57.1% over 352 exactly-corresponding events, with N-acidic sites at 44%. So the ` +
+        `interval is a model-derived estimate calibrated on the distribution of the training families, ` +
+        `not a validated interval on a structurally different molecule. A conformal guarantee rests on ` +
+        `the calibration and the query being exchangeable, and a molecule unlike the corpus breaks that ` +
+        `assumption rather than merely straining it. Read the interval as a statement about how densely ` +
+        `this region was sampled, and treat a molecule unlike the corpus as having no validated interval ` +
+        `at all. THE SAME DEFECT WAS ALREADY FIXED ONCE CONDITIONAL ON ELEMENT and is still open ` +
+        `conditional on distribution: see the carbon stratification below.`,
       "A NARROW INTERVAL MEANS THE MODEL SAW MANY SIMILAR SITES, NOT THAT THE VALUE IS RIGHT. Tree " +
         "agreement measures where the training data was dense; a molecule unlike anything in the set " +
         "can still draw confident agreement from ensemble members that are all extrapolating the " +
@@ -1471,7 +1521,24 @@ export function ionizationContract(): MethodContract {
       "anything containing a metal: no open pKa dataset contains a metal-bearing structure, so such " +
         "sites are reported as unassessed rather than scored",
       "non-aqueous media entirely",
-      "ionizable groups outside the tabulated site set"
+      "ionizable groups outside the tabulated site set",
+      // A METHOD-SCOPE LIMITATION, stated once here rather than warned per molecule. The site set has no
+      // entry for a carbonyl oxygen or a thiocarbonyl sulfur accepting a proton, so this implementation
+      // cannot assess that basicity at all. Two independent measurements agree: an end-to-end audit of
+      // the external development set reproduced 0 of 10 assigned O-basic events and 0 of 4 S-basic
+      // events, and a corpus site audit found the same missing patterns from the other direction.
+      //
+      // It is scoped as a limitation of THIS IMPLEMENTATION rather than a claim that the chemistry is
+      // unpredictable — the external counts are 10 and 4, far too small to support the stronger claim.
+      //
+      // Not warned per molecule, and the reason is a measurement: 45.8% of the 12,062 corpus molecules
+      // contain a neutral carbonyl. A flag on each would attach to nearly half of all results and stop
+      // being read, which is how a warning becomes decoration. A visible `unassessed` entry appears only
+      // where the unsupported state is actually the one presented — see `protonatedCarbonylSites`.
+      "the BASICITY of a carbonyl oxygen or a thiocarbonyl sulfur: no site type covers it, so protonated " +
+        "carbonyls (pKa near -5 to 0) get no rung. Where such a state is the one presented it is " +
+        "reported as unassessed; where the drawing is the neutral carbonyl this limitation is silent, " +
+        "and absence of a basic site on a C=O is not evidence that it has none"
     ],
     declinesWhen: [
       "no tabulated site substructure matches the structure",

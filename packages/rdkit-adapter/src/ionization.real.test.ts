@@ -120,13 +120,23 @@ describe("finding the ionizable atom", () => {
 });
 
 describe("what it refuses to score", () => {
-  it("says nothing ionizable rather than returning an empty success", async () => {
+  it("says no SUPPORTED EVENT rather than nothing ionizable, and stays a success", async () => {
     // Benzene has no site. That is the method not applying, not failing, and it must not drag the
     // run's status down.
+    //
+    // This assertion used to require the words "No tabulated ionizable site", and this test used to be
+    // named "says nothing ionizable" — both of which pinned a claim the method cannot support. What the
+    // branch knows is that nothing in a 47-entry table matched, which is a fact about the vocabulary and
+    // not about the molecule. The two read identically to a user and only one is true, and the same
+    // wording was reached by enols whose O-H the table DOES match, after the canonical tautomer rewrote
+    // them to a keto form. Measured end to end: the site table cannot represent carbonyl basicity at all,
+    // and 0 of 10 assigned O-basic events on the external development set were reproduced.
     const { run, result } = await ionization("c1ccccc1");
     expect(result.status).toBe("not-applicable");
     expect(result.sites).toEqual([]);
-    expect(result.applicability.reasons[0]).toMatch(/No tabulated ionizable site/);
+    expect(result.applicability.reasons[0]).toMatch(/No SUPPORTED ionization event/);
+    expect(result.applicability.reasons[0], "must not imply the molecule has no ionizable site")
+      .toMatch(/not evidence that there is none/);
     expect(run.status).toBe("ok");
   });
 

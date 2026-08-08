@@ -111,7 +111,8 @@ import {
   scoreSitesWithHammett,
   molblockWithChargedAtom,
   molblockWithCharges,
-  scoreSiteTransitions
+  scoreSiteTransitions,
+  protonatedCarbonylSites
 } from "./ionization";
 import { macroscopicApplies, macroscopicFromSites } from "./protonation";
 import type { PkaMolecularGraph } from "./pkaModel";
@@ -827,8 +828,14 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
           : derive("reference-tautomer") ?? derive("reference-protomer");
         if (!canonical || canonical === context) return ionizationResultFor(contract, context, module);
         registry.assertRunnable(contract.id, canonical.interpretation);
+        // The SUBMITTED structure is passed alongside the canonical one, and only for the unsupported
+        // -basicity notice. Measured: `reference-protomer` strips the charge from a drawn `C=[OH+]` in
+        // every case, so a protonated carbonyl is neutral by the time the site scan sees it — the state
+        // the USER presented is the only place that question is visible at all. Indices are shared: both
+        // derivations preserve atom order, which `siteDetection.real.test.ts` asserts over 12,062
+        // molecules.
         return withProtomerNotice(
-          ionizationResultFor(contract, canonical, module),
+          ionizationResultFor(contract, canonical, module, context),
           canonical.interpretation
         );
       };
@@ -1059,10 +1066,40 @@ function modelGraph(
 }
 
 /** Ionizable sites: scan in, `IonizationResult` out. */
+/**
+ * Atoms of `mol` that are a protonated carbonyl or thiocarbonyl — chemistry the site table cannot value.
+ *
+ * Reads `get_json()` rather than building a full graph: element, charge, hydrogen count and bond order are
+ * all this needs, and it runs on the SUBMITTED structure where the state is still visible.
+ */
+function unsupportedBasicityIn(mol: AnalysisMol): number[] {
+  const json = JSON.parse(mol.get_json()) as {
+    molecules: { atoms: { z?: number; chg?: number; impHs?: number }[];
+                 bonds: { atoms: number[]; bo?: number }[] }[];
+    defaults?: { atom?: { z?: number; chg?: number; impHs?: number }; bond?: { bo?: number } };
+  };
+  const molecule = json.molecules[0];
+  if (!molecule) return [];
+  const ad = json.defaults?.atom ?? {};
+  const bd = json.defaults?.bond?.bo ?? 1;
+  const atoms = molecule.atoms.map((atom) => ({
+    element: elementSymbol(atom.z ?? ad.z ?? 6),
+    charge: atom.chg ?? ad.chg ?? 0,
+    hydrogens: atom.impHs ?? ad.impHs ?? 0
+  }));
+  const bonds = molecule.bonds.map((bond) => ({
+    atoms: [bond.atoms[0]!, bond.atoms[1]!] as [number, number],
+    order: bond.bo ?? bd
+  }));
+  return protonatedCarbonylSites({ atoms, bonds, descriptors: {} });
+}
+
 function ionizationResultFor(
   contract: MethodContract,
   context: DerivedContext,
-  module: RdkitMinimalModule
+  module: RdkitMinimalModule,
+  /** The structure as SUBMITTED, when canonicalization replaced it. See `unsupportedBasicityIn`. */
+  submitted?: DerivedContext
 ): AnalysisResult {
   const base = resultBase({ contract, interpretation: context.interpretation, composition: context.composition });
   const json = JSON.parse(context.mol.get_json()) as {
@@ -1162,6 +1199,28 @@ function ionizationResultFor(
 
   scan = scoreSiteTransitions(scan, graph, protonatedAt);
 
+  // Chemistry the site table has no entry for, reported rather than silently absent — and read off the
+  // SUBMITTED structure, because canonicalization has already neutralised it here. A method-scope
+  // limitation is declared once in `knownUnsupportedChemistry`; this is the per-molecule case where the
+  // unsupported state is the one the user actually put in front of the method.
+  const unsupportedBasicity = submitted ? unsupportedBasicityIn(submitted.mol) : [];
+  if (unsupportedBasicity.length > 0) {
+    scan = {
+      ...scan,
+      unassessed: [
+        ...scan.unassessed,
+        {
+          atomIndices: unsupportedBasicity,
+          reason:
+            "A protonated carbonyl or thiocarbonyl, as drawn. No tabulated site type covers the " +
+            "basicity of a C=O or a C=S, so this method cannot value that rung and reports it rather " +
+            "than omitting it. Such states titrate near pKa -5 to 0. The structure was scored as its " +
+            "neutral form, whose own sites are reported above."
+        }
+      ]
+    };
+  }
+
   // Then a second, independent opinion wherever the Hammett relationship reaches, and let the two
   // methods' disagreement set the confidence. It reaches few sites and says so on the rest; where it
   // does reach, the pair is measurably better than either alone.
@@ -1235,14 +1294,19 @@ function ionizationResultFor(
     //
     // The substitution IS disclosed in a separate interpretation warning, but two warnings do not connect
     // themselves; the one a reader meets first has to carry the whole story.
+    // "No ionizable site" IS NOT WHAT THIS BRANCH KNOWS. It knows that no site type in a 47-entry table
+    // matched, which is a statement about the method's vocabulary, not about the molecule. The two read
+    // identically to a user and only one of them is true, so the wording says which.
     const derived = context.interpretation.id !== SOURCE_INTERPRETATION_ID;
     const reason = derived
-      ? `No tabulated ionizable site matched this structure as scored, which is the ` +
+      ? `No SUPPORTED ionization event was identified in this structure as scored, which is the ` +
         `${describeInterpretation(context.interpretation)} rather than the drawing as submitted. ` +
-        `A tautomer or protomer that was rewritten away may itself carry an ionizable site — an enol ` +
-        `scored as its keto form is the common case — so this is not evidence that the drawn structure ` +
-        `has none.`
-      : "No tabulated ionizable site matched this structure.";
+        `This is not evidence that the molecule has no ionizable site: a tautomer or protomer that was ` +
+        `rewritten away may carry one — an enol scored as its keto form is the common case — and the ` +
+        `site table does not cover every ionizable group.`
+      : "No SUPPORTED ionization event was identified in this structure. That means no tabulated site " +
+        "type matched, which is a limit of this method's site vocabulary rather than a finding about " +
+        "the molecule; absence of a site here is not evidence that there is none.";
     return {
       ...base,
       kind: "ionization",
