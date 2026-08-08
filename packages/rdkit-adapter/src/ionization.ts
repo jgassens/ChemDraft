@@ -1556,10 +1556,17 @@ export function ionizationContract(): MethodContract {
         title: "Dwar-iBond experimental pKa set",
         version: "as distributed with Uni-pKa",
         source: "https://github.com/dptech-corp/Uni-pKa",
-        license: "Apache-2.0",
+        // Apache-2.0 is UNI-PKA'S SOFTWARE LICENCE, and this row is a dataset — the same category error
+        // that was recorded against QupKake above. The data's own terms have not been established, so
+        // the licence is stated as unresolved rather than borrowed from the repository that carries it.
+        license: "unresolved — Apache-2.0 covers Uni-pKa's code, not this dataset",
         redistributable: true,
         recordCount: 3031,
         obligations: [
+          "OPEN QUESTION FOR LEGAL, and the largest one here: these 3,031 rows are 25% of the training " +
+            "corpus and their downstream reuse terms are not established. `redistributable` stays true " +
+            "because that is the status quo under which the model already shipped, NOT because the " +
+            "question has been answered. Resolving it may require re-deriving the corpus without them.",
           "Measured values, attributed per row in the source (predominantly DataWarrior, with " +
             "literature DOIs for the remainder). The shipped model's weights are trained on these " +
             "and on nothing derived from another predictor.",
@@ -1628,11 +1635,19 @@ export function ionizationContract(): MethodContract {
         title: "QupKake experimental pKa set (Novartis, ChEMBL and literature)",
         version: "as distributed in qupkake/data",
         source: "https://github.com/Shualdon/QupKake",
-        license: "BSD-3-Clause",
+        // NOT BSD-3-Clause. That is QupKake's SOFTWARE licence, and this row is a DATASET. The data
+        // originates with Baltruschat & Czodrowski's Machine-learning-meets-pKa, released CC BY 4.0, and
+        // a permissive grant over a repository's code says nothing about the corpus sitting in its
+        // `data/` directory. The distinction is not paperwork: CC BY 4.0 carries an attribution
+        // obligation that BSD-3-Clause does not describe, and it has to travel with the model artifact.
+        license: "CC-BY-4.0",
         redistributable: true,
         recordCount: 4022,
         obligations: [
-          "Originally Baltruschat & Czodrowski. The VALUES are measurements; the SITE INDEX is " +
+          "Originally Baltruschat & Czodrowski (Machine-learning-meets-pKa), whose upstream release is " +
+            "CC BY 4.0. This row previously recorded QupKake's BSD-3-Clause, which is the licence on " +
+            "QupKake's CODE and not a grant over the dataset it redistributes.",
+          "The VALUES are measurements; the SITE INDEX is " +
             "ChemAxon Marvin's assignment, which is a predictor annotation sitting inside the label " +
             "and is recorded as such on every row rather than presented as measured.",
           "1,462 of these rows were once sited on the wrong atom, because the index was read while " +

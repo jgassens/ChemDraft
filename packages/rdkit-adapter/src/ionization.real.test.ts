@@ -338,7 +338,22 @@ describe("the contract", () => {
     // The one most likely to mislead: a missing site is not evidence of absence.
     expect(conventions).toMatch(/Absence of a site is not evidence that there is none/);
     expect(contract.knownUnsupportedChemistry.join(" ")).toMatch(/metal/i);
-    expect(contract.datasets[0]!.license).toBe("Apache-2.0");
+    // A REPOSITORY'S SOFTWARE LICENCE IS NOT A GRANT OVER A DATASET IN ITS `data/` DIRECTORY, and this
+    // assertion used to require the opposite. It pinned Dwar-iBond at "Apache-2.0", which is Uni-pKa's
+    // code licence; the terms on the data itself have never been established. QupKake made the same
+    // substitution, recording BSD-3-Clause over a corpus whose upstream release is CC BY 4.0 — a licence
+    // that carries an attribution obligation BSD does not describe, and one that has to travel with the
+    // model artifact. Both now state what governs the DATA.
+    const dwar = contract.datasets.find((entry) => entry.id === "dwar-ibond")!;
+    const qupkake = contract.datasets.find((entry) => entry.id === "qupkake-exp")!;
+    expect(dwar.license).toMatch(/unresolved/i);
+    expect(dwar.obligations!.join(" ")).toMatch(/OPEN QUESTION FOR LEGAL/);
+    expect(qupkake.license).toBe("CC-BY-4.0");
+    // Neither may quietly re-acquire a software licence: those two strings are the specific mistake.
+    for (const entry of [dwar, qupkake]) {
+      expect(entry.license).not.toBe("Apache-2.0");
+      expect(entry.license).not.toBe("BSD-3-Clause");
+    }
     expect(contract.citations.some((entry) => entry.id === "dimorphite-2019")).toBe(true);
   });
 });
