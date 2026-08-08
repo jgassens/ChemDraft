@@ -52,6 +52,39 @@ RDLogger.DisableLog("rdApp.*")
 torch.manual_seed(0)
 np.random.seed(0)
 
+# --- reproducibility, measured rather than assumed -------------------------------------------------
+#
+# Repeat training on this project was irreproducible: four runs of one configuration returned 0.7107,
+# 0.7095, 0.7060 and 0.7032, and a paired confidence interval across two of them "significantly" excluded
+# zero against a true effect of zero. Two explanations were proposed and BOTH WERE WRONG.
+#
+#   "MPS index_add_ does not accumulate deterministically" -- true but not the whole story. CPU diverges
+#   as well, so the effect is not device-specific and blaming MPS would have left it in place.
+#
+#   "numpy is never reseeded per training, so the batch order drifts" -- a real defect, fixed below, but
+#   not the cause: `np.random.seed(0)` runs at import, so two separate invocations consume identical
+#   draws. Tested directly, reseeding leaves 60-epoch runs at +2.44306993 against +2.43308496.
+#
+# The cause is FLOATING-POINT REDUCTION ORDER. Multi-threaded CPU reductions sum partial results in
+# completion order, and MPS atomics do the same on the GPU. Each step differs by about 1e-8, and training
+# amplifies that chaotically: identical at epoch 4, diverging in the third decimal by epoch 20.
+#
+#   device  threads  60 epochs  reproducible
+#   mps        8      27.5 s     no
+#   mps        1      24.1 s     no          <- atomics, so threads are not the only source
+#   cpu        8       8.8 s     no
+#   cpu        1       5.7 s     BIT-EXACT
+#
+# So one thread on the CPU is both the only reproducible configuration and 4.4x faster than the MPS
+# default -- these molecules are 16 to 28 atoms, far too small to repay either GPU dispatch or thread
+# setup. `determinism_probe.py` reproduces the whole table.
+torch.set_num_threads(1)
+
+
+def preferred_device():
+    """CPU, deliberately, and not because MPS is unavailable. See the note above."""
+    return torch.device("cpu")
+
 # --- site-relative chemistry (Codex recommendation 2) ----------------------------------------------
 #
 # The encoder has three message-passing layers, so its learned receptive field is three bonds, and the
@@ -280,6 +313,13 @@ def element_weights(rows, power):
 def train_once(train_rows, device, pair, shells, epochs=EPOCHS, seed=0,
                weight_decay=0.0, balance=0.0):
     torch.manual_seed(seed)
+    # Seed numpy PER MEMBER too. It drives `np.random.shuffle(order)`, and seeding only torch left every
+    # member continuing whatever draw the previous one stopped on -- so anything that changed how many
+    # draws happened earlier (a screen with a different config list, a different fold count) silently
+    # changed the batch order of every member after it, and two experiments stopped being comparable for
+    # a reason nothing recorded. Seeding with `seed` rather than a constant keeps the members distinct,
+    # which is the ensemble's whole purpose.
+    np.random.seed(seed)
     model = PairSitePkaNet(pair, shells).to(device)
     optimiser = (torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=weight_decay)
                  if weight_decay else torch.optim.Adam(model.parameters(), lr=LEARNING_RATE))
@@ -320,10 +360,102 @@ def predict(model, rows, device):
     return np.concatenate(out) if out else np.zeros(0)
 
 
+def export_arm(members, path, mode, oof_paths):
+    """Weights plus an architecture block that fully DESCRIBES the arm, so a reader needs no constants.
+
+    `pka_gnn.export` hardcodes the shipped feature widths and pools globally, so it cannot describe this
+    arm. Every number the runtime needs to rebuild the feature vector is written here instead --
+    including the shell partition -- because `gnn_infer.py` used to build `SitePkaNet()` from whatever
+    `pka_gnn.HIDDEN` happened to be and threw size mismatches the moment an artifact disagreed. An
+    artifact that carries its own shape can be scored by a checkout that was never edited to match it.
+
+    The training figures are DERIVED from the out-of-fold files rather than passed in, so the number in
+    the artifact is the number that was measured.
+
+    **Several out-of-fold files are accepted, and recording only one would now be dishonest.** Training on
+    this hardware is not reproducible -- MPS `index_add_` does not accumulate deterministically, and four
+    runs of one configuration returned 0.7107, 0.7095, 0.7060 and 0.7032. A lone `cvMae` therefore reports
+    which run happened to be exported rather than what the configuration achieves, and a reader comparing
+    two artifacts by that field would be comparing two draws from the same distribution. `cvMaeSd` and
+    `cvReplicates` are what make the figure interpretable; with one replicate the sd is null and says so.
+    """
+    import os
+
+    per_run, spreads = [], None
+    for oof_path in oof_paths:
+        rows = json.load(open(oof_path))
+        per_run.append(np.array([abs(r["predicted"] - r["observed"]) for r in rows]))
+        if spreads is None:
+            spreads = np.array([r["spread"] for r in rows])
+    errors = per_run[0]
+    means = [float(e.mean()) for e in per_run]
+    shells = "shells" in mode
+    weights = [
+        {name: pka_gnn.round6(tensor.detach().cpu().numpy().tolist())
+         for name, tensor in model.state_dict().items()}
+        for model in members
+    ]
+    json.dump({
+        "architecture": {
+            "elements": ELEMENTS,
+            "atomFeatures": SHELL_ATOM_FEATURES if shells else pka_gnn.ATOM_FEATURES,
+            "bondFeatures": SHELL_BOND_FEATURES if shells else pka_gnn.BOND_FEATURES,
+            "hidden": HIDDEN, "layers": LAYERS, "ensemble": len(members),
+            # The two flags the runtime branches on, and the partition it pools by. Absent means the
+            # shipped acid-only architecture, so an older artifact still loads unchanged.
+            "siteShells": shells,
+            "readsConjugateBase": "pair" in mode,
+            "distanceBuckets": DISTANCE_BUCKETS if shells else None,
+            "ringSizeBuckets": RING_SIZE_BUCKETS if shells else None,
+            "shellBounds": [list(s) for s in SHELLS] if shells else None,
+            "electronegativity": ELECTRONEGATIVITY if shells else None,
+        },
+        "members": weights,
+        "training": {
+            "arm": mode,
+            "samples": len(errors),
+            "cvMae": round(float(np.mean(means)), 4),
+            "cvMaeSd": round(float(np.std(means, ddof=1)), 4) if len(means) > 1 else None,
+            "cvReplicates": len(means),
+            "cvMaePerRun": [round(m, 4) for m in means],
+            "cvRmse": round(float(np.sqrt((errors ** 2).mean())), 4),
+            "spreadCorrelation": round(float(np.corrcoef(spreads, errors)[0, 1]), 4),
+            "intervalQuartiles": [round(float(np.percentile(spreads, q)), 4) for q in (25, 50, 75)],
+            "grouping": "frozen molecular-family-aware folds (pka_folds.py)",
+            "hidden": HIDDEN, "layers": LAYERS, "epochs": EPOCHS, "ensemble": len(members),
+        },
+    }, open(path, "w"))
+    count = sum(t.numel() for t in members[0].state_dict().values()) * len(members)
+    print(f"   wrote {path}: {count:,} parameters, {os.path.getsize(path) / 1e6:.1f} MB", flush=True)
+
+
+def export_main(labels_path, out_path, mode, oof_paths, weight_decay, balance, seed_offset=0):
+    """Fit the whole corpus and write the runtime artifact. No cross-validation -- that already ran.
+
+    `seed_offset` produces an independent REPLICATE of the same configuration. This matters because the
+    external check is a single number per artifact, and training here is not reproducible: four runs of
+    one configuration spanned 0.0075 in cross-validated MAE, so one artifact's external score is one draw.
+    Comparing two configurations by one artifact each is the mistake that was already made once on the
+    cross-validation side. Distinct seeds also sample initialisation, which is what an ensemble member
+    varies anyway.
+    """
+    device = preferred_device()
+    print(f"device {device}   mode {mode}   wd {weight_decay}   balance {balance}   "
+          f"seeds {seed_offset}..{seed_offset + pka_gnn.ENSEMBLE - 1}   EXPORT", flush=True)
+    rows = load(labels_path, "shells" in mode)
+    started = time.time()
+    members = [train_once(rows, device, "pair" in mode, "shells" in mode, seed=seed,
+                          weight_decay=weight_decay, balance=balance)
+               for seed in range(seed_offset, seed_offset + pka_gnn.ENSEMBLE)]
+    print(f"   fitted {pka_gnn.ENSEMBLE} members on {len(rows)} rows "
+          f"({time.time() - started:.0f}s)", flush=True)
+    export_arm(members, out_path, mode, oof_paths)
+
+
 def main(labels_path, folds_path, out_dir, mode, weight_decay=0.0, balance=0.0, tag=None):
     pair = "pair" in mode
     shells = "shells" in mode
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = preferred_device()
     print(f"device {device}   mode {mode}   wd {weight_decay}   balance {balance}", flush=True)
 
     frozen = json.load(open(folds_path))
@@ -375,7 +507,34 @@ def main(labels_path, folds_path, out_dir, mode, weight_decay=0.0, balance=0.0, 
     print(f"   wrote {out}", flush=True)
 
 
+def check_argv(argv):
+    """Refuse an option value that is really a run of options. THIS BUG COST FOUR RUNS THEIR MEANING.
+
+    Three arms were launched as `--tag "shells-adamw-sqrtbal --wd 0.01 --balance 0.5"`, because zsh does
+    not word-split an unquoted variable. `--wd` and `--balance` were never separate argv entries, so
+    `"--wd" in argv` was false and both knobs silently stayed at zero. The runs printed `wd 0.0
+    balance 0.0`, wrote files whose names contained the flags as literal text, and were reported as three
+    distinct configurations. They were four replicates of one configuration, and the 0.0075 spread
+    between them -- which was read as an effect -- is this hardware's training nondeterminism.
+
+    Cheap to detect and worth detecting loudly: any value carrying whitespace, or beginning with a dash,
+    is a mistake rather than a name.
+    """
+    for i, token in enumerate(argv[1:], start=1):
+        if not token.startswith("--") or i + 1 >= len(argv):
+            continue
+        value = argv[i + 1]
+        if value.startswith("--"):
+            continue
+        if any(c.isspace() for c in value):
+            raise SystemExit(
+                f"{token} was given {value!r}, which contains whitespace -- it has swallowed the "
+                f"options that follow it. Pass each option as its own shell word."
+            )
+
+
 if __name__ == "__main__":
+    check_argv(sys.argv)
     mode = sys.argv[sys.argv.index("--mode") + 1] if "--mode" in sys.argv else "pair"
     if mode not in ("acid-only", "pair", "shells", "pair+shells"):
         raise SystemExit("--mode must be acid-only, pair, shells or pair+shells")
@@ -383,4 +542,10 @@ if __name__ == "__main__":
     wd = float(argv[argv.index("--wd") + 1]) if "--wd" in argv else 0.0
     bal = float(argv[argv.index("--balance") + 1]) if "--balance" in argv else 0.0
     tag = argv[argv.index("--tag") + 1] if "--tag" in argv else None
-    main(argv[1], argv[2], argv[3], mode, wd, bal, tag)
+    if "--export" in argv:
+        # python3 pka_gnn_pair.py <labels> <artifact-out> --mode shells --export --oof a.json,b.json
+        oofs = argv[argv.index("--oof") + 1].split(",")
+        offset = int(argv[argv.index("--seed-offset") + 1]) if "--seed-offset" in argv else 0
+        export_main(argv[1], argv[2], mode, oofs, wd, bal, offset)
+    else:
+        main(argv[1], argv[2], argv[3], mode, wd, bal, tag)
