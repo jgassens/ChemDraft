@@ -1226,13 +1226,33 @@ function ionizationResultFor(
   // Nothing ionizable is the method not applying, not failing — the same shape as a neutral loss a
   // composition cannot supply. It must not drag the run's status down.
   if (scan.sites.length === 0 && scan.unassessed.length === 0) {
-    const reason = "No tabulated ionizable site matched this structure.";
+    // "No tabulated ionizable site matched this structure" describes THE STRUCTURE THAT WAS SCORED, and
+    // when an interpretation has fired that is not the structure the user drew. Measured: an enol reaches
+    // this branch because the canonical tautomer rewrote it to its keto form, which genuinely has no O-H —
+    // `Vinyl_alcohol` and `Alcohol` both match the drawn enol at the right atom. So the message was true
+    // of a molecule the user never submitted and read as "there is nothing ionizable here", which is the
+    // silent-omission failure this method spends most of its conventions trying to avoid.
+    //
+    // The substitution IS disclosed in a separate interpretation warning, but two warnings do not connect
+    // themselves; the one a reader meets first has to carry the whole story.
+    const derived = context.interpretation.id !== SOURCE_INTERPRETATION_ID;
+    const reason = derived
+      ? `No tabulated ionizable site matched this structure as scored, which is the ` +
+        `${describeInterpretation(context.interpretation)} rather than the drawing as submitted. ` +
+        `A tautomer or protomer that was rewritten away may itself carry an ionizable site — an enol ` +
+        `scored as its keto form is the common case — so this is not evidence that the drawn structure ` +
+        `has none.`
+      : "No tabulated ionizable site matched this structure.";
     return {
       ...base,
       kind: "ionization",
       status: "not-applicable",
       sites: [],
       unassessed: [],
+      // The depiction was computed above and used to be dropped here, so a structure with no sites
+      // reported no atoms either — which made an interpretation substitution impossible to see from the
+      // result, and made a site-detection audit unable to tell a missing site from a missing molecule.
+      ...(depiction ? { depiction } : {}),
       applicability: { status: "out-of-domain", reasons: [reason], unsupportedFeatures: [] },
       warnings: [warning("ionization.no_sites", reason, "info", [base.id])]
     };

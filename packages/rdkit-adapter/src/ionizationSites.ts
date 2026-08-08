@@ -67,6 +67,48 @@ export const IONIZATION_SITE_TYPES: readonly IonizationSiteType[] = [
   { name: "Vinyl_alcohol", smarts: "[C:1]=[C:2]-[O:3]-[H]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.871850714285713, pKaStd: 1.660200255394124 }] },
   { name: "Alcohol", smarts: "[C:1]-[O:2]-[H]", aromaticNitrogen: false, sites: [{ matchPosition: 1, pKaMean: 14.780384615384616, pKaStd: 2.546464970533435 }] },
   { name: "N-hydroxyamide", smarts: "[C:1](=[O:2])-[N:3]-[O:4]-[H]", aromaticNitrogen: false, sites: [{ matchPosition: 3, pKaMean: 9.301904761904762, pKaStd: 1.2181897185891002 }] },
+  // NOT from Dimorphite — the only entry in this table that is not, and the statistics are this
+  // project's own. Dimorphite has no oxime pattern, so the app found ZERO of the 345 oxime sites in the
+  // training corpus: 85 of 85 in a randomised sample, a 100% miss rate. Handed acetone oxime it reported
+  // no ionizable site at all, which reads to a user as "there is nothing here" rather than "I did not
+  // look". Nothing distinguishes those two, which is what makes a missing pattern worse than a wrong
+  // number.
+  //
+  // The mean and spread below are measured over exactly the sites this SMARTS selects in
+  // `merged-labels.json` — 345 rows, all of them inside the aqueous window, spanning pKa 3.02 to 12.60.
+  // As with every other row here the table only LOCATES; the trained model supplies the value, and it
+  // was already trained on these 345 rows. So this entry asks the model a question it could always
+  // answer and was never asked.
+  //
+  // `[OX2H1,OX1H0-]` matches the oxime drawn either protonated or already deprotonated, since
+  // canonicalization may hand either form to the scanner. Distinct from `N-hydroxyamide` above, which is
+  // C(=O)-N-O-H; this is C=N-O-H, with no carbonyl.
+  { name: "Oxime", smarts: "[CX3:1]=[NX2:2]-[OX2H1,OX1H0-:3]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.655701, pKaStd: 1.703249 }] },
+  // The other four entries this project added, and the two it refused to. Each was chosen by measuring how
+  // many atoms the pattern hits that are NOT labelled sites, because a pattern that locates atoms the model
+  // was never trained on trades a silent omission for a confident fabrication -- the worse of the two.
+  //
+  //   candidate            labelled  unlabelled  verdict
+  //   Imine_protonated          514          17  added
+  //   Alpha_nitro               115           6  added
+  //   N_hydroxylamine            19          13  added
+  //   Aryl_hydroperoxide          7           0  added
+  //   alpha-to-carbonyl         459       3,436  REFUSED -- would put a site on every ketone's alpha
+  //                                              carbon, 7.5 unlabelled for every labelled one
+  //   As/Se/B/Si heteroacids     55          38  REFUSED -- the element sits outside the domain the
+  //                                              method declares, so the molecule declines anyway
+  //
+  // Statistics are measured over exactly the sites each SMARTS selects in `merged-labels.json`. All four
+  // fall entirely inside the aqueous window. Overlap with existing entries is expected and harmless --
+  // acetic acid already matches Alcohol, Carboxyl and Thioic_acid together -- so the incremental gain is
+  // only the sites currently going unreported, not the full labelled count above.
+  { name: "Imine_protonated", smarts: "[CX3:1]=[NX3H1+,NX3H2+:2]", aromaticNitrogen: false, sites: [{ matchPosition: 1, pKaMean: 8.214413, pKaStd: 2.007783 }] },
+  { name: "Alpha_nitro", smarts: "[CX4H1,CX4H2,CX4H3:1][NX3+](=[OX1])[OX1-]", aromaticNitrogen: false, sites: [{ matchPosition: 0, pKaMean: 6.189045, pKaStd: 2.265162 }] },
+  // Excludes the N of a hydroxamic acid (`N[CX3]=[OX1]`, already covered by N-hydroxyamide) and of an
+  // oxime (`N=*`, covered above), so the three N-O entries partition rather than overlap.
+  { name: "N_hydroxylamine", smarts: "[OX2H1,OX1H0-:1][NX3;!$(N[CX3]=[OX1]);!$(N=*)]", aromaticNitrogen: false, sites: [{ matchPosition: 0, pKaMean: 8.903158, pKaStd: 2.786721 }] },
+  // `Peroxide1` and `Peroxide2` both require an ALIPHATIC carbon, so an aryl hydroperoxide matched neither.
+  { name: "Aryl_hydroperoxide", smarts: "[c:1][OX2][OX2H1:2]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.6, pKaStd: 0.447214 }] },
   { name: "Ringed_imide1", smarts: "[O,S:1]=[C;R:2]([$([#8]),$([#7]),$([#16]),$([#6][Cl]),$([#6]F),$([#6][Br]):3])-[N;R:4]([C;R:5]=[O,S:6])-[H]", aromaticNitrogen: true, sites: [{ matchPosition: 3, pKaMean: 6.4525, pKaStd: 0.5555627777308341 }] },
   { name: "Ringed_imide2", smarts: "[O,S:1]=[C;R:2]-[N;R:3]([C;R:4]=[O,S:5])-[H]", aromaticNitrogen: true, sites: [{ matchPosition: 2, pKaMean: 8.681666666666667, pKaStd: 1.8657779975741713 }] },
   { name: "Imide", smarts: "[F,Cl,Br,S,s,P,p:1][#6:2][CX3:3](=[O,S:4])-[NX3+0:5]([CX3:6]=[O,S:7])-[H]", aromaticNitrogen: true, sites: [{ matchPosition: 4, pKaMean: 2.466666666666667, pKaStd: 1.4843629385474877 }] },
