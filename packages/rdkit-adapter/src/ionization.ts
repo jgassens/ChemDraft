@@ -197,8 +197,84 @@ import { siteContext } from "./pkaAromaticity";
  * evaluation had grown to 398 rows.
  */
 export const EXTERNAL_VALIDATION = externalJson as unknown as {
-  samples: number; mae: number; standardError: number;
+  samples: number; mae: number; rmse: number; standardError: number;
+  /** Per set, because the published competitor tables report per set and a comparison needs the same split. */
+  perSet: Record<string, { n: number; mae: number; rmse: number }>;
 };
+
+/** The Novartis and literature keys, named once so the two long filenames are not repeated. */
+const NOVARTIS = "novartis_qupkake_pka.sdf";
+const LITERATURE = "literature_qupkake_pka.sdf";
+
+/**
+ * What OTHER pKa predictors score on the same two sets. Published figures, hand-transcribed.
+ *
+ * **Why this exists.** Until now this contract published accuracy relative to nothing. "MAE 1.13" tells a
+ * reader whether the number is small, not whether it is good, and a chemist deciding whether to trust this
+ * over the tool they already have cannot answer that from an absolute figure.
+ *
+ * **Why a comparison is possible at all.** The external check runs on QupKake's redistribution of
+ * Baltruschat & Czodrowski's Novartis and literature sets, and those are the sets the published tables use.
+ * Row counts nearly coincide — 276 against their 280 Novartis, 122 against 122 literature — so this is
+ * close to like-for-like rather than a comparison across different data. Not exact: the four Novartis rows
+ * this evaluator omits are basic records whose acid form it could not construct.
+ *
+ * These are TRANSCRIBED, not measured here, which is the one place this contract cannot follow its own
+ * read-it-from-the-artifact rule. Sources are cited per row so each is checkable:
+ *   - MAE for Marvin and OPERA: Baltruschat & Czodrowski 2020, Table 2.
+ *   - RMSE for Epik Classic, MolGpKa, pkasolver: QupKake 2024, Figure 3b.
+ *   - QupKake's own MAE and RMSE, and its timings: QupKake 2024, Figure 3a and Figure 4.
+ */
+export const COMPETITOR_BENCHMARK: readonly {
+  name: string;
+  novartisMae?: number; novartisRmse?: number;
+  literatureMae?: number; literatureRmse?: number;
+  runs: string;
+  citationId: string;
+}[] = [
+  {
+    name: "QupKake",
+    novartisMae: 0.55, novartisRmse: 0.79, literatureMae: 0.39, literatureRmse: 0.54,
+    runs: "Python, PyTorch and GFN2-xTB semi-empirical QM; 2.36 s per molecule on one core, 0.67 s on eight",
+    citationId: "qupkake-2024"
+  },
+  {
+    name: "ChemAxon Marvin V20.1.0",
+    novartisMae: 0.856, novartisRmse: 1.166, literatureMae: 0.566, literatureRmse: 0.865,
+    runs: "commercial Java install and licence",
+    citationId: "baltruschat-czodrowski-2020"
+  },
+  {
+    name: "pkasolver",
+    novartisRmse: 1.13, literatureRmse: 0.82,
+    runs: "Python and PyTorch Geometric",
+    citationId: "qupkake-2024"
+  },
+  {
+    name: "Schrodinger Epik Classic",
+    novartisRmse: 1.16, literatureRmse: 0.92,
+    runs: "commercial install and licence",
+    citationId: "qupkake-2024"
+  },
+  {
+    name: "MolGpKa",
+    novartisRmse: 1.27, literatureRmse: 1.0,
+    runs: "Python and PyTorch",
+    citationId: "qupkake-2024"
+  },
+  {
+    name: "Baltruschat random forest (FCFP6, 4096 bit)",
+    novartisMae: 1.147, novartisRmse: 1.513, literatureMae: 0.532, literatureRmse: 0.785,
+    runs: "Python and scikit-learn",
+    citationId: "baltruschat-czodrowski-2020"
+  },
+  {
+    name: "OPERA V2.5",
+    novartisMae: 2.274, novartisRmse: 3.059, literatureMae: 1.737, literatureRmse: 2.182,
+    runs: "free local install",
+    citationId: "baltruschat-czodrowski-2020"
+  }
+];
 
 /** What combining the two methods was measured to be worth. Read, not asserted. */
 export const CONSENSUS_CALIBRATION = consensusJson as unknown as {
@@ -1400,6 +1476,30 @@ export function ionizationContract(): MethodContract {
         `this region was sampled, and treat a molecule unlike the corpus as having no validated interval ` +
         `at all. THE SAME DEFECT WAS ALREADY FIXED ONCE CONDITIONAL ON ELEMENT and is still open ` +
         `conditional on distribution: see the carbon stratification below.`,
+      // Placed here, among the conventions a reader actually meets, rather than only in the structured
+      // claims: an absolute error figure cannot answer "should I use this instead of what I have".
+      `MEASURED AGAINST THE ALTERNATIVES, THIS METHOD IS LAST BUT ONE. On the two held-out sets every ` +
+        `published method scores better except OPERA, the free local tool, which it beats by roughly half. ` +
+        `MAE on Novartis / literature: ` +
+        COMPETITOR_BENCHMARK.filter((e) => e.novartisMae !== undefined)
+          .map((e) => `${e.name} ${e.novartisMae!.toFixed(2)}/${e.literatureMae!.toFixed(2)}`)
+          .join(", ") +
+        `, this method ${(EXTERNAL_VALIDATION.perSet[NOVARTIS]?.mae ?? 0).toFixed(2)}/` +
+        `${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.mae ?? 0).toFixed(2)}. ` +
+        `ChemAxon Marvin is 0.34 better on Novartis and 0.42 on the literature set. Sources are cited per ` +
+        `figure; the comparison is possible because both published tables use these same two sets, and the ` +
+        `row counts nearly coincide.`,
+      // The other half of the same honesty: where it is not behind. Omitting this would be its own
+      // distortion, and each item is a measurement rather than a sales point.
+      `WHAT IT DOES THAT THE MORE ACCURATE METHODS DO NOT. It runs in-process in the drawing application ` +
+        `with no second runtime, no Python and no licence, at single-digit milliseconds per site — QupKake, ` +
+        `the most accurate of them, needs GFN2-xTB and reports 2.36 s per molecule on one core. It locates ` +
+        `its own sites and that step is MEASURED, at 91.6% strict recall over 12,021 corpus sites, which no ` +
+        `method above publishes; OPERA's own figures had to omit 31 Novartis and 6 literature molecules ` +
+        `because it returned two or zero values, which is that same step failing silently. It reports an ` +
+        `uncertainty per site at all, and states where that uncertainty is validated and where it is not. ` +
+        `And it answers carbon acids, which QupKake states it cannot: aliphatic carbon deprotonation was ` +
+        `absent from its training set, so it cannot even locate the site.`,
       "A NARROW INTERVAL MEANS THE MODEL SAW MANY SIMILAR SITES, NOT THAT THE VALUE IS RIGHT. Tree " +
         "agreement measures where the training data was dense; a molecule unlike anything in the set " +
         "can still draw confident agreement from ensemble members that are all extrapolating the " +
@@ -1588,6 +1688,40 @@ export function ionizationContract(): MethodContract {
           `model alone scores ${CONSENSUS_CALIBRATION.forestMaeHere.toFixed(2)} there and a plain ` +
           `average of the two scores ${CONSENSUS_CALIBRATION.meanMae.toFixed(2)}.`,
         citationId: "dwar-ibond"
+      },
+      // The two claims that place this method against the alternatives, one per external set. Our figures
+      // are READ from `external-validation.json`; the competitor figures are transcribed in
+      // `COMPETITOR_BENCHMARK` with a citation each.
+      {
+        metric: "mae",
+        value: EXTERNAL_VALIDATION.perSet[NOVARTIS]?.mae ?? EXTERNAL_VALIDATION.mae,
+        unit: "log10-unit",
+        basis:
+          `The Novartis set, ${EXTERNAL_VALIDATION.perSet[NOVARTIS]?.n ?? 0} sites, held out entirely. ` +
+          `RMSE ${(EXTERNAL_VALIDATION.perSet[NOVARTIS]?.rmse ?? 0).toFixed(2)}. ` +
+          `Published figures on the SAME set, MAE where reported and RMSE otherwise: ` +
+          COMPETITOR_BENCHMARK.map((entry) =>
+            `${entry.name} ${entry.novartisMae !== undefined
+              ? `MAE ${entry.novartisMae.toFixed(3)}`
+              : `RMSE ${entry.novartisRmse?.toFixed(2)}`}`).join(", ") +
+          `. THIS METHOD IS BEHIND EVERY ONE OF THEM EXCEPT OPERA, which it beats by roughly half. ` +
+          `Marvin, the tool a reader most likely already has, is 0.34 better on MAE.`,
+        citationId: "baltruschat-czodrowski-2020"
+      },
+      {
+        metric: "mae",
+        value: EXTERNAL_VALIDATION.perSet[LITERATURE]?.mae ?? EXTERNAL_VALIDATION.mae,
+        unit: "log10-unit",
+        basis:
+          `The literature set, ${EXTERNAL_VALIDATION.perSet[LITERATURE]?.n ?? 0} sites, held out entirely. ` +
+          `RMSE ${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.rmse ?? 0).toFixed(2)}, which is this method's ` +
+          `WORST dimension anywhere: every published method above scores below 1.01 RMSE on this set except ` +
+          `OPERA at 2.18. An MAE of ` +
+          `${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.mae ?? 0).toFixed(2)} beside an RMSE of ` +
+          `${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.rmse ?? 0).toFixed(2)} is a heavy tail, not a shifted ` +
+          `centre: typical answers are respectable and the hard cases are far worse than the competition's. ` +
+          `Marvin's ratio on the same set is 0.566 to 0.865.`,
+        citationId: "qupkake-2024"
       }
     ],
     citations: [
@@ -1615,6 +1749,30 @@ export function ionizationContract(): MethodContract {
         title: "Dimorphite-DL: an open-source program for enumerating the ionization states of drug-like small molecules",
         year: 2019,
         doi: "10.1186/s13321-019-0336-9"
+      },
+      // The two sources of every competitor number quoted below. Both benchmark on the SAME Novartis and
+      // literature sets this method's external check uses, which is what makes the comparison possible at
+      // all — and the reason those two sets were chosen for it.
+      {
+        id: "baltruschat-czodrowski-2020",
+        kind: "journal",
+        authors: "Marcel Baltruschat, Paul Czodrowski",
+        title:
+          "Machine learning meets pKa. F1000Research 9:113. Table 2 is the source of the ChemAxon Marvin " +
+          "and OPERA figures on the Novartis and literature sets, and the origin of both sets.",
+        year: 2020,
+        doi: "10.12688/f1000research.22090.2"
+      },
+      {
+        id: "qupkake-2024",
+        kind: "journal",
+        authors: "Omar Abarbanel, Geoffrey Hutchison",
+        title:
+          "QupKake: integrating machine learning and quantum chemistry for micro-pKa predictions. " +
+          "J. Chem. Theory Comput. 20, 6946-6956. Figure 3b is the source of the Epik Classic, MolGpKa " +
+          "and pkasolver RMSE figures on the same two sets; Figure 4 is the source of its own timings.",
+        year: 2024,
+        doi: "10.1021/acs.jctc.4c00328"
       }
     ],
     datasets: [

@@ -87,7 +87,13 @@ def evaluate(model_path, dataset_dir):
             except Exception:
                 continue
         if errors:
-            per_set[name] = {"n": len(errors), "mae": round(float(np.mean(errors)), 4)}
+            # RMSE alongside MAE, because the published competitor tables report RMSE and a comparison
+            # needs the same statistic. It is also this method's weakest dimension, so omitting it flattered.
+            per_set[name] = {
+                "n": len(errors),
+                "mae": round(float(np.mean(errors)), 4),
+                "rmse": round(float(np.sqrt(np.mean(np.square(errors)))), 4),
+            }
             all_errors += errors
     return per_set, all_errors
 
@@ -109,6 +115,7 @@ if __name__ == "__main__":
         "perSet": per_set,
         "samples": len(errors),
         "mae": round(float(np.mean(errors)), 4),
+        "rmse": round(float(np.sqrt(np.mean(np.square(errors)))), 4),
         "standardError": round(float(np.std(errors) / np.sqrt(len(errors))), 4),
     }
     out = argv[2] if len(argv) > 2 and not argv[2].startswith("--") else "."

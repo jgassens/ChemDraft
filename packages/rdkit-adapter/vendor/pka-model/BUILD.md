@@ -22,12 +22,18 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 | `consensus-calibration.json` | 645 | `4ae25e83d82b639d4c27371154fd6571aad135a485fc208f2ee4e1032f1cd62d` |
 | `coupling.json` | 1,404 | `1bc2015011408924f2fee6cc17785032766bf64be9d8fa3ac4c22bd1a607bcac` |
 | `edge-variance.json` | 1,933 | `b11d3385bab3f412349f2e271ccbde555638dbbc217cae0b33e69e502aa10f42` |
-| `external-validation.json` | 458 | `37981664695db5486231d884cb2ee8394640ac0c60a6e93fd20852040decaeb8` |
+| `external-validation.json` | 543 | `1c59bc0b8420a1f3117044c61d5db10267076a17e5fae93420700002957e290b` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
 | `interval-calibration.json` | 5,002 | `2bf20919222ec71fb6a6564cc1e0405b14f595ddfd030670ffe6872067108444` |
 | `site-pka-gnn.json` | 4,468,866 | `79061c4d3b4e11753c865088e5bb38d0c7e689e6e394af4fdf99c0dcfcfca688` |
 
-**Manifest:** `81cf1fca8155b5702c85d4d7561bf07778458b8a768846b62c6ef2bee196218c`
+**Manifest:** `fe50548392b4be6cdd7cadbbcab469fce05ffbcb06fff956e8e389c94328980e`
+
+The manifest moved without the MODEL moving. `site-pka-gnn.json` is byte-identical at
+`79061c4d…`; what changed is `external-validation.json`, which gained a per-set RMSE so the contract can
+state this method against published competitor tables that report RMSE. The manifest covers every runtime
+artifact precisely so that a measurement record cannot drift out from under a published figure unnoticed —
+this is that guard firing, not a retrain.
 
 The manifest is sha256 over the lines `${filename}  ${sha256hex}\n` with filenames sorted, so one
 constant covers the set and a failure can still name which file moved.
