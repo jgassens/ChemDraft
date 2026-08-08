@@ -6,6 +6,56 @@ Everything under this heading is the **full scope of work for this branch**. The
 ("Landed on `main` before this branch") are shipped-state records carried forward from the trunk so a
 merge does not drop them; they are context, not scope.
 
+## Fast aqueous baseline freeze and structured error audit (2026-08-08)
+
+The current shipped pKa system is frozen as the **fast aqueous baseline**. Its model weights and
+runtime artifact remain unchanged while the error mixture is measured. General feature, capacity,
+optimizer, and loss exploration is out of scope until this audit produces a disposition.
+
+This slice has three deliverables:
+
+1. A product contract naming the exact artifact, input interpretation, oracle-site versus end-to-end
+   evidence, training datasets and row counts, MAE and RMSE, tail behaviour, interval calibration,
+   known benchmark overlap, applicability, and explicit declines.
+2. A separate competitor benchmark record naming versions, common rows, site handling, omissions,
+   licences, runtime environment, hardware, and task differences. Results that do not measure the same
+   task must not share an unlabeled ranking.
+3. A molecule-level structured audit of severe failures. Each record must carry the intended acid and
+   conjugate base, experimental target type, supplied and derived tautomer/protomer, labelled and
+   predicted site, correct-event and extra-event status, training-family proximity, source consistency,
+   value and interval, and one primary failure category. Unknown fields remain explicit unknowns; a
+   predictor-assigned site is not upgraded into experimental ground truth.
+
+The audit, not another aggregate score, decides what follows:
+
+- wrong or missing events dominate: replace the separate locator with a joint reaction-event model;
+- state inconsistencies dominate: finish a reaction-valid tautomer/protomer layer before retraining;
+- disputed or incompatible labels dominate: narrow and recurate the corpus;
+- correct, supported events with genuinely bad values dominate: justify a larger or differently
+  trained regressor;
+- different mechanisms dominate different families: keep this baseline for the supported core and
+  abstain elsewhere.
+
+**Measured disposition (complete 2026-08-08).** The end-to-end audit assessed all 402 available
+Novartis/Literature structures: 352 Marvin-assigned events were reproduced, 33 were not, and 17 were
+indeterminate. On exact assigned-event comparisons, MAE was 1.0443, RMSE 1.8168, 38/24/12 errors
+exceeded 2/3/5 units, and nominal 68% intervals covered 57.10%. The 71 registered failures split nearly
+evenly between bad values on generated events (38) and assigned-event nonreproductions (33), while the
+mechanism reversed by transition: acidic failures were value-heavy and basic failures were event-heavy.
+
+This triggers the mixed-mechanism disposition. Retain the artifact unchanged as the fast aqueous
+baseline, specify and prospectively validate flags/abstentions for weak strata, resolve the ten
+rewritten-state mappings, and obtain experimental acid/base-pair event truth before choosing a joint
+locator. Only targeted value-model experiments on exactly generated, chemically adjudicated events are
+in scope; general feature, capacity, optimizer, loss, and pretraining exploration remains paused.
+
+Records of decision:
+
+- `docs/benchmarks/pka-fast-aqueous-product-contract.md`
+- `docs/benchmarks/pka-fast-aqueous-competitor-benchmark.md`
+- `docs/benchmarks/pka-fast-aqueous-error-audit.md`
+- `docs/benchmarks/pka-fast-aqueous-error-audit.json`
+
 ## Context
 
 The goal is to bring ChemDraw 26.0's computed-property surface to ChemDraft: composition and mass,
