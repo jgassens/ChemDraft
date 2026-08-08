@@ -381,3 +381,72 @@ in-window misses, with no retraining and no new data.
 | every other arm on Codex's matrix | zero |
 | **oximes alone** | **345 sites, 100% silent** |
 | **oximes + enols** | **~553 sites** |
+
+### 2d. Final split, and the exact denominator chain
+
+Self-contained harness, all 12,062 molecules, `SITE_DETECTION=1 pnpm vitest run siteDetection`:
+
+```
+found at the labelled atom   10,824      RECALL, strict            91.6%  (of 12,021)
+equivalent atom, same group     189      RECALL, credit relocation 95.6%
+same event, relocated           482
+policy removed, unreported      225
+genuine gap                     280
+label site from a predictor      75      (excluded from the denominator)
+flagged unassessable             21
+INDEX UNSTABLE                    0
+```
+
+| element | strict | relocated | policy-unreported | gap |
+|---|---:|---:|---:|---:|
+| N (6,789) | 96.2% | 46 | 77 | 80 |
+| O (4,669) | 86.7% | 355 | 98 | 134 |
+| S (189) | 69.8% | 36 | 13 | 3 |
+| C (449) | 66.6% | 45 | 37 | 63 |
+
+**Why the headline moved from 86.3% to 91.6%, in order.** The figures are not revisions of one measurement; each step changed either the software or the question.
+
+| | figure | what changed |
+|---|---|---|
+| 1 | 86.3% | first full pass. found-vs-missed only, no buckets |
+| 2 | 89.0% | *sample of 2,500.* Credited the carboxyl's other oxygen — one resonance structure apart, so which one carries the label is a convention (12.8% of in-window misses) |
+| 3 | 90.4% | *software changed.* The Oxime pattern shipped: +85 sites |
+| 4 | 90.6% | *software changed.* Four further patterns: +5 sites, near-zero |
+| 5 | 91.2% | full pass on the six-bucket harness, strict definition (found + equivalent atom only) |
+| 6 | **91.6%** | 75 rows whose site index came from ChemAxon Marvin left the denominator: 12,096 → **12,021** |
+
+The strict definition credits **only** `found` and `equivalent-atom`. `equivalent-atom` requires the same element sharing a neighbour with the labelled atom — any same-element atom anywhere would credit a phenol for a missed carboxyl.
+
+**`same-event-relocated` (482 rows, 4.0 points) IS NOT ADJUDICATED.** Two attempts to verify it failed, both mine: deprotonating the reported atom in the drawn frame removes a second proton from the wrong position, and hand-moving a proton without adjusting bond orders produces radicals. The re-run now dumps the derived structure so the audit can work in the frame the app actually scored. Until then the honest figure is the strict 91.6%.
+
+### 2e. RETRACTION — the interval is not a calibrated 68% interval off-distribution
+
+Reported twice as a differentiator: "67.6% coverage against a 68% target." That is measured **out-of-fold on the corpus, which is where the calibration curve was fitted.** Measured independently on the external set:
+
+| | coverage vs a claimed 68% |
+|---|---:|
+| out-of-fold corpus (fitted here) | 67.6% |
+| **external set (n=398)** | **57.3%** |
+| ↳ Novartis | 53.6% |
+| ↳ Literature | 65.6% |
+| ↳ nitrogen (314) | 55.7% |
+| ↳ **N-acidic** (Codex's audit) | **44%** |
+
+Confirms Codex's end-to-end audit at 57.10% on its 352 exact comparisons. **The same defect the carbon stratification was built to fix, one level up:** it was fixed conditional on element and remains open conditional on distribution. Conformal validity rests on exchangeability between calibration and test data, which structurally shifted molecules break.
+
+So the app shows a `±` that is roughly honest on corpus-like molecules and materially over-confident on novel ones — the case a user cares about most.
+
+### 2f. Where a sentinel can and cannot help
+
+Codex proposes a domain sentinel returning "unsupported" for carbonyl-O-basic and thiocarbonyl-S-basic, where its audit reproduced 0 of 10 and 0 of 4 assigned events. The gap is real and matches this corpus audit independently. But the sentinel cannot be keyed on the presence of the group:
+
+| | of 12,062 distinct molecules |
+|---|---:|
+| contains a neutral carbonyl `C=O` | 5,524 (45.8%) |
+| contains a neutral thiocarbonyl | 173 (1.4%) |
+| **drawn** protonated `C=[OH+]` | 21 (0.2%) |
+| **drawn** protonated `C=[SH+]` | 7 (0.1%) |
+
+`external_eval.sdf_sites` builds a basic record's acid form by protonating a NEUTRAL drawing, so those failures arrive as neutral carbonyls. A sentinel flagging unassessed carbonyl basicity would therefore fire on nearly half of all results and become noise. Keyed on the drawn protonated form it is precise and reaches 0.2%.
+
+The defensible form is a scope statement made ONCE in the contract — this implementation does not assess carbonyl or thiocarbonyl basicity — plus a per-molecule `unassessed` entry only where the user drew the protonated form. Not a flag on 5,524 molecules.
