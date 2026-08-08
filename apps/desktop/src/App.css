@@ -6575,6 +6575,23 @@ textarea:focus-visible,
   table-layout: fixed;
 }
 
+/* Cells must WRAP in here, and the rule above is why.
+   `.plugin-report-table` sets `white-space: nowrap` because it owns an `overflow-x: auto` scroller — a
+   wide table is meant to be carried sideways by it. Inside this pane it cannot: pinning the table to
+   `width: 100%` with fixed layout makes every column an equal share of the pane, so the table never
+   grows past the scroller and the scroller never engages. A cell longer than its share then overflowed
+   VISIBLY and painted on top of its neighbour — `Amines_primary_secondary_tertiary` needing 210px in a
+   113px column, a decline reason needing 1644px in 282px — which read as two columns of overprinted
+   text. `text-overflow: clip` was already set and inert, because clipping needs `overflow: hidden`.
+   Wrapping rather than an ellipsis is the deliberate choice: this pane's contract is that nothing is
+   hidden, and a truncated site type or a truncated reason is exactly the kind of quiet omission the
+   rest of this feature refuses to make. `overflow-wrap: anywhere` is already declared above, so the
+   long unbroken identifiers break too. */
+.molecular-inspector-viewport .plugin-report-table th,
+.molecular-inspector-viewport .plugin-report-table td {
+  white-space: normal;
+}
+
 .molecular-inspector-footer {
   padding: 5px 12px;
   border-top: 1px solid var(--cd-border, #c8c4ba);
