@@ -34,10 +34,34 @@ import {
   moleculeStructureBondStrokeWidthForCommand,
   moleculeStructureChainAngleCommandId,
   moleculeStructureChainAngleForCommand,
+  objectMarkerKindCommandId,
+  objectMarkerKindCommands,
+  objectMarkerKindForCommand,
+  objectMarkerSizeCommandId,
+  objectMarkerSizeForCommand,
   textFontFamilyCommandId,
   textFontFamilyForCommand,
   textStylePatchForCommand
 } from "./commands";
+
+describe("Arrow marker commands", () => {
+  it("round-trips every marker kind command for both ends", () => {
+    for (const command of objectMarkerKindCommands) {
+      expect(objectMarkerKindCommandId(command.markerId, command.kind)).toBe(command.id);
+      expect(objectMarkerKindForCommand(command.id)).toEqual({ markerId: command.markerId, kind: command.kind });
+    }
+    expect(objectMarkerKindForCommand("object.marker.end.kind.swirl")).toBeUndefined();
+  });
+
+  it("canonicalizes and strictly parses the head size command", () => {
+    expect(objectMarkerSizeCommandId(24)).toBe("object.marker.size:24");
+    expect(objectMarkerSizeForCommand("object.marker.size:24")).toEqual({ value: 24 });
+    // Out of the 4–96 handle range or malformed → not a marker size command.
+    expect(objectMarkerSizeForCommand("object.marker.size:0")).toBeUndefined();
+    expect(objectMarkerSizeForCommand("object.marker.size:120")).toBeUndefined();
+    expect(objectMarkerSizeForCommand("object.marker.size:16px")).toBeUndefined();
+  });
+});
 
 describe("Molecule Inspector commands", () => {
   it("canonicalizes and strictly parses Structure numeric commands", () => {

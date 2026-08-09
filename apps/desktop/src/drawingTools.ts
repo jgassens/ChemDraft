@@ -1,4 +1,5 @@
 import type { CommandSpec } from "./commands";
+import { canonicalCommandId } from "./renamedCommands";
 
 export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "bracket" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
@@ -363,11 +364,11 @@ export function withStandaloneDrawingToolCommands(commands: readonly CommandSpec
 }
 
 /** The declared set of tool ids that ship visibly in toolsets but still await their wiring slice
- *  (PLANS.md, Toolbar Wiring and Honesty). Declaration is deliberate: stub-ness cannot be derived
- *  from disabled state alone, because selection-dependent commands (layout.align*, boolean ops) are
- *  also disabled-with-reason in the manifest yet have live behavior. The customize gallery excludes
- *  these ids so a stub can never be dragged onto a real toolbar; each wiring slice shrinks this set
- *  and it must reach empty at closeout. */
+ *  (docs/shipped/README.md, Toolbar Wiring and Honesty). Declaration is deliberate: stub-ness
+ *  cannot be derived from disabled state alone, because selection-dependent commands
+ *  (layout.align*, boolean ops) are also disabled-with-reason in the manifest yet have live
+ *  behavior. The customize gallery excludes these ids so a stub can never be dragged onto a real
+ *  toolbar; each wiring slice shrinks this set and it must reach empty at closeout. */
 export const TRANSITIONAL_STUB_COMMAND_IDS: ReadonlySet<string> = new Set([]);
 
 /**
@@ -412,7 +413,13 @@ export function activateDrawingToolCommand(
   currentState: ActiveToolState,
   command: CommandSpec
 ): ToolActivationResult {
-  const definition = getDrawingToolDefinition(command.id);
+  // A renamed id activates whatever replaced it. The legacy semantic-arrow ids can still arrive
+  // from a menu, a shortcut, or persisted state that predates the rename, and following them
+  // reached the retired `reaction-arrow` builder — an object with none of the current arrow
+  // mechanics. Redirect once, here, so every downstream lookup sees the canonical tool.
+  const canonicalId = canonicalCommandId(command.id);
+  const resolvedCommand = canonicalId === command.id ? command : { ...command, id: canonicalId };
+  const definition = getDrawingToolDefinition(resolvedCommand.id);
   if (!definition) {
     return {
       state: {
@@ -425,7 +432,7 @@ export function activateDrawingToolCommand(
     };
   }
 
-  const normalizedCommand = mergeDrawingToolCommandSpec(command);
+  const normalizedCommand = mergeDrawingToolCommandSpec(resolvedCommand);
   const disabledReason = normalizedCommand.enabled === false
     ? normalizedCommand.disabledReason ?? "Tool unavailable"
     : undefined;
@@ -549,6 +556,17 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.brush", "Brush", "style", usageHint("drag to paint", "keep dragging to continue", "release ends, Esc cancels")],
     ["tool.art.eyedropper", "Eyedropper", "style", usageHint("click source art", "⌥ copies full appearance", "Esc exits")],
     ["tool.art.arrow", "Arrow", "export", artPathUsageHint],
+    ["tool.art.reactionArrow", "Reaction Arrow", "export", artPathUsageHint],
+    ["tool.art.reactionArrowBold", "Reaction Arrow (Large Head)", "export", artPathUsageHint],
+    ["tool.art.reactionArrowDashed", "Dashed Reaction Arrow", "export", artPathUsageHint],
+    ["tool.art.resonanceArrow", "Resonance Arrow", "export", artPathUsageHint],
+    ["tool.art.equilibriumArrow", "Equilibrium Arrow", "export", artPathUsageHint],
+    ["tool.art.retroArrow", "Retrosynthesis Arrow", "export", artPathUsageHint],
+    ["tool.art.curvedArrow90", "Curved Arrow (Gentle)", "export", artPathUsageHint],
+    ["tool.art.curvedArrow180", "Curved Arrow (Pronounced)", "export", artPathUsageHint],
+    ["tool.art.fishhookArrow", "Fishhook Arrow", "export", artPathUsageHint],
+    ["tool.art.fishhookCurved", "Curved Fishhook Arrow", "export", artPathUsageHint],
+    ["tool.art.noReactionArrow", "No-Reaction Arrow", "export", artPathUsageHint],
     ["tool.art.arc270", "Three-quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc180", "Half Arc", "export", artPathUsageHint],

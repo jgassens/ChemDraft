@@ -44,8 +44,8 @@ export function pluginFacingStructure(
  * follow the document's selection order. Pure and testable — no React, no refs. The host deep-copies
  * and freezes whatever this returns before handing it to a plugin.
  *
- * This stays a thin read over current document state so the pending selection-policy refactor
- * (PLANS-selection-policy.md) can land without touching plugin code.
+ * This stays a thin read over current document state. That kept plugin code untouched when the
+ * selection-policy refactor landed (docs/shipped/selection-policy-refactor.md); keep it thin.
  */
 export function buildPluginSelectionSnapshot(document: ChemDraftDocument): PluginSelectionSnapshot {
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();

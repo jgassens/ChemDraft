@@ -17,6 +17,7 @@ import {
   averageDefinedDepthWeights,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  doubleBondSecondaryFlushEnds,
   findNearestAtomAtPoint,
   findNearestBondHit,
   findNearestAtomHit,
@@ -2325,6 +2326,68 @@ describe("layout-engine page SVG planner", () => {
     expect(Number(secondary.attrs.y2)).toBe(Number(primary.attrs.y2));
   });
 
+  // The 3D spin overlay draws the same double bond and copied the inset formula but not this
+  // exception, so ethylene and every terminal alkene drew shortened while spinning and flush once
+  // committed. Exported so both callers ask the one question instead of each keeping an answer
+  // (AGENTS.md 5.26); pinned here because it is now a contract between two renderers, not a detail.
+  it("names the double-bond ends whose secondary line draws flush", () => {
+    const atom = (id: string, element: string, x: number, y: number, formalCharge = 0) =>
+      ({ id, element, x, y, formalCharge });
+
+    // Ethylene: both ends are terminal CH2, so both draw flush and the molecule stays symmetric.
+    const ethylene = moleculeObject({
+      id: "mol_flush_ethylene",
+      atoms: [atom("a", "C", 120, 160), atom("b", "C", 148, 160)],
+      bonds: [{ id: "bond_1", fromAtomId: "a", toAtomId: "b", order: "double" }]
+    });
+    expect(
+      doubleBondSecondaryFlushEnds(ethylene.atoms[0], ethylene.atoms[1], ethylene, ethylene.bonds[0])
+    ).toEqual({ from: true, to: true });
+
+    // Propene: only the terminal end is flush, and it is identified as the RIGHT end — swapping
+    // from/to would inset the methylene and tuck the substituted junction instead.
+    const propene = moleculeObject({
+      id: "mol_flush_propene",
+      atoms: [atom("j", "C", 142, 140), atom("t", "C", 142, 170), atom("m", "C", 120, 132)],
+      bonds: [
+        { id: "bond_d", fromAtomId: "j", toAtomId: "t", order: "double" },
+        { id: "bond_s", fromAtomId: "j", toAtomId: "m", order: "single" }
+      ]
+    });
+    const [junction, terminal] = propene.atoms;
+    expect(doubleBondSecondaryFlushEnds(junction, terminal, propene, propene.bonds[0]))
+      .toEqual({ from: false, to: true });
+    // …and it follows the atoms, not the argument order.
+    expect(doubleBondSecondaryFlushEnds(terminal, junction, propene, propene.bonds[0]))
+      .toEqual({ from: true, to: false });
+
+    // A charged terminal carbon is not a methylene, and neither is a heteroatom end (C=O).
+    const charged = moleculeObject({
+      id: "mol_flush_charged",
+      atoms: [atom("a", "C", 120, 160), atom("b", "C", 148, 160, 1)],
+      bonds: [{ id: "bond_1", fromAtomId: "a", toAtomId: "b", order: "double" }]
+    });
+    expect(doubleBondSecondaryFlushEnds(charged.atoms[0], charged.atoms[1], charged, charged.bonds[0]))
+      .toEqual({ from: true, to: false });
+
+    const carbonyl = moleculeObject({
+      id: "mol_flush_carbonyl",
+      atoms: [atom("c", "C", 120, 160), atom("o", "O", 148, 160)],
+      bonds: [{ id: "bond_1", fromAtomId: "c", toAtomId: "o", order: "double" }]
+    });
+    expect(doubleBondSecondaryFlushEnds(carbonyl.atoms[0], carbonyl.atoms[1], carbonyl, carbonyl.bonds[0]))
+      .toEqual({ from: false, to: false });
+
+    // Single bonds have no secondary line at all.
+    const single = moleculeObject({
+      id: "mol_flush_single",
+      atoms: [atom("a", "C", 120, 160), atom("b", "C", 148, 160)],
+      bonds: [{ id: "bond_1", fromAtomId: "a", toAtomId: "b", order: "single" }]
+    });
+    expect(doubleBondSecondaryFlushEnds(single.atoms[0], single.atoms[1], single, single.bonds[0]))
+      .toEqual({ from: false, to: false });
+  });
+
   it("renders ethylene's double bond symmetrically with both lines full length", () => {
     const molecule = moleculeObject({
       id: "mol_ethylene",
@@ -3502,5 +3565,150 @@ describe("atom-label depth cueing", () => {
 
   it("sizes the knockout halo from the label font size", () => {
     expect(atomLabelHaloWidthPx({ atomLabelFontSizePx: 15 } as never)).toBeCloseTo(4.5);
+  });
+});
+
+describe("shared SVG export of arrow marker and shaft-mark visuals", () => {
+  // These two visuals are planned by the art engine and drawn by the desktop canvas; the shared
+  // export renderer must agree, or a scientific figure leaving the app disagrees with the drawing
+  // the user reviewed on screen (AGENTS.md: exported arrows must match the canvas).
+  function arrowGraphic(overrides: Partial<GraphicObject> = {}): GraphicObject {
+    return {
+      id: "art_arrow_export",
+      type: "graphic",
+      x: 120,
+      y: 84,
+      width: 132,
+      height: 24,
+      rotation: 0,
+      style: {
+        strokeColor: "#111111",
+        strokeWidth: 2
+      },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line"
+      },
+      ...overrides
+    } satisfies GraphicObject;
+  }
+
+  function exportedElements(object: GraphicObject) {
+    return planPageSvgRender(pageWithObjects([object])).fragments.flatMap(elementFragments);
+  }
+
+  it("exports a fishhook half-arrow as a single-sided barb, not the bar fallback", () => {
+    const elements = exportedElements(arrowGraphic({
+      data: {
+        artPathKind: "line",
+        artToolId: "fishhookArrow",
+        markerEnd: { kind: "half-arrow", sizePx: 16 }
+      }
+    }));
+    const marker = elements.find((fragment) => fragment.attrs["data-graphic-marker"] === "end");
+
+    expect(marker).toBeDefined();
+    // A bar fallback is a two-point open path with fill:none; the barb is a filled closed triangle.
+    expect(marker?.attrs.fill).not.toBe("none");
+    expect(String(marker?.attrs.d)).toContain("Z");
+    expect(String(marker?.attrs.d).match(/L /g) ?? []).toHaveLength(2);
+  });
+
+  it("exports both equilibrium half-arrow heads as barbs", () => {
+    const elements = exportedElements(arrowGraphic({
+      data: {
+        artPathKind: "line",
+        artToolId: "equilibriumArrow",
+        dualShaft: true,
+        dualShaftGapPx: 7,
+        markerStart: { kind: "half-arrow", sizePx: 14 },
+        markerEnd: { kind: "half-arrow", sizePx: 14 }
+      }
+    }));
+    const markers = elements.filter((fragment) => fragment.attrs["data-graphic-marker"] !== undefined);
+
+    expect(markers).toHaveLength(2);
+    for (const marker of markers) {
+      expect(marker.attrs.fill).not.toBe("none");
+      expect(String(marker.attrs.d)).toContain("Z");
+    }
+  });
+
+  it("exports the no-reaction cross across the shaft", () => {
+    const elements = exportedElements(arrowGraphic({
+      data: {
+        artPathKind: "line",
+        artToolId: "noReactionArrow",
+        shaftMark: "cross",
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      }
+    }));
+    const cross = elements.find((fragment) => fragment.attrs["data-graphic-shaft-mark"] === "cross");
+
+    expect(cross).toBeDefined();
+    // Two independent strokes (the ✗), stroked not filled.
+    expect(String(cross?.attrs.d).match(/M /g) ?? []).toHaveLength(2);
+    expect(cross?.attrs.fill).toBe("none");
+    expect(cross?.attrs.stroke).toBe("#111111");
+  });
+
+  it("honours an explicit no-reaction cross size in the export", () => {
+    const small = exportedElements(arrowGraphic({
+      data: { artPathKind: "line", artToolId: "noReactionArrow", shaftMark: "cross", shaftMarkSizePx: 8 }
+    })).find((fragment) => fragment.attrs["data-graphic-shaft-mark"] === "cross");
+    const large = exportedElements(arrowGraphic({
+      data: { artPathKind: "line", artToolId: "noReactionArrow", shaftMark: "cross", shaftMarkSizePx: 32 }
+    })).find((fragment) => fragment.attrs["data-graphic-shaft-mark"] === "cross");
+
+    const armLength = (fragment: typeof small) => {
+      const numbers = String(fragment?.attrs.d).match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
+      return Math.hypot(numbers[2] - numbers[0], numbers[3] - numbers[1]);
+    };
+
+    expect(armLength(small)).toBeCloseTo(8, 1);
+    expect(armLength(large)).toBeCloseTo(32, 1);
+  });
+});
+
+describe("implicit hydrogens and formal charge", () => {
+  const atom = (element: string, formalCharge: number, id = "a1") => ({
+    id, element, x: 0, y: 0, formalCharge
+  });
+  const bondTo = (id: string) => ({
+    id: `b_${id}`, fromAtomId: "a1", toAtomId: id, order: "single" as const
+  });
+
+  it("counts implicit hydrogens against the CHARGED valence, not the neutral one", () => {
+    // A charge changes how many bonds an atom wants, so counting against the neutral valence
+    // invented hydrogens that are not there: an alkoxide drew as "OH-" and a trisubstituted
+    // carbocation as "CH+". Both are different molecules from the ones the user drew.
+
+    // Alkoxide: one bond, no hydrogen.
+    expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")])).toBe("O-");
+    // Neutral alcohol oxygen with one bond keeps its hydrogen.
+    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("OH");
+
+    // Carbocation with three bonds: no hydrogen.
+    expect(atomDisplayLabel(atom("C", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C+");
+    // Carbanion also takes three bonds.
+    expect(atomDisplayLabel(atom("C", -1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C-");
+
+    // Ammonium takes four bonds, so a fully substituted one has no hydrogen and is not
+    // over-counted as hypervalent either.
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3"), bondTo("c4")])).toBe("N+");
+    // Protonated amine: three bonds on N+ leaves one hydrogen.
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("NH+");
+
+    // A halide anion takes no bonds and no hydrogen.
+    expect(atomDisplayLabel(atom("Cl", -1), [])).toBe("Cl-");
+    // Neutral HCl keeps its hydrogen.
+    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("ClH");
+  });
+
+  it("still labels neutral atoms exactly as before", () => {
+    expect(atomDisplayLabel(atom("O", 0), [])).toBe("OH2");
+    expect(atomDisplayLabel(atom("N", 0), [])).toBe("NH3");
+    expect(atomDisplayLabel(atom("C", 0), [])).toBe("CH4");
+    expect(atomDisplayLabel(atom("S", 0), [bondTo("c1")])).toBe("SH");
   });
 });

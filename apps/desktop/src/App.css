@@ -1284,14 +1284,18 @@ textarea:focus-visible,
 }
 
 .main-toolbar-style-controls {
-  /* Size to content (both rows) instead of a fixed 344px — the old fixed width + `1fr` columns
-     below left dead whitespace between the swatch/align groups and made the font box sprawl. */
   display: grid;
   grid-template-rows: 24px 24px;
   align-items: stretch;
   justify-items: start;
   justify-content: start;
-  width: max-content;
+  /* The footprint is pinned by construction: every variant's rows budget exactly 11 cells
+     (11×24px + 10×4px gaps = 304px), plus the 4px lead-in padding under the global border-box
+     sizing — so the widget can never resize or slide as the selection changes variants (the
+     11-cell budget itself is asserted in mainStyleWidget.test.ts). Overflow stays visible — like
+     every tooltip-bearing palette container — so the cells' .tool-tooltip spans can hang below
+     the toolbar. */
+  width: calc(var(--cd-control-height) * 11 + var(--cd-space-2) * 11);
   gap: var(--cd-space-2);
   padding-left: var(--cd-space-2);
 }
@@ -2621,7 +2625,16 @@ textarea:focus-visible,
 .toolbar-widget-grid-slot {
   display: grid;
   align-items: center;
-  justify-items: center;
+  /* Start-aligned, not centered: the style widget's width is pinned (11 cells in a 12-cell slot),
+     and centering would slide every control sideways if the two ever disagreed. */
+  justify-items: start;
+}
+
+/* Widget cell widths are inline styles with literal calc multipliers (spanStyle in
+   mainStyleWidget/cells.tsx) — WKWebView drops calc() products whose operands are both
+   var()-dependent, so no shared n-in-a-var rule can carry them. */
+.toolbar-cell-gap {
+  height: var(--cd-control-height);
 }
 
 /* In customize mode the widget rides inside its sortable slot, inert — the slot owns the drag. */
@@ -3045,6 +3058,21 @@ textarea:focus-visible,
   visibility: visible;
 }
 
+/* Style-widget cells reuse the icon shells' tooltip contract without their fixed 24px box: the
+   shell hugs whatever control it wraps (swatch, toggle, or a multi-cell select). */
+.toolbar-cell-shell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.toolbar-cell-shell[data-tooltip-visible="true"] .tool-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition: opacity 90ms ease, transform 90ms ease;
+  visibility: visible;
+}
+
 .tool-palette.horizontal .tool-tooltip,
 .tool-palette.floating.horizontal .tool-tooltip {
   top: calc(100% + 7px);
@@ -3194,7 +3222,11 @@ textarea:focus-visible,
   grid-template-rows: var(--page-height);
   transform: translate(var(--page-translate-x, 0), var(--page-translate-y, 0));
   transform-origin: 0 0;
-  contain: layout paint;
+  /* No `paint` here: paint containment on this transformed element makes WKWebView
+     under-invalidate removals of overhanging descendants (rotate/tilt handles, path
+     dots), leaving partial ghost pixels on the canvas. `.page` keeps `contain: paint`
+     safely because it carries no transform. */
+  contain: layout;
   isolation: isolate;
 }
 
@@ -3664,15 +3696,28 @@ textarea:focus-visible,
   will-change: transform;
 }
 
+/* While any edit chrome is mounted on a graphic (path dots, bezier cage, gradient or
+   corner handles, the transform box), composite the whole wrapper. The chrome renders
+   inside the object's own SVG and overflows its box; painting it in the page layer is
+   what lets WKWebView strand stale pixels when it unmounts (see .object-transform-frame
+   above). The attribute is present only during an active interaction, so the layer is
+   transient. */
+.graphic-object[data-graphic-interaction-mode] {
+  will-change: transform;
+}
+
 .graphic-visual-shell {
   width: 100%;
   height: 100%;
   transform-origin: 50% 50%;
 }
 
-.graphic-visual-shell[data-art-z-rotation] {
-  will-change: transform;
-}
+/* No standing `will-change: transform` on rotated shells: it pinned a permanent
+   compositing layer under every rotated graphic, and WKWebView under-invalidates
+   chrome unmounting around such layers — hover cages, size-box handles, and dots
+   ghosted over any arrow that had ever been rotated. The transform-preview rule
+   above already grants the hint for the duration of a live drag, which is the only
+   time it earns its keep. */
 
 .graphic-glyph-shell {
   width: 100%;
@@ -3818,6 +3863,23 @@ textarea:focus-visible,
   background: var(--cd-bg-active);
   border-color: var(--cd-accent-strong);
   box-shadow: 0 0 0 3px rgb(29 127 104 / 18%), 0 0 0 5px rgb(255 255 255 / 75%);
+}
+
+/* Arrow-mode hover handles: small translucent dots (ChemDraw-style) marking the grab points on an
+   arrow you're hovering, rather than the full opaque Select-tool chrome. The base `pointer-events: all`
+   and `cursor: move` are inherited so the dots stay grabbable; they brighten on hover of each dot. */
+.graphic-path-edit-handle-dot {
+  width: 9px;
+  height: 9px;
+  border-width: 1px;
+  background: color-mix(in srgb, var(--cd-accent) 32%, transparent);
+  border-color: color-mix(in srgb, var(--cd-accent) 60%, transparent);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 55%);
+}
+
+.graphic-path-edit-handle-dot:hover {
+  background: color-mix(in srgb, var(--cd-accent) 70%, transparent);
+  border-color: var(--cd-accent-strong);
 }
 
 .graphic-path-segment-hit-layer {
@@ -4268,6 +4330,13 @@ textarea:focus-visible,
   position: absolute;
   z-index: 3;
   pointer-events: none;
+  /* Own compositing layer: the frame's buttons and corner handles overhang the object
+     box, and WKWebView under-invalidates that overhang when the frame unmounts or
+     follows a drag, leaving ghost pixels. Compositing keeps the chrome's pixels out
+     of the page layer entirely, so there is nothing stale to leave behind. Frames
+     mount only while an object is selected or Shift-hovered, so the layer count
+     stays small and transient. */
+  will-change: transform;
 }
 
 /* Bounding box around a multi-object selection (group rotate/resize chrome). */

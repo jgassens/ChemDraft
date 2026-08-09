@@ -2,8 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   listenForPaletteTooltipHide,
   listenForPaletteTooltipShow,
+  monitorLogicalBoundsAt,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
+  type MonitorLogicalBounds,
   type PaletteTooltipPayload
 } from "./window-manager";
 
@@ -30,6 +32,36 @@ function showTooltipWindow() {
   void import("@tauri-apps/api/core")
     .then(({ invoke }) => invoke("show_toolset_tooltip_window"))
     .catch(() => undefined);
+}
+
+/**
+ * Pure placement: center on the anchor, flip above when there's no room below, and clamp
+ * within the bounds of the monitor the ANCHOR lives on (global logical coordinates). The
+ * old clamp used `window.screen` — the display this (hidden, usually primary-screen)
+ * window was on — which dragged tooltips for a second-screen palette back to the primary
+ * display's edge. With no bounds (anchor on no known monitor), place at the anchor unclamped:
+ * a tooltip at the anchor is always better than one on the wrong screen.
+ */
+export function placePaletteTooltip(input: {
+  anchorCenterX: number;
+  belowY: number;
+  aboveY: number;
+  width: number;
+  height: number;
+  bounds?: MonitorLogicalBounds;
+}): { x: number; y: number } {
+  const { anchorCenterX, belowY, aboveY, width, height, bounds } = input;
+  const margin = 4;
+  let x = Math.round(anchorCenterX - width / 2);
+  let y = Math.round(belowY);
+  if (bounds) {
+    x = Math.max(bounds.left + margin, Math.min(x, bounds.right - width - margin));
+    if (y + height > bounds.bottom - margin) {
+      y = Math.round(aboveY - height);
+    }
+    y = Math.max(bounds.top + margin, y);
+  }
+  return { x, y };
 }
 
 export function PaletteTooltipWindow() {
@@ -81,22 +113,31 @@ export function PaletteTooltipWindow() {
     }
     const width = Math.ceil(rect.width);
     const height = Math.ceil(rect.height);
-    const margin = 4;
-    // window.screen describes the display this window is on. On a multi-display setup whose
-    // global origin isn't this display's top-left the clamp is approximate — acceptable for a
-    // transient tooltip; the anchor itself is always correct.
-    let left = Math.round(payload.anchorCenterX - width / 2);
-    const screenRight = window.screen.width > 0 ? window.screen.width : Number.MAX_SAFE_INTEGER;
-    left = Math.max(margin, Math.min(left, screenRight - width - margin));
-    let top = Math.round(payload.belowY);
-    const screenBottom = window.screen.height > 0 ? window.screen.height : Number.MAX_SAFE_INTEGER;
-    if (top + height > screenBottom - margin) {
-      top = Math.round(payload.aboveY - height);
-    }
     let cancelled = false;
     void (async () => {
+      // Clamp against the monitor that contains the ANCHOR (the hovered button), not
+      // whichever display this floating window is currently on — see placePaletteTooltip.
+      const anchorProbeY = (payload.aboveY + payload.belowY) / 2;
+      const bounds = await monitorLogicalBoundsAt(payload.anchorCenterX, anchorProbeY);
+      // Superseded while awaiting the monitor query: writing this placement now would drag the
+      // (already re-placed, visible) window back to the previous button's anchor while it shows the
+      // new button's text. Every write below is guarded, not just the reveal.
+      if (cancelled) {
+        return;
+      }
+      const { x, y } = placePaletteTooltip({
+        anchorCenterX: payload.anchorCenterX,
+        belowY: payload.belowY,
+        aboveY: payload.aboveY,
+        width,
+        height,
+        bounds
+      });
       await setCurrentWindowLogicalSize({ width, height });
-      await setCurrentWindowLogicalPosition({ x: left, y: top });
+      if (cancelled) {
+        return;
+      }
+      await setCurrentWindowLogicalPosition({ x, y });
       if (!cancelled) {
         showTooltipWindow();
       }

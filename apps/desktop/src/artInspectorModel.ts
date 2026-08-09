@@ -1,5 +1,6 @@
-import { planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
-import type { ChemDraftDocument, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
+import { graphicMarkerRenderedSizeFloorPx, graphicMarkerRenderedSizePx, planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
+import type { ChemDraftDocument, GraphicMarker, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
+import { graphicObjectHasShaftMark, graphicObjectSupportsMarkersWithPlan, nativeArrowToolIdForGraphic } from "./documentWorkflow";
 import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
 
 export type ArtInspectorPaintTarget = "fill" | "stroke";
@@ -25,6 +26,7 @@ export interface ArtInspectorSkippedObjectIdsByControl {
   fill?: ArtInspectorSkippedObject[];
   lineEnds?: ArtInspectorSkippedObject[];
   corners?: ArtInspectorSkippedObject[];
+  markers?: ArtInspectorSkippedObject[];
 }
 
 export interface ArtInspectorMixedValue<T> {
@@ -91,6 +93,21 @@ export interface ArtInspectorModel {
   supportsFillOpacityAll: boolean;
   supportsStrokeOpacityAny: boolean;
   supportsStrokeOpacityAll: boolean;
+  /** Marker-capable = an open-stroke path whose ends can carry arrowhead markers. */
+  supportsMarkersAny: boolean;
+  supportsMarkersAll: boolean;
+  /** Shaft-marked = draws the no-reaction ✗ across its midpoint. */
+  supportsShaftMarkAny: boolean;
+  supportsShaftMarkAll: boolean;
+  /** The largest rendered head size the selection's renderer will floor to, across every marker-
+   *  capable object and both its ends. A head-size control must not offer sizes below this or the
+   *  canvas silently overrides the choice; undefined when nothing in the selection has a head. */
+  markerRenderedSizeFloorPx?: number;
+  /** Arrow-family membership (drawn with one of the arrow tools), for the arrow style widget. */
+  isArrowAny: boolean;
+  isArrowAll: boolean;
+  /** Distinct arrow tool ids in the selection, sorted. */
+  arrowToolIds: string[];
   fillSupportedCount: number;
   strokeSupportedCount: number;
   dashSupportedCount: number;
@@ -98,6 +115,7 @@ export interface ArtInspectorModel {
   cornersSupportedCount: number;
   fillOpacitySupportedCount: number;
   strokeOpacitySupportedCount: number;
+  markersSupportedCount: number;
   values: {
     fillPaintType: ArtInspectorMixedValue<ArtInspectorPaintType>;
     strokePaintType: ArtInspectorMixedValue<ArtInspectorPaintType>;
@@ -111,6 +129,16 @@ export interface ArtInspectorModel {
     dash: ArtInspectorMixedValue<string>;
     lineEnds: ArtInspectorMixedValue<ArtInspectorLineCap>;
     corners: ArtInspectorMixedValue<ArtInspectorLineJoin>;
+    /** Absent marker keys read as "none" so a bare tail is a real value, not a mixed-null. */
+    markerStartKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
+    markerEndKind: ArtInspectorMixedValue<GraphicMarker["kind"]>;
+    /** The head size as RENDERED: the stored `sizePx`, or the engine's 10px default, floored per
+     *  marker kind by {@link markerRenderedSizeFloorPx}. Reporting the raw stored value meant an
+     *  unset head read as a size nothing drew at, and it could also fall below the floor the widget
+     *  clamps its choices to — so the control offered a value it could not round-trip. */
+    markerSizePx: ArtInspectorMixedValue<number>;
+    /** No-reaction ✗ size: an explicit px value, or "auto" when derived from stroke width. */
+    shaftMarkSizePx: ArtInspectorMixedValue<number | "auto">;
   };
   activeGradient: ArtInspectorGradientModel;
   effectControls: Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
@@ -124,7 +152,7 @@ export interface CreateArtInspectorModelOptions {
   requestedPaintTarget?: ArtInspectorPaintTarget;
 }
 
-type ArtInspectorCapabilityKey = "fill" | "stroke" | "dash" | "lineEnds" | "corners";
+type ArtInspectorCapabilityKey = "fill" | "stroke" | "dash" | "lineEnds" | "corners" | "markers";
 type ArtInspectorStyleObject = GraphicObject | MoleculeObject;
 type ArtInspectorPlannedEntry =
   | { object: GraphicObject; plan: ReturnType<typeof planNativeArtVisual> }
@@ -155,11 +183,21 @@ export function createArtInspectorModel({
   const supportsDash = planned.map((entry) => entry.plan?.capabilities.supportsDash === true);
   const supportsLineEnds = planned.map((entry) => entry.plan?.capabilities.supportsLineCap === true);
   const supportsCorners = planned.map((entry) => entry.plan?.capabilities.supportsLineJoin === true);
+  // From the plan computed above, not a second planNativeArtVisual call — see the note on
+  // `graphicObjectSupportsMarkersWithPlan`. This model is rebuilt every pointermove frame.
+  const supportsMarkers = planned.map(
+    (entry) => entry.object.type === "graphic" && entry.plan !== undefined && graphicObjectSupportsMarkersWithPlan(entry.object, entry.plan)
+  );
+  const supportsShaftMark = planned.map((entry) => entry.object.type === "graphic" && graphicObjectHasShaftMark(entry.object));
+  const arrowToolIdByEntry = planned.map((entry) => entry.object.type === "graphic" ? nativeArrowToolIdForGraphic(entry.object) : undefined);
+  const arrowCount = arrowToolIdByEntry.filter((toolId) => toolId !== undefined).length;
   const fillSupportedCount = countSupported(supportsFill);
   const strokeSupportedCount = countSupported(supportsStroke);
   const dashSupportedCount = countSupported(supportsDash);
   const lineEndsSupportedCount = countSupported(supportsLineEnds);
   const cornersSupportedCount = countSupported(supportsCorners);
+  const markersSupportedCount = countSupported(supportsMarkers);
+  const shaftMarkSupportedCount = countSupported(supportsShaftMark);
   const activePaintTarget = requestedPaintTarget === "fill" && fillSupportedCount === 0 && strokeSupportedCount > 0
     ? "stroke"
     : requestedPaintTarget === "stroke" && strokeSupportedCount === 0 && fillSupportedCount > 0
@@ -168,7 +206,7 @@ export function createArtInspectorModel({
 
   const values = {
     fillPaintType: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarPaintType(object) : moleculeFillToolbarPaintType(object)),
-    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : moleculeStrokeToolbarPaintType(object)),
+    strokePaintType: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarPaintType(object) : moleculeStrokeToolbarPaintType()),
     fillColor: uniformSupportedValue(planned, supportsFill, ({ object }) => object.type === "graphic" ? graphicFillToolbarColor(object) : moleculeFillToolbarColor(object)),
     strokeColor: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? graphicStrokeToolbarColor(object) : moleculeStrokeToolbarColor(object)),
     objectOpacity: uniformSupportedValue(planned, planned.map(() => true), ({ object }) => metadataNumberValue(object.style.opacity, 1)),
@@ -178,7 +216,18 @@ export function createArtInspectorModel({
     strokeWidth: uniformSupportedValue(planned, supportsStroke, ({ object }) => object.type === "graphic" ? metadataNumberValue(object.style.strokeWidth, 1.5) : undefined),
     dash: uniformSupportedValue(planned, supportsDash, ({ object }) => object.type === "graphic" ? metadataStringValue(object.style.strokeDasharray) ?? "solid" : undefined),
     lineEnds: uniformSupportedValue(planned, supportsLineEnds, ({ plan }) => plan?.stroke.lineCap),
-    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan?.stroke.lineJoin)
+    corners: uniformSupportedValue(planned, supportsCorners, ({ plan }) => plan?.stroke.lineJoin),
+    markerStartKind: uniformSupportedValue(planned, supportsMarkers, ({ object }) =>
+      object.type === "graphic" ? object.data.markerStart?.kind ?? "none" : undefined),
+    markerEndKind: uniformSupportedValue(planned, supportsMarkers, ({ object }) =>
+      object.type === "graphic" ? object.data.markerEnd?.kind ?? "none" : undefined),
+    markerSizePx: renderedMarkerSizeValue(planned, supportsMarkers),
+    shaftMarkSizePx: uniformSupportedValue(planned, supportsShaftMark, ({ object }) =>
+      object.type === "graphic"
+        ? typeof object.data.shaftMarkSizePx === "number" && Number.isFinite(object.data.shaftMarkSizePx)
+          ? object.data.shaftMarkSizePx
+          : "auto"
+        : undefined)
   };
   const effectControls = {
     shadow: effectModelForKind(planned, "shadow", selectedCount),
@@ -214,6 +263,14 @@ export function createArtInspectorModel({
     supportsFillOpacityAll: selectedCount > 0 && fillSupportedCount === selectedCount,
     supportsStrokeOpacityAny: strokeSupportedCount > 0,
     supportsStrokeOpacityAll: selectedCount > 0 && strokeSupportedCount === selectedCount,
+    supportsMarkersAny: markersSupportedCount > 0,
+    supportsMarkersAll: selectedCount > 0 && markersSupportedCount === selectedCount,
+    supportsShaftMarkAny: shaftMarkSupportedCount > 0,
+    supportsShaftMarkAll: selectedCount > 0 && shaftMarkSupportedCount === selectedCount,
+    markerRenderedSizeFloorPx: markerRenderedSizeFloorForSelection(planned, supportsMarkers),
+    isArrowAny: arrowCount > 0,
+    isArrowAll: selectedCount > 0 && arrowCount === selectedCount,
+    arrowToolIds: [...new Set(arrowToolIdByEntry.flatMap((toolId) => (toolId === undefined ? [] : [toolId as string])))].sort(),
     fillSupportedCount,
     strokeSupportedCount,
     dashSupportedCount,
@@ -221,6 +278,7 @@ export function createArtInspectorModel({
     cornersSupportedCount,
     fillOpacitySupportedCount: fillSupportedCount,
     strokeOpacitySupportedCount: strokeSupportedCount,
+    markersSupportedCount,
     values,
     activeGradient: gradientModelForTarget(
       planned,
@@ -271,6 +329,13 @@ export function createMoleculeRingArtInspectorModel(
     supportsFillOpacityAll: true,
     supportsStrokeOpacityAny: false,
     supportsStrokeOpacityAll: false,
+    supportsMarkersAny: false,
+    supportsMarkersAll: false,
+    supportsShaftMarkAny: false,
+    supportsShaftMarkAll: false,
+    isArrowAny: false,
+    isArrowAll: false,
+    arrowToolIds: [],
     fillSupportedCount: selectedCount,
     strokeSupportedCount: 0,
     dashSupportedCount: 0,
@@ -278,6 +343,7 @@ export function createMoleculeRingArtInspectorModel(
     cornersSupportedCount: 0,
     fillOpacitySupportedCount: selectedCount,
     strokeOpacitySupportedCount: 0,
+    markersSupportedCount: 0,
     values: {
       fillPaintType: moleculeInspector.values.fillPaintType,
       strokePaintType: { value: null, mixed: false },
@@ -290,7 +356,11 @@ export function createMoleculeRingArtInspectorModel(
       strokeWidth: { value: null, mixed: false },
       dash: { value: null, mixed: false },
       lineEnds: { value: null, mixed: false },
-      corners: { value: null, mixed: false }
+      corners: { value: null, mixed: false },
+      markerStartKind: { value: null, mixed: false },
+      markerEndKind: { value: null, mixed: false },
+      markerSizePx: { value: null, mixed: false },
+      shaftMarkSizePx: { value: null, mixed: false }
     },
     activeGradient: {
       paintType: null,
@@ -354,6 +424,78 @@ function uniqueGraphicKinds(objects: readonly GraphicObject[]): GraphicObject["g
   return [...new Set(objects.map((object) => object.graphicKind))];
 }
 
+/**
+ * The largest size the renderer will floor a head to anywhere in the selection. Derived from the
+ * engine's own rule (per marker kind × that object's stroke width) rather than a hand-copy, and
+ * taken over the MAXIMUM rather than a fallback stroke width: on a mixed-width selection the widget
+ * used to assume 2px, offering sizes the thickest arrow silently rendered larger.
+ */
+function markerRenderedSizeFloorForSelection(
+  planned: readonly ArtInspectorPlannedEntry[],
+  supportsMarkers: readonly boolean[]
+): number | undefined {
+  let floor: number | undefined;
+  planned.forEach((entry, index) => {
+    if (!supportsMarkers[index] || entry.object.type !== "graphic") {
+      return;
+    }
+    const strokeWidth = metadataNumberValue(entry.object.style.strokeWidth, 1.5) ?? 1.5;
+    for (const markerId of ["markerStart", "markerEnd"] as const) {
+      const marker = entry.object.data[markerId];
+      if (!marker || marker.kind === "none") {
+        continue;
+      }
+      const kindFloor = graphicMarkerRenderedSizeFloorPx(marker.kind, strokeWidth);
+      floor = floor === undefined ? kindFloor : Math.max(floor, kindFloor);
+    }
+  });
+  return floor;
+}
+
+/**
+ * What a control that edits every head at once should report. Aggregates the size of every RENDERED
+ * head across the selection — both ends of every marker-capable object — so two heads that disagree
+ * read as mixed whether they sit on one arrow or two. Shift-dragging legitimately produces a 12px
+ * start with a 24px end, and reading only `markerEnd?.sizePx ?? markerStart?.sizePx` reported that
+ * as a uniform 24 (a state the arrow was not in, which the size command then made true for both).
+ * A marker present as `{kind: "none"}` is not a rendered head and is skipped.
+ */
+function renderedMarkerSizeValue(
+  planned: readonly ArtInspectorPlannedEntry[],
+  supportsMarkers: readonly boolean[]
+): ArtInspectorMixedValue<number> {
+  const sizes: number[] = [];
+  planned.forEach((entry, index) => {
+    if (!supportsMarkers[index] || entry.object.type !== "graphic") {
+      return;
+    }
+    const strokeWidth = entry.plan?.stroke.width ?? 1.5;
+    for (const markerId of ["markerStart", "markerEnd"] as const) {
+      const marker = entry.object.data[markerId];
+      if (!marker || marker.kind === "none") {
+        continue;
+      }
+      // The size this head DRAWS at, from the engine's own rule. Substituting a flat 16 for an
+      // absent `sizePx` reported a number nothing rendered — the renderer defaults to 10 and floors
+      // by stroke width — so a selection mixing a stored 16 with an unset head read as a confident
+      // uniform 16: exactly the state the paragraph above says this function exists to prevent, and
+      // picking that size then made the misreport true.
+      //
+      // Read from the STORED marker, not the plan's `markerStart`/`markerEnd`: those are dual-shaft
+      // scaled, while the size command writes an unscaled `sizePx`, so reporting the scaled value
+      // would just trade one disagreement for another.
+      sizes.push(graphicMarkerRenderedSizePx(marker, strokeWidth));
+    }
+  });
+  if (sizes.length === 0) {
+    return { value: null, mixed: false };
+  }
+
+  const [first, ...rest] = sizes;
+  const uniform = rest.every((size) => size === first);
+  return { value: uniform ? first : null, mixed: !uniform };
+}
+
 function uniformSupportedValue<TEntry, T>(
   planned: readonly TEntry[],
   supported: readonly boolean[],
@@ -380,10 +522,12 @@ function skippedObjectIdsByControl(
   const fill = skippedForControl(planned, "fill");
   const lineEnds = skippedForControl(planned, "lineEnds");
   const corners = skippedForControl(planned, "corners");
+  const markers = skippedForControl(planned, "markers");
   return {
     ...(fill.length > 0 ? { fill } : {}),
     ...(lineEnds.length > 0 ? { lineEnds } : {}),
-    ...(corners.length > 0 ? { corners } : {})
+    ...(corners.length > 0 ? { corners } : {}),
+    ...(markers.length > 0 ? { markers } : {})
   };
 }
 
@@ -411,6 +555,14 @@ function skippedForControl(
       return [{
         objectId: object.id,
         reason: plan.capabilities.hasCorners ? "unsupported" : "no-corners"
+      }];
+    }
+    if (control === "markers" && !graphicObjectSupportsMarkersWithPlan(object, plan)) {
+      return [{
+        objectId: object.id,
+        // Closed shapes have no terminals to head; retro arrows (path-geometry "⇒") and other
+        // ineligible opens read as plain unsupported.
+        reason: plan.capabilities.isClosedShape ? "closed-shape" : "unsupported"
       }];
     }
     return [];
@@ -561,9 +713,11 @@ function moleculeFillToolbarPaintType(object: MoleculeObject): ArtInspectorPaint
     : "solid";
 }
 
-function moleculeStrokeToolbarPaintType(object: MoleculeObject): ArtInspectorPaintType {
-  const paint = graphicPaintFromMetadata(object.style.strokePaint);
-  return paint?.kind === "solid" ? "solid" : "solid";
+/** Molecule strokes are always solid — there is no gradient or gloss bond stroke to report. The
+ *  previous form read the stored paint and then returned "solid" from both arms of a ternary,
+ *  which looked like it was deciding something. */
+function moleculeStrokeToolbarPaintType(): ArtInspectorPaintType {
+  return "solid";
 }
 
 function objectPaintForTarget(

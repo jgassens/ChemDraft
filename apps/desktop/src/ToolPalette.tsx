@@ -7,7 +7,6 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
@@ -15,7 +14,6 @@ import iro from "@jaames/iro";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
 import {
@@ -28,6 +26,29 @@ import {
   type ToolbarWidgetState
 } from "./toolbars/toolbarWidgets";
 import { MolecularInspectorPane } from "./analysis/MolecularInspectorPane";
+import {
+  ScriptGlyph,
+  TextFontSelect,
+  ToolbarAlignButton,
+  ToolbarColorSwatchButton,
+  ToolbarTextButton,
+  closestObjectStrokeWidthCommandId,
+  closestSizeCommandId,
+  defaultFontFaces,
+  fontFamilyLabel,
+  objectStrokeDashCommandId,
+  usePaletteButtonInvoke
+} from "./toolbars/toolbarCells";
+import { MainStyleWidget } from "./toolbars/mainStyleWidget";
+import {
+  TOOLTIP_DELAY_MS,
+  useNativeFloatingTooltip,
+  usePaletteTooltipState
+} from "./toolbars/toolbarTooltip";
+
+// Re-exported for PaletteWindow and other existing importers; the definitions moved to
+// toolbars/toolbarTooltip.tsx so widget cells can share the tooltip machinery.
+export { PALETTE_TOOLTIP_DOM_EVENT, type PaletteTooltipDomDetail } from "./toolbars/toolbarTooltip";
 import {
   normalizeHexColor,
   distributeModeCommandIds,
@@ -103,7 +124,6 @@ import {
 	  textAlignmentCommands,
   textColorCommands,
   textFontCommands,
-  textFontFamilyCommandId,
   textLetterSpacingCommands,
   textLineHeightCommands,
   textParagraphSpacingCommands,
@@ -140,18 +160,9 @@ export type ToolbarFlyoutRequest = {
   flyout: ToolsetFlyoutSnapshot;
 };
 
-const mainToolbarTextColorCommands = textColorCommands.filter((command) => (
-  command.id === "text.color.black"
-  || command.id === "text.color.white"
-  || command.id === "text.color.blue"
-  || command.id === "text.color.red"
-  || command.id === "text.color.green"
-  || command.id === "text.color.gray"
-));
-const TOOLTIP_DELAY_MS = 500;
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
-const DISTRIBUTE_MENU_HOLD_MS = 420;
-const COMMAND_FLYOUT_HOLD_MS = 420;
+const DISTRIBUTE_MENU_HOLD_MS = 150;
+const COMMAND_FLYOUT_HOLD_MS = 150;
 
 const ART_SHAPE_COMMAND_IDS = [
   "tool.art.rect",
@@ -346,8 +357,15 @@ export function ToolPalette({
       })
     : [];
 
+  // Widgets learn about customize mode through the context so variant-swapping widgets can pin
+  // themselves to their default layout while being dragged around.
+  const effectiveWidgetState = useMemo<ToolbarWidgetState>(
+    () => ({ ...(widgetState ?? { onInvoke }), customizing: customize !== undefined }),
+    [customize, onInvoke, widgetState]
+  );
+
   return (
-    <ToolbarWidgetStateContext.Provider value={widgetState ?? { onInvoke }}>
+    <ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
       <aside
         className={[
           "tool-palette",
@@ -521,7 +539,7 @@ const TOOLBAR_WIDGET_REGISTRY: Record<
     gridMode: "append",
     className: "main-style-palette",
     title: "Style Controls",
-    render: () => <MainToolbarStyleControls />
+    render: () => <MainStyleWidget />
   },
   [TOOLBAR_WIDGET_IDS.textStyleControls]: {
     gridMode: "append",
@@ -644,368 +662,6 @@ function toolbarItemGridStyle(layout: ToolbarPaletteItemModel["layout"]): CSSPro
   };
 }
 
-function usePaletteTooltipState() {
-  const [visibleTooltipId, setVisibleTooltipId] = useState<string | undefined>();
-  const visibleTooltipIdRef = useRef<string | undefined>(undefined);
-  const pendingTooltipRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pendingTooltipIdRef = useRef<string | undefined>(undefined);
-  visibleTooltipIdRef.current = visibleTooltipId;
-
-  const clearPendingTooltip = useCallback(() => {
-    if (pendingTooltipRef.current !== undefined) {
-      clearTimeout(pendingTooltipRef.current);
-      pendingTooltipRef.current = undefined;
-    }
-    pendingTooltipIdRef.current = undefined;
-  }, []);
-
-  const requestTooltip = useCallback((tooltipId: string) => {
-    if (visibleTooltipIdRef.current === tooltipId || pendingTooltipIdRef.current === tooltipId) {
-      return;
-    }
-
-    clearPendingTooltip();
-    setVisibleTooltipId(undefined);
-    pendingTooltipIdRef.current = tooltipId;
-    pendingTooltipRef.current = setTimeout(() => {
-      pendingTooltipRef.current = undefined;
-      pendingTooltipIdRef.current = undefined;
-      setVisibleTooltipId(tooltipId);
-    }, TOOLTIP_DELAY_MS);
-  }, [clearPendingTooltip]);
-
-  const clearTooltip = useCallback((tooltipId?: string) => {
-    clearPendingTooltip();
-    setVisibleTooltipId((current) => (
-      tooltipId && current !== tooltipId ? current : undefined
-    ));
-  }, [clearPendingTooltip]);
-
-  useEffect(() => {
-    if (!visibleTooltipId) {
-      return undefined;
-    }
-
-    const clearWhenPointerLeavesOwner = (event: MouseEvent | PointerEvent) => {
-      const target = event.target;
-      const targetElement = target instanceof Element
-        ? target
-        : target instanceof Node
-          ? target.parentElement
-          : undefined;
-      const ownerElement = targetElement?.closest<HTMLElement>("[data-tooltip-owner-id]");
-
-      if (ownerElement?.dataset.tooltipOwnerId !== visibleTooltipId) {
-        clearTooltip(visibleTooltipId);
-      }
-    };
-
-    const clearVisibleTooltip = () => {
-      clearTooltip(visibleTooltipId);
-    };
-
-    document.addEventListener("mousemove", clearWhenPointerLeavesOwner, true);
-    document.addEventListener("pointermove", clearWhenPointerLeavesOwner, true);
-    document.addEventListener("mouseleave", clearVisibleTooltip, true);
-    document.addEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
-    window.addEventListener("blur", clearVisibleTooltip);
-
-    return () => {
-      document.removeEventListener("mousemove", clearWhenPointerLeavesOwner, true);
-      document.removeEventListener("pointermove", clearWhenPointerLeavesOwner, true);
-      document.removeEventListener("mouseleave", clearVisibleTooltip, true);
-      document.removeEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
-      window.removeEventListener("blur", clearVisibleTooltip);
-    };
-  }, [visibleTooltipId, clearTooltip]);
-
-  useEffect(() => {
-    const clearPendingOnBlur = () => {
-      clearTooltip();
-    };
-
-    window.addEventListener("blur", clearPendingOnBlur);
-    return () => {
-      window.removeEventListener("blur", clearPendingOnBlur);
-    };
-  }, [clearTooltip]);
-
-  useEffect(() => () => {
-    clearPendingTooltip();
-  }, [clearPendingTooltip]);
-
-  return {
-    visibleTooltipId,
-    requestTooltip,
-    clearTooltip
-  };
-}
-
-/** Tooltip visibility announcement from a shell to its hosting window. In the native palette
- *  windows the in-DOM tooltip span is hidden (a content-fit window clips anything outside it), and
- *  PaletteWindow relays these events into the shared floating tooltip window instead. A DOM event
- *  keeps ToolPalette runtime-agnostic — no desktop imports in the shared component. */
-export const PALETTE_TOOLTIP_DOM_EVENT = "chemdraft:palette-tooltip";
-
-export interface PaletteTooltipDomDetail {
-  visible: boolean;
-  title?: string;
-  description?: string;
-  shortcut?: string;
-  anchor?: { left: number; top: number; right: number; bottom: number };
-}
-
-/** Pull the structured tooltip parts back out of the (hidden) in-DOM span. The span holds the
- *  title as plain text/an unclassed span plus optional description/shortcut sub-spans AND a
- *  visually-hidden flat copy for screen readers — flattening the whole thing with textContent
- *  would concatenate all of them into garbage. */
-function extractTooltipParts(tooltip: Element): { title: string; description?: string; shortcut?: string } {
-  const description = tooltip.querySelector(".tool-tooltip-description")?.textContent ?? undefined;
-  const shortcut = tooltip.querySelector(".tool-tooltip-shortcut")?.textContent ?? undefined;
-  let title = "";
-  for (const node of Array.from(tooltip.childNodes)) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      title += node.textContent ?? "";
-    } else if (node instanceof Element && node.tagName === "SPAN" && node.classList.length === 0) {
-      title += node.textContent ?? "";
-    }
-  }
-  return { title: title.trim(), description: description || undefined, shortcut: shortcut || undefined };
-}
-
-/**
- * Announce this shell's tooltip to the hosting native palette window. The default in-DOM span is
- * unusable there: the content-fit palette window clips anything positioned outside it (a webview
- * cannot paint past its window), so the span is display:none in palette windows (App.css) and the
- * visible tooltip is the shared floating tooltip window, which can overflow the palette freely —
- * the same reason popovers/flyouts live in their own windows. Browser and in-window palettes keep
- * the pure-CSS span; this hook is a no-op for them.
- */
-function useNativeFloatingTooltip(shellRef: { current: HTMLElement | null }, visible: boolean) {
-  useEffect(() => {
-    if (!document.body.classList.contains("palette-window-body")) {
-      return;
-    }
-    const shell = shellRef.current;
-    if (!visible || !shell) {
-      return;
-    }
-    const tooltip = shell.querySelector(".tool-tooltip");
-    if (!tooltip) {
-      return;
-    }
-    const { title, description, shortcut } = extractTooltipParts(tooltip);
-    if (!title && !description) {
-      return;
-    }
-    const rect = shell.getBoundingClientRect();
-    window.dispatchEvent(
-      new CustomEvent<PaletteTooltipDomDetail>(PALETTE_TOOLTIP_DOM_EVENT, {
-        detail: {
-          visible: true,
-          title,
-          description,
-          shortcut,
-          anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
-        }
-      })
-    );
-    return () => {
-      window.dispatchEvent(
-        new CustomEvent<PaletteTooltipDomDetail>(PALETTE_TOOLTIP_DOM_EVENT, { detail: { visible: false } })
-      );
-    };
-  }, [shellRef, visible]);
-}
-
-// Text objects can use any installed font. The four legacy presets stay pinned at the
-// top for quick access; the full system catalog (shared with the atom-label picker via
-// loadSystemFonts) follows. A non-preset family round-trips through a dynamic
-// `text.font.family:` command id, mirroring how custom text colors are applied.
-function TextFontSelect({
-  currentTextStyle,
-  labelClassName,
-  onInvoke
-}: {
-  currentTextStyle?: NativeTextStyle;
-  labelClassName: string;
-  onInvoke: (commandId: string) => void;
-}) {
-  const currentFontFamily = currentTextStyle?.fontFamily;
-  const presetCommandId = presetTextFontCommandId(currentFontFamily);
-  // A non-preset family is a specific installed font; keep it selectable even before the
-  // catalog resolves (and on the web build, where there is no system-font bridge).
-  const customFamily = presetCommandId ? undefined : currentFontFamily?.trim() || undefined;
-  const [systemFonts, setSystemFonts] = useState<SystemFontFamily[]>([]);
-
-  useEffect(() => {
-    let disposed = false;
-    void loadSystemFonts(customFamily ? [customFamily] : []).then((fonts) => {
-      if (!disposed) {
-        setSystemFonts(fonts);
-      }
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [customFamily]);
-
-  const systemFontFamilies = systemFonts.length > 0
-    ? systemFonts
-    : customFamily
-      ? [{ family: customFamily, faces: defaultFontFaces() }]
-      : [];
-  const value = presetCommandId
-    ?? (customFamily ? textFontFamilyCommandId(customFamily) : textFontCommands[0].id);
-
-  return (
-    <label className={labelClassName}>
-      <span className="visually-hidden">Text font</span>
-      <select
-        className="toolbar-select toolbar-font-select"
-        value={value}
-        aria-label="Text font"
-        data-palette-control="true"
-        onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onInvoke(event.currentTarget.value)}
-      >
-        <optgroup label="Suggested">
-          {textFontCommands.map((command) => (
-            <option key={command.id} value={command.id}>
-              {fontLabel(command.title)}
-            </option>
-          ))}
-        </optgroup>
-        {systemFontFamilies.length > 0 ? (
-          <optgroup label="System fonts">
-            {systemFontFamilies.map((font) => (
-              <option key={font.family} value={textFontFamilyCommandId(font.family)}>
-                {fontFamilyLabel(font.family)}
-              </option>
-            ))}
-          </optgroup>
-        ) : null}
-      </select>
-    </label>
-  );
-}
-
-function MainToolbarStyleControls() {
-  const { currentTextStyle, currentTextScript = "normal", onInvoke } = useToolbarWidgetState();
-  const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
-  const textAlign = currentTextStyle?.textAlign ?? "left";
-  const currentColor = normalizeHexColor(currentTextStyle?.color) ?? textColorCommands[0].color;
-  const boldActive = (currentTextStyle?.fontWeight ?? 400) >= 600;
-  const italicActive = currentTextStyle?.fontStyle === "italic";
-  const underlineActive = currentTextStyle?.textDecoration === "underline";
-  // Superscript rides the top row (above subscript on the bottom row — they stack in the last
-  // column); subscript stays with the B/I/U toggles on the bottom row. Both rows are the same total
-  // cell count, so their right edges align and the x²/x₂ pair lines up vertically.
-  const superscriptCommand = textScriptCommands.find((command) => command.script === "superscript");
-  const subscriptCommand = textScriptCommands.find((command) => command.script === "subscript");
-
-  return (
-    <div className="main-toolbar-style-controls" data-toolbar-style-controls="main">
-      <div className="toolbar-style-row toolbar-style-row-primary">
-        <div className="toolbar-swatch-group" role="group" aria-label="Text color">
-          {mainToolbarTextColorCommands.map((command) => (
-            <ToolbarColorSwatchButton
-              active={normalizeHexColor(command.color) === currentColor}
-              command={command}
-              key={command.id}
-              onInvoke={onInvoke}
-            />
-          ))}
-        </div>
-        <div className="toolbar-align-group" role="group" aria-label="Text alignment">
-          {textAlignmentCommands.map((command) => (
-            <ToolbarAlignButton
-              active={textAlign === command.textAlign}
-              command={command}
-              key={command.id}
-              onInvoke={onInvoke}
-            />
-          ))}
-        </div>
-        {superscriptCommand ? (
-          <ToolbarTextButton
-            commandId={superscriptCommand.id}
-            label={superscriptCommand.title}
-            active={currentTextScript === "superscript"}
-            onInvoke={onInvoke}
-          >
-            <span className="toolbar-script-glyph" data-text-script="superscript">
-              x<span>2</span>
-            </span>
-          </ToolbarTextButton>
-        ) : null}
-      </div>
-      <div className="toolbar-style-row toolbar-style-row-secondary">
-        <TextFontSelect
-          currentTextStyle={currentTextStyle}
-          labelClassName="toolbar-control-label toolbar-font-control"
-          onInvoke={onInvoke}
-        />
-        <label className="toolbar-control-label toolbar-size-control">
-          <span className="visually-hidden">Text size</span>
-          <select
-            className="toolbar-select toolbar-size-select"
-            value={sizeCommandId}
-            aria-label="Text size"
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {textSizeCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {command.title.replace("Size: ", "")}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="toolbar-type-group" role="group" aria-label="Text style">
-          <ToolbarTextButton
-            commandId="text.bold"
-            label="Bold Text"
-            active={boldActive}
-            onInvoke={onInvoke}
-          >
-            B
-          </ToolbarTextButton>
-          <ToolbarTextButton
-            commandId="text.italic"
-            label="Italic Text"
-            active={italicActive}
-            onInvoke={onInvoke}
-          >
-            I
-          </ToolbarTextButton>
-          <ToolbarTextButton
-            commandId="text.underline"
-            label="Underline Text"
-            active={underlineActive}
-            onInvoke={onInvoke}
-          >
-            U
-          </ToolbarTextButton>
-          {subscriptCommand ? (
-            <ToolbarTextButton
-              commandId={subscriptCommand.id}
-              label={subscriptCommand.title}
-              active={currentTextScript === "subscript"}
-              onInvoke={onInvoke}
-            >
-              <span className="toolbar-script-glyph" data-text-script="subscript">
-                x<span>2</span>
-              </span>
-            </ToolbarTextButton>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function TextToolbarStyleControls() {
   const { currentTextStyle, currentTextScript = "normal", onColorPickerOpenChange, onInvoke } = useToolbarWidgetState();
   const sizeCommandId = closestSizeCommandId(currentTextStyle?.fontSizePx);
@@ -1126,22 +782,6 @@ function TextToolbarStyleControls() {
       </div>
     </div>
   );
-}
-
-function closestObjectStrokeWidthCommandId(strokeWidth: number | undefined): string {
-  if (strokeWidth === undefined) {
-    return objectStrokeWidthCommands[1]?.id ?? objectStrokeWidthCommands[0].id;
-  }
-
-  return objectStrokeWidthCommands.reduce((best, command) => (
-    Math.abs(command.strokeWidth - strokeWidth) < Math.abs(best.strokeWidth - strokeWidth) ? command : best
-  ), objectStrokeWidthCommands[0]).id;
-}
-
-function objectStrokeDashCommandId(strokeDasharray: string | undefined): string {
-  const normalized = strokeDasharray === undefined || strokeDasharray === "solid" ? undefined : strokeDasharray;
-  return objectStrokeDashCommands.find((command) => command.strokeDasharray === normalized)?.id ??
-    objectStrokeDashCommands[0].id;
 }
 
 const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;
@@ -2023,19 +1663,6 @@ function fontFacesForFamily(
     : true;
   return (currentFace && !currentFacePresent ? [...faces, currentFace] : faces)
     .sort((left, right) => left.weight - right.weight || left.style.localeCompare(right.style));
-}
-
-function defaultFontFaces(): SystemFontFace[] {
-  return [
-    { weight: 400, style: "normal" },
-    { weight: 700, style: "normal" },
-    { weight: 400, style: "italic" },
-    { weight: 700, style: "italic" }
-  ];
-}
-
-function fontFamilyLabel(fontFamily: string): string {
-  return fontFamily.split(",")[0]?.replace(/^["']|["']$/g, "") ?? fontFamily;
 }
 
 function fontFaceLabel(weight: number, style: "normal" | "italic"): string {
@@ -3135,11 +2762,6 @@ type IroColorPickerInstance = ReturnType<typeof iro.ColorPicker>;
 type IroColorLike = {
   hexString: string;
 };
-type ColorCommand = {
-  id: string;
-  title: string;
-  color: string;
-};
 type ColorPaletteSet = {
   id: string;
   title: string;
@@ -3616,63 +3238,6 @@ function IroColorWheel({
   );
 }
 
-function ToolbarTextButton({
-  active,
-  children,
-  commandId,
-  label,
-  onInvoke
-}: {
-  active: boolean;
-  children: ReactNode;
-  commandId: string;
-  label: string;
-  onInvoke: (commandId: string) => void;
-}) {
-  const invokeHandlers = usePaletteButtonInvoke(commandId, onInvoke);
-
-  return (
-    <button
-      type="button"
-      className={["toolbar-text-button", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      data-command-id={commandId}
-      data-palette-control="true"
-      {...invokeHandlers}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ToolbarColorSwatchButton({
-  active,
-  command,
-  onInvoke
-}: {
-  active: boolean;
-  command: ColorCommand;
-  onInvoke: (commandId: string) => void;
-}) {
-  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
-
-  return (
-    <button
-      type="button"
-      className={["toolbar-color-swatch", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
-      aria-label={command.title}
-      aria-pressed={active}
-      data-command-id={command.id}
-      data-palette-control="true"
-      style={{ "--swatch-color": command.color } as CSSProperties}
-      {...invokeHandlers}
-    />
-  );
-}
-
 function ColorPaletteSwatchButton({
   active,
   color,
@@ -3703,106 +3268,6 @@ function ColorPaletteSwatchButton({
       onClick={() => onApply(normalizedColor)}
     />
   );
-}
-
-function ToolbarAlignButton({
-  active,
-  command,
-  onInvoke
-}: {
-  active: boolean;
-  command: typeof textAlignmentCommands[number];
-  onInvoke: (commandId: string) => void;
-}) {
-  const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke);
-
-  return (
-    <button
-      type="button"
-      className={["toolbar-align-button", active ? "active" : ""].filter(Boolean).join(" ")}
-      title={command.title}
-      aria-label={command.title}
-      aria-pressed={active}
-      data-command-id={command.id}
-      data-palette-control="true"
-      {...invokeHandlers}
-    >
-      <span className={`toolbar-align-glyph toolbar-align-${command.textAlign}`} aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </span>
-    </button>
-  );
-}
-
-function usePaletteButtonInvoke(
-  commandId: string,
-  onInvoke: (commandId: string) => void,
-  disabled = false
-) {
-  const pointerInvokedRef = useRef(false);
-
-  return {
-    onPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
-      event.stopPropagation();
-      if (disabled || event.button !== 0) {
-        return;
-      }
-
-      pointerInvokedRef.current = true;
-      onInvoke(commandId);
-    },
-    onMouseDown(event: ReactMouseEvent<HTMLButtonElement>) {
-      event.stopPropagation();
-      if (pointerInvokedRef.current || disabled || event.button !== 0) {
-        return;
-      }
-
-      pointerInvokedRef.current = true;
-      onInvoke(commandId);
-    },
-    onClick() {
-      if (pointerInvokedRef.current) {
-        pointerInvokedRef.current = false;
-        return;
-      }
-
-      if (!disabled) {
-        onInvoke(commandId);
-      }
-    }
-  };
-}
-
-function ScriptGlyph({ script }: { script: TextSpan["script"] }) {
-  if (script === "normal") {
-    return <span className="toolbar-script-glyph" data-text-script="normal">x</span>;
-  }
-
-  return (
-    <span className="toolbar-script-glyph" data-text-script={script}>
-      x<span>2</span>
-    </span>
-  );
-}
-
-function fontLabel(title: string): string {
-  return title.replace(/^Font: /, "").replace("System Sans", "Arial");
-}
-
-function presetTextFontCommandId(fontFamily: string | undefined): string | undefined {
-  return textFontCommands.find((command) => fontFamily === command.fontFamily)?.id;
-}
-
-function closestSizeCommandId(fontSizePx: number | undefined): string {
-  if (fontSizePx === undefined) {
-    return textSizeCommands[2]?.id ?? textSizeCommands[0].id;
-  }
-
-  return textSizeCommands.reduce((best, command) => (
-    Math.abs(command.fontSizePx - fontSizePx) < Math.abs(best.fontSizePx - fontSizePx) ? command : best
-  ), textSizeCommands[0]).id;
 }
 
 export function hexToRgbColor(hex: string): RgbColor | undefined {
@@ -3962,13 +3427,15 @@ function ToolbarPaletteItem({
       return;
     }
 
-    holdOpenedRef.current = true;
     onTooltipLeave?.();
     if (onRequestFlyout) {
       const rect = shellRef.current?.getBoundingClientRect();
       if (!rect || !submenu) {
+        // Nothing opened, so the release must still invoke the primary command. Marking the hold as
+        // opened before this bail made such a press dead: no menu AND no tool.
         return;
       }
+      holdOpenedRef.current = true;
       onRequestFlyout({
         anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
         flyout: {
@@ -3991,6 +3458,7 @@ function ToolbarPaletteItem({
       });
       return;
     }
+    holdOpenedRef.current = true;
     setMenuOpen(true);
   }, [activeTool, hasSubmenu, item.label, onRequestFlyout, onTooltipLeave, submenu]);
 
@@ -4510,6 +3978,8 @@ export function CommandIconButton({
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}${shortcutText}${stateText}`;
   const invokeHandlers = usePaletteButtonInvoke(command.id, onInvoke, disabled);
+  // Resolve then guard: an unknown assetName yields undefined, which would render a broken <img>.
+  const assetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
 
   return (
     <span
@@ -4541,8 +4011,8 @@ export function CommandIconButton({
         data-tooltip={tooltipText}
         {...invokeHandlers}
       >
-        {command.assetName ? (
-          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        {assetSrc ? (
+          <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />
         ) : command.id.startsWith("tool.art.") ? (
           <ArtToolIcon commandId={command.id} />
         ) : (
@@ -4646,6 +4116,9 @@ function DistributeCommandIconButton({
   const shortcutText = disabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}: ${modeLabel}${shortcutText}${stateText}`;
+  // Resolve then guard: toolbarAsset() returns undefined for an unknown key, so rendering it directly
+  // would produce a broken <img>. Fall through to the named Icon when the asset can't resolve.
+  const distributeAssetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current !== undefined) {
@@ -4655,14 +4128,15 @@ function DistributeCommandIconButton({
   }, []);
 
   const openMenu = useCallback(() => {
-    holdOpenedRef.current = true;
     onTooltipLeave?.();
     // Native palettes open the mode chooser in its own floating window (overflows the palette).
     if (onRequestFlyout) {
       const rect = shellRef.current?.getBoundingClientRect();
       if (!rect) {
+        // Nothing opened — leave the release free to invoke, or the press does nothing at all.
         return;
       }
+      holdOpenedRef.current = true;
       onRequestFlyout({
         anchor: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
         flyout: {
@@ -4687,6 +4161,7 @@ function DistributeCommandIconButton({
       });
       return;
     }
+    holdOpenedRef.current = true;
     setMenuOpen(true);
   }, [onRequestFlyout, onTooltipLeave, command.id, command.title, distributeMode]);
 
@@ -4797,12 +4272,16 @@ function DistributeCommandIconButton({
           }
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            onInvoke(command.id);
+            // Match the pointer path (onPointerUp): a disabled distribute command must not invoke.
+            // The menu (ArrowDown / hold) stays reachable so the mode can still be changed.
+            if (!disabled) {
+              onInvoke(command.id);
+            }
           }
         }}
       >
-        {command.assetName ? (
-          <img className="tool-icon-image" src={toolbarAsset(command.assetName)} alt="" aria-hidden="true" />
+        {distributeAssetSrc ? (
+          <img className="tool-icon-image" src={distributeAssetSrc} alt="" aria-hidden="true" />
         ) : (
           <Icon name={command.icon} />
         )}
@@ -4950,6 +4429,65 @@ function ArtToolIcon({ commandId }: { commandId: string }) {
       <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
         <path className="art-tool-stroke" d="M3 11 L13 5" />
         <path className="art-tool-stroke filled" d="M13 5 L10.2 5.2 L11.7 7.6 Z" />
+      </svg>
+    );
+  }
+
+  if (toolId === "reactionArrow" || toolId === "reactionArrowBold" || toolId === "reactionArrowDashed" || toolId === "noReactionArrow") {
+    const bold = toolId === "reactionArrowBold";
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path
+          className={["art-tool-stroke", toolId === "reactionArrowDashed" ? "dashed" : ""].filter(Boolean).join(" ")}
+          d="M2 8.5 L13 8.5"
+        />
+        <path
+          className="art-tool-stroke filled"
+          d={bold ? "M15.4 8.5 L10.6 5.6 L10.6 11.4 Z" : "M15 8.5 L11.6 6.5 L11.6 10.5 Z"}
+        />
+        {toolId === "noReactionArrow" ? (
+          <path className="art-tool-stroke" d="M5.6 5.6 L9.4 11.4 M9.4 5.6 L5.6 11.4" />
+        ) : null}
+      </svg>
+    );
+  }
+
+  if (toolId === "resonanceArrow") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M4 8.5 L13 8.5" />
+        <path className="art-tool-stroke filled" d="M15 8.5 L11.6 6.5 L11.6 10.5 Z" />
+        <path className="art-tool-stroke filled" d="M2 8.5 L5.4 6.5 L5.4 10.5 Z" />
+      </svg>
+    );
+  }
+
+  if (toolId === "curvedArrow90" || toolId === "curvedArrow180") {
+    const gentle = toolId === "curvedArrow90";
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d={gentle ? "M3 12.5 A8 8 0 0 1 11.5 4.5" : "M2.6 10.5 A6.1 6.1 0 0 1 14 8"} />
+        {gentle
+          ? <path className="art-tool-stroke filled" d="M13.6 3.9 L10.2 3.4 L11.6 6.6 Z" />
+          : <path className="art-tool-stroke filled" d="M14.6 10.2 L14.7 6.6 L11.6 8.3 Z" />}
+      </svg>
+    );
+  }
+
+  if (toolId === "fishhookArrow") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M3 11 L13.5 5.5" />
+        <path className="art-tool-stroke filled" d="M13.5 5.5 L10.6 5.4 L12.3 6.4 Z" />
+      </svg>
+    );
+  }
+
+  if (toolId === "fishhookCurved") {
+    return (
+      <svg className="art-tool-icon" viewBox="0 0 17 17" aria-hidden="true" focusable="false" data-art-tool-icon={toolId}>
+        <path className="art-tool-stroke" d="M2.6 10.5 A6.1 6.1 0 0 1 14 8" />
+        <path className="art-tool-stroke filled" d="M14.6 9.8 L14.7 6.6 L13 7.9 Z" />
       </svg>
     );
   }

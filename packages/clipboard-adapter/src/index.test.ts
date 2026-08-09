@@ -346,6 +346,63 @@ describe("looksLikeSmiles (pre-filter only — never asserts validity)", () => {
   });
 });
 
+describe("V3000 line continuations", () => {
+  it("joins a wrapped line instead of dropping everything after the wrap", () => {
+    // V3000 wraps long lines: the line ends with "-" and the rest follows on the next "M  V30 "
+    // line. Splitting on newlines without rejoining silently dropped the tail — here a formal
+    // charge that happened to fall past the wrap, so the anion pasted as a neutral atom.
+    const wrapped = [
+      "ChemDraft V3000",
+      "  ChemDraft",
+      "",
+      "  0  0  0  0  0  0            999 V3000",
+      "M  V30 BEGIN CTAB",
+      "M  V30 COUNTS 2 1 0 0 0",
+      "M  V30 BEGIN ATOM",
+      "M  V30 1 C -0.7500 0.0000 0.0000 0",
+      // The wrap falls between tokens, which is where a conforming writer puts it: the trailing
+      // "-" is purely the continuation marker, and the charge follows intact on the next line.
+      "M  V30 2 O 0.7500 0.0000 0.0000 0 -",
+      "M  V30 CHG=-1",
+      "M  V30 END ATOM",
+      "M  V30 BEGIN BOND",
+      "M  V30 1 1 1 2",
+      "M  V30 END BOND",
+      "M  V30 END CTAB",
+      "M  END"
+    ].join("\n");
+
+    const parsed = parseMolfileGraph(wrapped);
+
+    expect(parsed.atoms).toHaveLength(2);
+    expect(parsed.atoms[1]).toMatchObject({ element: "O", formalCharge: -1 });
+    expect(parsed.bonds).toHaveLength(1);
+  });
+
+  it("still parses an unwrapped file identically", () => {
+    const parsed = parseMolfileGraph(etheneV3000);
+    expect(parsed.atoms).toHaveLength(2);
+    expect(parsed.atoms[1]).toMatchObject({ element: "C", formalCharge: -1 });
+    expect(parsed.bonds).toHaveLength(1);
+  });
+});
+
+describe("molfile detection is structural, not keyword-matching", () => {
+  it("does not classify ordinary prose that happens to contain V3000 or V2000", () => {
+    // A bare version keyword is not evidence of a molfile. Classifying prose as one sent it to a
+    // parser that throws, and the exception escaped the whole paste handler — so pasting a line of
+    // text into the canvas did nothing at all, with no message.
+    expect(detectMolfileFormat("Bruker V3000 spectrometer manual")).toBeUndefined();
+    expect(detectMolfileFormat("see appendix V2000 for the calibration table")).toBeUndefined();
+    expect(detectMolfileFormat("Exported from V3000-series software on Tuesday")).toBeUndefined();
+  });
+
+  it("still recognises real molfiles", () => {
+    expect(detectMolfileFormat(etheneV3000)).toBe("molfile-v3000");
+    expect(detectMolfileFormat(cyclopropaneV2000)).toBe("molfile-v2000");
+  });
+});
+
 function lengthPrefixedClipboardMolfile(lines: readonly string[]): string {
   return lines.map((line) => `\0${String.fromCharCode(line.length)}${line}`).join("");
 }

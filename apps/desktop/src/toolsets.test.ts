@@ -8,6 +8,7 @@ import {
   getToolsetCommandGroups,
   getToolsetItemGroups,
   migrateLegacyMainToolbarLayoutState,
+  migrateRenamedCommandIdsInLayoutState,
   type DesktopToolsetRegistry
 } from "./toolsets";
 
@@ -379,7 +380,7 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
     ]);
     expect(order.indexOf("core.main.divider.1")).toBeLessThan(order.indexOf("tool.bond"));
     expect(order.indexOf("art.boolean.union")).toBeGreaterThan(order.indexOf("tool.equilibriumArrow"));
-    expect(order.indexOf("art.boolean.union")).toBeLessThan(order.indexOf("tool.retroArrow"));
+    expect(order.indexOf("art.boolean.union")).toBeLessThan(order.indexOf("tool.art.retroArrow"));
     expect(override.groupOrder).toBeUndefined();
     expect(override.hiddenCommandIds).toEqual(["tool.lasso"]);
   });
@@ -433,7 +434,79 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
     });
     const [items] = getToolsetItemGroups("core.main", registry);
     const ids = items.map((item) => item.id);
-    expect(ids.indexOf("user.spacer.9")).toBe(ids.indexOf("tool.reactionArrow") + 1);
-    expect(ids.indexOf("user.spacer.9")).toBeLessThan(ids.indexOf("tool.resonanceArrow"));
+    expect(ids.indexOf("user.spacer.9")).toBe(ids.indexOf("tool.art.reactionArrow") + 1);
+    expect(ids.indexOf("user.spacer.9")).toBeLessThan(ids.indexOf("tool.art.resonanceArrow"));
+  });
+});
+
+describe("migrateRenamedCommandIdsInLayoutState", () => {
+  // Persisted layout state is id-based, so a command rename silently voids a user's saved hides and
+  // ordering — and the stale ids are then pruned as unknown, making the loss permanent on next save.
+  const legacyLayout = {
+    version: 1,
+    toolsetOverrides: [
+      {
+        toolsetId: "core.main",
+        hiddenCommandIds: ["tool.reactionArrow", "tool.select"],
+        itemOrder: {
+          "core.main.items": ["tool.retroArrow", "tool.equilibriumArrow", "tool.select"]
+        },
+        itemOverrides: [{ commandId: "tool.resonanceArrow", hidden: false }],
+        itemAdditions: [
+          { groupId: "core.main.items", index: 0, item: { commandId: "tool.reactionArrow" } }
+        ]
+      },
+      {
+        toolsetId: "core.arrows",
+        hiddenCommandIds: ["tool.equilibriumArrow"],
+        itemOrder: { "core.arrows.items": ["tool.retroArrow", "tool.reactionArrow"] }
+      }
+    ],
+    userToolsets: []
+  };
+
+  it("remaps every id-bearing field for renamed arrow commands, in every toolset", () => {
+    const migrated = migrateRenamedCommandIdsInLayoutState(legacyLayout) as typeof legacyLayout;
+    const [main, arrows] = migrated.toolsetOverrides;
+
+    expect(main.hiddenCommandIds).toEqual(["tool.art.reactionArrow", "tool.select"]);
+    expect(main.itemOrder["core.main.items"]).toEqual([
+      "tool.art.retroArrow",
+      "tool.art.equilibriumArrow",
+      "tool.select"
+    ]);
+    expect(main.itemOverrides?.[0].commandId).toBe("tool.art.resonanceArrow");
+    expect(main.itemAdditions?.[0].item.commandId).toBe("tool.art.reactionArrow");
+    // The rename applies to every toolset that saved those ids, not only the Main toolbar.
+    expect(arrows.hiddenCommandIds).toEqual(["tool.art.equilibriumArrow"]);
+    expect(arrows.itemOrder["core.arrows.items"]).toEqual(["tool.art.retroArrow", "tool.art.reactionArrow"]);
+  });
+
+  it("is idempotent and leaves already-migrated or unrelated state untouched", () => {
+    const once = migrateRenamedCommandIdsInLayoutState(legacyLayout);
+    const twice = migrateRenamedCommandIdsInLayoutState(once);
+    expect(twice).toEqual(once);
+
+    // No renamed id anywhere → the very same object comes back (cheap and allocation-free).
+    const modern = {
+      version: 1,
+      toolsetOverrides: [{ toolsetId: "core.main", hiddenCommandIds: ["tool.select"] }],
+      userToolsets: []
+    };
+    expect(migrateRenamedCommandIdsInLayoutState(modern)).toBe(modern);
+    expect(migrateRenamedCommandIdsInLayoutState(undefined)).toBeUndefined();
+    expect(migrateRenamedCommandIdsInLayoutState({ version: 1 })).toEqual({ version: 1 });
+  });
+
+  it("keeps a hidden legacy arrow hidden after the registry applies the migrated layout", () => {
+    // End to end: the saved intent (Reaction Arrow hidden) must still apply against new ids.
+    const registry = createDesktopToolsetRegistry(legacyLayout);
+    const mainCommandIds = registry
+      .listToolsets()
+      .filter((toolset) => toolset.id === "core.main")
+      .flatMap((toolset) => toolset.groups.flatMap((group) => group.items.map((item) => item.commandId)));
+
+    expect(mainCommandIds).not.toContain("tool.art.reactionArrow");
+    expect(mainCommandIds).not.toContain("tool.reactionArrow");
   });
 });

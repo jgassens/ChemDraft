@@ -5,6 +5,27 @@
 > feature only. Three phases: OCL refinement modes → Preferences window →
 > OpenBabel sidecar.
 
+## Status (2026-07-30)
+
+- **Phase 1 — Refinement modes: complete.** Fast/Balanced/Quality ship, default Quality.
+- **Phase 2 — Preferences window: complete.** `PreferencesWindow.tsx`, View ▸ Preferences… (Cmd+,),
+  cross-window settings sync over `chemdraft://spin3d-settings`.
+- **Phase 3 — OpenBabel: the pure core landed; the sidecar is blocked.** `parseV2000AtomBlock` and
+  `applyExternalMinimizedMolfile` are implemented and unit-tested in `chemistry-adapter`. Nothing
+  native exists: `refine_conformer_obabel` and `obabel_available()` are absent from the Rust
+  sources.
+
+**Phase 3 is blocked on two decisions that are yours, not an agent's:**
+
+1. **Install OpenBabel locally** so the 3a proof-of-life spike can run. Until it does, nothing about
+   the sidecar can be verified end to end, and atom-order survival stays an assumption.
+2. **A GPL license-packaging review.** OpenBabel is GPLv2. Shipping it means a separate executable,
+   `COPYING`, and a source offer, and someone has to decide whether ChemDraft takes that on.
+
+Do not start the remaining Phase 3 boxes before both are settled — the work is unverifiable without
+the binary and unshippable without the review. The dated Progress log at the bottom is authoritative
+for detail; keep appending to it.
+
 ## Why
 Spin 3D always refines with MMFF94 at a fixed iteration cap; no way to trade
 quality for speed or pick another force field. Add a **user setting** for that.
@@ -27,37 +48,38 @@ quality for speed or pick another force field. Add a **user setting** for that.
   directly — no Y-flip). `minimise()` is **single-shot / mutates in place** (`:430`).
 
 ## Prereqs
-- [ ] `npm install` at repo root (deps not installed).
-- [ ] Rust/Tauri toolchain for desktop build.
+- [x] `pnpm install` at repo root. (Satisfied. The original text said `npm`; this workspace is pnpm.)
+- [x] Rust/Tauri toolchain for desktop build. (Satisfied — Phase 2 closed with `cargo check` clean.)
+- [ ] OpenBabel installed locally — **still missing, and the reason Phase 3 is blocked.**
 
 ---
 
-## Phase 1 — Refinement modes (OCL only)  ▶ START HERE
-- [ ] **New `apps/desktop/src/spin3dSettings.ts`**: `Spin3dRefinementMode =
+## Phase 1 — Refinement modes (OCL only)  ✅ COMPLETE
+- [x] **New `apps/desktop/src/spin3dSettings.ts`**: `Spin3dRefinementMode =
       "fast"|"balanced"|"quality"` (default `"quality"` ⇒ no behavior change);
       `load/saveSpin3dSettings()` via `localStorage["chemdraft.spin3d.settings.v1"]`
       (validate on read); `conformerOptionsForSpin3d(settings, atomCount)`:
       fast⇒`{optimize:"none"}`, balanced⇒`mmff94` low caps (~120/80/50 by size),
       quality⇒`mmff94` + `refineIterationsFor()` (800/400/240).
-- [ ] **`chemistry-adapter` + `ocl-adapter`**: add
+- [x] **`chemistry-adapter` + `ocl-adapter`**: add
       `ProgressiveConformerResult.refineFromEmbedded({optimize,maxIts})` that
       snapshots embedded coords and `setAtomX/Y/Z`-restores them before each
       `new ForceFieldMMFF94(...).minimise(cap)` (so multiple modes derive from one
       embed without warping). Update the single-use note at
       `chemistry-adapter/src/index.ts:133`. Verify `OCL.ForceFieldMMFF94.MMFF94S`
       exists before exposing MMFF94s; else omit.
-- [ ] **`conformerWorker.ts`**: `options?` on `ConformerWorkRequest`; `runGenerate`
+- [x] **`conformerWorker.ts`**: `options?` on `ConformerWorkRequest`; `runGenerate`
       uses `request.options ?? <current default>`. **Two-level cache**: embed keyed
       by molfile; `refinedByMode: Map<refinementKey, result>` where
       `refinementKey = JSON.stringify({engine,optimize,maxMinimiseIterations})`.
       Fix `pendingRefine`/eviction.
-- [ ] **`conformerClient.ts`**: `options` param on `generate()`/`prefetch()`,
+- [x] **`conformerClient.ts`**: `options` param on `generate()`/`prefetch()`,
       forwarded in `send({...})`. `warmup()` unchanged.
-- [ ] **`MainWindow.tsx`**: hold `spin3dSettings` state; pass
+- [x] **`MainWindow.tsx`**: hold `spin3dSettings` state; pass
       `conformerOptionsForSpin3d(...)` to `generate` (~`:2132`), `prefetch`
       (~`:2214`), and the in-page fallback (~`:2092`); reset
       `lastSpinPrefetchRef.current=undefined` on settings change.
-- [ ] Unit tests: settings resolver + persistence; two-level cache reuses embed /
+- [x] Unit tests: settings resolver + persistence; two-level cache reuses embed /
       recomputes refined per mode; extend `conformerClient.test.ts` to assert
       options are forwarded.
 
@@ -65,23 +87,26 @@ quality for speed or pick another force field. Add a **user setting** for that.
 current; never reuse refined across modes; **do** reuse embed across modes;
 fallback + prefetch get the same options as generate.
 
-## Phase 2 — Preferences window
-- [ ] Rust `lib.rs`: `PREFERENCES_WINDOW_LABEL="preferences"` + `/?window=preferences`;
+## Phase 2 — Preferences window  ✅ COMPLETE
+- [x] Rust `lib.rs`: `PREFERENCES_WINDOW_LABEL="preferences"` + `/?window=preferences`;
       `toggle_preferences_window` + `ensure_preferences_window` (copy
       `ensure_spin3d_debugger_window:731`); register in `invoke_handler!`; menu
       item "Settings…" (Cmd+,) routed like `view.toggle3dDebugger` (add to
       `MENU_COMMAND_IDS`).
-- [ ] Permissions: `permissions/autogenerated/toggle_preferences_window.toml`;
+- [x] Permissions: `permissions/autogenerated/toggle_preferences_window.toml`;
       `capabilities/default.json` (+`"preferences"` window, +`allow-...`).
-- [ ] Web: route in `App.tsx`; new `PreferencesWindow.tsx`;
+- [x] Web: route in `App.tsx`; new `PreferencesWindow.tsx`;
       `togglePreferencesWindow()` in `window-manager/index.ts`; command id in
       `commands.ts`.
-- [ ] Cross-window sync: PreferencesWindow writes localStorage **and** emits
+- [x] Cross-window sync: PreferencesWindow writes localStorage **and** emits
       `chemdraft://spin3d-settings`; MainWindow listens (don't rely on `storage`).
-- [ ] UI heading **"3D refinement"**: Fast / Balanced / Quality (descriptions);
+- [x] UI heading **"3D refinement"**: Fast / Balanced / Quality (descriptions);
       Experimental: UFF/GAFF/Ghemical hidden/disabled until `obabel_available()`.
 
-## Phase 3 — OpenBabel (real UFF/GAFF/Ghemical)
+## Phase 3 — OpenBabel (real UFF/GAFF/Ghemical)  ⛔ BLOCKED — pure core landed
+The one checked box below shipped and is tested. Everything still unchecked needs the OpenBabel
+binary and the GPL review named in the Status block — **start there, not here.**
+
 Execution model: **`bundle.resources` + `std::process::Command`** in a bespoke
 Rust command. **No `tauri-plugin-shell`/`externalBin`.**
 - [ ] **3a proof-of-life spike (before UI):** bundled binary runs?
@@ -97,7 +122,7 @@ Rust command. **No `tauri-plugin-shell`/`externalBin`.**
       `steps`; resolve via `app.path().resource_dir()`, set `BABEL_DATADIR`. Add
       `obabel_available()`. Register + permissions + capabilities.
 - [ ] `tauri.conf.json`: bundle binary + `data/` under `bundle.resources` per platform.
-- [ ] `chemistry-adapter`: `name` += `GAFF`/`Ghemical`; `status` += `unsupported`;
+- [x] `chemistry-adapter`: `name` += `GAFF`/`Ghemical`; `status` += `unsupported`;
       `applyExternalMinimizedMolfile` + V2000 coord parser (with validation).
 - [ ] **Licensing = license-packaging review** (GPLv2, separate executable,
       COPYING + source offer). Start macOS-only.

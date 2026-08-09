@@ -10,7 +10,10 @@ or derived fixtures unless redistribution rights are explicit.
 
 The `cdxml/` directory contains small synthetic CDXML snippets for compatibility
 tests. They cover the supported visible subset and a few intentionally lossy
-paths so `cdx-compat` warnings stay testable. `crossing-bonds.cdxml` is the
+paths so `cdx-compat` warnings stay testable. These files are the single source
+of truth: `cdxmlFixtures` inlines their text at build time via Vite, so edit the
+`.cdxml` file and add a matching `cdxmlFixtureDescriptors` entry — never paste
+fixture XML into `src/index.ts`. `crossing-bonds.cdxml` is the
 synthetic target for over/under CDXML interop; do not replace it with a
 proprietary ChemDraw document. `bactvue-visible-subset.cdxml` combines the same
 classes of visible marks observed in the BactVue reference file without copying

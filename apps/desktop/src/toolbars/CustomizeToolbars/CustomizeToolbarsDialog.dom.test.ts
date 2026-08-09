@@ -108,6 +108,31 @@ describe("CustomizeToolbarsDialog", () => {
     expect(applied().toolsetOverrides).toContainEqual({ toolsetId: "core.main", title: "My Main" });
   });
 
+  it("keeps Escape inside a rename field from discarding the whole session's edits", () => {
+    render();
+    // A live-applied edit first: hiding a toolbar. Escape in a text field must not roll it back.
+    const artVisible = container.querySelector<HTMLInputElement>('[data-toolset-id="core.art"] .customize-toolset-visible');
+    act(() => artVisible!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const title = container.querySelector<HTMLInputElement>('[data-toolset-id="core.main"] .customize-toolset-title');
+    act(() => {
+      setInputValue(title!, "Half-typed name");
+      title!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    // The dialog is still open and the earlier edit survives.
+    expect(onClose).not.toHaveBeenCalled();
+    expect(applied().toolsetOverrides).toContainEqual({ toolsetId: "core.art", visible: true });
+  });
+
+  it("still closes on Escape outside a text field", () => {
+    render();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("creates a user toolbar", () => {
     render();
     const nameInput = container.querySelector<HTMLInputElement>('[aria-label="New toolbar name"]');

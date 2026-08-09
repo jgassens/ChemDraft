@@ -23,7 +23,13 @@ export function App() {
 
   const popoverRoute = toolsetPopoverRoute();
   if (popoverRoute) {
-    return <PalettePopoverWindow toolsetId={popoverRoute.toolsetId} kind={popoverRoute.kind} />;
+    return (
+      <PalettePopoverWindow
+        toolsetId={popoverRoute.toolsetId}
+        kind={popoverRoute.kind}
+        prewarm={popoverRoute.prewarm}
+      />
+    );
   }
 
   if (isToolsetTooltipRoute()) {
@@ -83,7 +89,7 @@ function isToolsetTooltipRoute(): boolean {
   return params.get("window") === TOOLSET_TOOLTIP_WINDOW_KIND;
 }
 
-function toolsetPopoverRoute(): { toolsetId: string; kind: string } | undefined {
+function toolsetPopoverRoute(): { toolsetId: string; kind: string; prewarm: boolean } | undefined {
   if (typeof window === "undefined") {
     return undefined;
   }
@@ -95,7 +101,10 @@ function toolsetPopoverRoute(): { toolsetId: string; kind: string } | undefined 
 
   return {
     toolsetId: params.get("toolsetId") ?? "core.art",
-    kind: params.get("kind") ?? "artColor"
+    kind: params.get("kind") ?? "artColor",
+    // Prewarmed popovers are built hidden before any press needs them; they must stay hidden until
+    // the palette pushes real content (see PalettePopoverWindow).
+    prewarm: params.get("prewarm") === "1"
   };
 }
 

@@ -9,7 +9,8 @@ import {
   medianBondLength3d,
   orientedOverlayScale,
   overlayScale,
-  projectSpin
+  projectSpin,
+  spinDoubleBondSecondaryLine
 } from "./spinOverlay";
 
 const Z: Vec3 = [0, 0, 1];
@@ -153,5 +154,58 @@ describe("spinOverlay — bondDepthWeights (overlay ↔ flatten parity)", () => 
     const coords = [0, 0, 0, 1, 0, 0, 2, 0, 0];
     const weights = bondDepthWeights(coords, [[0, 1], [1, 2]], IDENTITY_VIEW);
     expect(weights).toEqual([undefined, undefined]);
+  });
+});
+
+describe("spinOverlay — double-bond secondary line", () => {
+  // A horizontal bond from (0,0) to (40,0): unit along +x, normal along +y (screen-space, y-down).
+  const base = {
+    from: { x: 0, y: 0 },
+    to: { x: 40, y: 0 },
+    unit: { x: 1, y: 0 },
+    normal: { x: 0, y: 1 },
+    gap: 3,
+    side: 1,
+    insetPx: 6,
+    minimumVisiblePx: 13
+  };
+
+  it("insets both ends of an internal double bond", () => {
+    const line = spinDoubleBondSecondaryLine({ ...base, flush: { from: false, to: false } });
+    expect(line).toEqual({ x1: 6, y1: 3, x2: 34, y2: 3 });
+  });
+
+  it("draws flush at a terminal methylene end, and only that end", () => {
+    // Terminal alkene: the CH2 end reaches the same plane as the primary line, the substituted
+    // junction still tucks in. The spin overlay copied the inset formula but not this exception,
+    // so it drew both ends inset while the committed 2D drawing drew this one flush.
+    expect(spinDoubleBondSecondaryLine({ ...base, flush: { from: false, to: true } }))
+      .toEqual({ x1: 6, y1: 3, x2: 40, y2: 3 });
+    expect(spinDoubleBondSecondaryLine({ ...base, flush: { from: true, to: false } }))
+      .toEqual({ x1: 0, y1: 3, x2: 34, y2: 3 });
+  });
+
+  it("spans the whole bond for ethylene, where both ends are terminal", () => {
+    const line = spinDoubleBondSecondaryLine({ ...base, flush: { from: true, to: true } });
+    expect(line).toEqual({ x1: 0, y1: 3, x2: 40, y2: 3 });
+    // Full length, so the symmetric molecule renders symmetrically.
+    expect(Math.hypot(line.x2 - line.x1, line.y2 - line.y1)).toBeCloseTo(40, 6);
+  });
+
+  it("puts the line on the other side of the axis when the side flips", () => {
+    expect(spinDoubleBondSecondaryLine({ ...base, side: -1, flush: { from: false, to: false } }))
+      .toEqual({ x1: 6, y1: -3, x2: 34, y2: -3 });
+  });
+
+  it("clamps the inset so a short bond keeps a visible secondary line", () => {
+    // 16px bond, 13px minimum: the two insets may take only 1.5px each, not the requested 6.
+    const short = spinDoubleBondSecondaryLine({
+      ...base,
+      to: { x: 16, y: 0 },
+      flush: { from: false, to: false }
+    });
+    expect(short.x1).toBeCloseTo(1.5, 6);
+    expect(short.x2).toBeCloseTo(14.5, 6);
+    expect(short.x2 - short.x1).toBeCloseTo(13, 6);
   });
 });

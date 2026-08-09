@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { reactionArrowKindForToolCommand } from "./documentWorkflow";
 import {
   activateDrawingToolCommand,
   coreDrawingToolDefinitions,
@@ -55,6 +56,28 @@ describe("Phase 7 drawing tool activation", () => {
       activeKind: "bond",
       lastOutcome: "activated"
     });
+  });
+
+  it("activates the replacement tool when a renamed arrow id is invoked", () => {
+    // The semantic arrow ids moved into the art-arrow family when arrows gained real art geometry.
+    // A legacy id can still arrive from a menu, a shortcut, or persisted state older than the
+    // rename, and following it reached the retired reaction-arrow builder — an object with none of
+    // this branch's arrow mechanics. Activation redirects to the tool that replaced it.
+    const command: CommandSpec = {
+      id: "tool.reactionArrow",
+      title: "Reaction Arrow",
+      icon: "export",
+      source: "core",
+      category: "arrows",
+      enabled: true
+    };
+    const result = activateDrawingToolCommand(createActiveToolState(), command);
+
+    expect(result.outcome).toBe("activated");
+    expect(result.state.activeCommandId).toBe("tool.art.reactionArrow");
+    expect(result.state.lastCommandId).toBe("tool.art.reactionArrow");
+    // And it must not resolve to the legacy arrow builder any more.
+    expect(reactionArrowKindForToolCommand(result.state.activeCommandId)).toBeUndefined();
   });
 
   it("activates the manifest-backed single bond tool", () => {

@@ -67,7 +67,14 @@ export function hitToleranceForScale(scale: number): NativeMoleculeHitTolerance 
 export const BOND_HIT_CATCHER_HALF_WIDTH_PX = 10;
 export const BOND_HIT_CATCHER_STROKE_PX = BOND_HIT_CATCHER_HALF_WIDTH_PX * 2;
 
-/** The largest effective on-screen bond tolerance the model can accept across [minZoom, maxZoom]. */
+/**
+ * The largest effective on-screen bond tolerance the model can accept across [minZoom, maxZoom].
+ *
+ * Exported for the invariant test above `BOND_HIT_CATCHER_HALF_WIDTH_PX`, which is its only caller
+ * and is meant to be: it exists so the DOM catcher's half-width can be asserted to cover the model
+ * tolerance at every supported zoom. Test-only by design, not dead — deleting it would leave that
+ * constant unguarded.
+ */
 export function maxModelBondScreenTolerancePx(minZoom: number, maxZoom: number): number {
   // bondHitRadiusForScale(s) * s is piecewise; sample the endpoints and the clamp breakpoints.
   const breakpoints = [minZoom, maxZoom, BOND_HIT_SCREEN_PX / nativeBondLengthPx / BOND_HIT_MAX_PAGE_FRACTION, BOND_HIT_SCREEN_PX];
@@ -314,11 +321,23 @@ export type SelectionRingHit = {
 export type SelectionHit = InteractionTarget | SelectionRingHit;
 
 /**
- * The single selection hit resolver. Precedence is atom → bond → ring, and the ring tier is only
- * consulted when the caller opts in (`includeRings`, wired to "Molecule Inspector open"). Atom/bond
- * reuse the shared hover pick so click and highlight can never disagree; ring identity is resolved
- * geometrically across every molecule (smallest containing interior, then top layer, then a stable
- * object id), so a ring press never depends on which SVG node the browser made `event.target`.
+ * The intended single selection hit resolver. Precedence is atom → bond → ring, and the ring tier is
+ * only consulted when the caller opts in (`includeRings`, wired to "Molecule Inspector open").
+ * Atom/bond reuse the shared hover pick so click and highlight can never disagree; ring identity is
+ * resolved geometrically across every molecule (smallest containing interior, then top layer, then
+ * a stable object id), so a ring press never depends on which SVG node the browser made
+ * `event.target`.
+ *
+ * NOT WIRED YET — nothing in the app calls this. The shipped ring press goes through
+ * `nativeMoleculeRingSelectionFromPointerTarget` in `MainWindow.tsx`, which does depend on
+ * `event.target` (it reads `data-ring-hit-key` off the pressed node and only falls back to
+ * geometry), and which resolves within a single already-picked molecule rather than across all of
+ * them. This function is kept because that difference is the point of it: it is the fix for that
+ * fragility, not a duplicate of it. Adopting it is a selection-behaviour change — the precedence
+ * and the cross-molecule tie-break both move — so it needs its own slice rather than a quiet swap.
+ *
+ * Its tests below therefore describe intended behaviour, not shipped behaviour. The shipped path is
+ * covered by `ringPress.dom.test.ts`.
  */
 export function resolveSelectionHit(
   document: ChemDraftDocument,

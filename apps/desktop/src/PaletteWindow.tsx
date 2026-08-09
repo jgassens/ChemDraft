@@ -12,6 +12,7 @@ import {
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
@@ -23,6 +24,7 @@ import {
   getToolsetCommandSpecs,
   getToolsetPaletteGroups,
   paletteCommandGroupsFromItemGroups,
+  type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
@@ -35,17 +37,20 @@ import {
   dismissToolsetPopovers,
   hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
+  prewarmToolsetPopoverWindow,
   listenForPalettePointer,
   listenForPalettePointerLeave,
   listenForToolsetActiveTool,
   listenForToolsetCommandSpecs,
   listenForToolsetCustomizeMode,
+  listenForToolsetDefinitions,
   listenForToolsetLayoutState,
   listenForToolsetPopoverContentRequests,
   listenForToolsetTextStyle,
   loadToolsetLayoutState,
   requestToolsetCustomizeMode,
   requestToolsetCommandSpecs,
+  requestToolsetDefinitions,
   requestToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
@@ -64,6 +69,7 @@ import {
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetMoleculeInspectorPayload,
+  type ToolsetPopoverAnchor,
   type ToolsetPopoverContent,
   type ToolsetWindowPosition
 } from "./window-manager";
@@ -83,12 +89,30 @@ type PaletteWindowDrag = {
  *  waiting for its next layout/spec broadcast. */
 export function createPaletteRegistryFromLayoutState(
   layoutState: unknown,
-  commandSpecs: readonly CommandSpec[]
+  commandSpecs: readonly CommandSpec[],
+  pluginToolsets: readonly DesktopToolsetDefinition[] = []
 ): DesktopToolsetRegistry {
   return createDesktopToolsetRegistry(
     layoutState,
-    new Set([...SHELL_COMMAND_IDS, ...commandSpecs.map((command) => command.id)])
+    new Set([...SHELL_COMMAND_IDS, ...commandSpecs.map((command) => command.id)]),
+    pluginToolsets
   );
+}
+
+/** A neutral, empty stand-in for a toolset whose definition hasn't reached this webview yet (a plugin
+ *  or user toolbar window before its definitions broadcast lands, or an orphaned window for a toolset
+ *  that no longer exists). It carries the window's real id so the title bar, close button, and popover
+ *  routing all target the correct window — the point is precisely NOT to masquerade as core.main. The
+ *  OS-level window title (set by Rust at open time) still shows the real toolbar name meanwhile. */
+function pendingPlaceholderToolset(toolsetId: string): DesktopToolsetDefinition {
+  return {
+    id: toolsetId,
+    title: "",
+    source: "plugin",
+    defaultVisible: true,
+    defaultMode: "floating",
+    groups: [{ id: `${toolsetId}.pending`, items: [] }]
+  };
 }
 
 export function PaletteWindow({
@@ -115,6 +139,10 @@ export function PaletteWindow({
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
   const latestLayoutStateRef = useRef<unknown>(undefined);
+  // Plugin toolset definitions arrive over IPC (they aren't in the static manifest this webview ships
+  // with). Held in a ref so every registry rebuild — layout, command-spec, or definitions — folds in
+  // the latest set from one source.
+  const pluginToolsetsRef = useRef<readonly DesktopToolsetDefinition[]>([]);
   commandSpecsRef.current = commandSpecs;
   const [activeTool, setActiveTool] = useState("tool.select");
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
@@ -123,17 +151,28 @@ export function PaletteWindow({
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
+  const [currentSelection, setCurrentSelection] = useState<ToolbarSelectionModel | undefined>();
   const [currentMolecularInspector, setCurrentMolecularInspector] = useState<AnalysisReport | undefined>();
   const [molecularInspectorBusy, setMolecularInspectorBusy] = useState(false);
-  const toolset = toolsetRegistry.get(toolsetId) ?? toolsetRegistry.require(DEFAULT_TOOLSET_ID);
+  // A window opened for a plugin/user toolset starts with the core-only registry (its definition
+  // arrives over the definitions IPC channel a beat later). While it's unknown, render an empty
+  // placeholder carrying THIS window's real id — never fall back to core.main, which would render the
+  // Main toolbar under the plugin's title AND make its close button target the real Main window.
+  const knownToolset = toolsetRegistry.get(toolsetId);
+  const toolset = useMemo(
+    () => knownToolset ?? pendingPlaceholderToolset(toolsetId),
+    [knownToolset, toolsetId]
+  );
   const commandOverrides = useMemo(
     () => new Map(commandSpecs.map((command) => [command.id, command] as const)),
     [commandSpecs]
   );
-  // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them.
+  // Keep group ids (customize-mode reorder edits are per-group); itemGroups drops them. An
+  // as-yet-unknown toolset (placeholder) isn't in the registry, so render no groups until its
+  // definition lands rather than throwing on registry.require().
   const paletteGroups = useMemo(
-    () => getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides),
-    [commandOverrides, toolset.id, toolsetRegistry]
+    () => (knownToolset ? getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides) : []),
+    [knownToolset, commandOverrides, toolset.id, toolsetRegistry]
   );
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
@@ -188,7 +227,11 @@ export function PaletteWindow({
     void loadToolsetLayoutState()
       .then((layoutState) => {
         if (active && layoutState !== undefined) {
-          const nextRegistry = createPaletteRegistryFromLayoutState(layoutState, commandSpecsRef.current);
+          const nextRegistry = createPaletteRegistryFromLayoutState(
+            layoutState,
+            commandSpecsRef.current,
+            pluginToolsetsRef.current
+          );
           latestLayoutStateRef.current = layoutState;
           setToolsetRegistry(nextRegistry);
         }
@@ -212,7 +255,11 @@ export function PaletteWindow({
         return;
       }
       try {
-        const nextRegistry = createPaletteRegistryFromLayoutState(layoutState, commandSpecsRef.current);
+        const nextRegistry = createPaletteRegistryFromLayoutState(
+          layoutState,
+          commandSpecsRef.current,
+          pluginToolsetsRef.current
+        );
         latestLayoutStateRef.current = layoutState;
         setToolsetRegistry(nextRegistry);
       } catch {
@@ -250,7 +297,9 @@ export function PaletteWindow({
         setCommandSpecs(commands);
         if (latestLayoutStateRef.current !== undefined) {
           try {
-            setToolsetRegistry(createPaletteRegistryFromLayoutState(latestLayoutStateRef.current, commands));
+            setToolsetRegistry(
+              createPaletteRegistryFromLayoutState(latestLayoutStateRef.current, commands, pluginToolsetsRef.current)
+            );
           } catch {
             // Retain the last good registry if a future schema/version makes rehydration fail.
           }
@@ -264,6 +313,49 @@ export function PaletteWindow({
         }
         unlisten = cleanup;
         void requestToolsetCommandSpecs().catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Learn plugin toolset DEFINITIONS from the main window — this webview ships only the core manifest,
+  // so without them a window opened for a plugin toolset can never resolve it (and would render the
+  // placeholder forever). Fold the latest definitions into the registry, and request the current set
+  // once subscribed since they may have been published before this window finished mounting. Rebuild
+  // unconditionally (unlike the command-spec path): a plugin window with no layout customization still
+  // needs its definition to render. In production the registry derives purely from the layout/command/
+  // plugin refs, so folding them in is complete; the test-only `initialRegistry` seam never broadcasts
+  // definitions, so it can't be clobbered here.
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetDefinitions((toolsets) => {
+      if (!active) {
+        return;
+      }
+      pluginToolsetsRef.current = toolsets as DesktopToolsetDefinition[];
+      try {
+        setToolsetRegistry(
+          createPaletteRegistryFromLayoutState(
+            latestLayoutStateRef.current,
+            commandSpecsRef.current,
+            pluginToolsetsRef.current
+          )
+        );
+      } catch {
+        // Keep the last good registry if a malformed definition slips past the shape check.
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+        void requestToolsetDefinitions().catch(() => undefined);
       })
       .catch(() => undefined);
     return () => {
@@ -389,6 +481,13 @@ export function PaletteWindow({
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setCurrentMoleculeInspector(payload.currentMoleculeInspector);
+      // Version skew degrades to the pre-variant behavior: an unknown kind reads as no selection
+      // model at all rather than freezing the palette on a rejected payload.
+      setCurrentSelection(
+        payload.currentSelection && TOOLBAR_SELECTION_KINDS.includes(payload.currentSelection.kind)
+          ? payload.currentSelection
+          : undefined
+      );
       setCurrentMolecularInspector(payload.currentMolecularInspector);
       setMolecularInspectorBusy(payload.molecularInspectorBusy === true);
     })
@@ -488,8 +587,15 @@ export function PaletteWindow({
   // to global screen coordinates the same way popovers are anchored. The in-DOM tooltip span is
   // hidden in palette windows: this content-fit window would clip it.
   useEffect(() => {
+    // Showing awaits the window position; hiding is immediate. Without a generation token a hide
+    // that lands during that await is overtaken by the stale show that resolves after it, and the
+    // tooltip reappears for a button the pointer already left (likewise for a fast A→B hover, where
+    // A's slower resolve could win). Every show candidate, hide, and teardown invalidates the
+    // previous request; the token is re-checked after the await, immediately before emitting.
+    let tooltipRequest = 0;
     const handleTooltip = (event: Event) => {
       if (customizeThisPaletteRef.current) {
+        tooltipRequest += 1;
         void hidePaletteFloatingTooltip().catch(() => undefined);
         return;
       }
@@ -498,13 +604,16 @@ export function PaletteWindow({
         return;
       }
       if (!detail.visible || !detail.anchor || !(detail.title || detail.description)) {
+        tooltipRequest += 1;
         void hidePaletteFloatingTooltip().catch(() => undefined);
         return;
       }
       const { title, description, shortcut, anchor } = detail;
+      tooltipRequest += 1;
+      const request = tooltipRequest;
       void (async () => {
         const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
-        if (!windowPosition) {
+        if (!windowPosition || request !== tooltipRequest) {
           return;
         }
         await showPaletteFloatingTooltip({
@@ -519,6 +628,7 @@ export function PaletteWindow({
     };
     window.addEventListener(PALETTE_TOOLTIP_DOM_EVENT, handleTooltip);
     return () => {
+      tooltipRequest += 1;
       window.removeEventListener(PALETTE_TOOLTIP_DOM_EVENT, handleTooltip);
       void hidePaletteFloatingTooltip().catch(() => undefined);
     };
@@ -558,18 +668,40 @@ export function PaletteWindow({
   // (they overflow the little palette and float over the document). The window is content-agnostic,
   // so opening one after another just swaps its content — no second window to keep in sync. `anchor`
   // is a client rect inside this webview; add our window position to get screen coords. We remember
-  // the last content so the window can re-request it after it mounts (the create-vs-emit race).
-  const lastPopoverContentRef = useRef<ToolsetPopoverContent>({ kind: "artColor" });
+  // the last content so the window can re-request it after it mounts (the create-vs-emit race);
+  // `undefined` until the first real open, so a prewarmed popover's mount request — which fires with
+  // no open in flight — gets no answer and the hidden window stays hidden.
+  // Content AND anchor: the replay below must be able to answer with everything the direct push
+  // carries, or a popover that learns its content from the replay (the create-vs-emit race this ref
+  // exists for) never learns where it belongs and lands displaced after its content-fit resize.
+  const lastPopoverPayloadRef = useRef<{ content: ToolsetPopoverContent; anchor: ToolsetPopoverAnchor } | undefined>(
+    undefined
+  );
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
-    lastPopoverContentRef.current = content;
     void (async () => {
-      const windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
-      const screenX = (windowPosition?.x ?? 0) + anchor.left;
-      const screenY = (windowPosition?.y ?? 0) + anchor.bottom + 4;
+      // No silent origin fallback: a failed position read once sent the first popover
+      // open to the anchor offset from (0,0) — inches from its button — while every
+      // later open worked. Retry once, then abort; a popout that doesn't appear (and
+      // works on the next press) beats one that appears in the wrong place.
+      const windowPosition =
+        (await currentWindowLogicalPosition().catch(() => undefined)) ??
+        (await currentWindowLogicalPosition().catch(() => undefined));
+      if (!windowPosition) {
+        return;
+      }
+      const screenX = windowPosition.x + anchor.left;
+      const screenY = windowPosition.y + anchor.bottom + 4;
+      // Armed only once the open is actually going through. Priming it before the abortable read
+      // above meant a press that never opened anything still armed the replay, so the prewarmed
+      // window's mount request got answered and revealed a popover nobody asked for at (0, 0).
+      lastPopoverPayloadRef.current = { content, anchor: { x: screenX, y: screenY } };
       await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
-      await setToolsetPopoverContent(toolset.id, content);
-    })();
+      // The anchor rides along so the popover can re-assert its position AFTER sizing to
+      // content — a bottom-anchored macOS resize otherwise shifts the first open down by
+      // the height delta (Rust positions the old-size window; the resize moves its top).
+      await setToolsetPopoverContent(toolset.id, content, { x: screenX, y: screenY });
+    })().catch(() => undefined);
   };
 
   // Clicking the swatch always (re)opens + repositions — deliberately NOT a toggle: the panel hides
@@ -584,6 +716,18 @@ export function PaletteWindow({
   const openFlyoutPopover = (request: ToolbarFlyoutRequest) => {
     openPopover(request.anchor, "flyout", { kind: "flyout", flyout: request.flyout });
   };
+
+  // Build this palette's popover window hidden, ahead of the first flyout/color press. The cold
+  // build (a fresh webview loading the app bundle) is the slow part of a popover open — leaving it
+  // to the first press made that press look unresponsive for a second or more. Deferred briefly so
+  // palette startup itself stays snappy; by the first hold the window is warm and opens in a frame
+  // or two.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void prewarmToolsetPopoverWindow(toolset.id).catch(() => undefined);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [toolset.id]);
 
   // If this palette goes away, don't leave its popover window orphaned on screen.
   useEffect(() => {
@@ -600,7 +744,16 @@ export function PaletteWindow({
       if (requestedToolsetId !== toolset.id) {
         return;
       }
-      void setToolsetPopoverContent(toolset.id, lastPopoverContentRef.current).catch(() => undefined);
+      // No open has happened yet (a prewarmed popover requesting on mount): stay silent — an answer
+      // would masquerade as an open and reveal a popover nobody asked for.
+      const lastPayload = lastPopoverPayloadRef.current;
+      if (!lastPayload) {
+        return;
+      }
+      // Replay the anchor too. This path IS the cold-open path (the first emit raced the webview's
+      // subscription), so dropping the anchor here left exactly the opens that needed the
+      // post-resize reposition without it.
+      void setToolsetPopoverContent(toolset.id, lastPayload.content, lastPayload.anchor).catch(() => undefined);
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -815,6 +968,7 @@ export function PaletteWindow({
           currentArtStyle,
           currentArtStyleTarget,
           currentMoleculeInspector,
+          currentSelection,
           currentMolecularInspector,
           molecularInspectorBusy,
           currentTextStyle,

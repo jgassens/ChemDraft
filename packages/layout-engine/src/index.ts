@@ -886,7 +886,9 @@ interface BondCrossingGap {
   clearancePx: number;
 }
 
-const doubleBondMinimumVisibleSegmentPx = 13;
+/** Shortest secondary line a double bond may draw before the inset stops shrinking it. Exported
+ *  because the Spin-3D overlay applies the same inset and had its own copy of the number. */
+export const doubleBondMinimumVisibleSegmentPx = 13;
 const crossingIntersectionEpsilon = 0.000001;
 const crossingEndpointEpsilon = 0.0001;
 const crossingHitRadiusPx = 10;
@@ -3621,8 +3623,48 @@ function svgSketchEffectFragmentsForEffects(
   }));
 }
 
+/** The no-reaction ✗ drawn across a shaft midpoint. Mirrors the canvas renderer's geometry (two
+ *  strokes at ±45° to the local tangent, each `sizePx` long, centred on the mark point) — without
+ *  this the mark was planned but never exported, so a no-reaction arrow left the app as an ordinary
+ *  forward arrow. */
+function svgFlattenedShaftMarkFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
+  const mark = plan.shaftMark;
+  if (!mark) {
+    return [];
+  }
+
+  const normal = { x: -mark.direction.y, y: mark.direction.x };
+  const arm = mark.sizePx / 2;
+  const invSqrt2 = Math.SQRT1_2;
+  const armA = {
+    x: (mark.direction.x + normal.x) * invSqrt2,
+    y: (mark.direction.y + normal.y) * invSqrt2
+  };
+  const armB = {
+    x: (mark.direction.x - normal.x) * invSqrt2,
+    y: (mark.direction.y - normal.y) * invSqrt2
+  };
+  const d = [
+    `M ${formatNumber(mark.point.x - armA.x * arm)} ${formatNumber(mark.point.y - armA.y * arm)}`,
+    `L ${formatNumber(mark.point.x + armA.x * arm)} ${formatNumber(mark.point.y + armA.y * arm)}`,
+    `M ${formatNumber(mark.point.x - armB.x * arm)} ${formatNumber(mark.point.y - armB.y * arm)}`,
+    `L ${formatNumber(mark.point.x + armB.x * arm)} ${formatNumber(mark.point.y + armB.y * arm)}`
+  ].join(" ");
+  return [elementFragment("path", `graphic-shaft-mark-${objectId}`, {
+    "data-graphic-shaft-mark": mark.kind,
+    d,
+    fill: "none",
+    stroke: plan.stroke.color,
+    "stroke-opacity": plan.stroke.opacity === 1 ? undefined : plan.stroke.opacity,
+    "stroke-width": Math.max(1.6, plan.stroke.width),
+    "stroke-linecap": "round",
+    transform: plan.projectionTransform
+  })];
+}
+
 function svgFlattenedGraphicMarkerFragments(plan: NativeArtVisualPlan, objectId: string): PageSvgFragment[] {
   return [
+    ...svgFlattenedShaftMarkFragments(plan, objectId),
     ...(plan.markerStart && plan.markerStartTerminal
       ? svgFlattenedMarkerFragments(
           plan.markerStart,
@@ -3696,6 +3738,18 @@ function svgFlattenedMarkerFragments(
     return [elementFragment("path", id, {
       ...attrs,
       d: markerPath([tip, markerPoint(size, -half), markerPoint(size, half)]),
+      ...fillAttrs,
+      stroke: "none"
+    })];
+  }
+
+  if (marker.kind === "half-arrow") {
+    // Fishhook: a single-sided barb whose inner point sits back along the shaft. Same geometry the
+    // canvas draws (MainWindow's marker renderer) — without this branch it fell through to the bar
+    // fallback below and every fishhook/equilibrium head exported as a perpendicular crossbar.
+    return [elementFragment("path", id, {
+      ...attrs,
+      d: markerPath([tip, markerPoint(size, -half), markerPoint(size * 0.4, 0)]),
       ...fillAttrs,
       stroke: "none"
     })];
@@ -4164,9 +4218,9 @@ function bondLineSegments(
       drawingStyle.doubleBondInsetPx,
       Math.max(0, (trimmedLength - minimumSecondaryLength) / 2)
     );
-    const methyleneEnds = terminalMethyleneCarbons(fromAtom, toAtom, object, bond);
-    const secondaryFromInset = methyleneEnds.some((atom) => atom.id === fromAtom.id) ? 0 : inset;
-    const secondaryToInset = methyleneEnds.some((atom) => atom.id === toAtom.id) ? 0 : inset;
+    const flushEnds = doubleBondSecondaryFlushEnds(fromAtom, toAtom, object, bond);
+    const secondaryFromInset = flushEnds.from ? 0 : inset;
+    const secondaryToInset = flushEnds.to ? 0 : inset;
     return [
       { x1, y1, x2, y2, segment: "primary", doubleBondSide },
       {
@@ -4645,7 +4699,7 @@ export function atomDisplayLabel(
   const formalCharge = atom.formalCharge;
   const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens
     ? ""
-    : implicitHydrogenLabel(Math.max(0, (nativeAtomValence[element] ?? 0) - valenceUsed));
+    : implicitHydrogenLabel(Math.max(0, nativeAtomValenceForCharge(element, formalCharge) - valenceUsed));
 
   if (element === "C" && formalCharge === 0) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
@@ -4685,20 +4739,51 @@ const nativeElementSymbols = [
 ] as const;
 type NativeElementSymbol = typeof nativeElementSymbols[number];
 const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
-const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
+/** Main-group valence electrons. One table, because the bond count follows from it. */
+const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
   B: 3,
   C: 4,
-  N: 3,
-  O: 2,
-  F: 1,
+  N: 5,
+  O: 6,
+  F: 7,
   Si: 4,
-  P: 3,
-  S: 2,
-  Cl: 1,
-  Br: 1,
-  I: 1
+  P: 5,
+  S: 6,
+  Cl: 7,
+  Br: 7,
+  I: 7
 };
+
+/**
+ * How many bonds an atom of this element and formal charge wants — and so, after its real bonds are
+ * counted, how many implicit hydrogens it carries.
+ *
+ * Derived rather than looked up, because a formal charge changes the answer and a stored NEUTRAL
+ * valence cannot express that. Counting against the neutral value invented hydrogens that are not
+ * there: an alkoxide drew as "OH-" and a trisubstituted carbocation as "CH+" — different molecules
+ * from the ones on the page.
+ *
+ * The octet rule states it exactly. An atom with n valence electrons shares its unpaired ones, so
+ * it forms `8 - n` bonds once n reaches 4 and `n` below that; a charge simply moves n. That
+ * reproduces every neutral value this table used to hold, and gets O- (1 bond), O+ (3), N+ (4),
+ * N- (2), C+ (3), C- (3) and B- (4) right on the way. Hydrogen follows the duet rule instead, so
+ * it is handled on its own: H+ and H- both take no bonds.
+ */
+export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalCharge: number): number {
+  const electrons = nativeAtomValenceElectrons[element];
+  if (electrons === undefined) {
+    return 0;
+  }
+  if (element === "H") {
+    return Math.max(0, 1 - Math.abs(formalCharge));
+  }
+  const adjusted = electrons - formalCharge;
+  if (adjusted < 0 || adjusted > 8) {
+    return 0;
+  }
+  return adjusted >= 4 ? 8 - adjusted : adjusted;
+}
 const nativeBondOrderValue: Record<string, number> = {
   single: 1,
   double: 2,
@@ -5452,6 +5537,32 @@ function nativeSegmentVectorGeometry(
   };
 }
 
+/**
+ * Whether a double bond renders as the symmetric ±gap/2 straddle rather than a primary line with an
+ * offset secondary. This is the exact condition `bondLineSegments` applies, exported so the Spin-3D
+ * overlay can ask instead of approximating it — the overlay used `isTerminalHeteroatomDoubleBond`
+ * alone, which is only the LAST of four clauses, so every aldehyde, amide, and exocyclic C=O with a
+ * derivable inner side drew one-sided on canvas and symmetric in the live overlay (§5.26/§5.27).
+ *
+ * `ringInteriorSide` comes from {@link ringInteriorDoubleBondSides}, which is computed once per
+ * molecule; pass the entry for this bond.
+ */
+export function doubleBondRendersSymmetric(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond,
+  ringInteriorSide: DoubleBondSide | undefined
+): boolean {
+  return (
+    bond.order === "double" &&
+    bond.display?.doubleBondSide === undefined &&
+    ringInteriorSide === undefined &&
+    terminalHeteroatomDoubleBondInnerSide(fromAtom, toAtom, object, bond) === undefined &&
+    isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
+  );
+}
+
 export function isTerminalHeteroatomDoubleBond(
   fromAtom: MoleculeAtom,
   toAtom: MoleculeAtom,
@@ -5513,6 +5624,28 @@ function terminalHeteroatomDoubleBondInnerSide(
   }
 
   return adjacentSide > 0 ? "left" : "right";
+}
+
+/**
+ * Which ends of a double bond draw their secondary line FLUSH with the primary instead of inset.
+ *
+ * A terminal methylene (=CH2) has no backbone junction to tuck the short line away from, so insetting
+ * it just makes the bond look truncated. Exported because the 3D spin overlay draws the same bond and
+ * must reach the same answer: it copied the inset formula but not this exception, so ethylene and
+ * every terminal alkene drew shortened while spinning and flush once committed — the divergence
+ * AGENTS.md 5.26 exists to prevent.
+ */
+export function doubleBondSecondaryFlushEnds(
+  fromAtom: MoleculeAtom,
+  toAtom: MoleculeAtom,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond
+): { from: boolean; to: boolean } {
+  const methyleneEnds = terminalMethyleneCarbons(fromAtom, toAtom, object, bond);
+  return {
+    from: methyleneEnds.some((atom) => atom.id === fromAtom.id),
+    to: methyleneEnds.some((atom) => atom.id === toAtom.id)
+  };
 }
 
 function terminalMethyleneCarbons(

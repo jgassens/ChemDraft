@@ -31,9 +31,11 @@
     "allow-plugin-storage-write",
     "allow-open-plugin-panel-window",
     "allow-open-toolset-popover",
+    "allow-prewarm-toolset-popover",
     "allow-show-toolset-tooltip-window",
     "allow-close-toolset-popover",
     "allow-set-toolset-window-focusable",
+    "core:window:allow-show",
     "core:window:allow-hide",
     "allow-route-toolset-command",
     "allow-sync-plugin-menu-items",
@@ -41,6 +43,9 @@
     "allow-write-clipboard-text-items",
     "allow-toggle-spin3d-debugger-window",
     "allow-toggle-preferences-window",
+    "allow-agent-bridge-status",
+    "allow-window-logical-position",
+    "allow-take-pending-open-document",
     "allow-engine3d-sidecar-status",
     "allow-engine3d-sidecar-start-session",
     "allow-engine3d-sidecar-send-session",
@@ -56,93 +61,187 @@
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$TEMP/**" },
-        { "path": "$APPDATA/installed-plugins.json" },
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins.json"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-read-file",
       "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$TEMP/**" },
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-write-text-file",
       "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$TEMP/**" },
-        { "path": "$APPDATA/installed-plugins.json" },
-        { "path": "$APPDATA/installed-plugins.json.tmp" },
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins.json"
+        },
+        {
+          "path": "$APPDATA/installed-plugins.json.tmp"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-write-file",
       "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$TEMP/**" },
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-mkdir",
       "allow": [
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-remove",
       "allow": [
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-rename",
       "allow": [
-        { "path": "$APPDATA/installed-plugins.json" },
-        { "path": "$APPDATA/installed-plugins.json.tmp" }
+        {
+          "path": "$APPDATA/installed-plugins.json"
+        },
+        {
+          "path": "$APPDATA/installed-plugins.json.tmp"
+        }
       ]
     },
     {
       "identifier": "fs:allow-read-dir",
       "allow": [
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-exists",
       "allow": [
-        { "path": "$HOME/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "$TEMP/**" },
-        { "path": "$APPDATA/installed-plugins.json" },
-        { "path": "$APPDATA/installed-plugins" },
-        { "path": "$APPDATA/installed-plugins/**" }
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins.json"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
       ]
     }
   ]

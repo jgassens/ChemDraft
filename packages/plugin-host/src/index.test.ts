@@ -152,6 +152,96 @@ describe("PluginHost", () => {
     expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(PluginHostError);
   });
 
+  // A hostile plugin can hand the host a self-referencing proposal: the patch interior is
+  // deliberately passthrough() and structuredClone/postMessage both preserve cycles. Freezing that
+  // graph without a visited set blew the stack, and the throw escaped through proposePatch /
+  // listProposedPatches / rejectProposedPatch — the review tray calls the second during render with
+  // no error boundary above it, so untrusted input crashed the whole app, repeatably after restart.
+  it("survives a cyclic proposed patch instead of blowing the stack", () => {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({
+      id: "org.chemdraft.patch.hostile",
+      name: "Hostile",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.proposePatch"]
+    });
+
+    const cyclic: Record<string, unknown> = { op: "updateObject", objectId: "obj_1" };
+    cyclic.self = cyclic;
+    cyclic.nested = { back: cyclic, list: [cyclic] };
+
+    const queued = host.proposePatch("org.chemdraft.patch.hostile", {
+      reason: "hostile-cycle",
+      patch: cyclic as never
+    });
+
+    // Every queue operation stays usable, so the user can still see and dismiss the proposal.
+    expect(() => host.listProposedPatches()).not.toThrow();
+    expect(host.listProposedPatches("pending")).toHaveLength(1);
+    expect(() => host.rejectProposedPatch(queued.id)).not.toThrow();
+    expect(host.listProposedPatches("rejected")).toHaveLength(1);
+
+    // And the snapshot is still frozen through the cycle.
+    const [rejected] = host.listProposedPatches("rejected");
+    expect(Object.isFrozen(rejected)).toBe(true);
+    expect(Object.isFrozen(rejected.proposal.patch)).toBe(true);
+  });
+
+  // Same threat class as the cycle above, reached by a plugin doing something entirely ordinary.
+  // `Object.freeze` THROWS on an ArrayBuffer view that has elements ("Cannot freeze array buffer
+  // views with elements"), and `structuredClone`/`postMessage` preserve typed arrays faithfully — so
+  // a proposal carrying image bytes, a fingerprint, or any binary blob crashed the same three entry
+  // points the cycle guard was added for. `Object.seal` throws on views too, so there is no weaker
+  // lock to fall back on: a view has to be a leaf.
+  it("survives a proposed patch carrying binary data instead of throwing on freeze", () => {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({
+      id: "org.chemdraft.patch.binary",
+      name: "Binary",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.proposePatch"]
+    });
+
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const withBinary: Record<string, unknown> = {
+      op: "updateObject",
+      objectId: "obj_1",
+      thumbnail: bytes,
+      nested: { samples: new Float64Array([0.5, 1.5]), view: new DataView(new ArrayBuffer(8)) }
+    };
+
+    const queued = host.proposePatch("org.chemdraft.patch.binary", {
+      reason: "binary-payload",
+      patch: withBinary as never
+    });
+
+    // Every queue operation stays usable, so the user can still see and dismiss the proposal.
+    expect(() => host.listProposedPatches()).not.toThrow();
+    expect(host.listProposedPatches("pending")).toHaveLength(1);
+    expect(() => host.rejectProposedPatch(queued.id)).not.toThrow();
+
+    // The surrounding graph is still frozen — only the views themselves are exempt, because the
+    // language does not permit locking them.
+    const [rejected] = host.listProposedPatches("rejected");
+    const patch = rejected.proposal.patch as unknown as Record<string, unknown>;
+    expect(Object.isFrozen(rejected)).toBe(true);
+    expect(Object.isFrozen(patch)).toBe(true);
+    expect(Object.isFrozen(patch.nested)).toBe(true);
+
+    // And the bytes survive the round trip as a real typed array, not a plain object.
+    expect(patch.thumbnail).toBeInstanceOf(Uint8Array);
+    expect([...(patch.thumbnail as Uint8Array)]).toEqual([1, 2, 3, 4]);
+    // The clone is independent of the plugin's own array.
+    bytes[0] = 99;
+    expect((patch.thumbnail as Uint8Array)[0]).toBe(1);
+  });
+
   // The proposal queue is the one place plugin-authored data is held pending a trusted `applyPatch`.
   // Handing out the stored object let a caller flip `status` behind the host's back, so that the
   // queue and `requirePendingProposal` disagreed about what was still pending.
@@ -770,5 +860,39 @@ describe("PluginHost onPanelClosed hook", () => {
     host.unregisterPlugin("org.test.panelclose");
     host.notifyPanelClosed("org.test.panelclose", "panel.test.review"); // handler removed → no-op
     expect(closed).toEqual(["panel.test.review"]);
+  });
+});
+
+describe("PluginHost document boundary", () => {
+  it("hands in-process plugins a frozen copy of the active document, never the live one", async () => {
+    // The selection API deep-copies and freezes with the comment "never a live document reference".
+    // getActiveDocument returned the provider's value untouched ten lines later, so an in-process
+    // plugin -- a supported path; the MolScribe canary deliberately stays in-process -- could mutate
+    // the host's own document object directly, bypassing the propose/review channel entirely.
+    const live = createEmptyDocument({ now: timestamp });
+    live.pages[0].objects.push(moleculeObject());
+
+    const host = new PluginHost({ now: () => timestamp, getActiveDocument: () => live });
+    host.registerPlugin({
+      id: "org.test.docread",
+      name: "Doc Reader",
+      version: "0.0.1",
+      apiVersion: "^1.0.0",
+      entry: "dist/plugin.js",
+      permissions: ["document.read"],
+      contributes: { commands: [] }
+    });
+
+    const context = host.createCommandContext("org.test.docread");
+    const handed = await context.documents.getActiveDocument();
+
+    expect(handed).not.toBe(live);
+    expect(handed).toEqual(live);
+    expect(Object.isFrozen(handed)).toBe(true);
+    expect(Object.isFrozen(handed?.pages[0].objects[0])).toBe(true);
+    expect(() => {
+      (handed as { title: string }).title = "hijacked";
+    }).toThrow();
+    expect(live.title).not.toBe("hijacked");
   });
 });

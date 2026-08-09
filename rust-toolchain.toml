@@ -1,0 +1,11 @@
+# Pinned so `cargo clippy -- -D warnings` is reproducible.
+#
+# On `stable` the lint set is a moving target: a Rust release can turn a green main red with no
+# code change. That is not hypothetical here — 1.97 added `byte_char_slices`, which fired on code
+# that had been clippy-clean under the 1.96 toolchain it was written against, and CI caught it only
+# because the runner had already moved ahead of the developer machine.
+#
+# Bump deliberately, fixing whatever lints the new release introduces in the same commit.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

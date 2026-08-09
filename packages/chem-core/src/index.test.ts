@@ -1140,6 +1140,63 @@ describe("native document validation and serialization", () => {
 });
 
 describe("document patches", () => {
+  it("ignores explicit undefined in updateObject changes instead of erasing the field", () => {
+    // A spread lets an explicit `undefined` overwrite the real value, and zod's `.default([])`
+    // then fills the hole -- so `{ atoms: undefined }` silently wipes a molecule's graph with no
+    // error. Reachable from a plugin: the proposed-patch schema is `{ op: string }.passthrough()`
+    // and the review tray shows only a name and a reason, so the user approves blind.
+    // Dropping undefined keys also makes the in-process path agree with the out-of-process one,
+    // where JSON serialization already drops them before the patch ever arrives.
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      {
+        op: "addObject",
+        pageId: "page_001",
+        object: {
+          ...moleculeObject(),
+          atoms: [
+            { id: "atom_001", element: "C", x: 100, y: 100, formalCharge: 0 },
+            { id: "atom_002", element: "O", x: 160, y: 100, formalCharge: 0 }
+          ],
+          bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" }]
+        }
+      },
+      { now: timestamp }
+    );
+
+    const erased = applyPatch(
+      document,
+      { op: "updateObject", objectId: "mol_001", changes: { atoms: undefined, bonds: undefined } },
+      { now: timestamp }
+    );
+    const molecule = erased.pages[0].objects[0] as MoleculeObject;
+
+    expect(molecule.atoms).toHaveLength(2);
+    expect(molecule.bonds).toHaveLength(1);
+    expect(molecule.bonds[0]).toMatchObject({ order: "double" });
+
+    // A present key still applies, so this does not turn updateObject into a no-op for real edits.
+    const moved = applyPatch(
+      document,
+      { op: "updateObject", objectId: "mol_001", changes: { x: 999, atoms: undefined } },
+      { now: timestamp }
+    );
+    expect(moved.pages[0].objects[0]).toMatchObject({ x: 999 });
+    expect((moved.pages[0].objects[0] as MoleculeObject).atoms).toHaveLength(2);
+
+    // The other half: `chemistry` is optional with no default, so undefined there is a genuine
+    // clear, not an erasure — dropping stale derived chemistry after an editor save depends on it.
+    expect((document.pages[0].objects[0] as MoleculeObject).chemistry).toBeDefined();
+    const cleared = applyPatch(
+      document,
+      { op: "updateObject", objectId: "mol_001", changes: { chemistry: undefined } },
+      { now: timestamp }
+    );
+    const clearedMolecule = cleared.pages[0].objects[0] as MoleculeObject;
+    expect(clearedMolecule.chemistry).toBeUndefined();
+    expect(clearedMolecule.atoms).toHaveLength(2);
+  });
+
   it("adds, moves, updates, batches, and removes objects without mutating the original", () => {
     const document = createEmptyDocument({ now: timestamp });
     const added = applyPatch(

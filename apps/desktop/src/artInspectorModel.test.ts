@@ -752,3 +752,120 @@ function moleculeInspectorEffect(
     size: { value: 0.25, mixed: false }
   };
 }
+
+describe("arrowhead size reporting", () => {
+  function arrow(id: string, overrides: Partial<GraphicObject> = {}): GraphicObject {
+    return {
+      id,
+      type: "graphic",
+      x: 100,
+      y: 100,
+      width: 120,
+      height: 24,
+      rotation: 0,
+      style: { strokeColor: "#111111", strokeWidth: 2 },
+      graphicKind: "path",
+      data: {
+        artPathKind: "line",
+        artToolId: "reactionArrow",
+        markerEnd: { kind: "filled-arrow", sizePx: 16 }
+      },
+      ...overrides
+    } satisfies GraphicObject;
+  }
+
+  function modelFor(objects: readonly GraphicObject[]) {
+    return createArtInspectorModel({
+      document: createEmptyDocument({ now: "2026-01-01T00:00:00.000Z" }),
+      selectedGraphicObjects: objects,
+      requestedPaintTarget: "stroke"
+    });
+  }
+
+  it("reports mixed when one arrow's two heads differ, instead of claiming the end's size", () => {
+    // Shift-dragging a head legitimately produces this; reporting 24 as uniform made the toolbar
+    // claim a state the arrow was not in, and its size command then rewrote both heads.
+    const asymmetric = arrow("art_asymmetric", {
+      data: {
+        artPathKind: "line",
+        artToolId: "resonanceArrow",
+        markerStart: { kind: "filled-arrow", sizePx: 12 },
+        markerEnd: { kind: "filled-arrow", sizePx: 24 }
+      }
+    });
+
+    expect(modelFor([asymmetric]).values.markerSizePx).toEqual({ value: null, mixed: true });
+    // Symmetric heads still report a real value.
+    const symmetric = arrow("art_symmetric", {
+      data: {
+        artPathKind: "line",
+        artToolId: "resonanceArrow",
+        markerStart: { kind: "filled-arrow", sizePx: 20 },
+        markerEnd: { kind: "filled-arrow", sizePx: 20 }
+      }
+    });
+    expect(modelFor([symmetric]).values.markerSizePx).toEqual({ value: 20, mixed: false });
+  });
+
+  it("reports the size an unset head renders at, not a fabricated one", () => {
+    // The engine draws a head with no stored `sizePx` at max(2, 10, floor). Substituting 16 here
+    // reported a size nothing rendered, and — worse — a selection mixing a stored 16 with an unset
+    // head read as a confident uniform 16, the exact state this reporting exists to prevent.
+    const unset = arrow("art_unset", {
+      style: { strokeColor: "#111111", strokeWidth: 2 },
+      data: { artPathKind: "line", artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow" } }
+    });
+    // strokeWidth 2 -> filled floor 8, so the 10px default wins.
+    expect(modelFor([unset]).values.markerSizePx).toEqual({ value: 10, mixed: false });
+
+    // The pair that used to agree at a fabricated 16 now reads honestly as mixed.
+    const stored16 = arrow("art_stored", {
+      style: { strokeColor: "#111111", strokeWidth: 2 },
+      data: { artPathKind: "line", artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow", sizePx: 16 } }
+    });
+    expect(modelFor([unset, stored16]).values.markerSizePx).toEqual({ value: null, mixed: true });
+
+    // The floor is part of the answer: a thick stroke raises what a small stored size draws at, and
+    // the reported value must not sit below the minimum the widget clamps its choices to.
+    const flooredByStroke = arrow("art_floored", {
+      style: { strokeColor: "#111111", strokeWidth: 6 },
+      data: { artPathKind: "line", artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow", sizePx: 4 } }
+    });
+    const model = modelFor([flooredByStroke]);
+    expect(model.values.markerSizePx).toEqual({ value: 24, mixed: false });
+    expect(model.values.markerSizePx.value).toBeGreaterThanOrEqual(model.markerRenderedSizeFloorPx ?? 0);
+  });
+
+  it("ignores a present-but-none head when reporting size", () => {
+    // `{kind: "none"}` is not a rendered head, so its size must not be read as the arrow's.
+    const bareTail = arrow("art_bare_tail", {
+      data: {
+        artPathKind: "line",
+        artToolId: "reactionArrow",
+        markerStart: { kind: "filled-arrow", sizePx: 24 },
+        markerEnd: { kind: "none", sizePx: 8 }
+      }
+    });
+
+    expect(modelFor([bareTail]).values.markerSizePx).toEqual({ value: 24, mixed: false });
+  });
+
+  it("derives the rendered size floor from the thickest arrow and its marker kind", () => {
+    // A 6px-stroke filled head cannot render below 24px; a bar head floors at 2.4x instead of 4x.
+    const thin = arrow("art_thin", { style: { strokeColor: "#111111", strokeWidth: 1 } });
+    const thick = arrow("art_thick", { style: { strokeColor: "#111111", strokeWidth: 6 } });
+    expect(modelFor([thin]).markerRenderedSizeFloorPx).toBeCloseTo(4, 6);
+    // Mixed selection takes the MAX, not a fallback: the thick arrow constrains the shared control.
+    expect(modelFor([thin, thick]).markerRenderedSizeFloorPx).toBeCloseTo(24, 6);
+
+    const bar = arrow("art_bar", {
+      style: { strokeColor: "#111111", strokeWidth: 5 },
+      data: {
+        artPathKind: "line",
+        artToolId: "reactionArrow",
+        markerEnd: { kind: "bar", sizePx: 16 }
+      }
+    });
+    expect(modelFor([bar]).markerRenderedSizeFloorPx).toBeCloseTo(12, 6);
+  });
+});

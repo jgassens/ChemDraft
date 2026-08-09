@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { createElement } from "react";
@@ -232,7 +232,12 @@ function buttonMarkupForCommand(markup: string, commandId: string): string {
 
 const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
+const toolbarTooltipSource = readFileSync(new URL("./toolbars/toolbarTooltip.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const desktopCapabilitiesSource = readFileSync(
+  new URL("../src-tauri/capabilities/default.json", import.meta.url),
+  "utf8"
+);
 const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
@@ -321,6 +326,77 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.graphic-glyph-stroke\s*{[^}]*pointer-events:\s*visiblePainted;/s);
     expect(appCss).toMatch(/\.graphic-glyph-shape,\s*\.graphic-glyph-projected-shape,\s*\.graphic-glyph-path\s*{[^}]*pointer-events:\s*visiblePainted;/s);
     expect(appCss).toMatch(/\.graphic-glyph-hit-target\[data-graphic-hit-fill="true"\]\s*{[^}]*pointer-events:\s*all;/s);
+  });
+
+  it("keeps paint containment off the transformed document board (WKWebView ghost pixels)", () => {
+    // `contain: paint` on .document-board — an element that also carries the pan transform —
+    // makes WKWebView under-invalidate removals of chrome that overhangs an object's box
+    // (rotate/tilt handles, path edit dots), leaving partial ghost pixels on the canvas.
+    // Layout containment alone is fine, and .page still carries `contain: paint` safely
+    // because it has no transform. Verified by live bisect on macOS WKWebView (2026-07-31).
+    const appCssWithoutComments = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(appCssWithoutComments).toMatch(/\.document-board\s*{[^}]*transform:\s*translate\(/s);
+    expect(appCssWithoutComments).toMatch(/\.document-board\s*{[^}]*contain:\s*layout;/s);
+    expect(appCssWithoutComments).not.toMatch(/\.document-board\s*{[^}]*contain:[^;}]*paint/s);
+    expect(appCssWithoutComments).toMatch(/\.page\s*{[^}]*contain:\s*paint;/s);
+    // A rotated graphic must not keep a standing compositing layer: `will-change`
+    // on [data-art-z-rotation] shells made chrome unmounting around any once-rotated
+    // arrow leave ghost pixels (same WKWebView under-invalidation family). The hint
+    // stays scoped to live drags via [data-art-transform-preview].
+    expect(appCssWithoutComments).not.toMatch(/\[data-art-z-rotation\]\s*{[^}]*will-change/s);
+    expect(appCssWithoutComments).toMatch(/\.graphic-object\[data-art-transform-preview="true"\]\s*{[^}]*will-change:\s*transform/s);
+    // Chrome must composite while mounted (pixels stay out of the page layer), and the
+    // dismissal scrub must stay wired: together they prevent and erase chrome ghosts.
+    expect(appCssWithoutComments).toMatch(/\.object-transform-frame\s*{[^}]*will-change:\s*transform/s);
+    expect(appCssWithoutComments).toMatch(/\.graphic-object\[data-graphic-interaction-mode\]\s*{[^}]*will-change:\s*transform/s);
+    expect(mainWindowSource).toContain('page.style.setProperty("--cd-bg-page"');
+  });
+
+  it("ships no self-driving diagnostic in the app entry point", () => {
+    // A document-mutating probe (synthetic drags + edit.undo, window pinning) must not be reachable
+    // from a shipped build: a URL-parameter gate around a dynamic import still emits the chunk.
+    const mainSource = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+    expect(mainSource).not.toContain("ghostProbe");
+    expect(existsSync(new URL("./ghostProbe.ts", import.meta.url))).toBe(false);
+    // And the capabilities it alone needed are gone with it.
+    expect(desktopCapabilitiesSource).not.toContain("allow-set-always-on-top");
+    expect(desktopCapabilitiesSource).not.toContain("allow-set-visible-on-all-workspaces");
+  });
+
+  it("only autosaves the document session after a clean read of it", () => {
+    // Rust distinguishes "no session yet" from a failed read so a failure cannot be answered by
+    // writing the blank startup document over a session we merely failed to decode. The gate is
+    // what honours that: it must be set in the success path and checked before every save.
+    expect(mainWindowSource).toContain("documentSessionSaveEnabledRef");
+    expect(mainWindowSource).toMatch(/if \(!documentSessionHydratedRef\.current \|\| !documentSessionSaveEnabledRef\.current\)/);
+
+    const lines = mainWindowSource.split("\n");
+    const enablingLine = lines.findIndex((line) => line.includes("documentSessionSaveEnabledRef.current = true"));
+    expect(enablingLine).toBeGreaterThan(-1);
+    // Exactly one place may open the gate, so the checks below describe the whole rule.
+    expect(lines.filter((line) => line.includes("documentSessionSaveEnabledRef.current = true"))).toHaveLength(1);
+    // It must sit inside the `.then(...)` — before the `.catch(`/`.finally(` that also run after a
+    // rejection — so a failed read leaves the gate closed.
+    const thenLine = lines.findIndex((line) => line.includes("void loadDocumentSession()"));
+    const catchLine = lines.findIndex((line, index) => index > thenLine && line.includes(".catch("));
+    expect(thenLine).toBeGreaterThan(-1);
+    expect(catchLine).toBeGreaterThan(thenLine);
+    expect(enablingLine).toBeGreaterThan(thenLine);
+    expect(enablingLine).toBeLessThan(catchLine);
+
+    // PLACEMENT, not just presence: a resolved read — including a resolve of "no session yet" — has
+    // to open the gate, so the assignment must come BEFORE the restore path's early returns. Gating
+    // it behind them left first-run users (nothing to restore) with autosave permanently off, and a
+    // presence-only assertion could not see that the line had become unreachable.
+    const restoreEarlyReturns = [
+      "const envelope = parseDocumentSessionEnvelope(raw);",
+      "if (!pristine) {"
+    ];
+    for (const marker of restoreEarlyReturns) {
+      const markerLine = lines.findIndex((line) => line.includes(marker));
+      expect(markerLine, `expected to find ${marker}`).toBeGreaterThan(-1);
+      expect(enablingLine, `gate must be set before: ${marker}`).toBeLessThan(markerLine);
+    }
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
@@ -1767,7 +1843,7 @@ describe("ChemDraft desktop shell", () => {
   it("ships only live customize-toolbar commands", () => {
     // The Customize Toolbars dialog and the in-place Main-toolbar editor own reset/create/clone
     // through layoutStateEdits; the standalone view.toolset.* redirect commands are retired
-    // (PLANS.md, Toolbar Wiring and Honesty).
+    // (docs/shipped/README.md, Toolbar Wiring and Honesty).
     expect(toolbarCustomizationActions.map((command) => command.id).sort()).toEqual([
       "view.customizeMainToolbar",
       "view.customizeToolbars"
@@ -1913,10 +1989,10 @@ describe("ChemDraft desktop shell", () => {
       "tool.settings",
       "style.color",
       "tool.art.rect",
-      "tool.reactionArrow",
-      "tool.resonanceArrow",
-      "tool.equilibriumArrow",
-      "tool.retroArrow",
+      "tool.art.reactionArrow",
+      "tool.art.resonanceArrow",
+      "tool.art.equilibriumArrow",
+      "tool.art.retroArrow",
       "tool.lobe",
       "tool.shadedLobe",
       "tool.pOrbital",
@@ -2946,8 +3022,8 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("ships only the declared transitional stub tools, each disabled with a reason", () => {
-    // The exact set of ids still awaiting their wiring slice (PLANS.md, Toolbar Wiring and
-    // Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
+    // The exact set of ids still awaiting their wiring slice (docs/shipped/README.md, Toolbar
+    // Wiring and Honesty). Each wiring phase shrinks this list; it must reach empty at closeout. Anything
     // disabled outside this list is either a live selection-dependent command or a regression:
     // wire it or retire it.
     const expectedTransitionalStubs: string[] = [];
@@ -3207,8 +3283,8 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain("white-space: normal;");
     expect(appCss).toContain("overflow-wrap: anywhere;");
     expect(appCss).toContain('.icon-button[data-command-id="structure.cleanup2d"] .tool-icon-image');
-    expect(toolPaletteSource).toContain("const TOOLTIP_DELAY_MS = 500");
-    expect(toolPaletteSource).toContain("pendingTooltipIdRef.current === tooltipId");
+    expect(toolbarTooltipSource).toContain("const TOOLTIP_DELAY_MS = 500");
+    expect(toolbarTooltipSource).toContain("pendingTooltipIdRef.current === tooltipId");
     expect(toolPaletteSource).toContain("onClickCapture={() => onTooltipLeave?.()}");
     expect(toolPaletteSource).not.toContain("onMouseEnter={() => onTooltipEnter?.()}");
     expect(toolPaletteSource).not.toContain("onMouseLeave={() => onTooltipLeave?.()}");
@@ -4911,12 +4987,22 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-atom-count="7"');
     expect(markup).toContain('data-bond-count="6"');
     expect((markup.match(/native-bond-line/g) ?? []).length).toBe(6);
-    expect(svgLineNumberAttribute(firstBondMarkup, "x1")).toBeCloseTo(174.5);
-    expect(svgLineNumberAttribute(firstBondMarkup, "y1")).toBeCloseTo(210.20706666666667);
-    expect(svgLineNumberAttribute(firstBondMarkup, "x2")).toBeCloseTo(196.5);
-    expect(svgLineNumberAttribute(firstBondMarkup, "y2")).toBeCloseTo(210.20706666666667);
-    expect(svgLineNumberAttribute(branchBondMarkup, "x2")).toBeLessThan(svgLineNumberAttribute(branchBondMarkup, "x1"));
-    expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
+    // The chain spans x 157.66..212.62 and y 130.88..162.07 in the file, so it renders wider than
+    // tall — the "horizontal" this test is named for. Reading the points y-first transposed that
+    // into a vertical stack while these assertions described the transpose as if it were the truth.
+    const chainXs = [...markup.matchAll(/native-bond-line[^>]*?\bx1="([-0-9.]+)"/g)].map((m) => Number(m[1]));
+    const chainYs = [...markup.matchAll(/native-bond-line[^>]*?\by1="([-0-9.]+)"/g)].map((m) => Number(m[1]));
+    expect(Math.max(...chainXs) - Math.min(...chainXs)).toBeGreaterThan(Math.max(...chainYs) - Math.min(...chainYs));
+
+    // bond_001 joins p="157.6553 130.875" to p="157.6553 147.375": same x, so it hangs vertically
+    // off the left end of that horizontal chain.
+    expect(svgLineNumberAttribute(firstBondMarkup, "x1")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y1")).toBeCloseTo(174.5);
+    expect(svgLineNumberAttribute(firstBondMarkup, "x2")).toBeCloseTo(210.20706666666667);
+    expect(svgLineNumberAttribute(firstBondMarkup, "y2")).toBeCloseTo(196.5);
+    // bond_006 branches up and to the right, from p="199.1462 145.5677" to p="212.6208 136.0448".
+    expect(svgLineNumberAttribute(branchBondMarkup, "x2")).toBeGreaterThan(svgLineNumberAttribute(branchBondMarkup, "x1"));
+    expect(svgLineNumberAttribute(branchBondMarkup, "y2")).toBeLessThan(svgLineNumberAttribute(branchBondMarkup, "y1"));
   });
 
   it("renders the BactVue visible CDXML subset with text, molecules, and explicit compatibility fallbacks", () => {
@@ -4942,11 +5028,10 @@ describe("ChemDraft desktop shell", () => {
       .map((object) => object.bonds.length)
     ).toEqual([4, 1, 1]);
     expect(markup).toContain("DIPEA, DMSO");
-    expect(markup).toContain("reaction-arrow-object");
-    // This third-party fixture writes ArrowType="FullHead". It used to degrade to "unknown"
-    // because the reader only accepted ChemDraft's own lowercase spellings.
-    expect(markup).toContain('data-arrow-kind="forward"');
-    expect(markup).toContain("reaction-arrow-line");
+    // This third-party fixture writes ArrowType="FullHead". It now imports as an editable art arrow
+    // (a graphic with a filled end marker) rather than the legacy reaction-arrow object, so it renders
+    // with the graphic arrowhead marker. Its chemical identity is preserved for CDXML re-export.
+    expect(markup).toContain("graphic-marker-end-");
     expect(markup).toContain("graphic-object");
     expect(markup).toContain('data-graphic-kind="unknown"');
     expect(markup).toContain("generic-object");

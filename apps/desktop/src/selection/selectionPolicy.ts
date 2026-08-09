@@ -11,9 +11,10 @@
  * not through a faked pointer event. The `parts`/`rings` aggregates that used to be hand-built in
  * pointer branches are now produced only by the re-encoder.
  *
- * Slice scope: `fromSelectionItems` is single-molecule for native parts (it reproduces today's
- * single-slot behaviour). Cross-molecule part/ring selection is a deliberate follow-up (it only
- * needs the storage to become `SelectionItem[]`); see PLANS-selection-policy.md, Phase 7.
+ * `fromSelectionItems` defaults to single-molecule native parts, reproducing the original
+ * single-slot behaviour. Cross-molecule selection shipped in Phase 7: pass `scope: "multi"` for the
+ * recency-ordered `nativeMoleculeParts[]` encoding, with `toSelectionItemsMulti` as its inverse.
+ * See docs/shipped/selection-policy-refactor.md.
  */
 
 export type SelectionGesture = "click" | "region";

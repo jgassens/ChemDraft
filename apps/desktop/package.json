@@ -1,12 +1,12 @@
 {
   "name": "@chemdraft/desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "scripts": {
     "prepare:sparkle": "../../scripts/prepare-sparkle.sh",
     "dev": "../../run-app --dev",
-    "dev:tauri": "pnpm prepare:sparkle && PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev --config \"{\\\"build\\\":{\\\"devUrl\\\":\\\"http://127.0.0.1:${CHEMDRAFT_DEV_PORT:-5173}\\\"}}\"",
+    "dev:tauri": "pnpm prepare:sparkle && PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev --config \"{\\\"identifier\\\":\\\"${CHEMDRAFT_DEV_BUNDLE_ID:-org.chemdraft.desktop.dev}\\\",\\\"build\\\":{\\\"devUrl\\\":\\\"http://127.0.0.1:${CHEMDRAFT_DEV_PORT:-5173}\\\"}}\"",
     "dev:web": "vite --host 127.0.0.1 --port ${CHEMDRAFT_DEV_PORT:-5173} --strictPort",
     "build": "pnpm prepare:sparkle && PATH=\"$HOME/.cargo/bin:$PATH\" tauri build",
     "build:web": "vite build",

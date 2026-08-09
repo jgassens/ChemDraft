@@ -1,0 +1,106 @@
+name: CI
+
+# Every gate that used to be local-only. PR #26 merged 124 files with `mergeStateStatus: CLEAN`
+# purely because the check set was empty — "clean" means "nothing failed", and nothing ran.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push supersedes the run in flight for the same ref. main is exempt: its runs are the record
+# of what actually landed.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Types, tests, web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # --frozen-lockfile so a PR that edits package.json without regenerating the lockfile fails
+      # here rather than resolving to something nobody reviewed.
+      - run: pnpm install --frozen-lockfile
+
+      # `pnpm lint` is `tsc -p tsconfig.json --noEmit`. It is the only thing that typechecks tests —
+      # vitest does not — and it has already caught an invalid option in a test that ran green.
+      - run: pnpm lint
+
+      - run: pnpm vitest run
+
+      # The Vite build, without the Tauri bundle: catches bundling and import errors that neither
+      # tsc nor vitest sees, and needs no macOS runner. The Rust job builds this again because
+      # tauri_build validates that `apps/desktop/dist` exists.
+      - run: pnpm --filter @chemdraft/desktop build:web
+
+  rust:
+    name: Rust fmt, clippy, tests
+    # macOS-only by necessity, not preference: the crate depends on objc2-app-kit / objc2-web-kit
+    # and the Sparkle updater plugin, none of which build elsewhere.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # build.rs -> tauri_build::try_build validates the configured frontendDist (`../dist`), which
+      # is gitignored, so cargo cannot even compile without this.
+      - run: pnpm --filter @chemdraft/desktop build:web
+
+      # Downloads the pinned, SHA-256-verified Sparkle release. build.rs skips staging when the
+      # framework is absent, which leaves the test executables unable to link against it.
+      - run: pnpm --filter @chemdraft/desktop prepare:sparkle
+
+      # No toolchain action on purpose: rust-toolchain.toml is the single source of truth, so the
+      # runner and a developer machine cannot disagree about which lints exist. `@stable` did
+      # disagree — the runner had moved to 1.97 while this was written against 1.96, and clippy
+      # failed here on code that was clean locally.
+      - run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      # Formatting first: it needs no build, so a formatting-only failure reports in seconds instead
+      # of after a full compile.
+      - run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - run: cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
+      # 52 tests that no automated gate has ever run. `--locked` fails on a stale Cargo.lock rather
+      # than silently resolving new versions.
+      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  build-stamp:
+    name: Build stamp bumped
+    # PR-only: it compares against the base branch, and a push to main has already been decided.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - run: scripts/ci/require-build-stamp-bump.sh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}

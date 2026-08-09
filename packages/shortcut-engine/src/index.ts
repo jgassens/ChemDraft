@@ -168,14 +168,18 @@ export function keyboardEventChord(input: KeyboardEventLike): string {
   if (input.altKey) {
     modifiers.push("Alt");
   }
-  if (input.shiftKey) {
+  const key = normalizeKey(input.key);
+  // Shift on the +/= key only chooses which legend the event reports, so counting it would make
+  // Cmd+Shift+= — how most people press "Cmd plus" — a different chord from Cmd+=. No command
+  // binds Shift together with this key, so folding it costs nothing and revives the press.
+  if (input.shiftKey && key !== "=") {
     modifiers.push("Shift");
   }
   if (input.metaKey) {
     modifiers.push("Meta");
   }
 
-  return chordFor(normalizeKey(input.key), sortModifiers(modifiers));
+  return chordFor(key, sortModifiers(modifiers));
 }
 
 export function shortcutChord(shortcut: NormalizedShortcut): string {
@@ -226,16 +230,24 @@ function normalizeModifier(token: string, platform: ShortcutPlatform): ShortcutM
 }
 
 function normalizeKey(key: string): string {
+  // The spacebar reports key " ", so trimming first erased it: the event normalized to "" while a
+  // "Space" binding normalized to " ", and the two could never match. Handle it before the trim.
+  if (key === " ") {
+    return " ";
+  }
   const value = key.trim();
   const lower = value.toLowerCase();
-  if (value === "+") {
-    return "+";
+  // "+" and "=" are the same physical key; which one a KeyboardEvent reports depends only on Shift
+  // (and on the layout). Binding one and pressing the other must still match, so both normalize to
+  // "=" — the unshifted legend, and what a US keyboard reports for the common Cmd+= press.
+  if (value === "+" || value === "=") {
+    return "=";
   }
   if (value === "-") {
     return "-";
   }
   if (lower === "plus") {
-    return "+";
+    return "=";
   }
   if (lower === "minus") {
     return "-";

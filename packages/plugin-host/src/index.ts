@@ -461,7 +461,11 @@ export class PluginHost {
       documents: {
         getActiveDocument: async () => {
           this.requirePermission(pluginId, "document.read");
-          return await this.getActiveDocument?.();
+          const document = await this.getActiveDocument?.();
+          // Same boundary as the selection API above: an independent, immutable copy. In-process
+          // plugins share the host's heap, so returning the provider's value handed them the live
+          // document — edits would land without ever passing through propose/review.
+          return document === undefined ? undefined : deepFreeze(structuredClone(document));
         },
         proposePatch: async (proposal) => this.proposePatch(pluginId, proposal)
       },
@@ -496,9 +500,12 @@ export class PluginHost {
       proposal: parsedProposal
     };
 
+    // Snapshot BEFORE enqueueing: if a proposal cannot be cloned/frozen at all, it must never reach
+    // the queue, or the tray's next render throws on an entry the user has no way to dismiss.
+    const snapshot = snapshotProposal(queued);
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
-    return snapshotProposal(queued);
+    return snapshot;
   }
 
   listProposedPatches(status?: ProposedPatchStatus): QueuedProposedPatch[] {
@@ -733,12 +740,38 @@ function snapshotProposal(queued: QueuedProposedPatch): QueuedProposedPatch {
   return deepFreeze(structuredClone(queued));
 }
 
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object") {
-    for (const key of Object.keys(value as Record<string, unknown>)) {
-      deepFreeze((value as Record<string, unknown>)[key]);
-    }
-    Object.freeze(value);
+/**
+ * Freeze an object graph, cycle-safe. The patch interior is deliberately `passthrough()` and
+ * `structuredClone`/`postMessage` both preserve cycles, so a plugin can hand the host a self-
+ * referencing proposal; without the visited set this recursed until the stack blew, and because the
+ * throw escaped `proposePatch`/`listProposedPatches`/`rejectProposedPatch` — which the patch review
+ * tray calls during render, with no error boundary above it — untrusted plugin input could take the
+ * whole desktop app down and keep doing it after every restart. Same threat class the
+ * prototype-pollution guard exists for.
+ */
+function deepFreeze<T>(value: T, seen: Set<object> = new Set()): T {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  const object = value as object;
+  if (seen.has(object)) {
+    return value;
+  }
+  // An ArrayBuffer view is a leaf, because the language gives us no lock to put on it: `Object.freeze`
+  // THROWS on a view that has elements ("Cannot freeze array buffer views with elements") and so does
+  // `Object.seal`. `structuredClone`/`postMessage` preserve typed arrays faithfully, so a proposal
+  // carrying image bytes or any binary blob reached here and threw out of the same three entry points
+  // the cycle guard above was added for. Returning early also skips `Object.keys`, which lists every
+  // index on a typed array — descending would otherwise recurse once per byte.
+  if (ArrayBuffer.isView(object)) {
+    return value;
+  }
+  seen.add(object);
+  // Freeze before descending: a cycle that reaches this node again is then already frozen and the
+  // `seen` check short-circuits it either way.
+  Object.freeze(object);
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    deepFreeze((value as Record<string, unknown>)[key], seen);
   }
   return value;
 }

@@ -10,6 +10,7 @@ import type { ToolbarPaletteItemModel } from "../toolsets";
 // Type-only import: erased at runtime, so this does not create an import cycle with ToolPalette
 // (which imports the context *value* from here).
 import type { ToolbarPopoverAnchor } from "../ToolPalette";
+import type { ToolbarSelectionModel } from "./toolbarSelectionKind";
 
 /**
  * Live state + callbacks a toolbar widget (style controls, ring/molecule inspector) needs to render
@@ -25,6 +26,12 @@ export interface ToolbarWidgetState {
   currentArtStyle?: ToolsetArtStylePayload;
   currentArtStyleTarget?: ToolsetArtPaintTarget;
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
+  /** What the selection is, for variant-swapping widgets. Absent (older payloads, tests, default
+   *  context) reads as "none" — the text layout, i.e. the pre-variant behavior. */
+  currentSelection?: ToolbarSelectionModel;
+  /** True while the palette is in customize mode. Variant-swapping widgets pin themselves to their
+   *  default layout so the user always customizes against the layout they'll see most. */
+  customizing?: boolean;
   /** The latest analysis report, for the Molecular Inspector palette. Absent until one has run. */
   currentMolecularInspector?: AnalysisReport;
   /** True while a newer analysis for the same selection is in flight. */

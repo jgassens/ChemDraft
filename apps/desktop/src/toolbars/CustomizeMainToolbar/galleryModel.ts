@@ -1,5 +1,6 @@
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "../../commands";
+import { isRenamedCommandId } from "../../renamedCommands";
 import type { IconName } from "../../icons";
 import type { ToolbarAssetName } from "../../toolbarAssets";
 
@@ -100,6 +101,12 @@ export function buildGalleryModel(
       continue;
     }
     seen.add(command.id);
+    // A retired alias is not a separate tool. Both ids pass the catalog's tool.* filter, so the
+    // gallery listed two identically-titled "Reaction Arrow" tiles — and the legacy one built the
+    // retired object type.
+    if (isRenamedCommandId(command.id)) {
+      continue;
+    }
     if (!matchesSearch(query, command.title, command.id)) {
       continue;
     }
@@ -169,7 +176,14 @@ const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }>
   { pattern: /^bond\./, section: "bonds" },
   { pattern: /^tool\.(cyclopentane|cyclohexane|benzene|chairCyclohexane)/, section: "rings" },
   { pattern: /^atom\./, section: "atoms" },
-  { pattern: /^tool\.(reactionArrow|resonanceArrow|equilibriumArrow|retroArrow)$/, section: "arrows" },
+  // Keyed on the art-arrow family, which is what the arrow tools actually are since they gained
+  // real art geometry. This used to name only the four retired aliases, so once those stopped being
+  // offered the section emptied out — and even before that, every arrow a user could usefully add
+  // was filed under the generic "Art" heading by the `tool.art.` rule below.
+  {
+    pattern: /^tool\.art\.(arrow|reactionArrow|reactionArrowBold|reactionArrowDashed|resonanceArrow|equilibriumArrow|retroArrow|curvedArrow90|curvedArrow180|fishhookArrow|fishhookCurved|noReactionArrow)$/,
+    section: "arrows"
+  },
   // `tool.symbol` also has per-glyph variants (tool.symbol.degree, …), so the family is matched by
   // prefix rather than anchored exactly.
   { pattern: /^tool\.(plus|minus|bracket|squareBracket|dagger)$|^tool\.symbol(\.|$)/, section: "symbols" },

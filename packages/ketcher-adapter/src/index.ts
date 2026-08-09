@@ -167,8 +167,11 @@ export function createKetcherAdapter(options: CreateKetcherAdapterOptions = {}):
         );
       }
 
-      loadedObject = request.object;
+      // Record the object only once the engine actually holds it. Assigning first meant a rejected
+      // load left the adapter claiming the new object while the engine still had the previous
+      // molecule, so the next save wrote the old structure under the new object's id.
       await engine.loadMolecule({ format, value: request.object.structure });
+      loadedObject = request.object;
       emitChange({ reason: "content", warnings: warningStringsForObject(request.object) });
     },
     async saveObject(): Promise<EditorSaveResult> {

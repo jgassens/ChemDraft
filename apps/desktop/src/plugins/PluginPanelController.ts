@@ -101,6 +101,27 @@ export class PluginPanelController {
     this.notify();
   }
 
+  /**
+   * Undo a {@link detachPanel} when the floating window never opened. Detaching frees the in-app
+   * slot before the native window exists, so a rejected open otherwise strands the panel: gone from
+   * the in-app surface, no window to render it, and clearable only by disabling the plugin.
+   *
+   * Returns false when the in-app slot has since been taken by another panel — the caller must then
+   * close this one properly rather than leave an entry nothing can display.
+   */
+  reattachPanel(pluginId: string, panelId: string): boolean {
+    const key = pluginPanelIdentityKey(pluginId, panelId);
+    const panel = this.detached.get(key);
+    if (!panel || this.open) {
+      return false;
+    }
+    this.detached.delete(key);
+    // A surface change, like detachPanel: the panel never closed, so the plugin gets no signal.
+    this.open = panel;
+    this.notify();
+    return true;
+  }
+
   /** Detached panels, keyed by plugin + panel — several may float at once (ADR-0030 policy). */
   getDetachedPanels(): readonly OpenPluginPanel[] {
     return [...this.detached.values()];

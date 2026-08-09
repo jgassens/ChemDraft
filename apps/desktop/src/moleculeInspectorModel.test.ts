@@ -220,6 +220,69 @@ function documentWithObjects(objects: Array<MoleculeObject | GraphicObject>): Ch
   };
 }
 
+describe("implicit hydrogen applicability", () => {
+  // The widget disables its implicit-hydrogen toggle off this flag, because the field only shows
+  // up on atoms that already render a label — clicking it on a skeletal chain changes nothing.
+  it("is false for a skeletal carbon chain, which renders no atom labels at all", () => {
+    const molecule = singleBondMolecule("mol_skeletal", 100);
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), {
+      selectedObjectIds: [molecule.id]
+    });
+
+    expect(model.atomLabels.enabled).toBe(true);
+    expect(model.atomLabels.implicitHydrogensAffectLabels).toBe(false);
+  });
+
+  it("is true once terminal carbons render labels the hydrogens can attach to", () => {
+    const molecule = singleBondMolecule("mol_terminal", 100, {
+      style: { atomLabelShowTerminalCarbons: true }
+    });
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), {
+      selectedObjectIds: [molecule.id]
+    });
+
+    expect(model.atomLabels.implicitHydrogensAffectLabels).toBe(true);
+  });
+
+  it("is true for a heteroatom, which is labelled without any carbon setting", () => {
+    const molecule = singleBondMolecule("mol_hetero", 100, {
+      atoms: [
+        { id: "atom_c", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "atom_o", element: "O", x: 172, y: 100, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_1", fromAtomId: "atom_c", toAtomId: "atom_o", order: "single" }]
+    });
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), {
+      selectedObjectIds: [molecule.id]
+    });
+
+    expect(model.atomLabels.implicitHydrogensAffectLabels).toBe(true);
+  });
+
+  it("scopes to the selected atom, so picking a bare carbon reports no effect", () => {
+    const molecule = singleBondMolecule("mol_scoped", 100, {
+      atoms: [
+        { id: "atom_c", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "atom_o", element: "O", x: 172, y: 100, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_1", fromAtomId: "atom_c", toAtomId: "atom_o", order: "single" }]
+    });
+    const document = documentWithObjects([molecule]);
+
+    const carbonOnly = createMoleculeInspectorModel(document, {
+      selectedObjectIds: [],
+      selectedPart: { objectId: molecule.id, kind: "atom", atomId: "atom_c" }
+    });
+    const oxygenOnly = createMoleculeInspectorModel(document, {
+      selectedObjectIds: [],
+      selectedPart: { objectId: molecule.id, kind: "atom", atomId: "atom_o" }
+    });
+
+    expect(carbonOnly.atomLabels.implicitHydrogensAffectLabels).toBe(false);
+    expect(oxygenOnly.atomLabels.implicitHydrogensAffectLabels).toBe(true);
+  });
+});
+
 function singleBondMolecule(
   id: string,
   x: number,

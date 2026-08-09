@@ -229,3 +229,63 @@ describe("Phase 6 — repeat-edit: re-flatten never duplicates markers", () => {
     expect(reparsed.bonds).toHaveLength(mol.bonds.length);
   });
 });
+
+describe("spin release does not change how a double bond draws", () => {
+  it("leaves a symmetric C=O without a baked side", () => {
+    // A terminal heteroatom double bond with no derivable inner side renders as the symmetric
+    // +/-gap/2 straddle — it has no side at all. Flatten baked `doubleBondSide` onto every double
+    // bond regardless, and an explicit side is itself what suppresses the straddle, so committing a
+    // spin silently turned a symmetric C=O one-sided: "releasing changes nothing visually" broken
+    // by the release itself.
+    const formaldehyde = molecule(
+      "mol_sym",
+      [
+        { id: "a1", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a2", element: "O", x: 40, y: 0, formalCharge: 0 }
+      ],
+      [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "double" }]
+    );
+    const document = documentWith(formaldehyde);
+    const coords3d = new Float64Array([0, 0, 0, 1.2, 0, 0]);
+
+    const outcome = flattenSpunMolecule(document, "mol_sym", coords3d, IDENTITY);
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+
+    const bond = moleculeOf(outcome.document, "mol_sym").bonds[0];
+    expect(bond.display?.doubleBondSide).toBeUndefined();
+  });
+
+  it("still bakes a side for a ring double bond, which does draw one-sided", () => {
+    // The complement: a ring double bond genuinely has a side, and it must be recomputed from the
+    // new geometry — otherwise its inner line lands outside the ring.
+    const ring = molecule(
+      "mol_ring",
+      [
+        { id: "r1", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "r2", element: "C", x: 40, y: 0, formalCharge: 0 },
+        { id: "r3", element: "C", x: 60, y: 35, formalCharge: 0 },
+        { id: "r4", element: "C", x: 40, y: 70, formalCharge: 0 },
+        { id: "r5", element: "C", x: 0, y: 70, formalCharge: 0 },
+        { id: "r6", element: "C", x: -20, y: 35, formalCharge: 0 }
+      ],
+      [
+        { id: "rb1", fromAtomId: "r1", toAtomId: "r2", order: "double" },
+        { id: "rb2", fromAtomId: "r2", toAtomId: "r3", order: "single" },
+        { id: "rb3", fromAtomId: "r3", toAtomId: "r4", order: "single" },
+        { id: "rb4", fromAtomId: "r4", toAtomId: "r5", order: "single" },
+        { id: "rb5", fromAtomId: "r5", toAtomId: "r6", order: "single" },
+        { id: "rb6", fromAtomId: "r6", toAtomId: "r1", order: "single" }
+      ]
+    );
+    const document = documentWith(ring);
+    const coords3d = new Float64Array([
+      0, 0, 0, 1.4, 0, 0, 2.1, 1.2, 0, 1.4, 2.4, 0, 0, 2.4, 0, -0.7, 1.2, 0
+    ]);
+
+    const outcome = flattenSpunMolecule(document, "mol_ring", coords3d, IDENTITY);
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+
+    const bond = moleculeOf(outcome.document, "mol_ring").bonds.find((candidate) => candidate.id === "rb1");
+    expect(bond?.display?.doubleBondSide).toBeDefined();
+  });
+});
