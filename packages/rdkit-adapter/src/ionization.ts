@@ -229,19 +229,30 @@ export const COMPETITOR_BENCHMARK: readonly {
   name: string;
   novartisMae?: number; novartisRmse?: number;
   literatureMae?: number; literatureRmse?: number;
+  /**
+   * UNSOURCED CHARACTERISATION, not a measurement, and separated from the figures for that reason.
+   *
+   * Neither published table reports how its tools are deployed or what they cost to run, so every entry
+   * here is inference from what the software is, and the accessibility of a commercial product is not
+   * something this file has established. An earlier draft went further and called Marvin "the tool a
+   * reader most likely already has", which was invented outright.
+   *
+   * The one runtime figure that IS sourced is QupKake's, and it is reported as its authors measured it:
+   * on a 32-core server, not on a laptop.
+   */
   runs: string;
   citationId: string;
 }[] = [
   {
     name: "QupKake",
     novartisMae: 0.55, novartisRmse: 0.79, literatureMae: 0.39, literatureRmse: 0.54,
-    runs: "Python, PyTorch and GFN2-xTB semi-empirical QM; 2.36 s per molecule on one core, 0.67 s on eight",
+    runs: "Python, PyTorch and GFN2-xTB semi-empirical QM. 2.36 s per molecule on one core and 0.67 s on eight, as its authors measured on a 32-core EPYC server -- the only sourced runtime figure in this column",
     citationId: "qupkake-2024"
   },
   {
     name: "ChemAxon Marvin V20.1.0",
     novartisMae: 0.856, novartisRmse: 1.166, literatureMae: 0.566, literatureRmse: 0.865,
-    runs: "commercial Java install and licence",
+    runs: "commercial, licensed; deployment not established here",
     citationId: "baltruschat-czodrowski-2020"
   },
   {
@@ -253,7 +264,7 @@ export const COMPETITOR_BENCHMARK: readonly {
   {
     name: "Schrodinger Epik Classic",
     novartisRmse: 1.16, literatureRmse: 0.92,
-    runs: "commercial install and licence",
+    runs: "commercial, licensed; deployment not established here",
     citationId: "qupkake-2024"
   },
   {
@@ -271,7 +282,7 @@ export const COMPETITOR_BENCHMARK: readonly {
   {
     name: "OPERA V2.5",
     novartisMae: 2.274, novartisRmse: 3.059, literatureMae: 1.737, literatureRmse: 2.182,
-    runs: "free local install",
+    runs: "published free by the US EPA; deployment not established here",
     citationId: "baltruschat-czodrowski-2020"
   }
 ];
@@ -1493,7 +1504,9 @@ export function ionizationContract(): MethodContract {
       // distortion, and each item is a measurement rather than a sales point.
       `WHAT IT DOES THAT THE MORE ACCURATE METHODS DO NOT. It runs in-process in the drawing application ` +
         `with no second runtime, no Python and no licence, at single-digit milliseconds per site — QupKake, ` +
-        `the most accurate of them, needs GFN2-xTB and reports 2.36 s per molecule on one core. It locates ` +
+        `the most accurate of them, needs GFN2-xTB and reports 2.36 s per molecule on one core of a 32-core ` +
+        `server. That contrast is about COMPUTE, not about what hardware either will run on: nothing ` +
+        `here establishes how any of these tools is deployed or licensed. It locates ` +
         `its own sites and that step is MEASURED, at 91.6% strict recall over 12,021 corpus sites, which no ` +
         `method above publishes; OPERA's own figures had to omit 31 Novartis and 6 literature molecules ` +
         `because it returned two or zero values, which is that same step failing silently. It reports an ` +
@@ -1705,7 +1718,8 @@ export function ionizationContract(): MethodContract {
               ? `MAE ${entry.novartisMae.toFixed(3)}`
               : `RMSE ${entry.novartisRmse?.toFixed(2)}`}`).join(", ") +
           `. THIS METHOD IS BEHIND EVERY ONE OF THEM EXCEPT OPERA, which it beats by roughly half. ` +
-          `Marvin, the tool a reader most likely already has, is 0.34 better on MAE.`,
+          `Marvin, the commercial reference point both published tables benchmark against, is 0.34 ` +
+          `better on MAE.`,
         citationId: "baltruschat-czodrowski-2020"
       },
       {
