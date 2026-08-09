@@ -444,8 +444,23 @@ export function zwitterionic(
     const closer = Math.abs(state.charge) - Math.abs(best.charge);
     return closer < 0 || (closer === 0 && state.logBinding! > best.logBinding!) ? state : best;
   });
+  // `chargeAtLevel` sees LADDER atoms only, and a permanent charge does not sit on one. Selecting the
+  // dominant state above already uses `state.charge`, which folds in every non-ladder charge — but the
+  // test below used to drop back to ladder charges, so the very molecule the comment names was
+  // misjudged. Betaine reported `false`: its ladder holds only the carboxylate, and the quaternary N+
+  // that makes it a zwitterion is not on a ladder at all.
+  //
+  // The permanent contribution is recoverable without the graph: it is whatever `state.charge` carries
+  // beyond the ladders.
   const charges = ladders.map((ladder, i) => chargeAtLevel(ladder, dominant.levels[i]!));
-  return charges.some((q) => q > 0) && charges.some((q) => q < 0);
+  const permanent = dominant.charge - charges.reduce((sum, q) => sum + q, 0);
+  // Known limit, stated rather than hidden: two OPPOSITE permanent charges on non-ladder atoms net to
+  // zero here and are not detected. Distinguishing them needs per-atom charges, which this function is
+  // not given — and such a molecule's zwitterionic character does not depend on protonation state,
+  // which is what this flag exists to report.
+  const positive = charges.some((q) => q > 0) || permanent > 0;
+  const negative = charges.some((q) => q < 0) || permanent < 0;
+  return positive && negative;
 }
 
 /**
@@ -809,11 +824,18 @@ export function speciesDistribution(
   let uncharged = 0;
   for (const [i, state] of reachable.entries()) {
     const perLadder = ladders.map((ladder, j) => chargeAtLevel(ladder, state.levels[j]!));
-    const charge = perLadder.reduce((sum, q) => sum + q, 0);
+    // `state.charge`, NOT the ladder sum. The two differ by whatever permanent charge sits on a
+    // non-ladder atom, and using the ladder sum shifted every reported charge by that amount: betaine
+    // reported a dominant charge of -1 and a net-neutral population of 0.00001 when the true answer is
+    // 0 and ~1, because its quaternary N+ was invisible here.
+    const charge = state.charge;
+    const permanent = charge - perLadder.reduce((sum, q) => sum + q, 0);
     const fraction = 10 ** (logWeights[i]! - total);
-    // No formal charge on ANY site, not merely a net of zero. This is the clause that separates
-    // glycine's uncharged form from its zwitterion, and they differ by five orders of magnitude.
-    if (perLadder.every((q) => q === 0)) uncharged += fraction;
+    // No formal charge on ANY atom, not merely a net of zero. This is the clause that separates
+    // glycine's uncharged form from its zwitterion, and they differ by five orders of magnitude — so
+    // it has to exclude a permanent charge too, or a betaine's COOH microstate counts as uncharged
+    // while still carrying its N+.
+    if (permanent === 0 && perLadder.every((q) => q === 0)) uncharged += fraction;
     const seen = byCharge.get(charge);
     if (seen === undefined) {
       byCharge.set(charge, { fraction, protonCount: state.protonCount, largest: fraction });
