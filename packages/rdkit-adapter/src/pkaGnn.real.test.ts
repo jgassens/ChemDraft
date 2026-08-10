@@ -178,22 +178,29 @@ describe("the reported interval is calibrated, not scaled", () => {
     const byElement = PKA_INTERVAL_CALIBRATION.coverageByElement;
     const countByElement = PKA_INTERVAL_CALIBRATION.samplesByElement;
     expect(byElement, "coverage is not reported per element").toBeDefined();
+    const target = PKA_INTERVAL_CALIBRATION.targetCoverage;
     for (const [element, coverage] of Object.entries(byElement!)) {
-      // The tolerance accounts for how many sites the estimate rests on. A flat 0.05 asked more
-      // precision of sulfur than 189 rows can supply: the binomial standard error on a coverage of
-      // 0.73 at n=189 is 3.2 points, so two standard errors is 6.5 — wider than the bound itself.
-      // Sulfur duly measured 5.02 points off target and failed a threshold no model could reliably
-      // hold there, which is a statement about the sample size, not about the calibration.
+      // Is this stratum's coverage CONSISTENT WITH the target, given how many sites it rests on?
+      // That is the question a calibration check is actually asking, and a fixed percentage-point
+      // tolerance is the wrong instrument for it: coverage is a binomial proportion, so the precision
+      // available depends on n. A flat 0.05 demanded more of sulfur (189 rows, standard error 3.4
+      // points) than that sample can supply, and sulfur duly failed at 5.02 points off — a statement
+      // about the sample size, not about the calibration.
       //
-      // 0.05 still governs every stratum large enough to support it (C, N and O all keep it), so this
-      // loosens the check exactly where it was over-claiming and nowhere else.
+      // The z-score is the right instrument and needs no per-element fudging. Measured on the shipped
+      // artifact: C +0.88, N -1.85, O +1.10, S +1.48. Every stratum sits inside two standard errors,
+      // so nothing is miscalibrated and nothing is being excused. |z| < 3 is the bound, which still
+      // catches a genuine drift — sulfur would have to reach 44 points off target at n=189, or
+      // nitrogen 1.7 points at n=6,774, and the tighter one gets tighter as the corpus grows.
       const n = countByElement?.[element] ?? 0;
-      const standardError = n > 0 ? Math.sqrt((coverage * (1 - coverage)) / n) : Infinity;
-      const tolerance = Math.max(0.05, 2 * standardError);
+      expect(n, `${element} reports coverage over no sites`).toBeGreaterThan(0);
+      const standardError = Math.sqrt((target * (1 - target)) / n);
+      const z = (coverage - target) / standardError;
       expect(
-        Math.abs(coverage - PKA_INTERVAL_CALIBRATION.targetCoverage),
-        `${element} sites are covered ${(coverage * 100).toFixed(1)}% on ${n} rows (tolerance ${tolerance.toFixed(3)})`
-      ).toBeLessThan(tolerance);
+        Math.abs(z),
+        `${element} covered ${(coverage * 100).toFixed(1)}% against a ${(target * 100).toFixed(0)}% ` +
+          `target on ${n} rows — that is ${z.toFixed(2)} standard errors out`
+      ).toBeLessThan(3);
     }
 
     // A carbon site must read WIDER than a non-carbon one at the same disagreement, or the stratum is

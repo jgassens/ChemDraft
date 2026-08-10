@@ -140,6 +140,13 @@ describe("the macroscopic fold on curated titration curves", () => {
     // this change reconciles contradictions rather than retuning agreements.
     //
     // THEY TRACK THE MODEL, so a retrain moves them and they must be re-derived rather than assumed.
+    //
+    // Deriving them instead was tried and is WRONG: the macroscopic ladder is not the sorted list of
+    // microscopic values. Ethylenediamine folds to 6.78/10.23 from a microscopic 9.93, because the
+    // statistical factor and the charge left on the mono-cation both move it. Testing the claim
+    // properly needs a forward sweep to compare against, and that is the thing the solve replaced —
+    // so until one is reimplemented for the purpose, frozen values re-derived per retrain are the
+    // honest instrument, not a shortcut.
     // The 2026-08-10 retrain moved acetic acid 4.30 -> 4.52 (measured 4.76, so toward it) and left the
     // other five inside 0.005 — which is itself the useful signal: the FOLD did not change, one
     // microscopic prediction did. What this test proves is the relationship between the two, and that
