@@ -11,8 +11,12 @@ For the selected molecule it computes:
 - **Ion m/z** — common ESI adducts (`[M+H]⁺`, `[M+Na]⁺`, `[M+NH₄]⁺`, `[M+K]⁺`,
   `[M+H−H₂O]⁺`, `[M−H]⁻`) for neutral structures; an already charged structure instead reports
   its native `[M]` ion and net charge, without inventing neutral-precursor adducts.
-- A **first-order isotope pattern** (M / M+1 / M+2) from ¹³C/¹⁵N and ³⁷Cl/⁸¹Br/³⁴S abundances —
-  normalized to the monoisotopic isotopologue and labelled as an approximation, not a full isotopic convolution.
+- The **isotope envelope**, computed by the *host* through the `chemistry.compute` capability and
+  rendered with the engine, truncation policy, and abundance conventions that produced it. The plugin
+  does not compute it: it used to ship a first-order M/M+1/M+2 estimate over an eight-element abundance
+  table with no recorded source, which was retired on 2026-07-30. Where the host cannot answer — no
+  engine, or a structure the engine declines — the panel says so rather than falling back to an
+  estimate.
 
 ## What it demonstrates
 

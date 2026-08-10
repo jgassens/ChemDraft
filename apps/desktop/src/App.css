@@ -849,6 +849,28 @@ textarea:focus-visible,
   grid-template-columns: 12px minmax(0, 1fr);
 }
 
+/* The Molecular Inspector is a two-pane window, not a toolbar strip, so it has to escape the 104px
+   `.tool-palette.horizontal` cap the same way the inspector palettes below do. Without this the shell
+   measures ~104px, PaletteWindow sizes the OS window to that, and the panel opens as a short strip the
+   user has to drag taller every time.
+
+   Beware the near-collision: `molecule-inspector-palette` (below) is Drawn Structure Settings;
+   this is `molecular-`. One letter apart, and the wrong one silently reinstates the cap. */
+.tool-palette.horizontal.molecular-inspector-palette,
+.tool-palette.floating.horizontal.molecular-inspector-palette {
+  /* max-content, not 100%: the pane declares 820x560 and the shell must hug it so the window is
+     sized to the whole panel rather than to a clipped slice of it. */
+  width: max-content;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  gap: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .tool-palette.horizontal.molecule-inspector-palette,
 .tool-palette.floating.horizontal.molecule-inspector-palette,
 .tool-palette.horizontal.ring-inspector-palette,
@@ -6377,4 +6399,269 @@ textarea:focus-visible,
 
 .lf-hit {
   fill: transparent;
+}
+
+.analysis-panel-identity-flag {
+  color: var(--cd-warning, #8a5a00);
+}
+
+.analysis-panel-change {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.analysis-panel-change select {
+  font-size: 11px;
+  max-width: 220px;
+}
+
+.analysis-panel-busy {
+  margin: 4px 0;
+  color: var(--cd-text-muted, #6b665c);
+}
+
+/* Warmer than the muted busy line: this one is telling the reader the page is wrong for what they
+   have selected, which they need to notice rather than skim past. */
+.analysis-panel-stale {
+  margin: 4px 0;
+  color: var(--cd-text-warning, #8a5a00);
+}
+
+/* --- Molecular Inspector -------------------------------------------------------------------
+   A palette widget, so the window frame, drag, and saved position come from the toolset machinery.
+
+   CRITICAL: a palette window SIZES ITSELF TO THIS CONTENT. `PaletteWindow` measures the shell (which
+   is `max-content` in both axes) and resizes the OS window to match. So this pane must declare a
+   definite size and must never let its contents dictate one:
+
+   - `height: 100%` here collapses to nothing against a max-content parent, which produced a
+     full-width, ~120px-tall window.
+   - an unconstrained viewport column takes the max-content width of an InChI string and a 63-row
+     Provenance table, which is wider than any screen.
+
+   Hence fixed dimensions below, `minmax(0, 1fr)` on the viewport column, and hard wrapping inside it. */
+.molecular-inspector-pane {
+  display: flex;
+  flex-direction: column;
+  /* `flex: none` is required, not cosmetic. The pane is a flex item inside the palette, and the
+     `overflow: hidden` below sets its automatic minimum size to 0 — so without this it shrinks to
+     0x0 and the palette, which measures its content, reports a 25px window. */
+  flex: none;
+  /* A DEFINITE size, and deliberately no `max-width: 100vw` / `max-height: 100vh`. Inside a palette
+     window `100vw` is that window's own width, which `PaletteWindow` derives FROM this content — so a
+     viewport-relative cap is circular, and it collapses the pane to 0x0 whenever the viewport reports
+     0 (a freshly created window, a hidden tab). That is exactly what produced the full-width,
+     ~120px-tall, transparent window. */
+  width: 820px;
+  height: 560px;
+  /* Opaque: without this the palette window is transparent and the canvas shows straight through. */
+  background: var(--cd-surface, #f7f6f2);
+  color: var(--cd-text, #1c1a17);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.molecular-inspector-empty {
+  padding: 16px;
+  color: var(--cd-text-muted, #6b665c);
+}
+
+.molecular-inspector-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--cd-border, #c8c4ba);
+  font-size: 11px;
+  flex: none;
+}
+
+.molecular-inspector-spacer {
+  flex: 1;
+}
+
+/* Two panes. `minmax(0, …)` on BOTH columns so neither can be widened by its content, and
+   `min-height: 0` so each scrolls internally instead of growing the window. */
+.molecular-inspector-body {
+  display: grid;
+  grid-template-columns: minmax(0, 208px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.molecular-inspector-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  border-right: 1px solid var(--cd-border, #c8c4ba);
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  min-width: 0;
+}
+
+.molecular-inspector-categories button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 6px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.molecular-inspector-categories button:hover {
+  background: var(--cd-surface-raised, #efece5);
+}
+
+.molecular-inspector-categories button.is-selected {
+  background: var(--cd-accent-soft, #dce8e0);
+  border-color: var(--cd-border, #c8c4ba);
+  font-weight: 600;
+}
+
+.molecular-inspector-category-label {
+  overflow-wrap: anywhere;
+}
+
+.molecular-inspector-category-count {
+  color: var(--cd-text-muted, #6b665c);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+/* The computed count and the §2 disclosure. They wrap under the label rather than truncating: a
+   disclosure nobody can read has stopped disclosing. */
+.molecular-inspector-category-detail,
+.molecular-inspector-category-note {
+  grid-column: 1 / -1;
+  color: var(--cd-text-muted, #6b665c);
+  font-size: 10px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.molecular-inspector-viewport {
+  padding: 10px 14px;
+  overflow: auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* An InChI, a SMILES, and a 63-row Provenance table are all far wider than the pane. Wrap them
+   rather than letting them set the window's width. Tables get their own scroller. */
+.molecular-inspector-viewport,
+.molecular-inspector-viewport p,
+.molecular-inspector-viewport td,
+.molecular-inspector-viewport th {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.molecular-inspector-viewport table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+/* Cells must WRAP in here, and the rule above is why.
+   `.plugin-report-table` sets `white-space: nowrap` because it owns an `overflow-x: auto` scroller — a
+   wide table is meant to be carried sideways by it. Inside this pane it cannot: pinning the table to
+   `width: 100%` with fixed layout makes every column an equal share of the pane, so the table never
+   grows past the scroller and the scroller never engages. A cell longer than its share then overflowed
+   VISIBLY and painted on top of its neighbour — `Amines_primary_secondary_tertiary` needing 210px in a
+   113px column, a decline reason needing 1644px in 282px — which read as two columns of overprinted
+   text. `text-overflow: clip` was already set and inert, because clipping needs `overflow: hidden`.
+   Wrapping rather than an ellipsis is the deliberate choice: this pane's contract is that nothing is
+   hidden, and a truncated site type or a truncated reason is exactly the kind of quiet omission the
+   rest of this feature refuses to make. `overflow-wrap: anywhere` is already declared above, so the
+   long unbroken identifiers break too. */
+.molecular-inspector-viewport .plugin-report-table th,
+.molecular-inspector-viewport .plugin-report-table td {
+  white-space: normal;
+}
+
+.molecular-inspector-footer {
+  padding: 5px 12px;
+  border-top: 1px solid var(--cd-border, #c8c4ba);
+  color: var(--cd-text-muted, #6b665c);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  flex: none;
+}
+
+/* The Conventions section arrives as a text section carrying its own line breaks. */
+.molecular-inspector-pane .plugin-report-text p {
+  white-space: pre-line;
+}
+
+/* --- Isotope spectrum ----------------------------------------------------------------------
+   A stick plot inside the Molecular Inspector's viewport. Sized by its viewBox so it scales with
+   the pane rather than fighting it for width. */
+.molecular-inspector-spectrum-section {
+  margin: 0 0 12px;
+}
+
+.molecular-inspector-spectrum-section h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cd-text-muted, #6b665c);
+}
+
+.isotope-spectrum {
+  margin: 0;
+}
+
+.isotope-spectrum svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 560px;
+}
+
+.isotope-spectrum-grid {
+  stroke: var(--cd-border, #c8c4ba);
+  stroke-width: 0.5;
+  opacity: 0.5;
+}
+
+.isotope-spectrum-axis {
+  stroke: var(--cd-border, #c8c4ba);
+  stroke-width: 1;
+}
+
+/* Round caps so a 100%-tall stick and a 0.06%-tall one are both visible; without them the smallest
+   isotopologues vanish entirely and the pattern reads as having fewer peaks than it has. */
+.isotope-spectrum-peak {
+  stroke: var(--cd-accent, #2f6d4f);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+}
+
+.isotope-spectrum-tick,
+.isotope-spectrum-axis-label {
+  fill: var(--cd-text-muted, #6b665c);
+  font-size: 8px;
+}
+
+.isotope-spectrum-peak-label {
+  fill: var(--cd-text, #1c1a17);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.isotope-spectrum figcaption {
+  margin-top: 4px;
+  color: var(--cd-text-muted, #6b665c);
+  font-size: 10px;
+  line-height: 1.35;
 }

@@ -4,12 +4,22 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@chemdraft/chemistry-adapter": "workspace:*"
+    "@chemdraft/analysis-core": "workspace:*",
+    "@chemdraft/chemistry-adapter": "workspace:*",
+    "@chemdraft/isospec-adapter": "workspace:*"
   },
   "exports": {
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./adapter": {
+      "types": "./src/adapter.ts",
+      "default": "./src/adapter.ts"
+    },
+    "./constants": {
+      "types": "./src/constants.ts",
+      "default": "./src/constants.ts"
     },
     "./testing": {
       "types": "./src/testing.ts",

@@ -37,6 +37,7 @@
       "icons/icon.icns"
     ],
     "externalBin": ["binaries/avogadro3d-sidecar"],
+    "resources": ["resources/opsin/*.jar", "resources/opsin/*.txt", "resources/opsin/jre"],
     "fileAssociations": [
       {
         "ext": ["chemdraft"],
@@ -61,7 +62,8 @@
       }
     ],
     "macOS": {
-      "frameworks": ["./Sparkle.framework"]
+      "frameworks": ["./Sparkle.framework"],
+      "entitlements": "./chemdraft.entitlements"
     }
   }
 }

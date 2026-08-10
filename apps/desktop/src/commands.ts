@@ -77,6 +77,15 @@ export function createQuickActions(
     { id: "view.toggleToolPalette", title: "Toggle Tool Palette", icon: "palette", source: "core" },
     { id: "export.open", title: "Export...", icon: "export", shortcut: "Shift+Cmd+E", source: "core" },
     {
+      id: "analyze.molecularProperties",
+      title: "Molecular Inspector…",
+      icon: "atom",
+      source: "core"
+      // Deliberately NOT gated on a selection. The window has its own empty state, and a menu item
+      // that is greyed out reads as "this feature is broken" rather than "select something first".
+      // With a structure selected it also runs the analysis; without one it just opens.
+    },
+    {
       id: "chemistry.validateSelection",
       title: "Validate Selected Structure",
       icon: "atom",
@@ -95,12 +104,14 @@ export const structureCleanup3dCommandId = "structure.cleanup3d";
 export const structureRotate3dCommandId = "structure.rotate3d";
 export const ringInspectorToolsetId = "core.ringInspector";
 export const toggleRingInspectorCommandId = "view.toggleRingInspector";
-export const moleculeInspectorToolsetId = "core.moleculeInspector";
-export const toggleMoleculeInspectorCommandId = "view.toggleMoleculeInspector";
+export const drawnStructureSettingsToolsetId = "core.drawnStructureSettings";
+/** The analysis surface: one palette for every analysis of the selected structure. */
+export const molecularInspectorToolsetId = "core.molecularInspector";
+export const toggleDrawnStructureSettingsCommandId = "view.toggleDrawnStructureSettings";
 export const artToolsetId = "core.art";
 export const textToolsetId = "core.text";
-export const moleculeInspectorTemplateImportCommandId = "moleculeInspector.template.import";
-export const moleculeInspectorTemplateExportCommandId = "moleculeInspector.template.export";
+export const drawnStructureSettingsTemplateImportCommandId = "drawnStructureSettings.template.import";
+export const drawnStructureSettingsTemplateExportCommandId = "drawnStructureSettings.template.export";
 export const artBooleanOperationCommandIds = {
   union: "art.boolean.union",
   subtract: "art.boolean.subtract",
@@ -232,12 +243,12 @@ export const viewActions: CommandSpec[] = [
     description: "Open or close the Rings toolbar"
   },
   {
-    id: toggleMoleculeInspectorCommandId,
-    title: "Toggle Molecule Inspector",
+    id: toggleDrawnStructureSettingsCommandId,
+    title: "Toggle Drawn Structure Settings",
     icon: "inspector",
     source: "core",
     category: "view",
-    description: "Open or close the Molecule Inspector"
+    description: "Open or close Drawn Structure Settings"
   },
   {
     id: "view.toggleRulers",

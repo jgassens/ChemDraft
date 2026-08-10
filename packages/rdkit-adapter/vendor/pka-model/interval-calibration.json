@@ -1,0 +1,230 @@
+{
+  "measurement": "empirical quantile of |error| within equal-count bins of the ensemble's raw standard deviation, on out-of-fold predictions, stratified into carbon and non-carbon ionizing atoms; linearly interpolated between bin centres and clamped outside them",
+  "targetCoverage": 0.68,
+  "samples": 12081,
+  "bins": 12,
+  "carbonBins": 4,
+  "achievedCoverage": 0.6785,
+  "worstBinDeviation": 0.0014,
+  "intervalQuartiles": [
+    0.496,
+    0.6832,
+    0.9991
+  ],
+  "coverageByElement": {
+    "C": 0.6993,
+    "N": 0.6695,
+    "O": 0.6875,
+    "S": 0.7302
+  },
+  "samplesByElement": {
+    "C": 449,
+    "N": 6774,
+    "O": 4669,
+    "S": 189
+  },
+  "points": [
+    {
+      "spread": 0.050599,
+      "interval": 0.2796,
+      "samples": 1006,
+      "rawQuantile": 0.2796,
+      "coverage": 0.6799
+    },
+    {
+      "spread": 0.087581,
+      "interval": 0.369508,
+      "samples": 1007,
+      "rawQuantile": 0.369508,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.116771,
+      "interval": 0.464548,
+      "samples": 1007,
+      "rawQuantile": 0.464548,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.148329,
+      "interval": 0.529232,
+      "samples": 1007,
+      "rawQuantile": 0.529232,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.180645,
+      "interval": 0.5751,
+      "samples": 1006,
+      "rawQuantile": 0.5751,
+      "coverage": 0.6809
+    },
+    {
+      "spread": 0.217169,
+      "interval": 0.631116,
+      "samples": 1007,
+      "rawQuantile": 0.631116,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.259709,
+      "interval": 0.74182,
+      "samples": 1007,
+      "rawQuantile": 0.74182,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.310819,
+      "interval": 0.841164,
+      "samples": 1007,
+      "rawQuantile": 0.841164,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.37388,
+      "interval": 0.90782,
+      "samples": 1006,
+      "rawQuantile": 0.90782,
+      "coverage": 0.6799
+    },
+    {
+      "spread": 0.45498,
+      "interval": 1.110612,
+      "samples": 1007,
+      "rawQuantile": 1.110612,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 0.593268,
+      "interval": 1.206548,
+      "samples": 1007,
+      "rawQuantile": 1.206548,
+      "coverage": 0.6802
+    },
+    {
+      "spread": 1.003461,
+      "interval": 1.805704,
+      "samples": 1007,
+      "rawQuantile": 1.805704,
+      "coverage": 0.6802
+    }
+  ],
+  "strata": {
+    "carbon": [
+      {
+        "spread": 0.1732,
+        "interval": 0.632444,
+        "samples": 112,
+        "rawQuantile": 0.632444,
+        "coverage": 0.6786
+      },
+      {
+        "spread": 0.378706,
+        "interval": 1.189708,
+        "samples": 112,
+        "rawQuantile": 1.189708,
+        "coverage": 0.6786
+      },
+      {
+        "spread": 0.605404,
+        "interval": 1.47228,
+        "samples": 112,
+        "rawQuantile": 1.47228,
+        "coverage": 0.6786
+      },
+      {
+        "spread": 1.169398,
+        "interval": 3.288044,
+        "samples": 113,
+        "rawQuantile": 3.288044,
+        "coverage": 0.6814
+      }
+    ],
+    "other": [
+      {
+        "spread": 0.049985,
+        "interval": 0.275488,
+        "samples": 969,
+        "rawQuantile": 0.275488,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.086318,
+        "interval": 0.354108,
+        "samples": 969,
+        "rawQuantile": 0.354108,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.114756,
+        "interval": 0.471876,
+        "samples": 970,
+        "rawQuantile": 0.471876,
+        "coverage": 0.6794
+      },
+      {
+        "spread": 0.145483,
+        "interval": 0.524204,
+        "samples": 969,
+        "rawQuantile": 0.524204,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.17686,
+        "interval": 0.56144,
+        "samples": 969,
+        "rawQuantile": 0.56144,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.212249,
+        "interval": 0.619832,
+        "samples": 970,
+        "rawQuantile": 0.619832,
+        "coverage": 0.6794
+      },
+      {
+        "spread": 0.252911,
+        "interval": 0.715968,
+        "samples": 969,
+        "rawQuantile": 0.715968,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.301892,
+        "interval": 0.833904,
+        "samples": 969,
+        "rawQuantile": 0.833904,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.363189,
+        "interval": 0.89992,
+        "samples": 970,
+        "rawQuantile": 0.89992,
+        "coverage": 0.6794
+      },
+      {
+        "spread": 0.441154,
+        "interval": 1.04624,
+        "samples": 969,
+        "rawQuantile": 1.04624,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.569909,
+        "interval": 1.183432,
+        "samples": 969,
+        "rawQuantile": 1.183432,
+        "coverage": 0.6801
+      },
+      {
+        "spread": 0.958953,
+        "interval": 1.7084,
+        "samples": 970,
+        "rawQuantile": 1.7084,
+        "coverage": 0.6794
+      }
+    ]
+  }
+}

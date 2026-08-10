@@ -20,22 +20,63 @@ import { PluginApiVersion } from "./index";
  * announces it on startup and the host rejects a mismatch loudly rather than half-loading (M34
  * acceptance #5). It is intentionally separate from a plugin's semantic {@link PluginApiVersion}.
  */
+/*
+ * Deliberately NOT bumped when a capability method is added. Adding a method to a namespace is
+ * additive: a worker built against an older SDK simply never calls it, and every message shape below
+ * is unchanged. Bumping would make the host reject those workers outright, turning a compatible
+ * difference into a hard failure. What the growth of the map DOES require is that an unknown method
+ * be reported as "this host does not offer it" rather than "not granted" — see
+ * `PLUGIN_WORKER_UNKNOWN_CAPABILITY_METHOD` below.
+ */
 export const PLUGIN_WORKER_PROTOCOL_VERSION = 1 as const;
 
 /** The capability namespaces a plugin can reach across the boundary — one per capability object on
  *  {@link PluginCommandContext}. `documents` is always present on the context but its methods gate
  *  internally on `document.read` / `document.proposePatch`. */
-export type PluginWorkerCapabilityNamespace = "selection" | "analysis" | "storage" | "panels" | "documents";
+export type PluginWorkerCapabilityNamespace =
+  | "selection"
+  | "analysis"
+  | "storage"
+  | "panels"
+  | "documents"
+  | "chemistry";
 
-/** The methods each namespace exposes. The host bridge validates an incoming request against this map
- *  and rejects anything else, so a worker can never invoke an arbitrary property on a capability. */
-export const PLUGIN_WORKER_CAPABILITY_METHODS: Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>> = {
+/**
+ * The methods each namespace exposes. The host bridge validates an incoming request against this map
+ * and rejects anything else, so a worker can never invoke an arbitrary property on a capability.
+ *
+ * THIS MAP IS THE SOURCE OF TRUTH FOR THE WORKER-SIDE STUB TOO — see `chemistryStubMethods` in
+ * `workerRuntime.ts`. It used to be a second, hand-maintained list, and the two drifted apart exactly
+ * as you would expect: `nameToStructure` (API 0.1.1) and `structureFromSmiles` (API 0.1.2) were each
+ * added to the stub and to the in-process host and never here, so both shipped methods were rejected
+ * with `UnknownCapabilityMethod` for every worker-routed plugin — which is every installed plugin.
+ * `git show` on both feature commits against this file returns empty. No test caught it because
+ * `typeof Worker === "undefined"` under vitest, so the bundled plugin falls to the in-process branch
+ * and the bridge is never exercised; the round-trip tests added alongside this fix use the
+ * linked-endpoint harness instead.
+ */
+// `satisfies`, NOT a type annotation. Writing `: Readonly<Record<Namespace, readonly string[]>>` here
+// widens every entry to `string[]`, which silently defeats `CapabilityMethodOf` below — it resolves to
+// `string` and accepts anything. `satisfies` keeps the literal types while still checking that every
+// namespace is covered. Verified by reverting the chemistry row to its old value and confirming the
+// worker stub then fails to compile.
+export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
+  documents: ["getActiveDocument", "proposePatch"],
   panels: ["showReport"],
-  documents: ["getActiveDocument", "proposePatch"]
-} as const;
+  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"]
+} as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
+
+/**
+ * The method names one namespace accepts, as a union.
+ *
+ * `workerRuntime`'s `call` is typed with this, so the worker-side stub cannot offer a plugin a method
+ * the host bridge will reject — the condition that made two shipped SDK capabilities dead on arrival.
+ */
+export type CapabilityMethodOf<N extends PluginWorkerCapabilityNamespace> =
+  (typeof PLUGIN_WORKER_CAPABILITY_METHODS)[N][number];
 
 /** A serializable error crossing the boundary in either direction. Errors never travel as `Error`
  *  instances (not reliably cloneable); they are normalized to `{ code, message }`. */

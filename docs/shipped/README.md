@@ -17,6 +17,13 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 **Slices with their own file:**
 
+- [Analyzers: property and prediction suite](analyzers-property-prediction-suite.md) — the Molecular
+  Inspector, isotope envelopes, OPSIN and OpenClatura plugin work, Joback estimates, and the pKa
+  system. Kept separate because its later sections document how the pKa method behaves today: what it
+  declines to answer, where its interval is validated and where it is not, and how every published
+  figure regenerates. **The model is frozen**; the applicability protocol that would gate abstention is
+  deliberately unfinished.
+
 - [Selection Policy Refactor](selection-policy-refactor.md) — one pure selection policy, one hit
   resolver with atom→bond→ring precedence, uniform additive behavior across click/marquee/lasso, and
   cross-molecule part storage. All phases landed; kept separate because its design section still

@@ -20,16 +20,16 @@ export const massFragmentManifest: PluginManifest = {
   name: "Mass / m/z Analyzer",
   version: "0.0.0",
   apiVersion: "^0.1.0",
-  description: "Molecular formula, monoisotopic + average mass, common ESI adduct m/z, and a first-order isotope pattern for the selected structure.",
+  description: "Molecular formula, monoisotopic + average mass, common ESI adduct m/z, and the host-computed isotope envelope for the selected structure.",
   entry: "dist/plugin.js",
-  permissions: ["selection.read", "analysis.write", "ui.menu", "ui.panel"],
+  permissions: ["selection.read", "analysis.write", "chemistry.compute", "ui.menu", "ui.panel"],
   contributes: {
     commands: [
       {
         id: massAnalyzeCommandId,
         title: "Analyze Mass / m/z",
         category: "Analyze",
-        description: "Compute molecular formula, exact/average mass, adduct m/z, and isotope pattern for the selection.",
+        description: "Compute molecular formula, exact/average mass, adduct m/z, and isotope envelope for the selection.",
         requiredPermissions: ["selection.read", "analysis.write"],
         enabled: true
       }

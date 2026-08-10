@@ -1,0 +1,74 @@
+# Builds ChemDraft's IsoSpec WASM artifact.
+#
+# Reuses rdkit-minimallib-deps:latest purely as an Emscripten toolchain (emsdk 6.0.0) -- the same
+# compiler that produced the vendored RDKit_minimal.wasm. IsoSpec has no third-party dependencies, so
+# nothing else from that image is used; it is here to avoid a second multi-GB emsdk download and to
+# keep both WASM artifacts on one toolchain.
+FROM rdkit-minimallib-deps:latest AS build-stage
+
+ARG ISOSPEC_VERSION=2.3.5
+
+WORKDIR /src
+COPY isospec-src/src/IsoSpec++ /src/IsoSpec++
+COPY isospec-src/LICENCE /src/IsoSpec-LICENCE.txt
+COPY wrapper/chemdraft_isospec.cpp /src/chemdraft_isospec.cpp
+
+WORKDIR /src/out
+# unity-build.cpp #includes every other .cpp -- IsoSpec's own "poor man's LTO" -- so the whole library
+# plus our wrapper is a single translation unit.
+#
+# -fwasm-exceptions matches the vendored RDKit artifact: the wrapper catches std::invalid_argument
+# from formula parsing, and without real exception support that catch would not run.
+# MODULARIZE + EXPORT_NAME mirrors initRDKitModule so the loader shape is identical.
+RUN em++ -O3 -fwasm-exceptions -std=c++17 \
+      -DCHEMDRAFT_ISOSPEC_VERSION="\"${ISOSPEC_VERSION}\"" \
+      -DISOSPEC_BUILDING_R=0 \
+      -I/src/IsoSpec++ \
+      /src/IsoSpec++/unity-build.cpp \
+      /src/chemdraft_isospec.cpp \
+      --bind \
+      -s MODULARIZE=1 \
+      -s EXPORT_NAME="'initIsoSpecModule'" \
+      -s ALLOW_MEMORY_GROWTH=1 \
+      -s MAXIMUM_MEMORY=2GB \
+      -s USE_PTHREADS=0 \
+      -s STACK_OVERFLOW_CHECK=1 \
+      -s ENVIRONMENT=web,worker,node \
+      -o /src/out/IsoSpec.js
+
+# Prove the artifact runs before it can be exported: a formula whose envelope is known by hand.
+#
+# The explicit-isotope entry point is smoke-tested against the formula one rather than against a typed
+# constant: CH4 spelled out as carbon and hydrogen marginals must give exactly what 'C1H4' gives, which
+# is the only check that the flattened array layout was read the way Iso documents it. A transposed or
+# short array would still return peaks, just the wrong ones.
+RUN /opt/emsdk/node/*/bin/node -e "\
+const init = require('/src/out/IsoSpec.js'); \
+init().then((M) => { \
+  const r = JSON.parse(M.envelope_from_threshold('H2O1', 0.01, false)); \
+  if (!r.ok || r.peakCount < 1) { console.error(r); process.exit(1); } \
+  const bad = JSON.parse(M.envelope_from_threshold('not-a-formula', 0.01, false)); \
+  if (bad.ok) { console.error('malformed formula was accepted'); process.exit(1); } \
+  const t = JSON.parse(M.isotope_table()); \
+  const of = (el) => t.entries.filter((e) => e.element === el); \
+  const c = of('carbon'), h = of('hydrogen'); \
+  const iso = JSON.parse(M.envelope_from_threshold_isotopes( \
+    [c.length, h.length], [1, 4], \
+    c.map((e) => e.mass).concat(h.map((e) => e.mass)), \
+    c.map((e) => e.abundance).concat(h.map((e) => e.abundance)), 1e-6, false)); \
+  const ref = JSON.parse(M.envelope_from_threshold('C1H4', 1e-6, false)); \
+  if (!iso.ok || iso.peakCount !== ref.peakCount) { console.error(iso, ref); process.exit(1); } \
+  const dm = Math.max.apply(null, iso.masses.map((m, i) => Math.abs(m - ref.masses[i]))); \
+  if (!(dm < 1e-12)) { console.error('explicit isotopes disagree with the formula path', dm); process.exit(1); } \
+  const short_ = JSON.parse(M.envelope_from_threshold_isotopes([2], [1], [12.0], [1.0], 0.01, false)); \
+  if (short_.ok) { console.error('a short mass array was accepted'); process.exit(1); } \
+  console.log('smoke ok: H2O1 peaks=' + r.peakCount + ' covered=' + r.coveredProbability); \
+  console.log('smoke ok: malformed rejected -> ' + bad.error); \
+  console.log('smoke ok: explicit isotopes match the formula path, peaks=' + iso.peakCount); \
+  console.log('smoke ok: short array rejected -> ' + short_.error); \
+});"
+
+FROM scratch AS export-stage
+COPY --from=build-stage /src/out/IsoSpec.js /
+COPY --from=build-stage /src/out/IsoSpec.wasm /
+COPY --from=build-stage /src/IsoSpec-LICENCE.txt /

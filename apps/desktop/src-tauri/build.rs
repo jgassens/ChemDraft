@@ -10,6 +10,7 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     stage_sparkle_framework_for_cargo_executables();
+    ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "open_toolset_window",
@@ -37,6 +38,8 @@ fn main() {
             "tool_palette_state",
             "route_palette_command",
             "toggle_spin3d_debugger_window",
+            "opsin_status",
+            "opsin_name_to_structure",
             "agent_bridge_status",
             "window_logical_position",
             "take_pending_open_document",
@@ -72,4 +75,42 @@ fn stage_sparkle_framework_for_cargo_executables() {
     }
 
     println!("cargo:rerun-if-changed={}", source.display());
+}
+
+/// Make the OPSIN Java runtime path exist so `tauri_build` can resolve it, even when the runtime has
+/// not been built.
+///
+/// `tauri.conf.json` lists `resources/opsin/jre` as a bundle resource, and `tauri_build` PANICS on a
+/// resource path that does not exist. The runtime is ~47 MB produced by
+/// `scripts/build-opsin-runtime.sh` and is gitignored as rebuildable, so it is present on a developer
+/// machine that has built it and absent on every fresh checkout — which is exactly how CI failed:
+/// `failed to run Tauri build script: resource path resources/opsin/jre doesn't exist`.
+///
+/// Creating the directory is safe rather than a papering-over, because absence is already a supported
+/// state at RUNTIME: `opsin::java_binary` looks for `jre/bin/java` and reports OPSIN unavailable when
+/// it is missing, which is the behaviour the feature was built with ("say so honestly when it
+/// cannot"). An empty directory therefore reads as "no runtime", not as a broken one.
+///
+/// The warning is the point of the function beyond the mkdir: a bundle built without the runtime ships
+/// an app whose name-to-structure declines, and that should never be discovered by a user.
+fn ensure_opsin_runtime_dir() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/opsin/jre");
+    // Without this the script's output is cached, so building the runtime afterwards leaves the
+    // "absent" warning firing on a tree that now has it — the warning would outlive the condition it
+    // reports, which is worse than not warning at all.
+    println!(
+        "cargo:rerun-if-changed={}",
+        path.join("bin").join("java").display()
+    );
+    if path.join("bin").join("java").exists() {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&path) {
+        println!("cargo:warning=could not create {}: {error}", path.display());
+        return;
+    }
+    println!(
+        "cargo:warning=OPSIN Java runtime absent at resources/opsin/jre — building without it. \
+Name-to-structure will report itself unavailable. Run scripts/build-opsin-runtime.sh to include it."
+    );
 }

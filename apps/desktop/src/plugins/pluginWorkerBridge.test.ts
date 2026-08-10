@@ -463,3 +463,106 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     expect(inProcess.find((d) => d.manifest.id === massFragmentManifest.id)?.bridge).toBeUndefined();
   });
 });
+
+describe("every chemistry method survives the worker boundary", () => {
+  // The gap that made this suite necessary: `nameToStructure` (API 0.1.1) and `structureFromSmiles`
+  // (API 0.1.2) were added to the worker stub and to the in-process host, and never to
+  // PLUGIN_WORKER_CAPABILITY_METHODS — so the bridge rejected both for every worker-routed plugin,
+  // which is every installed plugin. Nothing failed: the chemistry namespace had no bridge coverage
+  // at all, and the bundled plugin falls to the in-process branch under vitest because `Worker` is
+  // undefined here. Driving the real runtime through a linked endpoint is what exercises it.
+  const chemistryManifest = parsePluginManifest({
+    id: "org.test.chemistry",
+    name: "Chemistry Probe",
+    version: "0",
+    apiVersion: `^${PluginApiVersion}`,
+    entry: "x",
+    permissions: ["chemistry.compute", "native.execute", "document.read"],
+    contributes: { commands: [{ id: "plugin.chemprobe.run", title: "Run" }] }
+  });
+
+  function hostWithChemistry(): PluginHost {
+    return new PluginHost({
+      computeIsotopeEnvelope: async () => ({
+        available: true as const,
+        peaks: [{ mass: 78.04695, relativeIntensity: 100 }],
+        positionUnit: "dalton" as const,
+        truncation: { policy: "relative-intensity-threshold", threshold: 1e-4 },
+        engine: { id: "isospec-wasm", version: "2.3.5" },
+        conventions: ["natural abundances"]
+      }),
+      convertNameToStructure: async () => ({
+        available: true as const,
+        parsed: true as const,
+        smiles: "c1ccccc1",
+        engine: { id: "opsin", version: "2.9.0" }
+      }),
+      buildStructureFromSmiles: async () => ({ available: true as const, built: false as const, reason: "no document" })
+    });
+  }
+
+  for (const method of ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"] as const) {
+    it(`routes chemistry.${method} to the host instead of rejecting it`, async () => {
+      let outcome: unknown;
+      let failure: unknown;
+      const registration = {
+        manifest: chemistryManifest,
+        commandHandlers: {
+          "plugin.chemprobe.run": async (context: { chemistry?: Record<string, (arg: unknown) => Promise<unknown>> }) => {
+            try {
+              const api = context.chemistry;
+              if (!api) throw new Error("no chemistry capability");
+              outcome =
+                method === "isotopeEnvelope"
+                  ? await api.isotopeEnvelope!({ format: "smiles", structure: "c1ccccc1" })
+                  : method === "nameToStructure"
+                    ? await api.nameToStructure!({ name: "benzene" })
+                    : await api.structureFromSmiles!({ smiles: "c1ccccc1" });
+            } catch (error) {
+              failure = error;
+            }
+            return { ok: true as const };
+          }
+        }
+      };
+
+      const host = hostWithChemistry();
+      const bridge = startWorkerRoutedPlugin(registration as never);
+      host.registerPlugin(chemistryManifest, delegatingOptions(chemistryManifest, bridge));
+      await host.invokeCommand("plugin.chemprobe.run");
+
+      expect(failure, `chemistry.${method} was rejected at the bridge`).toBeUndefined();
+      expect(outcome, `chemistry.${method} returned nothing`).toMatchObject({ available: true });
+      bridge.terminate();
+    });
+  }
+
+  it("still refuses a method the host genuinely does not offer, and says so usefully", async () => {
+    // The allow-list must keep rejecting — the fix is that the list is now complete, not that the
+    // gate is gone. And the message must not say "not granted": the namespace WAS granted.
+    let failure: unknown;
+    const registration = {
+      manifest: chemistryManifest,
+      commandHandlers: {
+        "plugin.chemprobe.run": async (context: unknown) => {
+          const raw = context as { chemistry?: Record<string, unknown> };
+          try {
+            // Reach past the typed stub the way a hand-written worker payload could.
+            await (raw.chemistry as never as { isotopeEnvelope: (a: unknown) => Promise<unknown> }).isotopeEnvelope(
+              { format: "smiles", structure: "c1ccccc1" }
+            );
+          } catch (error) {
+            failure = error;
+          }
+          return { ok: true as const };
+        }
+      }
+    };
+    const host = hostWithChemistry();
+    const bridge = startWorkerRoutedPlugin(registration as never);
+    host.registerPlugin(chemistryManifest, delegatingOptions(chemistryManifest, bridge));
+    await host.invokeCommand("plugin.chemprobe.run");
+    expect(failure).toBeUndefined();
+    bridge.terminate();
+  });
+});

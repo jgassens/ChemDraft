@@ -1,0 +1,12 @@
+# Regenerable intermediates from `pka_train.py`: the feature matrix and its fold groups. The trained
+# artifacts (site-pka-forest.json, calibration*.json, parity-fixture.json) ARE committed — those are
+# what ships and what the tests check.
+__pycache__/
+pka.X.npy
+pka.y.npy
+pka.meta.json
+merged-labels.json
+qupkake-labels.json
+pkachu-labels.json
+d2a-labels.json
+iupac-labels.json

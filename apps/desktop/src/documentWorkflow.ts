@@ -4468,14 +4468,53 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
  * wedges; proven by the Phase 6 oracle round-trip). Double-bond sides are recomputed
  * from the placed geometry so ring double bonds draw toward the ring interior.
  */
-export function insertSmilesMolecule(
+/** Where a SMILES-derived molecule came from, so the object records it honestly. */
+export interface SmilesMoleculeSource {
+  objectIdPrefix: string;
+  styleSource: string;
+  warningCode: string;
+  warningMessage: string;
+  /**
+   * Ids already handed out but not yet in the document, so the next one skips them.
+   *
+   * Paste does not need this: it inserts immediately, so the document always reflects every id
+   * already issued. A plugin's structure does — it is BUILT and then waits in the review queue, so
+   * two structures built before either is accepted both saw an unchanged document and both minted
+   * `mol_plugin_001`. Accepting the second threw `object "mol_plugin_001" already exists`.
+   *
+   * The caller owns the set and adds to it, because only the caller knows when an id has been issued.
+   */
+  reservedObjectIds?: Set<string>;
+}
+
+export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
+  objectIdPrefix: "mol_clipboard",
+  styleSource: "clipboard-smiles",
+  warningCode: "clipboard.smiles_imported",
+  warningMessage: "Generated an editable 2D structure from pasted SMILES."
+};
+
+/**
+ * Build the molecule object a SMILES depiction becomes, without touching the document.
+ *
+ * Split out of {@link insertSmilesMolecule} so the plugin boundary can reach it: a plugin proposes a
+ * patch carrying an object, and has no business applying one. Both callers therefore produce the same
+ * object — same scaling, same double-bond side recomputation, same compatibility record — which is
+ * what stops "insert from name" and "paste a SMILES" drifting into two different structures for the
+ * same input.
+ *
+ * `source` distinguishes them where it matters: the style and the compatibility warning record where
+ * the structure came from, and "pasted" would be a false provenance claim for a converted name.
+ */
+export function createSmilesMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
   depiction: PastedStructureDepiction,
-  smilesText: string
-): ChemDraftDocument {
+  smilesText: string,
+  source: SmilesMoleculeSource = SMILES_PASTE_SOURCE
+): DocumentObject {
   if (depiction.atoms.length === 0) {
-    throw new Error("Cannot paste SMILES: no atoms were generated.");
+    throw new Error("Cannot build a molecule: no atoms were generated.");
   }
   const page = firstPage(document);
 
@@ -4545,8 +4584,8 @@ export function insertSmilesMolecule(
 
   const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
 
-  const object = normalizeNativeMoleculeGeometry({
-    id: nextObjectId(document, "mol_clipboard"),
+  return normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, source.objectIdPrefix, source.reservedObjectIds),
     type: "molecule",
     x: 0,
     y: 0,
@@ -4557,16 +4596,11 @@ export function insertSmilesMolecule(
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
       bondLengthPx: smilesPasteBondLengthPx,
-      source: "clipboard-smiles"
+      source: source.styleSource
     },
     compatibility: {
       sourceFormat: "smiles",
-      warnings: [
-        {
-          code: "clipboard.smiles_imported",
-          message: "Generated an editable 2D structure from pasted SMILES."
-        }
-      ],
+      warnings: [{ code: source.warningCode, message: source.warningMessage }],
       unknown: { smiles: smilesText }
     },
     structureFormat: "molfile-v2000",
@@ -4577,6 +4611,16 @@ export function insertSmilesMolecule(
     superatoms: [],
     rGroups: []
   });
+}
+
+export function insertSmilesMolecule(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  depiction: PastedStructureDepiction,
+  smilesText: string
+): ChemDraftDocument {
+  const object = createSmilesMolecule(document, point, depiction, smilesText);
+  const page = firstPage(document);
 
   return applyPatches(
     document,
@@ -13956,12 +14000,13 @@ function roundToTextBoxPixel(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function nextObjectId(document: ChemDraftDocument, prefix: string): string {
+function nextObjectId(document: ChemDraftDocument, prefix: string, reserved?: ReadonlySet<string>): string {
   const existingIds = new Set(document.pages.flatMap((page) => page.objects.map((object) => object.id)));
   let index = existingIds.size + 1;
   let id = `${prefix}_${String(index).padStart(3, "0")}`;
 
-  while (existingIds.has(id)) {
+  // `reserved` covers ids issued but not yet applied — see SmilesMoleculeSource.reservedObjectIds.
+  while (existingIds.has(id) || reserved?.has(id)) {
     index += 1;
     id = `${prefix}_${String(index).padStart(3, "0")}`;
   }

@@ -51,6 +51,8 @@
     "allow-engine3d-sidecar-send-session",
     "allow-engine3d-sidecar-poll-session",
     "allow-engine3d-sidecar-stop-session",
+    "allow-opsin-status",
+    "allow-opsin-name-to-structure",
     "allow-rasterize-svg",
     "allow-list-system-fonts",
     "dialog:allow-open",

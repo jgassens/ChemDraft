@@ -1,5 +1,5 @@
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import type { PluginManifest, PluginPanelReport } from "@chemdraft/plugin-api";
+import type { PluginManifest, PluginPanelReport, PluginPermission } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import {
   CommandRegistry,
@@ -558,6 +558,244 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     });
     expect(host.listAnalyzerContributions()[0]?.contribution.id).toBe("analyzer.analyze.main");
     expect(host.listCommandContributions()[0]?.contribution.id).toBe("plugin.analyze.run");
+  });
+
+  it("serves chemistry.compute only when the plugin declares it AND the host provides an engine", async () => {
+    // Two independent conditions, and the failure mode differs: an undeclared permission is a plugin
+    // error, an absent engine is a host without that capability. Neither may look like the other, and
+    // neither may surface as a call that throws — the plugin has to be able to say which.
+    const computeIsotopeEnvelope = vi.fn(async () => ({
+      available: true as const,
+      peaks: [{ mass: 78.04695, relativeIntensity: 100 }],
+      positionUnit: "dalton" as const,
+      truncation: { policy: "relative-intensity-threshold", threshold: 1e-4 },
+      engine: { id: "isospec-wasm", version: "2.3.5" },
+      conventions: ["natural abundances from IsoSpec's built-in tables"]
+    }));
+
+    const manifest = (id: string, permissions: PluginPermission[]) => ({
+      id,
+      name: "Chem Plugin",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions,
+      contributes: {
+        commands: [{ id: `plugin.${id.split(".").pop()}.probe`, title: "Probe" }]
+      }
+    });
+
+    // 1. Declared + provided → the capability is there and reaches the engine.
+    const granted = new PluginHost({ computeIsotopeEnvelope });
+    let seen: unknown;
+    granted.registerPlugin(manifest("org.test.chemyes", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.chemyes.probe": async (context) => {
+          seen = await context.chemistry?.isotopeEnvelope({ format: "smiles", structure: "c1ccccc1" });
+        }
+      }
+    });
+    await granted.invokeCommand("plugin.chemyes.probe");
+    expect(computeIsotopeEnvelope).toHaveBeenCalledWith({ format: "smiles", structure: "c1ccccc1" });
+    expect(seen).toMatchObject({ available: true });
+
+    // 2. Provided but not declared → no API at all, rather than a permission error at call time.
+    const undeclared = new PluginHost({ computeIsotopeEnvelope });
+    let undeclaredApi: unknown = "unset";
+    undeclared.registerPlugin(manifest("org.test.chemno", []), {
+      commandHandlers: {
+        "plugin.chemno.probe": (context) => {
+          undeclaredApi = context.chemistry;
+        }
+      }
+    });
+    await undeclared.invokeCommand("plugin.chemno.probe");
+    expect(undeclaredApi).toBeUndefined();
+
+    // 3. Declared but the host has no engine → the API is STILL there and answers `available: false`.
+    //    Presence tracks the permission, not the engine, because a worker-routed plugin builds its stub
+    //    from its own manifest and cannot see what the host wired up. Gating presence on the engine
+    //    would make the in-process and worker paths disagree on the same host.
+    const engineless = new PluginHost();
+    let englessAnswer: unknown;
+    engineless.registerPlugin(manifest("org.test.chemhostless", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.chemhostless.probe": async (context) => {
+          expect(context.chemistry).toBeDefined();
+          englessAnswer = await context.chemistry?.isotopeEnvelope({ format: "smiles", structure: "CCO" });
+        }
+      }
+    });
+    await engineless.invokeCommand("plugin.chemhostless.probe");
+    expect(englessAnswer).toEqual({ available: false, reason: "This host provides no isotope engine." });
+  });
+
+  it("serves name-to-structure only to a plugin that also declared native.execute", async () => {
+    // NOT on `chemistry.compute` alone. The desktop implements this by spawning the bundled JVM
+    // (`Command::new(java).arg("-jar")`), so gating it on the ordinary permission handed a subprocess
+    // to every plugin holding it — §7 lists `native.execute` as Dangerous and §16 forbids running
+    // native code unless granted. Presence tracks the permissions the method actually needs, and the
+    // engine's availability is still carried in the answer rather than in whether the method exists.
+    const convertNameToStructure = vi.fn(async () => ({
+      available: true as const,
+      parsed: true as const,
+      smiles: "C1=CC=CC=C1",
+      engine: { id: "opsin", version: "2.9.0" }
+    }));
+
+    const manifest = (id: string, permissions: PluginPermission[]) => ({
+      id,
+      name: "Name Plugin",
+      version: "0.0.1",
+      apiVersion: "^0.1.0",
+      entry: "dist/plugin.js",
+      permissions,
+      contributes: { commands: [{ id: `plugin.${id.split(".").pop()}.probe`, title: "Probe" }] }
+    });
+
+    const granted = new PluginHost({ convertNameToStructure });
+    let seen: unknown;
+    granted.registerPlugin(manifest("org.test.nameyes", ["chemistry.compute", "native.execute"]), {
+      commandHandlers: {
+        "plugin.nameyes.probe": async (context) => {
+          seen = await context.chemistry?.nameToStructure?.({ name: "benzene" });
+        }
+      }
+    });
+    await granted.invokeCommand("plugin.nameyes.probe");
+    expect(convertNameToStructure).toHaveBeenCalledWith({ name: "benzene" });
+    expect(seen).toMatchObject({ available: true, parsed: true, smiles: "C1=CC=CC=C1" });
+
+    // No engine → still present, still answers, and says the host has none rather than throwing.
+    const engineless = new PluginHost();
+    let englessAnswer: unknown;
+    engineless.registerPlugin(manifest("org.test.namehostless", ["chemistry.compute", "native.execute"]), {
+      commandHandlers: {
+        "plugin.namehostless.probe": async (context) => {
+          expect(context.chemistry?.nameToStructure).toBeDefined();
+          englessAnswer = await context.chemistry?.nameToStructure?.({ name: "benzene" });
+        }
+      }
+    });
+    await engineless.invokeCommand("plugin.namehostless.probe");
+    expect(englessAnswer).toEqual({
+      available: false,
+      reason: "This host provides no name-to-structure engine."
+    });
+
+    // And the denial: `chemistry.compute` alone gets the rest of the chemistry API and NOT this. The
+    // method is absent rather than present-and-throwing, so a plugin can feature-detect it the same
+    // way it detects a host that predates the method.
+    const withoutNative = new PluginHost({ convertNameToStructure });
+    let sawMethod: unknown = "unset";
+    withoutNative.registerPlugin(manifest("org.test.namenonative", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.namenonative.probe": (context) => {
+          sawMethod = context.chemistry?.nameToStructure;
+          expect(context.chemistry?.isotopeEnvelope).toBeDefined();
+          return { ok: true as const };
+        }
+      }
+    });
+    await withoutNative.invokeCommand("plugin.namenonative.probe");
+    expect(sawMethod).toBeUndefined();
+    expect(convertNameToStructure).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands a plugin a laid-out object but never inserts it", async () => {
+    // The division that makes this capability safe: the host does the 2D layout a plugin cannot do,
+    // and the plugin still has to go through proposePatch to get it into the document. If this method
+    // inserted, it would be a write path that bypasses the review queue.
+    const object = { id: "mol_plugin_1", type: "molecule", x: 0, y: 0 };
+    const buildStructureFromSmiles = vi.fn(async () => ({
+      available: true as const,
+      built: true as const,
+      object: object as never
+    }));
+    const host = new PluginHost({ buildStructureFromSmiles });
+    let seen: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.layout",
+        name: "Layout Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.2",
+        entry: "dist/plugin.js",
+        permissions: ["chemistry.compute", "document.read"],
+        contributes: { commands: [{ id: "plugin.layout.probe", title: "Probe" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.layout.probe": async (context) => {
+            seen = await context.chemistry?.structureFromSmiles?.({ smiles: "c1ccccc1", origin: "Test" });
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.layout.probe");
+
+    expect(buildStructureFromSmiles).toHaveBeenCalledWith({ smiles: "c1ccccc1", origin: "Test" });
+    expect(seen).toMatchObject({ available: true, built: true, object });
+    // Nothing reached the patch queue: building is not proposing.
+    expect(host.listProposedPatches()).toHaveLength(0);
+  });
+
+  it("says the host has no layout engine rather than throwing", async () => {
+    const host = new PluginHost();
+    let answer: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.nolayout",
+        name: "Layout Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.2",
+        entry: "dist/plugin.js",
+        permissions: ["chemistry.compute", "document.read"],
+        contributes: { commands: [{ id: "plugin.nolayout.probe", title: "Probe" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.nolayout.probe": async (context) => {
+            answer = await context.chemistry?.structureFromSmiles?.({ smiles: "c1ccccc1" });
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.nolayout.probe");
+    expect(answer).toEqual({ available: false, reason: "This host provides no 2D layout engine." });
+  });
+
+  it("rejects an empty name at the boundary rather than passing it to an engine", async () => {
+    // The schema is the gate, as it is for the envelope request. An engine asked to parse "" answers
+    // something unhelpful; refusing here keeps the failure at the boundary that can explain it.
+    const convertNameToStructure = vi.fn();
+    const host = new PluginHost({ convertNameToStructure });
+    let thrown: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.nameempty",
+        name: "Name Plugin",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: ["chemistry.compute", "native.execute"],
+        contributes: { commands: [{ id: "plugin.nameempty.probe", title: "Probe" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.nameempty.probe": async (context) => {
+            try {
+              await context.chemistry?.nameToStructure?.({ name: "" });
+            } catch (error) {
+              thrown = error;
+            }
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.nameempty.probe");
+    expect(thrown).toBeDefined();
+    expect(convertNameToStructure).not.toHaveBeenCalled();
   });
 
   it("routes a schema-validated panel report through showPanelReport for declared panels only", async () => {

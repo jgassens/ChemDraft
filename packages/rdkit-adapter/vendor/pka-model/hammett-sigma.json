@@ -1,0 +1,211 @@
+{
+ "sigma": {
+  "C+0h3d1": [
+   -0.07,
+   -0.17,
+   "methyl"
+  ],
+  "C+0h2d2|C+0h3d1": [
+   -0.07,
+   -0.15,
+   "ethyl"
+  ],
+  "C+0h1d3|C+0h3d1,C+0h3d1": [
+   -0.07,
+   -0.15,
+   "isopropyl"
+  ],
+  "C+0h0d4|C+0h3d1,C+0h3d1,C+0h3d1": [
+   -0.1,
+   -0.2,
+   "tert-butyl"
+  ],
+  "C+0h0d3|C+0h1d2,C+0h1d2|C+0h1d2,C+0h1d2|C+0h1d2": [
+   0.06,
+   -0.01,
+   "phenyl"
+  ],
+  "F+0h0d1": [
+   0.34,
+   0.06,
+   "fluoro"
+  ],
+  "Cl+0h0d1": [
+   0.37,
+   0.23,
+   "chloro"
+  ],
+  "Br+0h0d1": [
+   0.39,
+   0.23,
+   "bromo"
+  ],
+  "I+0h0d1": [
+   0.35,
+   0.18,
+   "iodo"
+  ],
+  "O+0h1d1": [
+   0.12,
+   -0.37,
+   "hydroxy"
+  ],
+  "O+0h0d2|C+0h3d1": [
+   0.12,
+   -0.27,
+   "methoxy"
+  ],
+  "O+0h0d2|C+0h2d2|C+0h3d1": [
+   0.1,
+   -0.24,
+   "ethoxy"
+  ],
+  "O+0h0d2|C+0h0d3|C+0h1d2,C+0h1d2|C+0h1d2,C+0h1d2": [
+   0.25,
+   -0.03,
+   "phenoxy"
+  ],
+  "N+0h2d1": [
+   -0.16,
+   -0.66,
+   "amino"
+  ],
+  "N+0h1d2|C+0h3d1": [
+   -0.21,
+   -0.7,
+   "methylamino"
+  ],
+  "N+0h0d3|C+0h3d1,C+0h3d1": [
+   -0.16,
+   -0.83,
+   "dimethylamino"
+  ],
+  "N+1h0d3|O+0h0d1,O-1h0d1": [
+   0.71,
+   0.78,
+   "nitro"
+  ],
+  "C+0h0d2|N+0h0d1": [
+   0.56,
+   0.66,
+   "cyano"
+  ],
+  "C+0h0d4|F+0h0d1,F+0h0d1,F+0h0d1": [
+   0.43,
+   0.54,
+   "trifluoromethyl"
+  ],
+  "C+0h1d2|O+0h0d1": [
+   0.35,
+   0.42,
+   "formyl"
+  ],
+  "C+0h0d3|C+0h3d1,O+0h0d1": [
+   0.38,
+   0.5,
+   "acetyl"
+  ],
+  "C+0h0d3|O+0h0d1,O+0h1d1": [
+   0.37,
+   0.45,
+   "carboxy"
+  ],
+  "C+0h0d3|O+0h0d1,O+0h0d2|C+0h3d1": [
+   0.37,
+   0.45,
+   "methoxycarbonyl"
+  ],
+  "C+0h0d3|N+0h2d1,O+0h0d1": [
+   0.28,
+   0.36,
+   "carbamoyl"
+  ],
+  "S+0h0d4|N+0h2d1,O+0h0d1,O+0h0d1": [
+   0.46,
+   0.57,
+   "sulfamoyl"
+  ],
+  "S+0h0d4|C+0h3d1,O+0h0d1,O+0h0d1": [
+   0.6,
+   0.72,
+   "methylsulfonyl"
+  ],
+  "S+0h0d2|C+0h3d1": [
+   0.15,
+   0.0,
+   "methylthio"
+  ],
+  "S+0h1d1": [
+   0.25,
+   0.15,
+   "sulfanyl"
+  ],
+  "N+0h1d2|C+0h0d3|C+0h3d1,O+0h0d1": [
+   0.21,
+   0.0,
+   "acetamido"
+  ],
+  "C+0h2d2|O+0h1d1": [
+   0.0,
+   0.0,
+   "hydroxymethyl"
+  ],
+  "C+0h0d2|C+0h1d1": [
+   0.21,
+   0.23,
+   "ethynyl"
+  ],
+  "C+0h1d2|C+0h2d1": [
+   0.06,
+   -0.02,
+   "vinyl"
+  ],
+  "O+0h0d2|C+0h0d4|F+0h0d1,F+0h0d1,F+0h0d1": [
+   0.38,
+   0.35,
+   "trifluoromethoxy"
+  ]
+ },
+ "sigmaParaMinus": {
+  "N+1h0d3|O+0h0d1,O-1h0d1": [
+   1.27,
+   "nitro"
+  ],
+  "C+0h0d2|N+0h0d1": [
+   1.0,
+   "cyano"
+  ],
+  "C+0h0d4|F+0h0d1,F+0h0d1,F+0h0d1": [
+   0.65,
+   "trifluoromethyl"
+  ],
+  "C+0h1d2|O+0h0d1": [
+   1.03,
+   "formyl"
+  ],
+  "C+0h0d3|C+0h3d1,O+0h0d1": [
+   0.84,
+   "acetyl"
+  ],
+  "C+0h0d3|O+0h0d1,O+0h1d1": [
+   0.77,
+   "carboxy"
+  ],
+  "C+0h0d3|O+0h0d1,O+0h0d2|C+0h3d1": [
+   0.75,
+   "methoxycarbonyl"
+  ],
+  "C+0h0d3|N+0h2d1,O+0h0d1": [
+   0.61,
+   "carbamoyl"
+  ],
+  "S+0h0d4|N+0h2d1,O+0h0d1,O+0h0d1": [
+   0.94,
+   "sulfamoyl"
+  ],
+  "S+0h0d4|C+0h3d1,O+0h0d1,O+0h0d1": [
+   1.13,
+   "methylsulfonyl"
+  ]
+ }
+}

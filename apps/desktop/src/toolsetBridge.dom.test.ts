@@ -141,12 +141,12 @@ describe("toolset bridge interactions", () => {
   it("does not double-toggle toolset commands after StrictMode remounts bridge effects", async () => {
     await renderMainWindow();
 
-    expect(container.querySelector('[data-toolset-id="core.moleculeInspector"]')).toBeNull();
+    expect(container.querySelector('[data-toolset-id="core.drawnStructureSettings"]')).toBeNull();
 
-    routeCommand("view.toggleMoleculeInspector");
+    routeCommand("view.toggleDrawnStructureSettings");
 
-    expect(container.querySelectorAll('[data-toolset-id="core.moleculeInspector"]')).toHaveLength(1);
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Toggled Molecule Inspector");
+    expect(container.querySelectorAll('[data-toolset-id="core.drawnStructureSettings"]')).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Toggled Drawn Structure Settings");
   });
 
   it("opens the dedicated Rings toolbar from its view command", async () => {

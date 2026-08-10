@@ -14,13 +14,6 @@ export interface MassIon {
   charge: number;
 }
 
-export interface MassIsotopePeak {
-  /** "M", "M+1", "M+2". */
-  label: string;
-  /** Intensity relative to the monoisotopic peak (M = 100). */
-  relativeIntensity: number;
-}
-
 export interface MassReport {
   formula: string;
   /** Sum of explicit atomic formal charges in the parsed structure. */
@@ -28,7 +21,6 @@ export interface MassReport {
   monoisotopicMass: number;
   averageMass: number;
   ions: MassIon[];
-  isotopePattern: MassIsotopePeak[];
 }
 
 export class MassAnalysisError extends Error {
@@ -56,24 +48,17 @@ const ADDUCTS: readonly { species: string; delta: number; charge: number }[] = [
  *  masses, so a positive ion loses this mass per charge and a negative ion gains it. */
 const ELECTRON_MASS_U = 0.000548579909065;
 
-/** Natural abundances (%) used by this deliberately first-order approximation. Store absolute
- *  abundances together and derive heavy/light ratios uniformly: report intensities are relative to
- *  the all-light (monoisotopic) peak, never a mixture of absolute percentages and ratios. */
-const ISOTOPE_ABUNDANCES: Record<string, { light: number; m1?: number; m2?: number }> = {
-  H: { light: 99.9885, m1: 0.0115 },
-  C: { light: 98.93, m1: 1.07 },
-  N: { light: 99.631, m1: 0.369 },
-  O: { light: 99.757, m1: 0.038, m2: 0.205 },
-  Si: { light: 92.23, m1: 4.67, m2: 3.1 },
-  S: { light: 94.99, m1: 0.75, m2: 4.25 },
-  Cl: { light: 75.78, m2: 24.22 },
-  Br: { light: 50.69, m2: 49.31 }
-};
 
 /**
- * Compute the mass fingerprint of a structure: molecular formula, monoisotopic and average mass,
- * common adduct m/z, and a first-order M/M+1/M+2 isotope pattern. Pure over its input; the only
- * dependency is OpenChemLib for parsing + formula/weights.
+ * Compute the mass fingerprint of a structure: molecular formula, monoisotopic and average mass, and
+ * common adduct m/z. Pure over its input; the only dependency is OpenChemLib for parsing +
+ * formula/weights.
+ *
+ * **No isotope pattern here.** This used to end with a first-order M/M+1/M+2 estimate over an
+ * eight-element abundance table with no recorded source — a second, worse implementation of chemistry
+ * the application already owns, written only because the SDK boundary (ADR-0028 §1) stops a plugin
+ * importing the core's engines. The real envelope now comes from the host through
+ * `chemistry.compute`, so the plugin asks instead of approximating.
  */
 export function analyzeMass(input: MassAnalysisInput): MassReport {
   if (!input.value.trim()) {
@@ -112,8 +97,7 @@ export function analyzeMass(input: MassAnalysisInput): MassReport {
     netCharge,
     monoisotopicMass: round4(monoisotopicMass),
     averageMass: round2(averageMass),
-    ions,
-    isotopePattern: isotopePattern(counts)
+    ions
   };
 }
 
@@ -140,26 +124,6 @@ export function parseFormulaCounts(formula: string): Record<string, number> {
   return counts;
 }
 
-function isotopePattern(counts: Record<string, number>): MassIsotopePeak[] {
-  let m1 = 0;
-  let m2 = 0;
-  for (const [element, n] of Object.entries(counts)) {
-    const abundance = ISOTOPE_ABUNDANCES[element];
-    if (!abundance) continue;
-    m1 += ((abundance.m1 ?? 0) / abundance.light) * 100 * n;
-    m2 += ((abundance.m2 ?? 0) / abundance.light) * 100 * n;
-  }
-  // ¹³C₂ combinatorial contribution to M+2 (two heavy carbons in one molecule).
-  const nC = counts.C ?? 0;
-  const carbon = ISOTOPE_ABUNDANCES.C!;
-  const c13ToC12 = (carbon.m1 ?? 0) / carbon.light;
-  m2 += ((nC * (nC - 1)) / 2) * c13ToC12 * c13ToC12 * 100;
-
-  const peaks: MassIsotopePeak[] = [{ label: "M", relativeIntensity: 100 }];
-  if (m1 > 0.05) peaks.push({ label: "M+1", relativeIntensity: round2(m1) });
-  if (m2 > 0.05) peaks.push({ label: "M+2", relativeIntensity: round2(m2) });
-  return peaks;
-}
 
 const round4 = (value: number): number => Math.round(value * 1e4) / 1e4;
 const round2 = (value: number): number => Math.round(value * 1e2) / 1e2;

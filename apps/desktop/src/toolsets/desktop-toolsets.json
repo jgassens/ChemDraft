@@ -4917,8 +4917,8 @@
       ]
     },
     {
-      "id": "core.moleculeInspector",
-      "title": "Molecule Inspector",
+      "id": "core.drawnStructureSettings",
+      "title": "Drawn Structure Settings",
       "source": "core",
       "defaultVisible": false,
       "defaultMode": "floating",
@@ -4937,23 +4937,23 @@
       },
       "groups": [
         {
-          "id": "core.moleculeInspector.toggle",
+          "id": "core.drawnStructureSettings.toggle",
           "items": [
             {
-              "commandId": "view.toggleMoleculeInspector",
-              "title": "Molecule Inspector",
+              "commandId": "view.toggleDrawnStructureSettings",
+              "title": "Drawn Structure Settings",
               "icon": "inspector",
               "category": "view",
-              "id": "view.toggleMoleculeInspector",
+              "id": "view.toggleDrawnStructureSettings",
               "kind": "button",
-              "label": "Molecule Inspector",
+              "label": "Drawn Structure Settings",
               "primary": {
                 "type": "command",
-                "commandId": "view.toggleMoleculeInspector"
+                "commandId": "view.toggleDrawnStructureSettings"
               },
               "submenu": null,
               "tooltip": {
-                "title": "Molecule Inspector",
+                "title": "Drawn Structure Settings",
                 "shortcut": null
               },
               "layout": {
@@ -4962,12 +4962,49 @@
               }
             },
             {
-              "id": "widget.core.moleculeInspector",
+              "id": "widget.core.drawnStructureSettings",
               "kind": "control",
-              "label": "Molecule inspector",
+              "label": "Drawn Structure Settings",
               "primary": {
                 "type": "control",
-                "controlId": "widget.core.moleculeInspector"
+                "controlId": "widget.core.drawnStructureSettings"
+              },
+              "submenu": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core.molecularInspector",
+      "title": "Molecular Inspector",
+      "source": "core",
+      "defaultVisible": false,
+      "defaultMode": "floating",
+      "preferredWindowSize": {
+        "width": 820,
+        "height": 560,
+        "minWidth": 620,
+        "minHeight": 380
+      },
+      "category": "core",
+      "gridLayout": {
+        "orientation": "horizontal",
+        "rows": 1,
+        "cellWidth": 24,
+        "cellHeight": 24
+      },
+      "groups": [
+        {
+          "id": "core.molecularInspector.contents",
+          "items": [
+            {
+              "id": "widget.core.molecularInspector",
+              "kind": "control",
+              "label": "Molecular Inspector",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.molecularInspector"
               },
               "submenu": null
             }

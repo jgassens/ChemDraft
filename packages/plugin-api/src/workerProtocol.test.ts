@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { parsePluginManifest, type PluginManifest } from "./index";
+import { PluginApiVersion, parsePluginManifest, type PluginManifest } from "./index";
 import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
   PluginWorkerErrorCodes,
@@ -85,6 +85,20 @@ describe("isPluginApiVersionCompatible", () => {
   it("rejects unparseable versions", () => {
     expect(isPluginApiVersionCompatible("not-a-version", "0.1.0")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.0", "garbage")).toBe(false);
+  });
+
+  it("keeps already-published plugins installable across an additive API release", () => {
+    // The NMR predictor ships from its own repository against a vendored SDK and declares `^0.1.0`.
+    // Because a 0.x caret locks the MINOR, releasing an additive method as 0.2.0 would have made that
+    // plugin — already downloadable, already installed — refuse to load against this host. Adding to
+    // the patch instead is what keeps it working, and this test is here so a future bump has to
+    // confront that rather than discover it.
+    expect(isPluginApiVersionCompatible("^0.1.0", PluginApiVersion)).toBe(true);
+
+    // And a plugin that genuinely needs the newer capability can still say so: `^0.1.1` is satisfied
+    // here and correctly refused by a host that predates the method.
+    expect(isPluginApiVersionCompatible("^0.1.1", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.1", "0.1.0")).toBe(false);
   });
 });
 

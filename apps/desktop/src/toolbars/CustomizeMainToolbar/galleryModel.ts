@@ -226,7 +226,7 @@ function sectionDisplayTitle(section: string, entry: GalleryEntry): string {
 const LEGACY_TOOLBAR_LAUNCHER_TARGETS: Readonly<Record<string, string>> = {
   "view.toggleToolPalette": "core.main",
   "view.toggleRingInspector": "core.ringInspector",
-  "view.toggleMoleculeInspector": "core.moleculeInspector"
+  "view.toggleDrawnStructureSettings": "core.drawnStructureSettings"
 };
 
 /** Resolve aliases that show/hide the same toolbar to one stable target identity. */

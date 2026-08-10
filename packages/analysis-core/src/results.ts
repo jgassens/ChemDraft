@@ -1,0 +1,1019 @@
+/**
+ * The discriminated result union and the run that carries it (PLANS.md §3).
+ *
+ * Separate shared execution metadata from individual outputs, and make each result kind *require* what
+ * it needs. A scalar with a unit, an identifier that stops masquerading as a property, a distribution
+ * that must declare how it was truncated — none of these are the same shape, and one permissive
+ * `{ value: unknown }` is how a spectrum ends up JSON-serialised field by field.
+ *
+ * **Payload transport, decided here rather than retrofitted.** Bulk numeric channels — spectra,
+ * geometries, orbital grids, isotope envelopes — are `Float64Array`. They are structured-clone-safe
+ * (so they cross the worker and plugin-panel bridges unchanged) *and* transferable (so a large grid
+ * can move without a copy when ownership permits). Small fixed-arity data stays plain JSON. The rule
+ * is: anything whose length scales with atom count, grid size, or point count is a typed array.
+ *
+ * **One documented extension to the plan's seven variants.** §3 lists Scalar, Identifier,
+ * Distribution, Spectrum, Geometry, Orbital, and CorrelationMap. Release 1's first deliverable —
+ * "source-preserving formula, charge, components, isotope specification" — has no home among them:
+ * squeezing per-element counts and a per-component breakdown into an `IdentifierResult` string throws
+ * away exactly the structure that makes a salt legible as a salt. `CompositionResult` is added for it,
+ * recorded here so the extension is deliberate rather than drift.
+ */
+import { z } from "zod";
+
+import { ClassificationSchema, type Classification } from "./classification";
+import {
+  AnalysisWarningSchema,
+  ApplicabilitySchema,
+  CitationRefSchema,
+  DatasetRefSchema,
+  RawArtifactRefSchema,
+  UncertaintySchema,
+  type AnalysisWarning,
+  type Applicability,
+  type CitationRef,
+  type DatasetRef,
+  type RawArtifactRef,
+  type Uncertainty
+} from "./provenance";
+import { analysisHash, MolecularInterpretationSchema, type MolecularInterpretation } from "./interpretation";
+import { UnitIdSchema, type UnitId } from "./units";
+
+/** Bump when a field's meaning changes. Additive fields do not need a bump; reinterpretations do. */
+export const AnalysisSchemaVersion = "chemdraft.analysis.v1" as const;
+
+export type AnalysisStatus =
+  | "ok"
+  | "partial"
+  | "unsupported"
+  | "not-applicable"
+  | "failed"
+  | "cancelled"
+  | "timed-out";
+
+export const AnalysisStatusSchema = z.enum([
+  "ok",
+  "partial",
+  "unsupported",
+  "not-applicable",
+  "failed",
+  "cancelled",
+  "timed-out"
+]);
+
+/** Statuses that carry a value. Everything else must null its payload. */
+export function statusHasValue(status: AnalysisStatus): boolean {
+  return status === "ok" || status === "partial";
+}
+
+export type AnalysisResultKind =
+  | "scalar"
+  | "identifier"
+  | "composition"
+  | "distribution"
+  | "spectrum"
+  | "geometry"
+  | "orbital"
+  | "correlation-map"
+  | "ionization";
+
+// --- shared base -----------------------------------------------------------------------------
+
+export interface AnalysisResultBase {
+  /** Stable within a run; what `AnalysisWarning.affectedResultIds` points at. */
+  id: string;
+  label: string;
+  /** The contract this result came from. Version travels with the value, not just with the build. */
+  methodId: string;
+  methodVersion: string;
+  /** Which named interpretation the number describes (PLANS.md §1). Never implicit. */
+  interpretationId: string;
+  status: AnalysisStatus;
+  classification: Classification;
+  applicability: Applicability;
+  uncertainties: Uncertainty[];
+  /**
+   * The named choices the method made, copied from its contract when the value was computed (§2).
+   *
+   * Carried on the result rather than looked up from a registry, for the same reason `methodVersion`
+   * is: a run is cached, serialised, and re-rendered later, and the convention that produced a number
+   * is the one that was in force *then*. Reading it back from a live contract would relabel a cached
+   * TPSA with whatever convention the current engine build happens to use — the silent-wrong-provenance
+   * failure §3 exists to prevent, and precisely what the `includeSandP` rebuild made possible.
+   */
+  conventions: string[];
+  citations: CitationRef[];
+  datasets: DatasetRef[];
+  warnings: AnalysisWarning[];
+  /** Present for `seeded` and `stochastic` methods; its absence there is a reproducibility bug. */
+  seed?: number;
+  rawArtifacts: RawArtifactRef[];
+}
+
+const resultBaseShape = {
+  id: z.string().min(1),
+  label: z.string().min(1),
+  methodId: z.string().min(1),
+  methodVersion: z.string().min(1),
+  interpretationId: z.string().min(1),
+  status: AnalysisStatusSchema,
+  classification: ClassificationSchema,
+  applicability: ApplicabilitySchema,
+  uncertainties: z.array(UncertaintySchema).default([]),
+  conventions: z.array(z.string().min(1)).default([]),
+  citations: z.array(CitationRefSchema).default([]),
+  datasets: z.array(DatasetRefSchema).default([]),
+  warnings: z.array(AnalysisWarningSchema).default([]),
+  seed: z.number().int().optional(),
+  rawArtifacts: z.array(RawArtifactRefSchema).default([])
+};
+
+// --- variants --------------------------------------------------------------------------------
+
+export interface ScalarResult extends AnalysisResultBase {
+  kind: "scalar";
+  value: number | null;
+  unit: UnitId;
+  /** Significant decimal places the method can defend. Rendering must not exceed it. */
+  decimalPlaces?: number;
+}
+
+/**
+ * InChI, InChIKey, SMILES, CAS — strings that identify rather than measure. A separate variant so they
+ * stop appearing in a properties table between logP and TPSA as though they were quantities.
+ */
+export interface IdentifierResult extends AnalysisResultBase {
+  kind: "identifier";
+  identifierType: "inchi" | "inchikey" | "smiles" | "canonical-smiles" | "molblock" | "cas" | "iupac-name";
+  value: string | null;
+  /** e.g. `"standard"` vs `"non-standard"` InChI, or the SMILES flavour. Conventions are not free text elsewhere. */
+  flavour?: string;
+}
+
+export interface ElementCount {
+  symbol: string;
+  count: number;
+  /** Mass number when the atom carries an explicit isotope label; absent for natural-abundance atoms. */
+  isotope?: number;
+}
+
+export interface CompositionComponent {
+  /** Hill-notation formula for this connected component. */
+  formula: string;
+  charge: number;
+  /** How many copies of this component the input contains. */
+  multiplicity: number;
+  elements: ElementCount[];
+  /** Source atom indices belonging to this component, so a UI can highlight the counterion it named. */
+  sourceAtomIndices: number[];
+}
+
+/**
+ * Formula, charge, and per-component breakdown, source-preserving by default.
+ *
+ * `components.length > 1` is the salt case the whole interpretation ledger exists for: this result
+ * describes what the user drew, and any neutralised or largest-fragment view is a *different* result
+ * against a *different* interpretation, side by side rather than in place of it.
+ */
+export interface CompositionResult extends AnalysisResultBase {
+  kind: "composition";
+  /** Hill notation for the whole input under this interpretation. */
+  formula: string | null;
+  formalCharge: number | null;
+  elements: ElementCount[];
+  components: CompositionComponent[];
+  /** True when at least one atom carries an explicit isotope label that the formula reflects. */
+  hasExplicitIsotopes: boolean;
+  radicalElectronCount: number;
+}
+
+/**
+ * One ionizable position, and where its number came from.
+ *
+ * `basis` is not decoration. §8's requirement for any pKa-adjacent value is that it record "whether the
+ * value is experimentally trained, quantum-derived, or inherited from another predictor", and a site
+ * whose figure is a *type average* is a fourth thing again — it describes a class of sites, not this
+ * molecule. Carrying it per site is what lets one report mix a tabulated carboxyl with a model-derived
+ * amine and stay honest about both.
+ */
+export interface IonizationSite {
+  /** Every atom of the matched substructure, in the source interpretation's numbering. */
+  atomIndices: number[];
+  /** The atom that gains or loses the proton. */
+  ionizableAtomIndex: number;
+  /** Human-readable site class, e.g. "Carboxylic acid". */
+  siteType: string;
+  /**
+   * Which equilibrium this number describes. Never inferred by a reader from the value's size.
+   *
+   * `acidic` — this atom losing the proton it is drawn with. `basic` — this atom GAINING one, so the
+   * value is the pKa of its conjugate acid, which is the convention every pKa tool uses and the number
+   * a chemist means by "the amine's pKa". The same atom can carry both.
+   *
+   * Conflating the two is the failure this field exists to prevent: histidine's amine reported 9.03
+   * under an acidity label, which is nearly its ammonium's measured 9.25 and so read as correct while
+   * describing a different reaction.
+   */
+  transition: "acidic" | "basic";
+  /**
+   * Formal charge on `ionizableAtomIndex` in the ACID of this transition; the base carries one less.
+   *
+   * This is the transition's identity, and it is what makes several rows on one atom an ordered LADDER
+   * rather than a bag of independent switches. Two rows on one atom are adjacent rungs exactly when
+   * their `acidCharge` values differ by one, so "this nitrogen is -1 and +1 at once" is not a state that
+   * can be described, rather than one that happens not to be built.
+   *
+   * It is also the one identity both estimators compute the same way, which is why `transition` could
+   * not be the key. The trained model called pyridinium's N-H acidic — it is drawn holding a proton —
+   * while the Hammett pyridinium series called the same edge basic, because the number it produces is a
+   * conjugate acid's pKa. Both sentences are true of one rung. Keyed on direction they became two rows
+   * for one physical equilibrium and a molecule flagged as a zwitterion that is not one; keyed on
+   * `acidCharge` they are one row with two opinions, which is what a consensus is for.
+   */
+  acidCharge: number;
+  /**
+   * The estimate, or `null` for a site recognised but not titratable in any accessible range.
+   *
+   * Null rather than a sentinel number: Dimorphite encodes that case as -1000, and passing it through
+   * would put "pKa -1000" in front of a reader.
+   */
+  pKa: number | null;
+  /** Spread on `pKa`, in log units. Absent when `pKa` is null. */
+  spread?: number;
+  /** What kind of number this is. */
+  basis:
+    | "site-type-average"
+    | "experimentally-trained-model"
+    | "linear-free-energy-relationship"
+    | "inherited-from-another-predictor"
+    | "consensus";
+  /**
+   * How this particular value was arrived at, when the method can show its working.
+   *
+   * A Hammett estimate is checkable by hand if the reader can see which substituent contributed which
+   * constant; a bare number is not. Absent for methods with nothing legible to show.
+   */
+  derivation?: string;
+  /**
+   * Present when several site types claim this atom and the table cannot say which applies.
+   *
+   * Not a footnote. Measured over 1,750 experimentally labelled sites, 46% of ionizable atoms match
+   * more than one tabulated type, and the types can disagree by 20 log units — an alcohol oxygen
+   * losing a proton sits near 15, the same oxygen protonated loses one near -7. Choosing between them
+   * requires knowing the answer, so the site is reported with no value and the candidates listed.
+   */
+  ambiguity?: {
+    candidateTypes: string[];
+    candidateValues: number[];
+  };
+  /** Which methods produced a value here, and what they said. Populated when more than one did. */
+  agreement?: {
+    methods: string[];
+    values: number[];
+    /** Largest pairwise gap, in log units. The confidence signal: wide means the methods disagree. */
+    span: number;
+  };
+}
+
+/**
+ * The ionizable sites of a structure, each with its own provenance.
+ *
+ * A list rather than a scalar because a molecule has as many pKa values as it has ionizable sites, and
+ * collapsing them to "the pKa" is the first thing that makes a pKa number wrong. Histidine has three.
+ */
+export interface IonizationResult extends AnalysisResultBase {
+  kind: "ionization";
+  sites: IonizationSite[];
+  /**
+   * Sites the method could not assess but knows exist, e.g. a metal centre no training set covers.
+   * Reported rather than omitted: a silent absence reads as "no ionizable sites here".
+   *
+   * `feature` is the machine-readable name of WHY, written by the code that decided to withhold the
+   * site. The result's `applicability.unsupportedFeatures` used to hardcode `"metal-adjacent site"`
+   * whenever this array was non-empty, so a sulfonic acid, an unactivated amine and a protonless
+   * nitrogen were all filed under a metal that was not in the molecule. A consumer cannot recover the
+   * reason from the prose, so the producer states it.
+   */
+  unassessed: { atomIndices: number[]; reason: string; feature: string }[];
+  /**
+   * 2D coordinates for drawing the sites on the structure they belong to.
+   *
+   * `index` is the SAME numbering the sites use, which is the whole point — a depiction whose atom
+   * order drifts from the site indices would put every pKa on the wrong atom, silently and
+   * plausibly. Optional because a build without coordinate generation can still report the sites.
+   *
+   * `hydrogens` is carried per atom so the figure can draw the proton the value is about. A pKa is a
+   * statement about a specific H leaving a specific atom, and a report that shows neither cannot be
+   * checked.
+   */
+  depiction?: {
+    atoms: { index: number; x: number; y: number; element: string; charge: number; hydrogens: number }[];
+    bonds: { from: number; to: number; order: number }[];
+  };
+  /**
+   * Interval widths at which the method's own accuracy changes band, in log units.
+   *
+   * Carried on the result rather than known to the renderer, because only the method knows what it
+   * measured. These are quartile boundaries of its out-of-fold interval: at or below `good` is the
+   * quarter of sites where its MAE is lowest, above `poor` the quarter where it is highest. A figure
+   * that colours by them is reporting a measurement; one that picks its own cutoffs is decorating.
+   */
+  confidenceBands?: {
+    good: number;
+    poor: number;
+    /** OOF mean absolute error inside the tightest interval quartile — what a green ring is worth. */
+    tightestQuartileMae: number;
+    /** OOF mean absolute error inside the widest quartile — what a red ring is worth. */
+    widestQuartileMae: number;
+    /**
+     * The partition all four are measured on, e.g. "out-of-fold calibration corpus, 12,096 sites".
+     *
+     * Required, not optional. §9a: an accuracy figure without its partition is the strongest false
+     * claim a predictor can make, and the figure caption used to print two bare MAEs with no
+     * partition anywhere near them — hard-typed, from a model that had already been replaced.
+     */
+    partition: string;
+  };
+  /**
+   * What a titration would measure, folded from the microscopic ladder (`protonation.ts`).
+   *
+   * Every other value on this result is MICROSCOPIC — one proton, one atom. Reference tables are not:
+   * glycine's 9.6 is the second titration step of the whole molecule, measured on the species whose
+   * carboxyl has already gone, and it equals no single microscopic value.
+   *
+   * `inconsistency` is the honest caveat and belongs beside the numbers. pKa is a state function, so
+   * every route to a microstate should sum to the same binding constant; the model predicts each edge
+   * independently and they do not. The largest disagreement found bounds what these values are worth.
+   */
+  macroscopic?: {
+    /**
+     * Which species the molecule is in at one pH, summed by net charge.
+     *
+     * The question a macroscopic pKa is usually a proxy for. Derived from the same microstate free
+     * energies the ladder is, so it inherits `inconsistency` — a molecule whose thermodynamic cycles
+     * do not close has a distribution no more trustworthy than its pKa values.
+     */
+    distribution?: {
+      pH: number;
+      charges: { charge: number; fraction: number; protonCount: number }[];
+      dominantCharge: number;
+      /** Net charge zero — for an amino acid this is the ZWITTERION, not the uncharged form. */
+      fractionNetNeutral: number;
+      /** No formal charge anywhere: the species a permeability argument means. */
+      fractionUncharged: number;
+    };
+    pKa: number[];
+    inconsistency: number;
+    microstates: number;
+    /** Both an acidic and a basic site are present, where these values are measurably poor. */
+    zwitterionic: boolean;
+  };
+  /** Why no macroscopic value was folded — too many sites, or a ladder that could not be built. */
+  macroscopicDeclined?: string;
+}
+
+/**
+ * An isotope envelope, or any other set of (position, intensity) pairs that is not a spectrum.
+ *
+ * `truncation` is required, not optional. An envelope is always cut off somewhere, and an intensity
+ * list without its cutoff rule cannot be compared against another engine's — PLANS.md §9 makes
+ * recording it a Release 2 gate.
+ */
+export interface DistributionResult extends AnalysisResultBase {
+  kind: "distribution";
+  positions: Float64Array;
+  intensities: Float64Array;
+  positionUnit: UnitId;
+  intensityUnit: UnitId;
+  truncation: {
+    policy: "relative-intensity-threshold" | "cumulative-probability" | "peak-count" | "none";
+    threshold: number;
+    /** Total probability the retained peaks account for, where the engine reports it. */
+    coveredProbability?: number;
+  };
+}
+
+export interface SpectrumAxis {
+  label: string;
+  unit: UnitId;
+  /** Chemical-shift axes run right-to-left; a renderer must not have to guess. */
+  reversed: boolean;
+}
+
+export interface SpectrumResult extends AnalysisResultBase {
+  kind: "spectrum";
+  axis: SpectrumAxis;
+  intensityAxis: SpectrumAxis;
+  stickPositions: Float64Array;
+  stickIntensities: Float64Array;
+  /** Lineshape is a simulation parameter, never a measurement (AGENTS.md §8a). */
+  broadening?: { lineshape: "lorentzian" | "gaussian" | "none"; widthHz: number };
+  /** Spectrometer frequency where the simulation used one. Also a parameter, not an instrument. */
+  fieldMHz?: number;
+}
+
+export interface GeometryResult extends AnalysisResultBase {
+  kind: "geometry";
+  /** Flat [x,y,z, …] in the result's own atom order. */
+  coordinates: Float64Array;
+  coordinateUnit: UnitId;
+  /** Result atom index → source atom index; `-1` for an atom the engine added. */
+  atomToSourceAtom: Int32Array;
+  conformerId?: string;
+}
+
+export interface OrbitalResult extends AnalysisResultBase {
+  kind: "orbital";
+  gridDimensions: readonly [number, number, number];
+  gridOrigin: readonly [number, number, number];
+  gridSpacing: readonly [number, number, number];
+  values: Float64Array;
+  isovalue: number;
+  basis: string;
+  orbitalIndex?: number;
+}
+
+/**
+ * Graph-derived HSQC/HMBC/COSY connectivity.
+ *
+ * `presentation` is a required literal, and the reason is §6: HMBC depends on longer-range coupling and
+ * suppression conditions, COSY reflects scalar coupling rather than graph distance. These are
+ * **candidate correlation maps**, never simulated spectra, and the type refuses to let a renderer
+ * decide otherwise.
+ */
+export interface CorrelationMapResult extends AnalysisResultBase {
+  kind: "correlation-map";
+  experiment: "hsqc" | "hmbc" | "cosy" | "noesy";
+  presentation: "candidate-correlation-map";
+  correlations: {
+    sourceAtomA: number;
+    sourceAtomB: number;
+    /** Honest tiers only — no calibrated confidence percentages (AGENTS.md §8a, ADR-0020). */
+    tier: "expected" | "possible" | "unlikely";
+    bondSeparation: number;
+  }[];
+}
+
+export type AnalysisResult =
+  | ScalarResult
+  | IdentifierResult
+  | CompositionResult
+  | DistributionResult
+  | SpectrumResult
+  | GeometryResult
+  | OrbitalResult
+  | CorrelationMapResult
+  | IonizationResult;
+
+// --- schemas ---------------------------------------------------------------------------------
+
+const float64ArraySchema = z.instanceof(Float64Array);
+const int32ArraySchema = z.instanceof(Int32Array);
+
+const ElementCountSchema = z
+  .object({
+    symbol: z.string().min(1).max(3),
+    count: z.number().int().positive(),
+    isotope: z.number().int().positive().optional()
+  })
+  .strict();
+
+const CompositionComponentSchema = z
+  .object({
+    formula: z.string().min(1),
+    charge: z.number().int(),
+    multiplicity: z.number().int().positive(),
+    elements: z.array(ElementCountSchema),
+    sourceAtomIndices: z.array(z.number().int().nonnegative()).default([])
+  })
+  .strict();
+
+const ScalarResultSchema = z
+  .object({ ...resultBaseShape, kind: z.literal("scalar"), value: z.number().finite().nullable(), unit: UnitIdSchema, decimalPlaces: z.number().int().nonnegative().optional() })
+  .strict();
+
+const IdentifierResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("identifier"),
+    identifierType: z.enum(["inchi", "inchikey", "smiles", "canonical-smiles", "molblock", "cas", "iupac-name"]),
+    value: z.string().min(1).nullable(),
+    flavour: z.string().min(1).optional()
+  })
+  .strict();
+
+const CompositionResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("composition"),
+    formula: z.string().min(1).nullable(),
+    formalCharge: z.number().int().nullable(),
+    elements: z.array(ElementCountSchema).default([]),
+    components: z.array(CompositionComponentSchema).default([]),
+    hasExplicitIsotopes: z.boolean(),
+    radicalElectronCount: z.number().int().nonnegative()
+  })
+  .strict();
+
+const IonizationSiteSchema = z
+  .object({
+    atomIndices: z.array(z.number().int().nonnegative()).min(1),
+    ionizableAtomIndex: z.number().int().nonnegative(),
+    siteType: z.string().min(1),
+    transition: z.enum(["acidic", "basic"]),
+    acidCharge: z.number().int(),
+    pKa: z.number().finite().nullable(),
+    spread: z.number().finite().nonnegative().optional(),
+    basis: z.enum([
+      "site-type-average",
+      "experimentally-trained-model",
+      "linear-free-energy-relationship",
+      "inherited-from-another-predictor",
+      "consensus"
+    ]),
+    derivation: z.string().min(1).optional(),
+    ambiguity: z
+      .object({
+        candidateTypes: z.array(z.string().min(1)).min(2),
+        candidateValues: z.array(z.number().finite())
+      })
+      .strict()
+      // Parallel arrays: entry i of one names entry i of the other. Every other pair in this package
+      // is length-checked and these two were not, so a mismatch would silently misattribute a value
+      // to the wrong candidate type — a wrong label on a right number, which reads as correct.
+      .refine((value) => value.candidateTypes.length === value.candidateValues.length, {
+        message: "ambiguity.candidateTypes and candidateValues must be the same length."
+      })
+      .optional(),
+    agreement: z
+      .object({
+        methods: z.array(z.string().min(1)).min(2),
+        values: z.array(z.number().finite()).min(2),
+        span: z.number().finite().nonnegative()
+      })
+      .strict()
+      .refine((value) => value.methods.length === value.values.length, {
+        message: "agreement.methods and values must be the same length."
+      })
+      .optional()
+  })
+  .strict()
+  // A spread without a value is meaningless, and a value without one hides that this is an estimate.
+  .refine((site) => (site.pKa === null) === (site.spread === undefined), {
+    message: "An ionization site must carry a spread exactly when it carries a pKa."
+  });
+
+const IonizationResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("ionization"),
+    sites: z.array(IonizationSiteSchema).default([]),
+    depiction: z
+      .object({
+        atoms: z.array(
+          z.object({
+            index: z.number().int().nonnegative(),
+            x: z.number().finite(),
+            y: z.number().finite(),
+            element: z.string().min(1),
+            charge: z.number().int(),
+            hydrogens: z.number().int().nonnegative()
+          }).strict()
+        ),
+        bonds: z.array(
+          z.object({
+            from: z.number().int().nonnegative(),
+            to: z.number().int().nonnegative(),
+            order: z.number().int().min(1).max(3)
+          }).strict()
+        )
+      })
+      .strict()
+      .optional(),
+    confidenceBands: z
+      .object({
+        good: z.number().finite().positive(),
+        poor: z.number().finite().positive(),
+        tightestQuartileMae: z.number().finite().nonnegative(),
+        widestQuartileMae: z.number().finite().nonnegative(),
+        partition: z.string().min(1)
+      })
+      .strict()
+      .refine((bands) => bands.good <= bands.poor, {
+        // Inverted bands flip the figure's colour semantics silently: every tight interval would be
+        // graded against the loose threshold and drawn red.
+        message: "confidenceBands.good must not exceed confidenceBands.poor"
+      })
+      .refine((bands) => bands.tightestQuartileMae <= bands.widestQuartileMae, {
+        message: "the tightest quartile's MAE must not exceed the widest quartile's"
+      })
+      .optional(),
+    macroscopic: z
+      .object({
+        pKa: z.array(z.number().finite()),
+        distribution: z
+          .object({
+            pH: z.number().finite(),
+            charges: z
+              .array(
+                z
+                  .object({
+                    charge: z.number().int(),
+                    fraction: z.number().finite().min(0).max(1),
+                    protonCount: z.number().int().nonnegative()
+                  })
+                  .strict()
+              )
+              .min(1),
+            dominantCharge: z.number().int(),
+            fractionNetNeutral: z.number().finite().min(0).max(1),
+            fractionUncharged: z.number().finite().min(0).max(1)
+          })
+          .strict()
+          .optional(),
+        inconsistency: z.number().finite().nonnegative(),
+        microstates: z.number().int().positive(),
+        zwitterionic: z.boolean()
+      })
+      .strict()
+      .optional(),
+    macroscopicDeclined: z.string().min(1).optional(),
+    unassessed: z
+      .array(
+        z
+          .object({
+            atomIndices: z.array(z.number().int().nonnegative()).min(1),
+            reason: z.string().min(1),
+            feature: z.string().min(1)
+          })
+          .strict()
+      )
+      .default([])
+  })
+  .strict();
+
+const DistributionResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("distribution"),
+    positions: float64ArraySchema,
+    intensities: float64ArraySchema,
+    positionUnit: UnitIdSchema,
+    intensityUnit: UnitIdSchema,
+    truncation: z
+      .object({
+        policy: z.enum(["relative-intensity-threshold", "cumulative-probability", "peak-count", "none"]),
+        threshold: z.number().finite().nonnegative(),
+        coveredProbability: z.number().gt(0).lte(1).optional()
+      })
+      .strict()
+  })
+  .strict();
+
+const SpectrumAxisSchema = z
+  .object({ label: z.string().min(1), unit: UnitIdSchema, reversed: z.boolean() })
+  .strict();
+
+const SpectrumResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("spectrum"),
+    axis: SpectrumAxisSchema,
+    intensityAxis: SpectrumAxisSchema,
+    stickPositions: float64ArraySchema,
+    stickIntensities: float64ArraySchema,
+    broadening: z
+      .object({ lineshape: z.enum(["lorentzian", "gaussian", "none"]), widthHz: z.number().finite().nonnegative() })
+      .strict()
+      .optional(),
+    fieldMHz: z.number().finite().positive().optional()
+  })
+  .strict();
+
+const GeometryResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("geometry"),
+    coordinates: float64ArraySchema,
+    coordinateUnit: UnitIdSchema,
+    atomToSourceAtom: int32ArraySchema,
+    conformerId: z.string().min(1).optional()
+  })
+  .strict();
+
+const vec3Schema = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
+
+const OrbitalResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("orbital"),
+    gridDimensions: z.tuple([
+      z.number().int().positive(),
+      z.number().int().positive(),
+      z.number().int().positive()
+    ]),
+    gridOrigin: vec3Schema,
+    gridSpacing: vec3Schema,
+    values: float64ArraySchema,
+    isovalue: z.number().finite(),
+    basis: z.string().min(1),
+    orbitalIndex: z.number().int().optional()
+  })
+  .strict();
+
+const CorrelationMapResultSchema = z
+  .object({
+    ...resultBaseShape,
+    kind: z.literal("correlation-map"),
+    experiment: z.enum(["hsqc", "hmbc", "cosy", "noesy"]),
+    presentation: z.literal("candidate-correlation-map"),
+    correlations: z.array(
+      z
+        .object({
+          sourceAtomA: z.number().int().nonnegative(),
+          sourceAtomB: z.number().int().nonnegative(),
+          tier: z.enum(["expected", "possible", "unlikely"]),
+          bondSeparation: z.number().int().positive()
+        })
+        .strict()
+    )
+  })
+  .strict();
+
+/** The payload field each variant nulls when its status carries no value. */
+function payloadIsAbsent(result: AnalysisResult): boolean {
+  switch (result.kind) {
+    case "scalar":
+    case "identifier":
+      return result.value === null;
+    case "composition":
+      // `elements` and `components` count too. A result carrying either while `formula` and
+      // `formalCharge` happened to be null validated as "has a payload" under a status that forbids
+      // one, which is the check this function exists to make.
+      return (
+        result.formula === null &&
+        result.formalCharge === null &&
+        result.elements.length === 0 &&
+        result.components.length === 0
+      );
+    case "distribution":
+      return result.positions.length === 0;
+    case "spectrum":
+      return result.stickPositions.length === 0;
+    case "geometry":
+      return result.coordinates.length === 0;
+    case "orbital":
+      return result.values.length === 0;
+    case "correlation-map":
+      return result.correlations.length === 0;
+    case "ionization":
+      // An unassessed entry IS a payload — "there is a site here I cannot judge" is the answer, not the
+      // absence of one. Only a result carrying neither sites nor gaps is empty, and that case belongs
+      // to `not-applicable`: a molecule with nothing ionizable is the method not applying, not failing.
+      return result.sites.length === 0 && result.unassessed.length === 0;
+  }
+}
+
+export const AnalysisResultSchema = z
+  .discriminatedUnion("kind", [
+    ScalarResultSchema,
+    IdentifierResultSchema,
+    CompositionResultSchema,
+    IonizationResultSchema,
+    DistributionResultSchema,
+    SpectrumResultSchema,
+    GeometryResultSchema,
+    OrbitalResultSchema,
+    CorrelationMapResultSchema
+  ])
+  .superRefine((result, ctx) => {
+    const typed = result as AnalysisResult;
+
+    // A non-value status that still carries a payload is the exact failure mode the status enum
+    // exists to prevent: a stale or partial number rendered as though the run succeeded.
+    if (!statusHasValue(typed.status) && !payloadIsAbsent(typed)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["status"],
+        message: `Status "${typed.status}" must not carry a payload; clear the value.`
+      });
+    }
+    if (typed.status === "ok" && payloadIsAbsent(typed)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["status"],
+        message: 'Status "ok" requires a payload; use "partial", "unsupported", or "not-applicable".'
+      });
+    }
+    // One atom's transitions must form a contiguous ladder. This lives here, at the union level, and
+    // not on `IonizationResultSchema`, because that schema is a `discriminatedUnion` member: attaching
+    // `.superRefine` to it turns it into a `ZodEffects`, which `discriminatedUnion` rejects at module
+    // construction — an import-time crash in every package, not a test failure.
+    if (typed.kind === "ionization") {
+      const byAtom = new Map<number, number[]>();
+      for (const site of typed.sites) {
+        byAtom.set(site.ionizableAtomIndex, [
+          ...(byAtom.get(site.ionizableAtomIndex) ?? []),
+          site.acidCharge
+        ]);
+      }
+      for (const [atom, charges] of byAtom) {
+        const rungs = [...new Set(charges)].sort((a, b) => a - b);
+        if (rungs.length !== charges.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["sites"],
+            message: `Atom ${atom} carries two transitions at the same acid charge.`
+          });
+        } else if (rungs.length > 1 && rungs[rungs.length - 1]! - rungs[0]! !== rungs.length - 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["sites"],
+            message: `Atom ${atom}'s transitions are not a contiguous ladder: ${rungs.join(", ")}.`
+          });
+        }
+      }
+    }
+    // Silence is the thing to forbid. Every non-ok outcome names itself.
+    if (typed.status !== "ok" && typed.warnings.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["warnings"],
+        message: `Status "${typed.status}" requires at least one warning explaining it.`
+      });
+    }
+    if (typed.classification.determinism !== "deterministic" && typed.seed === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["seed"],
+        message: `Determinism "${typed.classification.determinism}" requires a recorded seed.`
+      });
+    }
+    if (typed.kind === "distribution" && typed.positions.length !== typed.intensities.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["intensities"],
+        message: "positions and intensities must have equal length."
+      });
+    }
+    if (typed.kind === "spectrum" && typed.stickPositions.length !== typed.stickIntensities.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["stickIntensities"],
+        message: "stickPositions and stickIntensities must have equal length."
+      });
+    }
+    if (typed.kind === "geometry" && typed.coordinates.length !== typed.atomToSourceAtom.length * 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["coordinates"],
+        message: "coordinates must hold exactly three values per atom in atomToSourceAtom."
+      });
+    }
+    if (typed.kind === "orbital") {
+      const [nx, ny, nz] = typed.gridDimensions;
+      if (typed.values.length !== nx * ny * nz) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["values"],
+          message: `values must hold ${nx * ny * nz} points for grid ${nx}×${ny}×${nz}.`
+        });
+      }
+    }
+  });
+
+// --- the run ---------------------------------------------------------------------------------
+
+export interface EngineEnvironment {
+  /** "rdkit-minimallib-wasm", "openchemlib", "mopac", … */
+  name: string;
+  version: string;
+  /** Hashes of the executable, model, and data artifacts the run depended on. */
+  artifactHashes: string[];
+  platform?: string;
+}
+
+/**
+ * Shared execution metadata for a set of results (PLANS.md §3).
+ *
+ * Deliberately lean for Release 1 — in-process descriptors do not need job scheduling — but the shape
+ * is the one the sidecar layer grows into, so the boundary does not move when MOPAC arrives.
+ */
+export interface AnalysisRun {
+  schemaVersion: typeof AnalysisSchemaVersion;
+  runId: string;
+  sourceHash: string;
+  /** Every interpretation any result in this run was computed against. */
+  interpretations: MolecularInterpretation[];
+  engines: EngineEnvironment[];
+  startedAt: string;
+  finishedAt?: string;
+  status: AnalysisStatus;
+  results: AnalysisResult[];
+  warnings: AnalysisWarning[];
+  /** Deterministic over inputs: same source, interpretations, methods, and engines → same fingerprint. */
+  fingerprint: string;
+}
+
+export const EngineEnvironmentSchema = z
+  .object({
+    name: z.string().min(1),
+    version: z.string().min(1),
+    artifactHashes: z.array(z.string().min(1)).default([]),
+    platform: z.string().min(1).optional()
+  })
+  .strict();
+
+export const AnalysisRunSchema = z
+  .object({
+    schemaVersion: z.literal(AnalysisSchemaVersion),
+    runId: z.string().min(1),
+    sourceHash: z.string().min(1),
+    interpretations: z.array(MolecularInterpretationSchema).min(1),
+    engines: z.array(EngineEnvironmentSchema).default([]),
+    startedAt: z.string().datetime(),
+    finishedAt: z.string().datetime().optional(),
+    status: AnalysisStatusSchema,
+    results: z.array(AnalysisResultSchema).default([]),
+    warnings: z.array(AnalysisWarningSchema).default([]),
+    fingerprint: z.string().min(1)
+  })
+  .strict()
+  .superRefine((run, ctx) => {
+    const known = new Set(run.interpretations.map((interpretation) => interpretation.id));
+    for (const [index, result] of run.results.entries()) {
+      if (!known.has(result.interpretationId)) {
+        // An unlisted interpretation id means the result's provenance cannot be reconstructed — which
+        // is worse than a missing result, because it still renders.
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["results", index, "interpretationId"],
+          message: `Result references interpretation "${result.interpretationId}", which the run does not carry.`
+        });
+      }
+    }
+    const resultIds = new Set(run.results.map((result) => result.id));
+    for (const [index, warning] of run.warnings.entries()) {
+      for (const affected of warning.affectedResultIds) {
+        if (!resultIds.has(affected)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["warnings", index, "affectedResultIds"],
+            message: `Warning "${warning.code}" points at unknown result "${affected}".`
+          });
+        }
+      }
+    }
+  });
+
+/**
+ * A run's status is the worst of its results', ordered worst-first so `find` returns the dominant
+ * outcome — with one deliberate exception.
+ *
+ * **`not-applicable` does not drag a run down.** A method that does not apply to this structure is its
+ * contract working, not a shortfall: aspirin has no nitrogen, so "[M+H−NH₃]⁺" correctly does not
+ * apply, and a run that reported `not-applicable` overall because of it would tell the user something
+ * went wrong with an analysis in which nothing did. `unsupported` still counts, because that IS a
+ * capability gap worth putting in the headline.
+ *
+ * A run where *everything* was inapplicable is still `not-applicable` — there, it is the whole story.
+ */
+const STATUS_SEVERITY: readonly Exclude<AnalysisStatus, "not-applicable">[] = [
+  "failed",
+  "timed-out",
+  "cancelled",
+  "unsupported",
+  "partial",
+  "ok"
+];
+
+export function aggregateStatus(statuses: readonly AnalysisStatus[]): AnalysisStatus {
+  if (statuses.length === 0) return "ok";
+  const applicable = statuses.filter(
+    (status): status is Exclude<AnalysisStatus, "not-applicable"> => status !== "not-applicable"
+  );
+  if (applicable.length === 0) return "not-applicable";
+  return STATUS_SEVERITY.find((candidate) => applicable.includes(candidate)) ?? "ok";
+}
+
+/**
+ * Deterministic over the run's inputs, and over nothing else: no timestamps, no run id, no result
+ * values. Two runs of the same methods, on the same source, under the same interpretations and the
+ * same engine artifacts must fingerprint identically — that is what makes a differing fingerprint
+ * mean "something in the pipeline changed" rather than "time passed".
+ */
+export function runFingerprint(input: {
+  sourceHash: string;
+  interpretationHashes: readonly string[];
+  methodKeys: readonly string[];
+  engineHashes: readonly string[];
+}): string {
+  return analysisHash(
+    [
+      input.sourceHash,
+      [...input.interpretationHashes].sort().join(","),
+      [...input.methodKeys].sort().join(","),
+      [...input.engineHashes].sort().join(",")
+    ].join(" ")
+  );
+}

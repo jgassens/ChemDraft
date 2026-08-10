@@ -149,7 +149,14 @@ import {
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
-import { createRdkitPlaceholderAdapter } from "@chemdraft/rdkit-adapter";
+// `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
+// 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
+// 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
+// claim is about — and the analysis worker then shipped its own second copy of it. Every method on
+// the adapter is async and loads the engine on demand.
+import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
+import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
+import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
@@ -200,12 +207,13 @@ import {
   objectStyleSwapCommand,
   objectStyleTargetCommands,
   ringInspectorToolsetId,
-  moleculeInspectorToolsetId,
+  drawnStructureSettingsToolsetId,
+  molecularInspectorToolsetId,
   artToolsetId,
   textToolsetId,
   toggleRingInspectorCommandId,
-  moleculeInspectorTemplateExportCommandId,
-  moleculeInspectorTemplateImportCommandId,
+  drawnStructureSettingsTemplateExportCommandId,
+  drawnStructureSettingsTemplateImportCommandId,
   moleculeRingEffectColorForCommand,
   moleculeRingEffectDisableForCommand,
   moleculeRingEffectForCommand,
@@ -259,7 +267,7 @@ import {
   pageCustomSizeAction,
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
-  toggleMoleculeInspectorCommandId,
+  toggleDrawnStructureSettingsCommandId,
   moleculeStructureNumberRanges,
   allShellCommands,
   type CommandSpec
@@ -536,6 +544,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
@@ -1298,7 +1307,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "8.1.8.57-fable";
+const CURRENT_BUILD_STAMP = "8.8.20.18-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1568,6 +1577,14 @@ export function MainWindow({
     commit: () => undefined,
     cancel: () => undefined
   });
+  /**
+   * The detached palette's Molecular Inspector actions, held in a ref for the same reason the preview
+   * handlers are: the listener is registered once on mount, and `recomputeAnalysisFor` is redefined on
+   * every render.
+   */
+  const paletteInspectorHandlersRef = useRef<{
+    changeInterpretation: (interpretationId: string | undefined) => void;
+  }>({ changeInterpretation: () => undefined });
   const selectionClipboardPayloadRef = useRef<ReturnType<typeof createSelectionClipboardPayload>>(undefined);
   const selectionClipboardPasteStateRef = useRef<SelectionClipboardPasteState | undefined>(undefined);
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
@@ -1609,7 +1626,90 @@ export function MainWindow({
   const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
-  const chemistryAdapter = useMemo(() => createRdkitPlaceholderAdapter(), []);
+  const chemistryAdapter = useMemo(() => createRdkitAdapter(), []);
+  /**
+   * Run the property suite for the selected structure through the analysis worker and show the report.
+   *
+   * Off the main thread on purpose (§5): the descriptor pass is a synchronous WASM call, and running
+   * it inline is what makes the canvas stutter. `slot: "selection"` means a second invocation while
+   * one is in flight supersedes it rather than racing it.
+   */
+  /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it. */
+  const copyAnalysisText = useCallback((text: string) => {
+    void navigator.clipboard?.writeText(text);
+    setStatus("Analysis copied");
+  }, []);
+
+  const runMolecularProperties = useCallback(
+    async (format: string, structure: string, interpretationOverride: string | undefined): Promise<void> => {
+      const client = analysisClient();
+      if (!client) {
+        setStatus("Analysis is unavailable in this runtime");
+        return;
+      }
+      setAnalysisBusy(true);
+      setStatus("Analyzing structure…");
+      let superseded = false;
+      try {
+        const run = await client.analyze(
+          "selection",
+          {
+            format,
+            value: structure,
+            ...(interpretationOverride ? { interpretationOverride } : {})
+          },
+          { immediate: true }
+        );
+        // A superseded run is not an answer; the newer invocation owns the panel. `superseded` is
+        // checked in the `finally` too: the busy flag is shared, and an older run clearing it while
+        // the run that displaced it is still working took "Recomputing…" off the screen and
+        // re-enabled the interpretation select over a stale report.
+        if (run.status === "cancelled") {
+          superseded = true;
+          return;
+        }
+        const report = buildAnalysisReport(run);
+        setAnalysisReport(report);
+        // What these numbers describe, so the pane can say when they stop describing it.
+        setAnalysisSubject(structure);
+        setAnalysisInterpretation(interpretationOverride);
+        setStatus(formatAnalysisRunStatus(run));
+      } finally {
+        if (!superseded) setAnalysisBusy(false);
+      }
+    },
+    []
+  );
+
+  // The Analyze surface (PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
+  // it re-runs the same selection against a derived interpretation and replaces the report.
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | undefined>();
+  /**
+   * The report as the palette broadcast sees it: a value that changes only when the REPORT changes.
+   *
+   * The toolbar text-style broadcast carries the whole `AnalysisReport`, and its effect depends on
+   * `currentMoleculeInspector` and `currentToolbarSelection` — both `useMemo`s over `document`, which
+   * is a new object on every stroke and keystroke. So from the user's first Analyze click onward,
+   * every edit for the rest of the session re-serialised a 28-57 KB report (measured across benzene,
+   * aspirin, caffeine, ibuprofen, lysine and ciprofloxacin) and emitted it over Tauri IPC —
+   * unconditionally, because `broadcastToolsetTextStyle` has no listener check. On the receiving side
+   * `PaletteWindow` set state from a freshly deserialised object, so `Object.is` never bailed out and
+   * the pane's whole memo chain re-ran per keystroke.
+   *
+   * Keyed on the report's own `fingerprint`, which every run already carries. Two runs that produced
+   * the same report are the same broadcast, and an edit that produced no run is not a broadcast at all.
+   */
+  /** The structure `analysisReport` was computed for; compared against the live selection below. */
+  const [analysisSubject, setAnalysisSubject] = useState<string | undefined>();
+  const analysisReportFingerprint = analysisReport?.fingerprint;
+  const analysisReportForBroadcast = useMemo(
+    () => analysisReport,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the fingerprint IS the report's identity.
+    [analysisReportFingerprint]
+  );
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
+
   const [documentHistory, setDocumentHistory] = useState(() =>
     createDocumentHistory(initialDocument ?? createPhase4Document())
   );
@@ -1872,6 +1972,19 @@ export function MainWindow({
   toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
+  /**
+   * The report describes something other than what is selected now.
+   *
+   * `setAnalysisReport` has one call site — run completion — and nothing ever invalidated it: not a
+   * document edit, not a selection change, not undo, not closing the document. So the panel could show
+   * a fully provenanced page of numbers for a structure the user had already changed or deselected.
+   * True when nothing is selected either: a report about a molecule that is no longer on screen is the
+   * same claim.
+   */
+  const analysisReportIsStale =
+    analysisReport !== undefined &&
+    analysisSubject !== undefined &&
+    selectedMolecule?.structure !== analysisSubject;
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -1979,6 +2092,24 @@ export function MainWindow({
     selectedToolbarObject,
     textStyleDefaults.color
   ]);
+  /**
+   * The §1 "— change" affordance, from the palette. Re-runs the current selection against another
+   * interpretation; a palette with no selection behind it simply does nothing.
+   */
+  const recomputeAnalysisFor = useCallback(
+    (interpretationId: string | undefined) => {
+      const molecule = getSelectedMolecule(document);
+      if (!molecule) return;
+      void runMolecularProperties(molecule.structureFormat, molecule.structure, interpretationId);
+    },
+    [document, runMolecularProperties]
+  );
+
+  // Keep the ref current so the mount-time palette listener always calls the live callback.
+  useEffect(() => {
+    paletteInspectorHandlersRef.current = { changeInterpretation: recomputeAnalysisFor };
+  }, [recomputeAnalysisFor]);
+
   const currentMoleculeInspector = useMemo(
     () => createMoleculeInspectorModel(document, {
       selectedObjectIds: document.selection.objectIds,
@@ -2033,7 +2164,9 @@ export function MainWindow({
       currentArtStyle,
       activeArtPaintTarget,
       currentMoleculeInspector,
-      currentToolbarSelection
+      currentToolbarSelection,
+      analysisReport,
+      analysisBusy
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -2042,7 +2175,9 @@ export function MainWindow({
     currentArtStyle,
     activeArtPaintTarget,
     currentMoleculeInspector,
-    currentToolbarSelection
+    currentToolbarSelection,
+    analysisReport,
+    analysisBusy
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -2483,11 +2618,23 @@ export function MainWindow({
         currentArtStyle,
         activeArtPaintTarget,
         currentMoleculeInspector,
-        currentToolbarSelection
+        currentToolbarSelection,
+        // The report travels on this payload, but this effect no longer re-sends it on every edit —
+        // see `analysisReportForBroadcast` below. Passing the memoised value keeps the payload shape
+        // unchanged while making the effect's identity stable across document changes.
+        analysisReportForBroadcast,
+        analysisBusy,
+        analysisReportIsStale
       )
     ).catch(() => undefined);
+    // `analysisReport` reaches this through `analysisReportForBroadcast`, so a detached Molecular
+    // Inspector window still refreshes when a new run lands — without it the palette would show the
+    // first report forever.
   }, [
     activeArtPaintTarget,
+    analysisBusy,
+    analysisReportIsStale,
+    analysisReportForBroadcast,
     currentArtStyle,
     currentMoleculeInspector,
     currentToolbarSelection,
@@ -6198,7 +6345,7 @@ export function MainWindow({
     }
 
     if (!result.targeted) {
-      setStatus("Select a molecule before changing Molecule Inspector style");
+      setStatus("Select a molecule before changing Drawn Structure Settings style");
       return true;
     }
 
@@ -6231,7 +6378,7 @@ export function MainWindow({
     moleculeInspectorPreviewRef.current = null;
     replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
-      setStatus("Select a molecule before changing Molecule Inspector style");
+      setStatus("Select a molecule before changing Drawn Structure Settings style");
       return;
     }
 
@@ -6287,7 +6434,7 @@ export function MainWindow({
     setStatus(
       changed
         ? `Imported ${imported.name} for ${moleculeObjectIds.length} molecule${moleculeObjectIds.length === 1 ? "" : "s"}${imported.warnings.length > 0 ? ` with ${imported.warnings.length} warning(s)` : ""}`
-        : `Molecule Inspector template already matches selected molecule${moleculeObjectIds.length === 1 ? "" : "s"}`
+        : `Drawn Structure Settings template already matches selected molecule${moleculeObjectIds.length === 1 ? "" : "s"}`
     );
   }, [
     cancelMoleculeInspectorPreview,
@@ -6332,7 +6479,7 @@ export function MainWindow({
       return;
     }
 
-    const templateName = `${currentDocument.title.replace(/\.(chemdraft|template)$/i, "") || "Molecule Inspector"} Style`;
+    const templateName = `${currentDocument.title.replace(/\.(chemdraft|template)$/i, "") || "Drawn Structure Settings"} Style`;
     const filename = moleculeInspectorTemplateFilename(templateName);
     const buildTemplateContents = () => {
       const drawing = {
@@ -6933,6 +7080,22 @@ export function MainWindow({
         if (action.id === "export.open") {
           openExportDialog();
         }
+        if (action.id === "analyze.molecularProperties") {
+          // Open the window BEFORE looking at the selection, and regardless of it. Two reasons: the
+          // window is up while a slow analysis runs (it shows its own empty state, then fills in),
+          // and with nothing selected the command still does something visible instead of appearing
+          // to do nothing at all.
+          if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
+            await toggleToolset(molecularInspectorToolsetId);
+          }
+          const molecule = getSelectedMolecule(document);
+          if (!molecule) {
+            setStatus("Molecular Inspector opened — select a structure to analyse it");
+            return;
+          }
+          await runMolecularProperties(molecule.structureFormat, molecule.structure, analysisInterpretation);
+          return;
+        }
         if (action.id === "chemistry.validateSelection") {
           const molecule = getSelectedMolecule(document);
           if (!molecule) {
@@ -6940,8 +7103,17 @@ export function MainWindow({
             return;
           }
 
+          // The chemistry adapter is the real RDKit engine now, so the WASM loader has to be
+          // registered before the first call. Dynamically imported for the same reason the SMILES
+          // paste path does it: `rdkitWasmLoader` inlines the 102 KB Emscripten glue, and neither it
+          // nor the 7.5 MB `.wasm` belongs in the static startup graph.
+          const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
+          registerRdkitWasmLoader();
+
+          // The real engine reads molfiles too, so the format is passed through rather than
+          // collapsed to "unknown" as it was under the SMILES-only placeholder.
           const analysis = await chemistryAdapter.analyzeStructure({
-            format: molecule.structureFormat === "smiles" ? "smiles" : "unknown",
+            format: molecule.structureFormat,
             value: molecule.structure
           });
           setLastAnalysis(analysis);
@@ -7108,7 +7280,7 @@ export function MainWindow({
         isLayerCommandId(tool.id) ||
         objectStyleCommandIds.has(tool.id) ||
         tool.id === toggleRingInspectorCommandId ||
-        tool.id === toggleMoleculeInspectorCommandId ||
+        tool.id === toggleDrawnStructureSettingsCommandId ||
         // Plugin commands are owned by PluginHost, which registers them into the same
         // registry with their permission context. Registering a core binding here too
         // would collide (duplicate id) and strip the plugin's permission checks.
@@ -7153,11 +7325,11 @@ export function MainWindow({
         if (tool.id === "tool.settings" || tool.id === "style.color") {
           const types = selectedDocumentObjectTypes(documentRef.current);
           if (types.size === 0) {
-            void toggleToolset(tool.id === "tool.settings" ? moleculeInspectorToolsetId : artToolsetId);
+            void toggleToolset(tool.id === "tool.settings" ? drawnStructureSettingsToolsetId : artToolsetId);
             return;
           }
           if (tool.id === "tool.settings" && types.has("molecule")) {
-            void toggleToolset(moleculeInspectorToolsetId);
+            void toggleToolset(drawnStructureSettingsToolsetId);
             return;
           }
           if (types.has("graphic") || types.has("molecule")) {
@@ -7286,8 +7458,8 @@ export function MainWindow({
           return;
         }
 
-        if (action.id === toggleMoleculeInspectorCommandId) {
-          void toggleToolset(moleculeInspectorToolsetId);
+        if (action.id === toggleDrawnStructureSettingsCommandId) {
+          void toggleToolset(drawnStructureSettingsToolsetId);
           return;
         }
 
@@ -7637,12 +7809,12 @@ export function MainWindow({
       return;
     }
 
-    if (commandId === moleculeInspectorTemplateImportCommandId) {
+    if (commandId === drawnStructureSettingsTemplateImportCommandId) {
       await importMoleculeInspectorTemplate();
       return;
     }
 
-    if (commandId === moleculeInspectorTemplateExportCommandId) {
+    if (commandId === drawnStructureSettingsTemplateExportCommandId) {
       await exportMoleculeInspectorTemplate();
       return;
     }
@@ -8667,6 +8839,7 @@ export function MainWindow({
     let unlistenPreview: (() => void) | undefined;
     let unlistenCommit: (() => void) | undefined;
     let unlistenCancel: (() => void) | undefined;
+    let unlistenInspector: (() => void) | undefined;
     void listenForToolsetCommands((commandId) => {
       invokeCommandRef.current(commandId);
     })
@@ -8770,6 +8943,22 @@ export function MainWindow({
         unlistenCancel = cleanup;
       })
       .catch(() => undefined);
+    // Changing the interpretation re-runs the analysis, which only this window can do. A detached
+    // palette could not reach it at all, so its interpretation select accepted changes that went
+    // nowhere; the ref keeps this listener off the recompute callback's identity.
+    void listenForPaletteInspectorActions((action) => {
+      if (action.kind === "interpretation") {
+        paletteInspectorHandlersRef.current.changeInterpretation(action.interpretationId);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenInspector = cleanup;
+      })
+      .catch(() => undefined);
 
     return () => {
       active = false;
@@ -8782,6 +8971,7 @@ export function MainWindow({
       unlistenPreview?.();
       unlistenCommit?.();
       unlistenCancel?.();
+      unlistenInspector?.();
     };
   }, []);
 
@@ -14755,6 +14945,9 @@ export function MainWindow({
                   currentArtStyleTarget: activeArtPaintTarget,
                   currentMoleculeInspector,
                   currentSelection: currentToolbarSelection,
+                  currentMolecularInspector: analysisReport,
+                  molecularInspectorBusy: analysisBusy,
+                  molecularInspectorStale: analysisReportIsStale,
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
@@ -14763,6 +14956,8 @@ export function MainWindow({
                   onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
                   onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
                   onMoleculeInspectorCancel: cancelMoleculeInspectorPreview,
+                  onMolecularInspectorCopy: copyAnalysisText,
+                  onMolecularInspectorChangeInterpretation: recomputeAnalysisFor,
                   onInvoke: invoke
                 }}
               />
@@ -25155,11 +25350,11 @@ async function pickNativeExportPath(
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
   const selected = await open({
-    title: "Import Molecule Inspector Template",
+    title: "Import Drawn Structure Settings Template",
     multiple: false,
     fileAccessMode: "scoped",
     filters: [
-      { name: "Molecule Inspector Templates", extensions: ["template", "cds"] },
+      { name: "Drawn Structure Settings Templates", extensions: ["template", "cds"] },
       { name: "ChemDraw Style Sheets", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
@@ -25170,9 +25365,9 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
 async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
   const selected = await save({
-    title: "Export Molecule Inspector Template",
+    title: "Export Drawn Structure Settings Template",
     defaultPath,
-    filters: [{ name: "Molecule Inspector Template", extensions: ["template"] }]
+    filters: [{ name: "Drawn Structure Settings Template", extensions: ["template"] }]
   });
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }
@@ -25301,6 +25496,29 @@ function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   return buffer;
+}
+
+/**
+ * The status line for a completed run.
+ *
+ * Counts what declined rather than only what succeeded: "46 properties" beside a silent decline reads
+ * as a complete answer, which is the impression PLANS.md §10 spends a paragraph warning against.
+ */
+function formatAnalysisRunStatus(run: AnalysisRun): string {
+  const computed = run.results.filter((result) => result.status === "ok").length;
+  // Two different words for two different things: "declined" is a capability gap (Crippen has no
+  // sodium parameters), "not applicable" is a method whose claim does not fit this structure (a
+  // molecule with no nitrogen cannot lose ammonia). Collapsing them makes an ordinary analysis read
+  // as though something went wrong.
+  const declined = run.results.filter((result) => result.status === "unsupported").length;
+  const inapplicable = run.results.filter((result) => result.status === "not-applicable").length;
+  if (computed === 0) {
+    return run.warnings[0]?.message ?? "Analysis produced no results";
+  }
+  const parts = [`${computed} propert${computed === 1 ? "y" : "ies"}`];
+  if (declined > 0) parts.push(`${declined} declined`);
+  if (inapplicable > 0) parts.push(`${inapplicable} not applicable`);
+  return `Analyzed: ${parts.join(", ")}`;
 }
 
 function formatAnalysisStatus(analysis: StructureAnalysisResult): string {

@@ -1,0 +1,1149 @@
+/**
+ * Protonation-state enumeration: microscopic pKa in, macroscopic pKa out (PLANS.md §8).
+ *
+ * **The gap this closes.** Every value the method produced until now was MICROSCOPIC — one proton, one
+ * atom, on one drawn structure. Tables are macroscopic. Glycine's "9.6" is not the pKa of any single
+ * transition; it is the second titration step of the whole molecule, and it is measured on the species
+ * whose carboxyl has already gone. Comparing a microscopic prediction to it was comparing two different
+ * equilibria, which is why glycine read 7.27 against a tabulated 9.60 with nothing wrong in the model.
+ *
+ * **The relation between them is exact, not a fit.** Number the microstates by how many protons they
+ * carry. Because pKa is a state function, a microstate `s` has a well-defined binding constant relative
+ * to the fully deprotonated reference:
+ *
+ *     L(s) = sum of the microscopic pKa values along ANY path from the reference to s
+ *
+ * Collect microstates by proton count into partition sums `Z(n) = sum over s of 10^L(s)`, and the
+ * macroscopic constant for the n-th proton is
+ *
+ *     pKa_macro(n) = log10( Z(n) / Z(n-1) )
+ *
+ * For a molecule with one site this collapses to the microscopic value, as it must. For several sites
+ * it is what a titration actually measures.
+ *
+ * **"ANY path" is a claim the model does not honour, and that is worth reporting rather than hiding.**
+ * Each edge is predicted independently, so two routes to the same microstate generally disagree. The
+ * disagreement is a thermodynamic inconsistency and it bounds how much the macroscopic numbers can be
+ * trusted: `inconsistency` carries the largest one found, and a molecule whose paths differ by three
+ * log units has no meaningful macroscopic pKa no matter how confident each edge looked.
+ *
+ * **Cost.** The microstate count is 2^sites, and each needs its own structure built and scored. The
+ * enumeration therefore declines above `MAX_SITES` rather than running away — a limit that is stated in
+ * the result, never a silent truncation.
+ */
+import type { IonizationSite } from "@chemdraft/analysis-core";
+
+import { cyclesThrough, distancesFrom, shareARing, siteContext } from "./pkaAromaticity";
+import { type PkaMolecularGraph } from "./pkaModel";
+import { predictSitePka } from "./pkaGnn";
+import couplingJson from "../vendor/pka-model/coupling.json";
+import edgeVarianceJson from "../vendor/pka-model/edge-variance.json";
+
+/**
+ * The electrostatic coupling the microscopic model could not learn.
+ *
+ * Charging one site shifts every other site's pKa by their interaction, which is the oldest result in
+ * this subject: dpKa_i = -W * sum_j q_j / d_ij, over the OTHER sites, with q the neighbour's formal
+ * charge in that microstate and d the through-bond distance. The sign falls out of the chemistry —
+ * deprotonation lowers the site's charge by one, so a positive neighbour stabilises the product and
+ * lowers the pKa.
+ *
+ * **Why the model needs help here at all.** Measured on glycine, it shifts the carboxyl by 0.57 log
+ * units between an adjacent NH3+ and an adjacent NH2, where the real effect is about 2.6 — and for the
+ * ammonium it moves the wrong way. The training labels are why: Dwar-iBond records the microstates a
+ * titration can populate, which for an amino acid are the cation, the zwitterion and the anion, never
+ * the neutral form. The model never sees one site with and without an adjacent opposite charge, so no
+ * amount of charge-counting features can teach it the contrast.
+ *
+ * **Applied ONLY across acid/base pairs**, and that restriction is measured rather than assumed. Like
+ * charges it already handles: ethylenediamine comes out at 6.93/9.98 against a measured 6.85/9.93 with
+ * no correction, because both of its microstates are populated and therefore in the labels. Applying
+ * the term to like pairs as well pushed the eight independent molecules from 0.28 to 0.95 while
+ * helping nothing.
+ *
+ * **The like-charge case is not uniformly fine, though, and the exception was measured rather than left
+ * as an assumption.** A carboxyl deprotonating while the molecule is ALREADY anionic, split by how far
+ * away that charge sits:
+ *
+ *     nothing charged yet        n=2074   MAE 0.421   bias +0.022
+ *     anion 4 bonds away         n=  22   MAE 0.874   bias -0.663
+ *     anion 5 bonds away         n=  44   MAE 0.427   bias +0.204
+ *     anion 6 bonds away         n=  49   MAE 0.559   bias -0.015
+ *     anion further than 6       n=  63   MAE 0.425   bias -0.287
+ *
+ * At four bonds the error doubles and the model under-predicts by two thirds of a log unit, which is
+ * exactly malonic acid's second value (-0.99) and phthalic acid's (-1.11). So the repulsion IS missed
+ * where the two groups are close.
+ *
+ * No term is fitted for it, for the same reason none is fitted for the second ring protonation: 22 rows,
+ * and the bias is NOT monotone in distance — five bonds runs the other way at +0.204 — so a 1/d law has
+ * nothing to stand on. And the shortest case is worse than thin: there is no 3-bond bucket at all,
+ * because oxalate's second deprotonation is 3 bonds and the corpus holds ZERO such labels. That is why
+ * oxalic acid comes out at 0.8 against a measured 1.25, and it is the same unlabelled-microstate story
+ * this method keeps meeting rather than a defect in the fold.
+ *
+ * **W is fitted against MACROSCOPIC values**, an aggregate the per-site labels do not contain, so this
+ * is not a second model fitted to the same data. Both halves of a Murcko-scaffold split of the 186
+ * fitting molecules independently choose 7, with a flat optimum from 6 to 8.
+ */
+const COUPLING = couplingJson as unknown as { W: number; appliesTo: string };
+
+/**
+ * Most ionizable sites the enumeration will attempt.
+ *
+ * 2^8 = 256 microstates, each needing a molecule built and re-parsed. Beyond this the wait stops being
+ * worth it, and the answer would be dominated by accumulated per-edge error anyway.
+ */
+export const MAX_SITES = 8;
+
+/**
+ * Most microstates the enumeration will build.
+ *
+ * The count is a PRODUCT of ladder heights, not 2^n — an amphoteric nitrogen contributes three levels
+ * rather than two. 2^8 is exactly the budget the boolean version had, kept so that no molecule which
+ * used to be answered starts declining.
+ */
+export const MAX_MICROSTATES = 2 ** MAX_SITES;
+
+/**
+ * Widest interval a rung may carry and still be folded into a titration curve.
+ *
+ * Half of water's roughly 14-unit range. Beyond it the rung is not locating a step, and a curve built
+ * from such rungs has plateaus the molecule does not have.
+ */
+export const HALF_THE_AQUEOUS_RANGE = 3.5;
+
+/**
+ * How far a predicted rung is likely to be wrong, as a variance, given the ensemble's own disagreement.
+ *
+ * Fitted on the 12,096 out-of-fold predictions in `gnn-oof.json` — every one held out of the fold that
+ * produced it — by Gaussian maximum likelihood on `sigma^2 = floor + perSpread * spread^2`. MLE rather
+ * than least squares on purpose: regressing squared error on squared spread is dominated by the heavy
+ * tail and comes back over-confident about nothing and under-confident about the easy rungs, missing
+ * by 1.69x on the tightest decile against this fit's 1.31x worst case anywhere.
+ *
+ * The spread is a real signal, which had to be established before any of this was worth building:
+ *
+ *     spread quintile     n      MAE    RMSE   > 2 log units
+ *     0.01 - 0.11      2416    0.332   0.559       1.4%
+ *     0.11 - 0.19      2419    0.501   0.798       2.7%
+ *     0.19 - 0.28      2420    0.651   0.961       5.2%
+ *     0.28 - 0.44      2421    0.843   1.263       8.8%
+ *     0.44 - 3.68      2420    1.313   1.905      19.6%
+ *
+ * Monotone, 4x in MAE and 14x in the rate of a two-log-unit miss, Spearman 0.42. So the model does
+ * know which of its answers to distrust, and `reconcile` below spends that knowledge.
+ *
+ * `floor` is what remains when the ensemble agrees completely: members trained on the same corpus share
+ * its blind spots, so zero disagreement is not zero error and a weight of 1/0 would let one confident
+ * rung dictate every microstate around it.
+ *
+ * SCALE CAVEAT, since three different quantities reach this function. A model-scored site carries the
+ * raw ensemble spread and is exactly what was fitted. A consensus site carries
+ * `max(method disagreement, tightest member's spread)`, so agreeing methods land near the member spread
+ * and disagreeing ones are down-weighted — the right direction, not the fitted quantity. A
+ * Hammett-only site carries that relationship's in-domain MAE. All three are error scales in log units
+ * and none is silently treated as certain, which is what matters here.
+ */
+export const EDGE_VARIANCE = edgeVarianceJson as unknown as {
+  measurement: string;
+  samples: number;
+  floor: number;
+  perSpread: number;
+  /** Median spread over the training corpus, used when a rung reports none at all. */
+  unknownSpread: number;
+  spearmanSpreadVersusError: number;
+  worstDecileMiscalibration: number;
+};
+
+const varianceFor = (spread: number | undefined): number => {
+  const s = spread === undefined || !Number.isFinite(spread) ? EDGE_VARIANCE.unknownSpread : spread;
+  return EDGE_VARIANCE.floor + EDGE_VARIANCE.perSpread * s * s;
+};
+
+/**
+ * Solve `A x = b` for a symmetric positive-definite `A`, by Gaussian elimination with partial pivoting.
+ *
+ * Small and dense by construction: `A` is one row per reachable microstate, so at most
+ * MAX_MICROSTATES - 1. Returns undefined if the system is singular, which happens when a microstate is
+ * connected to the rest of the ladder by no edge the model could value.
+ */
+function solveSymmetric(A: number[][], b: number[]): number[] | undefined {
+  const n = b.length;
+  if (n === 0) return [];
+  const m = A.map((row, i) => [...row, b[i]!]);
+  for (let col = 0; col < n; col += 1) {
+    let pivot = col;
+    for (let row = col + 1; row < n; row += 1) {
+      if (Math.abs(m[row]![col]!) > Math.abs(m[pivot]![col]!)) pivot = row;
+    }
+    if (Math.abs(m[pivot]![col]!) < 1e-12) return undefined;
+    [m[col], m[pivot]] = [m[pivot]!, m[col]!];
+    for (let row = col + 1; row < n; row += 1) {
+      const factor = m[row]![col]! / m[col]![col]!;
+      if (factor === 0) continue;
+      for (let k = col; k <= n; k += 1) m[row]![k]! -= factor * m[col]![k]!;
+    }
+  }
+  const x = new Array<number>(n).fill(0);
+  for (let row = n - 1; row >= 0; row -= 1) {
+    let sum = m[row]![n]!;
+    for (let k = row + 1; k < n; k += 1) sum -= m[row]![k]! * x[k]!;
+    x[row] = sum / m[row]![row]!;
+  }
+  return x;
+}
+
+/**
+ * Whether protonating this ring nitrogen would build a species water cannot hold.
+ *
+ * An azinium ring — a pyrimidine, quinazoline or pyrazine with one nitrogen already protonated — is
+ * strongly electron-poor, and its SECOND nitrogen is not basic in any accessible range. Pyrazine's
+ * second pKa is near -6. The model does not know this, because nothing could have taught it: a
+ * diprotonated pyrazine cannot be titrated in water either, so the corpus holds four such labels in
+ * 12,096 and it fills the gap with a plausible-looking number. Measured on its own out-of-fold
+ * predictions, those four come back at MAE 4.98 with a bias of +4.98 — every one over-predicted, and
+ * every one over-predicted from below zero to INSIDE the aqueous window, where it becomes a titration
+ * step the molecule does not have.
+ *
+ * **The discriminator is charge compensation, and it was measured rather than assumed.** Twenty-one
+ * corpus labels protonate a ring nitrogen whose ring already carries one. They separate exactly:
+ *
+ *     ring bears no negative charge   n= 4   MAE 4.98   bias +4.98    0 of 4 inside pH 2-12
+ *     ring bears a negative charge    n=17   MAE 1.31   bias +0.39   16 of 17 inside pH 2-12
+ *
+ * The second group is uracil, thiouracil and cytosine chemistry — `[nH+]c([O-])[nH+]`,
+ * `[nH+]c([S-])[nH+]` — where an anionic exocyclic oxygen or sulfur leaves the ring at net +1 rather
+ * than +2, and the second protonation is real, measurable and predicted well. A blanket "no second ring
+ * protonation" rule would have deleted all sixteen of those. This one suppresses four, all of them
+ * measured below -2.7, all of them predictions that are already wrong about a species no experiment can
+ * reach.
+ *
+ * Ring membership and formal charge only — both properties of the graph rather than of the resonance
+ * structure written, so the answer cannot depend on which Kekulé form the engine chose.
+ */
+export function isUncompensatedAzinium(
+  graph: PkaMolecularGraph,
+  atomIndex: number,
+  context: ReturnType<typeof siteContext>
+): boolean {
+  if (context.aromatic[atomIndex] !== true) return false;
+  if (graph.atoms[atomIndex]?.element !== "N") return false;
+  for (const ring of cyclesThrough(context.adjacency, atomIndex)) {
+    const alreadyCationic = ring.some(
+      (j) => j !== atomIndex && graph.atoms[j]?.element === "N" && (graph.atoms[j]?.charge ?? 0) > 0
+    );
+    if (!alreadyCationic) continue;
+    // Anything anionic ON the ring or hanging off it: the uracil/thiouracil exocyclic O- or S-.
+    const compensated = ring.some(
+      (j) =>
+        (graph.atoms[j]?.charge ?? 0) < 0 ||
+        (context.adjacency[j] ?? []).some((n) => (graph.atoms[n]?.charge ?? 0) < 0)
+    );
+    if (!compensated) return true;
+  }
+  return false;
+}
+
+/**
+ * One rung's value, with the model's own confidence in it.
+ *
+ * A bare number is accepted and means "no confidence information": every such rung is weighted alike,
+ * which is what the textbook degeneracy checks want and what they assert.
+ */
+export type MicroscopicEdge = number | { pKa: number; spread?: number };
+
+/**
+ * One rung of the microstate graph: an acid, the base one proton lighter, and the value between them.
+ */
+interface LadderEdge {
+  acid: number;
+  base: number;
+  /** Which ladder loses the proton across this edge — the coordinate the cycle check closes over. */
+  ladder: number;
+  pKa: number;
+  weight: number;
+}
+
+/**
+ * One rung of an atom's ladder: a single proton leaving, between two adjacent levels.
+ *
+ * `acidCharge` is the rung's whole identity, and it is what makes a ladder a ladder. The acid side
+ * carries that formal charge; the base side carries one less. Two rungs on one atom are adjacent
+ * exactly when their `acidCharge` values differ by one — so "this nitrogen is -1 and +1 at the same
+ * time" is not a state the enumeration can reach, rather than a state it happens not to build.
+ */
+export interface ProtonationRung {
+  /** Index into the caller's site list, so results can be mapped back. */
+  siteIndex: number;
+  /** Formal charge the ionizable atom carries in the ACID of this rung. */
+  acidCharge: number;
+}
+
+/**
+ * One ionizable ATOM's ordered ladder — the variable the enumeration moves.
+ *
+ * Levels are contiguous formal charges, ascending: level `k` carries `rungs[0].acidCharge - 1 + k`, so
+ * level 0 is the most deprotonated form and `rungs.length` the most protonated. Rung `r` connects
+ * level `r` (its base) to level `r + 1` (its acid).
+ *
+ * There is no per-atom "transition" here any more. A direction is a property of a RUNG, and an atom
+ * that both loses and gains a proton is ONE variable with two rungs rather than two variables. That is
+ * the difference between describing aniline and describing a nitrogen that is simultaneously an anion
+ * and a cation, which is what the previous representation allowed.
+ */
+export interface ProtonationLadder {
+  atomIndex: number;
+  /** Formal charge the atom carries as drawn. Always one of the ladder's levels. */
+  drawnCharge: number;
+  /** Ascending in `acidCharge`, contiguous, at least one. */
+  rungs: ProtonationRung[];
+}
+
+export interface Microstate {
+  /** Level index per ladder, in `ladders` order. */
+  levels: number[];
+  /** Protons held above the fully deprotonated reference: the sum of the level indices. */
+  protonCount: number;
+  /** Summed microscopic pKa from that reference. Undefined if no route reaches this state. */
+  logBinding?: number;
+  /** Total molecular formal charge in this state — absolute, not relative to the drawing. */
+  charge: number;
+}
+
+/** Where a ladder's drawn level sits, which is all the old per-site `transition` ever meant. */
+export type LadderRole = "acid" | "base" | "amphoteric";
+
+export const levelCount = (ladder: ProtonationLadder): number => ladder.rungs.length + 1;
+
+/** The formal charge the ionizable atom carries at a given level. Linear, with no direction branch. */
+export const chargeAtLevel = (ladder: ProtonationLadder, level: number): number =>
+  ladder.rungs[0]!.acidCharge - 1 + level;
+
+/** The level the atom actually sits at in the structure as drawn. */
+export const drawnLevel = (ladder: ProtonationLadder): number =>
+  ladder.drawnCharge - (ladder.rungs[0]!.acidCharge - 1);
+
+/**
+ * Whether a ladder can only lose a proton, only gain one, or both.
+ *
+ * `amphoteric` is the case the boolean model could not express at all: an atom whose drawn form sits
+ * between two rungs, so it is genuinely both an acid and a base. Aniline's nitrogen is one.
+ */
+export function ladderRole(ladder: ProtonationLadder): LadderRole {
+  const drawn = drawnLevel(ladder);
+  if (drawn === levelCount(ladder) - 1) return "acid";
+  if (drawn === 0) return "base";
+  return "amphoteric";
+}
+
+export interface MacroscopicResult {
+  /** Macroscopic pKa values, in titration order (first proton lost first). */
+  pKa: number[];
+  /** Which species the molecule is in at physiological pH. See `speciesDistribution`. */
+  distribution?: SpeciesDistribution;
+  /** Largest disagreement between two routes to the same microstate, in log units. */
+  inconsistency: number;
+  microstateCount: number;
+  siteCount: number;
+  /**
+   * An acidic and a basic site are both present, so the molecule forms a zwitterion.
+   *
+   * These used to be the method's worst case by a wide margin — mean error 2.06 log units against 0.30
+   * for everything else — because the microscopic model barely responds to a neighbouring charge.
+   *
+   * The electrostatic term in `COUPLING` is NOT what fixed it, though this comment used to say so. It
+   * was refitted to W = 0.0 once pKaCHU entered the corpus and now does nothing: the correction was
+   * never physics the model could not learn, it was physics the LABELS did not contain, and a corpus
+   * that records an amino acid's neutral form teaches it directly. See `coupling.json`'s own note.
+   *
+   * The flag no longer marks the weak class. Once the fold solved the ladder by weighted least squares
+   * these became the STRONGEST class in the curated set — 0.16 against 0.29 overall — because a
+   * zwitterion is precisely the molecule whose fold leans on a species no experiment can label, and
+   * that is what the weighting fixes. It stays as a description of the chemistry, which is true
+   * regardless, and because the reader still wants to know a zwitterion when they have one.
+   *
+   * The claim that used to sit here — that nothing else in the result catches this, alanine's
+   * `inconsistency` reading 0.00 against an error of 2.18 — was true of a fold whose coupling term was
+   * a fitted bilinear function of the charges. Such a term closes every thermodynamic cycle BY
+   * CONSTRUCTION, so the signal was structurally dead rather than uninformative. `W` is zero now, each
+   * rung is an independent prediction, and the cycles no longer close on their own: alanine reports
+   * 0.97, histidine 2.03, and monoprotic molecules still report zero because they have no cycle at all.
+   */
+  zwitterionic: boolean;
+}
+
+export interface ProtonationDeclined {
+  declined: string;
+}
+
+export type ProtonationOutcome = MacroscopicResult | ProtonationDeclined;
+
+export function macroscopicApplies(outcome: ProtonationOutcome): outcome is MacroscopicResult {
+  return !("declined" in outcome);
+}
+
+/**
+ * The charge an atom carries at a level, relative to how it was drawn.
+ *
+ * This used to branch on whether the site was acidic or basic, because a boolean cannot say where a
+ * proton went without knowing which convention it was drawn under. A level index can, so the charge is
+ * now linear in it and the branch is gone.
+ */
+export function chargeDelta(ladder: ProtonationLadder, level: number): number {
+  return chargeAtLevel(ladder, level) - ladder.drawnCharge;
+}
+
+/**
+ * Every combination of ladder levels, ordered by proton count.
+ *
+ * Mixed radix rather than a bitmask: ladders have different heights, so the state space is a product
+ * and not a power. That is the whole reason an impossible microstate can no longer be indexed.
+ */
+export function enumerateMicrostates(
+  ladders: readonly ProtonationLadder[],
+  drawnMolecularCharge = 0
+): Microstate[] {
+  const radices = ladders.map(levelCount);
+  const total = radices.reduce((product, n) => product * n, 1);
+  const out: Microstate[] = [];
+  for (let index = 0; index < total; index += 1) {
+    let rest = index;
+    const levels = radices.map((n) => {
+      const level = rest % n;
+      rest = Math.floor(rest / n);
+      return level;
+    });
+    out.push({
+      levels,
+      protonCount: levels.reduce((sum, level) => sum + level, 0),
+      charge:
+        drawnMolecularCharge +
+        levels.reduce((sum, level, i) => sum + chargeDelta(ladders[i]!, level), 0)
+    });
+  }
+  return out.sort((a, b) => a.protonCount - b.protonCount);
+}
+
+/**
+ * Whether a molecule's dominant species carries opposite charges on different atoms.
+ *
+ * NOT "it has an acidic site and a basic site". That sentence is a claim about site TYPES, and it is
+ * true of acetamide — whose single nitrogen is merely amphoteric — and of pyridinium, where two
+ * methods described one rung from opposite sides. Both were flagged; neither is a zwitterion. What the
+ * flag exists for is the case where the electrostatic coupling carries the answer, and that case is
+ * defined by CHARGES IN A STATE.
+ */
+export function zwitterionic(
+  ladders: readonly ProtonationLadder[],
+  states: readonly Microstate[]
+): boolean {
+  const reachable = states.filter((state) => state.logBinding !== undefined);
+  if (reachable.length === 0) return false;
+  // The state nearest neutral, most stable among ties. Nearest rather than exactly zero so that a
+  // molecule with a permanent charge — betaine's quaternary nitrogen — is still judged on a species
+  // that exists rather than on one that does not.
+  const dominant = reachable.reduce((best, state) => {
+    const closer = Math.abs(state.charge) - Math.abs(best.charge);
+    return closer < 0 || (closer === 0 && state.logBinding! > best.logBinding!) ? state : best;
+  });
+  // `chargeAtLevel` sees LADDER atoms only, and a permanent charge does not sit on one. Selecting the
+  // dominant state above already uses `state.charge`, which folds in every non-ladder charge — but the
+  // test below used to drop back to ladder charges, so the very molecule the comment names was
+  // misjudged. Betaine reported `false`: its ladder holds only the carboxylate, and the quaternary N+
+  // that makes it a zwitterion is not on a ladder at all.
+  //
+  // The permanent contribution is recoverable without the graph: it is whatever `state.charge` carries
+  // beyond the ladders.
+  const charges = ladders.map((ladder, i) => chargeAtLevel(ladder, dominant.levels[i]!));
+  const permanent = dominant.charge - charges.reduce((sum, q) => sum + q, 0);
+  // Known limit, stated rather than hidden: two OPPOSITE permanent charges on non-ladder atoms net to
+  // zero here and are not detected. Distinguishing them needs per-atom charges, which this function is
+  // not given — and such a molecule's zwitterionic character does not depend on protonation state,
+  // which is what this flag exists to report.
+  const positive = charges.some((q) => q > 0) || permanent > 0;
+  const negative = charges.some((q) => q < 0) || permanent < 0;
+  return positive && negative;
+}
+
+/**
+ * Build the ladder of microscopic pKa values and fold it into macroscopic ones.
+ *
+ * `microPka(state, ladderIndex)` must return the pKa of that ladder dropping ONE LEVEL from where it
+ * sits in `state` — the acid form. Returning undefined drops that edge, and a microstate reachable by
+ * no edge is left out of its partition sum rather than guessed at. Returning `{ pKa, spread }` rather
+ * than a bare number lets the fold weigh that rung against the others; see `EDGE_VARIANCE`.
+ */
+export function macroscopicPka(
+  ladders: readonly ProtonationLadder[],
+  microPka: (state: Microstate, ladderIndex: number) => MicroscopicEdge | undefined,
+  /**
+   * Pairs (acidic, basic) whose combined flip is a TAUTOMER rather than a distinct species.
+   *
+   * An azole's two ring nitrogens look like two independent sites — one drawn with a hydrogen, one
+   * without — but deprotonating the first while protonating the second is the proton MOVING, giving
+   * the tautomer with the hydrogen on the other nitrogen. Reaching it needs the ring's double bonds
+   * rearranged, which assigning charges cannot do: the enumeration builds `c1c[nH+]c[n-]1` instead, an
+   * ylide that does not meaningfully exist and which the model scores at 6.95 where the real neutral
+   * imidazole is 13.84.
+   *
+   * Those microstates are dropped rather than scored. Measured: imidazole's first macroscopic pKa goes
+   * from 3.28 to 6.83 against a reference 6.95, pyrazole from -0.00 to 3.42 against 2.49, and
+   * histidine's second from 2.82 to 6.45 against 6.00. Molecules without such a pair are untouched.
+   *
+   * What this does NOT do is compute the tautomer's own binding constant — the state is omitted from
+   * the partition sum, not replaced by the right species. For an azole both tautomers are the same
+   * protonation state, so the cost is a degeneracy factor of at most log10(2), well inside the
+   * method's error.
+   */
+  tautomerPairs: readonly (readonly [number, number])[] = [],
+  drawnMolecularCharge = 0
+): ProtonationOutcome {
+  if (ladders.length === 0) return { declined: "no ionizable sites to enumerate" };
+
+  if (ladders.length > MAX_SITES) {
+    return {
+      declined:
+        `${ladders.length} ionizable atoms is above the ${MAX_SITES} this enumeration accepts; each ` +
+        "carries its own ladder of microstates. No macroscopic value is reported rather " +
+        "than a truncated one."
+    };
+  }
+  const stateCount = ladders.map(levelCount).reduce((product, n) => product * n, 1);
+  if (stateCount > MAX_MICROSTATES) {
+    return {
+      declined:
+        `these ladders would need ${stateCount} microstates, above the ${MAX_MICROSTATES} this ` +
+        "enumeration accepts. No macroscopic value is reported rather than a truncated one."
+    };
+  }
+
+  const states = enumerateMicrostates(ladders, drawnMolecularCharge);
+  // Dot-separated, not digits joined: a level index can in principle exceed 9, and a joined-digit key
+  // would silently collide two different states onto one entry.
+  const key = (levels: readonly number[]) => levels.join(".");
+  const byKey = new Map(states.map((state) => [key(state.levels), state]));
+
+  // Only an acid/base pair can be tautomer-related: the proton has to have somewhere to go. Two acidic
+  // sites deprotonating one at a time are two genuinely different microstates, and dropping one of
+  // them would delete a real rung, so such a pair is ignored rather than trusted.
+  // No role filter here, deliberately. An earlier version required an acid paired with a base, which
+  // excluded urea — whose two nitrogens are both amphoteric and are exactly the pair that needs
+  // excluding. The state test below is what actually distinguishes a moved proton from a lost one, and
+  // it is already safe for same-role pairs: two carboxyls are both drawn at the top of their ladders,
+  // so neither can ever be ABOVE its drawn level and no real rung is ever dropped.
+  const pairs = tautomerPairs.filter(
+    ([a, b]) => ladders[a] !== undefined && ladders[b] !== undefined
+  );
+
+  /** One partner below its drawn level while the other is above it: a proton that moved, not one that left. */
+  const isTautomerState = (state: Microstate): boolean =>
+    pairs.some(([a, b]) => {
+      const gaveUp = state.levels[a]! < drawnLevel(ladders[a]!) && state.levels[b]! > drawnLevel(ladders[b]!);
+      const tookOn = state.levels[b]! < drawnLevel(ladders[b]!) && state.levels[a]! > drawnLevel(ladders[a]!);
+      return gaveUp || tookOn;
+    });
+
+  // Reference: the fully deprotonated state, L = 0 by definition.
+  const referenceIndex = states.findIndex((state) => state.protonCount === 0);
+  if (referenceIndex < 0) return { declined: "no fully deprotonated microstate to reference against" };
+
+  // Every rung the model can value, as an edge between two microstates. Collected before anything is
+  // solved: which of them the answer can USE is decided by connectivity below, not by the order they
+  // happen to be visited in.
+  const indexOf = new Map(states.map((state, i) => [key(state.levels), i]));
+  const edges: LadderEdge[] = [];
+  for (const [acid, state] of states.entries()) {
+    if (isTautomerState(state)) continue;
+    for (let i = 0; i < ladders.length; i += 1) {
+      if (state.levels[i] === 0) continue;
+      const base = indexOf.get(key(state.levels.map((level, j) => (j === i ? level - 1 : level))));
+      if (base === undefined || isTautomerState(states[base]!)) continue;
+      // The edge's pKa belongs to the ACID — the state that still holds the proton.
+      const edge = microPka(state, i);
+      if (edge === undefined) continue;
+      const pKa = typeof edge === "number" ? edge : edge.pKa;
+      if (!Number.isFinite(pKa)) continue;
+      const spread = typeof edge === "number" ? undefined : edge.spread;
+      edges.push({ acid, base, ladder: i, pKa, weight: 1 / varianceFor(spread) });
+    }
+  }
+
+  // Only what the reference can actually reach. A microstate joined to the rest by no valued rung is
+  // left out of its partition sum rather than guessed at, exactly as before.
+  const touching = new Map<number, LadderEdge[]>();
+  for (const edge of edges) {
+    for (const node of [edge.acid, edge.base]) {
+      const list = touching.get(node);
+      if (list) list.push(edge);
+      else touching.set(node, [edge]);
+    }
+  }
+  const reachable = new Set([referenceIndex]);
+  const queue = [referenceIndex];
+  while (queue.length > 0) {
+    const at = queue.shift()!;
+    for (const edge of touching.get(at) ?? []) {
+      const other = edge.acid === at ? edge.base : edge.acid;
+      if (!reachable.has(other)) {
+        reachable.add(other);
+        queue.push(other);
+      }
+    }
+  }
+
+  /**
+   * Solve every microstate's free energy at once, weighted by how much each rung is worth believing.
+   *
+   * This replaces walking outward by proton count and averaging the routes into each state. That sweep
+   * had three defects and this has none of them.
+   *
+   * It was FORWARD ONLY, so a badly predicted microstate could never be corrected by the well-predicted
+   * rungs on the far side of it. That is not an abstract worry: the fold has to build species that do
+   * not exist in water — glycine's neutral form, which no titration can populate and so no corpus can
+   * label — and it is exactly those that the surrounding chemistry has to pin down.
+   *
+   * It was UNWEIGHTED, so a rung the ensemble disagreed violently about got the same say as one it was
+   * certain of. Against `EDGE_VARIANCE` above, the confident end of the corpus earns roughly 300x the
+   * weight of the doubtful end.
+   *
+   * And it DISCARDED the disagreement it measured. Here the same quantity is the residual of a fit, so
+   * a rung that cannot be reconciled is pushed on by every path that reaches it rather than averaged
+   * once and forgotten.
+   *
+   * Minimising `sum_e w_e (L_acid - L_base - pKa_e)^2` over the free energies makes the normal
+   * equations a weighted graph Laplacian, symmetric positive-definite once the reference is pinned at
+   * zero. The thermodynamic cycle then closes BY CONSTRUCTION — L is a potential, so every route
+   * between two microstates agrees by definition, which is the property the sweep could only report the
+   * violation of.
+   */
+  const variables = [...reachable].filter((node) => node !== referenceIndex).sort((a, b) => a - b);
+  const slotOf = new Map(variables.map((node, slot) => [node, slot]));
+  const size = variables.length;
+  const normal = Array.from({ length: size }, () => new Array<number>(size).fill(0));
+  const rhs = new Array<number>(size).fill(0);
+  for (const edge of edges) {
+    if (!reachable.has(edge.acid) || !reachable.has(edge.base)) continue;
+    const a = slotOf.get(edge.acid);
+    const b = slotOf.get(edge.base);
+    if (a !== undefined) {
+      normal[a]![a]! += edge.weight;
+      rhs[a]! += edge.weight * edge.pKa;
+    }
+    if (b !== undefined) {
+      normal[b]![b]! += edge.weight;
+      rhs[b]! -= edge.weight * edge.pKa;
+    }
+    if (a !== undefined && b !== undefined) {
+      normal[a]![b]! -= edge.weight;
+      normal[b]![a]! -= edge.weight;
+    }
+  }
+
+  const solution = solveSymmetric(normal, rhs);
+  if (solution === undefined) {
+    return { declined: "the microstate ladder is not connected enough to solve for its free energies" };
+  }
+  states[referenceIndex]!.logBinding = 0;
+  for (const [slot, node] of variables.entries()) states[node]!.logBinding = solution[slot]!;
+
+  /**
+   * The largest thermodynamic cycle the model failed to close, in log units.
+   *
+   * Two protons leaving in either order must cost the same — the free energies are a state function,
+   * so `pKa(drop i) + pKa(then drop j)` has to equal `pKa(drop j) + pKa(then drop i)`. Each such square
+   * is one closed cycle, and any gap is the model contradicting itself about a molecule it was given.
+   *
+   * Measured on the EDGE VALUES, never on the solved energies. That is the whole point: the solve
+   * distributes a defect over every rung around it, so a fitted residual understates it — the 4/9
+   * against 6/4 square in `protonation.test.ts` leaves residuals of 1.5 apiece for a defect of 3. The
+   * quantity a reader needs is how far the predictions are from being physically possible, which is
+   * a property of the predictions alone and survives any choice of reconciliation.
+   *
+   * It is also a LABEL-FREE error signal, and measured to be a live one — on the curated polyprotic
+   * set it ranks glycine 0.25, alanine 0.97, aspartic 1.36, histidine 3.23 against macroscopic errors
+   * of 0.06, 0.28, 0.29, 0.56. Monoprotic molecules have no square and so report exactly zero.
+   */
+  let inconsistency = 0;
+  const valueOf = new Map<string, number>();
+  for (const edge of edges) {
+    if (reachable.has(edge.acid) && reachable.has(edge.base)) {
+      valueOf.set(`${edge.acid}:${edge.ladder}`, edge.pKa);
+    }
+  }
+  const stepDown = (node: number, i: number): number | undefined => {
+    const levels = states[node]!.levels;
+    return indexOf.get(key(levels.map((level, j) => (j === i ? level - 1 : level))));
+  };
+  for (const node of reachable) {
+    const levels = states[node]!.levels;
+    for (let i = 0; i < ladders.length; i += 1) {
+      for (let j = i + 1; j < ladders.length; j += 1) {
+        if (levels[i] === 0 || levels[j] === 0) continue;
+        const viaI = stepDown(node, i);
+        const viaJ = stepDown(node, j);
+        if (viaI === undefined || viaJ === undefined) continue;
+        const first = valueOf.get(`${node}:${i}`);
+        const second = valueOf.get(`${viaI}:${j}`);
+        const alsoFirst = valueOf.get(`${node}:${j}`);
+        const alsoSecond = valueOf.get(`${viaJ}:${i}`);
+        if (first === undefined || second === undefined) continue;
+        if (alsoFirst === undefined || alsoSecond === undefined) continue;
+        inconsistency = Math.max(
+          inconsistency,
+          Math.abs(first + second - alsoFirst - alsoSecond)
+        );
+      }
+    }
+  }
+
+  const maxProtons = ladders.reduce((sum, ladder) => sum + levelCount(ladder) - 1, 0);
+
+  // Partition sums per proton count, in log space — 10^L overflows for a strongly basic polyamine.
+  const partitions: (number | undefined)[] = [];
+  for (let n = 0; n <= maxProtons; n += 1) {
+    const bound = states
+      .filter((s) => s.protonCount === n && s.logBinding !== undefined)
+      .map((s) => s.logBinding!);
+    partitions.push(bound.length === 0 ? undefined : logSumExp10(bound));
+  }
+
+  const pKa: number[] = [];
+  for (let n = maxProtons; n >= 1; n -= 1) {
+    const upper = partitions[n];
+    const lower = partitions[n - 1];
+    if (upper === undefined || lower === undefined) continue;
+    pKa.push(upper - lower);
+  }
+  // Already in titration order: the loop starts at the fully protonated state, and the first proton
+  // to leave it is the most acidic one.
+
+  if (pKa.length === 0) return { declined: "no microstate ladder could be built from the site values" };
+  const distribution = speciesDistribution(ladders, states);
+  return {
+    pKa,
+    ...(distribution ? { distribution } : {}),
+    inconsistency,
+    microstateCount: states.filter((s) => s.logBinding !== undefined).length,
+    siteCount: ladders.length,
+    zwitterionic: zwitterionic(ladders, states)
+  };
+}
+
+/**
+ * log10 of a sum of 10^x, computed without ever forming 10^x.
+ *
+ * A tetraamine's most protonated microstate has L above 40; `10 ** 40` is representable but the sum
+ * loses every low-order term, and a hexavalent one overflows outright. Factoring out the largest
+ * exponent keeps the arithmetic in range.
+ */
+export function logSumExp10(values: readonly number[]): number {
+  const max = Math.max(...values);
+  const sum = values.reduce((total, value) => total + 10 ** (value - max), 0);
+  return max + Math.log10(sum);
+}
+
+/** The pH a distribution is reported at unless another is asked for: blood, and the usual reference. */
+export const PHYSIOLOGICAL_PH = 7.4;
+
+/** What fraction of the molecule carries each net charge, at one pH. */
+export interface ChargeFraction {
+  charge: number;
+  fraction: number;
+  /** Protons held, relative to the fully deprotonated form. Two charges can share a proton count. */
+  protonCount: number;
+}
+
+export interface SpeciesDistribution {
+  pH: number;
+  /** Every net charge with a non-negligible population, most abundant first. */
+  charges: ChargeFraction[];
+  /** The single most abundant net charge. */
+  dominantCharge: number;
+  /**
+   * Population at net charge zero — which for an amino acid is the ZWITTERION, not the uncharged form.
+   *
+   * Reported under this name rather than "neutral" deliberately. Glycine is 99.5% net-neutral at pH 7.4
+   * and essentially none of it is uncharged: the population is a zwitterion carrying +1 on nitrogen and
+   * -1 on oxygen. A reader who saw "99.5% neutral" and reached for a permeability argument would be
+   * wrong by five orders of magnitude, so the two quantities are reported separately and neither is
+   * called neutral.
+   */
+  fractionNetNeutral: number;
+  /**
+   * Population carrying no formal charge anywhere — the species a partition or permeability argument
+   * actually means.
+   *
+   * For an ordinary acid or base this equals `fractionNetNeutral`. For a zwitterion it is smaller, and
+   * for glycine at pH 7.4 it is around 1e-5 of it.
+   */
+  fractionUncharged: number;
+}
+
+/**
+ * Which species the molecule is actually in, at a given pH.
+ *
+ * This is the question a macroscopic pKa is usually a proxy for. "The pKa is 4.76" answers it only for
+ * someone willing to do the arithmetic; "at pH 7.4 this is 99.8% anionic" answers it directly, and it is
+ * the form that matters for solubility, permeability and which species a partition coefficient refers
+ * to.
+ *
+ * It costs nothing new. The fold already solves every microstate's free energy relative to the fully
+ * deprotonated reference, and mass action gives the population straight from it:
+ *
+ *     population(s) proportional to 10^( L(s) - n(s) * pH )
+ *
+ * where `n(s)` is the protons that microstate holds. Normalised over every microstate the fold reached,
+ * then summed by NET CHARGE, because that is the quantity a reader acts on — two microstates of the same
+ * charge are one species as far as a solubility argument is concerned, and glycine's zwitterion and its
+ * neutral form are both charge 0 and belong together.
+ *
+ * **This is less exposed to the unlabelled-microstate problem than the pKa ladder, and the reason is the
+ * Boltzmann factor rather than anything clever.** A species the fold had to invent because no experiment
+ * can populate it enters with weight `10^(L - n*pH)`, and being unpopulated is exactly what makes that
+ * weight tiny. Glycine's neutral form sits about five log units above its zwitterion and contributes
+ * around 10^-5 of the charge-0 population. A macroscopic pKa is a RATIO of two partition sums, so a
+ * spurious microstate shifts the reported number; here it shows up as its own small fraction and dilutes
+ * the rest proportionally. Being wrong is more visible and less contagious.
+ *
+ * The `inconsistency` on the same result still applies, and for the same reason: these fractions are
+ * built from the same rung values, so a molecule whose thermodynamic cycles do not close has a
+ * distribution no more trustworthy than its ladder.
+ */
+export function speciesDistribution(
+  ladders: readonly ProtonationLadder[],
+  states: readonly Microstate[],
+  pH: number = PHYSIOLOGICAL_PH
+): SpeciesDistribution | undefined {
+  const reachable = states.filter((state) => state.logBinding !== undefined);
+  if (reachable.length === 0) return undefined;
+
+  // log10 of the unnormalised population, per microstate. Kept in log space to the last moment: a
+  // strongly basic polyamine at low pH overflows 10^x long before it overflows a log.
+  const logWeights = reachable.map((state) => state.logBinding! - state.protonCount * pH);
+  const total = logSumExp10(logWeights);
+
+  const byCharge = new Map<number, { fraction: number; protonCount: number; largest: number }>();
+  let uncharged = 0;
+  for (const [i, state] of reachable.entries()) {
+    const perLadder = ladders.map((ladder, j) => chargeAtLevel(ladder, state.levels[j]!));
+    // `state.charge`, NOT the ladder sum. The two differ by whatever permanent charge sits on a
+    // non-ladder atom, and using the ladder sum shifted every reported charge by that amount: betaine
+    // reported a dominant charge of -1 and a net-neutral population of 0.00001 when the true answer is
+    // 0 and ~1, because its quaternary N+ was invisible here.
+    const charge = state.charge;
+    const permanent = charge - perLadder.reduce((sum, q) => sum + q, 0);
+    const fraction = 10 ** (logWeights[i]! - total);
+    // No formal charge on ANY atom, not merely a net of zero. This is the clause that separates
+    // glycine's uncharged form from its zwitterion, and they differ by five orders of magnitude — so
+    // it has to exclude a permanent charge too, or a betaine's COOH microstate counts as uncharged
+    // while still carrying its N+.
+    if (permanent === 0 && perLadder.every((q) => q === 0)) uncharged += fraction;
+    const seen = byCharge.get(charge);
+    if (seen === undefined) {
+      byCharge.set(charge, { fraction, protonCount: state.protonCount, largest: fraction });
+      continue;
+    }
+    seen.fraction += fraction;
+    // Named after its most populated microstate, compared against the previous MAXIMUM rather than the
+    // running sum — against the sum, several small microstates outweigh any later single one and the
+    // proton count silently freezes on whichever happened to arrive first.
+    if (fraction > seen.largest) {
+      seen.largest = fraction;
+      seen.protonCount = state.protonCount;
+    }
+  }
+
+  const charges = [...byCharge.entries()]
+    .map(([charge, entry]) => ({ charge, fraction: entry.fraction, protonCount: entry.protonCount }))
+    // A hundredth of a percent is below anything a reader would act on and below this method's accuracy
+    // by orders of magnitude. Dropped rather than printed as 0.00%.
+    .filter((entry) => entry.fraction >= 1e-4)
+    .sort((a, b) => b.fraction - a.fraction || a.charge - b.charge);
+  if (charges.length === 0) return undefined;
+
+  return {
+    pH,
+    charges,
+    dominantCharge: charges[0]!.charge,
+    // Read from the UNFILTERED map, not from `charges`. The 1e-4 filter exists so a reader is not shown
+    // a row of 0.00%, and taking these two numbers from different sides of it made them inconsistent:
+    // citric acid at pH 7.4 has a net-zero population below the threshold, so the filtered list dropped
+    // it and reported 0 net-neutral while still reporting a positive uncharged fraction — a subset
+    // larger than its superset.
+    fractionNetNeutral: byCharge.get(0)?.fraction ?? 0,
+    fractionUncharged: uncharged
+  };
+}
+
+/**
+ * Fold a structure's scored sites into macroscopic pKa values.
+ *
+ * `graphFor` must return the molecule with the given per-atom charge DELTAS applied, relative to the
+ * structure as drawn — the same construction the basic-pKa path already uses, and the same guard: a
+ * microstate that cannot be built contributes nothing rather than silently reusing the neutral form.
+ *
+ * Only sites carrying a value take part. A site the method declined to score has no rung on the
+ * ladder, and inventing one would put a macroscopic number on top of a microscopic gap.
+ */
+export function macroscopicFromSites(
+  sites: readonly IonizationSite[],
+  graph: PkaMolecularGraph,
+  graphFor: (deltas: ReadonlyMap<number, number>) => PkaMolecularGraph | undefined
+): ProtonationOutcome {
+  const adjacency = siteContext(graph).adjacency;
+
+  // Group the scored rows by ATOM. One atom is one variable however many rungs it has — that is the
+  // whole change, and it is why an impossible microstate can no longer be indexed.
+  /**
+   * Whether a rung is confident enough to be a step in a titration curve.
+   *
+   * A microscopic value with a wide interval is still worth SHOWING — it is the method's honest
+   * estimate for that site, and the interval says how much to trust it. Folding it into a macroscopic
+   * ladder is a different act: it asserts that a titration has a step there. A rung whose own interval
+   * spans five log units is not a step, it is an admission that the model does not know, and putting it
+   * in the curve invents a plateau the molecule does not have.
+   *
+   * The threshold is argued from the pH scale rather than from the model. Water spans roughly 14 log
+   * units, so an interval of +/-3.5 covers half of it: such a rung says "this titrates somewhere in
+   * the acidic half, or maybe the basic half", which is not a step. The model's own upper interval
+   * QUARTILE was tried first and is wrong for this — it is a property of the interval distribution, so
+   * a quarter of all sites exceed it by construction, and at the current calibration (2.477) it
+   * excluded ACETIC ACID, whose carboxyl carries 2.59. A filter that silences acetic acid is not
+   * measuring confidence, it is measuring the shape of a histogram.
+   *
+   * Measured on SAMPL6, end to end, where a structure is supplied and nothing else:
+   *
+   *   no filter   MAE 2.43,  1 of 24 molecules with the right number of steps, 26% within 1 log unit
+   *   this        MAE 2.09,  8 of 24,                                          32%
+   *
+   * and on the fifteen curated polyprotic molecules it changes almost nothing (0.341 -> 0.327, still
+   * 15 of 15 answered), which is what says it is removing noise rather than removing signal.
+   *
+   * This does NOT fix the underlying problem, which is that the scan finds sites that do not titrate:
+   * amide nitrogens offered a basicity, every aromatic ring nitrogen offered one, an amide N-H scored
+   * near 8 where it is really about 16. Those are site-detection and valuation defects and they need
+   * chemistry, not a filter. This keeps the worst of them out of the curve in the meantime, and the
+   * sites themselves are still reported with their intervals so nothing is hidden.
+   *
+   * **TIGHTENING THIS CANNOT FIX OVER-DETECTION, and that was measured rather than assumed.** The
+   * obvious next move is to lower the threshold until the spurious steps fall out. On SAMPL6 the sites
+   * blamed for in-window extra steps are indistinguishable from every other scored site by spread —
+   * median 1.203 against 1.203, mean 1.343 against 1.302 — so every threshold removes real sites at the
+   * same rate as spurious ones, and at 1.0 it is fractionally WORSE than random (57% of spurious, 60%
+   * of all). At the shipped 3.5 it drops nothing at all on that set.
+   *
+   * The model is CONFIDENTLY WRONG about these sites, which is a different failure from being unsure.
+   * The same ensemble spread predicts VALUATION error well — Spearman 0.42 over 12,096 held-out rows,
+   * and it is what `EDGE_VARIANCE` weights the fold by — and carries no signal about whether a site
+   * should exist at all. Two failure modes, one number, and it only speaks to one of them.
+   *
+   * **This is now a backstop rather than the working filter, and the reason is worth stating.** Since
+   * the interval became a calibrated 68% quantile rather than a multiple of the ensemble's deviation,
+   * the widest a model-scored rung can report is 1.84 — so against a threshold of 3.5 this can no
+   * longer fire for one. It still can for a CONSENSUS rung, where the interval is the disagreement
+   * between two methods and has no such ceiling, which is the case worth keeping it for.
+   *
+   * What replaced it is better than it was. A hard cutoff answers "is this rung allowed in the curve"
+   * with yes or no; the weighted solve answers "how much should it move the curve" with a number, so a
+   * doubtful rung is discounted rather than deleted. Measured across that change the numbers moved the
+   * right way — curated set 0.302 to 0.295, zwitterions 0.178 to 0.165, SAMPL6 matched 0.494 to
+   * 0.491 — while every rung stayed in the fold.
+   */
+  const confidentEnough = (site: IonizationSite) =>
+    site.spread === undefined || site.spread <= HALF_THE_AQUEOUS_RANGE;
+
+  const byAtom = new Map<number, ProtonationRung[]>();
+  const scoredCount = sites.filter((site) => site.pKa !== null).length;
+  let located = 0;
+  for (const [index, site] of sites.entries()) {
+    if (site.pKa === null) continue;
+    if (!confidentEnough(site)) continue;
+    const atom = graph.atoms[site.ionizableAtomIndex];
+    if (!atom) continue;
+    located += 1;
+    byAtom.set(site.ionizableAtomIndex, [
+      ...(byAtom.get(site.ionizableAtomIndex) ?? []),
+      { siteIndex: index, acidCharge: site.acidCharge }
+    ]);
+  }
+  if (located !== sites.filter((site) => site.pKa !== null && confidentEnough(site)).length) {
+    return { declined: "some scored sites could not be located on the structure" };
+  }
+  if (scoredCount > 0 && located === 0) {
+    // Sites were found and valued; none is confident enough to be a step. Saying "no ionizable sites"
+    // here would be false, and it is the reader's most likely misreading.
+    return {
+      declined:
+        `every site's estimate spans more than ${2 * HALF_THE_AQUEOUS_RANGE} log units, which places no ` +
+        "titration step. The per-site values are still reported above, with their intervals."
+    };
+  }
+
+  const scored: ProtonationLadder[] = [];
+  for (const [atomIndex, rungs] of [...byAtom.entries()].sort((a, b) => a[0] - b[0])) {
+    const ordered = [...rungs].sort((a, b) => a.acidCharge - b.acidCharge);
+    // Contiguity is enforced at the result contract too, but a hole here would silently produce a
+    // ladder whose levels do not mean what `chargeAtLevel` says they mean, so it declines instead.
+    const span = ordered[ordered.length - 1]!.acidCharge - ordered[0]!.acidCharge;
+    if (span !== ordered.length - 1) {
+      return { declined: `atom ${atomIndex}'s transitions do not form a contiguous ladder` };
+    }
+    const drawnCharge = graph.atoms[atomIndex]!.charge;
+    const ladder = { atomIndex, drawnCharge, rungs: ordered };
+    // The atom as drawn must BE one of the ladder's levels, or every charge on it is off by a constant
+    // and the coupling term would read the wrong sign.
+    const level = drawnLevel(ladder);
+    if (level < 0 || level >= levelCount(ladder)) {
+      return { declined: `atom ${atomIndex} is drawn at a charge its own ladder does not contain` };
+    }
+    scored.push(ladder);
+  }
+
+  // One structure per microstate, built once and reused across every edge that needs it.
+  const cache = new Map<string, PkaMolecularGraph | null>();
+  const graphOf = (state: Microstate): PkaMolecularGraph | undefined => {
+    const cacheKey = state.levels.join(".");
+    if (!cache.has(cacheKey)) {
+      const deltas = new Map<number, number>();
+      for (const [i, ladder] of scored.entries()) {
+        const delta = chargeDelta(ladder, state.levels[i]!);
+        if (delta !== 0) deltas.set(ladder.atomIndex, (deltas.get(ladder.atomIndex) ?? 0) + delta);
+      }
+      cache.set(cacheKey, graphFor(deltas) ?? null);
+    }
+    return cache.get(cacheKey) ?? undefined;
+  };
+
+  /**
+   * Whether every OTHER ladder sits where it is drawn.
+   *
+   * When it does, the scored value for this rung already describes exactly this environment — it is
+   * what the site table shows beside the structure, possibly a consensus with the Hammett relationship
+   * — so it is reused rather than recomputed. Rebuilding it from the model alone put phenol's
+   * macroscopic pKa at 10.24 against its own displayed 9.99.
+   *
+   * This replaces a check against one hard-coded "as drawn" state, and it is strictly wider: it now
+   * covers BASIC rungs too, which were silently recomputed from the model even when the row beside them
+   * showed a consensus. It is also self-consistent — if every other ladder is at its drawn level then
+   * every neighbouring charge is the drawn charge, so the coupling correction is zero and the reused
+   * value is not double-counting anything.
+   */
+  const othersAsDrawn = (state: Microstate, i: number): boolean =>
+    state.levels.every((level, j) => j === i || level === drawnLevel(scored[j]!));
+
+  // Through-bond distances between the sites, for the coupling term.
+  const distanceBetween = scored.map((ladder) => distancesFrom(adjacency, ladder.atomIndex));
+
+  /**
+   * How much every OTHER site's charge shifts this one, in this microstate.
+   *
+   * INERT AS SHIPPED. `coupling.json` pins `W = 0.0`, so every path below returns 0 — the term was
+   * refitted to nothing once pKaCHU entered the corpus, because the effect it modelled turned out to
+   * be absent from the LABELS rather than from the model. Kept rather than deleted for two reasons:
+   * `W` is a fitted artifact field and a future refit can revive it without new code, and the
+   * distance/role machinery is the derivation the artifact's note argues about. The early return
+   * makes the cost zero and the deadness legible instead of leaving a loop that quietly sums zeros.
+   */
+  const coupling = (state: Microstate, i: number): number => {
+    if (COUPLING.W === 0) return 0;
+    let shift = 0;
+    const roleI = ladderRole(scored[i]!);
+    for (let j = 0; j < scored.length; j += 1) {
+      if (j === i) continue;
+      // Acid/base pairs only — see COUPLING. Like charges the model already handles. An amphoteric
+      // ladder has no single role and is never excluded: which face it presents depends on the state.
+      const roleJ = ladderRole(scored[j]!);
+      if (roleI === roleJ && roleI !== "amphoteric") continue;
+      // The ABSOLUTE charge at this level, not the delta from the drawing. Identical on every molecule
+      // W was fitted against — their drawn forms are neutral — and correct for one whose canonical
+      // protomer is not, which is a case protomer canonicalization is about to make reachable.
+      const q = chargeAtLevel(scored[j]!, state.levels[j]!);
+      if (q === 0) continue;
+      const d = distanceBetween[i]!.get(scored[j]!.atomIndex);
+      if (d === undefined || d === 0) continue;
+      shift -= (COUPLING.W * q) / d;
+    }
+    return shift;
+  };
+
+  // Site pairs sharing an aromatic ring: an azole's two nitrogens, whose combined flip is a tautomer.
+  // Ladder pairs between which a proton MOVES rather than leaves. Per-atom ladders do not subsume this
+  // — imidazole's ylide is two DIFFERENT atoms, each at a level its own ladder allows — so the
+  // exclusion stays, now expressed in ladder coordinates and no longer limited to aromatic rings.
+  //
+  // Two heteroatoms attached to one CONJUGATED centre are the general case. Urea's nitrogens are the
+  // example that forced the generalisation: the model placed its ylide, one nitrogen at -1 and the
+  // other at +1, 1.7 log units BELOW neutral urea in free energy and so declared urea a zwitterion.
+  // That is the coupling term doing what it was fitted to do for glycine — stabilising opposite
+  // charges — applied to two nitrogens 2 bonds apart across a carbonyl, where the charges annihilate
+  // through the pi system instead of persisting. Moving urea's proton from one nitrogen to the other
+  // gives urea back.
+  //
+  // Glycine is the case that must NOT be caught, and is not: its amine hangs off an sp3 carbon and its
+  // carboxyl off a different one, so the two share no neighbour and its zwitterion is a real species.
+  const context = siteContext(graph);
+  const doubleBonded = new Set<number>();
+  for (const bond of graph.bonds) {
+    if (bond.order >= 2) {
+      doubleBonded.add(bond.atoms[0]);
+      doubleBonded.add(bond.atoms[1]);
+    }
+  }
+  // Per ATOM, never per bond: which bond of an aromatic ring carries the double bond depends on the
+  // Kekule structure chosen, and this project has shipped that bug four times.
+  const conjugated = (atom: number) => context.aromatic[atom] === true || doubleBonded.has(atom);
+
+  const tautomerPairs: [number, number][] = [];
+  for (let a = 0; a < scored.length; a += 1) {
+    for (let b = a + 1; b < scored.length; b += 1) {
+      const first = scored[a]!.atomIndex;
+      const second = scored[b]!.atomIndex;
+      const sharedRing =
+        context.aromatic[first] === true &&
+        context.aromatic[second] === true &&
+        shareARing(adjacency, first, second);
+      const sharedCentre = (adjacency[first] ?? []).some(
+        (neighbour) => conjugated(neighbour) && (adjacency[second] ?? []).includes(neighbour)
+      );
+      if (sharedRing || sharedCentre) tautomerPairs.push([a, b]);
+    }
+  }
+
+  const drawnMolecularCharge = graph.atoms.reduce((sum, atom) => sum + atom.charge, 0);
+
+  return macroscopicPka(scored, (state, i) => {
+    // The rung being descended: this ladder dropping from its current level to the one below.
+    const rung = scored[i]!.rungs[state.levels[i]! - 1];
+    if (rung && othersAsDrawn(state, i)) {
+      const known = sites[rung.siteIndex]?.pKa;
+      // Its environment is the drawn one, so the value takes no coupling correction — adding one would
+      // count the same interaction twice.
+      if (known !== null && known !== undefined) {
+        // The interval beside it on the site table is this rung's weight in the fold. A consensus that
+        // two methods agreed on is worth more than a lone model guess, and now says so.
+        return { pKa: known, spread: sites[rung.siteIndex]?.spread };
+      }
+    }
+    // The edge belongs to the ACID: the microstate that still holds this proton.
+    const acid = graphOf(state);
+    if (!acid) return undefined;
+    const ladder = scored[i]!;
+    const atom = acid.atoms[ladder.atomIndex];
+    // The proton has to actually be there, or the value would describe a different reaction.
+    if (!atom || atom.hydrogens === 0) return undefined;
+    // A second ring nitrogen protonated on an already-cationic, uncharge-compensated ring. Water does
+    // not hold that species, so the edge is dropped and the microstate leaves the partition sum —
+    // the same treatment an azole's ylide gets, and for the same reason.
+    if (isUncompensatedAzinium(acid, ladder.atomIndex, siteContext(acid))) return undefined;
+    try {
+      const prediction = predictSitePka(acid, ladder.atomIndex);
+      // These are the rungs no experiment can label — a microstate a titration cannot populate, built
+      // because the partition sum needs it. The ensemble's disagreement is the only thing that knows
+      // how far out on its own the model is here, so it is carried rather than dropped.
+      return { pKa: prediction.value + coupling(state, i), spread: prediction.spread };
+    } catch {
+      return undefined;
+    }
+  }, tautomerPairs, drawnMolecularCharge);
+}

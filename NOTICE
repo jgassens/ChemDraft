@@ -1,0 +1,112 @@
+ChemDraft
+Copyright 2026 Jeremiah J. Gassensmith
+
+This product includes software developed as part of the ChemDraft project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components requiring attribution
+--------------------------------------------------------------------------------
+
+The following components are redistributed with this software. Each is permissively
+licensed and each requires that its copyright notice, conditions, and disclaimer be
+reproduced in the materials accompanying a binary distribution. Full terms are
+vendored alongside each artifact; the complete inventory, including build provenance
+and artifact hashes, is in docs/architecture/dependency-inventory.md.
+
+RDKit MinimalLib (vendored WebAssembly build)
+  BSD-3-Clause. Copyright (c) 2006-2026 Rational Discovery LLC, Greg Landrum,
+  and other RDKit contributors.
+  Source: https://github.com/rdkit/rdkit, tag Release_2026_03_3.
+  Locally modified: 7 patches, recorded in
+  packages/rdkit-adapter/vendor/patches/ and vendor/BUILD.md.
+  Full licence text: packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
+
+IsoSpec (vendored WebAssembly build)
+  BSD-2-Clause. Copyright (c) 2015-2025 Michal Startek and Mateusz Lacki.
+  Source: https://github.com/MatteoLacki/IsoSpec, tag v2.3.5. Unmodified.
+  Full licence text: packages/isospec-adapter/vendor/IsoSpec-LICENCE.txt
+
+OPSIN (vendored Java archive, name-to-structure)
+  MIT. Copyright (c) 2017 Daniel Lowe.
+  Source: https://github.com/dan2097/opsin, release 2.9.0. Unmodified.
+  Full licence text: apps/desktop/src-tauri/resources/opsin/OPSIN-LICENSE.txt
+
+  The released artifact is a shaded "jar-with-dependencies", and shading overwrites
+  META-INF, so the jar's own LICENSE/NOTICE files are incomplete. The components it
+  actually redistributes, and their terms, are therefore reproduced here:
+
+    Woodstox (woodstox-core 7.1.1)          Apache-2.0, (c) FasterXML
+    Apache Log4j API and Core (2.25.3)      Apache-2.0, (c) 1999-2025 The Apache
+                                              Software Foundation
+    Apache Commons IO (2.21.0)              Apache-2.0, (c) 2002-2025 The Apache
+                                              Software Foundation
+    Stax2 API (stax2-api 4.2.2)             BSD-2-Clause, (c) Tatu Saloranta
+    dk.brics automaton (1.12-4)             BSD-2-Clause, (c) Anders Moeller,
+                                              Aarhus University
+
+  This product includes software developed at The Apache Software Foundation
+  (https://www.apache.org/).
+
+Bundled Java runtime (OpenJDK, produced with jlink)
+  GPL-2.0-only WITH Classpath-exception-2.0. The runtime is redistributed so the
+  name-to-structure feature works without a system Java; macOS ships none. The
+  Classpath Exception is what permits linking it with independently licensed code.
+  Build recipe and module list:
+  apps/desktop/src-tauri/resources/opsin/BUILD.md
+
+InChI (statically linked into the RDKit MinimalLib build above)
+  The binary self-identifies as "InChI version 1, Software 1.07.3 (API Library)".
+  The InChI Trust's terms changed across the 1.06 -> 1.07 series; the applicable
+  licence and notice obligations for 1.07.3 are RECORDED AS UNCONFIRMED in the
+  dependency inventory and must be resolved, with the notice archived here, before
+  any public redistribution.
+
+--------------------------------------------------------------------------------
+Data under separate terms
+--------------------------------------------------------------------------------
+
+Bundled datasets are NOT covered by the licence above. A component that ships data
+under different terms states them separately in its own package metadata — see
+AGENTS.md section 8c. Most notably, the NMR predictor plugin's shift database is
+derived from nmrshiftdb2 and carries that database's own attribution and share-alike
+obligations; describing such a package by its code licence alone is incorrect.
+
+The pKa model's weights are trained in this repository and carry this repo's licence,
+but the DATA they were trained on does not. The shipped corpus is 12,096 labelled sites
+drawn from FOUR sources; a fifth is recorded and deliberately unused. None is vendored:
+
+  Dwar-iBond experimental pKa set, as distributed with Uni-pKa
+  https://github.com/dptech-corp/Uni-pKa -- Apache-2.0
+  Values are measurements attributed per row in the source, predominantly
+  DataWarrior with literature DOIs for the remainder. RECORDED AS UNRESOLVED: the
+  DataWarrior author has stated that the original literature references for part of
+  this set were lost, and a software licence is not automatically a licence for an
+  associated dataset. This must be settled before public redistribution.
+
+  QupKake experimental pKa set
+  https://github.com/Shualdon/QupKake -- CC BY 4.0, ATTRIBUTION REQUIRED
+  Originally Baltruschat & Czodrowski. The values are measurements; the per-site
+  index is ChemAxon Marvin's assignment and is recorded as such on every row.
+  BSD-3-Clause is QupKake's SOFTWARE licence and does not reach this dataset --
+  a repository's code licence is not a grant over the data inside it, the same
+  distinction recorded for Dwar-iBond above. See pka-provenance.md.
+
+  pKaCHU
+  https://zenodo.org/records/20089807 -- CC BY 4.0
+  Experimental aqueous values as acid/base microstate pairs. Attribution required.
+
+  D2A-pKa (AQUEOUS ROWS ONLY)
+  https://zenodo.org/records/15277342 -- CC BY 4.0
+  Attribution required. Only the neat-water rows are used; the DMSO, acetonitrile,
+  DMF and alcohol rows are a different measurement scale and are excluded.
+
+  IUPAC Dissociation-Constants v2.3e
+  https://zenodo.org/records/21533589 -- CC BY-NC 4.0, NON-COMMERCIAL
+  NOT USED BY ANY SHIPPED WEIGHT. The ingest is vendored and the data was evaluated;
+  it is the only source carrying weakly basic nitrogens in the numbers this model
+  needs, and it degrades the macroscopic fold on amino acids, so it is out. Recorded
+  here because that decision could be revisited: were it ever included, the
+  NonCommercial term would become a real constraint on redistributing the resulting
+  weights under this repository's own licence, and that must be settled before any
+  public release rather than discovered afterwards.

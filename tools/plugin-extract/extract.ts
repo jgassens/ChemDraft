@@ -26,6 +26,7 @@ import {
   canonicalPath,
   createPluginSourceSnapshot,
   distributionName,
+  assertBundledDataLicensed,
   findLicense,
   PluginGateError,
   readPluginGitState,
@@ -107,6 +108,8 @@ function extractCommittedPlugin(
 ): ExtractionResult {
   assertPluginBoundary(pluginRoot, gateError);
   const licenseFile = findLicense(pluginRoot, gateError);
+  // Gate 4: a bundled dataset carries its own terms; the code licence does not reach it (§8c).
+  assertBundledDataLicensed(pluginRoot, gateError);
   const pkg = readPluginPackageJson(pluginRoot, gateError);
   const name = distributionName(sourcePluginRoot, gateError);
   const sdkVersion = sdkVersionFrom(repoRoot, gateError);

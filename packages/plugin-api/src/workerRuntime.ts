@@ -18,6 +18,7 @@
 
 import type {
   PluginAnalysisAPI,
+  PluginChemistryAPI,
   PluginCommandContext,
   PluginCommandHandler,
   PluginDocumentAPI,
@@ -33,6 +34,7 @@ import {
   asHostToWorkerMessage,
   toPluginWorkerErrorPayload,
   type HostToWorkerMessage,
+  type CapabilityMethodOf,
   type PluginWorkerCapabilityNamespace,
   type PluginWorkerEndpoint,
   type PluginWorkerErrorPayload,
@@ -139,8 +141,16 @@ export function runPluginWorker(
     });
 
   const buildContext = (commandRequestId: number): PluginCommandContext => {
-    const call = (namespace: PluginWorkerCapabilityNamespace, method: string, args: readonly unknown[]): Promise<unknown> =>
-      callCapability(commandRequestId, namespace, method, args);
+    // `method` is typed against PLUGIN_WORKER_CAPABILITY_METHODS rather than being a bare `string`, so
+    // the stub and the host bridge's allow-list are one list instead of two. This is the fix for the
+    // real defect: `nameToStructure` and `structureFromSmiles` were added here, and to the in-process
+    // host, and never to the map — so the bridge rejected both for every worker-routed plugin while
+    // the compiler said nothing. Offering a method the host will not accept is now a type error.
+    const call = <N extends PluginWorkerCapabilityNamespace>(
+      namespace: N,
+      method: CapabilityMethodOf<N>,
+      args: readonly unknown[]
+    ): Promise<unknown> => callCapability(commandRequestId, namespace, method, args);
 
     const documents: PluginDocumentAPI = {
       getActiveDocument: () => call("documents", "getActiveDocument", []) as ReturnType<PluginDocumentAPI["getActiveDocument"]>,
@@ -168,6 +178,42 @@ export function runPluginWorker(
       ? { showReport: (panelId, report) => call("panels", "showReport", [panelId, report]) as ReturnType<PluginPanelAPI["showReport"]> }
       : undefined;
 
+    // Gated on the permission alone, exactly like the others. The host still decides whether it can
+    // actually serve the call: a host with no chemistry engine resolves the stub's request with
+    // `available: false` rather than the plugin having to guess from the capability's presence.
+    const chemistry: PluginChemistryAPI | undefined = has("chemistry.compute")
+      ? {
+          isotopeEnvelope: (request) =>
+            call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>,
+          // Present in the stub for the same reason: a worker-routed plugin must see the same shape
+          // an in-process one does, or the two paths disagree about what this host can do — which is
+          // why `nameToStructure` carries the SAME extra condition the host applies. It spawns a JVM
+          // on the desktop, so it needs `native.execute` as well as `chemistry.compute`; offering the
+          // stub without it would put a method on the context that the host would then refuse.
+          ...(has("native.execute")
+            ? {
+                nameToStructure: (request: Parameters<NonNullable<PluginChemistryAPI["nameToStructure"]>>[0]) =>
+                  call("chemistry", "nameToStructure", [request]) as ReturnType<
+                    NonNullable<PluginChemistryAPI["nameToStructure"]>
+                  >
+              }
+            : {}),
+          // Same rule as the host: this one lays out against the active document, so it needs
+          // `document.read` too. Keeping the two conditions identical is what keeps the in-process and
+          // worker paths agreeing about what the host offers.
+          ...(has("document.read")
+            ? {
+                structureFromSmiles: (
+                  request: Parameters<NonNullable<PluginChemistryAPI["structureFromSmiles"]>>[0]
+                ) =>
+                  call("chemistry", "structureFromSmiles", [request]) as ReturnType<
+                    NonNullable<PluginChemistryAPI["structureFromSmiles"]>
+                  >
+              }
+            : {})
+        }
+      : undefined;
+
     const analysis: PluginAnalysisAPI | undefined = has("analysis.write")
       ? ({
           write: (input: unknown) => call("analysis", "write", [input]),
@@ -188,6 +234,7 @@ export function runPluginWorker(
       selection,
       panels,
       analysis,
+      chemistry,
       hasPermission: has,
       requirePermission: (permission) => {
         if (!has(permission)) {

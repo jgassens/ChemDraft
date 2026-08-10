@@ -265,7 +265,17 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     {
       id: "analyze",
       label: "Analyze",
-      items: [command("chemistry.validateSelection", "Validate Selected Structure", { enabled: context.hasSelectedMolecule })]
+      items: [
+        // NOT gated on a selection, and NOT titled differently from the native menu. `commands.ts`
+        // states the rule — "a menu item that is greyed out reads as 'this feature is broken' rather
+        // than 'select something first'" — and the window has its own empty state. This copy greyed it
+        // out anyway, so in the browser build the open-the-window-anyway path was unreachable from the
+        // menu while the same command worked from the palette and from the native macOS menu, which
+        // hardcodes `true`. Two surfaces, two behaviours, one command id.
+        command("analyze.molecularProperties", "Molecular Inspector…"),
+        separator(),
+        command("chemistry.validateSelection", "Validate Selected Structure", { enabled: context.hasSelectedMolecule })
+      ]
     },
     {
       id: "plugins",

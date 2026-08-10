@@ -2757,7 +2757,7 @@ describe("ChemDraft desktop shell", () => {
         "core.style",
         "core.text",
         "core.ringInspector",
-        "core.moleculeInspector"
+        "core.drawnStructureSettings"
       ])
     );
     expect(ids).not.toContain(FIXTURE_PLUGIN_TOOLSET_ID);

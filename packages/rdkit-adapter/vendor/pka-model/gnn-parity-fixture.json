@@ -1,0 +1,74 @@
+[
+ {
+  "smiles": "CC(=O)O",
+  "site": 2,
+  "prediction": 4.107815,
+  "spread": 1.7084
+ },
+ {
+  "smiles": "Oc1ccccc1",
+  "site": 0,
+  "prediction": 9.913171,
+  "spread": 0.508172
+ },
+ {
+  "smiles": "c1ccncc1",
+  "site": 3,
+  "prediction": 10.519076,
+  "spread": 1.7084
+ },
+ {
+  "smiles": "c1cc[nH]c1",
+  "site": 3,
+  "prediction": 16.733177,
+  "spread": 0.603172
+ },
+ {
+  "smiles": "c1c[nH]cn1",
+  "site": 3,
+  "prediction": 10.029073,
+  "spread": 3.288044
+ },
+ {
+  "smiles": "c1ccc2[nH]ccc2c1",
+  "site": 4,
+  "prediction": 15.411751,
+  "spread": 0.731261
+ },
+ {
+  "smiles": "c1ccc2ncccc2c1",
+  "site": 4,
+  "prediction": 9.670763,
+  "spread": 1.7084
+ },
+ {
+  "smiles": "C[NH3+]",
+  "site": 1,
+  "prediction": 10.631017,
+  "spread": 0.350273
+ },
+ {
+  "smiles": "c1ccc(-c2ccccc2)cc1",
+  "site": 0,
+  "prediction": 13.870426,
+  "spread": 1.505187
+ },
+ {
+  "smiles": "NC(=O)N",
+  "site": 0,
+  "prediction": 14.498349,
+  "spread": 0.616623
+ },
+ {
+  "smiles": "CS(=O)(=O)N",
+  "site": 4,
+  "prediction": 10.497113,
+  "spread": 0.708491
+ },
+ {
+  "smiles": "OC(=O)c1ccccc1",
+  "site": 1,
+  "prediction": 7.666578,
+  "spread": 1.9769
+ }
+]

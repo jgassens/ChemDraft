@@ -1,3 +1,4 @@
+import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
@@ -5,11 +6,23 @@ import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
+import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
 export const PALETTE_COMMAND_COMMIT_EVENT = "chemdraft://palette-command-commit";
 export const PALETTE_COMMAND_CANCEL_EVENT = "chemdraft://palette-command-cancel";
+/**
+ * The Molecular Inspector's two actions, travelling from a detached palette back to the main window.
+ *
+ * Their own channel because the command channel carries `{ commandId }` and nothing else, and both of
+ * these need an argument — WHICH copy, WHICH interpretation. Without it the detached palette had no
+ * way to send them at all, so `PaletteWindow` simply did not forward the handlers: Copy rendered
+ * "Copied" with an empty clipboard, and the interpretation select accepted changes that went nowhere.
+ * The web-preview path supplied the callbacks directly and worked, which is why it survived review —
+ * the broken path is the one the desktop actually ships (`shouldDefaultToNativePalettes()`).
+ */
+export const PALETTE_INSPECTOR_ACTION_EVENT = "chemdraft://palette-inspector-action";
 export const DOM_COMMAND_EVENT = "chemdraft:native-command";
 export const TOOLSET_WINDOW_STATE_EVENT = "chemdraft://toolset-window-state";
 export const TOOLSET_ACTIVE_TOOL_EVENT = "chemdraft://toolset-active-tool";
@@ -64,6 +77,16 @@ export interface ToolsetTextStylePayload {
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload;
   /** Selection classification for variant-swapping widgets; absent in older payloads. */
   currentSelection?: ToolbarSelectionModel;
+  /**
+   * The latest analysis report, for the Molecular Inspector palette.
+   *
+   * Safe to send over Tauri's event channel, which is JSON: `buildAnalysisReport` has already rendered
+   * every distribution into a table of strings, so no typed array reaches this boundary. An
+   * `AnalysisRun` would NOT survive the trip — its positions and intensities are `Float64Array`.
+   */
+  currentMolecularInspector?: AnalysisReport;
+  molecularInspectorBusy?: boolean;
+  molecularInspectorStale?: boolean;
 }
 
 export interface ToolsetCommandSpecsPayload {
@@ -130,14 +153,20 @@ export function createToolsetTextStylePayload(
   currentArtStyle?: ToolsetArtStylePayload,
   currentArtStyleTarget: ToolsetArtPaintTarget = "fill",
   currentMoleculeInspector?: ToolsetMoleculeInspectorPayload,
-  currentSelection?: ToolbarSelectionModel
+  currentSelection?: ToolbarSelectionModel,
+  currentMolecularInspector?: AnalysisReport,
+  molecularInspectorBusy = false,
+  molecularInspectorStale = false
 ): ToolsetTextStylePayload {
   return {
     currentTextStyle,
     currentTextScript,
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
     ...(currentMoleculeInspector ? { currentMoleculeInspector } : {}),
-    ...(currentSelection ? { currentSelection } : {})
+    ...(currentSelection ? { currentSelection } : {}),
+    ...(currentMolecularInspector ? { currentMolecularInspector } : {}),
+    ...(molecularInspectorBusy ? { molecularInspectorBusy } : {}),
+    ...(molecularInspectorStale ? { molecularInspectorStale } : {})
   };
 }
 
@@ -434,7 +463,12 @@ export async function loadToolsetLayoutState(): Promise<unknown | undefined> {
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<unknown | null>("load_toolset_customization_state").then((state) => state ?? undefined);
+  return invoke<unknown | null>("load_toolset_customization_state").then((state) =>
+    // Migrated on the way in, so a layout saved before the 2026-07-31 Molecule Inspector -> Drawn
+    // Structure Settings rename still resolves. Without this the user's customized toolbar silently
+    // reverts to default, which reads as data loss rather than a rename.
+    state === null || state === undefined ? undefined : migrateLegacyToolsetIds(state)
+  );
 }
 
 /**
@@ -553,6 +587,20 @@ async function emitToolsetCommandEvent(eventName: string, commandId: string): Pr
 
   const { emit } = await import("@tauri-apps/api/event");
   await emit<ToolsetCommandPayload>(eventName, payload);
+}
+
+/** What a detached palette asks the main window to do on its behalf. */
+export type PaletteInspectorAction =
+  | { kind: "copy"; format: "text" | "markdown" }
+  | { kind: "interpretation"; interpretationId: string | undefined };
+
+export async function sendPaletteInspectorAction(action: PaletteInspectorAction): Promise<void> {
+  dispatchDomToolsetEvent(PALETTE_INSPECTOR_ACTION_EVENT, action as unknown as ToolsetCommandPayload);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, action);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
@@ -679,6 +727,42 @@ export async function listenForPaletteCommandCommits(handler: (commandId: string
 
 export async function listenForPaletteCommandCancels(handler: (commandId: string) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_CANCEL_EVENT, handler);
+}
+
+export async function listenForPaletteInspectorActions(
+  handler: (action: PaletteInspectorAction) => void
+): Promise<Unlisten> {
+  const onDom = (event: Event): void => {
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (isPaletteInspectorAction(detail)) handler(detail);
+  };
+  globalThis.addEventListener?.(PALETTE_INSPECTOR_ACTION_EVENT, onDom as EventListener);
+  const unlistenDom = (): void => {
+    globalThis.removeEventListener?.(PALETTE_INSPECTOR_ACTION_EVENT, onDom as EventListener);
+  };
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<unknown>(PALETTE_INSPECTOR_ACTION_EVENT, (event) => {
+    // Validated rather than cast: this arrives over the event bus from another webview, and
+    // dereferencing a field on a malformed payload throws inside the listener.
+    if (isPaletteInspectorAction(event.payload)) handler(event.payload);
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+function isPaletteInspectorAction(payload: unknown): payload is PaletteInspectorAction {
+  if (typeof payload !== "object" || payload === null) return false;
+  const candidate = payload as { kind?: unknown; format?: unknown; interpretationId?: unknown };
+  if (candidate.kind === "copy") return candidate.format === "text" || candidate.format === "markdown";
+  if (candidate.kind === "interpretation") {
+    return candidate.interpretationId === undefined || typeof candidate.interpretationId === "string";
+  }
+  return false;
 }
 
 export async function listenForToolsetActiveTool(handler: (commandId: string) => void): Promise<Unlisten> {

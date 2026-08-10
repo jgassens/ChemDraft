@@ -1,0 +1,21 @@
+{
+ "measurement": "out-of-fold NETWORK predictions vs the literature Hammett relationship, on the sites where both apply",
+ "grouping": "Bemis-Murcko scaffold",
+ "samples": 342,
+ "phenolSamples": 101,
+ "benzoicSamples": 241,
+ "forestWeight": 0.258,
+ "forestWeightRule": "inverse of each method's own measured MAE",
+ "hammettMae": 0.2594,
+ "hammettInterval68": 0.2066,
+ "hammettMaePhenol": 0.2721,
+ "hammettMaeBenzoic": 0.2541,
+ "forestMaeHere": 0.5405,
+ "meanMae": 0.3047,
+ "consensusMae": 0.2487,
+ "consensusMaePhenol": 0.2549,
+ "coverage": 0.8889,
+ "disagreementCorrelation": 0.8077,
+ "medianHalfWidth": 0.4115,
+ "modelHalfWidthHere": 0.2899
+}

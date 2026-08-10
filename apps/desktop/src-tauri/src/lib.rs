@@ -1,6 +1,7 @@
 mod export;
 mod fonts;
 mod installed_plugins;
+mod opsin;
 
 use std::{
     collections::HashMap,
@@ -103,6 +104,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
     PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
+    "analyze.molecularProperties",
     "chemistry.validateSelection",
     "structure.openInteractive3d",
     "plugins.manage",
@@ -134,7 +136,7 @@ struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
 #[derive(Default)]
 struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)>);
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolsetWindowPosition {
     x: f64,
@@ -467,6 +469,8 @@ pub fn run() {
             toggle_preferences_window,
             window_logical_position,
             agent_bridge_status,
+            opsin::opsin_status,
+            opsin::opsin_name_to_structure,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
             engine3d_sidecar_send_session,
@@ -2171,6 +2175,18 @@ fn build_analyze_submenu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Submenu<R>> {
+    // "Molecular Inspector", matching `commands.ts`'s canonical title and the toolset it opens. The
+    // native menu said "Molecular Properties" while the command registry, the palette and the window
+    // title all said "Molecular Inspector" — one command id wearing two names depending on which
+    // surface a user reached it from. `true` for enabled is correct and deliberate: the command is
+    // NOT gated on a selection, because the window has its own empty state.
+    let properties = MenuItem::with_id(
+        app,
+        "analyze.molecularProperties",
+        "Molecular Inspector\u{2026}",
+        true,
+        None::<&str>,
+    )?;
     let validate = MenuItem::with_id(
         app,
         "chemistry.validateSelection",
@@ -2178,6 +2194,8 @@ fn build_analyze_submenu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    // Separates the core Analyze commands from the plugin-contributed items below them.
+    let core_separator = PredefinedMenuItem::separator(app)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let plugin_menu_items = plugin_items
         .iter()
@@ -2192,7 +2210,8 @@ fn build_analyze_submenu<R: Runtime>(
         })
         .collect::<tauri::Result<Vec<_>>>()?;
 
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![&validate];
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+        vec![&properties, &core_separator, &validate];
     if !plugin_menu_items.is_empty() {
         items.push(&separator);
         for item in &plugin_menu_items {
@@ -2997,7 +3016,9 @@ fn recover_offscreen_toolset_window<R: Runtime>(
         return;
     };
     let size = size.to_logical::<f64>(scale);
-    let clamped = clamp_toolset_position(app, position.clone(), size.width, size.height);
+    // `position` is Copy on this branch (the clamping helpers wanted it), so main's `.clone()` here is
+    // a lint neither side trips alone -- main's struct is Clone-only. A merge artifact, not a bug.
+    let clamped = clamp_toolset_position(app, position, size.width, size.height);
     if (clamped.x - position.x).abs() < 0.5 && (clamped.y - position.y).abs() < 0.5 {
         return;
     }
@@ -3338,6 +3359,7 @@ fn find_menu_item_by_id<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

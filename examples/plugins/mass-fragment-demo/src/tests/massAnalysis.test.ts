@@ -37,18 +37,14 @@ describe("analyzeMass", () => {
     expect(report.ions).toEqual([{ species: "[M]-", mz: 34.9694, charge: -1 }]);
   });
 
-  it("captures the strong M+2 signature of a polychlorinated compound", () => {
-    const report = analyzeMass({ format: "smiles", value: "ClC(Cl)Cl" }); // chloroform, 3× Cl
+  it("no longer reports an isotope pattern of its own", () => {
+    // The retired approximation. Chloroform was this plugin's showcase — a ~96% M+2 from three
+    // chlorines — and it is now the host's answer, computed by IsoSpec against a real abundance table
+    // rather than estimated here from an eight-element one with no recorded source. The chemistry is
+    // covered by `envelope.real.test.ts` in the adapter, against the real engine.
+    const report = analyzeMass({ format: "smiles", value: "ClC(Cl)Cl" });
     expect(report.formula).toBe("CHCl3");
-    const m2 = report.isotopePattern.find((peak) => peak.label === "M+2");
-    expect(m2?.relativeIntensity).toBeGreaterThan(90); // ~96%: the chloroform isotope fingerprint
-  });
-
-  it("normalizes sulfur isotope abundance against the monoisotopic isotope", () => {
-    const report = analyzeMass({ format: "smiles", value: "CS(C)=O" });
-    const m2 = report.isotopePattern.find((peak) => peak.label === "M+2");
-    expect(report.isotopePattern[0]).toEqual({ label: "M", relativeIntensity: 100 });
-    expect(m2?.relativeIntensity).toBe(4.69);
+    expect(report).not.toHaveProperty("isotopePattern");
   });
 
   it("analyzes a V2000 molfile — the lossless format the selection boundary now emits", () => {

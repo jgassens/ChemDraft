@@ -1,4 +1,8 @@
-import type { PluginCommandContext, PluginCommandResult } from "@chemdraft/plugin-api";
+import type {
+  PluginCommandContext,
+  PluginCommandResult,
+  PluginIsotopeEnvelopeResult
+} from "@chemdraft/plugin-api";
 
 import { composeMassErrorReport, composeMassReport } from "../composeMassReport";
 import { massForwardAnalysisType, massFragmentPanelId } from "../manifest";
@@ -16,7 +20,7 @@ import type { MassReport } from "../massAnalysis";
 export async function analyzeSelectedStructureMass(
   context: PluginCommandContext
 ): Promise<PluginCommandResult<MassReport>> {
-  const { selection, panels, analysis } = context;
+  const { selection, panels, analysis, chemistry } = context;
 
   if (!selection || !analysis) {
     return {
@@ -45,6 +49,24 @@ export async function analyzeSelectedStructureMass(
     const { analyzeMass } = await import("../massAnalysis");
     const report = analyzeMass({ format, value: source.structure });
 
+    // The isotope envelope comes from the host, not from this plugin, and its absence must never cost
+    // the reader the formula, masses, and ions — those are computed here and are perfectly good.
+    //
+    // Two ways it can be missing, and both end as a stated reason rather than a failed command:
+    // `chemistry` is undefined in-process when the host has no engine, and across the worker bridge the
+    // stub exists whenever the permission is declared, so an engine-less host rejects the call instead.
+    // The plugin does NOT fall back to estimating a pattern itself — that is the approximation this
+    // change retired, and reinstating it as a fallback would undo the point.
+    let envelope: PluginIsotopeEnvelopeResult | undefined;
+    if (chemistry) {
+      try {
+        envelope = await chemistry.isotopeEnvelope({ format, structure: source.structure });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "the host could not compute an isotope envelope.";
+        envelope = { available: false, reason };
+      }
+    }
+
     await analysis.write<MassReport>({
       analysisType: massForwardAnalysisType,
       schemaVersion: "1",
@@ -68,7 +90,7 @@ export async function analyzeSelectedStructureMass(
       provenance: { engineId: "chemdraft.mass.ocl", engineVersion: "0.0.0", method: "formula-mass" }
     });
 
-    await panels?.showReport(massFragmentPanelId, composeMassReport(source, report));
+    await panels?.showReport(massFragmentPanelId, composeMassReport(source, report, envelope));
     return { ok: true, data: report };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Mass analysis failed.";

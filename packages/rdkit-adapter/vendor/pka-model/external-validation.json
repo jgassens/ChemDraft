@@ -1,0 +1,21 @@
+{
+ "measurement": "held-out external data, never used in training or fold selection",
+ "model": "site-pka-gnn.json",
+ "source": "QupKake (Shualdon/QupKake, BSD-3-Clause), data/ at the repository root \u2014 Novartis and literature sets, originally from Baltruschat & Czodrowski",
+ "perSet": {
+  "novartis_qupkake_pka.sdf": {
+   "n": 276,
+   "mae": 1.225,
+   "rmse": 1.8784
+  },
+  "literature_qupkake_pka.sdf": {
+   "n": 122,
+   "mae": 1.0236,
+   "rmse": 2.1904
+  }
+ },
+ "samples": 398,
+ "mae": 1.1633,
+ "rmse": 1.9793,
+ "standardError": 0.0803
+}

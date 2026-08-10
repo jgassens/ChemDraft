@@ -5,9 +5,19 @@ import { z } from "zod";
 // a `ChemDraftDocument`, `proposePatch()` takes a `DocumentPatch`). Surfacing them here keeps the plugin
 // boundary a single package: a plugin — and a host merging only the SDK — names these without importing
 // chem-core directly (see docs/plugin-architecture and the M33 boundary guard).
-export type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
+export type { ChemDraftDocument, DocumentObject, DocumentPatch } from "@chemdraft/chem-core";
+import type { DocumentObject } from "@chemdraft/chem-core";
 
-export const PluginApiVersion = "0.1.0" as const;
+/**
+ * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`.
+ *
+ * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
+ * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
+ * predictor among them — refuse to install against this host, for purely additive methods. A plugin
+ * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` to also insert), which this host
+ * satisfies and an older one correctly does not.
+ */
+export const PluginApiVersion = "0.1.2" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -781,6 +791,150 @@ export interface PluginAnalysisAPI {
   getLatest<TPayload = unknown>(query: PluginAnalysisQuery): Promise<PluginAnalysisRecord<TPayload> | undefined>;
 }
 
+/**
+ * Chemistry the host computes on a plugin's behalf, gated by `chemistry.compute`.
+ *
+ * This exists so a plugin need not reimplement chemistry the application already owns. The
+ * mass-fragment demo shipped its own eight-element abundance table and a first-order M/M+1/M+2
+ * estimate precisely because the SDK boundary (ADR-0028 §1) stops a plugin reaching the core's
+ * engines — and the result was a second, worse, unsourced implementation of something the host does
+ * properly. Asking the host is the way out that leaves the boundary intact.
+ */
+export interface PluginIsotopeEnvelopeRequest {
+  format: "smiles" | "molfile-v2000" | "molfile-v3000";
+  structure: string;
+}
+
+export const PluginIsotopeEnvelopeRequestSchema = z
+  .object({
+    format: z.enum(["smiles", "molfile-v2000", "molfile-v3000"]),
+    structure: NonEmptyStringSchema
+  })
+  .strict();
+
+export interface PluginIsotopeEnvelopePeak {
+  /**
+   * The peak's position on the axis named by `positionUnit` — **read that field before labelling it.**
+   *
+   * For a neutral structure this is neutral-molecule mass in daltons. For a charged one it is m/z:
+   * the engine subtracts the electrons and divides by |charge|, so a dication's peaks come back at
+   * half its mass. The field kept the name `mass` and the doc comment said "not m/z" long after the
+   * envelope contract started dividing, and the host dropped the unit on the way through — so a
+   * plugin rendering a drawn dication showed 87.10 under a "Mass (Da)" header for a molecule of
+   * 174.21 Da, with 0.5 spacing between isotopologues. The name is kept for compatibility; the unit
+   * is what decides the label.
+   */
+  mass: number;
+  /** Normalised to the base peak at 100. */
+  relativeIntensity: number;
+}
+
+/**
+ * Either the envelope, or why there is not one.
+ *
+ * A discriminated result rather than a throw or an empty list, because the host declines for real
+ * chemical reasons a plugin has to be able to show a reader — an isotope-labelled structure cannot be
+ * expressed to the engine at all. (A charged structure is no longer one of those reasons: since
+ * envelope contract 2.0.0 the host answers it in m/z rather than declining, which is why
+ * `positionUnit` exists.)
+ */
+export type PluginIsotopeEnvelopeResult =
+  | {
+      available: true;
+      peaks: readonly PluginIsotopeEnvelopePeak[];
+      /**
+       * Which axis `peak.mass` is on: `"dalton"` for a neutral structure, `"thomson"` (m/z) for a
+       * charged one. A renderer must label from this rather than assuming daltons — "Mass (Da)" over
+       * m/z values is a mislabelled axis in exactly the case where the distinction carries the charge
+       * state, and it is the case a reader is least able to catch by eye.
+       */
+      positionUnit: "dalton" | "thomson";
+      /** What the engine dropped, and how much of the distribution survived. */
+      truncation: { policy: string; threshold: number; coveredProbability?: number };
+      engine: { id: string; version: string };
+      /** The named choices behind these intensities — above all, which abundance table produced them. */
+      conventions: readonly string[];
+    }
+  | { available: false; reason: string };
+
+export interface PluginNameToStructureRequest {
+  /** A systematic chemical name, e.g. "2-acetyloxybenzoic acid". */
+  name: string;
+}
+
+export const PluginNameToStructureRequestSchema = z
+  .object({ name: NonEmptyStringSchema })
+  .strict();
+
+/**
+ * Either a structure, or why the name did not become one.
+ *
+ * The two failure modes are deliberately distinct, because a plugin should tell a reader different
+ * things about them. `available: false` means the engine is not there to ask — a build without the
+ * bundled runtime — and nothing about the name. A `parsed: false` result means the engine ran and
+ * could not interpret the name, and carries the engine's own words for why.
+ */
+export type PluginNameToStructureResult =
+  | {
+      available: true;
+      parsed: true;
+      /** SMILES for the named compound, from the engine. Stereodescriptors are preserved. */
+      smiles: string;
+      engine: { id: string; version: string };
+    }
+  | {
+      available: true;
+      parsed: false;
+      /** The engine's own diagnostic, never a synthesised one. */
+      reason: string;
+      engine: { id: string; version: string };
+    }
+  | { available: false; reason: string };
+
+export interface PluginStructureFromSmilesRequest {
+  smiles: string;
+  /** Recorded on the object so a reader can tell what produced it. Free text, e.g. a plugin name. */
+  origin?: string;
+}
+
+export const PluginStructureFromSmilesRequestSchema = z
+  .object({ smiles: NonEmptyStringSchema, origin: z.string().max(200).optional() })
+  .strict();
+
+/**
+ * A drawable object, or why there is not one.
+ *
+ * The object is returned rather than inserted, because inserting is `proposePatch`'s job and that
+ * queue is what gives the user a review step. A plugin gets the thing it could not build for itself —
+ * atoms, bonds, and **2D coordinates** — and still has to propose it like any other change.
+ */
+export type PluginStructureFromSmilesResult =
+  | { available: true; built: true; object: DocumentObject }
+  | { available: true; built: false; reason: string }
+  | { available: false; reason: string };
+
+export interface PluginChemistryAPI {
+  isotopeEnvelope(request: PluginIsotopeEnvelopeRequest): Promise<PluginIsotopeEnvelopeResult>;
+  /**
+   * Lay a SMILES out as a document object a plugin can propose.
+   *
+   * This exists because 2D layout is the drawing application's work, not a plugin's: a plugin that
+   * invented coordinates would produce a molecule with unusable geometry, and one that shipped its own
+   * layout engine would be the mass-fragment demo's abundance table all over again. Optional for the
+   * same version-skew reason as `nameToStructure`.
+   */
+  structureFromSmiles?(
+    request: PluginStructureFromSmilesRequest
+  ): Promise<PluginStructureFromSmilesResult>;
+  /**
+   * Name → structure. Optional on purpose: a host that cannot offer it simply omits it, and a plugin
+   * that finds it missing reports the capability as absent rather than failing. Making it required
+   * would break every existing host implementation of this interface for a capability that is, by
+   * design, allowed not to be there.
+   */
+  nameToStructure?(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -798,6 +952,8 @@ export interface PluginCommandContext {
   panels?: PluginPanelAPI;
   /** Present only when the plugin declares "analysis.write". */
   analysis?: PluginAnalysisAPI;
+  /** Present only when the plugin declares "chemistry.compute" and the host provides an engine. */
+  chemistry?: PluginChemistryAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

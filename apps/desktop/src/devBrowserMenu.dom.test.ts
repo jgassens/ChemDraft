@@ -115,6 +115,6 @@ describe("shared browser menu bar", () => {
       buttonWithText("Toolbars").click();
     });
     expect(button('[data-command-id="view.toolset.toggle.core.ringInspector"]').textContent).toContain("Rings");
-    expect(button('[data-command-id="view.toolset.toggle.core.moleculeInspector"]').textContent).toContain("Molecule");
+    expect(button('[data-command-id="view.toolset.toggle.core.drawnStructureSettings"]').textContent).toContain("Drawn Structure Settings");
   });
 });

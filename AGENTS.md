@@ -377,9 +377,13 @@ Five example plugins live here. Two carry code; three are README-only placeholde
   other analyzer. Keep it free of spectroscopy concepts, workers, and reference databases — that
   absence is the point of it.
 - `molscribe-ocsr` — image-to-structure scaffold; its rules follow below.
-- `advanced-style-pack`, `journal-style-pack`, `opsin-name-to-structure` — README-only
-  placeholders. Keep them placeholders until a slice implements them, and never describe them as
-  shipped plugins; a README naming a future plugin is not a plugin.
+- `advanced-style-pack`, `journal-style-pack` — README-only placeholders. Keep them placeholders
+  until a slice implements them, and never describe them as shipped plugins; a README naming a
+  future plugin is not a plugin.
+- Name→structure is NO LONGER a placeholder plugin and no longer a plugin at all. It shipped as a
+  host CAPABILITY — `chemistry.nameToStructure`, backed by the vendored OPSIN jar on a bundled JRE
+  (`apps/desktop/src-tauri/src/opsin.rs`) — and the `opsin-name-to-structure` example was deleted.
+  Because it spawns a process, it requires `native.execute` in addition to `chemistry.compute`.
 
 `molscribe-ocsr` specifically:
 
@@ -493,10 +497,14 @@ Not allowed:
 
 ### 6.19 `rdkit-adapter`
 
-**Half placeholder, half real** — and the two halves must not be confused for each other.
+**Real, on both halves.** This section described the 2D surface as a placeholder long after it
+stopped being one, and named `createRdkitPlaceholderAdapter`, a function no longer in the tree — so
+a reader following the rulebook was told the opposite of what the code does. That is the same
+failure the section was rewritten once before to fix: a rulebook contradicting the shipped tree
+teaches the reader to discount it.
 
-The 2D chemistry/depiction surface is still a placeholder
-(`rdkitAdapterStatus === "placeholder"`, `createRdkitPlaceholderAdapter`).
+The 2D chemistry/analysis surface is real: `rdkitAdapterStatus === "real"`, `createRdkitAdapter()`,
+and the ~62-method property suite behind `analyzeStructure`. Its rules are §8b's.
 
 The 3D conformer engine is real: ETKDGv3 running in a custom RDKit MinimalLib WASM build, vendored
 at `packages/rdkit-adapter/vendor/` and wired in `conformer.ts`. That slice landed in `81711038`;
@@ -600,6 +608,69 @@ Not allowed:
 
 - Importing it from shipped app or package code
 - Growing it into a second home for production helpers
+
+### 6.26 `analysis-core`
+
+Pure contracts for the property & prediction suite (scoped by `PLANS.md`; the rules are in §8b). No
+RDKit, no OpenChemLib, no worker, no DOM — the adapters produce these types and the worker, panel, and
+provenance report consume them.
+
+Allowed:
+
+- The interpretation ledger (`MolecularInterpretation`, `Transformation`, the atom-mapping algebra)
+- Classification, units, uncertainty, applicability, citations, dataset references, warning codes
+- The `AnalysisResult` discriminated union, `AnalysisRun`, and their `.strict()` Zod schemas
+- The method contract and its registry
+- Scheduling policy (debounce, supersession, session cache) over an injected transport
+- The provenance report model and its text/Markdown renderings
+- The property corpus and the representation-invariance harness
+
+Not allowed:
+
+- Importing a chemistry engine, or any code that loads one
+- Deriving chemistry: valence, implicit hydrogens, aromaticity, and tautomers are the engine's calls
+- Reading `classification.derivation` or `classification.claim` to decide behaviour — those two axes
+  are for display and grouping; behaviour branches on `classification.flags` (see §8b)
+
+### 6.27 `isospec-adapter`
+
+The isotope-envelope engine (scoped by `PLANS.md`; §8 placed it, §8b's rules apply to anything it
+reports). Vendored IsoSpec WASM plus the thinnest surface that loads it.
+
+Allowed:
+
+- Loading `vendor/IsoSpec.{js,wasm}` and typing its Embind surface
+- The pins (`PINNED_ISOSPEC_VERSION`, `PINNED_ISOSPEC_COMMIT`, `PINNED_ISOSPEC_WASM_SHA256`)
+- `explicitFormulaCounts` — IsoSpec demands `H2O1`, never `H2O`, and RDKit's Hill formula is the
+  latter, so the expansion belongs at this boundary
+- Converting an envelope to `Float64Array` for the §5 worker transport
+- Flattening `IsoSpecDimension[]` for the explicit-isotope entry point, and the lookups that address
+  the shipped table by symbol (`isotopesOf`, `isotopeMass`, `electronMass`,
+  `ELEMENT_NAMES_BY_SYMBOL`). The map holds **names only** — no masses and no abundances — because the
+  table names elements in full and RDKit writes symbols; a test asserts every entry resolves against
+  the binary. Values still come from `isotope_table()`, which is what keeps this on the right side of
+  the rule below.
+
+Not allowed:
+
+- **Patching IsoSpec.** It is vendored unpatched and should stay that way; the patch budget §7 tracks
+  is a real maintenance cost and nothing here has needed one. Our own Embind wrapper is not a patch,
+  and may grow when IsoSpec exposes something its formula API cannot reach — as
+  `envelope_from_threshold_isotopes` does for site-specific labels. A wrapper addition that takes raw
+  arrays must validate lengths and normalisation itself: IsoSpec does no bounds checking, so a short
+  array reads past the end of the WASM heap and returns numbers instead of failing.
+- Re-declaring the abundance table in TypeScript. Read it from the binary with `isotope_table()` —
+  IsoSpec records no provenance for it upstream, so "what the shipped engine used" is the only claim
+  that can be defended, and a duplicated copy could disagree with the artifact. This covers the
+  electron mass too: it is a table entry, not a physical constant to type in.
+- Method contracts, classification, or building `DistributionResult`. Those live with the analysis
+  wiring, which is `packages/rdkit-adapter/src/envelope.ts` — and that placement is forced rather than
+  arbitrary: the envelope needs RDKit's composition *and* IsoSpec's distribution, so neither adapter
+  owns the method. `rdkit-adapter` depends on this package; the reverse must never happen.
+
+Its abundance set is **convention-dependent** and must be disclosed wherever a number derived from it
+is shown: ¹³C is 0.82% above the commonly quoted CIAAW representative value. Treat it the way
+`includeSandP` is treated, not as an implementation detail.
 
 ## 7. Plugin API rules
 
@@ -779,8 +850,96 @@ chosen because the nmrshiftdb2 Database License requires prediction software rel
 be OSI-approved. MIT does NOT cover the bundled reference database: it is a derivative database under
 the nmrshiftdb2 Database License (ODbL-derived) with share-alike and attribution obligations that
 travel with any redistribution, including a packaged plugin zip. Never describe a packaged plugin as
-"MIT" without that carve-out. The root repository `LICENSE` remains unfinalized (`UNLICENSED` in
-package.json) — the project owner's call; do not change it.
+"MIT" without that carve-out. The root repository is **Apache-2.0** (finalized 2026-07-31 by the
+project owner; see §8c). Changing it again is the owner's call — do not.
+
+## 8c. Licensing and redistribution rules
+
+**The core is Apache-2.0** (`LICENSE`, `package.json`, finalized 2026-07-31). Attribution plus an
+express patent grant. The example plugins and the two SDK packages stay MIT — a permissive core does
+not require a plugin to match it, and nothing here has ever said otherwise.
+
+**`NOTICE` is part of the distribution.** Apache-2.0 §4(d) obliges a redistributor to carry it. It
+records the project's own copyright and every vendored component whose licence requires attribution
+(RDKit BSD-3-Clause, IsoSpec BSD-2-Clause, and the statically linked InChI, whose 1.07.3 terms are
+still **unconfirmed** and must be resolved before any public redistribution). Adding a vendored binary
+means adding its row to `NOTICE` and to `docs/architecture/dependency-inventory.md` in the same change.
+
+**Code licence and data licence are separate claims, and a package must not merge them.** This is the
+rule the nmrshiftdb2 case exists to enforce: the NMR predictor's shift database is a derivative database
+under nmrshiftdb2's ODbL-derived terms, with share-alike and attribution obligations that travel with
+the zip, and no MIT grant on the surrounding code reaches it. So:
+
+- A plugin bundling data under terms different from its code **must** declare both — its `license`
+  field describes its *code*, and a `dataLicenses` entry names each dataset with its terms.
+- A package that ships a dataset while claiming only a code licence is refused at packaging time
+  (`tools/plugin-extract/gates.ts`). The gate is mechanical: it cannot judge whether stated terms are
+  *correct*, only that a bundled dataset is not silently covered by the code licence.
+- Never describe such a package by its code licence alone, in a manifest, a README, or a release note.
+
+**What this is not.** It is not a rule that plugins inherit the core's licence; permissive licences
+never require that. It is a labelling obligation, and it exists because the failure it prevents —
+shipping data under terms nobody recorded — is invisible until someone else discovers it.
+
+## 8b. Property & prediction suite rules (branch `chemdraft-analyzers`)
+
+**The plan of record is `docs/shipped/analyzers-property-prediction-suite.md`.** It holds the
+architecture document this work was scoped from — §1 interpretation ledger, §2 classification, §3 run
+and result union, §4 the two tracks, §5 execution, §6 corrections register, §7 engine findings, §8
+dependency triage, §9 rollout, §10 verification — plus the phase-by-phase delivery sequence and the
+definition of done. **Every bare "§n" below and in the analysis source comments refers to a section of
+that document.** Read it before changing anything in `analysis-core` or the RDKit adapter's analysis
+path; the rules here are its conclusions, not their derivation.
+
+It used to live in `PLANS.md`, and closeout moved it — correctly, per §1's own rule that a completed
+slice leaves `PLANS.md`. What closeout missed is that ~49 source comments cite "PLANS.md §n", and
+`PLANS.md` no longer contains a single one of those sections. Those citations resolve to the file
+named above; a comment saying `PLANS.md §n` is stale, not wrong about which section it means.
+
+**One parse, many named interpretations.** Parse and sanitise once through RDKit, keep the source
+representation, and derive explicitly named interpretations from it. Composition, charge, mass, and
+isotope specification always describe what the user drew. A method that wants a desalted or neutralised
+molecule gets a *derived* interpretation with a populated `Transformation` ledger — never a silent
+substitution, and never in place of the source result. Sodium benzoate must not become benzoic acid
+because a predictor prefers neutrals.
+
+**The active interpretation is visible and changeable.** Every analysis surface shows which
+interpretation its numbers describe and offers a way to change it. Per-atom results map back through
+the ledger to the atoms that were drawn; an interpretation that reindexes without updating its atom
+mapping silently breaks every per-atom feature.
+
+**Classification: enums display, flags decide.** `derivation` and `claim` group and label.
+`ClassificationFlags` is what code branches on. Do not add a fourth axis.
+
+**Declining is a feature.** A method with an element parameterisation must decline (`unsupported`) for
+elements outside it rather than report a fallback contribution: RDKit answers Crippen logP −2.95 for
+sodium benzoate against +0.05 for the benzoate anion, and nothing in the engine flags the difference.
+Runtime failures map onto `AnalysisStatus` and `applicability`, never onto prose. A report must show
+what it could not compute — "unavailable" and "not asked for" must never look the same.
+
+**Every number carries a method contract.** Public name, exact implementation and version, default
+interpretation, units, the conventions it chose, supported and unsupported chemistry, declining
+conditions, and version-increment triggers. Nearly every descriptor here is convention-dependent —
+ring counts go through SSSR, masses through the standard atomic weights in force — and the contract is
+where that is stated. Where a contract's value depends on the loaded artifact rather than the source
+tree, detect the capability **by value**: on the committed MinimalLib build, `get_descriptors` silently
+ignores an unsupported details argument instead of rejecting it, so an arity check would report a
+capability that is not there and label an old number with a new convention.
+
+**A stated convention must reach the reader, and a disclosure must point where the answer is.**
+Recording conventions on the contract is necessary and not sufficient: for a while every one of the 62
+contracts named its conventions, the schema refused any that did not, and the panel said
+"convention-dependent — see Provenance" over a table of method ids and versions that never named a
+convention. A note pointing somewhere the answer is not is worse than no note, because it reads as
+though the disclosure happened. Conventions therefore travel **on the result**, not by registry lookup
+— a run is cached and re-rendered, and the convention that produced a number is the one in force then,
+not whatever the current engine build would choose — and `report.real.test.ts` asserts that every
+"see X" note names a section the report actually contains.
+
+**Never build a second molecular-interpretation engine.** Formula, charge, and composition come from
+the sanitised RDKit molecule via `get_json()`; masses come from RDKit's own `amw`/`exactmw`. Reading
+and selecting over the engine's own atom and bond lists is bookkeeping and is fine. Re-deciding
+valence, hydrogen counts, or aromaticity is not.
 
 ## 9. Command registry rules
 
@@ -828,6 +987,30 @@ plugin.molscribeOcsr.recognizeImage
 A command should be invokable from menu, quick-action toolbar, floating/dockable tool palette, keyboard shortcut, command palette later, and plugin call where appropriate.
 
 Do not hard-code important actions only inside button click handlers.
+
+## 9a. A quantity validated conditional on one partition is not validated conditional on another
+
+**Uncertainty calibration is part of a model's applicability domain.** An interval fitted on internal folds
+is not a validated interval on a new chemical family, and reporting it as one is the strongest false claim
+a predictor can make — a wrong number invites checking, a wrong error bar suppresses it.
+
+This repository has now made the same mistake twice, at two different conditioning levels:
+
+| fixed conditional on | still broken conditional on | how it showed up |
+|---|---|---|
+| **element** — carbon got its own interval curve, 58.8% → 67.0% coverage | **distribution** | 67.6% coverage on the OOF calibration corpus against 57.3% on the external development set, 44% for N-acidic |
+| **scaffold** — folds hashed by Bemis-Murcko scaffold | **molecular family** | 642 protonation/tautomer families spanning 1,344 rows straddled folds; closing it moved the honest baseline 0.7281 → 0.7482 |
+
+The pattern to watch for: a stratified fix reports a healthy number *within* the strata it was fitted on,
+which reads as "solved" and hides that some other partition is now the leak. Conformal validity rests on
+the calibration set and the query being exchangeable; a structurally different molecule breaks that
+assumption rather than merely straining it.
+
+**So, in practice.** State the partition alongside any coverage or accuracy figure — "OOF calibration
+corpus", "external development set" — never a bare percentage. Before claiming a stratified fix worked,
+name the next partition it could be leaking through and measure that one too. And never derive an
+abstention threshold or interval width from the same molecules that revealed the problem: the rule must be
+written before the set it will be judged on is opened, or it is fitted to its own test.
 
 ## 10. Chemistry invariants
 

@@ -521,11 +521,14 @@ chemdraft/
 
   examples/
     plugins/
-      mass-fragment-demo/     Working non-NMR analyzer; proves the plugin API is domain-agnostic
-      molscribe-ocsr/         Optional image-to-structure plugin scaffold
-      opsin-name-to-structure/  README-only placeholder
-      advanced-style-pack/      README-only placeholder
-      journal-style-pack/       README-only placeholder
+      mass-fragment-demo/     Real: mass analysis over the host's IsoSpec engine (chemistry.compute)
+      molscribe-ocsr/         Real: image-to-structure runtime canary
+      advanced-style-pack/      PLACEHOLDER — README only, nothing implemented
+      journal-style-pack/       PLACEHOLDER — README only, nothing implemented
+
+  (name→structure and the NMR predictor are first-party plugins in their own
+   repositories, installed as packages rather than bundled — see the shipped
+   analyzers slice in docs/shipped/)
 
   docs/
     architecture/

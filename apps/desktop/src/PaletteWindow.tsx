@@ -1,3 +1,4 @@
+import type { AnalysisReport } from "@chemdraft/analysis-core";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
 import {
@@ -8,6 +9,7 @@ import {
   type ToolbarFlyoutRequest,
   type ToolbarPopoverAnchor
 } from "./ToolPalette";
+import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
@@ -57,6 +59,7 @@ import {
   setToolsetPopoverContent,
   sendPaletteCommand,
   sendPaletteCommandCancel,
+  sendPaletteInspectorAction,
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
   showPaletteFloatingTooltip,
@@ -151,6 +154,9 @@ export function PaletteWindow({
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const [currentSelection, setCurrentSelection] = useState<ToolbarSelectionModel | undefined>();
+  const [currentMolecularInspector, setCurrentMolecularInspector] = useState<AnalysisReport | undefined>();
+  const [molecularInspectorBusy, setMolecularInspectorBusy] = useState(false);
+  const [molecularInspectorStale, setMolecularInspectorStale] = useState(false);
   // A window opened for a plugin/user toolset starts with the core-only registry (its definition
   // arrives over the definitions IPC channel a beat later). While it's unknown, render an empty
   // placeholder carrying THIS window's real id — never fall back to core.main, which would render the
@@ -485,6 +491,18 @@ export function PaletteWindow({
           ? payload.currentSelection
           : undefined
       );
+      // Gated on the report's own fingerprint. Every broadcast arrives as a FRESHLY DESERIALISED
+      // object, so `Object.is` can never bail out and a plain `setState` re-rendered the whole pane —
+      // `buildInspectorModel`, `reportForSelection`, and the body memo's `toPanelReport` — on a
+      // payload identical to the one already on screen. React cannot see that; the fingerprint can.
+      setCurrentMolecularInspector((previous) =>
+        previous?.fingerprint !== undefined &&
+        previous.fingerprint === payload.currentMolecularInspector?.fingerprint
+          ? previous
+          : payload.currentMolecularInspector
+      );
+      setMolecularInspectorBusy(payload.molecularInspectorBusy === true);
+      setMolecularInspectorStale(payload.molecularInspectorStale === true);
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -657,6 +675,22 @@ export function PaletteWindow({
   };
   const cancelPreviewCommand = () => {
     void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+  };
+  // The two Molecular Inspector actions the detached palette never forwarded, so its Copy button
+  // reported success onto an empty clipboard and its interpretation select was inert. That is the
+  // SHIPPING desktop path (`shouldDefaultToNativePalettes()`); the web-preview branch supplied these
+  // directly and worked, which is why it survived review.
+  //
+  // Copy is handled HERE rather than routed to the main window: the pane hands over the already
+  // rendered text, and the palette can reach the clipboard perfectly well. Going through the same
+  // `writeClipboardTextItems` helper the rest of the app uses is what makes the failure legible —
+  // it returns false when the write did not happen, which the pane needs in order not to claim it did.
+  const molecularInspectorCopy = (text: string) => {
+    void writeClipboardTextItems([{ type: "text/plain", text }]).catch(() => false);
+  };
+  // Changing the interpretation re-runs the analysis, which only the main window can do.
+  const molecularInspectorChangeInterpretation = (interpretationId: string | undefined) => {
+    void sendPaletteInspectorAction({ kind: "interpretation", interpretationId }).catch(() => undefined);
   };
 
   // The colour picker and the flyout dropdowns open in this palette's own floating popover window
@@ -964,6 +998,9 @@ export function PaletteWindow({
           currentArtStyleTarget,
           currentMoleculeInspector,
           currentSelection,
+          currentMolecularInspector,
+          molecularInspectorBusy,
+          molecularInspectorStale,
           currentTextStyle,
           currentTextScript,
           onColorPickerOpenChange: setColorPickerOpen,
@@ -974,6 +1011,8 @@ export function PaletteWindow({
           onMoleculeInspectorPreview: previewCommand,
           onMoleculeInspectorCommit: commitPreviewCommand,
           onMoleculeInspectorCancel: cancelPreviewCommand,
+          onMolecularInspectorCopy: molecularInspectorCopy,
+          onMolecularInspectorChangeInterpretation: molecularInspectorChangeInterpretation,
           onInvoke: invokeCommand
         }}
       />

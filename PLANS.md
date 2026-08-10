@@ -4,6 +4,26 @@ This file describes **the slice currently in flight** — nothing else. Complete
 `docs/shipped/README.md` when they land, so that an agent told to "follow PLANS.md" gets the work
 in progress rather than a changelog.
 
+---
+
+# In flight: pKa applicability, and the analyzers tail
+
+The analyzers slice shipped and moved to
+[`docs/shipped/analyzers-property-prediction-suite.md`](docs/shipped/analyzers-property-prediction-suite.md).
+What remains open from it:
+
+- **The prospective applicability protocol**, `docs/benchmarks/pka-applicability-prospective-protocol.md`.
+  §7 — the rule deciding when a prediction is shown with an interval, without one, or not at all — is
+  deliberately blank, and the evaluation set it will be judged on has not been assembled. Order of
+  operations is enforced by three commits in sequence: the sealed set's hash, then the rule, then the
+  scores. Writing the rule after seeing the set voids the result.
+- **OpenClatura silent omission.** A validated patch exists at `docs/benchmarks/openclatura-patch`; it
+  has not been submitted upstream.
+- **The pKa model itself is frozen** at SHA-256 `79061c4d…`. Model research is stopped, not paused for
+  lack of ideas: the measured gap is not where feature or optimizer work reaches. Reopening it needs a
+  reason recorded here first.
+
+
 Repo-wide scope lives in `PLAN.md`. One further scoped plan applies inside its area:
 `PLAN-spin3d-forcefields.md` (Phase 3 blocked on owner decisions). The selection-architecture plan
 finished and moved to `docs/shipped/selection-policy-refactor.md`.

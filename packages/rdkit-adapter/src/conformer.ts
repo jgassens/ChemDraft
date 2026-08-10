@@ -44,6 +44,13 @@ export interface RdkitJsMol {
   get_molblock?(): string;
   /** Canonical isomeric SMILES, used by real-engine identity regression tests. */
   get_smiles?(): string;
+  /**
+   * The canonical tautomer's V2000 molblock, or "" when canonicalisation fails.
+   *
+   * Vendor patch #7. Optional because an artifact predating it simply does not have the binding, and
+   * `detectEngineCapabilities` probes for it BY VALUE rather than by presence — see `methods.ts`.
+   */
+  get_canonical_tautomer_molblock?(): string;
   delete(): void;
 }
 

@@ -1,5 +1,11 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
+  PluginIsotopeEnvelopeRequest,
+  PluginIsotopeEnvelopeResult,
+  PluginNameToStructureRequest,
+  PluginNameToStructureResult,
+  PluginStructureFromSmilesRequest,
+  PluginStructureFromSmilesResult,
   PluginManifest,
   PluginPermission,
   PluginSelectionSnapshot,
@@ -15,6 +21,26 @@ import {
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
+import {
+  computeIsotopeEnvelopeForPlugin,
+  nameToStructureForPlugin,
+  structureFromSmilesForPlugin
+} from "./pluginChemistry";
+
+/** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
+export type DesktopIsotopeEnvelopeProvider = (
+  request: PluginIsotopeEnvelopeRequest
+) => Promise<PluginIsotopeEnvelopeResult>;
+
+/** Serves name → structure to a plugin holding `chemistry.compute`. */
+export type DesktopNameToStructureProvider = (
+  request: PluginNameToStructureRequest
+) => Promise<PluginNameToStructureResult>;
+
+/** Lays a SMILES out as a document object for a plugin holding `chemistry.compute`. */
+export type DesktopStructureFromSmilesProvider = (
+  request: PluginStructureFromSmilesRequest
+) => Promise<PluginStructureFromSmilesResult>;
 
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -32,6 +58,16 @@ export interface DesktopPluginRuntimeOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /**
+   * Serves `chemistry.compute`. Defaults to the real engine-backed implementation; injectable so tests
+   * can drive the capability without standing up an analysis worker. Passing `null` withholds it, which
+   * is how a host with no engines is modelled — the plugin then sees no `chemistry` API at all.
+   */
+  computeIsotopeEnvelope?: DesktopIsotopeEnvelopeProvider | null;
+  /** Serves name → structure under the same permission and the same null-withholds rule. */
+  convertNameToStructure?: DesktopNameToStructureProvider | null;
+  /** Serves 2D layout under the same permission and the same null-withholds rule. */
+  buildStructureFromSmiles?: DesktopStructureFromSmilesProvider | null;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -96,6 +132,17 @@ export interface DesktopPluginRuntime {
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
   const now = options.now ?? (() => new Date());
+  const envelopeProvider =
+    options.computeIsotopeEnvelope === undefined ? computeIsotopeEnvelopeForPlugin : options.computeIsotopeEnvelope;
+  const nameProvider =
+    options.convertNameToStructure === undefined ? nameToStructureForPlugin : options.convertNameToStructure;
+  // Bound to the runtime's own document getter: layout needs the page it is being placed on, and a
+  // plugin must not be able to name a different document than the one the host is showing.
+  const structureProvider =
+    options.buildStructureFromSmiles === undefined
+      ? (request: PluginStructureFromSmilesRequest) =>
+          structureFromSmilesForPlugin(request, options.getActiveDocument)
+      : options.buildStructureFromSmiles;
   const nowIso = (): string => {
     const value = now();
     return typeof value === "string" ? value : value.toISOString();
@@ -114,6 +161,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
     },
+    ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
+    ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
+    ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
     now
   });
   controller = new PluginPanelController(host, nowIso);

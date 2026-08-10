@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type {
   ToolsetArtPaintTarget,
@@ -31,6 +32,12 @@ export interface ToolbarWidgetState {
   /** True while the palette is in customize mode. Variant-swapping widgets pin themselves to their
    *  default layout so the user always customizes against the layout they'll see most. */
   customizing?: boolean;
+  /** The latest analysis report, for the Molecular Inspector palette. Absent until one has run. */
+  currentMolecularInspector?: AnalysisReport;
+  /** True while a newer analysis for the same selection is in flight. */
+  molecularInspectorBusy?: boolean;
+  /** The report no longer describes the current selection. See MolecularInspectorPane. */
+  molecularInspectorStale?: boolean;
   onInvoke: (commandId: string) => void;
   onColorPickerOpenChange?: (open: boolean) => void;
   onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
@@ -40,6 +47,8 @@ export interface ToolbarWidgetState {
   onMoleculeInspectorPreview?: (commandId: string) => void;
   onMoleculeInspectorCommit?: (commandId: string) => void;
   onMoleculeInspectorCancel?: () => void;
+  onMolecularInspectorCopy?: (text: string) => void;
+  onMolecularInspectorChangeInterpretation?: (interpretationId: string | undefined) => void;
 }
 
 const DEFAULT_TOOLBAR_WIDGET_STATE: ToolbarWidgetState = {
@@ -70,7 +79,8 @@ export const TOOLBAR_WIDGET_IDS = {
   textStyleControls: "widget.core.textStyleControls",
   artStyleControls: "widget.core.artStyleControls",
   ringInspector: "widget.core.ringInspector",
-  moleculeInspector: "widget.core.moleculeInspector"
+  drawnStructureSettings: "widget.core.drawnStructureSettings",
+  molecularInspector: "widget.core.molecularInspector"
 } as const;
 
 export type ToolbarWidgetId = (typeof TOOLBAR_WIDGET_IDS)[keyof typeof TOOLBAR_WIDGET_IDS];

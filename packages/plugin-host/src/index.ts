@@ -10,9 +10,16 @@ import type {
   PluginAnalysisQuery,
   PluginAnalysisRecord,
   PluginAnalyzerContribution,
+  PluginChemistryAPI,
   PluginCommandContext,
   PluginCommandContribution,
   PluginCommandHandler,
+  PluginIsotopeEnvelopeRequest,
+  PluginIsotopeEnvelopeResult,
+  PluginNameToStructureRequest,
+  PluginNameToStructureResult,
+  PluginStructureFromSmilesRequest,
+  PluginStructureFromSmilesResult,
   PluginMenuContribution,
   NormalizedProposedDocumentPatch,
   PluginManifest,
@@ -31,7 +38,14 @@ import { AnalysisStore } from "./analysisStore";
 
 export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
-import { PluginPanelReportSchema, ProposedDocumentPatchSchema, parsePluginManifest } from "@chemdraft/plugin-api";
+import {
+  PluginIsotopeEnvelopeRequestSchema,
+  PluginNameToStructureRequestSchema,
+  PluginPanelReportSchema,
+  PluginStructureFromSmilesRequestSchema,
+  ProposedDocumentPatchSchema,
+  parsePluginManifest
+} from "@chemdraft/plugin-api";
 
 export interface CommandDefinition {
   id: string;
@@ -170,6 +184,18 @@ export interface PluginHostOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Renders a validated panel report; absent hosts simply expose no panels API. */
   showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
+  /**
+   * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
+   * why the capability is optional on the context rather than assumed. This package stays engine-free;
+   * the application supplies the engine it already owns.
+   */
+  computeIsotopeEnvelope?: (request: PluginIsotopeEnvelopeRequest) => Promise<PluginIsotopeEnvelopeResult>;
+  /** Converts a systematic name to a structure. Same rule: absent hosts answer `available: false`. */
+  convertNameToStructure?: (request: PluginNameToStructureRequest) => Promise<PluginNameToStructureResult>;
+  /** Lays a SMILES out as a document object. Same rule: absent hosts answer `available: false`. */
+  buildStructureFromSmiles?: (
+    request: PluginStructureFromSmilesRequest
+  ) => Promise<PluginStructureFromSmilesResult>;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   now?: () => Date | string;
@@ -189,6 +215,9 @@ export class PluginHost {
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
+  private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
+  private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
+  private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
   private readonly onProposedPatchesChanged?: PluginHostOptions["onProposedPatchesChanged"];
   private readonly now: () => Date | string;
   private readonly createId: () => string;
@@ -202,6 +231,9 @@ export class PluginHost {
     this.getSelectionSnapshot = options.getSelection;
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
+    this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
+    this.convertNameToStructure = options.convertNameToStructure;
+    this.buildStructureFromSmiles = options.buildStructureFromSmiles;
     this.onProposedPatchesChanged = options.onProposedPatchesChanged;
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? (() => globalThis.crypto.randomUUID());
@@ -380,6 +412,76 @@ export class PluginHost {
         }
       : undefined;
 
+    // Presence tracks the PERMISSION alone; whether the host can actually serve the call is carried in
+    // the answer. That split is deliberate: across the worker bridge the plugin's stub is built from
+    // its manifest permissions, with no way to know what the host wired up, so gating presence on the
+    // engine too would make the in-process and worker paths disagree for the same plugin on the same
+    // host — one seeing no capability, the other a rejected call. One code path, one shape of answer.
+    const chemistry: PluginChemistryAPI | undefined = this.hasPermission(pluginId, "chemistry.compute")
+      ? {
+          isotopeEnvelope: async (request) => {
+            this.requirePermission(pluginId, "chemistry.compute");
+            const parsed = PluginIsotopeEnvelopeRequestSchema.parse(request);
+            if (!this.computeIsotopeEnvelope) {
+              return { available: false, reason: "This host provides no isotope engine." };
+            }
+            return await this.computeIsotopeEnvelope(parsed);
+          },
+          // `native.execute` ON TOP OF `chemistry.compute`, and this is the one method that needs it.
+          //
+          // Name-to-structure is not computed in-process: the desktop's implementation invokes a Tauri
+          // command that runs `Command::new(java).arg("-jar")` on the bundled OPSIN runtime. §7 lists
+          // `native.execute` among the Dangerous permissions and `chemistry.compute` among the
+          // ordinary ones, so gating a subprocess spawn on the ordinary one handed every plugin
+          // holding it — including the bundled mass-fragment demo — the ability to start an OS
+          // process, which §16 forbids ("Run native code unless granted"). It was unreachable only
+          // because the worker allow-list had not been updated; completing that list is what made this
+          // live, so the two land together.
+          //
+          // Presence tracks the permissions the method actually needs, which keeps the uniform rule
+          // above intact rather than breaking it: a plugin sees the method exactly when it has
+          // declared what the method costs. `workerRuntime` applies the identical condition, so the
+          // in-process and worker paths still agree about what this host offers.
+          //
+          // The spawn itself stays narrow — fixed argv, the name over stdin, control characters
+          // rejected, a 2,000-character cap and a 30-second kill — so this is a declaration
+          // requirement, not a sandbox escape being papered over.
+          ...(this.hasPermission(pluginId, "native.execute")
+            ? {
+                nameToStructure: async (request: PluginNameToStructureRequest) => {
+                  this.requirePermission(pluginId, "chemistry.compute");
+                  this.requirePermission(pluginId, "native.execute");
+                  const parsed = PluginNameToStructureRequestSchema.parse(request);
+                  if (!this.convertNameToStructure) {
+                    return { available: false, reason: "This host provides no name-to-structure engine." };
+                  }
+                  return await this.convertNameToStructure(parsed);
+                }
+              }
+            : {}),
+          // `document.read` as well, and for the same reason `nameToStructure` needs `native.execute`:
+          // the answer carries information the plugin has not been granted otherwise. The object this
+          // returns is laid out against the ACTIVE DOCUMENT — its id encodes the document's object
+          // count (`nextObjectId` is `existingIds.size + 1`) and its coordinates encode the page
+          // dimensions (the insert point is the page centre). The desktop bound this to its ungated
+          // document getter rather than the `document.read`-checked reader, so a plugin holding only
+          // `chemistry.compute` could read both, past the gate that exists to stop it.
+          ...(this.hasPermission(pluginId, "document.read")
+            ? {
+                structureFromSmiles: async (request: PluginStructureFromSmilesRequest) => {
+                  this.requirePermission(pluginId, "chemistry.compute");
+                  this.requirePermission(pluginId, "document.read");
+                  const parsed = PluginStructureFromSmilesRequestSchema.parse(request);
+                  if (!this.buildStructureFromSmiles) {
+                    return { available: false, reason: "This host provides no 2D layout engine." };
+                  }
+                  return await this.buildStructureFromSmiles(parsed);
+                }
+              }
+            : {})
+        }
+      : undefined;
+
     return {
       plugin: {
         id: plugin.manifest.id,
@@ -387,6 +489,7 @@ export class PluginHost {
         version: plugin.manifest.version,
         permissions: plugin.manifest.permissions
       },
+      ...(chemistry ? { chemistry } : {}),
       documents: {
         getActiveDocument: async () => {
           this.requirePermission(pluginId, "document.read");
