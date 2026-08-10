@@ -93,3 +93,55 @@ for binary in "${MACH_O[@]}"; do
 done
 
 echo "OPSIN runtime signed and verified (${#MACH_O[@]} files)."
+
+# THE JAR IS ALSO A CODE CONTAINER. The notary service unpacks zip archives — including jars — and
+# walks the Mach-O files inside them. opsin-cli ships JNA's libjnidispatch.jnilib and jna-inchi's
+# libjnainchi.dylib for darwin in both architectures, and submission 2026-08-10 was rejected on
+# exactly those four entries. The Linux/BSD .so entries are ELF and invisible to the notary.
+#
+# The jar is git-tracked, so this signs the darwin natives IN PLACE and the signed jar is meant to
+# be committed. The verify-first check keeps the step idempotent: once the committed jar carries our
+# signatures, release builds leave it byte-identical and the working tree stays clean.
+for JAR in "$TAURI_DIR"/resources/opsin/*.jar; do
+  [ -f "$JAR" ] || continue
+
+  NATIVES=()
+  while IFS= read -r entry; do
+    NATIVES+=("$entry")
+  done < <(unzip -Z1 "$JAR" | grep -E '\.(dylib|jnilib)$' || true)
+  [ "${#NATIVES[@]}" -gt 0 ] || continue
+
+  JAR_TMP="$(mktemp -d)"
+  trap 'rm -rf "$JAR_TMP"' EXIT
+  (cd "$JAR_TMP" && unzip -q -o "$JAR" "${NATIVES[@]}")
+
+  ALREADY_SIGNED=1
+  for entry in "${NATIVES[@]}"; do
+    if ! codesign --verify --strict "$JAR_TMP/$entry" 2>/dev/null; then
+      ALREADY_SIGNED=0
+      break
+    fi
+    # No `grep -q` on a live pipe: under pipefail, grep quitting at the first match can SIGPIPE
+    # codesign and fail the pipeline even though the signature is ours.
+    SIGN_INFO="$(codesign -dvv "$JAR_TMP/$entry" 2>&1 || true)"
+    case "$SIGN_INFO" in
+      *"Authority=$APPLE_SIGNING_IDENTITY"*) ;;
+      *) ALREADY_SIGNED=0; break ;;
+    esac
+  done
+
+  if [ "$ALREADY_SIGNED" -eq 1 ]; then
+    echo "$(basename "$JAR"): ${#NATIVES[@]} embedded natives already signed; jar untouched."
+    continue
+  fi
+
+  echo "Signing ${#NATIVES[@]} embedded natives in $(basename "$JAR")..."
+  for entry in "${NATIVES[@]}"; do
+    codesign --force --options runtime --timestamp \
+      --entitlements "$ENTITLEMENTS" \
+      --sign "$APPLE_SIGNING_IDENTITY" "$JAR_TMP/$entry"
+    codesign --verify --strict "$JAR_TMP/$entry"
+  done
+  (cd "$JAR_TMP" && zip -q "$JAR" "${NATIVES[@]}")
+  echo "$(basename "$JAR"): embedded natives signed and jar updated in place."
+done
