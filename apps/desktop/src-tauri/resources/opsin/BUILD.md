@@ -11,11 +11,21 @@ That is the whole reason this directory holds a JAR instead of a `.wasm` like ev
 ## Pin
 - Release: **`2.9.0`**, published 2026-03-15, from `dan2097/opsin`
 - Artifact: `opsin-cli-2.9.0-jar-with-dependencies.jar` (13.7 MB)
-- SHA-256: `c2e29326c281f87b59a05d934d8589adac6e9d17b95b984931b3e739111b360f`
+- SHA-256: `a39cd589eb46709b1ca1e086a36a50f7c93f294cff7ade7c87c2da06efb6e5ac`
+  (the **shipped** jar, which differs from upstream only by the code signing described below; the
+  test that pins this line requires it to hold the bare hash)
+- Upstream SHA-256: `c2e29326c281f87b59a05d934d8589adac6e9d17b95b984931b3e739111b360f` — the jar as
+  released by `dan2097/opsin`
 - License: **MIT**, © 2017 Daniel Lowe — `OPSIN-LICENSE.txt`, vendored beside the artifact
-- **Unmodified.** The released jar is shipped byte-for-byte. It is tempting to strip `log4j-core` (see
-  the runtime section — it costs ~20 MB), but repackaging a third-party release makes "is this really
-  OPSIN 2.9.0?" unanswerable from the hash, and that trade is not worth 20 MB.
+- **Modified only by code signing.** Apple's notary service unpacks jars and walks the Mach-O files
+  inside; the first 0.3.2 submission was rejected on exactly four entries — JNA's
+  `com/sun/jna/darwin-{aarch64,x86-64}/libjnidispatch.jnilib` and jna-inchi's
+  `darwin-{aarch64,x86-64}/libjnainchi.dylib`. `scripts/sign-opsin-runtime.sh` re-signs those four
+  with our Developer ID identity and repacks them into the jar; **every other entry is byte-identical
+  to upstream**, so "is this really OPSIN 2.9.0?" stays answerable by diffing entry contents against
+  the upstream release. No classes, resources, or manifests are touched. The old temptation to strip
+  `log4j-core` (see the runtime section — it costs ~20 MB) remains resisted: signing is forced by
+  notarization, repackaging for size is a choice.
 
 > ⚠️ **It must be the `cli` jar, not `core`.** OPSIN 2.9.0 removed `main` from `NameToStructure`, and
 > `opsin-core-…-jar-with-dependencies.jar` (4.9 MB) has **no `Main-Class`** — it cannot be run at all.
