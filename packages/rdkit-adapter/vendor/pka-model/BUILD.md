@@ -121,7 +121,7 @@ second measurement reversed the first.**
 | `macro_validate` zwitterionic | **0.130** | 0.22 |
 | `macro_validate` azole | 0.212 | **0.15** |
 | SAMPL6 matched | 0.491 | **0.480** |
-| SAMPL6 within one log unit | **87%** | 90% |
+| SAMPL6 within one log unit | **90%** | 90% |
 | SAMPL6 extra steps | 49 | 49 |
 | artifact | **4.5 MB** | 12.2 MB |
 

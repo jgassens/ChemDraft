@@ -264,10 +264,16 @@ describe("SAMPL6, end to end", () => {
     // larger is a change the published claim has to be re-earned for.
     const withinOne = matched.filter((error) => error <= 1).length;
     const withinTwo = matched.filter((error) => error <= 2).length;
-    expect(mean(matched)).toBeCloseTo(0.5, 1);
+    const rmse = Math.sqrt(matched.reduce((sum, error) => sum + error * error, 0) / matched.length);
+    expect(mean(matched)).toBeCloseTo(0.49, 1);
     expect(mean(matched)).toBeLessThan(0.55);
     expect((100 * withinOne) / matched.length).toBeGreaterThanOrEqual(85);
     expect(withinTwo).toBe(matched.length);
+    // RMSE and the worst case are asserted too, because the retrain moved them the OTHER way — MAE and
+    // coverage improved while the tail got longer, and a suite that only watches the mean would have
+    // reported an unambiguous win. Both figures are in the published contract, so both are defended.
+    expect(rmse).toBeLessThan(0.75);
+    expect(Math.max(...matched)).toBeLessThan(2);
     // And it must not have achieved that by answering almost nothing.
     expect(results.filter((entry) => !entry.declined).length).toBeGreaterThanOrEqual(
       Math.floor(results.length * 0.6)

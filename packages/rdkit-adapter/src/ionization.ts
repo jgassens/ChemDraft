@@ -130,9 +130,9 @@
  * **What it scores when it is given nothing but a structure.** Every figure above is oracle-site: the
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
- * pipeline scores **MAE 0.50 and RMSE 0.60** over 31 macroscopic values when each measured value is
- * matched to its closest prediction, with 87% inside one log unit, 100% inside two, and a largest single
- * error of 1.35 — and emits 37 extra steps nothing measured. RMSE is quoted alongside because it is what
+ * pipeline scores **MAE 0.49 and RMSE 0.64** over 31 macroscopic values when each measured value is
+ * matched to its closest prediction, with 90% inside one log unit, 100% inside two, and a largest single
+ * error of 1.72 — and emits 39 extra steps nothing measured. RMSE is quoted alongside because it is what
  * the challenge itself reported, and because MAE alone flatters a method with a long tail.
  *
  * The gap between 1.0 and 2.2 is the honest measure of what is still wrong, and it is not valuation:
@@ -1462,8 +1462,10 @@ export function ionizationContract(): MethodContract {
         "nothing else, on the SAMPL6 blind challenge set — 24 drug-like molecules, 31 measured " +
         "macroscopic values, a BLIND challenge whose answers were withheld while predictions were " +
         "submitted, and checked to share no skeleton with any training row — this method matches every " +
-        "measured value to MAE 0.50, RMSE 0.60, with 87% inside one log unit, 100% inside two, a " +
-        "largest single error of 1.35 and a bias of -0.03. RMSE is quoted because that is what the " +
+        "measured value to MAE 0.49, RMSE 0.64, with 90% inside one log unit, 100% inside two and a " +
+        "largest single error of 1.72. The 2026-08-10 retrain moved these in BOTH directions — MAE " +
+        "0.50 to 0.49 and coverage 87% to 90%, but RMSE 0.60 to 0.64 and the worst case 1.35 to 1.72 — " +
+        "so the method got better on the typical value and worse on its tail. RMSE is quoted because that is what the " +
         "SAMPL6 challenge itself reported and MAE alone flatters. On COUNTING the steps it does far " +
         "worse, and the honest figure is the harsh one: exactly as many values as were measured on 2 " +
         "of 24 molecules, or 12 of 24 once predictions outside an aqueous assay's 2-12 window are set " +
