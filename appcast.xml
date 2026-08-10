@@ -6,6 +6,17 @@
         <description>Signed ChemDraft updates for macOS.</description>
         <language>en</language>
         <item>
+            <title>0.3.2</title>
+            <pubDate>Mon, 10 Aug 2026 14:32:16 -0500</pubDate>
+            <link>https://github.com/jgassens/ChemDraft</link>
+            <sparkle:version>0.3.2</sparkle:version>
+            <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <sparkle:releaseNotesLink>https://raw.githubusercontent.com/jgassens/ChemDraft/main/ChemDraft_0.3.2_aarch64.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/jgassens/ChemDraft/releases/download/v0.3.2/ChemDraft_0.3.2_aarch64.dmg" length="67847909" type="application/octet-stream" sparkle:edSignature="G8e+DbOYS+3h2jPswp1EGMkIMrop/DSLucMbjYEDvwFW6pvQV87Y7ZzDjkl7Ri447HzRhiJ/hYWL2aI2ny8aDw=="/>
+        </item>
+        <item>
             <title>0.3.1</title>
             <pubDate>Sun, 02 Aug 2026 14:40:34 -0500</pubDate>
             <link>https://github.com/jgassens/ChemDraft</link>
@@ -26,16 +37,6 @@
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <sparkle:releaseNotesLink>https://raw.githubusercontent.com/jgassens/ChemDraft/main/ChemDraft_0.3.0_aarch64.md</sparkle:releaseNotesLink>
             <enclosure url="https://github.com/jgassens/ChemDraft/releases/download/v0.3.0/ChemDraft_0.3.0_aarch64.dmg" length="19318771" type="application/octet-stream" sparkle:edSignature="qmCEtPeZf/23IUq+M02Bamk8fm7/vf0oeV4Or6dxkXBmE0qBA+IjSLbTGBTAk7ZcmjDeEYHWqh7PQb17dwP2BQ=="/>
-        </item>
-        <item>
-            <title>0.2.0</title>
-            <pubDate>Fri, 24 Jul 2026 17:35:03 -0500</pubDate>
-            <link>https://github.com/jgassens/ChemDraft</link>
-            <sparkle:version>0.2.0</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/jgassens/ChemDraft/releases/download/v0.2.0/ChemDraft_0.2.0_aarch64.dmg" length="16893266" type="application/octet-stream" sparkle:edSignature="i1Q+JAHscRj9Q10KFCYxPkJyjdiWgnOJ7lLYX1Rb9/YE1E4zJGBRQvhF6Z6c7fIAWXkm1MobwbSuBKQQOn6XDg=="/>
         </item>
     </channel>
 </rss>
