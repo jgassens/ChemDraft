@@ -20,8 +20,13 @@ import {
   type ScheduleOptions
 } from "@chemdraft/analysis-core";
 import { PINNED_ISOSPEC_WASM_SHA256 } from "@chemdraft/isospec-adapter";
-import { PINNED_PKA_MODEL_SHA256,
-  PINNED_RDKIT_WASM_SHA256, sourceInterpretation } from "@chemdraft/rdkit-adapter";
+// `/constants`, NOT the barrel. The barrel re-exports `./analysis`, which reaches the pKa network's
+// 4.2 MB of JSON — so importing three constants here put the whole model in the app's startup chunk.
+import {
+  PINNED_PKA_MODEL_SHA256,
+  PINNED_RDKIT_WASM_SHA256,
+  sourceInterpretation
+} from "@chemdraft/rdkit-adapter/constants";
 
 import type { AnalysisWorkRequest, AnalysisWorkResponse } from "./analysisWorker";
 
@@ -87,8 +92,25 @@ export function createAnalysisClient(workerFactory?: () => Worker): AnalysisClie
     const onDeath = (): void => {
       // A dead worker's pending requests can never be answered. Failing them turns into `failed` runs
       // at the scheduler, which is a state the UI already renders — better than promises that hang.
+      //
+      // TERMINATE it, do not just drop the reference. An `error` event does NOT kill a worker — it
+      // reports an uncaught error inside one that is still running — so `worker = null` alone
+      // orphaned a live worker with its RDKit and IsoSpec WASM heaps resident and its listeners
+      // attached, once per event, up to four of them before `ensureWorker` gives up. `dispose()`
+      // terminates only the CURRENT worker, which is null by now, so the orphans outlived it too.
+      // `conformerClient` gets this right and its test asserts `terminated`.
+      try {
+        created.terminate();
+      } catch {
+        // A worker that is already gone throws here on some runtimes; nothing to clean up either way.
+      }
       worker = null;
       restarts += 1;
+      // A fresh worker has loaded neither engine, so the warm-up has to happen again. Without this,
+      // `warmup()` short-circuits forever after the first crash and the replacement worker meets the
+      // next request cold — the exact cost `warmup` exists to avoid. `conformerClient.ts` clears it
+      // for the same reason, with the same comment.
+      warmed = false;
       failAllPending("The analysis worker stopped unexpectedly.");
     };
     created.addEventListener("error", onDeath);
@@ -179,8 +201,3 @@ export function analysisClient(): AnalysisClient | null {
   return singleton;
 }
 
-/** Test-only: drop the shared client so the next call builds a fresh one. */
-export function resetAnalysisClientForTesting(): void {
-  singleton?.dispose();
-  singleton = undefined;
-}

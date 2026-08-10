@@ -105,6 +105,12 @@ describe("finding the ionizable atom", () => {
     // are withheld with reasons (the protonless ring nitrogen, the amine terminus) — but each position
     // is accounted for separately, which is the property being pinned.
     const { result } = await ionization("NC(Cc1c[nH]cn1)C(=O)O");
+    // A FLOOR ON THE SCORED HALF. `sites.length + unassessed.length >= 4` passes with zero sites
+    // scored and all four positions withheld, and `atoms.size === sites.length` is then 0 === 0 — so
+    // histidine losing every value would have left this green while the comment above still claimed a
+    // specific split. The separateness of the sites is the property; it needs sites to be separate.
+    const scored = result.sites.filter((site) => site.pKa !== null);
+    expect(scored.length, "no site was scored at all").toBeGreaterThanOrEqual(2);
     expect(result.sites.length + result.unassessed.length).toBeGreaterThanOrEqual(4);
     const atoms = new Set(result.sites.map((site) => site.ionizableAtomIndex));
     expect(atoms.size).toBe(result.sites.length);
@@ -186,7 +192,13 @@ describe("what it refuses to score", () => {
     const scored = result.sites.filter((site) => site.pKa !== null);
     expect(scored).toHaveLength(1);
     expect(scored[0]!.siteType).toMatch(/Amines/);
-    expect(scored[0]!.pKa!).toBeCloseTo(5.74, 1);
+    // A WINDOW AROUND THE MEASURED VALUE (6.15), not a pin to the model's current output. This read
+    // `toBeCloseTo(5.74, 1)` — the number the model happened to produce — while its own comment cited
+    // 6.15, so a retrain that moved the prediction TOWARD the measurement would have turned the test
+    // red. That is the anti-pattern this same file denounces further down, and the test's stated point
+    // is that the nitrogen survives, not that it survives at one particular value.
+    expect(scored[0]!.pKa!).toBeGreaterThan(4.5);
+    expect(scored[0]!.pKa!).toBeLessThan(7.5);
     // One rung, so the cycle closes exactly. Carrying the sulfonate at a declared bound instead was
     // tried and drove this to 3.03 — see `isFullyDissociatedSulfonic`.
     expect(result.macroscopic!.pKa).toHaveLength(1);

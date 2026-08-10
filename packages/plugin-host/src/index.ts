@@ -427,26 +427,58 @@ export class PluginHost {
             }
             return await this.computeIsotopeEnvelope(parsed);
           },
-          // Always supplied here, for the reason above — even though the interface declares it
-          // optional. That optionality is about *version skew*, not about this host: plugins are
-          // distributed independently and may meet a host older than the method, so a plugin has to
-          // be able to check. Within one host the presence rule stays uniform.
-          nameToStructure: async (request) => {
-            this.requirePermission(pluginId, "chemistry.compute");
-            const parsed = PluginNameToStructureRequestSchema.parse(request);
-            if (!this.convertNameToStructure) {
-              return { available: false, reason: "This host provides no name-to-structure engine." };
-            }
-            return await this.convertNameToStructure(parsed);
-          },
-          structureFromSmiles: async (request) => {
-            this.requirePermission(pluginId, "chemistry.compute");
-            const parsed = PluginStructureFromSmilesRequestSchema.parse(request);
-            if (!this.buildStructureFromSmiles) {
-              return { available: false, reason: "This host provides no 2D layout engine." };
-            }
-            return await this.buildStructureFromSmiles(parsed);
-          }
+          // `native.execute` ON TOP OF `chemistry.compute`, and this is the one method that needs it.
+          //
+          // Name-to-structure is not computed in-process: the desktop's implementation invokes a Tauri
+          // command that runs `Command::new(java).arg("-jar")` on the bundled OPSIN runtime. §7 lists
+          // `native.execute` among the Dangerous permissions and `chemistry.compute` among the
+          // ordinary ones, so gating a subprocess spawn on the ordinary one handed every plugin
+          // holding it — including the bundled mass-fragment demo — the ability to start an OS
+          // process, which §16 forbids ("Run native code unless granted"). It was unreachable only
+          // because the worker allow-list had not been updated; completing that list is what made this
+          // live, so the two land together.
+          //
+          // Presence tracks the permissions the method actually needs, which keeps the uniform rule
+          // above intact rather than breaking it: a plugin sees the method exactly when it has
+          // declared what the method costs. `workerRuntime` applies the identical condition, so the
+          // in-process and worker paths still agree about what this host offers.
+          //
+          // The spawn itself stays narrow — fixed argv, the name over stdin, control characters
+          // rejected, a 2,000-character cap and a 30-second kill — so this is a declaration
+          // requirement, not a sandbox escape being papered over.
+          ...(this.hasPermission(pluginId, "native.execute")
+            ? {
+                nameToStructure: async (request: PluginNameToStructureRequest) => {
+                  this.requirePermission(pluginId, "chemistry.compute");
+                  this.requirePermission(pluginId, "native.execute");
+                  const parsed = PluginNameToStructureRequestSchema.parse(request);
+                  if (!this.convertNameToStructure) {
+                    return { available: false, reason: "This host provides no name-to-structure engine." };
+                  }
+                  return await this.convertNameToStructure(parsed);
+                }
+              }
+            : {}),
+          // `document.read` as well, and for the same reason `nameToStructure` needs `native.execute`:
+          // the answer carries information the plugin has not been granted otherwise. The object this
+          // returns is laid out against the ACTIVE DOCUMENT — its id encodes the document's object
+          // count (`nextObjectId` is `existingIds.size + 1`) and its coordinates encode the page
+          // dimensions (the insert point is the page centre). The desktop bound this to its ungated
+          // document getter rather than the `document.read`-checked reader, so a plugin holding only
+          // `chemistry.compute` could read both, past the gate that exists to stop it.
+          ...(this.hasPermission(pluginId, "document.read")
+            ? {
+                structureFromSmiles: async (request: PluginStructureFromSmilesRequest) => {
+                  this.requirePermission(pluginId, "chemistry.compute");
+                  this.requirePermission(pluginId, "document.read");
+                  const parsed = PluginStructureFromSmilesRequestSchema.parse(request);
+                  if (!this.buildStructureFromSmiles) {
+                    return { available: false, reason: "This host provides no 2D layout engine." };
+                  }
+                  return await this.buildStructureFromSmiles(parsed);
+                }
+              }
+            : {})
         }
       : undefined;
 

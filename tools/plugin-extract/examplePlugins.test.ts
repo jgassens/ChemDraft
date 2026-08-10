@@ -12,11 +12,13 @@
  * updating the list below — which is the point: it makes the transition deliberate and reviewable
  * instead of something a reader has to infer from whether `src/` happens to exist.
  */
+import { fileURLToPath } from "node:url";
+
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const EXAMPLES = new URL("../../examples/plugins/", import.meta.url).pathname;
+const EXAMPLES = fileURLToPath(new URL("../../examples/plugins/", import.meta.url));
 
 /**
  * The plugins that actually exist. Everything else under `examples/plugins/` must be a placeholder.

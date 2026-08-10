@@ -97,9 +97,48 @@ describe("the gate", () => {
           }
         ]
       }),
+      // The notice this manifest promises. It was absent, so a fixture named "accepts a package" was
+      // describing one whose attribution file ships nowhere — the case the gate now rejects.
+      "data/NOTICE-nmrshiftdb2.txt": "nmrshiftdb2 Database License. Attribution: nmrshiftdb2 contributors.",
       "data/nmrshiftdb2-derived.csv": "shift,element"
     });
     expect(() => assertBundledDataLicensed(root, gateError)).not.toThrow();
+  });
+
+  it("refuses a declaration whose noticeFile is not in the package", () => {
+    // A promise the distribution cannot keep: the manifest says "the terms are in this file" and the
+    // file ships nowhere, so the attribution never reaches anyone the plugin is given to. Nothing
+    // checked it — this gate is the only code that reads the field at all.
+    const root = plugin({
+      "package.json": JSON.stringify({
+        name: "p",
+        license: "MIT",
+        dataLicenses: [
+          { name: "some corpus", license: "CC BY 4.0", noticeFile: "data/NOTICE-missing.txt" }
+        ]
+      }),
+      "data/corpus.csv": "a,b"
+    });
+    expect(() => assertBundledDataLicensed(root, gateError)).toThrow(/noticeFile that is not in the package/);
+  });
+
+  it("does not flag source that happens to live under a data directory", () => {
+    // `src/data/parser.ts` is code. Flagging it as a shipped dataset is the false positive that
+    // teaches a reader to stop believing the gate.
+    const root = plugin({
+      "package.json": JSON.stringify({ name: "p", license: "MIT" }),
+      "src/data/parser.ts": "export const parse = () => undefined;"
+    });
+    expect(() => assertBundledDataLicensed(root, gateError)).not.toThrow();
+  });
+
+  it("still catches a corpus under the spellings the list was missing", () => {
+    // "db" was listed and "database" was not — the most natural name for the thing being caught.
+    const root = plugin({
+      "package.json": JSON.stringify({ name: "p", license: "MIT" }),
+      "database/shifts.csv": "shift,element"
+    });
+    expect(() => assertBundledDataLicensed(root, gateError)).toThrow(/declares no "dataLicenses"/);
   });
 
   it("refuses a declaration that names a dataset without naming its terms", () => {

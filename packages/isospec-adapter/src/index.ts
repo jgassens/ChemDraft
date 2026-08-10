@@ -113,7 +113,21 @@ export function ensureIsoSpec(): Promise<IsoSpecModule> {
   if (!loader) {
     return Promise.reject(new Error("No IsoSpec module loader installed — call setIsoSpecModuleLoader first."));
   }
-  pending ??= loader();
+  // Clear the memo on rejection, exactly as `ensureRdkit` does (`rdkit-adapter/src/conformer.ts`:
+  // "allow a later retry"). `pending ??= loader()` assigned only when `pending` was null/undefined —
+  // and a REJECTED promise is neither, so one transient WASM load failure was cached for the life of
+  // the worker with nothing able to clear it: `registerIsoSpecWasmLoader` is behind a `registered`
+  // flag and `analysisWorker` has a second guard, so `setIsoSpecModuleLoader` never runs again.
+  //
+  // The blast radius was wider than a declined method. `envelopeResultFor` returns `unsupported`, and
+  // `STATUS_SEVERITY` ranks that ABOVE `ok`, so `aggregateStatus` downgraded the WHOLE run — and the
+  // scheduler caches unconditionally, under a key built from compile-time hashes that never change.
+  if (!pending) {
+    pending = loader().catch((error: unknown) => {
+      pending = null;
+      throw error;
+    });
+  }
   return pending;
 }
 
@@ -277,16 +291,3 @@ export const ELEMENT_NAMES_BY_SYMBOL: Readonly<Record<string, string>> = {
 };
 
 
-/**
- * §5 transport: envelopes cross the worker boundary as typed arrays, not arrays of objects.
- * Structured-clone-safe and compact — an insulin envelope is ~1300 peaks.
- */
-export function envelopeToTypedArrays(envelope: IsoSpecEnvelope): {
-  positions: Float64Array;
-  intensities: Float64Array;
-} {
-  return {
-    positions: Float64Array.from(envelope.masses),
-    intensities: Float64Array.from(envelope.probabilities)
-  };
-}

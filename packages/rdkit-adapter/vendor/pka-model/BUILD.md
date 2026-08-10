@@ -8,6 +8,34 @@ PYTHON=/path/to/python ./run_all.sh <dwar-ibond-labels.json> <qupkake-data-dir>
 
 and then run `python3 macro_validate.py` for the macroscopic yardstick.
 
+### Regeneration is reproducible — as of the determinism back-port, and not before it
+
+`pka_gnn.py` writes `site-pka-gnn.json`, the weights the app ships, and until now two runs of the same
+command produced **different weights**. Seeds were not the cause: multi-threaded CPU reductions sum
+partial results in completion order, and MPS atomics do the same on the GPU, so each step differs by
+about 1e-8 and training amplifies that chaotically. The script also never reseeded numpy per ensemble
+member, so every member inherited wherever the previous one left the global stream — and because
+`main()` runs the full cross-validation *before* the exported fit, roughly 1,200 shuffles preceded the
+weights that ship.
+
+`pka_gnn_pair.py` was fixed for all three months ago; the file that actually produces the artifact was
+not. It now is: `torch.set_num_threads(1)`, `preferred_device()` returning CPU, and `np.random.seed(seed)`
+per member. Verified by hashing the trained state dict of two ensemble members across separate
+processes:
+
+| configuration | run 1 | run 2 |
+| --- | --- | --- |
+| cpu / 1 thread / per-member reseed (**now**) | `5d61cfdf` `05309b2d` | `5d61cfdf` `05309b2d` |
+| mps / 8 threads / no reseed (**before**) | `8a8e3f16` `10d96449` | `de9652ab` `38256751` |
+
+CPU at one thread is also **~4.4x faster** than the MPS default here — these molecules are 16 to 28
+atoms, far too small to repay GPU dispatch or thread setup. `determinism_probe.py` reproduces the
+underlying device/thread table.
+
+**What this does not do:** it makes FUTURE runs reproducible. The committed `site-pka-gnn.json` was
+trained before the fix and cannot be regenerated bit-for-bit; a rebuild produces a different, and from
+here on a stable, artifact.
+
 ## Pinned artifacts
 
 Five of these are loaded at RUNTIME. `site-pka-forest.json` is NOT among them any more and is not pinned: the network replaced it, and the forest stays committed only as the baseline the comparison is made against.
@@ -18,16 +46,16 @@ from the pin deliberately: fixtures gate the build, they do not produce a number
 
 | file | bytes | sha256 |
 |---|---:|---|
-| `calibration.json` | 2,031 | `a361085c2ed1dd274f630f5266a94a2b6411cd915d815bad937f24aaf6666abc` |
-| `consensus-calibration.json` | 645 | `4ae25e83d82b639d4c27371154fd6571aad135a485fc208f2ee4e1032f1cd62d` |
-| `coupling.json` | 1,404 | `1bc2015011408924f2fee6cc17785032766bf64be9d8fa3ac4c22bd1a607bcac` |
-| `edge-variance.json` | 1,933 | `b11d3385bab3f412349f2e271ccbde555638dbbc217cae0b33e69e502aa10f42` |
-| `external-validation.json` | 543 | `1c59bc0b8420a1f3117044c61d5db10267076a17e5fae93420700002957e290b` |
+| `calibration.json` | 2,033 | `3d64b8fef63d948ef1412b695c15f3422d30fd1e9e27190fa13d5679ef9b5a16` |
+| `consensus-calibration.json` | 645 | `4093caf1b36a26dd2d54ebe5426653f8c659035709ff08c4a861a94f39bfaf2b` |
+| `coupling.json` | 1,402 | `796b5647a0d1b8a49b535ab70bbcd2430ab6ce8997ed50473580a3fed5e775ae` |
+| `edge-variance.json` | 1,932 | `b211b75f6ba82d6750d91e876a338a7c760bd63aa22562aff007e1cfa374d568` |
+| `external-validation.json` | 545 | `c376b56ac96eb8044a7534fd5e5f03630478d3fc63873086312a25b6a810f446` |
 | `hammett-sigma.json` | 2,833 | `3f1bbd785d8fd7189f898240d2b0ce1d98efd24d9749e27b291d1f97d8ee6bf0` |
-| `interval-calibration.json` | 5,002 | `2bf20919222ec71fb6a6564cc1e0405b14f595ddfd030670ffe6872067108444` |
-| `site-pka-gnn.json` | 4,468,866 | `79061c4d3b4e11753c865088e5bb38d0c7e689e6e394af4fdf99c0dcfcfca688` |
+| `interval-calibration.json` | 5,000 | `98e1b08af34b18522cfe5e81ef037ca3e4a206fee41fe7247b8f21c7cead4c18` |
+| `site-pka-gnn.json` | 4,469,996 | `100f90cbe4d63222f12fc69cebef57800fd7584d440eea1fd9dd16f39714578b` |
 
-**Manifest:** `fe50548392b4be6cdd7cadbbcab469fce05ffbcb06fff956e8e389c94328980e`
+**Manifest:** `3c3dbeceaa66d62c7860ce81c47cd8a81a5ef0f4ad069c4eee4be3def016ce4a`
 
 The manifest moved without the MODEL moving. `site-pka-gnn.json` is byte-identical at
 `79061c4d…`; what changed is `external-validation.json`, which gained a per-set RMSE so the contract can
@@ -93,7 +121,7 @@ second measurement reversed the first.**
 | `macro_validate` zwitterionic | **0.130** | 0.22 |
 | `macro_validate` azole | 0.212 | **0.15** |
 | SAMPL6 matched | 0.491 | **0.480** |
-| SAMPL6 within one log unit | **94%** | 90% |
+| SAMPL6 within one log unit | **87%** | 90% |
 | SAMPL6 extra steps | 49 | 49 |
 | artifact | **4.5 MB** | 12.2 MB |
 

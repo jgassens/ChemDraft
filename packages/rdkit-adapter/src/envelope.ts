@@ -251,6 +251,15 @@ export type EnvelopeOutcome =
       peakCount: number;
       /** `dalton` for a neutral structure, `thomson` for an ion — see `ION_ENVELOPE_CONVENTION`. */
       positionUnit: UnitId;
+      /**
+       * The threshold this envelope was ACTUALLY computed at.
+       *
+       * `computeEnvelope` and `envelopeResult` each took their own `threshold` parameter with its own
+       * default, so a caller that passed a non-default value to the first and not the second recorded
+       * a `truncation.threshold` describing a computation that never happened — a provenance field
+       * that quietly lies. Carrying it on the outcome means the two cannot disagree.
+       */
+      threshold: number;
     }
   | { ok: false; reason: string; unsupportedFeature?: string };
 
@@ -292,10 +301,24 @@ export function computeEnvelope(
 
   // Sort by mass and normalise to the base peak. IsoSpec returns peaks in its own traversal order, and
   // a distribution whose positions are unordered is a plotting bug waiting to happen.
-  const order = envelope.masses
-    .map((mass, index) => ({ mass, probability: envelope.probabilities[index]! }))
-    .sort((a, b) => a.mass - b.mass);
-  const base = Math.max(...order.map((peak) => peak.probability));
+  //
+  // Sorted as an INDEX permutation, and the base peak found with a loop. The previous form built an
+  // object per peak, spread the whole list into `Math.max(...)`, and then built two more arrays for
+  // `Float64Array.from` — about 5n allocations plus n object headers. The spread was also a latent
+  // crash: JavaScriptCore caps function arguments at 65,535, and a molecule near the 500-heavy-atom
+  // budget can produce an envelope in that range, so `Math.max` would throw `RangeError` on exactly
+  // the largest inputs. With no per-method isolation in the run loop (see `analysis.ts`), that one
+  // throw failed the entire ~62-method run.
+  const peakCount = envelope.masses.length;
+  const order = new Uint32Array(peakCount);
+  for (let i = 0; i < peakCount; i += 1) order[i] = i;
+  order.sort((a, b) => envelope.masses[a]! - envelope.masses[b]!);
+
+  let base = 0;
+  for (let i = 0; i < peakCount; i += 1) {
+    const probability = envelope.probabilities[i]!;
+    if (probability > base) base = probability;
+  }
 
   // Charge bookkeeping. IsoSpec computed over neutral atoms, so an ion is that sum less one electron
   // per unit of positive charge (plus one per unit of negative), and what a spectrometer places it at
@@ -305,13 +328,22 @@ export function computeEnvelope(
   const shift = charge === 0 ? 0 : charge * electronMass(module);
   const divisor = charge === 0 ? 1 : Math.abs(charge);
 
+  const positions = new Float64Array(peakCount);
+  const intensities = new Float64Array(peakCount);
+  for (let i = 0; i < peakCount; i += 1) {
+    const source = order[i]!;
+    positions[i] = (envelope.masses[source]! - shift) / divisor;
+    intensities[i] = (envelope.probabilities[source]! / base) * 100;
+  }
+
   return {
     ok: true,
-    positions: Float64Array.from(order.map((peak) => (peak.mass - shift) / divisor)),
-    intensities: Float64Array.from(order.map((peak) => (peak.probability / base) * 100)),
+    positions,
+    intensities,
     coveredProbability: envelope.coveredProbability,
     peakCount: envelope.peakCount,
-    positionUnit: charge === 0 ? "dalton" : "thomson"
+    positionUnit: charge === 0 ? "dalton" : "thomson",
+    threshold
   };
 }
 
@@ -330,11 +362,7 @@ export type EnvelopeResultBase = Omit<
 >;
 
 /** Build the `DistributionResult` (or its decline) from an outcome. */
-export function envelopeResult(
-  base: EnvelopeResultBase,
-  outcome: EnvelopeOutcome,
-  threshold: number = DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
-): DistributionResult {
+export function envelopeResult(base: EnvelopeResultBase, outcome: EnvelopeOutcome): DistributionResult {
   if (!outcome.ok) {
     return {
       ...base,
@@ -376,7 +404,12 @@ export function envelopeResult(
     intensityUnit: "relative-abundance",
     truncation: {
       policy: "relative-intensity-threshold",
-      threshold,
+      // From the OUTCOME. This function used to take its own `threshold` parameter with its own
+      // default, independent of the one `computeEnvelope` actually ran at, so a caller that passed a
+      // non-default value to one and not the other recorded provenance for a computation that never
+      // happened. The parameter is gone rather than defaulted: there is now exactly one place the
+      // threshold can come from.
+      threshold: outcome.threshold,
       coveredProbability: outcome.coveredProbability
     },
     applicability: { status: "in-domain", reasons: [], unsupportedFeatures: [] },

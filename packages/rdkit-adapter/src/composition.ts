@@ -71,7 +71,24 @@ const ELEMENT_SYMBOLS = [
   "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"
 ] as const;
 
+/**
+ * The symbol RDKit writes for a dummy atom — an R-group, an attachment point, a query atom.
+ *
+ * Atomic number 0 is not a missing element, it is the deliberate absence of one, and `chem-core`
+ * treats such atoms as first-class objects a user can draw. This used to throw, and because
+ * `compositionFromRdkitJson` runs before any method does, the throw rejected the ENTIRE run: drawing
+ * `*c1ccccc1` — which RDKit parses perfectly well — failed every one of the ~62 methods with
+ * "No element symbol for atomic number 0", including the ones that never look at elements.
+ *
+ * Reporting `*` matches what RDKit's own `CalcMolFormula` emits (`C6H5*`), so the formula stays the
+ * one a reader cross-checking against RDKit expects, and the methods that genuinely cannot handle a
+ * pseudoatom decline through `elementsOutsideParameterization` with their own reasons — one decline
+ * per method that means it, rather than one exception for all of them.
+ */
+const DUMMY_ATOM_SYMBOL = "*";
+
 export function elementSymbol(atomicNumber: number): string {
+  if (atomicNumber === 0) return DUMMY_ATOM_SYMBOL;
   const symbol = ELEMENT_SYMBOLS[atomicNumber];
   if (!symbol) throw new Error(`No element symbol for atomic number ${atomicNumber}.`);
   return symbol;
@@ -119,7 +136,15 @@ export function hillFormula(counts: readonly ElementCount[]): string {
       const [groupA, symbolA, isotopeA] = rank(a);
       const [groupB, symbolB, isotopeB] = rank(b);
       if (groupA !== groupB) return groupA - groupB;
-      if (symbolA !== symbolB) return symbolA.localeCompare(symbolB);
+      // Code-unit order, NOT `localeCompare`. Element symbols are ASCII, so this is the alphabetical
+      // order Hill notation means — and unlike `localeCompare` with no locale argument it gives the
+      // same answer on every machine. The default collator resolves from the OS language: under
+      // Estonian, Z sorts between S and T and ZnTiO3 renders as OZnTi; under Lithuanian, Y follows I
+      // and YBa2Cu3O7 renders as BaCuYO. Verified in JavaScriptCore, the engine the WKWebView
+      // actually runs, where the collator follows the Apple language preference rather than LANG.
+      // A formula is part of the method contract's stated convention, so it cannot depend on who is
+      // reading it.
+      if (symbolA !== symbolB) return symbolA < symbolB ? -1 : 1;
       return isotopeA - isotopeB;
     })
     .map((entry) => {

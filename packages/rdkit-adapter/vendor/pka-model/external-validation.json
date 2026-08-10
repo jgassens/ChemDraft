@@ -5,17 +5,17 @@
  "perSet": {
   "novartis_qupkake_pka.sdf": {
    "n": 276,
-   "mae": 1.193,
-   "rmse": 1.8527
+   "mae": 1.225,
+   "rmse": 1.8784
   },
   "literature_qupkake_pka.sdf": {
    "n": 122,
-   "mae": 0.983,
-   "rmse": 2.1304
+   "mae": 1.0236,
+   "rmse": 2.1904
   }
  },
  "samples": 398,
- "mae": 1.1286,
- "rmse": 1.942,
- "standardError": 0.0792
+ "mae": 1.1633,
+ "rmse": 1.9793,
+ "standardError": 0.0803
 }

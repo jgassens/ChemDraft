@@ -31,6 +31,10 @@ describe("carbonyl basicity is a declared scope limit, not a per-molecule warnin
     for (const smiles of ["CCSC(=[OH+])c1cccc(Br)c1", "CC=[OH+]", "CC(N)=[SH+]"]) {
       const result = await ionization(smiles);
       expect(result?.kind, smiles).toBe("ionization");
+      // Assert BEFORE the guard. Two of these three tests skipped straight past a missing result, so
+      // renaming the method id or dropping it from the default set would leave the loop body — which
+      // holds every `expect` in the test — unexecuted, and the test green with zero assertions.
+      expect(result?.kind, smiles).toBe("ionization");
       if (result?.kind !== "ionization") continue;
       const reasons = result.unassessed.map((entry) => entry.reason).join(" ");
       expect(reasons, `${smiles} should name the unsupported basicity`)
@@ -41,6 +45,10 @@ describe("carbonyl basicity is a declared scope limit, not a per-molecule warnin
   it("stays SILENT on a neutral carbonyl, which 45.8% of the corpus contains", async () => {
     for (const smiles of ["CC(=O)O", "CC(=O)Nc1ccc(O)cc1", "CC(C)=O", "O=C(N)N"]) {
       const result = await ionization(smiles);
+      // Assert BEFORE the guard. Two of these three tests skipped straight past a missing result, so
+      // renaming the method id or dropping it from the default set would leave the loop body — which
+      // holds every `expect` in the test — unexecuted, and the test green with zero assertions.
+      expect(result?.kind, smiles).toBe("ionization");
       if (result?.kind !== "ionization") continue;
       const reasons = result.unassessed.map((entry) => entry.reason).join(" ");
       expect(reasons, `${smiles} must not carry a carbonyl-basicity caveat`)
@@ -52,6 +60,10 @@ describe("carbonyl basicity is a declared scope limit, not a per-molecule warnin
     // Butane has nothing; an enol has an O-H the table matches but the tautomer rewrite removes.
     for (const smiles of ["CCCC", "CC=CO"]) {
       const result = await ionization(smiles);
+      // Assert BEFORE the guard. Two of these three tests skipped straight past a missing result, so
+      // renaming the method id or dropping it from the default set would leave the loop body — which
+      // holds every `expect` in the test — unexecuted, and the test green with zero assertions.
+      expect(result?.kind, smiles).toBe("ionization");
       if (result?.kind !== "ionization") continue;
       const reason = result.applicability.reasons.join(" ");
       expect(reason, smiles).toMatch(/No SUPPORTED ionization event/);

@@ -192,7 +192,13 @@ export function distancesFrom(adjacency: number[][], start: number): Map<number,
 /** Radii the local-environment counts are taken at. Order fixed by the trained model. */
 const RADII = [1, 2, 3, 4, 6] as const;
 const HALOGENS = new Set(["F", "Cl", "Br", "I"]);
-/** Stand-in distance when a molecule has no polar atom or no charge at all. */
+/**
+ * Stand-in distance when a molecule has no polar atom or no charge at all.
+ *
+ * A SENTINEL, not a maximum — it means "there is none", and a real distance may legitimately exceed
+ * it. Mirrors `local_environment.py`'s `min(polar) if polar else 12.0`. See the substitution at the
+ * bottom of `localEnvironmentFeatures` for why the distinction matters.
+ */
 const NO_SUCH_ATOM = 12;
 
 /**
@@ -243,15 +249,37 @@ export function localEnvironmentFeatures(
 
   // How far away the rest of the molecule's polar chemistry sits. A carboxyl four bonds off is a
   // different situation from one bonded directly, and no whole-molecule descriptor can say which.
-  let nearestPolar = NO_SUCH_ATOM;
-  let nearestCharge = NO_SUCH_ATOM;
+  //
+  // COLLECT THEN SUBSTITUTE, which is not the same as seeding the accumulator with the sentinel. In
+  // `local_environment.py` — the Python that built the training matrix — 12.0 is what you get when
+  // there IS NO such atom (`min(polar) if polar else 12.0`); it is not a ceiling. Seeding
+  // `nearestPolar = 12` and taking a running minimum silently CLAMPED any real distance above 12, so
+  // the two implementations disagreed: on 12-aminododecanoic acid (`NCCCCCCCCCCCC(=O)O`, site 0)
+  // Python emits 13.0 and this emitted 12, on identical 15-atom graphs. `eccentricity` below is not
+  // clamped, so the vector could even report `eccentricity: 13` beside `nearestPolar: 12` — a
+  // combination the trainer can never produce.
+  //
+  // Latent rather than live: nothing on the shipped path calls this today (the GNN builds its own
+  // features, and the forest that used these is no longer the predictor). It is fixed anyway because
+  // a train/serve divergence that is only sleeping is the kind that wakes up silently.
+  let nearestPolarSeen: number | undefined;
+  let nearestChargeSeen: number | undefined;
   let eccentricity = 0;
   for (const [atom, d] of distance) {
     if (d > eccentricity) eccentricity = d;
     if (d === 0) continue;
-    if (["N", "O", "S"].includes(graph.atoms[atom]!.element)) nearestPolar = Math.min(nearestPolar, d);
-    if (graph.atoms[atom]!.charge !== 0) nearestCharge = Math.min(nearestCharge, d);
+    if (["N", "O", "S"].includes(graph.atoms[atom]!.element)) {
+      nearestPolarSeen = nearestPolarSeen === undefined ? d : Math.min(nearestPolarSeen, d);
+    }
+    if (graph.atoms[atom]!.charge !== 0) {
+      nearestChargeSeen = nearestChargeSeen === undefined ? d : Math.min(nearestChargeSeen, d);
+    }
   }
-  out.push(nearestPolar, nearestCharge, eccentricity, graph.atoms.length - distance.size);
+  out.push(
+    nearestPolarSeen ?? NO_SUCH_ATOM,
+    nearestChargeSeen ?? NO_SUCH_ATOM,
+    eccentricity,
+    graph.atoms.length - distance.size
+  );
   return out;
 }

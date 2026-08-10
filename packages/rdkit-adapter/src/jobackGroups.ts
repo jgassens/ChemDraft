@@ -11,7 +11,9 @@
  *
  * A `null` contribution means the group has no published value for that property. It is not zero, and
  * a structure containing it must decline for that property rather than sum around the gap — `=NH`
- * has no Tb or Tc, which is exactly the case that would otherwise produce a confidently wrong number.
+ * carries Joback's published boiling-point term (83.08) but has no critical-temperature,
+ * critical-pressure or critical-volume term, which is exactly the case that would otherwise produce a
+ * confidently wrong number for three of the four properties while the fourth is fine.
  */
 
 export interface JobackGroup {
@@ -29,6 +31,17 @@ export interface JobackGroup {
   pc: number | null;
   /** Critical-volume contribution, cm3/mol. */
   vc: number | null;
+  /**
+   * This group's own SMARTS names a formal charge, so a charged atom matching it is intentional.
+   *
+   * Joback's increments are fitted to NEUTRAL organics, so every other pattern here describes a
+   * neutral atom and must not claim a charged one. Without that rule an aromatic `[nH+]` matches
+   * `>NH (ring)` — the pyrrole-type NEUTRAL nitrogen — and pyridinium is scored as a different
+   * molecule: 384.67 K, `in-domain`, no warning, four kelvin from real pyridine's boiling point.
+   * `-NO2` is the one genuine exception: it is charge-separated as written and net neutral, and
+   * Joback does publish increments for it.
+   */
+  chargeSeparated?: true;
 }
 
 export const JOBACK_GROUPS: readonly JobackGroup[] = [
@@ -64,12 +77,18 @@ export const JOBACK_GROUPS: readonly JobackGroup[] = [
   { id: 30, label: "-NH2", smarts: "[NX3H2]", priority: 177, tb: 73.23, tc: 0.0243, pc: 0.0109, vc: 38.0 },
   { id: 31, label: ">NH (nonring)", smarts: "[NX3H1;!R]", priority: 176, tb: 50.17, tc: 0.0295, pc: 0.0077, vc: 35.0 },
   { id: 32, label: ">NH (ring)", smarts: "[#7X3H1;R]", priority: 176, tb: 52.82, tc: 0.013, pc: 0.0114, vc: 29.0 },
-  { id: 33, label: ">N- (nonring)", smarts: "[#7X3H0;!$([#7](~O)~O)]", priority: 175, tb: 11.74, tc: 0.0169, pc: 0.0074, vc: 9.0 },
+  // `!R` is not decoration. Joback publishes no `>N- (ring)` increment — the table pairs ring and
+  // nonring for `>NH`, `-N=` and `-S-`, and tertiary ring nitrogen is simply absent. Without the
+  // guard this pattern claimed ring nitrogens with the NONRING parameter, so 1-methylpyridinium
+  // fragmented to `33x1, 1x1, 14x5` and returned a confident 367.17 K. A ring tertiary N now falls
+  // through to `unassignedAtoms`, which declines the structure — the honest answer, and the same one
+  // the `thermo` fragmentation this implementation is validated against gives.
+  { id: 33, label: ">N- (nonring)", smarts: "[#7X3H0;!R;!$([#7](~O)~O)]", priority: 175, tb: 11.74, tc: 0.0169, pc: 0.0074, vc: 9.0 },
   { id: 34, label: "-N= (nonring)", smarts: "[#7X2H0;!R]", priority: 175, tb: 74.6, tc: 0.0255, pc: -0.0099, vc: null },
   { id: 35, label: "-N= (ring)", smarts: "[#7X2H0;R]", priority: 175, tb: 57.55, tc: 0.0085, pc: 0.0076, vc: 34.0 },
   { id: 36, label: "=NH", smarts: "[#7X2H1]", priority: 176, tb: 83.08, tc: null, pc: null, vc: null },
   { id: 37, label: "-CN", smarts: "[#6X2]#[#7X1H0]", priority: 275, tb: 125.66, tc: 0.0496, pc: -0.0101, vc: 91.0 },
-  { id: 38, label: "-NO2", smarts: "[$([#7X3,#7X3+][!#8])](=[O])~[O-]", priority: 475, tb: 152.54, tc: 0.0437, pc: 0.0064, vc: 91.0 },
+  { id: 38, label: "-NO2", smarts: "[$([#7X3,#7X3+][!#8])](=[O])~[O-]", priority: 475, tb: 152.54, tc: 0.0437, pc: 0.0064, vc: 91.0, chargeSeparated: true },
   { id: 39, label: "-SH", smarts: "[SX2H]", priority: 251, tb: 63.56, tc: 0.0031, pc: 0.0084, vc: 63.0 },
   { id: 40, label: "-S- (nonring)", smarts: "[#16X2H0;!R]", priority: 250, tb: 68.78, tc: 0.0119, pc: 0.0049, vc: 54.0 },
   { id: 41, label: "-S- (ring)", smarts: "[#16X2H0;R]", priority: 250, tb: 52.1, tc: 0.0019, pc: 0.0051, vc: 38.0 },

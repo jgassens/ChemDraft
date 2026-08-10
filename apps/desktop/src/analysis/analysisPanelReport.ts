@@ -20,7 +20,7 @@ function toSection(section: AnalysisReportSection): PluginPanelSection {
     case "conventions":
       // Flattened to `text` rather than adding a section kind to `PluginPanelSection`: that schema is
       // the versioned plugin SDK surface, and this is a core-analysis presentation concern that no
-      // plugin has asked for. The body keeps its line breaks — `.analysis-panel` styles the renderer's
+      // plugin has asked for. The body keeps its line breaks — `.molecular-inspector-pane` styles the renderer's
       // text sections `white-space: pre-line` so they survive.
       return {
         kind: "text",

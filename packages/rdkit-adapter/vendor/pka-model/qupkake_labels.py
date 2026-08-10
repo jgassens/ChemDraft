@@ -14,7 +14,9 @@ DATA, by diffing an acid/base microstate pair, with no predictor involved.
 So Marvin's call is checked rather than trusted, on three counts:
 
   1. the atom must be capable of the transition it is credited with (an acidic site needs a proton;
-     a basic site must be a nitrogen with a lone pair to accept one);
+     a basic site must be a nitrogen with a lone pair to accept one), AND the measured value must be
+     possible for that transition -- capability alone let 13 rows through claiming a neutral amine
+     loses its N-H around pH 7, a reaction that happens near pH 35 and not in water at all;
   2. protonating a basic site must actually produce the cation it should;
   3. a label that contradicts one we already have for the same site is dropped, not averaged.
 
@@ -28,9 +30,10 @@ import sys
 
 from rdkit import Chem, RDLogger
 
-from parity_features import written_smiles_with_site
+from parity_features import AQUEOUS_WINDOW, is_unactivated_amine, written_smiles_with_site
 
 RDLogger.DisableLog("rdApp.*")
+
 
 
 def protonated(mol, idx):
@@ -122,6 +125,29 @@ def extract(sdf_path, existing_path):
             drop("acidic site has no proton once written"); continue
         if kind == "basic" and stored_atom.GetSymbol() != "N":
             drop("basic site is not nitrogen once written"); continue
+        # (1b) CAPABILITY IS NOT ENOUGH -- the value has to be possible for the transition too.
+        #
+        # The gates above ask "can this atom do this?". For an acidic label on a neutral amine the
+        # answer is yes: the nitrogen really does have a proton to lose. What they never asked is
+        # whether the NUMBER is possible for that reaction, and it is not -- a neutral aliphatic
+        # amine's N-H comes off near pKa 35, which water cannot host at any pH.
+        #
+        # 13 QupKake structures arrived exactly this way: `NCC(F)F` recorded as losing its N-H at 7.2,
+        # `N#CCCN` at 7.75, `CNCCC#N` at 8.10. Every one of those numbers is the molecule's BASIC pKa
+        # -- the pH at which its ammonium gives a proton back -- filed against the acidic transition.
+        # Marvin assigned the direction upstream and it was wrong; this file's job is to check Marvin
+        # rather than trust it, and this was the check it was missing. The model trained on all 13,
+        # learning that deprotonating a neutral amine in water is routine.
+        #
+        # Rejected only when the value lands INSIDE the aqueous window, because that is what makes it
+        # demonstrably mislabelled rather than merely out of scope. A row recording the real ~35 would
+        # be honest-but-unusable and is reported separately, so the two never get confused.
+        if kind == "acidic" and is_unactivated_amine(written, site):
+            if AQUEOUS_WINDOW[0] <= pka <= AQUEOUS_WINDOW[1]:
+                drop("acidic label on an unactivated amine, at a pKa water cannot host")
+            else:
+                drop("unactivated amine N-H acidity, outside the aqueous range this corpus covers")
+            continue
 
         key = (smiles, site)
 

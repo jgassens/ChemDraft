@@ -15,9 +15,9 @@ const MAX_RENDERED_PEAKS = 20;
  *
  * `undefined` means `chemistry.compute` was not granted, so nothing was ever asked. `available: false`
  * means it was asked and could not be answered — an engine-less host, or a structure the engine
- * declines (a charge it cannot account for, an isotope label it cannot express). Those are different
- * facts and the panel states which, rather than showing an empty table or — as this plugin used to — a
- * first-order estimate of its own.
+ * declines (an isotope label it cannot express; a charge is answered in m/z rather than declined).
+ * Those are different facts and the panel states which, rather than showing an empty table or — as
+ * this plugin used to — a first-order estimate of its own.
  */
 function isotopeSections(envelope: PluginIsotopeEnvelopeResult | undefined): PluginPanelSection[] {
   if (!envelope) {
@@ -47,11 +47,16 @@ function isotopeSections(envelope: PluginIsotopeEnvelopeResult | undefined): Plu
     ...(shown.length < envelope.peaks.length ? [`showing the ${shown.length} most intense`] : [])
   ].join(", ");
 
+  // Label from the unit the host reported, never from the field name. `peak.mass` holds m/z for a
+  // charged structure — the engine divides by |charge| — so a drawn dication's peaks arrive at half
+  // its mass, and a hardcoded "Mass (Da)" header turned a 174.21 Da molecule into a 87.10 Da one.
+  const axis = envelope.positionUnit === "thomson" ? "m/z" : "Mass (Da)";
+
   return [
     {
       kind: "table",
       title: `Isotope pattern (${detail})`,
-      columns: ["Mass (Da)", "Rel. intensity"],
+      columns: [axis, "Rel. intensity"],
       rows: shown.map((peak) => [peak.mass.toFixed(5), `${peak.relativeIntensity.toFixed(2)} %`])
     },
     {

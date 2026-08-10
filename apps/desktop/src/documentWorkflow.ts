@@ -4474,6 +4474,17 @@ export interface SmilesMoleculeSource {
   styleSource: string;
   warningCode: string;
   warningMessage: string;
+  /**
+   * Ids already handed out but not yet in the document, so the next one skips them.
+   *
+   * Paste does not need this: it inserts immediately, so the document always reflects every id
+   * already issued. A plugin's structure does — it is BUILT and then waits in the review queue, so
+   * two structures built before either is accepted both saw an unchanged document and both minted
+   * `mol_plugin_001`. Accepting the second threw `object "mol_plugin_001" already exists`.
+   *
+   * The caller owns the set and adds to it, because only the caller knows when an id has been issued.
+   */
+  reservedObjectIds?: Set<string>;
 }
 
 export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
@@ -4574,7 +4585,7 @@ export function createSmilesMolecule(
   const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
 
   return normalizeNativeMoleculeGeometry({
-    id: nextObjectId(document, source.objectIdPrefix),
+    id: nextObjectId(document, source.objectIdPrefix, source.reservedObjectIds),
     type: "molecule",
     x: 0,
     y: 0,
@@ -13989,12 +14000,13 @@ function roundToTextBoxPixel(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function nextObjectId(document: ChemDraftDocument, prefix: string): string {
+function nextObjectId(document: ChemDraftDocument, prefix: string, reserved?: ReadonlySet<string>): string {
   const existingIds = new Set(document.pages.flatMap((page) => page.objects.map((object) => object.id)));
   let index = existingIds.size + 1;
   let id = `${prefix}_${String(index).padStart(3, "0")}`;
 
-  while (existingIds.has(id)) {
+  // `reserved` covers ids issued but not yet applied — see SmilesMoleculeSource.reservedObjectIds.
+  while (existingIds.has(id) || reserved?.has(id)) {
     index += 1;
     id = `${prefix}_${String(index).padStart(3, "0")}`;
   }

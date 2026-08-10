@@ -62,7 +62,8 @@
       }
     ],
     "macOS": {
-      "frameworks": ["./Sparkle.framework"]
+      "frameworks": ["./Sparkle.framework"],
+      "entitlements": "./chemdraft.entitlements"
     }
   }
 }

@@ -357,11 +357,21 @@ export class PluginWorkerBridge {
       return;
     }
 
-    const allowedMethods = PLUGIN_WORKER_CAPABILITY_METHODS[message.namespace];
+    // Widened deliberately. The map keeps literal method names so the worker-side stub is typed
+    // against it (see `CapabilityMethodOf`), which makes each namespace's entry a distinct tuple type;
+    // indexing with a UNION namespace therefore gives a union of tuples, and `.includes` narrows its
+    // parameter to their intersection — `never`. This is a runtime membership test on a string that
+    // arrived over the wire, so `readonly string[]` is the honest type for it.
+    const allowedMethods: readonly string[] = PLUGIN_WORKER_CAPABILITY_METHODS[message.namespace];
     if (!allowedMethods.includes(message.method)) {
       this.sendCapabilityError(message.requestId, {
         code: PluginWorkerErrorCodes.UnknownCapabilityMethod,
-        message: `"${message.namespace}.${message.method}" is not a valid capability method.`
+        // Says "this host does not offer it", not "you were not granted it". The namespace WAS
+        // granted — the method is either a typo or one this host predates, and a plugin author
+        // reading "not granted" goes looking at their manifest for a permission that is already there.
+        message:
+          `"${message.namespace}.${message.method}" is not a capability method this host offers. ` +
+          `Available on "${message.namespace}": ${allowedMethods.join(", ")}.`
       });
       return;
     }

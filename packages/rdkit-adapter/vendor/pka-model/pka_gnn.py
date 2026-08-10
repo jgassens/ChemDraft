@@ -50,6 +50,35 @@ RDLogger.DisableLog("rdApp.*")
 torch.manual_seed(0)
 np.random.seed(0)
 
+# REPRODUCIBILITY, and the reason it is a thread count rather than a seed.
+#
+# This script writes `site-pka-gnn.json` -- the weights the app ships -- so "can this artifact be
+# regenerated" is a question about this file specifically. It could not be. Two runs of the same
+# command produced different weights, and the seeds were not why.
+#
+# The cause is FLOATING-POINT REDUCTION ORDER. Multi-threaded CPU reductions sum partial results in
+# completion order, and MPS atomics do the same on the GPU. Each step differs by about 1e-8, and
+# training amplifies that chaotically: identical at epoch 4, diverging in the third decimal by epoch 20.
+# Measured (`determinism_probe.py` reproduces the table):
+#
+#   device  threads  60 epochs  reproducible
+#   mps        8      27.5 s     no
+#   mps        1      24.1 s     no          <- atomics, so threads are not the only source
+#   cpu        8       8.8 s     no
+#   cpu        1       5.7 s     BIT-EXACT
+#
+# One CPU thread is both the only reproducible configuration and 4.4x faster than the MPS default --
+# these molecules are 16 to 28 atoms, far too small to repay either GPU dispatch or thread setup.
+#
+# Back-ported from `pka_gnn_pair.py`, which got these fixes first while this file -- the one that
+# actually produces the shipped artifact -- kept none of them.
+torch.set_num_threads(1)
+
+
+def preferred_device():
+    """CPU, deliberately, and not because MPS is unavailable. See the note above."""
+    return torch.device("cpu")
+
 # The one-hot element order. Fixed, and shared with the TypeScript: reordering it silently rebinds
 # every weight in the first layer.
 ELEMENTS = ["N", "O", "C", "S", "P", "F", "Cl", "Br", "I"]
@@ -251,6 +280,17 @@ def collate(batch, device):
 
 def train_once(train_rows, device, epochs=EPOCHS, seed=0):
     torch.manual_seed(seed)
+    # Seed numpy PER MEMBER too. It drives `np.random.shuffle(order)` below, and seeding only torch
+    # left every member continuing whatever draw the previous one stopped on -- so anything that
+    # changed how many draws happened earlier silently changed the batch order of every member after
+    # it. That matters here more than in the screen: `main` runs the full cross-validation BEFORE the
+    # exported fit, so up to 1,200 shuffles preceded the weights that ship, and changing the fold
+    # count or skipping an empty fold moved them for reasons unrelated to the data. Re-running only
+    # the final fit could not reproduce the artifact at all.
+    #
+    # Seeding with `seed` rather than a constant keeps the members distinct, which is the ensemble's
+    # whole purpose.
+    np.random.seed(seed)
     model = SitePkaNet().to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     schedule = torch.optim.lr_scheduler.OneCycleLR(
@@ -363,7 +403,7 @@ def export(members, path, training):
 
 
 def main(labels_path, out_dir):
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = preferred_device()
     print(f"device {device}")
     rows = load(labels_path)
     print("== scaffold-grouped cross-validation ==")

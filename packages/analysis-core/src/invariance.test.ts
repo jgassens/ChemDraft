@@ -161,3 +161,37 @@ describe("checkAtomIndexedInvariance", () => {
     expect(report.deviations.every((deviation) => deviation.delta === undefined)).toBe(true);
   });
 });
+
+describe("NaN is a deviation, not a pass", () => {
+  const ref: RepresentationVariant = {
+    id: "ref",
+    kind: "canonical",
+    value: "CO",
+    format: "smiles",
+    atomToReferenceAtom: [0, 1]
+  };
+  const kekule: RepresentationVariant = {
+    id: "kekule",
+    kind: "kekule",
+    value: "CO",
+    format: "smiles",
+    atomToReferenceAtom: [0, 1]
+  };
+
+  it("catches a per-atom pipeline that produced NaN where the reference has a value", () => {
+    // Every comparison against NaN is false, so `Math.abs(NaN - 5) > tolerance` was FALSE and this
+    // reported `invariant: true` — in the function whose own doc calls it "the test that does not"
+    // pass a pipeline that assigned values to the wrong atoms. NaN is precisely what such a pipeline
+    // produces. `defaultEquals`, three functions up in the same module, always got this right.
+    const report = checkAtomIndexedInvariance(ref, [kekule], (variant) =>
+      variant.id === "ref" ? [Number.NaN, 2] : [5, 2]
+    );
+    expect(report.invariant, "a NaN reference value passed silently").toBe(false);
+    expect(report.deviations.length).toBeGreaterThan(0);
+  });
+
+  it("treats two NaNs as agreeing, the way defaultEquals does", () => {
+    const report = checkAtomIndexedInvariance(ref, [kekule], () => [Number.NaN, 2]);
+    expect(report.invariant).toBe(true);
+  });
+});

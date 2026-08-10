@@ -350,9 +350,12 @@ export interface MacroscopicResult {
    * An acidic and a basic site are both present, so the molecule forms a zwitterion.
    *
    * These used to be the method's worst case by a wide margin — mean error 2.06 log units against 0.30
-   * for everything else — because the microscopic model barely responds to a neighbouring charge. The
-   * electrostatic term in `COUPLING` closes most of that: 2.06 to 0.70, with the other molecules
-   * untouched at 0.30.
+   * for everything else — because the microscopic model barely responds to a neighbouring charge.
+   *
+   * The electrostatic term in `COUPLING` is NOT what fixed it, though this comment used to say so. It
+   * was refitted to W = 0.0 once pKaCHU entered the corpus and now does nothing: the correction was
+   * never physics the model could not learn, it was physics the LABELS did not contain, and a corpus
+   * that records an amino acid's neutral form teaches it directly. See `coupling.json`'s own note.
    *
    * The flag no longer marks the weak class. Once the fold solved the ladder by weighted least squares
    * these became the STRONGEST class in the curated set — 0.16 against 0.29 overall — because a
@@ -1032,8 +1035,18 @@ export function macroscopicFromSites(
   // Through-bond distances between the sites, for the coupling term.
   const distanceBetween = scored.map((ladder) => distancesFrom(adjacency, ladder.atomIndex));
 
-  /** How much every OTHER site's charge shifts this one, in this microstate. */
+  /**
+   * How much every OTHER site's charge shifts this one, in this microstate.
+   *
+   * INERT AS SHIPPED. `coupling.json` pins `W = 0.0`, so every path below returns 0 — the term was
+   * refitted to nothing once pKaCHU entered the corpus, because the effect it modelled turned out to
+   * be absent from the LABELS rather than from the model. Kept rather than deleted for two reasons:
+   * `W` is a fitted artifact field and a future refit can revive it without new code, and the
+   * distance/role machinery is the derivation the artifact's note argues about. The early return
+   * makes the cost zero and the deadness legible instead of leaving a loop that quietly sums zeros.
+   */
   const coupling = (state: Microstate, i: number): number => {
+    if (COUPLING.W === 0) return 0;
     let shift = 0;
     const roleI = ladderRole(scored[i]!);
     for (let j = 0; j < scored.length; j += 1) {

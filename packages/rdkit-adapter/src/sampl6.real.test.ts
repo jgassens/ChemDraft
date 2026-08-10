@@ -255,7 +255,19 @@ describe("SAMPL6, end to end", () => {
     // the moment the model reports a step the assay could not see, and this model does: SM19 predicts
     // 9.43 against a measured 9.56 while index-pairing scores its first value, 2.11, against it.
     const matched = results.flatMap((entry) => entry.matchedErrors);
-    expect(mean(matched)).toBeLessThan(1.0);
+
+    // THE QUOTED FIGURES, not a loose bound. `mean(matched) < 1.0` was the only assertion here while
+    // the contract published "MAE 0.50, RMSE 0.60, with 90% inside one log unit" — a full half a log
+    // unit of silent room, and the coverage claim defended by nothing at all. It was wrong: the
+    // measured figure is 87% (27 of 31), and `vendor/pka-model/BUILD.md` had a third number, 94%.
+    // Slack is documented rather than generous: ±0.05 on the MAE is ordinary drift, and anything
+    // larger is a change the published claim has to be re-earned for.
+    const withinOne = matched.filter((error) => error <= 1).length;
+    const withinTwo = matched.filter((error) => error <= 2).length;
+    expect(mean(matched)).toBeCloseTo(0.5, 1);
+    expect(mean(matched)).toBeLessThan(0.55);
+    expect((100 * withinOne) / matched.length).toBeGreaterThanOrEqual(85);
+    expect(withinTwo).toBe(matched.length);
     // And it must not have achieved that by answering almost nothing.
     expect(results.filter((entry) => !entry.declined).length).toBeGreaterThanOrEqual(
       Math.floor(results.length * 0.6)

@@ -67,7 +67,7 @@ const aceticAcid = {
       { from: 1, to: 3, order: 1 }
     ]
   },
-  confidenceBands: { good: 0.6, poor: 1.5 },
+  confidenceBands: { good: 0.6, poor: 1.5, tightestQuartileMae: 0.36, widestQuartileMae: 1.25, partition: "out-of-fold calibration corpus, 12,096 sites" },
   macroscopic: { pKa: [4.5], inconsistency: 0, microstates: 2, zwitterionic: false }
 };
 
@@ -148,7 +148,7 @@ describe("the ionization result schema", () => {
       sites: [],
       macroscopic: undefined,
       depiction: undefined,
-      unassessed: [{ atomIndices: [3], reason: "adjacent to Fe" }],
+      unassessed: [{ atomIndices: [3], reason: "adjacent to Fe", feature: "metal-adjacent site" }],
       warnings: [
         {
           code: "ionization.unassessed_site",
@@ -194,7 +194,7 @@ describe("rendering an ionization result", () => {
     const partial = {
       ...aceticAcid,
       status: "partial" as const,
-      unassessed: [{ atomIndices: [0], reason: "adjacent to Na" }],
+      unassessed: [{ atomIndices: [0], reason: "adjacent to Na", feature: "metal-adjacent site" }],
       warnings: [
         {
           code: "ionization.unassessed_site",
@@ -230,7 +230,7 @@ describe("an amphoteric atom in the figure", () => {
     kind: "ionization" as const,
     status: "ok" as const,
     unassessed: [],
-    confidenceBands: { good: 1.0, poor: 2.6 },
+    confidenceBands: { good: 1.0, poor: 2.6, tightestQuartileMae: 0.36, widestQuartileMae: 1.25, partition: "out-of-fold calibration corpus, 12,096 sites" },
     sites: [
       {
         atomIndices: [0], ionizableAtomIndex: 0, siteType: "Aniline",
@@ -265,7 +265,13 @@ describe("an amphoteric atom in the figure", () => {
   it("orders them most acidic first, which is titration order", () => {
     const report = buildAnalysisReport(runWith(aniline));
     const svg = report.sections.find((section) => section.kind === "svg");
+    expect(svg, "no figure was rendered").toBeDefined();
     if (svg?.kind !== "svg") return;
+    // Both values must be PRESENT before their order means anything. Comparing raw `indexOf` results
+    // let a figure that dropped 4.60 entirely pass, because -1 is less than any real index — which is
+    // precisely the failure the sibling test three lines up calls "the acidic value was dropped".
+    expect(svg.svg).toContain("4.60");
+    expect(svg.svg).toContain("12.90");
     expect(svg.svg.indexOf("4.60")).toBeLessThan(svg.svg.indexOf("12.90"));
   });
 

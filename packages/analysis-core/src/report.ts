@@ -26,7 +26,7 @@ import {
 } from "./classification";
 import { interpretationChangesIdentity, type MolecularInterpretation } from "./interpretation";
 import { statusHasValue, type AnalysisResult, type AnalysisRun } from "./results";
-import { unit as unitDefinition, type UnitId } from "./units";
+import { unit as unitDefinition, unitSymbol, type UnitId } from "./units";
 import { ionizationBand, ionizationFigureSvg } from "./ionizationFigure";
 
 /**
@@ -166,13 +166,6 @@ function scalarSpread(result: Extract<AnalysisResult, { kind: "scalar" }>): stri
 }
 
 
-function unitSymbol(id: UnitId): string {
-  try {
-    return unitDefinition(id).symbol;
-  } catch {
-    return "";
-  }
-}
 
 /**
  * A spectrum's column heading: "Mass (Da)", but plain "m/z" rather than "m/z (m/z)".
@@ -437,6 +430,13 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
           svg,
           // The caption carries what the colours mean and what the drawn hydrogen is, because the
           // figure is the first thing read and the contract is the last.
+          //
+          // Every number here is READ FROM THE RESULT, including the two MAEs. They used to be typed
+          // into this string — "MAE 0.5" and "MAE 2.2" — and `git log -S` traces them to the RETIRED
+          // forest's calibration as it stood in August 2026. The shipping model's figures are 0.36 and
+          // 1.25, so the caption overstated its own worst-case error by nearly 2x, and the same report
+          // printed different numbers for the same quantity a few sections down. The partition is
+          // named alongside them, which §9a requires and the old string did not do at all.
           caption:
             "Red is an acidic pKa (that atom losing its drawn proton); blue is a basic pKa (the pKa of " +
             "its conjugate acid, the number usually meant by an amine's pKa). The ring around each atom " +
@@ -445,7 +445,12 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
               ? `, from the method's measured accuracy at that interval: green within ±${formatNumber(
                   bands.good,
                   1
-                )} (MAE 0.5), amber to ±${formatNumber(bands.poor, 1)}, red beyond (MAE 2.2)`
+                )}, amber to ±${formatNumber(bands.poor, 1)}, red beyond. Measured on the ${
+                  bands.partition
+                }: mean absolute error ${formatNumber(bands.tightestQuartileMae, 2)} in the green band and ${formatNumber(
+                  bands.widestQuartileMae,
+                  2
+                )} in the red`
               : "") +
             "."
         });

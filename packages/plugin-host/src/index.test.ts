@@ -567,6 +567,7 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     const computeIsotopeEnvelope = vi.fn(async () => ({
       available: true as const,
       peaks: [{ mass: 78.04695, relativeIntensity: 100 }],
+      positionUnit: "dalton" as const,
       truncation: { policy: "relative-intensity-threshold", threshold: 1e-4 },
       engine: { id: "isospec-wasm", version: "2.3.5" },
       conventions: ["natural abundances from IsoSpec's built-in tables"]
@@ -629,10 +630,12 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     expect(englessAnswer).toEqual({ available: false, reason: "This host provides no isotope engine." });
   });
 
-  it("serves name-to-structure under the same permission and the same presence rule", async () => {
-    // A second capability on `chemistry.compute`, wired the same way on purpose: one permission, one
-    // presence rule, and the engine's availability carried in the answer rather than in whether the
-    // method exists. Anything else and a plugin would have to probe differently per capability.
+  it("serves name-to-structure only to a plugin that also declared native.execute", async () => {
+    // NOT on `chemistry.compute` alone. The desktop implements this by spawning the bundled JVM
+    // (`Command::new(java).arg("-jar")`), so gating it on the ordinary permission handed a subprocess
+    // to every plugin holding it — §7 lists `native.execute` as Dangerous and §16 forbids running
+    // native code unless granted. Presence tracks the permissions the method actually needs, and the
+    // engine's availability is still carried in the answer rather than in whether the method exists.
     const convertNameToStructure = vi.fn(async () => ({
       available: true as const,
       parsed: true as const,
@@ -652,7 +655,7 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
 
     const granted = new PluginHost({ convertNameToStructure });
     let seen: unknown;
-    granted.registerPlugin(manifest("org.test.nameyes", ["chemistry.compute"]), {
+    granted.registerPlugin(manifest("org.test.nameyes", ["chemistry.compute", "native.execute"]), {
       commandHandlers: {
         "plugin.nameyes.probe": async (context) => {
           seen = await context.chemistry?.nameToStructure?.({ name: "benzene" });
@@ -666,7 +669,7 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
     // No engine → still present, still answers, and says the host has none rather than throwing.
     const engineless = new PluginHost();
     let englessAnswer: unknown;
-    engineless.registerPlugin(manifest("org.test.namehostless", ["chemistry.compute"]), {
+    engineless.registerPlugin(manifest("org.test.namehostless", ["chemistry.compute", "native.execute"]), {
       commandHandlers: {
         "plugin.namehostless.probe": async (context) => {
           expect(context.chemistry?.nameToStructure).toBeDefined();
@@ -679,6 +682,24 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
       available: false,
       reason: "This host provides no name-to-structure engine."
     });
+
+    // And the denial: `chemistry.compute` alone gets the rest of the chemistry API and NOT this. The
+    // method is absent rather than present-and-throwing, so a plugin can feature-detect it the same
+    // way it detects a host that predates the method.
+    const withoutNative = new PluginHost({ convertNameToStructure });
+    let sawMethod: unknown = "unset";
+    withoutNative.registerPlugin(manifest("org.test.namenonative", ["chemistry.compute"]), {
+      commandHandlers: {
+        "plugin.namenonative.probe": (context) => {
+          sawMethod = context.chemistry?.nameToStructure;
+          expect(context.chemistry?.isotopeEnvelope).toBeDefined();
+          return { ok: true as const };
+        }
+      }
+    });
+    await withoutNative.invokeCommand("plugin.namenonative.probe");
+    expect(sawMethod).toBeUndefined();
+    expect(convertNameToStructure).toHaveBeenCalledTimes(1);
   });
 
   it("hands a plugin a laid-out object but never inserts it", async () => {
@@ -700,7 +721,7 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
         version: "0.0.1",
         apiVersion: "^0.1.2",
         entry: "dist/plugin.js",
-        permissions: ["chemistry.compute"],
+        permissions: ["chemistry.compute", "document.read"],
         contributes: { commands: [{ id: "plugin.layout.probe", title: "Probe" }] }
       },
       {
@@ -729,7 +750,7 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
         version: "0.0.1",
         apiVersion: "^0.1.2",
         entry: "dist/plugin.js",
-        permissions: ["chemistry.compute"],
+        permissions: ["chemistry.compute", "document.read"],
         contributes: { commands: [{ id: "plugin.nolayout.probe", title: "Probe" }] }
       },
       {
@@ -757,7 +778,7 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
         version: "0.0.1",
         apiVersion: "^0.1.0",
         entry: "dist/plugin.js",
-        permissions: ["chemistry.compute"],
+        permissions: ["chemistry.compute", "native.execute"],
         contributes: { commands: [{ id: "plugin.nameempty.probe", title: "Probe" }] }
       },
       {

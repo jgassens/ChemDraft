@@ -27,6 +27,15 @@ export interface IonizationSiteType {
   smarts: string;
   /** Dimorphite's `*` flag — an aromatic nitrogen its enumeration treats specially. */
   aromaticNitrogen: boolean;
+  /**
+   * Added by THIS project, not transcribed from Dimorphite-DL.
+   *
+   * The dataset record credited Dimorphite with the full table length, so five entries this project
+   * fitted itself sat under another group's name and licence. Attribution is not decoration: their
+   * means and spreads were fitted here, from this corpus, and a reader tracing a number back to
+   * `site_substructures.smarts` would not find it.
+   */
+  addedHere?: true;
   sites: readonly {
     /** 0-based index into the substructure match, NOT the SMARTS atom map number. */
     matchPosition: number;
@@ -83,7 +92,7 @@ export const IONIZATION_SITE_TYPES: readonly IonizationSiteType[] = [
   // `[OX2H1,OX1H0-]` matches the oxime drawn either protonated or already deprotonated, since
   // canonicalization may hand either form to the scanner. Distinct from `N-hydroxyamide` above, which is
   // C(=O)-N-O-H; this is C=N-O-H, with no carbonyl.
-  { name: "Oxime", smarts: "[CX3:1]=[NX2:2]-[OX2H1,OX1H0-:3]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.655701, pKaStd: 1.703249 }] },
+  { name: "Oxime", addedHere: true, smarts: "[CX3:1]=[NX2:2]-[OX2H1,OX1H0-:3]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.655701, pKaStd: 1.703249 }] },
   // The other four entries this project added, and the two it refused to. Each was chosen by measuring how
   // many atoms the pattern hits that are NOT labelled sites, because a pattern that locates atoms the model
   // was never trained on trades a silent omission for a confident fabrication -- the worse of the two.
@@ -102,13 +111,13 @@ export const IONIZATION_SITE_TYPES: readonly IonizationSiteType[] = [
   // fall entirely inside the aqueous window. Overlap with existing entries is expected and harmless --
   // acetic acid already matches Alcohol, Carboxyl and Thioic_acid together -- so the incremental gain is
   // only the sites currently going unreported, not the full labelled count above.
-  { name: "Imine_protonated", smarts: "[CX3:1]=[NX3H1+,NX3H2+:2]", aromaticNitrogen: false, sites: [{ matchPosition: 1, pKaMean: 8.214413, pKaStd: 2.007783 }] },
-  { name: "Alpha_nitro", smarts: "[CX4H1,CX4H2,CX4H3:1][NX3+](=[OX1])[OX1-]", aromaticNitrogen: false, sites: [{ matchPosition: 0, pKaMean: 6.189045, pKaStd: 2.265162 }] },
+  { name: "Imine_protonated", addedHere: true, smarts: "[CX3:1]=[NX3H1+,NX3H2+:2]", aromaticNitrogen: false, sites: [{ matchPosition: 1, pKaMean: 8.214413, pKaStd: 2.007783 }] },
+  { name: "Alpha_nitro", addedHere: true, smarts: "[CX4H1,CX4H2,CX4H3:1][NX3+](=[OX1])[OX1-]", aromaticNitrogen: false, sites: [{ matchPosition: 0, pKaMean: 6.189045, pKaStd: 2.265162 }] },
   // Excludes the N of a hydroxamic acid (`N[CX3]=[OX1]`, already covered by N-hydroxyamide) and of an
   // oxime (`N=*`, covered above), so the three N-O entries partition rather than overlap.
-  { name: "N_hydroxylamine", smarts: "[OX2H1,OX1H0-:1][NX3;!$(N[CX3]=[OX1]);!$(N=*)]", aromaticNitrogen: false, sites: [{ matchPosition: 0, pKaMean: 8.903158, pKaStd: 2.786721 }] },
+  { name: "N_hydroxylamine", addedHere: true, smarts: "[OX2H1,OX1H0-:1][NX3;!$(N[CX3]=[OX1]);!$(N=*)]", aromaticNitrogen: false, sites: [{ matchPosition: 0, pKaMean: 8.903158, pKaStd: 2.786721 }] },
   // `Peroxide1` and `Peroxide2` both require an ALIPHATIC carbon, so an aryl hydroperoxide matched neither.
-  { name: "Aryl_hydroperoxide", smarts: "[c:1][OX2][OX2H1:2]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.6, pKaStd: 0.447214 }] },
+  { name: "Aryl_hydroperoxide", addedHere: true, smarts: "[c:1][OX2][OX2H1:2]", aromaticNitrogen: false, sites: [{ matchPosition: 2, pKaMean: 8.6, pKaStd: 0.447214 }] },
   { name: "Ringed_imide1", smarts: "[O,S:1]=[C;R:2]([$([#8]),$([#7]),$([#16]),$([#6][Cl]),$([#6]F),$([#6][Br]):3])-[N;R:4]([C;R:5]=[O,S:6])-[H]", aromaticNitrogen: true, sites: [{ matchPosition: 3, pKaMean: 6.4525, pKaStd: 0.5555627777308341 }] },
   { name: "Ringed_imide2", smarts: "[O,S:1]=[C;R:2]-[N;R:3]([C;R:4]=[O,S:5])-[H]", aromaticNitrogen: true, sites: [{ matchPosition: 2, pKaMean: 8.681666666666667, pKaStd: 1.8657779975741713 }] },
   { name: "Imide", smarts: "[F,Cl,Br,S,s,P,p:1][#6:2][CX3:3](=[O,S:4])-[NX3+0:5]([CX3:6]=[O,S:7])-[H]", aromaticNitrogen: true, sites: [{ matchPosition: 4, pKaMean: 2.466666666666667, pKaStd: 1.4843629385474877 }] },

@@ -149,7 +149,12 @@ import {
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
-import { createRdkitAdapter } from "@chemdraft/rdkit-adapter";
+// `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
+// 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
+// 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
+// claim is about — and the analysis worker then shipped its own second copy of it. Every method on
+// the adapter is async and loads the engine on demand.
+import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
@@ -539,6 +544,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
   listenForToolsetActiveToolRequests,
@@ -1301,7 +1307,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "8.8.20.15-claude";
+const CURRENT_BUILD_STAMP = "8.8.20.16-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1571,6 +1577,14 @@ export function MainWindow({
     commit: () => undefined,
     cancel: () => undefined
   });
+  /**
+   * The detached palette's Molecular Inspector actions, held in a ref for the same reason the preview
+   * handlers are: the listener is registered once on mount, and `recomputeAnalysisFor` is redefined on
+   * every render.
+   */
+  const paletteInspectorHandlersRef = useRef<{
+    changeInterpretation: (interpretationId: string | undefined) => void;
+  }>({ changeInterpretation: () => undefined });
   const selectionClipboardPayloadRef = useRef<ReturnType<typeof createSelectionClipboardPayload>>(undefined);
   const selectionClipboardPasteStateRef = useRef<SelectionClipboardPasteState | undefined>(undefined);
   const lastNativeOpenPayloadKeyRef = useRef<{ key: string; at: number } | undefined>(undefined);
@@ -1635,6 +1649,7 @@ export function MainWindow({
       }
       setAnalysisBusy(true);
       setStatus("Analyzing structure…");
+      let superseded = false;
       try {
         const run = await client.analyze(
           "selection",
@@ -1645,14 +1660,22 @@ export function MainWindow({
           },
           { immediate: true }
         );
-        // A superseded run is not an answer; the newer invocation owns the panel.
-        if (run.status === "cancelled") return;
+        // A superseded run is not an answer; the newer invocation owns the panel. `superseded` is
+        // checked in the `finally` too: the busy flag is shared, and an older run clearing it while
+        // the run that displaced it is still working took "Recomputing…" off the screen and
+        // re-enabled the interpretation select over a stale report.
+        if (run.status === "cancelled") {
+          superseded = true;
+          return;
+        }
         const report = buildAnalysisReport(run);
         setAnalysisReport(report);
+        // What these numbers describe, so the pane can say when they stop describing it.
+        setAnalysisSubject(structure);
         setAnalysisInterpretation(interpretationOverride);
         setStatus(formatAnalysisRunStatus(run));
       } finally {
-        setAnalysisBusy(false);
+        if (!superseded) setAnalysisBusy(false);
       }
     },
     []
@@ -1661,6 +1684,29 @@ export function MainWindow({
   // The Analyze surface (PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
   // it re-runs the same selection against a derived interpretation and replaces the report.
   const [analysisReport, setAnalysisReport] = useState<AnalysisReport | undefined>();
+  /**
+   * The report as the palette broadcast sees it: a value that changes only when the REPORT changes.
+   *
+   * The toolbar text-style broadcast carries the whole `AnalysisReport`, and its effect depends on
+   * `currentMoleculeInspector` and `currentToolbarSelection` — both `useMemo`s over `document`, which
+   * is a new object on every stroke and keystroke. So from the user's first Analyze click onward,
+   * every edit for the rest of the session re-serialised a 28-57 KB report (measured across benzene,
+   * aspirin, caffeine, ibuprofen, lysine and ciprofloxacin) and emitted it over Tauri IPC —
+   * unconditionally, because `broadcastToolsetTextStyle` has no listener check. On the receiving side
+   * `PaletteWindow` set state from a freshly deserialised object, so `Object.is` never bailed out and
+   * the pane's whole memo chain re-ran per keystroke.
+   *
+   * Keyed on the report's own `fingerprint`, which every run already carries. Two runs that produced
+   * the same report are the same broadcast, and an edit that produced no run is not a broadcast at all.
+   */
+  /** The structure `analysisReport` was computed for; compared against the live selection below. */
+  const [analysisSubject, setAnalysisSubject] = useState<string | undefined>();
+  const analysisReportFingerprint = analysisReport?.fingerprint;
+  const analysisReportForBroadcast = useMemo(
+    () => analysisReport,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the fingerprint IS the report's identity.
+    [analysisReportFingerprint]
+  );
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
 
@@ -1926,6 +1972,19 @@ export function MainWindow({
   toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
+  /**
+   * The report describes something other than what is selected now.
+   *
+   * `setAnalysisReport` has one call site — run completion — and nothing ever invalidated it: not a
+   * document edit, not a selection change, not undo, not closing the document. So the panel could show
+   * a fully provenanced page of numbers for a structure the user had already changed or deselected.
+   * True when nothing is selected either: a report about a molecule that is no longer on screen is the
+   * same claim.
+   */
+  const analysisReportIsStale =
+    analysisReport !== undefined &&
+    analysisSubject !== undefined &&
+    selectedMolecule?.structure !== analysisSubject;
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -2045,6 +2104,11 @@ export function MainWindow({
     },
     [document, runMolecularProperties]
   );
+
+  // Keep the ref current so the mount-time palette listener always calls the live callback.
+  useEffect(() => {
+    paletteInspectorHandlersRef.current = { changeInterpretation: recomputeAnalysisFor };
+  }, [recomputeAnalysisFor]);
 
   const currentMoleculeInspector = useMemo(
     () => createMoleculeInspectorModel(document, {
@@ -2555,16 +2619,22 @@ export function MainWindow({
         activeArtPaintTarget,
         currentMoleculeInspector,
         currentToolbarSelection,
-        analysisReport,
-        analysisBusy
+        // The report travels on this payload, but this effect no longer re-sends it on every edit —
+        // see `analysisReportForBroadcast` below. Passing the memoised value keeps the payload shape
+        // unchanged while making the effect's identity stable across document changes.
+        analysisReportForBroadcast,
+        analysisBusy,
+        analysisReportIsStale
       )
     ).catch(() => undefined);
-    // `analysisReport` is in the deps so a detached Molecular Inspector window refreshes when a new
-    // run lands — without it the palette would show the first report forever.
+    // `analysisReport` reaches this through `analysisReportForBroadcast`, so a detached Molecular
+    // Inspector window still refreshes when a new run lands — without it the palette would show the
+    // first report forever.
   }, [
     activeArtPaintTarget,
     analysisBusy,
-    analysisReport,
+    analysisReportIsStale,
+    analysisReportForBroadcast,
     currentArtStyle,
     currentMoleculeInspector,
     currentToolbarSelection,
@@ -8769,6 +8839,7 @@ export function MainWindow({
     let unlistenPreview: (() => void) | undefined;
     let unlistenCommit: (() => void) | undefined;
     let unlistenCancel: (() => void) | undefined;
+    let unlistenInspector: (() => void) | undefined;
     void listenForToolsetCommands((commandId) => {
       invokeCommandRef.current(commandId);
     })
@@ -8872,6 +8943,22 @@ export function MainWindow({
         unlistenCancel = cleanup;
       })
       .catch(() => undefined);
+    // Changing the interpretation re-runs the analysis, which only this window can do. A detached
+    // palette could not reach it at all, so its interpretation select accepted changes that went
+    // nowhere; the ref keeps this listener off the recompute callback's identity.
+    void listenForPaletteInspectorActions((action) => {
+      if (action.kind === "interpretation") {
+        paletteInspectorHandlersRef.current.changeInterpretation(action.interpretationId);
+      }
+    })
+      .then((cleanup) => {
+        if (!active) {
+          cleanup();
+          return;
+        }
+        unlistenInspector = cleanup;
+      })
+      .catch(() => undefined);
 
     return () => {
       active = false;
@@ -8884,6 +8971,7 @@ export function MainWindow({
       unlistenPreview?.();
       unlistenCommit?.();
       unlistenCancel?.();
+      unlistenInspector?.();
     };
   }, []);
 
@@ -14859,6 +14947,7 @@ export function MainWindow({
                   currentSelection: currentToolbarSelection,
                   currentMolecularInspector: analysisReport,
                   molecularInspectorBusy: analysisBusy,
+                  molecularInspectorStale: analysisReportIsStale,
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,

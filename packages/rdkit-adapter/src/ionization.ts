@@ -42,22 +42,25 @@
  * set — so its agreement with the model carries information instead of being circular.
  *
  * It reaches a small fraction of sites and declines on the rest, which is what an LFER should do. Four
- * series ship — benzoic, phenol, anilinium, pyridinium — and over the 199 sites they reach:
+ * series ship — benzoic, phenol, anilinium, pyridinium — and over the 342 sites they reach:
  *
  * | | MAE (log units) |
  * |---|---|
- * | the model alone | 0.56 |
- * | the relationship alone | 0.22 |
+ * | the model alone | 0.51 |
+ * | the relationship alone | 0.26 |
  * | their plain average | 0.29 |
- * | weighted by measured accuracy | 0.20 |
+ * | weighted by measured accuracy | 0.24 |
+ *
+ * (Read from `consensus-calibration.json`, not typed: this table said 199 sites and 0.56 / 0.22 / 0.20,
+ * two corpus generations back. The live artifact is the one the code interpolates a few hundred lines
+ * down, so the prose and the contract were quoting different numbers for the same quantity.)
  *
  * The third row is the one that shaped the code: averaging is the obvious rule and it is worse than the
  * better method alone, so `combineSiteEstimates` weights by each method's own measured error.
  *
  * The fourth row does not beat the relationship on its own, and the contract says so rather than
  * claiming otherwise. What the pair buys is the INTERVAL. Their disagreement tracks actual error at
- * r = 0.87, where the forest's own tree variance manages 0.52, and the resulting interval covers 94%
- * of the real error.
+ * r = 0.79, and the resulting interval covers 89% of the real error.
  *
  * Where only one method fires, its estimate passes through as itself and is never labelled a consensus.
  *
@@ -77,11 +80,14 @@
  * 9.25 of its ammonium, and so read as correct while describing a different reaction. Both are now
  * labelled basic and computed properly.
  *
- * **What still gets no acidic value: a plain amine's N-H.** Near 35, outside water, and zero of the
- * 7,053 training labels is an unactivated amine — a count, not a chemical opinion, re-counted on the
- * corrected corpus: of 636 acidic labels on a neutral N-H, none has only saturated carbon around it.
- * The rule was checked the other way too (applied to the training set it rejects 0 rows). The amine
- * still reports its basic pKa, which is the one anybody wanted.
+ * **What still gets no acidic value: a plain amine's N-H.** Near 35, outside water, and the corpus has
+ * no sound example of it — a count, not a chemical opinion. Re-counted over the current 12,096-row
+ * corpus (the earlier "zero of 7,053" was taken before the corpus grew to four sources): 15 labels
+ * match the rule, every one of them carrying a value between 5.7 and 8.7 written against a
+ * neutral-amine-to-amide-anion pair, i.e. a basic pKa recorded as an acidic transition. So the
+ * suppression still holds, but on the ground that those 15 rows are mislabelled rather than that the
+ * model never saw the case. See `isUnactivatedAmine`. The amine still reports its basic pKa, which is
+ * the one anybody wanted.
  *
  * **Macroscopic pKa, from the microstate ladder.** Everything above is microscopic; a reference table
  * is not. `protonation.ts` folds the ladder into what a titration measures, exactly rather than by a
@@ -125,7 +131,7 @@
  * position and its direction are supplied. On SAMPL6 — a BLIND challenge, so the values were withheld
  * while predictions were made, and checked here to share no skeleton with any training row — the whole
  * pipeline scores **MAE 0.50 and RMSE 0.60** over 31 macroscopic values when each measured value is
- * matched to its closest prediction, with 90% inside one log unit, 100% inside two, and a largest single
+ * matched to its closest prediction, with 87% inside one log unit, 100% inside two, and a largest single
  * error of 1.35 — and emits 37 extra steps nothing measured. RMSE is quoted alongside because it is what
  * the challenge itself reported, and because MAE alone flatters a method with a long tail.
  *
@@ -184,7 +190,6 @@ import {
   PKA_MODEL_CALIBRATION,
   PKA_MODEL_TRAINING,
   ringMembership,
-  siteFeatures,
   type PkaMolecularGraph
 } from "./pkaModel";
 import { PKA_GNN_TRAINING, PKA_INTERVAL_CALIBRATION, predictSitePka } from "./pkaGnn";
@@ -335,7 +340,29 @@ export const IONIZATION_CONFIDENCE_BANDS = {
   // calibrated number, so colouring it by the raw one would grade a ring against a scale it is not
   // drawn on. Reading the forest's here would be the same mistake one model further back.
   good: PKA_INTERVAL_CALIBRATION.intervalQuartiles[0]!,
-  poor: PKA_INTERVAL_CALIBRATION.intervalQuartiles[2]!
+  poor: PKA_INTERVAL_CALIBRATION.intervalQuartiles[2]!,
+  // What the bands are WORTH: the shipping model's out-of-fold mean absolute error inside the
+  // tightest and widest quartiles of that same calibrated interval.
+  //
+  // These belong beside the thresholds because a reader shown a green ring is being told something
+  // about accuracy, and the two numbers must come from the same model and the same partition as the
+  // thresholds do. They did not: the figure caption hard-typed "MAE 0.5" and "MAE 2.2", traced by
+  // `git log -S` to the RETIRED FOREST's `calibration.json` as it stood in August 2026 — a different
+  // model, and stale even for that one. The same report then printed 0.39 / 1.86 from the artifact a
+  // few sections later, so one page said both.
+  //
+  // MEASURED, not chosen: computed over all 12,096 rows of the committed `gnn-oof.json` by applying
+  // `interval-calibration.json`'s curve to each row's ensemble spread, sorting by the resulting
+  // interval, and taking the mean |predicted − observed| within each quartile. `intervalMaeIsMeasured`
+  // in `pkaGnn.real.test.ts` recomputes both from the artifacts and fails if either drifts, which is
+  // the same constant-vs-artifact guard the WASM hashes get. They are constants rather than a
+  // runtime read only because `gnn-oof.json` is 1.6 MB and is not a runtime artifact; the durable fix
+  // is for `interval_calibrate.py` to emit them into `interval-calibration.json` on the next
+  // regeneration, at which point these should be deleted and read from there.
+  tightestQuartileMae: 0.3862,
+  widestQuartileMae: 1.2629,
+  /** The partition all four numbers above are measured on. §9a: it travels with the figure. */
+  partition: "out-of-fold calibration corpus, 12,081 sites"
 };
 
 const IONIZATION_ENGINE = "dimorphite-site-table";
@@ -357,7 +384,7 @@ export interface IonizationMolecule {
 
 export interface IonizationScan {
   sites: IonizationSite[];
-  unassessed: { atomIndices: number[]; reason: string }[];
+  unassessed: { atomIndices: number[]; reason: string; feature: string }[];
 }
 
 /**
@@ -381,7 +408,7 @@ export function scanIonizableSites(
   elementByAtom: readonly string[]
 ): IonizationScan {
   const sites: IonizationSite[] = [];
-  const unassessed: { atomIndices: number[]; reason: string }[] = [];
+  const unassessed: { atomIndices: number[]; reason: string; feature: string }[] = [];
   const seen = new Set<string>();
   const byAtom = new Map<number, { atoms: number[]; typeName: string; mean: number | null; std: number }[]>();
 
@@ -407,6 +434,7 @@ export function scanIonizableSites(
           if (metal !== undefined) {
             unassessed.push({
               atomIndices: [...match.atoms],
+              feature: "metal-adjacent site",
               reason:
                 `This ${type.name} site is adjacent to ${elementByAtom[metal]}. No open pKa dataset ` +
                 "contains a metal-bearing structure, so there is no evidence on which to give it a value."
@@ -474,13 +502,18 @@ export function scanIonizableSites(
 /**
  * How much each method's estimate counts, as the inverse of the error it has been measured to make.
  *
- * A plain average would be the obvious thing and it is measurably wrong here. On the 94 sites where
- * both methods fire, the forest scores MAE 0.42 and the Hammett relationship 0.16; averaging them
- * gives 0.22 — *worse than the better method alone*. Weighting by inverse MAE gives 0.15, and on the
- * non-circular phenol half it beats Hammett alone too (0.18 against 0.22).
+ * A plain average would be the obvious thing and it is measurably wrong here. On the 342 sites where
+ * both methods fire, the network scores MAE 0.51 and the Hammett relationship 0.26; averaging them
+ * gives 0.29 — *worse than the better method alone*. Weighting by inverse MAE gives 0.24, and on the
+ * non-circular phenol half it lands at 0.25.
  *
- * The exact weight is not a knob that was tuned: inverse-MAE from each method's own published figure
- * puts the forest at 0.164, and the optimum measured across the sweep is flat from 0.10 to 0.30.
+ * Every figure above is `consensus-calibration.json` as it stands, and the code below interpolates the
+ * same artifact. This block used to say 94 sites and 0.42 / 0.16 / 0.22 — a third generation of the
+ * numbers, different again from the 199-site set quoted at the top of this file and from the live
+ * artifact, so one module carried three answers to one question.
+ *
+ * The weight is not a knob that was tuned: it is inverse-MAE from each method's own measured figure,
+ * putting the network at 0.263, and the optimum across the sweep is flat over a wide range.
  */
 const METHOD_MAE: Readonly<Record<string, number>> = {
   model: PKA_GNN_TRAINING.cvMae,
@@ -981,7 +1014,7 @@ export function scoreSiteTransitions(
     }
 
     if (sites.length === before) {
-      unassessed.push({ atomIndices: site.atomIndices, reason: unscorableReason(graph, site) });
+      unassessed.push({ atomIndices: site.atomIndices, ...unscorableReason(graph, site) });
     }
   }
 
@@ -1229,11 +1262,27 @@ function isUnactivatedAmide(
  * A neutral amine whose every neighbour is a saturated carbon.
  *
  * Its N-H acidity is near 35 — outside water, outside the training range (-9.02 to 30.90), and outside
- * what a forest bounded by its own leaf values could return. The justification is a count rather than a
- * chemical opinion, the same shape as the metal decline: of the 17 training labels that look like
- * "neutral N-H on saturated carbon" every one is activated (thioamides, cyano-enamines), so unactivated
- * amines number zero of 3,031. Checked the other way too — applied to the training set the rule rejects
- * 0 rows, so it can only withhold chemistry the model never learned.
+ * what a model bounded by its own training values could return.
+ *
+ * RE-MEASURED against the current 12,096-row corpus, because the original count was taken over 3,031
+ * rows and the corpus has since grown to four sources. The rule matched **15** labels, not zero. All
+ * 15 carried values between 5.70 and 8.70 — 2,2-difluoroethylamine at 7.20, 3-aminopropanenitrile at
+ * 7.75, N-methyl-3-aminopropanenitrile at 8.10 — which are BASIC pKa values, the conjugate acid RNH3+
+ * losing its proton. But every one of those rows is written as the ACIDIC pair: `acid` is the neutral
+ * amine and `base` is the amide anion (`NCC(F)F` → `[NH-]CC(F)F`). The transition the row draws and
+ * the value it carries are not the same event, and the model was taught that a neutral aliphatic
+ * amine's N-H acidity is about 8. All 15 trace to the QupKake set, whose per-site direction is
+ * ChemAxon Marvin's assignment rather than a measured fact.
+ *
+ * FIXED AT THE SOURCE. `qupkake_labels.py` now rejects an acidic label on an unactivated amine whose
+ * value lands inside the aqueous window — the gate its own header promises ("Marvin's call is checked
+ * rather than trusted") and did not have, because every existing gate asked whether the transition was
+ * POSSIBLE and none asked whether the value was possible FOR it. Verified against the whole corpus: it
+ * rejects those 15 and nothing else, leaving 12,081 rows untouched.
+ *
+ * This rule stays, for now as defence in depth rather than as the fix. The SHIPPED weights were
+ * trained on all 15 and still carry what they taught; only a retrain against a regenerated corpus
+ * clears that, and until then withholding the value is still the honest output.
  *
  * This suppresses only the ACIDIC half. The amine's basic pKa is well predicted and is reported.
  */
@@ -1321,30 +1370,51 @@ function isFullyDissociatedSulfonic(graph: PkaMolecularGraph, atomIndex: number)
   return sulfonylOxygens.size >= 2;
 }
 
-/** Why a located site produced no value at all — always specific, never a bare absence. */
-function unscorableReason(graph: PkaMolecularGraph, site: IonizationSite): string {
+/**
+ * Why a located site produced no value at all — always specific, never a bare absence.
+ *
+ * Returns the machine-readable `feature` alongside the prose. The result's
+ * `applicability.unsupportedFeatures` needs the former, and used to hardcode `"metal-adjacent site"`
+ * for every withheld site regardless of which of these branches fired — so a sulfonic acid was
+ * reported as being next to a metal that was not in the molecule.
+ */
+function unscorableReason(
+  graph: PkaMolecularGraph,
+  site: IonizationSite
+): { reason: string; feature: string } {
   const atom = graph.atoms[site.ionizableAtomIndex]!;
   if (isFullyDissociatedSulfonic(graph, site.ionizableAtomIndex)) {
-    return (
-      "A sulfonic acid, fully dissociated across the entire aqueous range — no pKa is reported because " +
-      "it has none in water. All 15 such labels in the training corpus fall below pH 0 (-7.15 to -1.25), " +
-      "where the measurement is a Hammett acidity function rather than an aqueous dissociation constant."
-    );
+    return {
+      feature: "fully dissociated sulfonic acid",
+      reason:
+        "A sulfonic acid, fully dissociated across the entire aqueous range — no pKa is reported because " +
+        "it has none in water. All 15 such labels in the training corpus fall below pH 0 (-7.15 to -1.25), " +
+        `where the measurement is a Hammett acidity function rather than an aqueous dissociation constant.`
+    };
   }
   if (isUnactivatedAmine(graph, site.ionizableAtomIndex)) {
-    return (
-      "Drawn neutral, this amine's only acidity is that N-H losing a proton — a pKa near 35, which " +
-      "water cannot hold and no aqueous dataset records; zero of the model's 7,053 training labels is " +
-      "an unactivated amine. Its basic pKa could not be built for this structure either."
-    );
+    return {
+      feature: "unactivated amine",
+      reason:
+        "Drawn neutral, this amine's only acidity is that N-H losing a proton — a pKa near 35, which " +
+        "water cannot hold and no aqueous dataset records. The 15 rows in the training corpus that " +
+        "match this pattern all carry values between 5.7 and 8.7, which are basic pKa values written " +
+        "against an acidic transition, so the model has no sound example of this event to have " +
+        "learned from. Its basic pKa could not be built for this structure either."
+    };
   }
   if (atom.hydrogens === 0) {
-    return (
-      `This ${site.siteType} site carries no hydrogen as drawn, so it has no acidity to report, and ` +
-      "its lone pair is not available to accept one — so neither transition applies here."
-    );
+    return {
+      feature: "site with no proton as drawn",
+      reason:
+        `This ${site.siteType} site carries no hydrogen as drawn, so it has no acidity to report, and ` +
+        "its lone pair is not available to accept one — so neither transition applies here."
+    };
   }
-  return `The model could not build features for this ${site.siteType} site, so it carries no value.`;
+  return {
+    feature: "site the model could not featurise",
+    reason: `The model could not build features for this ${site.siteType} site, so it carries no value.`
+  };
 }
 
 const CLASSIFICATION: Classification = {
@@ -1392,7 +1462,7 @@ export function ionizationContract(): MethodContract {
         "nothing else, on the SAMPL6 blind challenge set — 24 drug-like molecules, 31 measured " +
         "macroscopic values, a BLIND challenge whose answers were withheld while predictions were " +
         "submitted, and checked to share no skeleton with any training row — this method matches every " +
-        "measured value to MAE 0.50, RMSE 0.60, with 90% inside one log unit, 100% inside two, a " +
+        "measured value to MAE 0.50, RMSE 0.60, with 87% inside one log unit, 100% inside two, a " +
         "largest single error of 1.35 and a bias of -0.03. RMSE is quoted because that is what the " +
         "SAMPL6 challenge itself reported and MAE alone flatters. On COUNTING the steps it does far " +
         "worse, and the honest figure is the harsh one: exactly as many values as were measured on 2 " +
@@ -1423,8 +1493,11 @@ export function ionizationContract(): MethodContract {
         "neutral form; against ChemAxon it lands within 0.5-0.8 on histidine's two nitrogens.",
       "A PLAIN AMINE GETS NO ACIDIC VALUE, only a basic one. A PLAIN AMINE " +
         "drawn neutral has an N-H acidity near 35, which water cannot hold and no aqueous dataset " +
-        "records — zero of the 7,053 training labels is an unactivated amine — so that half is " +
-        "withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
+        `records. Of the ${PKA_GNN_TRAINING.samples.toLocaleString("en-US")} labels in the training ` +
+        "corpus, 15 match this pattern and every one of them carries a value between 5.7 and 8.7 " +
+        "written against a neutral-amine-to-amide-anion pair — basic pKa values recorded as acidic " +
+        "transitions — so the model has no sound example of the event to have learned from and that " +
+        "half is withheld. Its BASIC pKa is reported and is the familiar number. Anilines, amides, " +
         "sulfonamides and thioamides keep their acidic values too: their N-H acidity IS " +
         "aqueous-measurable and IS in the data.",
       "A SULFONIC ACID GETS NO NUMBER, because it has none in water: it is reported as fully " +
@@ -1463,8 +1536,13 @@ export function ionizationContract(): MethodContract {
       `trained members ` +
         `disagreed about THIS site — not one error figure repeated on every row. Out of fold it ` +
         `separates: sites in the least-disagreeing quarter have a mean absolute error of ` +
-        `${PKA_MODEL_CALIBRATION.quartileMae[0]!.toFixed(2)} against ` +
-        `${PKA_MODEL_CALIBRATION.quartileMae[3]!.toFixed(2)} for the most. The disagreement is not ` +
+        // THE NETWORK'S OWN quartile MAEs, not `PKA_MODEL_CALIBRATION.quartileMae`. That field is the
+        // RETIRED FOREST's, and describes how TREE disagreement mapped to an interval — a different
+        // model and a different quantity. It read 0.39 / 1.86 here; the shipping network's figures,
+        // measured over the same 12,096 out-of-fold rows, are 0.36 / 1.25.
+        `${IONIZATION_CONFIDENCE_BANDS.tightestQuartileMae.toFixed(2)} against ` +
+        `${IONIZATION_CONFIDENCE_BANDS.widestQuartileMae.toFixed(2)} for the most, on the ` +
+        `${IONIZATION_CONFIDENCE_BANDS.partition}. The disagreement is not ` +
         `reported as the interval, nor scaled by a constant into one: it is the empirical quantile of ` +
         `held-out |error| among sites that disagreed by a similar amount, which contains ` +
         `${Math.round(PKA_INTERVAL_CALIBRATION.achievedCoverage * 100)}% of held-out errors and is ` +
@@ -1507,7 +1585,7 @@ export function ionizationContract(): MethodContract {
         `the most accurate of them, needs GFN2-xTB and reports 2.36 s per molecule on one core of a 32-core ` +
         `server. That contrast is about COMPUTE, not about what hardware either will run on: nothing ` +
         `here establishes how any of these tools is deployed or licensed. It locates ` +
-        `its own sites and that step is MEASURED, at 91.6% strict recall over 12,021 corpus sites, which no ` +
+        `its own sites and that step is MEASURED, at 91.6% strict recall over 12,006 corpus sites, which no ` +
         `method above publishes; OPERA's own figures had to omit 31 Novartis and 6 literature molecules ` +
         `because it returned two or zero values, which is that same step failing silently. It reports an ` +
         `uncertainty per site at all, and states where that uncertainty is validated and where it is not. ` +
@@ -1555,19 +1633,21 @@ export function ionizationContract(): MethodContract {
         "one of them. The MACROSCOPIC values reported alongside are what a titration measures, folded " +
         "from the microscopic ladder over every protonation microstate: pKa(n) = log10(Z(n)/Z(n-1)), " +
         "which is exact rather than fitted.",
-      "A ZWITTERION carries an electrostatic correction, and the result says which molecules got one. " +
-        "The microscopic model barely responds to a neighbouring charge — on glycine it shifts the " +
-        "carboxyl by 0.6 log units where the real effect is 2.6, and for the ammonium it moves the " +
-        "wrong way — because the training labels only contain microstates a titration can populate, " +
-        "never an amino acid's neutral form. A Coulomb term across acid/base site pairs, one parameter " +
-        "fitted against MACROSCOPIC values, takes those molecules from 2.06 log units of error to 0.53 " +
-        "while leaving every other molecule alone. Like-charge pairs get no correction: the model " +
-        "already handles them, and applying it there made things worse.",
-      "zwitterions remain the weakest case even corrected, which is why they are flagged. Glycine " +
-        "lands at 0.38, alanine at 0.18, aspartic acid at 0.52 and histidine at 0.86 — the error grows " +
-        "where several acid/base pairs act at once. Diacids and diamines are the reliable end: " +
-        "piperazine 0.05, ethylenediamine 0.07, succinic acid 0.29, though oxalic acid is the worst " +
-        "case anywhere in the set at 1.22, where the two carboxyls sit directly bonded.",
+      "A ZWITTERION IS FLAGGED, and no longer carries an electrostatic correction — the correction was " +
+        "refitted to zero and the shipped `coupling.json` pins W = 0.0. This paragraph used to claim it " +
+        "took those molecules from 2.06 log units of error to 0.53, which was true of the " +
+        "Dwar-iBond-only corpus, where both scaffold halves independently chose W = 7. Refitted after " +
+        "pKaCHU was added, both halves choose 0.0 and the old value is now WORSE than no correction. " +
+        "The term was never physics the model could not learn; it was physics the LABELS did not " +
+        "contain — Dwar-iBond records only microstates a titration can populate, never an amino acid's " +
+        "neutral form, and pKaCHU does, so the model learns the contrast directly.",
+      "zwitterions are now the STRONGEST class in the curated set rather than the weakest — 0.16 " +
+        "against 0.29 overall — because a zwitterion is precisely the molecule whose fold leans on a " +
+        "species no experiment can label, and the weighted-least-squares fold is what fixed that. The " +
+        "flag stays because it describes the chemistry, which is true regardless, and because a reader " +
+        "still wants to know when they have one. Diacids and diamines remain reliable: piperazine 0.05, " +
+        "ethylenediamine 0.07, succinic acid 0.29; oxalic acid is the worst case anywhere in the set at " +
+        "1.22, where the two carboxyls sit directly bonded.",
       "an AZOLE shares one proton between two ring nitrogens, and the two arrangements are tautomers " +
         "rather than different species. The enumeration assigns charges, which cannot move a double " +
         "bond, so combining both flips built an ylide the model scored seven log units too acidic. " +
@@ -1667,18 +1747,28 @@ export function ionizationContract(): MethodContract {
     accuracyClaims: [
       {
         metric: "mae",
-        value: PKA_MODEL_TRAINING.cvMae,
+        // PKA_GNN_TRAINING, not PKA_MODEL_TRAINING. This published the RETIRED forest's 1.0228 while
+        // every pKa the app reports comes from the graph network at 0.7281 — a 40% overstatement of
+        // the method's own error, attributed to a corpus description that did not add up either
+        // ("TWO experimental sets, 3,031 + 4,022" sums to 7,053, against the 12,096 the same sentence
+        // interpolated). The forest constant is still imported for other metadata, which is exactly
+        // how the wrong one got read here.
+        value: PKA_GNN_TRAINING.cvMae,
         unit: "log10-unit",
         basis:
-          `5-fold cross-validation over ${PKA_MODEL_TRAINING.samples} sites from TWO experimental ` +
-          "sets — 3,031 Dwar-iBond and 4,022 QupKake — with folds held out by " +
-          `${PKA_MODEL_TRAINING.grouping}. An earlier version of this figure said 1.18; it was ` +
-          "grouped by canonical SMILES, which separates identical molecules and nothing else and so " +
-          "left every congeneric series straddling the folds. " +
-          `Predicting the dataset mean scores ${PKA_MODEL_TRAINING.baselinePredictTheMean.toFixed(2)}. ` +
+          `5-fold cross-validation over ${PKA_GNN_TRAINING.samples} sites from FOUR experimental ` +
+          "sources — 3,031 Dwar-iBond, 4,022 QupKake, 4,419 pKaCHU and 624 aqueous D2A rows — with " +
+          `folds held out by ${PKA_GNN_TRAINING.grouping}. An earlier version of this figure said ` +
+          "1.18; it was grouped by canonical SMILES, which separates identical molecules and nothing " +
+          "else and so left every congeneric series straddling the folds. " +
+          `Predicting the dataset mean scores ${PKA_GNN_TRAINING.baselinePredictTheMean.toFixed(2)}. ` +
           "THIS IS AN ORACLE-SITE FIGURE: the site and its direction are supplied, so it measures how " +
-          "well a known site is valued and says nothing about whether the right sites were found. No " +
-          "end-to-end number is published yet, which is why the method is marked experimental.",
+          "well a known site is valued and says nothing about whether the right sites were found — " +
+          "site detection is measured separately at 91.6% strict recall. " +
+          "AND THE SCAFFOLD PARTITION IS NOT THE HARDEST ONE: it straddles 642 protonation and " +
+          "tautomer families, and closing that leak moves the honest figure to 0.7482. Read 0.75 as " +
+          "what this method achieves on a molecule whose family it has not seen, and 0.73 as what it " +
+          "achieves on a scaffold it has not seen.",
         citationId: "dwar-ibond"
       },
       {
@@ -1710,7 +1800,7 @@ export function ionizationContract(): MethodContract {
         value: EXTERNAL_VALIDATION.perSet[NOVARTIS]?.mae ?? EXTERNAL_VALIDATION.mae,
         unit: "log10-unit",
         basis:
-          `The Novartis set, ${EXTERNAL_VALIDATION.perSet[NOVARTIS]?.n ?? 0} sites, held out entirely. ` +
+          `The Novartis set, ${EXTERNAL_VALIDATION.perSet[NOVARTIS]?.n ?? 0} sites, never trained on, but NOT a blind test: this set has now selected models repeatedly — the H160 rejection and the shells arms were both decided on it — so it is DEVELOPMENT data, and the same contract calls it the external development set elsewhere. Treat it as an honest out-of-corpus check whose optimism grows each time it is consulted. ` +
           `RMSE ${(EXTERNAL_VALIDATION.perSet[NOVARTIS]?.rmse ?? 0).toFixed(2)}. ` +
           `Published figures on the SAME set, MAE where reported and RMSE otherwise: ` +
           COMPETITOR_BENCHMARK.map((entry) =>
@@ -1727,7 +1817,7 @@ export function ionizationContract(): MethodContract {
         value: EXTERNAL_VALIDATION.perSet[LITERATURE]?.mae ?? EXTERNAL_VALIDATION.mae,
         unit: "log10-unit",
         basis:
-          `The literature set, ${EXTERNAL_VALIDATION.perSet[LITERATURE]?.n ?? 0} sites, held out entirely. ` +
+          `The literature set, ${EXTERNAL_VALIDATION.perSet[LITERATURE]?.n ?? 0} sites, never trained on, but NOT a blind test: this set has now selected models repeatedly — the H160 rejection and the shells arms were both decided on it — so it is DEVELOPMENT data, and the same contract calls it the external development set elsewhere. Treat it as an honest out-of-corpus check whose optimism grows each time it is consulted. ` +
           `RMSE ${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.rmse ?? 0).toFixed(2)}, which is this method's ` +
           `WORST dimension anywhere: every published method above scores below 1.01 RMSE on this set except ` +
           `OPERA at 2.18. An MAE of ` +
@@ -1901,11 +1991,18 @@ export function ionizationContract(): MethodContract {
         source: "https://github.com/durrantlab/dimorphite_dl",
         license: "Apache-2.0",
         redistributable: true,
-        recordCount: IONIZATION_SITE_TYPES.length,
+        // Only the rows Dimorphite actually authored. This was the whole table length, so five
+        // entries fitted by this project were credited to Dimorphite's authors under Dimorphite's
+        // licence — an attribution error in the direction that matters, since a reader tracing one of
+        // those numbers to `site_substructures.smarts` would not find it there.
+        recordCount: IONIZATION_SITE_TYPES.filter((type) => !type.addedHere).length,
         obligations: [
           "Per-site-type pKa means and standard deviations fitted by Dimorphite-DL's authors over " +
             "compounds with experimentally measured pKa. Transcribed unmodified; attribution retained " +
-            "in the citation above."
+            "in the citation above.",
+          `${IONIZATION_SITE_TYPES.filter((type) => type.addedHere).length} further site types in this ` +
+            "implementation are NOT Dimorphite's and are not covered by this row — they were fitted " +
+            "here, from this project's own corpus, and are marked `addedHere` in `ionizationSites.ts`."
         ]
       }
     ],

@@ -41,15 +41,17 @@ async function fragment(smiles: string): Promise<JobackFragmentation> {
   };
   try {
     const json = JSON.parse(mol.get_json()) as {
-      molecules: { atoms: { impHs?: number }[] }[];
-      defaults?: { atom?: { impHs?: number } };
+      molecules: { atoms: { impHs?: number; chg?: number }[] }[];
+      defaults?: { atom?: { impHs?: number; chg?: number } };
     };
     const atoms = json.molecules[0]!.atoms;
     const defaultImpHs = json.defaults?.atom?.impHs ?? 0;
+    const defaultCharge = json.defaults?.atom?.chg ?? 0;
     const heavy = atoms.map((_, index) => index);
     // Joback's nA counts hydrogens too, so the implicit ones have to be added back.
     const total = atoms.length + atoms.reduce((sum, a) => sum + (a.impHs ?? defaultImpHs), 0);
-    return fragmentForJoback(rdkit, mol, heavy, total);
+    const charges = new Map<number, number>(atoms.map((a, index) => [index, a.chg ?? defaultCharge]));
+    return fragmentForJoback(rdkit, mol, heavy, total, charges);
   } finally {
     mol.delete();
   }
@@ -247,5 +249,106 @@ describe("the report", () => {
     );
     const row = section?.kind === "keyValue" ? section.rows.find((r) => r.label.includes("TPSA")) : undefined;
     expect(row?.value).not.toContain("±");
+  });
+});
+
+describe("charged species are outside the method", () => {
+  // Joback's increments are fitted to neutral organics, and the group table says so
+  // (`knownUnsupportedChemistry`). Nothing enforced it: an aromatic `[nH+]` is X3, H1 and in a ring,
+  // so it matched `>NH (ring)` — the PYRROLE-TYPE NEUTRAL nitrogen — and every property came back
+  // `ok` and `in-domain`. Pyridinium's 384.67 K sat four kelvin from real pyridine's boiling point,
+  // which is what made it dangerous: nothing about the number reads as wrong.
+  it("declines an N-protonated aromatic heterocycle and says the charge is why", async () => {
+    const frag = await fragment("c1cc[nH+]cc1");
+    expect(frag.chargedAtoms).toHaveLength(1);
+    expect(frag.unassignedAtoms).toContain(frag.chargedAtoms[0]);
+
+    for (const estimate of [
+      jobackNormalBoilingPoint(frag),
+      jobackCriticalTemperature(frag),
+      jobackCriticalPressure(frag),
+      jobackCriticalVolume(frag)
+    ]) {
+      expect(estimate.ok).toBe(false);
+      if (estimate.ok) continue;
+      expect(estimate.reason).toMatch(/formal charge/);
+      expect(estimate.unsupportedFeature).toBe("ionic or zwitterionic species");
+    }
+  });
+
+  it("declines an N-alkylated aromatic cation, which used to score on the nonring parameter", async () => {
+    // 1-methylpyridinium fragmented to `33x1` — `>N- (nonring)` — because that pattern carried no
+    // `!R` guard, so a RING nitrogen was scored with the NONRING increment. Joback publishes no
+    // `>N- (ring)` term at all, so there is nothing to fall back to and declining is the answer.
+    const frag = await fragment("C[n+]1ccccc1");
+    expect(frag.unassignedAtoms.length).toBeGreaterThan(0);
+    expect(jobackNormalBoilingPoint(frag).ok).toBe(false);
+  });
+
+  it("still scores nitro compounds, whose charge separation is the group as published", async () => {
+    // The one genuine exception: `-NO2` is written charge-separated and is net neutral, and its
+    // SMARTS names the charges itself. A blanket "no charged atoms" rule would have broken every
+    // nitro compound, which is why the exemption is a property of the group rather than of the atom.
+    const frag = await fragment("[O-][N+](=O)c1ccccc1");
+    expect(frag.unassignedAtoms).toEqual([]);
+    const boiling = jobackNormalBoilingPoint(frag);
+    expect(boiling.ok).toBe(true);
+    if (boiling.ok) expect(boiling.value).toBeGreaterThan(400);
+  });
+
+  it("leaves ordinary neutral organics untouched", async () => {
+    // The regression guard for the charge rule: pyridine is the neutral twin of the first case.
+    const frag = await fragment("c1ccncc1");
+    expect(frag.chargedAtoms).toEqual([]);
+    expect(frag.unassignedAtoms).toEqual([]);
+    expect(jobackNormalBoilingPoint(frag).ok).toBe(true);
+  });
+});
+
+describe("the critical-pressure correlation declines instead of squaring the sign away", () => {
+  // `Pc = (0.113 + 0.0032·nA − Σpc)⁻²`. The guard used to read `base === 0`, which a float sum lands
+  // on only by accident — so a NEGATIVE base fell through to `1 / (base * base)`, the square erased
+  // the sign, and the method returned a large positive pressure as `ok` with a ±0.31 bar uncertainty.
+  it("declines when the base term goes negative", async () => {
+    // Hexakis(pentahydroxyphenyl)benzene: 72 heavy atoms, inside the 500-atom budget, every atom
+    // assigned. base = -0.1462, which used to report 46.8 bar — an entirely ordinary-looking number.
+    const frag = await fragment(
+      "Oc1c(O)c(O)c(-c2c(-c3c(O)c(O)c(O)c(O)c3O)c(-c3c(O)c(O)c(O)c(O)c3O)c(-c3c(O)c(O)c(O)c(O)c3O)" +
+        "c(-c3c(O)c(O)c(O)c(O)c3O)c2-c2c(O)c(O)c(O)c(O)c2O)c(O)c1O"
+    );
+    expect(frag.unassignedAtoms).toEqual([]);
+    const pressure = jobackCriticalPressure(frag);
+    expect(pressure.ok).toBe(false);
+    if (!pressure.ok) expect(pressure.kind).toBe("not-applicable");
+  });
+
+  it("declines when the base term is positive but too small to be physical", async () => {
+    // The sign guard alone does not catch this: base stays positive and the reciprocal square runs
+    // away. Decahydroxyanthracene — 24 heavy atoms, every one assigned — gives base = +0.0266 and
+    // 1,413 bar. Water, the highest critical pressure among common substances and not even an
+    // organic, is 220.6 bar; the highest this correlation gives any ordinary small organic is 68.
+    const frag = await fragment("Oc1c(O)c(O)c2c(O)c3c(O)c(O)c(O)c(O)c3c(O)c2c1O");
+    expect(frag.unassignedAtoms).toEqual([]);
+    const pressure = jobackCriticalPressure(frag);
+    expect(pressure.ok).toBe(false);
+    if (!pressure.ok) expect(pressure.reason).toMatch(/not a physical critical pressure/);
+  });
+
+  it("leaves the highest-pressure molecules the method can legitimately describe alone", async () => {
+    // The guard against the guard: the ceiling must sit far enough above real chemistry that nothing
+    // Joback can actually score is refused by it. These are the small polar molecules with the
+    // highest real critical pressures in the method's reach.
+    for (const smiles of ["CO", "OC=O", "CC(=O)O", "OCC(O)CO", "Oc1ccccc1", "CC#N"]) {
+      const estimate = jobackCriticalPressure(await fragment(smiles));
+      expect(estimate.ok, smiles).toBe(true);
+      if (estimate.ok) expect(estimate.value, smiles).toBeLessThan(100);
+    }
+  });
+
+  it("still reports ordinary molecules", async () => {
+    const frag = await fragment("CCCCCCCC");
+    const pressure = jobackCriticalPressure(frag);
+    expect(pressure.ok).toBe(true);
+    if (pressure.ok) expect(pressure.value).toBeCloseTo(25.35, 1);
   });
 });

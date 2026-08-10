@@ -20,7 +20,7 @@ import type {
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult
 } from "@chemdraft/plugin-api";
-import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter";
+import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
 
 import { analysisClient } from "../analysisClient";
 import {
@@ -55,8 +55,10 @@ export async function computeIsotopeEnvelopeForPlugin(
   }
 
   if (result.status !== "ok") {
-    // The engine's own decline: a charged structure, an isotope label it cannot express, an element
-    // outside its tables. Pass the reason through verbatim — the plugin shows it to a reader.
+    // The engine's own decline: an isotope label it cannot express, an element outside its tables.
+    // (A charged structure is NOT one of these any more — since envelope contract 2.0.0 it is
+    // answered in m/z rather than declined.) Pass the reason through verbatim: the plugin shows it
+    // to a reader.
     return {
       available: false,
       reason: result.applicability.reasons[0] ?? "The isotope envelope does not apply to this structure."
@@ -70,6 +72,11 @@ export async function computeIsotopeEnvelopeForPlugin(
       mass,
       relativeIntensity: result.intensities[index] ?? 0
     })),
+    // The unit travels with the numbers. Dropping it here is what let a plugin render a dication's
+    // m/z values under a "Mass (Da)" header: the engine had already divided by |charge| and recorded
+    // `positionUnit: "thomson"`, and this boundary threw that away while keeping the field name
+    // `mass`. The app's own report gets it right by branching on the same field.
+    positionUnit: result.positionUnit === "thomson" ? "thomson" : "dalton",
     truncation: {
       policy: result.truncation.policy,
       threshold: result.truncation.threshold,
@@ -103,6 +110,13 @@ export async function structureFromSmilesForPlugin(
   if (!document) {
     return { available: false, reason: "There is no open document to build a structure for." };
   }
+  // NOTE for the caller: this function reads the active document, so the host gates it on
+  // `document.read` as well as `chemistry.compute`. The returned object carries document-derived
+  // information whether or not that is the intent — the minted id encodes the document's object count
+  // (`nextObjectId` is `existingIds.size + 1`) and the coordinates encode the page dimensions (the
+  // insert point is the page centre). It used to be bound to the runtime's UNGATED document getter
+  // rather than the `document.read`-checked one, so a plugin holding only `chemistry.compute` could
+  // read both.
 
   const ocl = await import("@chemdraft/ocl-adapter");
   let depiction: PastedStructureDepiction;
@@ -130,8 +144,14 @@ export async function structureFromSmilesForPlugin(
   }
 
   const origin = request.origin?.trim();
+  // `reservedObjectIds` is what stops two proposals colliding. `nextObjectId` is purely
+  // document-derived and deterministic, and this function deliberately does NOT insert — the object
+  // waits in the review queue until the user accepts it. So a plugin that builds two structures
+  // before either lands got `mol_plugin_001` twice, and accepting the second threw
+  // `DocumentPatchError: object "mol_plugin_001" already exists` from `addObject`.
   const object = createSmilesMolecule(document, pluginInsertPoint(document), depiction, request.smiles, {
     objectIdPrefix: "mol_plugin",
+    reservedObjectIds: RESERVED_PLUGIN_OBJECT_IDS,
     styleSource: "plugin-smiles",
     warningCode: "plugin.smiles_imported",
     // Names the plugin, because "pasted" would be a false account of where this came from.
@@ -140,8 +160,19 @@ export async function structureFromSmilesForPlugin(
       : "Generated an editable 2D structure from SMILES supplied by a plugin."
   });
 
+  RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
   return { available: true, built: true, object };
 }
+
+/**
+ * Ids this runtime has minted for proposals that have not landed yet.
+ *
+ * Module-scoped because the collision is across CALLS, not within one. Entries are never removed: an
+ * accepted object puts its id in the document, where `nextObjectId` already sees it, and a rejected
+ * one leaves a gap in the numbering, which costs nothing. The set is bounded by how many structures a
+ * plugin builds in a session.
+ */
+const RESERVED_PLUGIN_OBJECT_IDS = new Set<string>();
 
 /**
  * Where a plugin's structure lands.
@@ -158,11 +189,17 @@ function pluginInsertPoint(document: ChemDraftDocument): { x: number; y: number 
 interface OpsinStatusReply {
   available: boolean;
   reason?: string | null;
-  version: string;
+  /** Absent when no jar is bundled: there is no engine whose version it would be. */
+  version?: string | null;
 }
 interface OpsinConversionReply {
   smiles?: string | null;
   failureReason?: string | null;
+}
+/** The rejected shape — `kind` is the distinction this layer used to throw away. */
+interface OpsinErrorReply {
+  kind?: "invalidName" | "engineFailure";
+  message?: string;
 }
 
 const OPSIN_ENGINE_ID = "opsin";
@@ -196,7 +233,11 @@ export async function nameToStructureForPlugin(
     };
   }
 
-  const engine = { id: OPSIN_ENGINE_ID, version: status.version };
+  // `status.available` is true here, which the Rust side only reports with a jar present — and the
+  // version describes that jar. The fallback is for a host that answered `available` without one,
+  // which would be a contradiction; "unknown" is the honest word for it rather than a fabricated
+  // number.
+  const engine = { id: OPSIN_ENGINE_ID, version: status.version ?? "unknown" };
   try {
     const reply = await invoke<OpsinConversionReply>("opsin_name_to_structure", { name: request.name });
     if (reply.smiles) {
@@ -209,13 +250,24 @@ export async function nameToStructureForPlugin(
       engine
     };
   } catch (error) {
-    // The command itself rejected — a name carrying a control character, or the process failing to
-    // start. That is still "the engine ran and said no", so it stays a parse failure with its reason.
-    return {
-      available: true,
-      parsed: false,
-      reason: error instanceof Error ? error.message : String(error),
-      engine
-    };
+    // The command rejected, and WHICH rejection it was decides what the user is told. This used to
+    // map every one of them to `parsed: false` — so a JVM that could not start, or a 30-second
+    // timeout, reported the user's chemical name as unreadable when OPSIN had never run. Rust
+    // distinguishes the two; the header of this function promises they are "kept apart all the way
+    // across", and this is where that promise was being broken.
+    const rejection = error as OpsinErrorReply;
+    const message =
+      typeof rejection?.message === "string"
+        ? rejection.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+
+    if (rejection?.kind === "invalidName") {
+      // Refused before any process started, so it genuinely is about the name.
+      return { available: true, parsed: false, reason: message, engine };
+    }
+    // Everything else is the engine failing, which says nothing at all about the name.
+    return { available: false, reason: message };
   }
 }

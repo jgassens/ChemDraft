@@ -47,6 +47,14 @@ export interface JobackFragmentation {
    * caught by cross-checking `thermo` rather than by inspection.
    */
   atomCount: number;
+  /**
+   * Heavy atoms carrying a formal charge, so a decline can say *why* the fragmentation is short.
+   *
+   * Without this the ionic case reports "matched no parameterised Joback group", which is true of a
+   * charged nitrogen but sends the reader looking for an exotic element rather than at the charge
+   * they drew themselves.
+   */
+  chargedAtoms: number[];
 }
 
 /**
@@ -60,14 +68,14 @@ export function fragmentForJoback(
   rdkit: JobackMatcher,
   mol: JobackMolecule,
   heavyAtomIndices: readonly number[],
-  totalAtomCount: number
+  totalAtomCount: number,
+  formalCharges: ReadonlyMap<number, number>
 ): JobackFragmentation {
   const claimed = new Set<number>();
   const counts = new Map<number, number>();
-  const ordered = [...JOBACK_GROUPS].sort((a, b) => b.priority - a.priority);
 
-  for (const group of ordered) {
-    const query = rdkit.get_qmol(group.smarts);
+  for (const group of ORDERED_GROUPS) {
+    const query = queryFor(rdkit, group);
     if (!query) continue;
     try {
       const matches = JSON.parse(mol.get_substruct_matches(query)) as { atoms: number[] }[];
@@ -75,22 +83,58 @@ export function fragmentForJoback(
         // Every atom of the match must still be free. A partially-claimed match is a different group's
         // territory, and taking the remainder would count one atom towards two groups.
         if (match.atoms.some((atom) => claimed.has(atom))) continue;
+        // Joback's increments describe NEUTRAL atoms. A pattern that does not name a charge must not
+        // claim one, or the group's parameter is being applied to a different species than the one it
+        // was fitted to — see JobackGroup.chargeSeparated. Left unclaimed, the atom reaches
+        // `unassignedAtoms` and the structure declines, which is what the contract already promises
+        // for ionic and zwitterionic species.
+        if (!group.chargeSeparated && match.atoms.some((atom) => (formalCharges.get(atom) ?? 0) !== 0)) {
+          continue;
+        }
         for (const atom of match.atoms) claimed.add(atom);
         counts.set(group.id, (counts.get(group.id) ?? 0) + 1);
       }
     } catch {
       // A pattern this build cannot compile contributes nothing; the atoms it would have claimed stay
       // unassigned and the structure declines, which is the safe direction.
-    } finally {
-      query.delete();
     }
   }
 
   return {
     counts,
     unassignedAtoms: heavyAtomIndices.filter((atom) => !claimed.has(atom)),
-    atomCount: totalAtomCount
+    atomCount: totalAtomCount,
+    chargedAtoms: heavyAtomIndices.filter((atom) => (formalCharges.get(atom) ?? 0) !== 0)
   };
+}
+
+/**
+ * Priority order, computed once. `[...JOBACK_GROUPS].sort(...)` per call copied and re-sorted a
+ * 41-element array on every analysis for an answer that never changes.
+ */
+const ORDERED_GROUPS: readonly JobackGroup[] = [...JOBACK_GROUPS].sort((a, b) => b.priority - a.priority);
+
+/**
+ * Compiled SMARTS, cached per RDKit module instance.
+ *
+ * All 41 patterns were compiled with `get_qmol` and `delete()`d again on EVERY run — 41 SMARTS parses
+ * inside WASM, 41 Emscripten string marshals, and 41 heap allocations freed a line later, several of
+ * them recursive patterns that are the most expensive form to compile. The patterns are module
+ * constants and a compiled query is valid for the lifetime of the module, so this is the same
+ * WeakMap-per-module idiom `ION_MASS_CACHE` and the IsoSpec table cache already use. Keyed on the
+ * module so a reset (tests, a rebuilt engine) drops the cache with it, and never deleted — the entries
+ * die with the module.
+ */
+const QUERY_CACHE = new WeakMap<JobackMatcher, Map<number, unknown>>();
+
+function queryFor(rdkit: JobackMatcher, group: JobackGroup): unknown {
+  let byGroup = QUERY_CACHE.get(rdkit);
+  if (!byGroup) {
+    byGroup = new Map<number, unknown>();
+    QUERY_CACHE.set(rdkit, byGroup);
+  }
+  if (!byGroup.has(group.id)) byGroup.set(group.id, rdkit.get_qmol(group.smarts));
+  return byGroup.get(group.id);
 }
 
 const byId = new Map<number, JobackGroup>(JOBACK_GROUPS.map((group) => [group.id, group]));
@@ -144,6 +188,25 @@ export type JobackEstimate =
 function requireFullCoverage(fragmentation: JobackFragmentation): JobackEstimate | undefined {
   if (fragmentation.unassignedAtoms.length === 0) return undefined;
   const count = fragmentation.unassignedAtoms.length;
+
+  // Name the charge when that is what is actually blocking the fragmentation. "Matched no
+  // parameterised group" is true of a charged nitrogen, but it reads as though the molecule contains
+  // something exotic, when the reader drew the reason themselves.
+  const charged = new Set(fragmentation.chargedAtoms);
+  const blockedByCharge = fragmentation.unassignedAtoms.filter((atom) => charged.has(atom));
+  if (blockedByCharge.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `Joback's group contributions are fitted to neutral organics, and this structure carries a ` +
+        `formal charge on ${blockedByCharge.length === 1 ? "atom" : "atoms"} ${blockedByCharge.join(", ")}. ` +
+        "Ionic and zwitterionic species are outside the method, so no estimate is reported rather " +
+        "than one computed from the neutral analogue's parameters.",
+      unsupportedFeature: "ionic or zwitterionic species",
+      kind: "unsupported"
+    };
+  }
+
   return {
     ok: false,
     reason:
@@ -202,6 +265,19 @@ export function jobackCriticalTemperature(fragmentation: JobackFragmentation): J
   return { ok: true, value: boiling.value / denominator };
 }
 
+/**
+ * Above this, the reciprocal square is reporting extrapolation error rather than chemistry.
+ *
+ * Not a fitted quantity and not an accuracy claim — a domain bound, and deliberately a loose one.
+ * Water is 220.6 bar and is the highest critical pressure among common substances; it is not even an
+ * organic. Sweeping twenty small molecules with the highest real critical pressures Joback would ever
+ * be applied to — methanol, formic acid, acetonitrile, acetic acid, glycerol, phenol, oxalic acid —
+ * the largest value this correlation produces for any of them is 68.0 bar. So the ceiling sits nearly
+ * four times above anything reachable by a molecule the method can legitimately describe, and a value
+ * over it means the base term has gone small rather than that the molecule is unusual.
+ */
+const PC_EXTRAPOLATION_CEILING_BAR = 250;
+
 /** Critical pressure, bar. `Pc = (0.113 + 0.0032·nA − Σpcᵢ)⁻²`, with nA the total atom count *including hydrogens*. */
 export function jobackCriticalPressure(fragmentation: JobackFragmentation): JobackEstimate {
   const blocked = requireFullCoverage(fragmentation);
@@ -210,15 +286,49 @@ export function jobackCriticalPressure(fragmentation: JobackFragmentation): Joba
   if (!sum.ok) return missingParameterReason(sum.missing, "critical-pressure");
 
   const base = 0.113 + 0.0032 * fragmentation.atomCount - sum.total;
-  if (base === 0) {
+
+  // `base <= 0`, not `base === 0`. The old test could not fire — `base` is a float sum over group
+  // contributions and lands on exactly zero only by measure-zero accident — so a NEGATIVE base fell
+  // straight through to `1 / (base * base)`, which squares the sign away and returns a large POSITIVE
+  // pressure. Hexakis(pentahydroxyphenyl)benzene, 72 heavy atoms and well inside the app's budget,
+  // gave base = -0.1462 and reported 46.8 bar as `ok` and `in-domain`: a completely ordinary-looking
+  // critical pressure for a molecule the correlation has nothing to say about. The sibling Tc
+  // correlation had `<= 0` from the start; this is that guard, finally written the same way.
+  if (base <= 0) {
     return {
       ok: false,
-      reason: "The Joback critical-pressure correlation is out of range for this molecule.",
+      reason:
+        "The Joback critical-pressure correlation is out of range for this molecule: the group sum " +
+        "drives its base term non-positive, and squaring that would report a large positive pressure " +
+        "from a negative quantity. Joback was fitted to small organics and does not extrapolate to " +
+        "structures with this many contributing groups.",
       unsupportedFeature: "correlation out of range",
       kind: "not-applicable"
     };
   }
-  return { ok: true, value: 1 / (base * base) };
+
+  const value = 1 / (base * base);
+
+  // A base that is positive but very small blows the reciprocal square up without ever changing sign,
+  // so the guard above does not catch it: C18(OH)12 gives base = +0.0122 and 6,719 bar, and
+  // tetradecahydroxypentacene gives 206,612 bar. Neither is a critical pressure. The ceiling is a
+  // domain guard rather than an accuracy claim — water, the highest of the common substances, is
+  // 220.6 bar, so 500 bar is far outside anything Joback's development set contained and a value
+  // above it means the correlation has been extrapolated past the point of meaning.
+  if (value > PC_EXTRAPOLATION_CEILING_BAR) {
+    return {
+      ok: false,
+      reason:
+        `The Joback critical-pressure correlation extrapolates to ${Math.round(value)} bar for this ` +
+        "molecule, which is not a physical critical pressure — water, the highest of the common " +
+        `substances, is 220.6 bar. The base term is positive but small enough that the reciprocal ` +
+        "square is dominated by extrapolation error rather than by the group contributions.",
+      unsupportedFeature: "correlation out of range",
+      kind: "not-applicable"
+    };
+  }
+
+  return { ok: true, value };
 }
 
 /** Critical volume, cm³/mol. `Vc = 17.5 + Σ nᵢ·vcᵢ`. */
@@ -360,9 +470,14 @@ export function jobackContracts(): MethodContract[] {
     ],
     declinesWhen: [
       "a heavy atom matches no parameterised group",
-      "a matched group has no published contribution for the requested property (=NH has no boiling " +
-        "point or critical-temperature term)",
-      "the correlation's denominator is non-positive for the summed contributions"
+      "the structure carries a formal charge — Joback's increments are fitted to neutral organics, " +
+        "so an ionic or zwitterionic species is declined rather than scored from its neutral " +
+        "analogue's parameters",
+      "a matched group has no published contribution for the requested property (=NH has a boiling-" +
+        "point term but no critical-temperature, critical-pressure or critical-volume term)",
+      "the correlation's denominator or base term is non-positive for the summed contributions, or " +
+        "the critical-pressure base is small enough that the reciprocal square extrapolates past any " +
+        "physical critical pressure"
     ],
     accuracyClaims: [JOBACK_UNCERTAINTY[spec.id]!],
     citations: [

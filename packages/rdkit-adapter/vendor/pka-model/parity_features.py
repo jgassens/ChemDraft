@@ -293,3 +293,32 @@ if __name__ == "__main__":
     np.save(sys.argv[2] + ".X.npy", X); np.save(sys.argv[2] + ".y.npy", y)
     json.dump({"featureNames": FEATURE_NAMES, "groups": g, "rows": keep}, open(sys.argv[2] + ".meta.json", "w"))
     print(f"samples {X.shape[0]}  features {X.shape[1]}")
+
+# --- label plausibility, shared by every ingest -----------------------------------------------------
+
+# The aqueous window. Water levels the strongest acids and bases it can hold: below about -2 and above
+# about 16 a titration is no longer measuring an aqueous dissociation constant. A label claiming a value
+# inside this window is claiming something a titration in water could actually observe.
+AQUEOUS_WINDOW = (-2.0, 16.0)
+
+
+def is_unactivated_amine(mol, idx):
+    """A neutral amine whose every neighbour is a saturated carbon.
+
+    Its N-H acidity is near 35 -- outside water entirely. Lives here rather than in one ingest because
+    the defect it catches is not specific to a source: any upstream that assigns a transition direction
+    can file a basic measurement against an acidic pair, and each ingest was carrying its own copy of
+    everything else it shares already.
+
+    Mirrors `isUnactivatedAmine` in `ionization.ts`, which applies the same rule at OUTPUT.
+    """
+    atom = mol.GetAtomWithIdx(idx)
+    if atom.GetSymbol() != "N" or atom.GetFormalCharge() != 0 or atom.GetTotalNumHs() == 0:
+        return False
+    for neighbour in atom.GetNeighbors():
+        if neighbour.GetSymbol() != "C":
+            return False
+        for bond in neighbour.GetBonds():
+            if bond.GetBondTypeAsDouble() > 1.0:
+                return False
+    return True

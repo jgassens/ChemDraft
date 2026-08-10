@@ -20,12 +20,12 @@ import {
   envelopeFromThreshold,
   envelopeFromThresholdIsotopes,
   envelopeFromTotalProb,
-  envelopeToTypedArrays,
   explicitFormulaCounts,
   isotopeMass,
   isotopeTable,
   isotopesOf,
   resetIsoSpecForTesting,
+  setIsoSpecModuleLoader,
   type IsoSpecDimension,
   type IsoSpecEnvelope,
   type IsoSpecModule
@@ -281,12 +281,19 @@ describe("truncation policies, as DistributionResult models them", () => {
 });
 
 describe("worker transport", () => {
-  it("converts an envelope to the Float64Arrays §5 requires", () => {
+  it("produces peak arrays that survive a structured clone", () => {
+    // `envelopeToTypedArrays` used to be tested here. It was dead production surface — nothing but
+    // this test called it — and its docstring described itself as "the §5 transport" while the real
+    // path (`rdkit-adapter/src/envelope.ts`) does the conversion itself, and DIFFERENTLY: sorting by
+    // mass, normalising to the base peak, and applying charge bookkeeping, none of which the dead
+    // function did. Two functions named as though they did the same job, where the exported one would
+    // have produced unsorted, unnormalised, charge-unadjusted output if anyone had believed the
+    // comment. What is worth asserting is the property §5 actually needs, on the arrays IsoSpec
+    // really returns.
     const smx = envelope(explicitFormulaCounts("C10H11N3O3S"), 0.01);
-    const { positions, intensities } = envelopeToTypedArrays(smx);
-    expect(positions).toBeInstanceOf(Float64Array);
-    expect(intensities).toBeInstanceOf(Float64Array);
-    expect(positions).toHaveLength(smx.peakCount);
+    expect(smx.masses).toHaveLength(smx.peakCount);
+    expect(smx.probabilities).toHaveLength(smx.peakCount);
+    const positions = Float64Array.from(smx.masses);
     expect(structuredClone(positions)).toEqual(positions);
   });
 
@@ -296,5 +303,35 @@ describe("worker transport", () => {
     if (!insulin.ok) return;
     expect(insulin.peakCount).toBeGreaterThan(5);
     expect(insulin.coveredProbability).toBeGreaterThanOrEqual(0.999);
+  });
+});
+
+describe("a failed load can be retried", () => {
+  it("does not cache a rejected loader promise for the life of the worker", async () => {
+    // `pending ??= loader()` assigns only when `pending` is null/undefined, and a REJECTED promise is
+    // neither — so one transient WASM load failure was memoised forever. Nothing could clear it in
+    // production: `registerIsoSpecWasmLoader` sits behind a `registered` flag and `analysisWorker`
+    // adds a second guard, so the only reset (`setIsoSpecModuleLoader`) never ran again. And because
+    // a declined envelope makes the whole run `unsupported` — `STATUS_SEVERITY` ranks it above `ok` —
+    // one hiccup downgraded every subsequent analysis, each of them then cached.
+    //
+    // A stub stands in for the module: what is under test is that the SECOND call reaches the loader
+    // at all, not what the loader returns.
+    resetIsoSpecForTesting();
+    let attempts = 0;
+    const stub = { marker: "second-attempt" } as unknown as IsoSpecModule;
+    setIsoSpecModuleLoader(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient WASM instantiation failure");
+      return stub;
+    });
+
+    await expect(ensureIsoSpec()).rejects.toThrow(/transient/);
+    await expect(ensureIsoSpec()).resolves.toBe(stub);
+    expect(attempts).toBe(2);
+
+    // Put the real engine back for anything that runs after this file.
+    resetIsoSpecForTesting();
+    installRealIsoSpecModuleLoader();
   });
 });

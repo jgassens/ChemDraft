@@ -124,7 +124,30 @@ export function requiresProvenanceOnExport(classification: Classification): bool
  * directly: a calibrated or trained value is *derived from* measurements, which is the opposite of
  * being one. Kept as a named function because the question gets asked, and answering it in one place
  * beats each caller inventing its own test.
+ *
+ * DERIVED from the derivation class rather than hardcoded. This used to be a bare `return false` that
+ * ignored its argument, which made the closeout suite's "never claims a computed value is a
+ * measurement" a tautology — it asserted a constant, over every result of every corpus entry, and
+ * could not fail. The switch is exhaustive, so adding a `"measured"` derivation to the union stops
+ * compiling here and forces the question to be answered rather than inherited.
  */
-export function isMeasuredValue(_classification: Classification): boolean {
-  return false;
+export function isMeasuredValue(classification: Classification): boolean {
+  switch (classification.derivation) {
+    case "graph-derived":
+    case "convention":
+    case "fragment-rule":
+    case "database-lookup":
+    case "statistical-model":
+    case "force-field":
+    case "electronic-structure":
+      // Every one of these computes a number from a structure. `database-lookup` is the closest call
+      // and is still not a measurement: it retrieves a tabulated value someone else measured, which
+      // the provenance records as a citation rather than as this run having measured anything.
+      return false;
+    default: {
+      // Exhaustiveness: a new derivation class lands here as a type error, not as a silent `false`.
+      const unreachable: never = classification.derivation;
+      return unreachable;
+    }
+  }
 }

@@ -18,7 +18,7 @@ RDKit MinimalLib (vendored WebAssembly build)
   BSD-3-Clause. Copyright (c) 2006-2026 Rational Discovery LLC, Greg Landrum,
   and other RDKit contributors.
   Source: https://github.com/rdkit/rdkit, tag Release_2026_03_3.
-  Locally modified: 6 patches, recorded in
+  Locally modified: 7 patches, recorded in
   packages/rdkit-adapter/vendor/patches/ and vendor/BUILD.md.
   Full licence text: packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
 
@@ -73,7 +73,8 @@ derived from nmrshiftdb2 and carries that database's own attribution and share-a
 obligations; describing such a package by its code licence alone is incorrect.
 
 The pKa model's weights are trained in this repository and carry this repo's licence,
-but the DATA they were trained on does not. Two sets are used, neither vendored:
+but the DATA they were trained on does not. The shipped corpus is 12,096 labelled sites
+drawn from FOUR sources; a fifth is recorded and deliberately unused. None is vendored:
 
   Dwar-iBond experimental pKa set, as distributed with Uni-pKa
   https://github.com/dptech-corp/Uni-pKa -- Apache-2.0
@@ -84,9 +85,12 @@ but the DATA they were trained on does not. Two sets are used, neither vendored:
   associated dataset. This must be settled before public redistribution.
 
   QupKake experimental pKa set
-  https://github.com/Shualdon/QupKake -- BSD-3-Clause
+  https://github.com/Shualdon/QupKake -- CC BY 4.0, ATTRIBUTION REQUIRED
   Originally Baltruschat & Czodrowski. The values are measurements; the per-site
   index is ChemAxon Marvin's assignment and is recorded as such on every row.
+  BSD-3-Clause is QupKake's SOFTWARE licence and does not reach this dataset --
+  a repository's code licence is not a grant over the data inside it, the same
+  distinction recorded for Dwar-iBond above. See pka-provenance.md.
 
   pKaCHU
   https://zenodo.org/records/20089807 -- CC BY 4.0

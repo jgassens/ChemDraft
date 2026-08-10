@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for Developer ID distribution under the hardened runtime.
+
+  These exist for the bundled OPSIN Java runtime and nothing else. A JVM compiles bytecode to native
+  code at run time and writes it into pages it then executes, which the hardened runtime forbids by
+  default: without `allow-jit` the JVM is killed by the kernel on its first compilation, and the
+  failure appears ONLY in a signed, hardened build — a `tauri dev` run and an unsigned Release build
+  both work, so this is a defect that first shows up after notarization has already succeeded.
+
+  Scoped as narrowly as the JVM allows:
+
+  * `allow-jit` — the mapping the JIT needs (MAP_JIT). This is the modern, narrow entitlement.
+  * `allow-unsigned-executable-memory` — broader, and required because HotSpot predates MAP_JIT and
+    still allocates some code buffers the old way. Dropping it is the first thing to retry if a
+    future JRE build no longer needs it; verify by running a name conversion in a signed build, not
+    by reasoning about it.
+
+  Deliberately NOT present:
+
+  * `disable-library-validation` — the JRE loads only its own signed dylibs, so it is not needed.
+    Adding it would let any Team-ID-mismatched library load into the app.
+  * `allow-dyld-environment-variables` — nothing here reads DYLD_*, and `opsin.rs` explicitly strips
+    the JAVA_TOOL_OPTIONS family before spawning.
+  * Any `com.apple.security.automation` or network entitlement — this app is air-gapped by design.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

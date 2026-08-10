@@ -287,8 +287,14 @@ export interface IonizationResult extends AnalysisResultBase {
   /**
    * Sites the method could not assess but knows exist, e.g. a metal centre no training set covers.
    * Reported rather than omitted: a silent absence reads as "no ionizable sites here".
+   *
+   * `feature` is the machine-readable name of WHY, written by the code that decided to withhold the
+   * site. The result's `applicability.unsupportedFeatures` used to hardcode `"metal-adjacent site"`
+   * whenever this array was non-empty, so a sulfonic acid, an unactivated amine and a protonless
+   * nitrogen were all filed under a metal that was not in the molecule. A consumer cannot recover the
+   * reason from the prose, so the producer states it.
    */
-  unassessed: { atomIndices: number[]; reason: string }[];
+  unassessed: { atomIndices: number[]; reason: string; feature: string }[];
   /**
    * 2D coordinates for drawing the sites on the structure they belong to.
    *
@@ -312,7 +318,22 @@ export interface IonizationResult extends AnalysisResultBase {
    * quarter of sites where its MAE is lowest, above `poor` the quarter where it is highest. A figure
    * that colours by them is reporting a measurement; one that picks its own cutoffs is decorating.
    */
-  confidenceBands?: { good: number; poor: number };
+  confidenceBands?: {
+    good: number;
+    poor: number;
+    /** OOF mean absolute error inside the tightest interval quartile — what a green ring is worth. */
+    tightestQuartileMae: number;
+    /** OOF mean absolute error inside the widest quartile — what a red ring is worth. */
+    widestQuartileMae: number;
+    /**
+     * The partition all four are measured on, e.g. "out-of-fold calibration corpus, 12,096 sites".
+     *
+     * Required, not optional. §9a: an accuracy figure without its partition is the strongest false
+     * claim a predictor can make, and the figure caption used to print two bare MAEs with no
+     * partition anywhere near them — hard-typed, from a model that had already been replaced.
+     */
+    partition: string;
+  };
   /**
    * What a titration would measure, folded from the microscopic ladder (`protonation.ts`).
    *
@@ -517,6 +538,12 @@ const IonizationSiteSchema = z
         candidateValues: z.array(z.number().finite())
       })
       .strict()
+      // Parallel arrays: entry i of one names entry i of the other. Every other pair in this package
+      // is length-checked and these two were not, so a mismatch would silently misattribute a value
+      // to the wrong candidate type — a wrong label on a right number, which reads as correct.
+      .refine((value) => value.candidateTypes.length === value.candidateValues.length, {
+        message: "ambiguity.candidateTypes and candidateValues must be the same length."
+      })
       .optional(),
     agreement: z
       .object({
@@ -525,6 +552,9 @@ const IonizationSiteSchema = z
         span: z.number().finite().nonnegative()
       })
       .strict()
+      .refine((value) => value.methods.length === value.values.length, {
+        message: "agreement.methods and values must be the same length."
+      })
       .optional()
   })
   .strict()
@@ -561,8 +591,22 @@ const IonizationResultSchema = z
       .strict()
       .optional(),
     confidenceBands: z
-      .object({ good: z.number().finite().positive(), poor: z.number().finite().positive() })
+      .object({
+        good: z.number().finite().positive(),
+        poor: z.number().finite().positive(),
+        tightestQuartileMae: z.number().finite().nonnegative(),
+        widestQuartileMae: z.number().finite().nonnegative(),
+        partition: z.string().min(1)
+      })
       .strict()
+      .refine((bands) => bands.good <= bands.poor, {
+        // Inverted bands flip the figure's colour semantics silently: every tight interval would be
+        // graded against the loose threshold and drawn red.
+        message: "confidenceBands.good must not exceed confidenceBands.poor"
+      })
+      .refine((bands) => bands.tightestQuartileMae <= bands.widestQuartileMae, {
+        message: "the tightest quartile's MAE must not exceed the widest quartile's"
+      })
       .optional(),
     macroscopic: z
       .object({
@@ -599,7 +643,8 @@ const IonizationResultSchema = z
         z
           .object({
             atomIndices: z.array(z.number().int().nonnegative()).min(1),
-            reason: z.string().min(1)
+            reason: z.string().min(1),
+            feature: z.string().min(1)
           })
           .strict()
       )
@@ -702,7 +747,15 @@ function payloadIsAbsent(result: AnalysisResult): boolean {
     case "identifier":
       return result.value === null;
     case "composition":
-      return result.formula === null && result.formalCharge === null;
+      // `elements` and `components` count too. A result carrying either while `formula` and
+      // `formalCharge` happened to be null validated as "has a payload" under a status that forbids
+      // one, which is the check this function exists to make.
+      return (
+        result.formula === null &&
+        result.formalCharge === null &&
+        result.elements.length === 0 &&
+        result.components.length === 0
+      );
     case "distribution":
       return result.positions.length === 0;
     case "spectrum":

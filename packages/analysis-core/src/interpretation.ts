@@ -260,7 +260,7 @@ export function analysisHash(input: string): string {
 
 /** Hash of the structure exactly as it entered — format included, because the same text in two formats is two inputs. */
 export function hashSource(format: string, value: string): string {
-  return analysisHash(`${format} ${value}`);
+  return analysisHash(`${format}\x00${value}`);
 }
 
 /**
@@ -285,7 +285,7 @@ export function hashInterpretation(
       interpretation.protomerPolicy ?? "",
       interpretation.conformerId ?? "",
       interpretation.transformations.map((step) => `${step.name}@${step.version}`).join(">")
-    ].join(" ")
+    ].join("\x00")
   );
 }
 
@@ -316,6 +316,6 @@ export function analysisCacheKey(input: {
       input.methodVersion,
       serialisedParameters,
       [...(input.engineHashes ?? [])].sort().join(",")
-    ].join(" ")
+    ].join("\x00")
   );
 }

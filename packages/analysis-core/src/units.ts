@@ -135,3 +135,19 @@ export function formatWithUnit(value: number, id: UnitId): string {
   const symbol = unit(id).symbol;
   return symbol ? `${value} ${symbol}` : `${value}`;
 }
+
+/**
+ * A unit's display symbol, or `""` when the id is not one this module knows.
+ *
+ * Exported because it existed twice already: privately in `report.ts`, and again in the desktop's
+ * `IsotopeSpectrum.tsx` — where, because the typed helper was never exported, the copy took a
+ * `string` and laundered it through `unitDefinition(id as never)`. One helper, one behaviour, and no
+ * cast defeating the type safety this module exists to provide.
+ */
+export function unitSymbol(id: UnitId): string {
+  try {
+    return unit(id).symbol;
+  } catch {
+    return "";
+  }
+}

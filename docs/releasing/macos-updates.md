@@ -40,6 +40,30 @@ the framework-root Sparkle helpers — `Versions/B/Updater.app` (and its `MacOS/
 timestamp. Those helpers sit outside every standard nested-code location, so no other signing step
 reaches them, and Apple notarization rejects the app without this. Unsigned dev builds skip it.
 
+## The bundled OPSIN Java runtime
+
+Same class of problem, thirty-one files wider. `tauri.conf.json` ships `resources/opsin/jre` as a
+bundle resource, and that jlink'd runtime contains **31 Mach-O files** — `bin/java`,
+`lib/jspawnhelper`, and ~29 `.dylib`s — all of them code, all under `Contents/Resources/`, which is
+not a standard nested-code location. The outer `codesign` does not reach them (and Apple deprecates
+`--deep` for signing), so the notary service finds each one unsigned and rejects the submission.
+
+`pnpm --filter @chemdraft/desktop build` runs `scripts/sign-opsin-runtime.sh` before `tauri build`,
+which signs all 31 innermost-first with the hardened runtime, a secure timestamp, and
+`src-tauri/chemdraft.entitlements`. Ordering matters: a signature covers what it encloses, so the
+JRE must be signed **before** the `.app` is sealed around it. With no `APPLE_SIGNING_IDENTITY` set
+the script prints a notice and exits 0, which is right for dev and wrong for a release.
+
+Two entitlements ride along, and they are for the JVM specifically:
+`com.apple.security.cs.allow-jit` and `com.apple.security.cs.allow-unsigned-executable-memory`. A
+JVM writes native code at run time and then executes it, which the hardened runtime forbids by
+default. **This failure mode appears only in a signed build** — `tauri dev` and an unsigned Release
+both work fine, so an unentitled JVM is discovered after notarization has already succeeded.
+
+> Not yet exercised against the notary service. This follows the documented flow and the files do
+> sign and verify locally, but no submission has been made with it. The first release build is what
+> proves it — if notarytool rejects, its log names the exact path, and that path is the fix.
+
 ## Publishing an update
 
 Sparkle compares the packaged app's `CFBundleVersion`. Tauri derives the macOS version fields from

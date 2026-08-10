@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { MethodRegistry, elementsOutsideParameterization, methodKey } from "@chemdraft/analysis-core";
@@ -268,5 +268,41 @@ describe("vendor patch #6 — TPSA includeSandP", () => {
       const registry = new MethodRegistry();
       for (const contract of contracts) expect(() => registry.register(contract)).not.toThrow();
     }
+  });
+});
+
+describe("the distribution records track the artifact they describe", () => {
+  // `BUILD.md` and `methods.ts` were checked against the bytes; `NOTICE` and the dependency inventory
+  // were checked by nobody. So commit 5ed64745 rebuilt the wasm and added patch 0007 without touching
+  // either, and both went on describing the superseded 2026-07-30 artifact — wrong hash, wrong size,
+  // "6 patches" — in the two files that are the project's actual attribution record. AGENTS.md §8c
+  // requires the NOTICE row and the inventory to move in the SAME change as the vendored binary; this
+  // is what makes that mechanical rather than remembered.
+  const notice = readFileSync(new URL("../../../NOTICE", import.meta.url), "utf8");
+  const inventory = readFileSync(
+    new URL("../../../docs/architecture/dependency-inventory.md", import.meta.url),
+    "utf8"
+  );
+  const patchCount = readdirSync(new URL("../vendor/patches/", import.meta.url)).filter((name) =>
+    name.endsWith(".patch")
+  ).length;
+
+  it("records the shipped wasm hash in the dependency inventory", () => {
+    expect(inventory).toContain(PINNED_RDKIT_WASM_SHA256);
+  });
+
+  it("records the real patch count in both NOTICE and the inventory", () => {
+    expect(patchCount).toBeGreaterThan(0);
+    expect(notice, `NOTICE does not say "${patchCount} patches"`).toContain(`${patchCount} patches`);
+    expect(inventory, `the inventory does not say "${patchCount} patches"`).toContain(`${patchCount} patches`);
+  });
+
+  it("does not describe the QupKake DATASET by QupKake's software licence", () => {
+    // The dataset is CC BY 4.0 with attribution owed. BSD-3-Clause is the repository's code licence,
+    // and §8c is explicit that the two are separate claims. The correction landed in `ionization.ts`
+    // and `pka-provenance.md` and was missed in both of these.
+    const qupkakeRow = notice.slice(notice.indexOf("QupKake experimental pKa set"));
+    expect(qupkakeRow.slice(0, 400)).toContain("CC BY 4.0");
+    expect(qupkakeRow.slice(0, 200)).not.toMatch(/QupKake\s+https:\S+\s+--\s+BSD-3-Clause/);
   });
 });

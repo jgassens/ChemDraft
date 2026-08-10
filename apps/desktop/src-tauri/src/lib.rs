@@ -2175,10 +2175,15 @@ fn build_analyze_submenu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Submenu<R>> {
+    // "Molecular Inspector", matching `commands.ts`'s canonical title and the toolset it opens. The
+    // native menu said "Molecular Properties" while the command registry, the palette and the window
+    // title all said "Molecular Inspector" — one command id wearing two names depending on which
+    // surface a user reached it from. `true` for enabled is correct and deliberate: the command is
+    // NOT gated on a selection, because the window has its own empty state.
     let properties = MenuItem::with_id(
         app,
         "analyze.molecularProperties",
-        "Molecular Properties\u{2026}",
+        "Molecular Inspector\u{2026}",
         true,
         None::<&str>,
     )?;

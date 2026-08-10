@@ -1,135 +1,135 @@
 {
  "measurement": "Murcko-scaffold-grouped 5-fold cross-validation; every pair is out-of-fold",
  "grouping": "Bemis-Murcko scaffold",
- "groups": 4626,
- "samples": 12096,
- "correlation": 0.5121,
+ "groups": 4603,
+ "samples": 12081,
+ "correlation": 0.5111,
  "quartileMae": [
-  0.3864,
-  0.7425,
-  1.102,
-  1.8604
+  0.3905,
+  0.7227,
+  1.1638,
+  1.8693
  ],
  "coverage": {
-  "1.0": 0.7135,
-  "1.5": 0.876,
-  "2.0": 0.9451
+  "1.0": 0.7095,
+  "1.5": 0.8731,
+  "2.0": 0.9436
  },
  "spreadMultiplier": 1.5,
  "intervalQuartiles": [
-  1.089,
-  1.769,
-  2.579
+  1.102,
+  1.754,
+  2.617
  ],
- "baselinePredictTheMean": 2.4797,
+ "baselinePredictTheMean": 2.4816,
  "bySiteClass": {
   "N+1 on saturated C": {
    "n": 2384,
-   "mae": 0.6905
+   "mae": 0.6922
   },
   "O+0 on C=O / C=N": {
    "n": 2269,
-   "mae": 0.5303
+   "mae": 0.532
   },
   "N+1 aromatic ring": {
    "n": 1348,
-   "mae": 1.0708
+   "mae": 1.1273
   },
   "O+0 on aromatic C": {
    "n": 1150,
-   "mae": 1.1922
+   "mae": 1.2165
   },
   "N+1 on C=O / C=N": {
    "n": 621,
-   "mae": 1.1572
+   "mae": 1.1558
   },
   "N+0 aromatic ring": {
    "n": 594,
-   "mae": 1.1996
+   "mae": 1.312
   },
   "O+0 on saturated C": {
    "n": 561,
-   "mae": 1.6028
+   "mae": 1.5933
   },
   "O+0 on N/O": {
    "n": 542,
-   "mae": 0.9082
+   "mae": 0.8828
   },
   "N+1 on aromatic C": {
    "n": 430,
-   "mae": 1.3229
+   "mae": 1.2984
   },
   "N+0 on sulfonyl": {
    "n": 383,
-   "mae": 1.047
+   "mae": 1.0371
   },
   "N+0 on C=O / C=N": {
    "n": 329,
-   "mae": 1.3811
+   "mae": 1.4166
   },
   "N+0 on aromatic C": {
    "n": 315,
-   "mae": 1.3214
+   "mae": 1.3502
   },
   "C+0 on C=O / C=N": {
    "n": 260,
-   "mae": 2.1187
+   "mae": 2.1013
   },
   "N+0 on N/O": {
    "n": 133,
-   "mae": 1.4094
+   "mae": 1.4379
   },
   "N+1 on N/O": {
    "n": 124,
-   "mae": 1.341
+   "mae": 1.302
   },
   "S+0 on aromatic C": {
    "n": 86,
-   "mae": 2.0764
+   "mae": 1.9511
   },
   "C+0 on N/O": {
    "n": 82,
-   "mae": 1.5718
+   "mae": 1.5451
   },
   "S+0 on saturated C": {
    "n": 74,
-   "mae": 0.8408
+   "mae": 0.8151
   },
   "N+1 on sulfonyl": {
    "n": 69,
-   "mae": 1.1887
+   "mae": 1.0728
   },
   "O+1 on aromatic C": {
    "n": 55,
-   "mae": 0.903
+   "mae": 0.963
   },
   "C+0 on aromatic C": {
    "n": 48,
-   "mae": 1.5571
-  },
-  "N+0 on saturated C": {
-   "n": 45,
-   "mae": 1.2701
+   "mae": 1.7627
   },
   "O+0 on sulfonyl": {
    "n": 34,
-   "mae": 2.207
+   "mae": 2.6113
   },
   "O+1 on C=O / C=N": {
    "n": 32,
-   "mae": 3.6235
+   "mae": 3.5035
+  },
+  "N+0 on saturated C": {
+   "n": 30,
+   "mae": 1.5587
   },
   "C+0 on sulfonyl": {
    "n": 29,
-   "mae": 1.8949
+   "mae": 2.2755
   },
   "C+0 on saturated C": {
    "n": 26,
-   "mae": 4.2137
+   "mae": 4.3673
   },
   "O+1 on saturated C": {
    "n": 23,
-   "mae": 2.4812
+   "mae": 2.3378
   }
  }
 }

@@ -333,6 +333,8 @@ const INTERVAL_CALIBRATION = intervalJson as unknown as {
   intervalQuartiles: number[];
   /** Measured coverage per ionizing element under the stratified taxonomy. */
   coverageByElement?: Record<string, number>;
+  /** How many sites each element's coverage figure rests on — a tolerance has to know. */
+  samplesByElement?: Record<string, number>;
   /** The pooled curve, used when the element is unknown. */
   points: CalibrationCurve;
   /** The taxonomy: `carbon` and `other`. */

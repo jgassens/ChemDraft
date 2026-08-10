@@ -28,3 +28,10 @@ tauri-plugin-http = "2.5.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-sparkle-updater = "=0.2.4"
+
+[dev-dependencies]
+# Test-only, and deliberately pinned to the version already in Cargo.lock as a transitive dependency
+# so this adds nothing to the build graph. It exists for one assertion: that the vendored OPSIN jar's
+# bytes match the SHA-256 recorded in its BUILD.md. That jar is a 14 MB executable handed to a JVM,
+# and until this test it was the only vendored artifact whose provenance rested on its own filename.
+sha2 = "0.10"

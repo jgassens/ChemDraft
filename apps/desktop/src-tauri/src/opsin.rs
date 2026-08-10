@@ -40,7 +40,45 @@ pub struct OpsinStatus {
     pub reason: Option<String>,
     pub jar_present: bool,
     pub runtime_present: bool,
-    pub version: &'static str,
+    /// `None` when no jar is bundled — there is no engine whose version this would be.
+    pub version: Option<&'static str>,
+}
+
+/// Why a conversion could not be attempted — which is not the same as a name that would not parse.
+///
+/// The two were flattened into one `String` at the boundary, and the TypeScript layer mapped every
+/// rejection to `parsed: false` — so a JVM that failed to start, or a 30-second timeout, told the user
+/// their chemical name was bad when OPSIN had never run. The distinction exists in the code below;
+/// this carries it across.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpsinError {
+    /// `invalidName` — the input was refused before any process started, so it IS about the name.
+    /// `engineFailure` — the engine could not be run or did not finish. Says nothing about the name.
+    pub kind: OpsinErrorKind,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OpsinErrorKind {
+    InvalidName,
+    EngineFailure,
+}
+
+impl OpsinError {
+    pub fn invalid_name(message: impl Into<String>) -> Self {
+        Self {
+            kind: OpsinErrorKind::InvalidName,
+            message: message.into(),
+        }
+    }
+    pub fn engine_failure(message: impl Into<String>) -> Self {
+        Self {
+            kind: OpsinErrorKind::EngineFailure,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -68,14 +106,40 @@ fn resource_path<R: Runtime>(app: &tauri::AppHandle<R>, relative: &str) -> Optio
     if let Ok(dir) = app.path().resource_dir() {
         candidates.push(dir.join(relative));
     }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative));
+    // DEV ONLY. `CARGO_MANIFEST_DIR` is baked in at compile time, so in a release build this fallback
+    // points at the BUILD MACHINE's source tree — a path outside the app bundle, writable by any
+    // process running as that user. If the bundle's resource glob ever failed to match (an empty glob
+    // is not a build error), a signed, notarized app would have located and `java -jar`'d a jar the
+    // code signature says nothing about. Dev needs it because `resource_dir()` points at `src-tauri/`
+    // under `tauri dev` only after the resources are staged; a release build must find its resources
+    // inside itself or not at all.
+    if cfg!(debug_assertions) {
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative));
+    }
     candidates.into_iter().find(|path| path.exists())
 }
 
 fn java_binary<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     let runtime = resource_path(app, RUNTIME_RELATIVE)?;
     let java = runtime.join("bin").join("java");
-    java.exists().then_some(java)
+    is_executable(&java).then_some(java)
+}
+
+/// Present AND runnable. `exists()` alone reported a truncated or non-executable `java` as available,
+/// so `opsin_status` said the engine was ready and the failure surfaced later as a spawn error that
+/// the TypeScript layer then reported as "could not parse that name".
+fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 /// Reject names that would corrupt the line-and-tab protocol, or that are not worth sending.
@@ -141,21 +205,47 @@ pub fn opsin_status<R: Runtime>(app: tauri::AppHandle<R>) -> OpsinStatus {
         reason,
         jar_present,
         runtime_present,
-        version: OPSIN_VERSION,
+        // `None` when there is no jar. The version describes the vendored engine, and reporting
+        // "2.9.0" for a build that contains no engine states a fact about something that is not there.
+        version: jar_present.then_some(OPSIN_VERSION),
     }
 }
 
+/// Serialises conversions, so a plugin loop cannot spawn unbounded JVMs.
+///
+/// Until this command moved off the main thread, Tauri's own main-thread serialisation was the only
+/// thing bounding concurrency — an accidental property, and one that came at the cost of freezing
+/// every menu and IPC call for the duration. Holding this across the conversion keeps the bound (one
+/// JVM at a time, as before) while the UI stays responsive, and a blocking-pool thread is exactly
+/// where a 0.4-second wait belongs.
+static CONVERSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tauri::command]
-pub fn opsin_name_to_structure<R: Runtime>(
+pub async fn opsin_name_to_structure<R: Runtime>(
     app: tauri::AppHandle<R>,
     name: String,
-) -> Result<OpsinConversion, String> {
-    let jar = resource_path(&app, JAR_RELATIVE)
-        .ok_or("The OPSIN engine is not present in this build.")?;
-    let java = java_binary(&app).ok_or(
-        "The bundled Java runtime is not present in this build, so names cannot be converted.",
-    )?;
-    convert_with(&java, &jar, &name)
+) -> Result<OpsinConversion, OpsinError> {
+    // `async` + `spawn_blocking`, following `fonts.rs`. Tauri 2 runs a non-`async` command ON THE MAIN
+    // THREAD, so this spawned a JVM and busy-polled there: ~0.4 s of frozen IPC and menus per call,
+    // and up to the full 30 s timeout on a hang.
+    let jar = resource_path(&app, JAR_RELATIVE).ok_or_else(|| {
+        OpsinError::engine_failure("The OPSIN engine is not present in this build.")
+    })?;
+    let java = java_binary(&app).ok_or_else(|| {
+        OpsinError::engine_failure(
+            "The bundled Java runtime is not present in this build, so names cannot be converted.",
+        )
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _serialised = CONVERSION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        convert_with(&java, &jar, &name)
+    })
+    .await
+    .map_err(|error| {
+        OpsinError::engine_failure(format!("The name parser could not be scheduled: {error}"))
+    })?
 }
 
 /// The conversion itself, against explicit paths.
@@ -167,30 +257,45 @@ pub fn convert_with(
     java: &std::path::Path,
     jar: &std::path::Path,
     name: &str,
-) -> Result<OpsinConversion, String> {
-    let name = validate_name(name)?;
+) -> Result<OpsinConversion, OpsinError> {
+    // The ONLY `invalidName` path: the input was refused before a process existed. Everything below
+    // this line is the engine, and a failure there says nothing about the name.
+    let name = validate_name(name).map_err(OpsinError::invalid_name)?;
 
     let mut child = Command::new(java)
         .arg("-jar")
         .arg(jar)
         .args(["-o", "smi", "-n"])
+        // The child inherits the app's environment, and these three change how the JVM starts. Two
+        // reasons to drop them. They can alter behaviour we have pinned (GC logging goes to STDOUT and
+        // interleaves between result lines; a heap cap can make the JVM refuse to start at all), and
+        // the launcher announces them on stderr as "Picked up _JAVA_OPTIONS: …", which
+        // `parse_failure_reason` then hands to the user as the reason their chemical name failed.
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("Could not start the name parser: {error}"))?;
+        .map_err(|error| {
+            OpsinError::engine_failure(format!("Could not start the name parser: {error}"))
+        })?;
 
     {
         let stdin = child
             .stdin
             .as_mut()
-            .ok_or("Could not write to the name parser.")?;
+            .ok_or_else(|| OpsinError::engine_failure("Could not write to the name parser."))?;
         // One name, one newline. Closing stdin is what makes OPSIN finish rather than wait for more.
-        writeln!(stdin, "{name}").map_err(|error| format!("Could not send the name: {error}"))?;
+        writeln!(stdin, "{name}").map_err(|error| {
+            OpsinError::engine_failure(format!("Could not send the name: {error}"))
+        })?;
     }
     drop(child.stdin.take());
 
-    let output = wait_with_timeout(child, OPSIN_TIMEOUT_SECS)?;
+    let output =
+        wait_with_timeout(child, OPSIN_TIMEOUT_SECS).map_err(OpsinError::engine_failure)?;
 
     // Deliberately NOT checked: OPSIN exits 0 whether or not the name parsed (BUILD.md). Reading
     // success from the status code would report every unparsable name as a success with no structure.
@@ -390,6 +495,38 @@ mod tests {
         assert!(
             build_doc.contains(OPSIN_VERSION),
             "BUILD.md does not record the pinned version"
+        );
+    }
+
+    /// The jar's BYTES, not just its version string.
+    ///
+    /// This was the weakest provenance of any vendored artifact in the repo: the RDKit and IsoSpec
+    /// wasm blobs are each pinned three ways (constant ↔ BUILD.md ↔ bytes), while a 14 MB executable
+    /// jar that the app hands to a JVM was checked only by the version number appearing in its own
+    /// filename — which a replaced jar keeps. Reads the expected digest out of BUILD.md rather than
+    /// duplicating it here, so the record and the check cannot drift apart.
+    #[test]
+    fn jar_bytes_match_the_hash_recorded_in_build_md() {
+        use sha2::{Digest, Sha256};
+
+        let jar_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(JAR_RELATIVE);
+        let bytes = std::fs::read(&jar_path)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", jar_path.display()));
+        let actual = format!("{:x}", Sha256::digest(&bytes));
+
+        let build_doc = include_str!("../resources/opsin/BUILD.md");
+        let recorded = build_doc
+            .lines()
+            .find_map(|line| {
+                let rest = line.trim().strip_prefix("- SHA-256:")?;
+                Some(rest.trim().trim_matches('`').to_string())
+            })
+            .expect("BUILD.md records no `- SHA-256:` line for the jar");
+
+        assert_eq!(
+            actual, recorded,
+            "the vendored OPSIN jar does not match the hash BUILD.md records. Either the jar was \
+             replaced without updating BUILD.md, or BUILD.md was edited without rebuilding."
         );
     }
 }

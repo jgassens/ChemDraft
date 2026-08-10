@@ -222,3 +222,27 @@ describe("createAnalysisClient", () => {
     }
   });
 });
+
+describe("a dead worker is cleaned up, not just dropped", () => {
+  it("terminates the crashed worker and re-warms its replacement", async () => {
+    // An `error` event reports an uncaught error INSIDE a worker; it does not kill it. Nulling the
+    // reference therefore orphaned a live worker with its RDKit and IsoSpec WASM heaps resident, once
+    // per event, up to four before `ensureWorker` gives up — and `dispose()` only ever terminated the
+    // current one, so the orphans outlived that too. `conformerClient` gets this right and asserts it.
+    const { client, workers, current } = createClient();
+    const first = client.analyze("selection", ASPIRIN, { immediate: true });
+    const crashed = current();
+    crashed.crash();
+    await expect(first).resolves.toMatchObject({ status: "failed" });
+    expect(crashed.terminated, "the crashed worker was abandoned, not terminated").toBe(true);
+
+    // `warmed` must reset with it: a replacement worker has loaded neither engine, and a `warmup()`
+    // that short-circuits forever after the first crash leaves it to meet the next request cold —
+    // exactly the cost warmup exists to avoid.
+    client.warmup();
+    const replacement = current();
+    expect(replacement).not.toBe(crashed);
+    expect(workers.length).toBe(2);
+    expect(replacement.posted.some((message) => message.kind === "warmup")).toBe(true);
+  });
+});

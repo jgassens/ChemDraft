@@ -128,14 +128,20 @@ export class AnalysisScheduler {
   request(slot: string, spec: AnalysisRequestSpec, options: ScheduleOptions = {}): Promise<AnalysisRun> {
     this.#supersede(slot);
 
+    // Refuse FIRST. `#refuse` is an O(1) length compare; `analysisRequestKey` hashes the entire input
+    // with a BigInt-multiply-per-character FNV-1a, measured at 6.6 ms for 100 KB and 47 ms for 1 MB in
+    // JavaScriptCore — the engine the WKWebView actually runs. Hashing before refusing meant an
+    // oversized paste was fully hashed and then rejected by a length check, which is the opposite of
+    // this module's own stated intent ("a pasted megabyte of text costs nothing to reject"). Nothing
+    // is lost by reordering: `#refuse` reads only `spec.value.length`, and a refusal is never cached.
+    const refusal = this.#refuse(spec);
+    if (refusal) return Promise.resolve(refusal);
+
     const key = analysisRequestKey(spec, this.#options.engineHashes ?? []);
     const cached = this.#cache.get(key);
     // A cache hit skips the debounce entirely: there is nothing to coalesce, and making an instant
     // answer wait 120 ms would defeat the reason the cache exists.
     if (cached) return Promise.resolve(cached);
-
-    const refusal = this.#refuse(spec);
-    if (refusal) return Promise.resolve(refusal);
 
     const state: SlotState = { spec };
     this.#slots.set(slot, state);
@@ -147,30 +153,45 @@ export class AnalysisScheduler {
         const signal = new MutableSignal();
         state.signal = signal;
 
-        void this.#options
-          .run(spec, signal)
-          .then(
-            (run) => {
-              if (signal.cancelled) return;
-              this.#cache.set(key, run);
-              this.#settle(slot, state, run);
-            },
-            (error: unknown) => {
-              if (signal.cancelled) return;
-              this.#settle(
-                slot,
-                state,
-                this.#emptyRun(spec, "failed", [
-                  {
-                    code: "analysis.engine_error",
-                    severity: "error",
-                    message: error instanceof Error ? error.message : String(error),
-                    affectedResultIds: []
-                  }
-                ])
-              );
-            }
+        const failed = (error: unknown): void => {
+          if (signal.cancelled) return;
+          this.#settle(
+            slot,
+            state,
+            this.#emptyRun(spec, "failed", [
+              {
+                code: "analysis.engine_error",
+                severity: "error",
+                message: error instanceof Error ? error.message : String(error),
+                affectedResultIds: []
+              }
+            ])
           );
+        };
+
+        // `run` is called SYNCHRONOUSLY and its throw caught here, rather than being deferred through
+        // `Promise.resolve().then(...)`. A transport that throws synchronously used to escape both
+        // paths: on the debounce path the throw unwound out of a `setTimeout` callback, so the slot's
+        // promise never settled and the caller hung forever; on the immediate path it propagated out
+        // of `request`, which this method's docstring promises never happens ("Never rejects").
+        // Deferring would fix that too, but it would also move worker creation and `postMessage` a
+        // microtask later — an observable timing change for every caller, to fix a throw.
+        let started: Promise<AnalysisRun>;
+        try {
+          started = this.#options.run(spec, signal);
+        } catch (error) {
+          failed(error);
+          return;
+        }
+
+        void started.then((run) => {
+          if (signal.cancelled) return;
+          // Only cache a run that carries an answer. A `failed` run is a transport or engine fault,
+          // not a property of the input — caching it made a single transient failure permanent for
+          // that structure for the rest of the session, with no way to retry.
+          if (run.status !== "failed") this.#cache.set(key, run);
+          this.#settle(slot, state, run);
+        }, failed);
       };
 
       if (options.immediate) start();

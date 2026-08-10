@@ -32,7 +32,7 @@ import sys
 from rdkit import Chem, RDLogger
 
 from pka_labels import changed_atom
-from parity_features import written_smiles_with_site
+from parity_features import AQUEOUS_WINDOW, is_unactivated_amine, written_smiles_with_site
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -86,6 +86,27 @@ def extract(src, existing_path):
             drop("labelled Prot but the changed atom is not cationic in the acid"); continue
         if prefix == "Deprot" and charge > 0:
             drop("labelled Deprot but the changed atom is cationic in the acid"); continue
+
+        # The cross-check above asks whether the CHARGE matches the direction. It does not ask whether
+        # the VALUE is possible for that direction, and for a neutral amine labelled `Deprot` it is
+        # not: a neutral aliphatic amine's N-H comes off near pKa 35, which water cannot host at any pH.
+        #
+        # 15 rows arrived exactly this way -- `NCC(F)F` recorded as losing its N-H at 7.20, `N#CCCN` at
+        # 7.75, `CNCCC#N` at 8.10. Every one of those numbers is the molecule's BASIC pKa, the pH at
+        # which its ammonium gives a proton back, filed against the acidic transition. They passed both
+        # the Prot/Deprot charge check (a neutral amine IS charge-0, as `Deprot` requires) and the
+        # one-changed-atom check, and the shipped model trained on all 15 -- learning that deprotonating
+        # a neutral amine in water is routine.
+        #
+        # Rejected only when the value lands INSIDE the aqueous window, because that is what makes it
+        # demonstrably mislabelled rather than merely out of scope. A row recording the real ~35 would
+        # be honest-but-unusable and is counted separately, so the two never get confused.
+        if prefix != "Prot" and is_unactivated_amine(acid, idx):
+            if AQUEOUS_WINDOW[0] <= pka <= AQUEOUS_WINDOW[1]:
+                drop("acidic label on an unactivated amine, at a pKa water cannot host")
+            else:
+                drop("unactivated amine N-H acidity, outside the aqueous range this corpus covers")
+            continue
 
         # Deduplicate through the SAME mapping the other sources use, or the key pairs a canonical
         # SMILES with an index in the pre-canonical numbering and never matches anything.

@@ -103,7 +103,22 @@ export class AnalysisSessionCache {
     return run;
   }
 
+  /**
+   * Freeze on the way in, so a cache hit cannot be edited under the next reader.
+   *
+   * Every hit hands out the SAME object, and callers render it — so one caller sorting `results` in
+   * place, or a renderer stamping a field onto the run it was given, would silently rewrite what the
+   * next reader sees, with no way to tell a mutated hit from a fresh run. Freezing turns that into a
+   * loud `TypeError` in strict mode (which every module here is) at the moment of the mistake.
+   *
+   * The freeze is deliberately SHALLOW plus `results`, not deep. That covers the realistic accidents
+   * — reassigning `status`, pushing to `results`, re-sorting it — while stopping short of the
+   * `Float64Array`s inside distribution results: `Object.freeze` on a typed array with elements
+   * throws, so a naive deep freeze would break the isotope envelope rather than protect it.
+   */
   set(key: string, run: AnalysisRun): void {
+    Object.freeze(run.results);
+    Object.freeze(run);
     if (this.#entries.has(key)) this.#entries.delete(key);
     this.#entries.set(key, run);
     while (this.#entries.size > this.#maxEntries) {

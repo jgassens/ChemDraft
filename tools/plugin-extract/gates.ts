@@ -214,8 +214,23 @@ export function findLicense(pluginRoot: string, error: (message: string) => Plug
  * corpus actually takes. A plugin shipping data some other way is still required to declare it — the
  * rule is AGENTS.md §8c — this only catches the common case mechanically.
  */
-const DATA_DIRECTORY_NAMES = new Set(["data", "datasets", "db", "corpus"]);
+// "database" was missing while "db" was present — the most natural spelling of the very thing this
+// gate exists to catch. Also "fixtures" and "labels", which are what a chemistry plugin actually calls
+// a shipped corpus.
+const DATA_DIRECTORY_NAMES = new Set([
+  "data",
+  "datasets",
+  "database",
+  "databases",
+  "db",
+  "corpus",
+  "corpora",
+  "fixtures",
+  "labels"
+]);
 const DATA_FILE_EXTENSIONS = new Set([".csv", ".tsv", ".sqlite", ".sqlite3", ".db", ".parquet", ".arrow"]);
+/** Source that happens to live under a data directory. Not a shipped dataset. */
+const CODE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".map", ".md"]);
 
 /** One dataset a plugin ships under terms other than its code licence. */
 export interface PluginDataLicense {
@@ -241,9 +256,21 @@ export function findBundledDataPaths(pluginRoot: string): string[] {
     for (const entry of entries) {
       if (entry === "node_modules" || entry === "dist" || entry === ".git") continue;
       const full = join(dir, entry);
-      if (statSync(full).isDirectory()) {
+      // `lstatSync`, so a symlink is inspected rather than followed. `statSync` followed them: a
+      // BROKEN symlink crashed the gate with a raw ENOENT instead of a licence verdict, and a
+      // symlinked directory could recurse without bound or walk clean outside the plugin root. A
+      // symlink is never itself a data file, so skipping is both safe and the honest reading —
+      // `assertRegularDistributionTree` is what rejects them, and it should stay the one that does.
+      const stats = lstatSync(full);
+      if (stats.isSymbolicLink()) continue;
+      if (stats.isDirectory()) {
         walk(full, insideDataDir || DATA_DIRECTORY_NAMES.has(entry.toLowerCase()));
-      } else if (insideDataDir || DATA_FILE_EXTENSIONS.has(extname(entry).toLowerCase())) {
+      } else if (
+        // Inside a data directory, only files that look like data. `src/data/parser.ts` is source
+        // that happens to live under `data/`, and flagging it taught readers to ignore the gate.
+        (insideDataDir && !CODE_FILE_EXTENSIONS.has(extname(entry).toLowerCase())) ||
+        DATA_FILE_EXTENSIONS.has(extname(entry).toLowerCase())
+      ) {
         out.push(relative(pluginRoot, full));
       }
     }
@@ -289,6 +316,20 @@ export function assertBundledDataLicensed(
   const incomplete = declared.filter((entry) => !entry?.name?.trim() || !entry?.license?.trim());
   if (incomplete.length > 0) {
     throw error(`every "dataLicenses" entry needs a non-empty name and license; ${incomplete.length} does not.`);
+  }
+
+  // A declared `noticeFile` that is not in the package is an attribution promise the distribution
+  // cannot keep — the manifest says "the terms are in this file" and the file ships nowhere. Checked
+  // here because this gate is the only thing that reads the field at all.
+  const missingNotices = declared
+    .map((entry) => entry?.noticeFile?.trim())
+    .filter((path): path is string => Boolean(path))
+    .filter((path) => !existsSync(join(pluginRoot, path)));
+  if (missingNotices.length > 0) {
+    throw error(
+      `"dataLicenses" names a noticeFile that is not in the package: ${missingNotices.join(", ")}. ` +
+        "The attribution it promises would not reach anyone the plugin is distributed to."
+    );
   }
 }
 

@@ -8,6 +8,9 @@
 // main window over the palette-command bridge. Both halves run through the real window-manager
 // event channel (DOM CustomEvents in jsdom), so a regression in either direction fails here.
 
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, DefaultNativeTextStyle, type MoleculeObject } from "@chemdraft/chem-core";
@@ -143,5 +146,34 @@ describe("PaletteWindow molecule inspector bridge", () => {
       bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
     expect(commandsByChannel.get(PALETTE_COMMAND_COMMIT_EVENT)).toContain(moleculeStructureBondLengthCommandId(20));
+  });
+});
+
+describe("the detached Molecular Inspector palette can actually act", () => {
+  // The palette forwarded the report and the busy flag but neither handler, so on the SHIPPING desktop
+  // path (`shouldDefaultToNativePalettes()`) Copy rendered "Copied" onto an empty clipboard and the
+  // interpretation select accepted changes that went nowhere. The inline web-preview branch supplied
+  // both callbacks directly and worked, which is why it survived review — and why the palette-level
+  // test matters: the working path is the one nobody ships.
+  it("forwards both inspector handlers into the widget state", async () => {
+    const source = await readFile(resolve(process.cwd(), "apps/desktop/src/PaletteWindow.tsx"), "utf8");
+    const widgetState = source.slice(source.indexOf("widgetState={{"));
+    expect(widgetState).toContain("onMolecularInspectorCopy:");
+    expect(widgetState).toContain("onMolecularInspectorChangeInterpretation:");
+  });
+
+  it("copies through the app's clipboard helper rather than assuming success", async () => {
+    // `writeClipboardTextItems` returns false when the write did not happen, which is the whole reason
+    // to use it here instead of a bare `navigator.clipboard` call.
+    const source = await readFile(resolve(process.cwd(), "apps/desktop/src/PaletteWindow.tsx"), "utf8");
+    expect(source).toContain("writeClipboardTextItems");
+    expect(source).not.toMatch(/navigator\.clipboard/);
+  });
+
+  it("routes an interpretation change to the main window, which owns the analysis", async () => {
+    const source = await readFile(resolve(process.cwd(), "apps/desktop/src/PaletteWindow.tsx"), "utf8");
+    expect(source).toContain("sendPaletteInspectorAction");
+    const main = await readFile(resolve(process.cwd(), "apps/desktop/src/MainWindow.tsx"), "utf8");
+    expect(main).toContain("listenForPaletteInspectorActions");
   });
 });

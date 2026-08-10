@@ -33,6 +33,16 @@ export interface MolecularInspectorPaneProps {
   /** Absent until an analysis has run — the palette can be open before anything is selected. */
   report?: AnalysisReport;
   busy?: boolean;
+  /**
+   * The report no longer describes what is selected.
+   *
+   * Nothing invalidated this report: it was set at run completion and never cleared on a document
+   * edit, a selection change, an undo, or a new document, and `cancel("selection")` was never called.
+   * So a user could read a confident, fully provenanced page of numbers for a structure they had
+   * since changed or deselected, with only the identity rows to notice. Badged rather than cleared —
+   * the analysis was asked for, and throwing it away on a stray click would be its own annoyance.
+   */
+  stale?: boolean;
   onChangeInterpretation?(interpretationId: string | undefined): void;
   onCopy?(text: string): void;
 }
@@ -40,6 +50,7 @@ export interface MolecularInspectorPaneProps {
 export function MolecularInspectorPane({
   report,
   busy,
+  stale,
   onChangeInterpretation,
   onCopy
 }: MolecularInspectorPaneProps) {
@@ -111,9 +122,12 @@ export function MolecularInspectorPane({
   const selectedLabel = selection.categoryId ?? "All analyses";
 
   const copy = (kind: "text" | "markdown"): void => {
-    onCopy?.(
-      kind === "text" ? renderSelectionText(report, selection) : renderSelectionMarkdown(report, selection)
-    );
+    // "Copied" only when something was asked to copy it. `setCopied` used to fire unconditionally, so
+    // wherever `onCopy` was absent — the detached palette, which is the shipping desktop path — the
+    // button announced success onto an empty clipboard. A label that lies about the clipboard is
+    // worse than a button that does nothing, because the user walks away and pastes something else.
+    if (!onCopy) return;
+    onCopy(kind === "text" ? renderSelectionText(report, selection) : renderSelectionMarkdown(report, selection));
     setCopied(kind);
   };
 
@@ -184,6 +198,12 @@ export function MolecularInspectorPane({
 
         <section className="molecular-inspector-viewport" aria-label={selectedLabel}>
           {busy ? <p className="analysis-panel-busy">Recomputing…</p> : null}
+          {!busy && stale ? (
+            <p className="analysis-panel-stale">
+              These numbers describe a structure that is no longer selected. Run Analyze again for the
+              current selection.
+            </p>
+          ) : null}
           {body}
         </section>
       </div>

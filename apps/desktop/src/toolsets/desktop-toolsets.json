@@ -4964,7 +4964,7 @@
             {
               "id": "widget.core.drawnStructureSettings",
               "kind": "control",
-              "label": "Molecule inspector",
+              "label": "Drawn Structure Settings",
               "primary": {
                 "type": "control",
                 "controlId": "widget.core.drawnStructureSettings"

@@ -6401,64 +6401,6 @@ textarea:focus-visible,
   fill: transparent;
 }
 
-/* Analyze surface (PLANS.md §9). Core-owned chrome; the report body is the shared
-   PluginReportRenderer, so section styling is inherited rather than duplicated. */
-.analysis-panel {
-  position: absolute;
-  top: 64px;
-  right: 16px;
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  width: 380px;
-  max-height: calc(100vh - 120px);
-  overflow-y: auto;
-  padding: 12px 14px 10px;
-  background: var(--cd-surface, #fdfcf8);
-  border: 1px solid var(--cd-border, #c8c4ba);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
-  font-size: 12px;
-}
-
-.analysis-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.analysis-panel-header h3 {
-  margin: 0;
-  font-size: 13px;
-}
-
-.analysis-panel-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.analysis-panel-actions button {
-  padding: 2px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--cd-border, #c8c4ba);
-  background: var(--cd-surface, #fdfcf8);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-/* The §1 disclosure line: which interpretation the numbers describe, and how to change it. */
-.analysis-panel-interpretation {
-  margin: 8px 0 4px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: var(--cd-surface-muted, #f2efe7);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-}
-
 .analysis-panel-identity-flag {
   color: var(--cd-warning, #8a5a00);
 }
@@ -6474,32 +6416,16 @@ textarea:focus-visible,
   max-width: 220px;
 }
 
-.analysis-panel-ledger {
-  flex-basis: 100%;
-  margin: 4px 0 0;
-  padding-left: 16px;
-  color: var(--cd-text-muted, #6b665c);
-}
-
 .analysis-panel-busy {
   margin: 4px 0;
   color: var(--cd-text-muted, #6b665c);
 }
 
-.analysis-panel-footer {
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--cd-border, #c8c4ba);
-  color: var(--cd-text-muted, #6b665c);
-  font-size: 10px;
-  overflow-wrap: anywhere;
-}
-
-/* The Conventions section arrives as a `text` section whose body carries its own line breaks (one
-   method group per block, one bullet per named choice). Scoped to `.analysis-panel` so plugin text
-   sections elsewhere keep the renderer's default paragraph flow. */
-.analysis-panel .plugin-report-text p {
-  white-space: pre-line;
+/* Warmer than the muted busy line: this one is telling the reader the page is wrong for what they
+   have selected, which they need to notice rather than skim past. */
+.analysis-panel-stale {
+  margin: 4px 0;
+  color: var(--cd-text-warning, #8a5a00);
 }
 
 /* --- Molecular Inspector -------------------------------------------------------------------

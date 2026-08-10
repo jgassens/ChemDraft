@@ -813,7 +813,17 @@ export const PluginIsotopeEnvelopeRequestSchema = z
   .strict();
 
 export interface PluginIsotopeEnvelopePeak {
-  /** Neutral-molecule mass in daltons — not m/z: no adduct, no charge. */
+  /**
+   * The peak's position on the axis named by `positionUnit` — **read that field before labelling it.**
+   *
+   * For a neutral structure this is neutral-molecule mass in daltons. For a charged one it is m/z:
+   * the engine subtracts the electrons and divides by |charge|, so a dication's peaks come back at
+   * half its mass. The field kept the name `mass` and the doc comment said "not m/z" long after the
+   * envelope contract started dividing, and the host dropped the unit on the way through — so a
+   * plugin rendering a drawn dication showed 87.10 under a "Mass (Da)" header for a molecule of
+   * 174.21 Da, with 0.5 spacing between isotopologues. The name is kept for compatibility; the unit
+   * is what decides the label.
+   */
   mass: number;
   /** Normalised to the base peak at 100. */
   relativeIntensity: number;
@@ -823,13 +833,22 @@ export interface PluginIsotopeEnvelopePeak {
  * Either the envelope, or why there is not one.
  *
  * A discriminated result rather than a throw or an empty list, because the host declines for real
- * chemical reasons a plugin has to be able to show a reader: a charged structure has no neutral mass
- * to report, and an isotope-labelled one cannot be expressed to the engine at all.
+ * chemical reasons a plugin has to be able to show a reader — an isotope-labelled structure cannot be
+ * expressed to the engine at all. (A charged structure is no longer one of those reasons: since
+ * envelope contract 2.0.0 the host answers it in m/z rather than declining, which is why
+ * `positionUnit` exists.)
  */
 export type PluginIsotopeEnvelopeResult =
   | {
       available: true;
       peaks: readonly PluginIsotopeEnvelopePeak[];
+      /**
+       * Which axis `peak.mass` is on: `"dalton"` for a neutral structure, `"thomson"` (m/z) for a
+       * charged one. A renderer must label from this rather than assuming daltons — "Mass (Da)" over
+       * m/z values is a mislabelled axis in exactly the case where the distinction carries the charge
+       * state, and it is the case a reader is least able to catch by eye.
+       */
+      positionUnit: "dalton" | "thomson";
       /** What the engine dropped, and how much of the distribution survived. */
       truncation: { policy: string; threshold: number; coveredProbability?: number };
       engine: { id: string; version: string };

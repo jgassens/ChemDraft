@@ -36,6 +36,8 @@ export interface ToolbarWidgetState {
   currentMolecularInspector?: AnalysisReport;
   /** True while a newer analysis for the same selection is in flight. */
   molecularInspectorBusy?: boolean;
+  /** The report no longer describes the current selection. See MolecularInspectorPane. */
+  molecularInspectorStale?: boolean;
   onInvoke: (commandId: string) => void;
   onColorPickerOpenChange?: (open: boolean) => void;
   onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;

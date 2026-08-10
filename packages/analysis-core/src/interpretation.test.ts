@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -288,5 +290,24 @@ describe("MolecularInterpretationSchema", () => {
       MolecularInterpretationSchema.safeParse({ ...interpretation(), componentPolicy: "biggest-bit" })
         .success
     ).toBe(false);
+  });
+});
+
+describe("the source file stays searchable", () => {
+  it("uses the \\x00 escape rather than embedding literal NUL bytes", () => {
+    // Three hash functions here joined their fields with a raw U+0000 byte typed straight into the
+    // source. Same string at runtime, but `file(1)` reported this module as `data`, ripgrep's walk
+    // silently SKIPPED it, and read tools refused it — in the one file that holds the atom-mapping
+    // algebra, which is the worst file in the repo to be invisible to search. It was the only such
+    // file in the tree.
+    //
+    // The needle is built with `fromCharCode` so this test does not reintroduce the very byte it
+    // guards against.
+    const source = readFileSync(new URL("./interpretation.ts", import.meta.url), "utf8");
+    expect(source.includes(String.fromCharCode(0)), "a literal NUL byte is back in interpretation.ts").toBe(
+      false
+    );
+    // The separator itself still has to be there — the point was never to remove it.
+    expect(source).toContain("\\x00");
   });
 });

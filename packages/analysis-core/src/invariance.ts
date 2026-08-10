@@ -196,7 +196,18 @@ export function checkAtomIndexedInvariance(
 
     for (const [referenceAtom, expected] of referenceValues.entries()) {
       const actual = byReferenceAtom.get(referenceAtom);
-      if (actual === undefined || Math.abs(expected - actual) > tolerance) {
+      // NaN is a DEVIATION, not a pass. Every comparison against NaN is false, so
+      // `Math.abs(NaN - 5) > tolerance` was false and a reference value of NaN beside a variant value
+      // of 5 recorded nothing and left `invariant` true — in the function whose own doc calls it "the
+      // test that does not" pass a pipeline that assigned values to the wrong atoms. NaN is exactly
+      // what a broken per-atom pipeline produces. `defaultEquals` in this same module gets it right
+      // with an explicit `Number.isNaN` pair check, so the two halves disagreed about the one input
+      // that matters most. Two NaNs still agree, matching `defaultEquals`.
+      const bothNaN = Number.isNaN(expected) && actual !== undefined && Number.isNaN(actual);
+      const differs =
+        actual === undefined ||
+        (!bothNaN && !(Math.abs(expected - actual) <= tolerance));
+      if (differs) {
         deviations.push({
           variantId: variant.id,
           kind: variant.kind,

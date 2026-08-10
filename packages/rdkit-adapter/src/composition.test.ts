@@ -26,7 +26,8 @@ describe("elementSymbol", () => {
   });
 
   it("throws rather than inventing a symbol", () => {
-    expect(() => elementSymbol(0)).toThrowError(/No element symbol/);
+    // Atomic number 0 is deliberately NOT in here any more: it is a dummy atom, not a missing
+    // element, and throwing on it rejected every method in the run. See the dummy-atom test below.
     expect(() => elementSymbol(500)).toThrowError(/No element symbol/);
   });
 });
@@ -223,5 +224,46 @@ describe("compositionFromRdkitJson", () => {
 
   it("throws when the JSON carries no molecule", () => {
     expect(() => compositionFromRdkitJson({ molecules: [] })).toThrowError(/no molecule/);
+  });
+});
+
+describe("machine-independent ordering and dummy atoms", () => {
+  it("orders elements by code unit, not by the reader's OS language", () => {
+    // `localeCompare` with no locale argument resolves its collator from the host language. Under
+    // Estonian, Z sorts between S and T; under Lithuanian, Y follows I. That made the same molecule
+    // render a different formula on different machines, in a string the method contract names as a
+    // stated convention. These are the exact pairs that reorder.
+    // Estonian: Z between S and T.
+    expect(hillFormula([{ symbol: "O", count: 3 }, { symbol: "Ti", count: 1 }, { symbol: "Zn", count: 1 }])).toBe(
+      "O3TiZn"
+    );
+    // Lithuanian: Y directly after I.
+    expect(
+      hillFormula([
+        { symbol: "Ba", count: 2 },
+        { symbol: "Cu", count: 3 },
+        { symbol: "O", count: 7 },
+        { symbol: "Y", count: 1 }
+      ])
+    ).toBe("Ba2Cu3O7Y");
+    // Hungarian: "cs" is a single letter sorting after "c".
+    expect(hillFormula([{ symbol: "Cs", count: 2 }, { symbol: "Cu", count: 1 }, { symbol: "Cl", count: 4 }])).toBe(
+      "Cl4Cs2Cu"
+    );
+  });
+
+  it("names a dummy atom instead of rejecting the whole run", () => {
+    // Atomic number 0 is an R-group or attachment point, not a missing element. This used to throw,
+    // and because composition is built before any method runs, one drawn `*` failed all ~62 methods
+    // with "No element symbol for atomic number 0" — including every method that ignores elements.
+    expect(elementSymbol(0)).toBe("*");
+    const composition = compositionFromRdkitJson(json([{ z: 0 }, { z: 6, impHs: 3 }], [{ atoms: [0, 1] }]));
+    expect(composition.formula).toBe("CH3*");
+    expect(composition.presentElements).toContain("*");
+  });
+
+  it("still refuses an atomic number that is not an element at all", () => {
+    expect(() => elementSymbol(119)).toThrowError(/No element symbol/);
+    expect(() => elementSymbol(-1)).toThrowError(/No element symbol/);
   });
 });

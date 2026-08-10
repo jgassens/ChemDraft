@@ -377,9 +377,13 @@ Five example plugins live here. Two carry code; three are README-only placeholde
   other analyzer. Keep it free of spectroscopy concepts, workers, and reference databases — that
   absence is the point of it.
 - `molscribe-ocsr` — image-to-structure scaffold; its rules follow below.
-- `advanced-style-pack`, `journal-style-pack`, `opsin-name-to-structure` — README-only
-  placeholders. Keep them placeholders until a slice implements them, and never describe them as
-  shipped plugins; a README naming a future plugin is not a plugin.
+- `advanced-style-pack`, `journal-style-pack` — README-only placeholders. Keep them placeholders
+  until a slice implements them, and never describe them as shipped plugins; a README naming a
+  future plugin is not a plugin.
+- Name→structure is NO LONGER a placeholder plugin and no longer a plugin at all. It shipped as a
+  host CAPABILITY — `chemistry.nameToStructure`, backed by the vendored OPSIN jar on a bundled JRE
+  (`apps/desktop/src-tauri/src/opsin.rs`) — and the `opsin-name-to-structure` example was deleted.
+  Because it spawns a process, it requires `native.execute` in addition to `chemistry.compute`.
 
 `molscribe-ocsr` specifically:
 
@@ -493,10 +497,14 @@ Not allowed:
 
 ### 6.19 `rdkit-adapter`
 
-**Half placeholder, half real** — and the two halves must not be confused for each other.
+**Real, on both halves.** This section described the 2D surface as a placeholder long after it
+stopped being one, and named `createRdkitPlaceholderAdapter`, a function no longer in the tree — so
+a reader following the rulebook was told the opposite of what the code does. That is the same
+failure the section was rewritten once before to fix: a rulebook contradicting the shipped tree
+teaches the reader to discount it.
 
-The 2D chemistry/depiction surface is still a placeholder
-(`rdkitAdapterStatus === "placeholder"`, `createRdkitPlaceholderAdapter`).
+The 2D chemistry/analysis surface is real: `rdkitAdapterStatus === "real"`, `createRdkitAdapter()`,
+and the ~62-method property suite behind `analyzeStructure`. Its rules are §8b's.
 
 The 3D conformer engine is real: ETKDGv3 running in a custom RDKit MinimalLib WASM build, vendored
 at `packages/rdkit-adapter/vendor/` and wired in `conformer.ts`. That slice landed in `81711038`;
@@ -875,13 +883,18 @@ shipping data under terms nobody recorded — is invisible until someone else di
 
 ## 8b. Property & prediction suite rules (branch `chemdraft-analyzers`)
 
-**The plan of record is `PLANS.md`**, whose first heading is "ChemDraft property & prediction suite".
-It holds the architecture document this work was scoped from — §1 interpretation ledger, §2
-classification, §3 run and result union, §4 the two tracks, §5 execution, §6 corrections register, §7
-engine findings, §8 dependency triage, §9 rollout, §10 verification — plus the phase-by-phase delivery
-sequence and the definition of done. **Every bare "§n" below and in the analysis source comments refers
-to a section of that document.** Read it before changing anything in `analysis-core` or the RDKit
-adapter's analysis path; the rules here are its conclusions, not their derivation.
+**The plan of record is `docs/shipped/analyzers-property-prediction-suite.md`.** It holds the
+architecture document this work was scoped from — §1 interpretation ledger, §2 classification, §3 run
+and result union, §4 the two tracks, §5 execution, §6 corrections register, §7 engine findings, §8
+dependency triage, §9 rollout, §10 verification — plus the phase-by-phase delivery sequence and the
+definition of done. **Every bare "§n" below and in the analysis source comments refers to a section of
+that document.** Read it before changing anything in `analysis-core` or the RDKit adapter's analysis
+path; the rules here are its conclusions, not their derivation.
+
+It used to live in `PLANS.md`, and closeout moved it — correctly, per §1's own rule that a completed
+slice leaves `PLANS.md`. What closeout missed is that ~49 source comments cite "PLANS.md §n", and
+`PLANS.md` no longer contains a single one of those sections. Those citations resolve to the file
+named above; a comment saying `PLANS.md §n` is stale, not wrong about which section it means.
 
 **One parse, many named interpretations.** Parse and sanitise once through RDKit, keep the source
 representation, and derive explicitly named interpretations from it. Composition, charge, mass, and

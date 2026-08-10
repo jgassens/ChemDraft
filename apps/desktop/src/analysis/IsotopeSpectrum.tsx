@@ -12,7 +12,7 @@
 import { useMemo } from "react";
 
 import type { ReportSpectrumSection } from "@chemdraft/analysis-core";
-import { unit as unitDefinition } from "@chemdraft/analysis-core";
+import { unit as unitDefinition , unitSymbol} from "@chemdraft/analysis-core";
 
 const WIDTH = 520;
 const HEIGHT = 190;
@@ -20,13 +20,6 @@ const PADDING = { top: 10, right: 12, bottom: 30, left: 42 };
 const PLOT_WIDTH = WIDTH - PADDING.left - PADDING.right;
 const PLOT_HEIGHT = HEIGHT - PADDING.top - PADDING.bottom;
 
-function unitSymbol(id: string): string {
-  try {
-    return unitDefinition(id as never).symbol;
-  } catch {
-    return "";
-  }
-}
 
 export function IsotopeSpectrum({ section }: { section: ReportSpectrumSection }) {
   const decimals = section.positionDecimals ?? 5;

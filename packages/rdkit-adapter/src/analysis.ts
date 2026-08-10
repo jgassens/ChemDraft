@@ -116,6 +116,15 @@ import {
 } from "./ionization";
 import { macroscopicApplies, macroscopicFromSites } from "./protonation";
 import type { PkaMolecularGraph } from "./pkaModel";
+// Re-exported so the barrel and every existing importer keep working; it LIVES in its own module so
+// `constants.ts` can offer it without the engine. See that file for why the split exists.
+import { sourceInterpretation } from "./sourceInterpretation";
+
+export { sourceInterpretation };
+// The corpus size is read from the shipped artifact, never typed here. The decline messages quote it
+// to the user, and a hand-typed count drifts the moment the corpus is regenerated — which is exactly
+// what happened: three call sites still said 7,053 after the corpus reached 12,096.
+import { PKA_GNN_TRAINING } from "./pkaGnn";
 import {
   PINNED_ISOSPEC_VERSION,
   PINNED_ISOSPEC_WASM_SHA256,
@@ -348,29 +357,6 @@ export function resolveIonComponentMasses(module: AnalysisModule): ReadonlyMap<s
   return masses;
 }
 
-/** The source interpretation: what the user drew, sanitised but not derived. */
-export function sourceInterpretation(format: string, value: string): MolecularInterpretation {
-  const sourceHash = hashSource(format, value);
-  const policy = {
-    id: SOURCE_INTERPRETATION_ID,
-    sourceHash,
-    componentPolicy: "whole-input" as const,
-    explicitHydrogenPolicy: "as-drawn — implicit hydrogens stay implicit, explicit ones stay explicit",
-    isotopePolicy: "preserve-labels",
-    // Stated rather than left implicit, which is what a tautomer-sensitive method requires before it
-    // may run (§1). "as-drawn" is the honest description: no tautomer standardisation is applied, so
-    // the keto and enol forms of acetylacetone are analysed as the two different molecules they are.
-    // Declaring it does not weaken the guarantee — it is the guarantee, made checkable.
-    tautomerPolicy: "as-drawn — no tautomer standardisation; the drawn form is the analysed form",
-    aromaticityModel: "rdkit-default",
-    transformations: []
-  };
-  return {
-    ...policy,
-    label: "as drawn",
-    interpretationHash: hashInterpretation(policy)
-  };
-}
 
 function warning(
   code: string,
@@ -485,9 +471,10 @@ function declineForElements(context: ResultContext, outside: string[]): Analysis
 function declineForComponents(context: ResultContext, componentCount: number): AnalysisResult {
   const message =
     `This structure is ${componentCount} separate components, and a pKa belongs to one species. ` +
-    "Zero of the model's 7,053 training labels is multi-component, and the descriptors it reads " +
-    "(mass, polar surface area, logP, charge) are computed over everything drawn — so a counterion " +
-    "or a second molecule shifts the answer without appearing in it.";
+    `Zero of the model's ${PKA_GNN_TRAINING.samples.toLocaleString("en-US")} training labels is ` +
+    "multi-component, and the descriptors it reads (mass, polar surface area, logP, charge) are " +
+    "computed over everything drawn — so a counterion or a second molecule shifts the answer " +
+    "without appearing in it.";
   const base = resultBase(context);
   return {
     ...base,
@@ -517,21 +504,67 @@ function failedIdentifier(context: ResultContext, identifierType: "inchi" | "inc
   };
 }
 
-export interface RdkitAnalysisEngine {
-  version: string;
-  contracts: MethodContract[];
-  registry: MethodRegistry;
+/**
+ * A method that threw, reported as itself rather than as the end of the run.
+ *
+ * `failed`, deliberately, and not one of the decline statuses: every decline in this engine is a
+ * considered statement about the chemistry, and an exception is not one of those. It is the engine
+ * going wrong, the reader should be able to tell the difference, and `aggregateStatus` ranks it so the
+ * run says something went wrong too.
+ */
+function failedMethod(contract: MethodContract, context: DerivedContext, error: unknown): AnalysisResult {
+  const message = error instanceof Error ? error.message : String(error);
+  const base = resultBase({
+    contract,
+    interpretation: context.interpretation,
+    composition: context.composition
+  });
+  return {
+    ...base,
+    kind: "scalar",
+    status: "failed",
+    value: null,
+    unit: contract.unit ?? "dimensionless",
+    applicability: { status: "undetermined", reasons: [message], unsupportedFeatures: [] },
+    warnings: [
+      warning(
+        "method.threw",
+        `${contract.publicName} could not be computed: ${message}`,
+        "error",
+        [base.id]
+      )
+    ]
+  };
 }
 
-/** Build the registry against the live engine so a rebuilt artifact flows into every cache key. */
-export async function rdkitAnalysisEngine(): Promise<RdkitAnalysisEngine> {
-  const module = await ensureRdkit();
-  const version = typeof module.version === "function" ? module.version() : PINNED_RDKIT_VERSION;
-  const contracts = rdkitMethodContracts(version);
-  const registry = new MethodRegistry();
-  for (const contract of contracts) registry.register(contract);
-  return { version, contracts, registry };
+/**
+ * The identifier does not exist for this structure, which is not the same as the attempt going wrong.
+ *
+ * `failed` means something broke and the number is unknown; `unsupported` means the standard has no
+ * representation for what was drawn. InChI has none for a dummy atom, so `*c1ccccc1` — a structure
+ * RDKit parses without complaint and every other method scores happily — should report a capability
+ * gap and leave the run's status alone. Filing it as `failed` dragged the whole run to `failed` and
+ * told the reader something had broken when nothing had. §8b's decline-versus-failure line.
+ */
+function unsupportedIdentifier(
+  context: ResultContext,
+  identifierType: "inchi" | "inchikey" | "canonical-smiles",
+  reason: string,
+  unsupportedFeatures: string[] = []
+): AnalysisResult {
+  const base = resultBase(context);
+  return {
+    ...base,
+    kind: "identifier",
+    identifierType,
+    status: "unsupported",
+    value: null,
+    applicability: { status: "out-of-domain", reasons: [reason], unsupportedFeatures },
+    warnings: [warning(`identifier.${identifierType}_unavailable`, reason, "info", [base.id])]
+  };
 }
+
+
 
 /** CIP descriptors as RDKit perceived them, plus a note for centres the drawing left unassigned. */
 export function stereochemistryLabels(stereoTagsJson: string, unspecifiedCentres: number): string[] {
@@ -736,7 +769,12 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         [
           warning(
             "structure.too_many_atoms",
-            `The structure has ${mol.get_num_atoms()} heavy atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
+            // "atoms", not "heavy atoms". `get_num_atoms()` counts EXPLICIT hydrogens too, so a
+            // molfile that writes its hydrogens out is measured on a different scale from the SMILES
+            // for the same molecule — and the message named the scale it was not using. The guard is a
+            // work budget, so counting what the engine will actually process is right; only the word
+            // was wrong.
+            `The structure has ${mol.get_num_atoms()} atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
             "warning"
           )
         ]
@@ -763,6 +801,24 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     }
     const results: AnalysisResult[] = [];
     const extraWarnings: AnalysisWarning[] = [];
+    // A method id that matches no contract used to vanish silently, so a caller's typo produced a run
+    // missing a method with nothing anywhere to say so — and `methodIds` is exactly the surface a
+    // caller uses when they care which methods ran.
+    if (wanted) {
+      const known = new Set(contracts.map((contract) => contract.id));
+      const unknown = [...wanted].filter((id) => !known.has(id));
+      if (unknown.length > 0) {
+        extraWarnings.push(
+          warning(
+            "request.unknown_method",
+            `No method is registered for ${unknown.join(", ")}, so ${
+              unknown.length === 1 ? "it was" : "they were"
+            } not computed.`,
+            "warning"
+          )
+        );
+      }
+    }
     // Computed on first use and reused across all four Joback properties: 41 SMARTS patterns is the
     // expensive part, and a run that asks for none of them pays nothing.
     let jobackFragmentation: JobackFragmentation | undefined;
@@ -786,6 +842,22 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
     }
 
     for (const contract of selected) {
+      // ONE METHOD'S EXCEPTION MUST NOT COST THE OTHER SIXTY-ONE.
+      //
+      // Every branch below can throw — a WASM abort, a SMARTS the build cannot compile, a `RangeError`
+      // out of a large envelope — and an uncaught throw here abandoned the whole run: a user who drew
+      // one structure got nothing rather than sixty-one answers and one decline. The declines this
+      // codebase is careful about are all deliberate; this is the accidental kind, and it deserves the
+      // same treatment. A method that throws is reported as `failed` WITH its message, which is
+      // honestly different from a decline and is a state the report already renders.
+      try {
+        runOneMethod(contract);
+      } catch (error) {
+        results.push(failedMethod(contract, primary, error));
+      }
+    }
+
+    function runOneMethod(contract: MethodContract): void {
       // Runs the §1 tautomer-policy check before anything touches the engine.
       registry.assertRunnable(contract.id, primary.interpretation);
 
@@ -795,13 +867,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       // it says so itself when an element is missing).
       if (contract.id === ISOTOPE_ENVELOPE_METHOD_ID) {
         results.push(envelopeResultFor(contract, primary, isospec));
-        continue;
+        return;
       }
 
       if (JOBACK_METHOD_IDS.has(contract.id)) {
         jobackFragmentation ??= fragmentationFor(primary, module);
         results.push(jobackResultFor(contract, primary, jobackFragmentation));
-        continue;
+        return;
       }
 
       // Every method's own computation, so the fallback ladder below can re-run whichever one declined.
@@ -842,7 +914,8 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
 
       const outside = elementsOutsideParameterization(contract, primary.composition.presentElements);
       // Multi-component input is out of domain for pKa specifically, and the evidence is the same shape
-      // as the element rule: ZERO of the 7,053 training labels has more than one component. The element
+      // as the element rule: ZERO of the 12,096 training labels has more than one component — re-counted
+      // over the current four-source corpus, not carried over from the 7,053-row one. The element
       // check does not catch it — `CCN.Cl` and `Oc1ccccc1.CC(=O)O` are all in-set elements — and the
       // whole-molecule descriptors the model is fed (mass, TPSA, logP, charge) include every component,
       // so co-drawn phenol and acetic acid returned a fabricated two-step ladder for a species that does
@@ -857,7 +930,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
 
       if (outside.length === 0 && multiComponent === 0) {
         results.push(computeFor(primary));
-        continue;
+        return;
       }
 
       // Declined as given. Keep that result — nothing is silently substituted — and then look for an
@@ -866,7 +939,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       results.push(
         outside.length > 0 ? declineForElements(context, outside) : declineForComponents(context, multiComponent)
       );
-      if (primary !== sourceContext) continue;
+      if (primary !== sourceContext) return;
 
       for (const fallbackId of fallbacks) {
         const candidate = derive(fallbackId);
@@ -880,7 +953,11 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         }
         registry.assertRunnable(contract.id, candidate.interpretation);
         results.push(
-          withDerivationNotice(computeFor(candidate), candidate.interpretation, outside)
+          withDerivationNotice(
+            computeFor(candidate),
+            candidate.interpretation,
+            derivationReason(outside, multiComponent)
+          )
         );
         break;
       }
@@ -971,17 +1048,25 @@ export const JOBACK_METHOD_IDS: ReadonlySet<string> = new Set([
  */
 function fragmentationFor(context: DerivedContext, module: RdkitMinimalModule): JobackFragmentation {
   const json = JSON.parse(context.mol.get_json()) as {
-    molecules: { atoms: { impHs?: number }[] }[];
-    defaults?: { atom?: { impHs?: number } };
+    molecules: { atoms: { impHs?: number; chg?: number }[] }[];
+    defaults?: { atom?: { impHs?: number; chg?: number } };
   };
   const atoms = json.molecules[0]?.atoms ?? [];
   const defaultImpHs = json.defaults?.atom?.impHs ?? 0;
+  const defaultCharge = json.defaults?.atom?.chg ?? 0;
   const totalAtoms = atoms.length + atoms.reduce((sum, atom) => sum + (atom.impHs ?? defaultImpHs), 0);
+  // Per-atom formal charge, read from `get_json()` rather than re-derived — §8b. The fragmentation
+  // needs it to keep neutral-atom patterns off charged atoms; without it pyridinium matched the
+  // pyrrole-type `>NH (ring)` and every Joback property came back in-domain.
+  const formalCharges = new Map<number, number>(
+    atoms.map((atom, index) => [index, atom.chg ?? defaultCharge])
+  );
   return fragmentForJoback(
     module as unknown as Parameters<typeof fragmentForJoback>[0],
     context.mol as unknown as Parameters<typeof fragmentForJoback>[1],
     atoms.map((_, index) => index),
-    totalAtoms
+    totalAtoms,
+    formalCharges
   );
 }
 
@@ -1211,6 +1296,7 @@ function ionizationResultFor(
         ...scan.unassessed,
         {
           atomIndices: unsupportedBasicity,
+          feature: "protonated carbonyl or thiocarbonyl",
           reason:
             "A protonated carbonyl or thiocarbonyl, as drawn. No tabulated site type covers the " +
             "basicity of a C=O or a C=S, so this method cannot value that rung and reports it rather " +
@@ -1344,7 +1430,11 @@ function ionizationResultFor(
     applicability: {
       status: scan.unassessed.length > 0 ? "borderline" : "in-domain",
       reasons: scan.unassessed.map((entry) => entry.reason),
-      unsupportedFeatures: scan.unassessed.length > 0 ? ["metal-adjacent site"] : []
+      // Each withheld site names its own reason. This used to be the literal `["metal-adjacent site"]`
+      // whenever ANYTHING was withheld, so a fully dissociated sulfonic acid, an unactivated amine and
+      // a protonless nitrogen were all reported as being next to a metal the molecule did not contain
+      // — a fabricated provenance tag on an otherwise honest decline.
+      unsupportedFeatures: [...new Set(scan.unassessed.map((entry) => entry.feature))]
     },
     warnings: notes
   };
@@ -1378,8 +1468,7 @@ function envelopeResultFor(
       // Already split so `[13C]` tallies apart from `C`, which is exactly the shape the explicit-isotope
       // path needs — the envelope does not re-derive it.
       elements: context.composition.elements
-    }),
-    DEFAULT_ENVELOPE_RELATIVE_THRESHOLD
+    })
   );
 }
 
@@ -1417,7 +1506,7 @@ function withProtomerNotice(
 function withDerivationNotice(
   result: AnalysisResult,
   interpretation: MolecularInterpretation,
-  forcedBy: readonly string[]
+  forcedBy: string
 ): AnalysisResult {
   return {
     ...result,
@@ -1425,13 +1514,31 @@ function withDerivationNotice(
       ...result.warnings,
       warning(
         "interpretation.derived",
-        `Computed on ${describeInterpretation(interpretation)}, because the structure as drawn contains ` +
-          `${forcedBy.join(", ")}, which this method has no parameters for.`,
+        `Computed on ${describeInterpretation(interpretation)}, because ${forcedBy}.`,
         "info",
         [result.id]
       )
     ]
   };
+}
+
+/**
+ * Why the method had to leave the structure as drawn — the same reason the decline beside it gives.
+ *
+ * This used to be built from the unparameterised-element list alone, and the multi-component path
+ * reached it with that list guaranteed EMPTY: the branch above only declines for components when
+ * `outside.length === 0`. So every co-drawn organic pair produced "because the structure as drawn
+ * contains , which this method has no parameters for" — a sentence with a hole in it, naming the
+ * wrong reason, on the most ordinary input there is (`Oc1ccccc1.CC(=O)O`).
+ */
+function derivationReason(outside: readonly string[], componentCount: number): string {
+  if (outside.length > 0) {
+    return `the structure as drawn contains ${outside.join(", ")}, which this method has no parameters for`;
+  }
+  return (
+    `the structure as drawn is ${componentCount} separate components, and this method describes ` +
+    "one species"
+  );
 }
 
 /**
@@ -1731,7 +1838,14 @@ function computeResult(
         return failedIdentifier(context, "inchi", error instanceof Error ? error.message : String(error));
       }
       if (!inchi.startsWith("InChI=")) {
-        return failedIdentifier(context, "inchi", "The InChI library returned no identifier for this structure.");
+        return unsupportedIdentifier(
+          context,
+          "inchi",
+          "The InChI standard has no representation for this structure, so no identifier was " +
+            "generated. Dummy atoms and attachment points are the usual reason: InChI describes a " +
+            "definite set of elements, and an R-group is not one.",
+          context.composition.presentElements.includes("*") ? ["dummy atom"] : []
+        );
       }
       return {
         ...base,
@@ -1754,7 +1868,12 @@ function computeResult(
         return failedIdentifier(context, "inchikey", error instanceof Error ? error.message : String(error));
       }
       if (!key) {
-        return failedIdentifier(context, "inchikey", "No InChI was generated, so no key could be derived.");
+        return unsupportedIdentifier(
+          context,
+          "inchikey",
+          "No InChI was generated for this structure, so there is nothing to hash into a key.",
+          context.composition.presentElements.includes("*") ? ["dummy atom"] : []
+        );
       }
       return {
         ...base,
@@ -1839,14 +1958,3 @@ function computeResult(
   }
 }
 
-/** Convenience for the session cache Phase 4 will own: the §1 key for one method in one run. */
-export function cacheKeyFor(run: AnalysisRun, contract: MethodContract): string {
-  return analysisCacheKey({
-    sourceHash: run.sourceHash,
-    interpretationHash: run.interpretations[0]?.interpretationHash ?? "",
-    methodId: contract.id,
-    methodVersion: contract.version,
-    parameters: contract.implementation.parameters,
-    engineHashes: [PINNED_RDKIT_WASM_SHA256]
-  });
-}

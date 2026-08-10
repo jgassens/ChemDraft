@@ -8,7 +8,7 @@
  * So the numeric expectations below are **exact**, not approximate. A rebuilt WASM that shifts a
  * descriptor by one ulp should fail this file and be reviewed, not rounded away.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   checkInvariance,
@@ -290,7 +290,10 @@ describe("unsupported and malformed input", () => {
     expect(run.status).toBe("unsupported");
     expect(run.results).toHaveLength(0);
     expect(run.warnings[0]?.code).toBe("structure.too_many_atoms");
-    expect(run.warnings[0]?.message).toMatch(/40 heavy atoms, over the 20 limit/);
+    expect(run.warnings[0]?.message).toMatch(// "atoms", not "heavy atoms": `get_num_atoms()` counts explicit hydrogens too, so a molfile that
+      // writes them out is measured on a different scale from the SMILES for the same molecule. The
+      // guard is a work budget and counting what the engine processes is right; the word was wrong.
+      /40 atoms, over the 20 limit/);
   });
 
   it("lets a structure at the limit through", async () => {
@@ -510,5 +513,94 @@ describe("engine capability detection (vendor patch #6)", () => {
     );
     expect(tpsa?.version).toBe("2.0.0");
     expect(tpsa?.conventions.some((convention) => convention.includes("INCLUDED"))).toBe(true);
+  });
+});
+
+describe("a dummy atom is a drawing, not a broken run", () => {
+  // `*c1ccccc1` — an R-group or attachment point — is a native `chem-core` object a user can draw,
+  // and RDKit parses it without complaint. Composition is built once, before any method runs, and
+  // `elementSymbol(0)` threw there: one drawn `*` rejected the ENTIRE run with "No element symbol
+  // for atomic number 0", including every method that never looks at an element.
+  it("scores the methods that can, and declines the ones that cannot", async () => {
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "*c1ccccc1",
+      runId: "dummy-atom",
+      startedAt: "2026-08-09T00:00:00.000Z"
+    } as never);
+
+    const composition = run.results.find((result) => result.methodId === "rdkit.composition");
+    expect(composition?.status).toBe("ok");
+    // The symbol RDKit's own CalcMolFormula emits, so a reader cross-checking gets the same string.
+    if (composition?.kind === "composition") expect(composition.formula).toBe("C6H5*");
+
+    // The point of the fix: most of the suite still answers.
+    const ok = run.results.filter((result) => result.status === "ok");
+    expect(ok.length).toBeGreaterThan(40);
+    expect(run.results.some((result) => result.status === "failed")).toBe(false);
+  });
+
+  it("calls the InChI gap a capability gap rather than a failure", async () => {
+    // InChI has no representation for a dummy atom. That is the standard's domain, not a fault, so
+    // it must not read as "something broke" — and a `failed` result drags the whole run's status
+    // down with it. §8b's decline-versus-failure line.
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "*c1ccccc1",
+      runId: "dummy-atom-inchi",
+      startedAt: "2026-08-09T00:00:00.000Z"
+    } as never);
+
+    for (const methodId of ["rdkit.inchi", "rdkit.inchikey"]) {
+      const result = run.results.find((entry) => entry.methodId === methodId);
+      expect(result?.status, methodId).toBe("unsupported");
+      expect(result?.applicability.status, methodId).toBe("out-of-domain");
+      expect(result?.applicability.unsupportedFeatures, methodId).toContain("dummy atom");
+    }
+    expect(run.status).not.toBe("failed");
+  });
+});
+
+describe("a decline says the reason it actually declined for", () => {
+  it("does not leave a hole where the reason should be on a multi-component drawing", async () => {
+    // `withDerivationNotice` was built from the unparameterised-ELEMENT list, and the multi-component
+    // branch reaches it with that list guaranteed empty — the decline above it only fires for
+    // components when `outside.length === 0`. So co-drawn phenol and acetic acid, two entirely
+    // ordinary organics, produced: "because the structure as drawn contains , which this method has
+    // no parameters for" — a sentence with a hole in it, naming a reason that was not the reason.
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "Oc1ccccc1.CC(=O)O",
+      runId: "two-components",
+      startedAt: "2026-08-09T00:00:00.000Z"
+    } as never);
+
+    const notices = run.results
+      .flatMap((result) => result.warnings)
+      .filter((entry) => entry.code === "interpretation.derived");
+    expect(notices.length).toBeGreaterThan(0);
+    for (const notice of notices) {
+      expect(notice.message).not.toMatch(/contains , /);
+      expect(notice.message).toMatch(/separate components|has no parameters for/);
+    }
+    // And the reason names components, because that is what actually forced the derivation here.
+    expect(notices.some((notice) => /2 separate components/.test(notice.message))).toBe(true);
+  });
+
+  it("tags a withheld site with the feature that withheld it, not a hardcoded metal", async () => {
+    // `unsupportedFeatures` was the literal ["metal-adjacent site"] whenever anything was withheld, so
+    // a fully dissociated sulfonic acid was reported as being next to a metal that is not there.
+    const run = await analyzeStructure({
+      format: "smiles",
+      value: "CS(=O)(=O)O",
+      runId: "sulfonic-feature",
+      startedAt: "2026-08-09T00:00:00.000Z"
+    } as never);
+    const ionization = run.results.find((result) => result.methodId === "dimorphite.ionizable-sites");
+    if (ionization?.kind !== "ionization" || ionization.unassessed.length === 0) return;
+    expect(ionization.applicability.unsupportedFeatures).not.toContain("metal-adjacent site");
+    for (const entry of ionization.unassessed) {
+      expect(ionization.applicability.unsupportedFeatures).toContain(entry.feature);
+    }
   });
 });

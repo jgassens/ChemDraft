@@ -27,6 +27,7 @@ const report: MassReport = {
 /** What the host returns for a neutral structure it could compute. */
 const ENVELOPE: PluginIsotopeEnvelopeResult = {
   available: true,
+  positionUnit: "dalton",
   peaks: [
     { mass: 78.04695, relativeIntensity: 100 },
     { mass: 79.05031, relativeIntensity: 6.49 }
@@ -67,6 +68,25 @@ describe("composeMassReport", () => {
 
     expect(ionTable && ionTable.kind === "table" && ionTable.rows).toEqual([["[M]+", "74.0964", "+1"]]);
     expect(note && note.kind === "text" && note.body).toContain("neutral-precursor adducts are omitted");
+  });
+
+  it("labels a charged structure's axis m/z, because that is what the host computed", () => {
+    // The engine divides by |charge| and reports `positionUnit: "thomson"`. This plugin used to
+    // hardcode "Mass (Da)", so a drawn dication of 174.21 Da rendered as 87.10 under a daltons
+    // header, with 0.5 spacing between isotopologues and nothing on screen to say why.
+    const charged: PluginIsotopeEnvelopeResult = {
+      ...ENVELOPE,
+      positionUnit: "thomson",
+      peaks: [
+        { mass: 87.10425, relativeIntensity: 100 },
+        { mass: 87.60593, relativeIntensity: 10.91 }
+      ]
+    };
+    const panel = composeMassReport(source, report, charged);
+    const table = panel.sections.find((section) => section.kind === "table" && section.title?.startsWith("Isotope"));
+
+    expect(table && table.kind === "table" && table.columns).toEqual(["m/z", "Rel. intensity"]);
+    expect(table && table.kind === "table" && table.rows[0]).toEqual(["87.10425", "100.00 %"]);
   });
 
   it("renders the host's envelope, naming the engine that produced it", () => {

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { migrateLegacyId, migrateLegacyToolsetIds } from "./legacyToolsetIds";
+import { LEGACY_TOOLSET_ID_MIGRATIONS, migrateLegacyId, migrateLegacyToolsetIds } from "./legacyToolsetIds";
 
 describe("migrateLegacyId", () => {
   it("maps every renamed id", () => {
@@ -13,6 +13,17 @@ describe("migrateLegacyId", () => {
     expect(migrateLegacyId("widget.core.moleculeInspector")).toBe("widget.core.drawnStructureSettings");
     expect(migrateLegacyId("moleculeInspector.template.import")).toBe("drawnStructureSettings.template.import");
     expect(migrateLegacyId("moleculeInspector.template.export")).toBe("drawnStructureSettings.template.export");
+    // The group-id entry, implemented and unpinned. A test called "maps every renamed id" that checks
+    // five of six is a test whose name is the assertion it does not make.
+    expect(migrateLegacyId("core.moleculeInspector.toggle")).toBe("core.drawnStructureSettings.toggle");
+  });
+
+  it("pins EVERY entry in the map, so the name of the test above stays true", () => {
+    // Derived from the map rather than listed, so adding a rename without a case here is impossible.
+    for (const [legacy, current] of Object.entries(LEGACY_TOOLSET_ID_MIGRATIONS)) {
+      expect(migrateLegacyId(legacy), legacy).toBe(current);
+    }
+    expect(Object.keys(LEGACY_TOOLSET_ID_MIGRATIONS).length).toBeGreaterThanOrEqual(6);
   });
 
   it("leaves every other id alone", () => {
