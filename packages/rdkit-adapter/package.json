@@ -17,6 +17,10 @@
       "types": "./src/adapter.ts",
       "default": "./src/adapter.ts"
     },
+    "./identifiers": {
+      "types": "./src/identifiers.ts",
+      "default": "./src/identifiers.ts"
+    },
     "./constants": {
       "types": "./src/constants.ts",
       "default": "./src/constants.ts"

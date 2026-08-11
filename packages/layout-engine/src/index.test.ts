@@ -1110,11 +1110,15 @@ describe("layout-engine page SVG planner", () => {
       [
         "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|120|160|157|160",
         "line|mol_snapshot|molecule|bond_001|bond_001|native-bond-line native-bond-double|124.5|164.8|152.5|164.8",
+        "text|mol_snapshot|molecule|native-atom-label-halo|0|0|middle",
+        "text|mol_snapshot|molecule|native-atom-label-halo|5.8500000000000005|-7.199999999999999|start",
         "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
         "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
         "text|text_snapshot|text|220|178|start",
         "tspan|text_snapshot|text|220|178|start",
-        "text|charge_snapshot|electron-mark|329|169|middle",
+        "circle|charge_snapshot|electron-mark",
+        "line|charge_snapshot|electron-mark|325.832|169|332.168|169",
+        "line|charge_snapshot|electron-mark|329|165.832|329|172.168",
       ]
     `);
   });
@@ -1281,13 +1285,16 @@ describe("layout-engine page SVG planner", () => {
       "font-weight": 400,
       "font-style": "normal"
     });
-    // Per-atom backgrounds render as the label's glyph-hugging halo stroke, not an opaque rect:
-    // the O override colors its halo (width tracks its 20px font), and N's "transparent"
-    // background opts out of the knockout entirely.
-    const oxygenAttrs = labelGroups.find((fragment) => fragment.attrs["data-atom-label"] === "O")?.attrs;
-    expect(oxygenAttrs).toMatchObject({ stroke: "#fff0c2", "paint-order": "stroke" });
-    expect(Number(oxygenAttrs?.["stroke-width"])).toBeCloseTo(20 * 0.3, 5);
-    expect(labelGroups.find((fragment) => fragment.attrs["data-atom-label"] === "N")?.attrs.stroke).toBeUndefined();
+    // Per-atom backgrounds render as the label's glyph-hugging halo: a stroked text copy painted
+    // UNDER the fill copy (not paint-order, which Illustrator ignores and paints over the fill).
+    // The O override colors its halo (width tracks its 20px font); N's "transparent" background
+    // opts out of the knockout entirely.
+    const haloRuns = fragments.filter((fragment) => fragment.attrs.class === "native-atom-label-halo");
+    const oxygenHalo = haloRuns.find((fragment) => fragment.attrs.stroke === "#fff0c2");
+    expect(oxygenHalo).toBeDefined();
+    expect(Number(oxygenHalo?.attrs["stroke-width"])).toBeCloseTo(20 * 0.3, 5);
+    expect(haloRuns).toHaveLength(1); // N has no halo copy at all
+    expect(labelGroups.every((fragment) => fragment.attrs["paint-order"] === undefined)).toBe(true);
     expect(fragments.filter((fragment) => fragment.attrs.class === "native-atom-label-background")).toHaveLength(0);
   });
 

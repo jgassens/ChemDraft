@@ -4935,10 +4935,71 @@ textarea:focus-visible,
   text-align: left;
 }
 
+.object-context-menu-submenu {
+  position: relative;
+}
+
+.object-context-menu-submenu-trigger {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  gap: 12px;
+}
+
+.object-context-menu-submenu-chevron {
+  color: var(--cd-text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.object-context-menu-flyout {
+  position: absolute;
+  min-width: 168px;
+}
+
 .object-context-menu-item:hover,
 .object-context-menu-item:focus-visible {
   outline: none;
   background: var(--cd-bg-hover);
+}
+
+.mechanism-arrow-object {
+  pointer-events: none;
+}
+
+.mechanism-arrow-handle {
+  position: absolute;
+  z-index: 6;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 1.5px solid var(--cd-accent-strong);
+  border-radius: 50%;
+  background: var(--cd-bg-panel);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.mechanism-arrow-handle:active {
+  cursor: grabbing;
+  background: var(--cd-accent-focus-soft);
+}
+
+.mechanism-arrow-preview-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+}
+
+.mechanism-arrow-preview-path {
+  fill: none;
+  stroke: var(--cd-accent-strong);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 4;
+  stroke-linecap: round;
 }
 
 .charge-mark-object {

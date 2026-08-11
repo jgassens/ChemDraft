@@ -2114,7 +2114,9 @@ describe("graphic path direct editing interactions", () => {
     const selectedId = document.selection.objectIds[0] ?? "";
     expect(selectedId).not.toBe(hoveredId);
 
-    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.curvedArrow180" });
+    // The curved-arrow stamps are no longer activatable tools (the electron-push arrows replaced
+    // them), but imported arc-arrow graphics still exist — any surviving arrow tool hover-edits them.
+    await renderMainWindow(document, { initialActiveToolCommandId: "tool.art.reactionArrow" });
 
     await act(async () => {
       dispatchPointer(objectElement(hoveredId), "pointermove", { x: 260, y: 320 }, 41, 1, { buttons: 0 });

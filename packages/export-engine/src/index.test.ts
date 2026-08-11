@@ -250,7 +250,9 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain('data-object-type="electron-mark"');
     expect(result.contents).toContain('data-mark-kind="charge"');
     expect(result.contents).toContain('data-charge="-1"');
-    expect(result.contents).toContain(">-</text>");
+    // The anion draws as a circled minus (vector circle + bar), not a text glyph.
+    expect(result.contents).toContain('data-charge-style="circled"');
+    expect(result.contents).toContain("<circle");
   });
 
   it("exports styled native text objects with text style metadata", () => {

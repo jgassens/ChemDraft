@@ -228,6 +228,21 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         separator(),
         command("clipboard.cut", "Cut", { accelerator: "Cmd+X", enabled: context.hasSelection, nativePredefined: true }),
         command("clipboard.copy", "Copy", { accelerator: "Cmd+C", enabled: context.hasSelection, nativePredefined: true }),
+        {
+          kind: "submenu",
+          id: "edit.copyAs",
+          label: "Copy As",
+          items: [
+            command("clipboard.copyAs.smiles", "SMILES", { accelerator: "Alt+Cmd+C" }),
+            command("clipboard.copyAs.inchi", "InChI"),
+            command("clipboard.copyAs.inchiKey", "InChI Key"),
+            command("clipboard.copyAs.cdxml", "CDXML Text", { accelerator: "Cmd+D" }),
+            command("clipboard.copyAs.mol", "MOL Text", { accelerator: "Alt+Cmd+O" }),
+            command("clipboard.copyAs.molV2000", "MOL V2000 Text", { accelerator: "Alt+Shift+Cmd+O" }),
+            command("clipboard.copyAs.svg", "SVG"),
+            command("clipboard.copyAs.png", "PNG")
+          ]
+        },
         command("clipboard.paste", "Paste", { accelerator: "Cmd+V", nativePredefined: true }),
         separator(),
         command("layout.group", "Group", { accelerator: "Cmd+G" }),

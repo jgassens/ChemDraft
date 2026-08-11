@@ -5,6 +5,7 @@ export interface NativeRasterExportOptions {
   background?: string;
   jpegQuality?: number;
   maxDimensionPx?: number;
+  pixelsPerInch?: number;
 }
 
 export interface NativeRasterExportWarning {
@@ -40,7 +41,8 @@ export async function rasterizeSvgNative(
       scale: options.scale,
       background: options.background,
       jpegQuality: options.jpegQuality,
-      maxDimensionPx: options.maxDimensionPx
+      maxDimensionPx: options.maxDimensionPx,
+      pixelsPerInch: options.pixelsPerInch
     }
   });
 

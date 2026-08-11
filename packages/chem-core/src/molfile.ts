@@ -135,3 +135,49 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   lines.push("M  END");
   return lines.join("\n") + "\n";
 }
+
+/**
+ * V3000 (extended) molblock. No 999-atom ceiling and explicit per-atom CHG fields, so it is the
+ * "MOL Text" flavor Copy As offers alongside the classic V2000 form.
+ */
+export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWriteOptions = {}): string {
+  const ySign = options.fromDocFrame ? -1 : 1;
+  const atoms = mol.atoms;
+  const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based
+  const writableBonds = mol.bonds.filter(
+    (bond) => atomIndex.has(bond.fromAtomId) && atomIndex.has(bond.toAtomId)
+  );
+  const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
+
+  const lines: string[] = [
+    "",
+    "  ChemDraft",
+    "",
+    "  0  0  0  0  0  0  0  0  0  0999 V3000",
+    "M  V30 BEGIN CTAB",
+    `M  V30 COUNTS ${atoms.length} ${writableBonds.length} 0 0 ${hasStereo ? 1 : 0}`,
+    "M  V30 BEGIN ATOM"
+  ];
+
+  atoms.forEach((atom, index) => {
+    const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
+    lines.push(
+      `M  V30 ${index + 1} ${atom.element} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}`
+    );
+  });
+
+  lines.push("M  V30 END ATOM", "M  V30 BEGIN BOND");
+  writableBonds.forEach((bond, index) => {
+    const stereo = wedgeStereoFlag(bond);
+    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : "";
+    lines.push(
+      `M  V30 ${index + 1} ${BOND_ORDER_CODE[bond.order]} ${atomIndex.get(bond.fromAtomId)!} ${atomIndex.get(bond.toAtomId)!}${config}`
+    );
+  });
+  lines.push("M  V30 END BOND", "M  V30 END CTAB", "M  END");
+  return lines.join("\n") + "\n";
+}
+
+function round4(value: number): string {
+  return Number(value.toFixed(4)).toString();
+}

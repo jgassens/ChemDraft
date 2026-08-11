@@ -42,6 +42,7 @@ import {
   objectStyleActions,
   pageOrientationActions,
   pageSizeActions,
+  allPaletteCommands,
   paletteGroups,
   structureCleanup3dCommandId,
   structureCleanupCommandId,
@@ -1606,6 +1607,22 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
   });
 
+  it("routes desktop copy and cut through the native pasteboard, not the WebKit DataTransfer", () => {
+    // A DataTransfer custom flavor never leaves the webview as that flavor on macOS — WKWebView
+    // serializes it into its private, origin-gated com.apple.WebKit.custom-pasteboard-data blob,
+    // which a second ChemDraft instance cannot read (and whose bytes must never be treated as
+    // text). The desktop runtime must therefore write the selection natively.
+    const handlerStart = mainWindowSource.indexOf("const writeSelectionClipboardEvent");
+    const handlerEnd = mainWindowSource.indexOf("const handleCopy", handlerStart);
+    expect(handlerStart).toBeGreaterThan(-1);
+    const handlerSource = mainWindowSource.slice(handlerStart, handlerEnd);
+    expect(handlerSource).toContain("if (isDesktopRuntime())");
+    expect(handlerSource).toContain("void copySelectionToClipboard(mode)");
+    expect(handlerSource.indexOf("isDesktopRuntime()")).toBeLessThan(
+      handlerSource.indexOf("writeClipboardDataTransfer")
+    );
+  });
+
   it("copies a graphic-only ChemDraft selection with the payload in the private flavor only", () => {
     let document = insertNativeArtGraphicObject(createPhase4Document("Selection Clipboard"), { x: 120, y: 140 }, "tool.art.rect");
     document = insertNativeArtGraphicObject(document, { x: 220, y: 140 }, "tool.art.circle");
@@ -1976,8 +1993,15 @@ describe("ChemDraft desktop shell", () => {
       structureSpin3dCommandId,
       structureInteractive3dCommandId,
       structureCleanup3dCommandId,
+      "tool.charge",
       "tool.plus",
       "tool.minus",
+      "tool.plusPlain",
+      "tool.minusPlain",
+      "tool.radicalCation",
+      "tool.radicalAnion",
+      "tool.radical",
+      "tool.lonePair",
       "tool.dagger",
       "tool.symbol",
       "tool.symbol.degree",
@@ -2020,8 +2044,14 @@ describe("ChemDraft desktop shell", () => {
     expect(paletteGroups.flat().find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
       enabled: true
     });
-    expect(paletteGroups.flat().find((command) => command.id === "tool.plus")).toMatchObject({ enabled: true });
-    expect(paletteGroups.flat().find((command) => command.id === "tool.minus")).toMatchObject({ enabled: true });
+    // The charge symbols live behind one dropdown button; the individual tools surface as
+    // submenu-backed commands rather than top-level palette cells.
+    expect(paletteGroups.flat().find((command) => command.id === "tool.charge")).toMatchObject({ enabled: true });
+    const paletteCommandIds = new Set(allPaletteCommands().map((command) => command.id));
+    ["tool.plus", "tool.minus", "tool.plusPlain", "tool.minusPlain", "tool.radicalCation",
+      "tool.radicalAnion", "tool.radical", "tool.lonePair"].forEach((commandId) => {
+      expect(paletteCommandIds.has(commandId)).toBe(true);
+    });
     expect(paletteGroups.flat().find((command) => command.id === "tool.wedgeBond")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.benzene")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === "tool.eraser")).toMatchObject({ enabled: true });
@@ -3069,7 +3099,8 @@ describe("ChemDraft desktop shell", () => {
 
     // Retired command ids must be gone from the whole shell catalog, not just disabled.
     const retiredCommandIds = [
-      "tool.mechanismArrow",
+      // "tool.mechanismArrow" was retired as an unimplemented stub and later REINTRODUCED as the
+      // real electron-pushing arrow tool, so it is deliberately absent from this list.
       "tool.arrows",
       "tool.templateGrid",
       "tool.toolOptions",
@@ -4358,9 +4389,9 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain('data-structure="CO"');
-    // Heteroatom labels carry a glyph-hugging paper knockout (paint-order stroke) in place of the
-    // old opaque background rect.
-    expect(markup).toContain('paint-order="stroke"');
+    // Heteroatom labels carry a glyph-hugging paper knockout: a stroked halo text copy painted
+    // under the fill copy (paint-order is ignored by Illustrator-class SVG consumers).
+    expect(markup).toContain('class="native-atom-label-halo"');
     expect(markup).toContain('font-family="Arial, Helvetica, sans-serif"');
     expect(markup).toContain('data-atom-label="OH"');
     expect(markup).toContain('data-atom-label-run="normal"');

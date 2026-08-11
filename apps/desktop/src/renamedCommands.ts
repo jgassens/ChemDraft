@@ -21,7 +21,13 @@ export const RENAMED_COMMAND_IDS: Readonly<Record<string, string>> = {
   "tool.reactionArrow": "tool.art.reactionArrow",
   "tool.resonanceArrow": "tool.art.resonanceArrow",
   "tool.equilibriumArrow": "tool.art.equilibriumArrow",
-  "tool.retroArrow": "tool.art.retroArrow"
+  "tool.retroArrow": "tool.art.retroArrow",
+  // The stamp-style curved/fishhook art arrows were replaced by real electron-pushing arrows
+  // that anchor to atoms and charges (the art geometry stays for CDX-imported documents).
+  "tool.art.curvedArrow90": "tool.mechanismArrow",
+  "tool.art.curvedArrow180": "tool.mechanismArrow",
+  "tool.art.fishhookArrow": "tool.mechanismFishhook",
+  "tool.art.fishhookCurved": "tool.mechanismFishhook"
 };
 
 /**

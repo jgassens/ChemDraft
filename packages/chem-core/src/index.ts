@@ -210,4 +210,4 @@ export {
   type ViewMatrix
 } from "./perspective";
 
-export { moleculeToMolfileV2000, type MolfileWriteOptions } from "./molfile";
+export { moleculeToMolfileV2000, moleculeToMolfileV3000, type MolfileWriteOptions } from "./molfile";

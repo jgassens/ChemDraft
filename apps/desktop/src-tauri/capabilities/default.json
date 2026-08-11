@@ -41,6 +41,7 @@
     "allow-sync-plugin-menu-items",
     "allow-read-clipboard-payload",
     "allow-write-clipboard-text-items",
+    "allow-write-clipboard-image",
     "allow-toggle-spin3d-debugger-window",
     "allow-toggle-preferences-window",
     "allow-agent-bridge-status",
