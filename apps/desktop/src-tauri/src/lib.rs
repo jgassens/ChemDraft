@@ -1471,34 +1471,49 @@ fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
 }
 
 fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
-    let (big_endian, content) = if bytes.starts_with(&[0xfe, 0xff]) {
-        (true, &bytes[2..])
-    } else if bytes.starts_with(&[0xff, 0xfe]) {
-        (false, &bytes[2..])
+    if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        return decode_utf16_units(content, true);
+    }
+    if let Some(content) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        return decode_utf16_units(content, false);
+    }
+
+    // Without a BOM, only accept byte patterns real UTF-16 text actually has. Two shapes are
+    // legitimate: mostly-Latin/mixed text puts a null in nearly every unit, concentrated on one
+    // parity (that parity is the high-byte position, which tells us the endianness); mostly-CJK
+    // or other wide-script text puts a null in almost NONE of its units on either parity, since
+    // those code points' high bytes are non-zero — so a low null density on BOTH parities is just
+    // as real a signal as a lopsided one, it just can't tell us the endianness by itself. Binary
+    // blobs (plists, CDX, image headers) fall in neither bucket: they scatter a meaningful number
+    // of nulls across both parities in comparable amounts.
+    let pair_count = bytes.len() / 2;
+    if pair_count == 0 {
+        return None;
+    }
+    let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
+    let odd_nulls = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+    let (dominant, other, dominant_is_big_endian) = if even_nulls >= odd_nulls {
+        (even_nulls, odd_nulls, true)
     } else {
-        // Without a BOM, only accept the byte pattern real UTF-16 text actually has: the null
-        // high bytes concentrated on one parity. Mostly-Latin UTF-16 puts a null in nearly
-        // every unit; binary blobs (plists, CDX, image headers) scatter nulls across both
-        // parities, and decoding those fabricated CJK "text" out of arbitrary bytes.
-        let pair_count = bytes.len() / 2;
-        let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
-        let odd_nulls = bytes
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .filter(|byte| **byte == 0)
-            .count();
-        let (dominant, other, big_endian) = if even_nulls >= odd_nulls {
-            (even_nulls, odd_nulls, true)
-        } else {
-            (odd_nulls, even_nulls, false)
-        };
-        if pair_count == 0 || dominant * 2 < pair_count || other * 8 > pair_count {
-            return None;
-        }
-        (big_endian, bytes)
+        (odd_nulls, even_nulls, false)
     };
 
+    if dominant * 2 >= pair_count && other * 8 <= pair_count {
+        return decode_utf16_units(bytes, dominant_is_big_endian);
+    }
+    if (even_nulls + odd_nulls) * 8 <= pair_count {
+        // Nulls are too sparse on both sides to reveal which parity is the high byte from
+        // content alone. Byte-swapped CJK often decodes to SOME other real (non-control) script
+        // rather than failing outright, so "try both, take whichever passes" would silently
+        // prefer whichever order happens first even when it's wrong — try this platform's native
+        // order (macOS pasteboard UTF-16 without a BOM is little-endian) first, and only fall
+        // back to big-endian, which a non-native source could still have written.
+        return decode_utf16_units(bytes, false).or_else(|| decode_utf16_units(bytes, true));
+    }
+    None
+}
+
+fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
     if content.len() < 2 || content.len() % 2 != 0 {
         return None;
     }
@@ -4255,6 +4270,17 @@ mod tests {
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
+
+        expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_accepts_bomless_majority_cjk_payloads() {
+        // CJK code points rarely null-pad either byte of a UTF-16 unit, so the null-parity ratio
+        // that flags mostly-Latin text can't fire here — this is the exact "paste between two
+        // ChemDraft instances mangles Chinese text" shape the decoder must still accept.
+        let text = "苯甲酸";
+        let bytes = text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
     }

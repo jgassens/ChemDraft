@@ -5049,6 +5049,26 @@ export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalC
   }
   return adjusted >= 4 ? 8 - adjusted : adjusted;
 }
+
+/**
+ * Whether `formalCharge` keeps this element's electron count inside a representable range —
+ * distinct from `nativeAtomValenceForCharge` returning 0, which also happens for a charge that
+ * legitimately has no room for MORE bonds (H+ and H- both take zero). Without this, a caller that
+ * only checks `valenceUsed <= nativeAtomValenceForCharge(...)` can't tell "no more bonds fit" from
+ * "this charge doesn't exist" — both collapse to the same 0, and an unbonded atom's valenceUsed of
+ * 0 trivially satisfies either one, so charges of arbitrary magnitude appear equally legal.
+ */
+export function nativeAtomChargeIsExpressible(element: NativeElementSymbol, formalCharge: number): boolean {
+  const electrons = nativeAtomValenceElectrons[element];
+  if (electrons === undefined) {
+    return false;
+  }
+  if (element === "H") {
+    return Math.abs(formalCharge) <= 1;
+  }
+  const adjusted = electrons - formalCharge;
+  return adjusted >= 0 && adjusted <= 8;
+}
 const nativeBondOrderValue: Record<string, number> = {
   single: 1,
   double: 2,

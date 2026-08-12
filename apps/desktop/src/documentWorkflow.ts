@@ -116,6 +116,7 @@ import {
   planFreeformBondExtension,
   doubleBondRendersSymmetric,
   nativeAtomValenceForCharge,
+  nativeAtomChargeIsExpressible,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
   resolvePageAnchorPoint,
@@ -7008,11 +7009,18 @@ function addChargeMarkAtPoint(
  * copies pasted without their mark all settle correctly with no history diffing.
  */
 export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDraftDocument {
-  const page = document.pages[0];
-  if (!page) {
-    return document;
-  }
+  let changed = false;
+  const pages = document.pages.map((page) => {
+    const nextPage = reconcileNativeChargeMarksOnPage(page);
+    if (nextPage !== page) {
+      changed = true;
+    }
+    return nextPage;
+  });
+  return changed ? { ...document, pages } : document;
+}
 
+function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
   const electronMarks = page.objects.filter((object): object is ElectronMarkObject =>
     object.type === "electron-mark" &&
     (object.markKind === "lone-pair" ||
@@ -7026,7 +7034,7 @@ export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDra
     molecule.atoms.some((atom) => (atom.markCharge ?? 0) !== 0 || (atom.markRadicals ?? 0) !== 0)
   );
   if (electronMarks.length === 0 && !hasMarkContributions) {
-    return document;
+    return page;
   }
 
   // What a mark contributes to its atom. Lone pairs contribute nothing — they anchor for
@@ -7188,14 +7196,11 @@ export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDra
   });
 
   if (nextObjectById.size === 0) {
-    return document;
+    return page;
   }
 
   const objects = page.objects.map((object) => nextObjectById.get(object.id) ?? object);
-  return {
-    ...document,
-    pages: document.pages.map((candidate, index) => (index === 0 ? { ...candidate, objects } : candidate))
-  };
+  return { ...page, objects };
 }
 
 /** Where an electron-pushing arrow may start or end: an atom, or a charge/electron mark. */
@@ -9996,6 +10001,15 @@ export function moveDocumentObject(
      * otherwise translate by the wrong delta, leaving its Bezier controls at stale coordinates.
      */
     clampToPage?: boolean;
+    /**
+     * A bulk, uniform-delta translate (the Copy As scoped document, which moves every scoped
+     * object by the same dx/dy — including a mechanism arrow's anchored atoms, via their own
+     * separate call in that same loop) needs a fully atom/object-anchored arrow's Bezier
+     * controls to move too, since the atoms it's relative to are moving by the identical
+     * amount. An interactive single-object drag has no such guarantee — the rest of the
+     * document, including any anchored atom, stays put — so it must default to false.
+     */
+    translateAnchoredGeometry?: boolean;
   } = {}
 ): ChemDraftDocument {
   const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
@@ -10014,21 +10028,42 @@ export function moveDocumentObject(
   }
 
   if (object.type === "molecule") {
-    return applyPatch(
+    // Charge/radical/lone-pair marks render from their own stored x/y rather than resolving
+    // live from their anchored atom (unlike mechanism-arrow endpoints), so they must ride along
+    // with the molecule explicitly or reconciliation will see them stranded out of range and
+    // silently strip the chemistry they were carrying.
+    const atomIds = new Set(object.atoms.map((atom) => atom.id));
+    const anchoredMarkPatches: DocumentPatch[] = page.objects.flatMap((candidate) =>
+      candidate.type === "electron-mark" &&
+      candidate.anchor.kind === "atom" &&
+      candidate.anchor.objectId === objectId &&
+      candidate.anchor.atomId !== undefined &&
+      atomIds.has(candidate.anchor.atomId)
+        ? [{
+            op: "updateObject" as const,
+            objectId: candidate.id,
+            changes: { x: candidate.x + dx, y: candidate.y + dy }
+          }]
+        : []
+    );
+    return applyPatches(
       document,
-      {
-        op: "updateObject",
-        objectId,
-        changes: {
-          x: nextX,
-          y: nextY,
-          atoms: object.atoms.map((atom) => ({
-            ...atom,
-            x: atom.x + dx,
-            y: atom.y + dy
-          }))
-        }
-      },
+      [
+        {
+          op: "updateObject",
+          objectId,
+          changes: {
+            x: nextX,
+            y: nextY,
+            atoms: object.atoms.map((atom) => ({
+              ...atom,
+              x: atom.x + dx,
+              y: atom.y + dy
+            }))
+          }
+        },
+        ...anchoredMarkPatches
+      ],
       { now: phase4Timestamp }
     );
   }
@@ -10056,9 +10091,37 @@ export function moveDocumentObject(
     );
   }
 
+  if (object.type === "reaction-arrow") {
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          start: offsetAnchorPoint(object.start, dx, dy),
+          end: offsetAnchorPoint(object.end, dx, dy)
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
   if (object.type === "mechanism-arrow") {
     // The Bezier controls and any point-anchored ends live in page coordinates, so they ride
-    // along; atom/object anchors stay put and re-resolve wherever their targets are.
+    // along; atom/object anchors stay put and re-resolve wherever their targets are — UNLESS
+    // this is a bulk uniform translate (translateAnchoredGeometry) where the anchored atoms are
+    // moving by the identical delta via their own call in the same loop, in which case the
+    // controls must move too or they end up stale relative to the atoms that did move. Without
+    // that flag, when BOTH ends are atom/object-anchored the arrow has no independent position to
+    // translate — sliding just the control points while the (unmoved) endpoints stayed put would
+    // warp the curve instead of leaving it alone, so that case is a no-op.
+    const sourceIsPoint = object.source.kind === "point" && object.source.point !== undefined;
+    const targetIsPoint = object.target.kind === "point" && object.target.point !== undefined;
+    if (!options.translateAnchoredGeometry && !sourceIsPoint && !targetIsPoint) {
+      return document;
+    }
     return applyPatch(
       document,
       {
@@ -11195,17 +11258,36 @@ function translateDocumentObjectBy(
   const nextY = object.y + dy;
 
   if (object.type === "molecule") {
-    return applyPatch(
+    // See the identical comment in moveDocumentObject: marks render from their own stored
+    // x/y, so they need to ride along explicitly or reconciliation strands the chemistry.
+    const atomIds = new Set(object.atoms.map((atom) => atom.id));
+    const anchoredMarkPatches: DocumentPatch[] = page.objects.flatMap((candidate) =>
+      candidate.type === "electron-mark" &&
+      candidate.anchor.kind === "atom" &&
+      candidate.anchor.objectId === objectId &&
+      candidate.anchor.atomId !== undefined &&
+      atomIds.has(candidate.anchor.atomId)
+        ? [{
+            op: "updateObject" as const,
+            objectId: candidate.id,
+            changes: { x: candidate.x + dx, y: candidate.y + dy }
+          }]
+        : []
+    );
+    return applyPatches(
       document,
-      {
-        op: "updateObject",
-        objectId,
-        changes: {
-          x: nextX,
-          y: nextY,
-          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
-        }
-      },
+      [
+        {
+          op: "updateObject",
+          objectId,
+          changes: {
+            x: nextX,
+            y: nextY,
+            atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+          }
+        },
+        ...anchoredMarkPatches
+      ],
       { now: phase4Timestamp }
     );
   }
@@ -11264,6 +11346,13 @@ function translateDocumentObjectBy(
   }
 
   if (object.type === "mechanism-arrow") {
+    // See the identical comment in moveDocumentObject: a fully atom/object-anchored arrow has
+    // no independent position, so translating just the control points warps the curve.
+    const sourceIsPoint = object.source.kind === "point" && object.source.point !== undefined;
+    const targetIsPoint = object.target.kind === "point" && object.target.point !== undefined;
+    if (!sourceIsPoint && !targetIsPoint) {
+      return document;
+    }
     return applyPatch(
       document,
       {
@@ -14223,9 +14312,16 @@ export function copyAsScopeObjects(document: ChemDraftDocument): readonly Docume
     return page.objects;
   }
 
+  const isArrowObject = (object: DocumentObject): object is MechanismArrowObject | ArrowObject =>
+    object.type === "mechanism-arrow" || object.type === "reaction-arrow";
+  const arrowEndpoints = (object: MechanismArrowObject | ArrowObject): readonly Anchor[] =>
+    object.type === "mechanism-arrow" ? [object.source, object.target] : [object.start, object.end];
+
   // A selected molecule travels with its chemistry annotations: charge/electron marks anchored
-  // to it, and electron-push arrows whose BOTH ends resolve inside the scope (a half-dangling
-  // arrow would render nothing, so partially-attached arrows stay out).
+  // to it, and electron-push/reaction arrows whose BOTH ends resolve inside the scope (a
+  // half-dangling arrow would render nothing, so partially-attached arrows stay out). A
+  // directly-selected arrow travels the other way too — whatever it's anchored to comes along,
+  // so copying just the arrow doesn't strand it without the endpoints it needs to render.
   const scopeIds = new Set(selectedIds);
   page.objects.forEach((object) => {
     if (
@@ -14238,12 +14334,22 @@ export function copyAsScopeObjects(document: ChemDraftDocument): readonly Docume
     }
   });
   page.objects.forEach((object) => {
-    if (object.type !== "mechanism-arrow") {
+    if (!isArrowObject(object) || !selectedIds.has(object.id)) {
       return;
     }
-    const endpointInScope = (anchor: MechanismArrowObject["source"]) =>
+    arrowEndpoints(object).forEach((anchor) => {
+      if (anchor.kind !== "point" && anchor.objectId !== undefined) {
+        scopeIds.add(anchor.objectId);
+      }
+    });
+  });
+  page.objects.forEach((object) => {
+    if (!isArrowObject(object)) {
+      return;
+    }
+    const endpointInScope = (anchor: Anchor) =>
       anchor.kind === "point" || (anchor.objectId !== undefined && scopeIds.has(anchor.objectId));
-    if (endpointInScope(object.source) && endpointInScope(object.target)) {
+    if (arrowEndpoints(object).every(endpointInScope)) {
       scopeIds.add(object.id);
     }
   });
@@ -14352,7 +14458,12 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
   const dx = copyAsPagePaddingPx - minX;
   const dy = copyAsPagePaddingPx - minY;
   for (const object of objects) {
-    scoped = moveDocumentObject(scoped, object.id, { x: object.x + dx, y: object.y + dy }, { clampToPage: false });
+    scoped = moveDocumentObject(
+      scoped,
+      object.id,
+      { x: object.x + dx, y: object.y + dy },
+      { clampToPage: false, translateAnchoredGeometry: true }
+    );
   }
   return scoped;
 }
@@ -16113,6 +16224,14 @@ function nativeAtomChargeSupportsValence(
 ): boolean {
   const maxValence = nativeAtomMaxValence[element];
   if (maxValence !== undefined && valenceUsed > maxValence) {
+    return false;
+  }
+
+  // nativeAtomValenceForCharge collapses to 0 both when the charge legitimately leaves no room
+  // for more bonds (H+ has none) AND when the charge itself isn't chemically expressible (a
+  // carbon can't lose 12 electrons) — the two must not be conflated, or a zero-valence atom
+  // (valenceUsed 0) trivially "supports" any charge magnitude via 0 <= 0.
+  if (!nativeAtomChargeIsExpressible(element, formalCharge)) {
     return false;
   }
 

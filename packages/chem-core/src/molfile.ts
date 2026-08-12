@@ -20,8 +20,8 @@
  * proven against RDKit in the Phase 1C/2 tests.
  *
  * Known limitations (the native model does not carry these, so they cannot be emitted):
- *   - Isotopes (`M  ISO`) and radicals (`M  RAD`) are not represented in `MoleculeAtom`
- *     and are therefore not written. A round-trip through this writer loses them.
+ *   - Isotopes (`M  ISO`) are not represented in `MoleculeAtom` and are therefore not written.
+ *     A round-trip through this writer loses them.
  *   - `unknown` bond order has no V2000 encoding and is written as single (code 1).
  *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
  *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
@@ -74,6 +74,17 @@ function wedgeStereoFlag(bond: MoleculeBond): number {
   if (style === "wedge") return 1; // up (narrow end at fromAtomId)
   if (style === "hashed") return 6; // down
   return 0;
+}
+
+/**
+ * MDL `RAD` atom-radical code from the drawn unpaired-electron count. One dot is an ordinary
+ * (doublet) radical; two dots on the same atom is written as a triplet, the conventional reading
+ * when spin pairing isn't tracked separately (matching how other drawing tools serialize it).
+ * 0 means "not a radical" and is never written as a property line.
+ */
+function mdlRadicalCode(markRadicals: number | undefined): number {
+  if (!markRadicals || markRadicals <= 0) return 0;
+  return markRadicals === 1 ? 2 : 3;
 }
 
 /**
@@ -132,6 +143,16 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     lines.push(`M  CHG${i3(chunk.length)}${body}`);
   }
 
+  // Radical property lines: same up-to-8-pairs-per-line shape as M CHG above.
+  const radicals = atoms
+    .map((atom, index) => ({ atomNumber: index + 1, radicalCode: mdlRadicalCode(atom.markRadicals) }))
+    .filter((entry) => entry.radicalCode !== 0);
+  for (let i = 0; i < radicals.length; i += 8) {
+    const chunk = radicals.slice(i, i + 8);
+    const body = chunk.map((entry) => `${i4(entry.atomNumber)}${i4(entry.radicalCode)}`).join("");
+    lines.push(`M  RAD${i3(chunk.length)}${body}`);
+  }
+
   lines.push("M  END");
   return lines.join("\n") + "\n";
 }
@@ -161,8 +182,10 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
 
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
+    const radicalCode = mdlRadicalCode(atom.markRadicals);
+    const radical = radicalCode !== 0 ? ` RAD=${radicalCode}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${atom.element} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}`
+      `M  V30 ${index + 1} ${atom.element} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}`
     );
   });
 

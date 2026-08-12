@@ -25,6 +25,7 @@ import {
   type NativeArtPoint
 } from "@chemdraft/art-engine";
 import {
+  CSS_PX_PER_INCH,
   DefaultNativeTextStyle,
   applyPatches,
   createDocumentHistory,
@@ -5376,16 +5377,18 @@ export function MainWindow({
         setStatus("Rendering PNG…");
         try {
           const svgResult = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false });
-          // Oversample 4x and declare 288 dpi (4 x 72) so the paste stays the drawn
-          // size while carrying enough pixels to stay sharp.
+          // Oversample 4x for sharpness; the exported SVG's units are CSS px (96/inch, not the
+          // 72/inch PDF-point convention), so declaring the true density needs CSS_PX_PER_INCH,
+          // not a hardcoded "288". Both raster paths derive the stamped density from the scale
+          // actually applied (after any size clamping), so the paste always stays the drawn size.
           const pngBytes = isDesktopRuntime()
             ? (await rasterizeSvgNative(svgResult.contents, "png", {
                 scale: 4,
                 background: "#ffffff",
                 maxDimensionPx: 8192,
-                pixelsPerInch: 288
+                cssPxPerInch: CSS_PX_PER_INCH
               })).bytes
-            : await rasterizeSvgInBrowser(svgResult.contents, 4, 288);
+            : await rasterizeSvgInBrowser(svgResult.contents, 4, CSS_PX_PER_INCH, 8192);
           const didWrite = await writeClipboardImage(pngBytes);
           setStatus(didWrite ? "Copied PNG to clipboard" : "Copy as PNG failed: clipboard unavailable");
         } catch (error) {
@@ -8620,6 +8623,21 @@ export function MainWindow({
     replacePresentDocument(drag.startDocument);
   }, [replacePresentDocument]);
 
+  /** Abandon an in-flight electron-push-arrow drag before it commits. Defined ahead of the
+   *  keydown effect that calls it, so the effect's dependency list can name it. */
+  const cancelMechanismArrowDrag = useCallback((): void => {
+    const drag = mechanismArrowDragRef.current;
+    if (!drag) {
+      return;
+    }
+    mechanismArrowDragRef.current = null;
+    setMechanismArrowPreview(undefined);
+    const page = pageRef.current;
+    if (page?.hasPointerCapture(drag.pointerId)) {
+      page.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -8742,6 +8760,16 @@ export function MainWindow({
         return;
       }
 
+      // Same reasoning as nativePlacementDragRef above: an in-progress electron-push-arrow drag
+      // is armed independently of the active tool, so switching to Select alone would not stop
+      // the eventual pointerup from still placing the arrow the user just tried to cancel.
+      if (event.key === "Escape" && mechanismArrowDragRef.current) {
+        event.preventDefault();
+        cancelMechanismArrowDrag();
+        setStatus("Electron push arrow canceled");
+        return;
+      }
+
       if (
         event.key === "Escape" &&
         activeToolCommandIdRef.current !== "tool.select" &&
@@ -8787,6 +8815,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
     clearNativePathArtDraw,
@@ -14293,7 +14322,11 @@ export function MainWindow({
       currentDocument.selection.objectIds.length > 1 &&
       currentDocument.selection.objectIds.includes(selectableObjectId);
 
-    if (!preserveMultiSelection && object?.type === "molecule" && nativeMoleculeHit) {
+    // A precise atom/bond hit resolves the same way whether or not the broader selection is
+    // being preserved — preserveMultiSelection only decides whether the document SELECTION
+    // collapses to this one object below, not whether bond-depth/layer-part menu options are
+    // available for the exact thing the user right-clicked.
+    if (object?.type === "molecule" && nativeMoleculeHit) {
       const selectionResolution = nativeContextMenuSelectionResolutionFromHit(
         currentDocument,
         objectId,
@@ -14319,7 +14352,7 @@ export function MainWindow({
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
-    setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
+    setSelectedNativeMoleculePart(nextSelectedNativePart);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setObjectContextMenu({
@@ -14330,7 +14363,11 @@ export function MainWindow({
       y: event.clientY
     });
     setStatus(preserveMultiSelection
-      ? `Options for ${currentDocument.selection.objectIds.length} selected objects`
+      ? (crossingHit && targetKind !== "object"
+          ? `Layer and bond depth options for selected molecule part (${currentDocument.selection.objectIds.length} objects selected)`
+          : targetKind !== "object"
+            ? `Layer options for selected molecule part (${currentDocument.selection.objectIds.length} objects selected)`
+            : `Options for ${currentDocument.selection.objectIds.length} selected objects`)
       : crossingHit && targetKind !== "object"
         ? "Layer and bond depth options for selected molecule part"
         : targetKind === "object" ? "Layer options for selected object" : "Layer options for selected molecule part");
@@ -15608,6 +15645,7 @@ export function MainWindow({
                       onMechanismHandlePointerDown={startMechanismHandleDrag}
                       onMechanismHandlePointerMove={moveMechanismHandleDrag}
                       onMechanismHandlePointerUp={endMechanismHandleDrag}
+                      onMechanismHandlePointerCancel={endMechanismHandleDrag}
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
@@ -21255,6 +21293,7 @@ function DocumentObjectView({
   onMechanismHandlePointerDown,
   onMechanismHandlePointerMove,
   onMechanismHandlePointerUp,
+  onMechanismHandlePointerCancel,
   doubleBondSidePreview,
   nativeMoleculeSvgFragments,
   rotateReadout,
@@ -21327,6 +21366,7 @@ function DocumentObjectView({
   onMechanismHandlePointerDown(objectId: string, controlIndex: number, event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerMove(event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerUp(event: PointerEvent<HTMLButtonElement>): void;
+  onMechanismHandlePointerCancel(event: PointerEvent<HTMLButtonElement>): void;
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
   nativeMoleculeSvgFragments?: readonly PageSvgElementFragment[];
   rotateReadout?: ObjectRotateReadoutState;
@@ -22061,6 +22101,7 @@ function DocumentObjectView({
             onPointerDown={(event) => onMechanismHandlePointerDown(object.id, controlIndex, event)}
             onPointerMove={onMechanismHandlePointerMove}
             onPointerUp={onMechanismHandlePointerUp}
+            onPointerCancel={onMechanismHandlePointerCancel}
           />
         )) : null}
       </div>

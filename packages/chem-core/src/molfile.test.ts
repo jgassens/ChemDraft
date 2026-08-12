@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { moleculeToMolfileV2000 } from "./molfile";
+import { moleculeToMolfileV2000, moleculeToMolfileV3000 } from "./molfile";
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 
-type AtomSpec = { id: string; element: string; x: number; y: number; charge?: number };
+type AtomSpec = {
+  id: string;
+  element: string;
+  x: number;
+  y: number;
+  charge?: number;
+  markRadicals?: number;
+};
 type BondSpec = { id: string; from: string; to: string; order?: MoleculeBond["order"]; style?: "wedge" | "hashed" };
 
 function molecule(atoms: AtomSpec[], bonds: BondSpec[]): MoleculeObject {
@@ -18,7 +25,14 @@ function molecule(atoms: AtomSpec[], bonds: BondSpec[]): MoleculeObject {
     structureFormat: "molfile-v2000",
     structure: "",
     atoms: atoms.map(
-      ({ id, element, x, y, charge = 0 }): MoleculeAtom => ({ id, element, x, y, formalCharge: charge })
+      ({ id, element, x, y, charge = 0, markRadicals }): MoleculeAtom => ({
+        id,
+        element,
+        x,
+        y,
+        formalCharge: charge,
+        ...(markRadicals !== undefined ? { markRadicals } : {})
+      })
     ),
     bonds: bonds.map(
       ({ id, from, to, order = "single", style }): MoleculeBond => ({
@@ -108,5 +122,54 @@ describe("moleculeToMolfileV2000 — structure", () => {
     );
     const mf = moleculeToMolfileV2000(ion);
     expect(mf).toMatch(/M {2}CHG {2}2 {3}1 {3}1 {3}2 {2}-1/);
+  });
+
+  it("emits an M  RAD line for a drawn radical, using the doublet code for one unpaired electron", () => {
+    const radical = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0, markRadicals: 1 },
+        { id: "a1", element: "C", x: 1, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    const mf = moleculeToMolfileV2000(radical);
+    expect(mf).toMatch(/M {2}RAD {2}1 {3}1 {3}2/);
+  });
+
+  it("uses the triplet code for two unpaired electrons on the same atom", () => {
+    const carbene = molecule([{ id: "a0", element: "C", x: 0, y: 0, markRadicals: 2 }], []);
+    const mf = moleculeToMolfileV2000(carbene);
+    expect(mf).toMatch(/M {2}RAD {2}1 {3}1 {3}3/);
+  });
+
+  it("omits M  RAD entirely when no atom carries an unpaired electron", () => {
+    const flat = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "O", x: 1, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    expect(moleculeToMolfileV2000(flat)).not.toContain("M  RAD");
+  });
+});
+
+describe("moleculeToMolfileV3000 — radicals and charges", () => {
+  it("appends RAD= to the atom line for a drawn radical", () => {
+    const radical = molecule([{ id: "a0", element: "C", x: 0, y: 0, markRadicals: 1 }], []);
+    const mf = moleculeToMolfileV3000(radical);
+    expect(mf).toContain("RAD=2");
+  });
+
+  it("appends both CHG= and RAD= when an atom carries both", () => {
+    const radicalCation = molecule([{ id: "a0", element: "N", x: 0, y: 0, charge: 1, markRadicals: 1 }], []);
+    const mf = moleculeToMolfileV3000(radicalCation);
+    expect(mf).toContain("CHG=1");
+    expect(mf).toContain("RAD=2");
+  });
+
+  it("omits RAD= for a non-radical atom", () => {
+    const flat = molecule([{ id: "a0", element: "C", x: 0, y: 0 }], []);
+    expect(moleculeToMolfileV3000(flat)).not.toContain("RAD=");
   });
 });

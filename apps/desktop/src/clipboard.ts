@@ -207,8 +207,20 @@ export function pngWithPhysicalDensity(pngBytes: Uint8Array, pixelsPerInch: numb
   return output;
 }
 
-/** Rasterize an SVG string to PNG bytes with a canvas — the non-desktop Copy As ▸ PNG path. */
-export async function rasterizeSvgInBrowser(svgText: string, scale = 2, pixelsPerInch?: number): Promise<Uint8Array> {
+/**
+ * Rasterize an SVG string to PNG bytes with a canvas — the non-desktop Copy As ▸ PNG path.
+ *
+ * `cssPxPerInch` is the CSS pixels-per-inch convention the source SVG's units represent (96, for
+ * every SVG this app emits), not the density to stamp directly — the embedded density is derived
+ * from this times the scale actually applied, after `maxDimensionPx` clamping, mirroring the
+ * native Rust rasterizer so the two paths can't silently produce different-sized pastes.
+ */
+export async function rasterizeSvgInBrowser(
+  svgText: string,
+  scale = 2,
+  cssPxPerInch?: number,
+  maxDimensionPx = 8192
+): Promise<Uint8Array> {
   const svgUrl = URL.createObjectURL(new Blob([svgText], { type: "image/svg+xml" }));
   try {
     const image = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -217,9 +229,13 @@ export async function rasterizeSvgInBrowser(svgText: string, scale = 2, pixelsPe
       element.onerror = () => reject(new Error("SVG could not be rasterized."));
       element.src = svgUrl;
     });
+    const requestedWidth = Math.max(1, Math.round(image.width * scale));
+    const requestedHeight = Math.max(1, Math.round(image.height * scale));
+    const requestedMax = Math.max(requestedWidth, requestedHeight);
+    const clampScale = requestedMax > maxDimensionPx ? maxDimensionPx / requestedMax : 1;
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(image.width * scale));
-    canvas.height = Math.max(1, Math.round(image.height * scale));
+    canvas.width = Math.max(1, Math.round(requestedWidth * clampScale));
+    canvas.height = Math.max(1, Math.round(requestedHeight * clampScale));
     const context = canvas.getContext("2d");
     if (!context) {
       throw new Error("Canvas 2D context unavailable.");
@@ -230,7 +246,11 @@ export async function rasterizeSvgInBrowser(svgText: string, scale = 2, pixelsPe
       throw new Error("PNG encoding failed.");
     }
     const pngBytes = new Uint8Array(await blob.arrayBuffer());
-    return pixelsPerInch === undefined ? pngBytes : pngWithPhysicalDensity(pngBytes, pixelsPerInch);
+    if (cssPxPerInch === undefined || image.width === 0) {
+      return pngBytes;
+    }
+    const appliedScale = canvas.width / image.width;
+    return pngWithPhysicalDensity(pngBytes, appliedScale * cssPxPerInch);
   } finally {
     URL.revokeObjectURL(svgUrl);
   }
