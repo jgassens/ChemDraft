@@ -10010,6 +10010,13 @@ export function moveDocumentObject(
      * document, including any anchored atom, stays put — so it must default to false.
      */
     translateAnchoredGeometry?: boolean;
+    /**
+     * The single-object interactive drag cascades a molecule's move to its anchored marks
+     * (they render from their own x/y, so leaving them behind strands the chemistry). Loops
+     * that explicitly move EVERY object themselves (the Copy As scoped translate) must opt
+     * out, or a mark that happens to precede its molecule in z-order gets moved twice.
+     */
+    cascadeAnchoredMarks?: boolean;
   } = {}
 ): ChemDraftDocument {
   const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
@@ -10033,19 +10040,21 @@ export function moveDocumentObject(
     // with the molecule explicitly or reconciliation will see them stranded out of range and
     // silently strip the chemistry they were carrying.
     const atomIds = new Set(object.atoms.map((atom) => atom.id));
-    const anchoredMarkPatches: DocumentPatch[] = page.objects.flatMap((candidate) =>
-      candidate.type === "electron-mark" &&
-      candidate.anchor.kind === "atom" &&
-      candidate.anchor.objectId === objectId &&
-      candidate.anchor.atomId !== undefined &&
-      atomIds.has(candidate.anchor.atomId)
-        ? [{
-            op: "updateObject" as const,
-            objectId: candidate.id,
-            changes: { x: candidate.x + dx, y: candidate.y + dy }
-          }]
-        : []
-    );
+    const anchoredMarkPatches: DocumentPatch[] = (options.cascadeAnchoredMarks ?? true)
+      ? page.objects.flatMap((candidate) =>
+          candidate.type === "electron-mark" &&
+          candidate.anchor.kind === "atom" &&
+          candidate.anchor.objectId === objectId &&
+          candidate.anchor.atomId !== undefined &&
+          atomIds.has(candidate.anchor.atomId)
+            ? [{
+                op: "updateObject" as const,
+                objectId: candidate.id,
+                changes: { x: candidate.x + dx, y: candidate.y + dy }
+              }]
+            : []
+        )
+      : [];
     return applyPatches(
       document,
       [
@@ -11241,12 +11250,28 @@ function roundLayoutCoordinate(value: number): number {
   return Number(value.toFixed(3));
 }
 
-/** Translate one object by a delta (no per-object clamping — the group clamps as a whole). */
+/**
+ * Translate one object by a delta (no per-object clamping — the group clamps as a whole).
+ *
+ * Unlike moveDocumentObject this NEVER cascades to anchored electron-marks: group callers
+ * (moveDocumentObjects, translateSelectionLayoutItemBy) already expand their moved-id set to
+ * include a molecule's anchored marks, and a cascade here on top of that moved every mark
+ * twice — stranding it outside the association radius, which silently stripped its charge.
+ */
 function translateDocumentObjectBy(
   document: ChemDraftDocument,
   objectId: string,
   dx: number,
-  dy: number
+  dy: number,
+  options: {
+    /**
+     * A fully atom/object-anchored mechanism arrow normally no-ops here (its endpoints resolve
+     * dynamically, so shifting only its controls warps the curve). When the group being moved
+     * ALSO contains everything the arrow anchors to, the endpoints move by this same delta and
+     * the controls must ride along — the group caller detects that case and opts in.
+     */
+    translateAnchoredGeometry?: boolean;
+  } = {}
 ): ChemDraftDocument {
   const page = document.pages.find((candidate) => candidate.objects.some((object) => object.id === objectId));
   const object = page?.objects.find((candidate) => candidate.id === objectId);
@@ -11258,36 +11283,17 @@ function translateDocumentObjectBy(
   const nextY = object.y + dy;
 
   if (object.type === "molecule") {
-    // See the identical comment in moveDocumentObject: marks render from their own stored
-    // x/y, so they need to ride along explicitly or reconciliation strands the chemistry.
-    const atomIds = new Set(object.atoms.map((atom) => atom.id));
-    const anchoredMarkPatches: DocumentPatch[] = page.objects.flatMap((candidate) =>
-      candidate.type === "electron-mark" &&
-      candidate.anchor.kind === "atom" &&
-      candidate.anchor.objectId === objectId &&
-      candidate.anchor.atomId !== undefined &&
-      atomIds.has(candidate.anchor.atomId)
-        ? [{
-            op: "updateObject" as const,
-            objectId: candidate.id,
-            changes: { x: candidate.x + dx, y: candidate.y + dy }
-          }]
-        : []
-    );
-    return applyPatches(
+    return applyPatch(
       document,
-      [
-        {
-          op: "updateObject",
-          objectId,
-          changes: {
-            x: nextX,
-            y: nextY,
-            atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
-          }
-        },
-        ...anchoredMarkPatches
-      ],
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+        }
+      },
       { now: phase4Timestamp }
     );
   }
@@ -11347,10 +11353,11 @@ function translateDocumentObjectBy(
 
   if (object.type === "mechanism-arrow") {
     // See the identical comment in moveDocumentObject: a fully atom/object-anchored arrow has
-    // no independent position, so translating just the control points warps the curve.
+    // no independent position, so translating just the control points warps the curve — unless
+    // the caller knows the anchor targets are moving by this same delta (group moves).
     const sourceIsPoint = object.source.kind === "point" && object.source.point !== undefined;
     const targetIsPoint = object.target.kind === "point" && object.target.point !== undefined;
-    if (!sourceIsPoint && !targetIsPoint) {
+    if (!options.translateAnchoredGeometry && !sourceIsPoint && !targetIsPoint) {
       return document;
     }
     return applyPatch(
@@ -11377,6 +11384,47 @@ function translateDocumentObjectBy(
   );
 }
 
+/**
+ * Expands a moved-id set with the electron-marks anchored to any molecule in it. Marks render
+ * from their own stored x/y (not resolved from their anchor atom), so a group translate that
+ * moves a molecule without its marks strands them and the next reconciliation strips the
+ * chemistry they carried. The Set result also dedupes marks the caller already selected.
+ */
+function expandWithAnchoredMarkIds(
+  pageObjects: readonly DocumentObject[],
+  ids: readonly string[]
+): Set<string> {
+  const expanded = new Set(ids);
+  const moleculeIds = new Set(
+    pageObjects.filter((object) => object.type === "molecule" && expanded.has(object.id)).map((object) => object.id)
+  );
+  pageObjects.forEach((object) => {
+    if (
+      object.type === "electron-mark" &&
+      object.anchor.kind === "atom" &&
+      object.anchor.objectId !== undefined &&
+      moleculeIds.has(object.anchor.objectId)
+    ) {
+      expanded.add(object.id);
+    }
+  });
+  return expanded;
+}
+
+/**
+ * Whether every endpoint of an anchored mechanism arrow rides along with this group move —
+ * point endpoints always translate, and object/atom endpoints follow their targets, so the
+ * arrow's Bezier controls should translate exactly when all of its targets are moving too.
+ */
+function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: ReadonlySet<string>): boolean {
+  if (object.type !== "mechanism-arrow") {
+    return false;
+  }
+  return [object.source, object.target].every((anchor) =>
+    anchor.kind === "point" || (anchor.objectId !== undefined && movedIds.has(anchor.objectId))
+  );
+}
+
 /** Move every object in `ids` by the same delta, clamped so the group bbox stays on the page. */
 export function moveDocumentObjects(
   document: ChemDraftDocument,
@@ -11386,7 +11434,8 @@ export function moveDocumentObjects(
 ): ChemDraftDocument {
   const page = firstPage(document);
   const objectIds = resolveGroupedDocumentObjectIds(page.objects, ids);
-  const bounds = selectionBounds(page.objects, objectIds);
+  const set = expandWithAnchoredMarkIds(page.objects, objectIds);
+  const bounds = selectionBounds(page.objects, [...set]);
   if (!bounds) {
     return document;
   }
@@ -11397,11 +11446,12 @@ export function moveDocumentObjects(
     return document;
   }
 
-  const set = new Set(objectIds);
   let next = document;
   for (const object of page.objects) {
     if (set.has(object.id)) {
-      next = translateDocumentObjectBy(next, object.id, cdx, cdy);
+      next = translateDocumentObjectBy(next, object.id, cdx, cdy, {
+        translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, set)
+      });
     }
   }
   return next;
@@ -11432,9 +11482,16 @@ function translateSelectionLayoutItemBy(
   if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) {
     return document;
   }
+  const memberIds = expandWithAnchoredMarkIds(
+    pageObjects,
+    resolveGroupedDocumentObjectIds(pageObjects, [itemId])
+  );
   let next = document;
-  for (const memberId of resolveGroupedDocumentObjectIds(pageObjects, [itemId])) {
-    next = translateDocumentObjectBy(next, memberId, dx, dy);
+  for (const memberId of memberIds) {
+    const member = pageObjects.find((object) => object.id === memberId);
+    next = translateDocumentObjectBy(next, memberId, dx, dy, {
+      translateAnchoredGeometry: member !== undefined && groupMoveTranslatesArrowGeometry(member, memberIds)
+    });
   }
   return next;
 }
@@ -14317,22 +14374,15 @@ export function copyAsScopeObjects(document: ChemDraftDocument): readonly Docume
   const arrowEndpoints = (object: MechanismArrowObject | ArrowObject): readonly Anchor[] =>
     object.type === "mechanism-arrow" ? [object.source, object.target] : [object.start, object.end];
 
-  // A selected molecule travels with its chemistry annotations: charge/electron marks anchored
-  // to it, and electron-push/reaction arrows whose BOTH ends resolve inside the scope (a
-  // half-dangling arrow would render nothing, so partially-attached arrows stay out). A
-  // directly-selected arrow travels the other way too — whatever it's anchored to comes along,
-  // so copying just the arrow doesn't strand it without the endpoints it needs to render.
+  // A directly-selected arrow travels with whatever it's anchored to (copying just the arrow
+  // must not strand it without the endpoints it needs to render); this runs FIRST so the mark
+  // pass below also covers the molecules an arrow pulled in. A selected molecule then travels
+  // with its chemistry annotations: charge/electron marks anchored to it, and arrows anchored
+  // into the scope. An arrow auto-includes only when at least ONE endpoint references an
+  // in-scope object and none reference an out-of-scope one — point endpoints ride along but
+  // never qualify by themselves, or every free-floating arrow on the page would leak into
+  // every copy.
   const scopeIds = new Set(selectedIds);
-  page.objects.forEach((object) => {
-    if (
-      object.type === "electron-mark" &&
-      object.anchor.kind === "atom" &&
-      object.anchor.objectId !== undefined &&
-      scopeIds.has(object.anchor.objectId)
-    ) {
-      scopeIds.add(object.id);
-    }
-  });
   page.objects.forEach((object) => {
     if (!isArrowObject(object) || !selectedIds.has(object.id)) {
       return;
@@ -14344,12 +14394,26 @@ export function copyAsScopeObjects(document: ChemDraftDocument): readonly Docume
     });
   });
   page.objects.forEach((object) => {
+    if (
+      object.type === "electron-mark" &&
+      object.anchor.kind === "atom" &&
+      object.anchor.objectId !== undefined &&
+      scopeIds.has(object.anchor.objectId)
+    ) {
+      scopeIds.add(object.id);
+    }
+  });
+  page.objects.forEach((object) => {
     if (!isArrowObject(object)) {
       return;
     }
-    const endpointInScope = (anchor: Anchor) =>
-      anchor.kind === "point" || (anchor.objectId !== undefined && scopeIds.has(anchor.objectId));
-    if (arrowEndpoints(object).every(endpointInScope)) {
+    const objectEndpoints = arrowEndpoints(object).filter(
+      (anchor) => anchor.kind !== "point" && anchor.objectId !== undefined
+    );
+    const allEndpointsRideAlong = arrowEndpoints(object).every(
+      (anchor) => anchor.kind === "point" || (anchor.objectId !== undefined && scopeIds.has(anchor.objectId))
+    );
+    if (objectEndpoints.length > 0 && allEndpointsRideAlong) {
       scopeIds.add(object.id);
     }
   });
@@ -14462,7 +14526,7 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
       scoped,
       object.id,
       { x: object.x + dx, y: object.y + dy },
-      { clampToPage: false, translateAnchoredGeometry: true }
+      { clampToPage: false, translateAnchoredGeometry: true, cascadeAnchoredMarks: false }
     );
   }
   return scoped;

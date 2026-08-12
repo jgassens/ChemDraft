@@ -1507,10 +1507,30 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
         // rather than failing outright, so "try both, take whichever passes" would silently
         // prefer whichever order happens first even when it's wrong — try this platform's native
         // order (macOS pasteboard UTF-16 without a BOM is little-endian) first, and only fall
-        // back to big-endian, which a non-native source could still have written.
-        return decode_utf16_units(bytes, false).or_else(|| decode_utf16_units(bytes, true));
+        // back to big-endian, which a non-native source could still have written. This is the
+        // decoder's lowest-confidence path (short binary payloads can decode into valid-looking
+        // units), so its results get extra scrutiny beyond the ordinary plausibility filter.
+        return decode_utf16_units(bytes, false)
+            .filter(|text| utf16_sparse_text_is_convincing(text))
+            .or_else(|| decode_utf16_units(bytes, true).filter(|text| utf16_sparse_text_is_convincing(text)));
     }
     None
+}
+
+/// Extra scrutiny for the no-BOM sparse-null path only: real prose and chemistry text never
+/// contains private-use or noncharacter code points, while binary bytes and byte-swapped UTF-16
+/// frequently decode into exactly those ranges. (BOM'd and null-parity-detected payloads skip
+/// this — their encoding evidence is strong enough that PUA glyphs, e.g. icon fonts, pass.)
+fn utf16_sparse_text_is_convincing(text: &str) -> bool {
+    text.chars().all(|character| {
+        let code_point = character as u32;
+        let private_use = (0xe000..=0xf8ff).contains(&code_point)
+            || (0xf0000..=0xffffd).contains(&code_point)
+            || (0x100000..=0x10fffd).contains(&code_point);
+        let noncharacter =
+            (0xfdd0..=0xfdef).contains(&code_point) || (code_point & 0xfffe) == 0xfffe;
+        !private_use && !noncharacter
+    })
 }
 
 fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
@@ -4283,6 +4303,16 @@ mod tests {
         let bytes = text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_rejects_sparse_binary_that_decodes_into_private_use_glyphs() {
+        // Null-free binary bytes reach the low-confidence sparse-null path; when they decode
+        // into private-use code points (as byte-swapped or arbitrary data often does), the
+        // extra-scrutiny filter must reject them instead of pasting them as "text".
+        let bytes = vec![0xe1, 0xe1, 0xe1, 0xe1, 0xe1, 0xe1]; // decodes to U+E1E1 (PUA) x3 either order
+
+        expect_eq(None, decode_clipboard_text_bytes(&bytes));
     }
 
     #[test]

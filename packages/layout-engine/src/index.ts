@@ -5057,11 +5057,15 @@ export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalC
  * only checks `valenceUsed <= nativeAtomValenceForCharge(...)` can't tell "no more bonds fit" from
  * "this charge doesn't exist" — both collapse to the same 0, and an unbonded atom's valenceUsed of
  * 0 trivially satisfies either one, so charges of arbitrary magnitude appear equally legal.
+ *
+ * Elements outside the valence-electron table (metals: Na, K, Ca, Fe, ...) have no octet
+ * arithmetic to bound them and legitimately carry ionic charges the table cannot express, so
+ * they stay permissive — the bound only applies where the octet math actually defines one.
  */
 export function nativeAtomChargeIsExpressible(element: NativeElementSymbol, formalCharge: number): boolean {
   const electrons = nativeAtomValenceElectrons[element];
   if (electrons === undefined) {
-    return false;
+    return true;
   }
   if (element === "H") {
     return Math.abs(formalCharge) <= 1;

@@ -14352,7 +14352,11 @@ export function MainWindow({
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
-    setSelectedNativeMoleculePart(nextSelectedNativePart);
+    // The resolved part drives the MENU (targetKind, bondDepthContext) either way, but only a
+    // single-object right-click promotes it to the persistent part selection — under a
+    // preserved multi-selection the document selection stays authoritative, so Delete and other
+    // selection-wide commands keep acting on everything selected, not the hit bond.
+    setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setObjectContextMenu({
