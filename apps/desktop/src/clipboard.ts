@@ -175,7 +175,7 @@ export function pngWithPhysicalDensity(pngBytes: Uint8Array, pixelsPerInch: numb
   view.setUint32(17, pngCrc32(physChunk.subarray(4, 17)));
 
   const chunks: Uint8Array[] = [pngBytes.subarray(0, PNG_SIGNATURE.length)];
-  let offset = PNG_SIGNATURE.length;
+  let offset: number = PNG_SIGNATURE.length;
   let inserted = false;
   while (offset + 8 <= pngBytes.length) {
     const dataView = new DataView(pngBytes.buffer, pngBytes.byteOffset + offset);

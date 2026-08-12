@@ -1409,9 +1409,7 @@ const OPAQUE_CLIPBOARD_TYPES: [&str; 2] = [
 ];
 
 fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
-    OPAQUE_CLIPBOARD_TYPES
-        .iter()
-        .any(|opaque| *opaque == pasteboard_type)
+    OPAQUE_CLIPBOARD_TYPES.contains(&pasteboard_type)
 }
 
 #[cfg(target_os = "macos")]
@@ -1491,7 +1489,12 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
         return None;
     }
     let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
-    let odd_nulls = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+    let odd_nulls = bytes
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|byte| **byte == 0)
+        .count();
     let (dominant, other, dominant_is_big_endian) = if even_nulls >= odd_nulls {
         (even_nulls, odd_nulls, true)
     } else {
@@ -1512,7 +1515,9 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
         // units), so its results get extra scrutiny beyond the ordinary plausibility filter.
         return decode_utf16_units(bytes, false)
             .filter(|text| utf16_sparse_text_is_convincing(text))
-            .or_else(|| decode_utf16_units(bytes, true).filter(|text| utf16_sparse_text_is_convincing(text)));
+            .or_else(|| {
+                decode_utf16_units(bytes, true).filter(|text| utf16_sparse_text_is_convincing(text))
+            });
     }
     None
 }
@@ -1534,7 +1539,7 @@ fn utf16_sparse_text_is_convincing(text: &str) -> bool {
 }
 
 fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
-    if content.len() < 2 || content.len() % 2 != 0 {
+    if content.len() < 2 || !content.len().is_multiple_of(2) {
         return None;
     }
 
@@ -2444,14 +2449,62 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "Copy As",
                         true,
                         &[
-                            &MenuItem::with_id(app, "clipboard.copyAs.smiles", "SMILES", true, Some("CmdOrCtrl+Alt+C"))?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.inchi", "InChI", true, None::<&str>)?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.inchiKey", "InChI Key", true, None::<&str>)?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.cdxml", "CDXML Text", true, Some("CmdOrCtrl+D"))?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.mol", "MOL Text", true, Some("CmdOrCtrl+Alt+O"))?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.molV2000", "MOL V2000 Text", true, Some("CmdOrCtrl+Alt+Shift+O"))?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.svg", "SVG", true, None::<&str>)?,
-                            &MenuItem::with_id(app, "clipboard.copyAs.png", "PNG", true, None::<&str>)?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.smiles",
+                                "SMILES",
+                                true,
+                                Some("CmdOrCtrl+Alt+C"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.inchi",
+                                "InChI",
+                                true,
+                                None::<&str>,
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.inchiKey",
+                                "InChI Key",
+                                true,
+                                None::<&str>,
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.cdxml",
+                                "CDXML Text",
+                                true,
+                                Some("CmdOrCtrl+D"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.mol",
+                                "MOL Text",
+                                true,
+                                Some("CmdOrCtrl+Alt+O"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.molV2000",
+                                "MOL V2000 Text",
+                                true,
+                                Some("CmdOrCtrl+Alt+Shift+O"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.svg",
+                                "SVG",
+                                true,
+                                None::<&str>,
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.png",
+                                "PNG",
+                                true,
+                                None::<&str>,
+                            )?,
                         ],
                     )?,
                     &PredefinedMenuItem::paste(app, None)?,
@@ -4300,7 +4353,10 @@ mod tests {
         // that flags mostly-Latin text can't fire here — this is the exact "paste between two
         // ChemDraft instances mangles Chinese text" shape the decoder must still accept.
         let text = "苯甲酸";
-        let bytes = text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+        let bytes = text
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
     }
@@ -4331,7 +4387,9 @@ mod tests {
         // this as UTF-16 and produced CJK mojibake "text" that pasted as a text object.
         let mut bytes = vec![0x01, 0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x00];
         bytes.extend(b"null:acff5040-3cd6-47ec-8888-000000000000".to_vec());
-        bytes.extend(vec![0x00, 0x62, 0x70, 0x00, 0x00, 0x13, 0x37, 0x00, 0x81, 0x92]);
+        bytes.extend(vec![
+            0x00, 0x62, 0x70, 0x00, 0x00, 0x13, 0x37, 0x00, 0x81, 0x92,
+        ]);
 
         expect_eq(None, decode_clipboard_text_bytes(&bytes));
     }
@@ -4348,9 +4406,15 @@ mod tests {
 
     #[test]
     fn webkit_custom_pasteboard_container_is_opaque() {
-        expect_true(is_opaque_clipboard_type("com.apple.WebKit.custom-pasteboard-data"));
-        expect_true(is_opaque_clipboard_type("org.webkit.custom-pasteboard-data"));
-        expect_false(is_opaque_clipboard_type("application/x-chemdraft-selection+json"));
+        expect_true(is_opaque_clipboard_type(
+            "com.apple.WebKit.custom-pasteboard-data",
+        ));
+        expect_true(is_opaque_clipboard_type(
+            "org.webkit.custom-pasteboard-data",
+        ));
+        expect_false(is_opaque_clipboard_type(
+            "application/x-chemdraft-selection+json",
+        ));
         expect_false(is_opaque_clipboard_type("com.mdli.molfile"));
         expect_false(is_opaque_clipboard_type("text/plain"));
     }
@@ -4376,13 +4440,15 @@ mod tests {
         // What a webview copy leaves behind: binary, null-sprinkled container data.
         let mut container_bytes: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x00];
         container_bytes.extend(b"null:acff5040-3cd6-47ec".to_vec());
-        container_bytes.extend(vec![0x00, 0x62, 0x70, 0x00, 0x00, 0x13, 0x37, 0x00, 0x81, 0x92]);
+        container_bytes.extend(vec![
+            0x00, 0x62, 0x70, 0x00, 0x00, 0x13, 0x37, 0x00, 0x81, 0x92,
+        ]);
         let pasteboard = NSPasteboard::generalPasteboard();
         let container_type = NSString::from_str("com.apple.WebKit.custom-pasteboard-data");
-        expect_true(pasteboard.setData_forType(
-            Some(&NSData::with_bytes(&container_bytes)),
-            &container_type,
-        ));
+        expect_true(
+            pasteboard
+                .setData_forType(Some(&NSData::with_bytes(&container_bytes)), &container_type),
+        );
 
         let payload = read_clipboard_payload_impl().expect("native clipboard read should succeed");
 
@@ -4392,14 +4458,18 @@ mod tests {
             .find(|item| item.r#type == "application/x-chemdraft-selection+json")
             .expect("selection flavor should read back");
         expect_eq(selection_json.to_string(), selection_item.text.clone());
-        expect_true(payload
-            .types
-            .iter()
-            .any(|kind| kind == "com.apple.WebKit.custom-pasteboard-data"));
-        expect_true(!payload
-            .text_items
-            .iter()
-            .any(|item| item.r#type == "com.apple.WebKit.custom-pasteboard-data"));
+        expect_true(
+            payload
+                .types
+                .iter()
+                .any(|kind| kind == "com.apple.WebKit.custom-pasteboard-data"),
+        );
+        expect_true(
+            !payload
+                .text_items
+                .iter()
+                .any(|item| item.r#type == "com.apple.WebKit.custom-pasteboard-data"),
+        );
     }
 
     #[test]

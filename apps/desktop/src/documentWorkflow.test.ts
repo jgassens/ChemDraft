@@ -860,7 +860,7 @@ function cyclopentaneVerticesFromBond(
 function setNativeAtomElement(
   document: ChemDraftDocument,
   atomId: string,
-  element: "H" | "B" | "C" | "N" | "O" | "F" | "P" | "S" | "I"
+  element: "H" | "B" | "C" | "N" | "O" | "F" | "Na" | "P" | "S" | "I"
 ): ChemDraftDocument {
   const molecule = selectedMolecule(document);
   return applyNativeAtomElementTarget(document, {
