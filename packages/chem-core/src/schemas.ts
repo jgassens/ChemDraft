@@ -306,6 +306,20 @@ export const MoleculeAtomSchema = z
     y: z.number().finite(),
     z: z.number().finite().optional(),
     formalCharge: z.number().int().default(0),
+    /**
+     * The portion of `formalCharge` contributed by nearby charge-mark objects rather than the
+     * atom's own (drawn or imported) charge. Maintained by the charge-mark reconciliation:
+     * present only while a mark is associated, and always contained in `formalCharge`. Lets the
+     * label suppress a superscript the floating mark already draws, and lets a copied molecule
+     * (or a mark dragged away) shed the contribution instead of baking it in forever.
+     */
+    markCharge: z.number().int().optional(),
+    /**
+     * Unpaired electrons contributed by associated radical marks (•, •+, •−). Like `markCharge`,
+     * maintained by the charge-mark reconciliation. Each one consumes a bonding slot, so the
+     * implicit hydrogen count drops by one per radical.
+     */
+    markRadicals: z.number().int().nonnegative().optional(),
     labelVisible: z.boolean().optional(),
     labelOffset: PointSchema.optional()
   })
@@ -426,7 +440,11 @@ export const ElectronMarkObjectSchema = BaseObjectSchema.extend({
   type: z.literal("electron-mark"),
   markKind: degradingEnum(["lone-pair", "radical-dot", "charge", "unknown"]),
   anchor: AnchorSchema,
-  charge: z.number().int().optional()
+  charge: z.number().int().optional(),
+  /** Charge marks draw circled (⊕/⊖) by default; "plain" renders the bare +/− glyph. */
+  chargeStyle: z.enum(["circled", "plain"]).optional(),
+  /** A charge mark with `radical` is a radical ion symbol (•+ / •−): one unpaired electron rides along. */
+  radical: z.boolean().optional()
 }).strict();
 
 export const TextSpanSchema = z

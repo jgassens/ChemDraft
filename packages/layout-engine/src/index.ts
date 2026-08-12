@@ -11,6 +11,7 @@ import {
   type ArrowObject,
   type GraphicPaint,
   type GraphicObject,
+  type MechanismArrowObject,
   type MoleculeAtom,
   type MoleculeBond as CoreMoleculeBond,
   type MoleculeObject,
@@ -1179,7 +1180,17 @@ function cross(left: LayoutPoint, right: LayoutPoint): number {
   return left.x * right.y - left.y * right.x;
 }
 
-export function planPageSvgRender(page: DocumentPage): PageSvgRenderPlan {
+export function planPageSvgRender(
+  page: DocumentPage,
+  options: {
+    /**
+     * The page anchored objects (mechanism arrows) resolve against. The editor surface renders a
+     * FILTERED page — native molecules paint on their own overlay — so an arrow anchored to an
+     * atom must look the atom up in the unfiltered page.
+     */
+    anchorResolutionPage?: DocumentPage;
+  } = {}
+): PageSvgRenderPlan {
   const warnings: PageSvgRenderWarning[] = [];
   const crossings = resolvePageBondCrossings(page, warnings);
   const gapsByBondKey = crossings.reduce<Map<string, BondCrossingGap[]>>((byBond, crossing) => {
@@ -1193,7 +1204,7 @@ export function planPageSvgRender(page: DocumentPage): PageSvgRenderPlan {
 
   return {
     fragments: page.objects.flatMap((object, layerIndex) => {
-      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey);
+      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page);
       return fragment ? flattenDocumentObjectSvg(fragment) : [];
     }).concat(crossingHitTargets),
     crossings,
@@ -1247,7 +1258,8 @@ function planDocumentObjectSvg(
   object: DocumentObject,
   layerIndex: number,
   warnings: PageSvgRenderWarning[],
-  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
+  page?: DocumentPage
 ): PageSvgElementFragment | undefined {
   switch (object.type) {
     case "molecule":
@@ -1256,10 +1268,18 @@ function planDocumentObjectSvg(
       return planTextObjectSvg(object, layerIndex);
     case "plus":
       return centeredTextFragment(object, "+", 24, 700, layerIndex);
-    case "electron-mark":
-      return object.markKind === "charge"
-        ? chargeMarkFragment(object, layerIndex)
+    case "mechanism-arrow":
+      return page
+        ? mechanismArrowFragment(object, page, layerIndex)
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
+    case "electron-mark":
+      if (object.markKind === "charge") {
+        return chargeMarkFragment(object, layerIndex);
+      }
+      if (object.markKind === "lone-pair" || object.markKind === "radical-dot") {
+        return electronDotMarkFragment(object, layerIndex);
+      }
+      return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
       return reactionArrowFragment(object, layerIndex);
     case "bracket":
@@ -1448,32 +1468,48 @@ function planNativeMoleculeGraphSvg(
     const depthWeight = labelDepthWeightByAtomId.get(plan.atom.id);
     const scale = depthCuedLabelScale(depthWeight);
     const baseTransform = `translate(${formatNumber(plan.anchor.x)} ${formatNumber(plan.anchor.y)})`;
+    // The knockout halo is emitted as a separate stroked copy UNDER the fill copy instead of a
+    // `paint-order: stroke` on one node. Same pixels in the editor, but the copied/exported SVG
+    // stays correct in consumers that ignore paint-order (Illustrator painted the white halo
+    // stroke OVER the fill, turning every label white-on-white). The vertical centering uses
+    // `dy` instead of `dominant-baseline` for the same reason.
+    const labelRun = (run: (typeof plan.layout.runs)[number], index: number, variant: "halo" | "fill") =>
+      elementFragment("text", `label-run-${variant === "halo" ? "halo-" : ""}${object.id}-${plan.atom.id}-${index}`, {
+        class: variant === "halo" ? "native-atom-label-halo" : "native-atom-label-run",
+        "data-atom-label-run": variant === "halo" ? undefined : run.script === "superscript" ? "charge" : run.script,
+        x: run.x,
+        y: run.y,
+        dy: "0.35em",
+        "text-anchor": run.textAnchor,
+        "font-size": atomLabelRunFontSize(run.script, plan.drawingStyle),
+        ...(variant === "halo"
+          ? {
+              fill: plan.backgroundColor,
+              stroke: plan.backgroundColor,
+              "stroke-width": formatNumber(atomLabelHaloWidthPx(plan.drawingStyle)),
+              "stroke-linejoin": "round",
+              "stroke-linecap": "round",
+              "aria-hidden": "true"
+            }
+          : {})
+      }, [textFragment(`label-run-text-${variant === "halo" ? "halo-" : ""}${object.id}-${plan.atom.id}-${index}`, run.text)]);
+
     return elementFragment("g", `label-${object.id}-${plan.atom.id}`, {
       class: "native-atom-label",
       "data-atom-label": plan.label,
       transform: scale === 1 ? baseTransform : `${baseTransform} scale(${formatNumber(scale)})`,
       fill: depthCuedLabelColor(plan.color, depthWeight),
       "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
-      stroke: plan.backgroundVisible ? plan.backgroundColor : undefined,
-      "stroke-width": plan.backgroundVisible ? formatNumber(atomLabelHaloWidthPx(plan.drawingStyle)) : undefined,
-      "stroke-linejoin": plan.backgroundVisible ? "round" : undefined,
-      "stroke-linecap": plan.backgroundVisible ? "round" : undefined,
-      "paint-order": plan.backgroundVisible ? "stroke" : undefined,
       "font-family": plan.fontFamily,
       "font-size": plan.fontSizePx,
       "font-weight": plan.fontWeight,
       "font-style": plan.fontStyle
-    }, plan.layout.runs.map((run, index) =>
-      elementFragment("text", `label-run-${object.id}-${plan.atom.id}-${index}`, {
-        class: "native-atom-label-run",
-        "data-atom-label-run": run.script === "superscript" ? "charge" : run.script,
-        x: run.x,
-        y: run.y,
-        "dominant-baseline": "central",
-        "text-anchor": run.textAnchor,
-        "font-size": atomLabelRunFontSize(run.script, plan.drawingStyle)
-      }, [textFragment(`label-run-text-${object.id}-${plan.atom.id}-${index}`, run.text)])
-    ));
+    }, [
+      ...(plan.backgroundVisible
+        ? plan.layout.runs.map((run, index) => labelRun(run, index, "halo"))
+        : []),
+      ...plan.layout.runs.map((run, index) => labelRun(run, index, "fill"))
+    ]);
   });
   const indicatorFragments = moleculeStructureIndicatorFragments(object, drawingStyle, moleculeStrokeOpacity);
   const atomHitFragments = object.atoms.map((atom) =>
@@ -3028,24 +3064,245 @@ export function textObjectSpansForRendering(object: TextObject): TextSpan[] {
   return [{ text: object.text, script: "normal", style: {} }];
 }
 
+/**
+ * Charge and electron symbols, drawn as vectors so the circled forms stay crisp at any zoom.
+ * The default charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant —
+ * and a `radical` charge carries the unpaired-electron dot beside the sign (•+ / •−).
+ */
 function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
   const charge = object.charge === -1 ? -1 : 1;
+  const centerX = object.x + object.width / 2;
+  const centerY = object.y + object.height / 2;
+  const radius = Math.min(object.width, object.height) * 0.32;
+  const barHalf = radius * 0.55;
+  const strokeWidth = 1.5;
+  const circled = object.chargeStyle !== "plain" && object.radical !== true;
+  const children: PageSvgElementFragment[] = [];
+
+  if (circled) {
+    children.push(elementFragment("circle", `charge-circle-${object.id}`, {
+      cx: centerX,
+      cy: centerY,
+      r: radius,
+      fill: "none",
+      stroke: "#111111",
+      "stroke-width": strokeWidth
+    }));
+  }
+
+  const signHalf = circled ? barHalf : radius * 0.85;
+  const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+  children.push(elementFragment("line", `charge-bar-${object.id}`, {
+    x1: signX - signHalf,
+    y1: centerY,
+    x2: signX + signHalf,
+    y2: centerY,
+    stroke: "#111111",
+    "stroke-width": strokeWidth,
+    "stroke-linecap": "round"
+  }));
+  if (charge > 0) {
+    children.push(elementFragment("line", `charge-bar-vertical-${object.id}`, {
+      x1: signX,
+      y1: centerY - signHalf,
+      x2: signX,
+      y2: centerY + signHalf,
+      stroke: "#111111",
+      "stroke-width": strokeWidth,
+      "stroke-linecap": "round"
+    }));
+  }
+  if (object.radical === true) {
+    children.push(elementFragment("circle", `charge-radical-${object.id}`, {
+      cx: centerX - radius * 0.75,
+      cy: centerY,
+      r: 2.1,
+      fill: "#111111"
+    }));
+  }
+
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     "data-mark-kind": "charge",
     "data-charge": charge,
+    "data-charge-style": circled ? "circled" : "plain",
+    ...(object.radical === true ? { "data-charge-radical": "true" } : {}),
+    transform: rotationTransform(object)
+  }), children);
+}
+
+/**
+ * Where a mechanism-arrow endpoint lives right now. Atom anchors follow their atom, object
+ * anchors (charge marks) follow their object's center — so an arrow drawn onto a molecule
+ * stays attached as the molecule moves.
+ */
+export function resolvePageAnchorPoint(
+  page: DocumentPage,
+  anchor: MechanismArrowObject["source"]
+): { x: number; y: number } | undefined {
+  if (anchor.kind === "point") {
+    return anchor.point;
+  }
+
+  const object = page.objects.find((candidate) => candidate.id === anchor.objectId);
+  if (!object) {
+    return undefined;
+  }
+
+  if (anchor.kind === "atom" && object.type === "molecule") {
+    const atom = object.atoms.find((candidate) => candidate.id === anchor.atomId);
+    return atom ? { x: atom.x, y: atom.y } : undefined;
+  }
+
+  if (anchor.kind === "object") {
+    return { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+  }
+
+  return undefined;
+}
+
+export interface MechanismArrowGeometry {
+  source: { x: number; y: number };
+  target: { x: number; y: number };
+  /** The Bezier control points in effect — stored ones, or the defaults for a fresh arrow. */
+  controls: { x: number; y: number }[];
+  pathD: string;
+  /** Unit tangent at the target end, for the arrowhead. */
+  headTangent: { x: number; y: number };
+}
+
+/** Endpoints pull back this far from the anchored atom/charge center so heads never sit on labels. */
+export const mechanismArrowEndClearancePx = 8;
+
+export function defaultMechanismArrowControls(
+  source: { x: number; y: number },
+  target: { x: number; y: number }
+): { x: number; y: number }[] {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const normal = { x: -dy / length, y: dx / length };
+  const bulge = Math.max(14, length * 0.3);
+  // Short hops take one handle (a simple hump); long reaches get two so the curve can snake.
+  if (length < 100) {
+    return [{
+      x: source.x + dx * 0.5 + normal.x * bulge,
+      y: source.y + dy * 0.5 + normal.y * bulge
+    }];
+  }
+  return [
+    { x: source.x + dx * (1 / 3) + normal.x * bulge, y: source.y + dy * (1 / 3) + normal.y * bulge },
+    { x: source.x + dx * (2 / 3) + normal.x * bulge, y: source.y + dy * (2 / 3) + normal.y * bulge }
+  ];
+}
+
+export function mechanismArrowGeometry(
+  page: DocumentPage,
+  object: MechanismArrowObject
+): MechanismArrowGeometry | undefined {
+  const sourceCenter = resolvePageAnchorPoint(page, object.source);
+  const targetCenter = resolvePageAnchorPoint(page, object.target);
+  if (!sourceCenter || !targetCenter) {
+    return undefined;
+  }
+
+  const controls = object.controlPoints.length > 0
+    ? object.controlPoints
+    : defaultMechanismArrowControls(sourceCenter, targetCenter);
+
+  const pullToward = (from: { x: number; y: number }, toward: { x: number; y: number }) => {
+    const dx = toward.x - from.x;
+    const dy = toward.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= mechanismArrowEndClearancePx) {
+      return from;
+    }
+    return {
+      x: from.x + (dx / length) * mechanismArrowEndClearancePx,
+      y: from.y + (dy / length) * mechanismArrowEndClearancePx
+    };
+  };
+  const source = pullToward(sourceCenter, controls[0]);
+  const target = pullToward(targetCenter, controls[controls.length - 1]);
+
+  const pathD = controls.length === 1
+    ? `M ${source.x} ${source.y} Q ${controls[0].x} ${controls[0].y} ${target.x} ${target.y}`
+    : `M ${source.x} ${source.y} C ${controls[0].x} ${controls[0].y} ${controls[1].x} ${controls[1].y} ${target.x} ${target.y}`;
+
+  const lastControl = controls[controls.length - 1];
+  const tangentLength = Math.hypot(target.x - lastControl.x, target.y - lastControl.y) || 1;
+  const headTangent = {
+    x: (target.x - lastControl.x) / tangentLength,
+    y: (target.y - lastControl.y) / tangentLength
+  };
+
+  return { source, target, controls, pathD, headTangent };
+}
+
+/**
+ * An electron-pushing arrow: a Bezier anchored to chemistry at both ends, with a filled head for
+ * pair transfer or a single-sided (fishhook) head for one electron.
+ */
+function mechanismArrowFragment(
+  object: MechanismArrowObject,
+  page: DocumentPage,
+  layerIndex: number
+): PageSvgElementFragment | undefined {
+  const geometry = mechanismArrowGeometry(page, object);
+  if (!geometry) {
+    return undefined;
+  }
+
+  const headSize = 9;
+  const { headTangent, target } = geometry;
+  const headNormal = { x: -headTangent.y, y: headTangent.x };
+  const back = { x: target.x - headTangent.x * headSize, y: target.y - headTangent.y * headSize };
+  const headHalfWidth = headSize * 0.45;
+  const fullHead = `${target.x},${target.y} ` +
+    `${back.x + headNormal.x * headHalfWidth},${back.y + headNormal.y * headHalfWidth} ` +
+    `${back.x - headNormal.x * headHalfWidth},${back.y - headNormal.y * headHalfWidth}`;
+  const halfHead = `${target.x},${target.y} ` +
+    `${back.x + headNormal.x * headHalfWidth},${back.y + headNormal.y * headHalfWidth} ` +
+    `${back.x + headNormal.x * (headHalfWidth * 0.2)},${back.y + headNormal.y * (headHalfWidth * 0.2)}`;
+
+  return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+    "data-mechanism-arrow-kind": object.arrowKind,
     transform: rotationTransform(object)
   }), [
-    elementFragment("text", `charge-${object.id}`, {
-      x: object.x + object.width / 2,
-      y: object.y + object.height / 2,
-      "dominant-baseline": "central",
-      "text-anchor": "middle",
-      "font-family": "Arial, Helvetica, sans-serif",
-      "font-size": 18,
-      "font-weight": 700,
-      fill: "#111111"
-    }, [textFragment(`charge-text-${object.id}`, charge > 0 ? "+" : "-")])
+    elementFragment("path", `mechanism-shaft-${object.id}`, {
+      d: geometry.pathD,
+      fill: "none",
+      stroke: "#111111",
+      "stroke-width": 1.6,
+      "stroke-linecap": "round"
+    }),
+    elementFragment("polygon", `mechanism-head-${object.id}`, {
+      points: object.arrowKind === "half-headed" ? halfHead : fullHead,
+      fill: "#111111",
+      stroke: "none"
+    })
   ]);
+}
+
+/** A lone pair (two dots) or a single unpaired-electron dot. */
+function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+  const centerX = object.x + object.width / 2;
+  const centerY = object.y + object.height / 2;
+  const dotRadius = 2.1;
+  const dots = object.markKind === "lone-pair"
+    ? [centerX - dotRadius * 1.6, centerX + dotRadius * 1.6]
+    : [centerX];
+
+  return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+    "data-mark-kind": object.markKind,
+    transform: rotationTransform(object)
+  }), dots.map((dotX, index) =>
+    elementFragment("circle", `electron-dot-${object.id}-${index}`, {
+      cx: dotX,
+      cy: centerY,
+      r: dotRadius,
+      fill: "#111111"
+    })
+  ));
 }
 
 function graphicObjectFragment(
@@ -4690,16 +4947,24 @@ export function atomDisplayLabel(
   drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
   atoms: readonly MoleculeAtom[] = []
 ): string | undefined {
+  // The mark-contributed part of the charge is drawn by the floating charge mark itself, so the
+  // label must not repeat it as a superscript — but hydrogen count always follows the FULL
+  // charge, because the deprotonation is real regardless of which object displays the sign.
+  const labelCharge = atom.formalCharge - (atom.markCharge ?? 0);
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
     const symbol = atom.element.trim() || "C";
-    return `${symbol}${chargeLabelSuffix(atom.formalCharge)}`;
+    return `${symbol}${chargeLabelSuffix(labelCharge)}`;
   }
   const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
   const formalCharge = atom.formalCharge;
+  // Each unpaired electron from an associated radical mark occupies a bonding slot.
   const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens
     ? ""
-    : implicitHydrogenLabel(Math.max(0, nativeAtomValenceForCharge(element, formalCharge) - valenceUsed));
+    : implicitHydrogenLabel(Math.max(
+        0,
+        nativeAtomValenceForCharge(element, formalCharge) - valenceUsed - (atom.markRadicals ?? 0)
+      ));
 
   if (element === "C" && formalCharge === 0) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
@@ -4719,8 +4984,8 @@ export function atomDisplayLabel(
     singleHeavyNeighbor !== undefined &&
     singleHeavyNeighbor.x > atom.x + 0.001;
   return hydrogenBeforeElement
-    ? `${implicitHydrogens}${element}${chargeLabelSuffix(formalCharge)}`
-    : `${element}${implicitHydrogens}${chargeLabelSuffix(formalCharge)}`;
+    ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
+    : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`;
 }
 
 const nativeElementSymbols = [
@@ -4783,6 +5048,30 @@ export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalC
     return 0;
   }
   return adjusted >= 4 ? 8 - adjusted : adjusted;
+}
+
+/**
+ * Whether `formalCharge` keeps this element's electron count inside a representable range —
+ * distinct from `nativeAtomValenceForCharge` returning 0, which also happens for a charge that
+ * legitimately has no room for MORE bonds (H+ and H- both take zero). Without this, a caller that
+ * only checks `valenceUsed <= nativeAtomValenceForCharge(...)` can't tell "no more bonds fit" from
+ * "this charge doesn't exist" — both collapse to the same 0, and an unbonded atom's valenceUsed of
+ * 0 trivially satisfies either one, so charges of arbitrary magnitude appear equally legal.
+ *
+ * Elements outside the valence-electron table (metals: Na, K, Ca, Fe, ...) have no octet
+ * arithmetic to bound them and legitimately carry ionic charges the table cannot express, so
+ * they stay permissive — the bound only applies where the octet math actually defines one.
+ */
+export function nativeAtomChargeIsExpressible(element: NativeElementSymbol, formalCharge: number): boolean {
+  const electrons = nativeAtomValenceElectrons[element];
+  if (electrons === undefined) {
+    return true;
+  }
+  if (element === "H") {
+    return Math.abs(formalCharge) <= 1;
+  }
+  const adjusted = electrons - formalCharge;
+  return adjusted >= 0 && adjusted <= 8;
 }
 const nativeBondOrderValue: Record<string, number> = {
   single: 1,

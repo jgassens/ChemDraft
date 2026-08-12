@@ -79,6 +79,14 @@ const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
+    "clipboard.copyAs.smiles",
+    "clipboard.copyAs.inchi",
+    "clipboard.copyAs.inchiKey",
+    "clipboard.copyAs.cdxml",
+    "clipboard.copyAs.mol",
+    "clipboard.copyAs.molV2000",
+    "clipboard.copyAs.svg",
+    "clipboard.copyAs.png",
     "document.new",
     "document.open",
     "document.save",
@@ -465,6 +473,7 @@ pub fn run() {
             sync_plugin_menu_items,
             read_clipboard_payload,
             write_clipboard_text_items,
+            write_clipboard_image,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
             window_logical_position,
@@ -1265,6 +1274,34 @@ fn write_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), 
     write_clipboard_text_items_impl(normalize_clipboard_write_text_items(items)?)
 }
 
+/// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
+#[tauri::command]
+fn write_clipboard_image(png_bytes: Vec<u8>) -> Result<(), String> {
+    if png_bytes.is_empty() {
+        return Err("Empty PNG payload.".to_string());
+    }
+    write_clipboard_image_impl(&png_bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn write_clipboard_image_impl(png_bytes: &[u8]) -> Result<(), String> {
+    use objc2_foundation::NSData;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+    let png_type = NSString::from_str("public.png");
+    if pasteboard.setData_forType(Some(&NSData::with_bytes(png_bytes)), &png_type) {
+        Ok(())
+    } else {
+        Err("Could not write PNG data to the clipboard.".to_string())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_clipboard_image_impl(_png_bytes: &[u8]) -> Result<(), String> {
+    Err("Native clipboard image writes are only implemented for macOS.".to_string())
+}
+
 fn normalize_clipboard_write_text_items(
     items: Vec<ClipboardWriteTextItem>,
 ) -> Result<Vec<ClipboardWriteTextItem>, String> {
@@ -1362,11 +1399,28 @@ fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextI
     pasteboard.setString_forType(&text, &pasteboard_type)
 }
 
+/// Pasteboard flavors whose bytes are private containers, never directly pasteable text.
+/// WebKit's custom-pasteboard-data is a binary blob (length-prefixed origin + type + payload)
+/// that any WebKit view — Safari included — leaves behind on copy; "decoding" it produced the
+/// CJK-mojibake text objects users saw when pasting between two ChemDraft instances.
+const OPAQUE_CLIPBOARD_TYPES: [&str; 2] = [
+    "com.apple.WebKit.custom-pasteboard-data",
+    "org.webkit.custom-pasteboard-data",
+];
+
+fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
+    OPAQUE_CLIPBOARD_TYPES.contains(&pasteboard_type)
+}
+
 #[cfg(target_os = "macos")]
 fn clipboard_text_for_type(
     pasteboard: &NSPasteboard,
     pasteboard_type: &objc2_app_kit::NSPasteboardType,
 ) -> Option<String> {
+    if is_opaque_clipboard_type(&pasteboard_type.to_string()) {
+        return None;
+    }
+
     if let Some(text) = pasteboard.stringForType(pasteboard_type) {
         let text = text.to_string();
         if !text.is_empty() {
@@ -1390,8 +1444,11 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     }
 
     if let Ok(text) = String::from_utf8(bytes.to_vec()) {
-        if !text.is_empty() {
-            return Some(text);
+        // ChemDraw-style flavors end in a C-string terminator; strip it. An INTERIOR null is
+        // different — text never contains one, so its presence means these bytes are binary.
+        let text = text.trim_end_matches('\0');
+        if !text.is_empty() && !text.contains('\0') {
+            return Some(text.to_string());
         }
     }
 
@@ -1412,28 +1469,77 @@ fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
 }
 
 fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
-    let (big_endian, content) = if bytes.starts_with(&[0xfe, 0xff]) {
-        (true, &bytes[2..])
-    } else if bytes.starts_with(&[0xff, 0xfe]) {
-        (false, &bytes[2..])
+    if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        return decode_utf16_units(content, true);
+    }
+    if let Some(content) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        return decode_utf16_units(content, false);
+    }
+
+    // Without a BOM, only accept byte patterns real UTF-16 text actually has. Two shapes are
+    // legitimate: mostly-Latin/mixed text puts a null in nearly every unit, concentrated on one
+    // parity (that parity is the high-byte position, which tells us the endianness); mostly-CJK
+    // or other wide-script text puts a null in almost NONE of its units on either parity, since
+    // those code points' high bytes are non-zero — so a low null density on BOTH parities is just
+    // as real a signal as a lopsided one, it just can't tell us the endianness by itself. Binary
+    // blobs (plists, CDX, image headers) fall in neither bucket: they scatter a meaningful number
+    // of nulls across both parities in comparable amounts.
+    let pair_count = bytes.len() / 2;
+    if pair_count == 0 {
+        return None;
+    }
+    let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
+    let odd_nulls = bytes
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|byte| **byte == 0)
+        .count();
+    let (dominant, other, dominant_is_big_endian) = if even_nulls >= odd_nulls {
+        (even_nulls, odd_nulls, true)
     } else {
-        let even_nulls = bytes.iter().step_by(2).filter(|byte| **byte == 0).count();
-        let odd_nulls = bytes
-            .iter()
-            .skip(1)
-            .step_by(2)
-            .filter(|byte| **byte == 0)
-            .count();
-        if even_nulls > odd_nulls {
-            (true, bytes)
-        } else if odd_nulls > even_nulls {
-            (false, bytes)
-        } else {
-            return None;
-        }
+        (odd_nulls, even_nulls, false)
     };
 
-    if content.len() < 2 || content.len() % 2 != 0 {
+    if dominant * 2 >= pair_count && other * 8 <= pair_count {
+        return decode_utf16_units(bytes, dominant_is_big_endian);
+    }
+    if (even_nulls + odd_nulls) * 8 <= pair_count {
+        // Nulls are too sparse on both sides to reveal which parity is the high byte from
+        // content alone. Byte-swapped CJK often decodes to SOME other real (non-control) script
+        // rather than failing outright, so "try both, take whichever passes" would silently
+        // prefer whichever order happens first even when it's wrong — try this platform's native
+        // order (macOS pasteboard UTF-16 without a BOM is little-endian) first, and only fall
+        // back to big-endian, which a non-native source could still have written. This is the
+        // decoder's lowest-confidence path (short binary payloads can decode into valid-looking
+        // units), so its results get extra scrutiny beyond the ordinary plausibility filter.
+        return decode_utf16_units(bytes, false)
+            .filter(|text| utf16_sparse_text_is_convincing(text))
+            .or_else(|| {
+                decode_utf16_units(bytes, true).filter(|text| utf16_sparse_text_is_convincing(text))
+            });
+    }
+    None
+}
+
+/// Extra scrutiny for the no-BOM sparse-null path only: real prose and chemistry text never
+/// contains private-use or noncharacter code points, while binary bytes and byte-swapped UTF-16
+/// frequently decode into exactly those ranges. (BOM'd and null-parity-detected payloads skip
+/// this — their encoding evidence is strong enough that PUA glyphs, e.g. icon fonts, pass.)
+fn utf16_sparse_text_is_convincing(text: &str) -> bool {
+    text.chars().all(|character| {
+        let code_point = character as u32;
+        let private_use = (0xe000..=0xf8ff).contains(&code_point)
+            || (0xf0000..=0xffffd).contains(&code_point)
+            || (0x100000..=0x10fffd).contains(&code_point);
+        let noncharacter =
+            (0xfdd0..=0xfdef).contains(&code_point) || (code_point & 0xfffe) == 0xfffe;
+        !private_use && !noncharacter
+    })
+}
+
+fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
+    if content.len() < 2 || !content.len().is_multiple_of(2) {
         return None;
     }
 
@@ -1449,7 +1555,20 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
         .collect::<Vec<_>>();
     String::from_utf16(&units)
         .ok()
-        .filter(|text| !text.is_empty())
+        .filter(|text| !text.is_empty() && text_is_plausible_clipboard_text(text))
+}
+
+/// Rejects strings that only a mis-decode produces: control characters (beyond whitespace)
+/// and replacement characters never occur in text a user meant to paste, while every
+/// legitimate UTF-16 clipboard payload (molfiles, CDXML, SMILES, prose) is clean of them.
+fn text_is_plausible_clipboard_text(text: &str) -> bool {
+    text.chars().all(|character| {
+        character == '\t'
+            || character == '\n'
+            || character == '\r'
+            || character == '\u{0c}'
+            || (character != '\u{fffd}' && !character.is_control())
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2325,6 +2444,69 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
+                    &Submenu::with_items(
+                        app,
+                        "Copy As",
+                        true,
+                        &[
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.smiles",
+                                "SMILES",
+                                true,
+                                Some("CmdOrCtrl+Alt+C"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.inchi",
+                                "InChI",
+                                true,
+                                None::<&str>,
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.inchiKey",
+                                "InChI Key",
+                                true,
+                                None::<&str>,
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.cdxml",
+                                "CDXML Text",
+                                true,
+                                Some("CmdOrCtrl+D"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.mol",
+                                "MOL Text",
+                                true,
+                                Some("CmdOrCtrl+Alt+O"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.molV2000",
+                                "MOL V2000 Text",
+                                true,
+                                Some("CmdOrCtrl+Alt+Shift+O"),
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.svg",
+                                "SVG",
+                                true,
+                                None::<&str>,
+                            )?,
+                            &MenuItem::with_id(
+                                app,
+                                "clipboard.copyAs.png",
+                                "PNG",
+                                true,
+                                None::<&str>,
+                            )?,
+                        ],
+                    )?,
                     &PredefinedMenuItem::paste(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
@@ -4163,6 +4345,131 @@ mod tests {
             .collect::<Vec<_>>();
 
         expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_accepts_bomless_majority_cjk_payloads() {
+        // CJK code points rarely null-pad either byte of a UTF-16 unit, so the null-parity ratio
+        // that flags mostly-Latin text can't fire here — this is the exact "paste between two
+        // ChemDraft instances mangles Chinese text" shape the decoder must still accept.
+        let text = "苯甲酸";
+        let bytes = text
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+
+        expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_rejects_sparse_binary_that_decodes_into_private_use_glyphs() {
+        // Null-free binary bytes reach the low-confidence sparse-null path; when they decode
+        // into private-use code points (as byte-swapped or arbitrary data often does), the
+        // extra-scrutiny filter must reject them instead of pasting them as "text".
+        let bytes = vec![0xe1, 0xe1, 0xe1, 0xe1, 0xe1, 0xe1]; // decodes to U+E1E1 (PUA) x3 either order
+
+        expect_eq(None, decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_accepts_bom_prefixed_utf16_payloads() {
+        let text = "苯甲酸";
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+
+        expect_eq(Some(text.to_string()), decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_rejects_null_heavy_binary_blobs() {
+        // The shape of a WebKit custom-pasteboard-data / binary-plist blob: length-prefixed
+        // fields whose null bytes land on BOTH parities. The old heuristic decoded blobs like
+        // this as UTF-16 and produced CJK mojibake "text" that pasted as a text object.
+        let mut bytes = vec![0x01, 0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x00];
+        bytes.extend(b"null:acff5040-3cd6-47ec-8888-000000000000".to_vec());
+        bytes.extend(vec![
+            0x00, 0x62, 0x70, 0x00, 0x00, 0x13, 0x37, 0x00, 0x81, 0x92,
+        ]);
+
+        expect_eq(None, decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn clipboard_byte_decoder_rejects_bomless_utf16_with_scattered_nulls() {
+        // 50% nulls overall (old trigger) but split across both parities — binary, not text.
+        let bytes = vec![
+            0x00, 0x41, 0x42, 0x00, 0x00, 0x43, 0x44, 0x00, 0x00, 0x45, 0x46, 0x00,
+        ];
+
+        expect_eq(None, decode_clipboard_text_bytes(&bytes));
+    }
+
+    #[test]
+    fn webkit_custom_pasteboard_container_is_opaque() {
+        expect_true(is_opaque_clipboard_type(
+            "com.apple.WebKit.custom-pasteboard-data",
+        ));
+        expect_true(is_opaque_clipboard_type(
+            "org.webkit.custom-pasteboard-data",
+        ));
+        expect_false(is_opaque_clipboard_type(
+            "application/x-chemdraft-selection+json",
+        ));
+        expect_false(is_opaque_clipboard_type("com.mdli.molfile"));
+        expect_false(is_opaque_clipboard_type("text/plain"));
+    }
+
+    /// Round-trips the real NSPasteboard, so it stomps the user's clipboard — run explicitly
+    /// with `cargo test -- --ignored`. This is the cross-instance copy/paste contract: what
+    /// one ChemDraft process writes natively, another must read back verbatim, and a WebKit
+    /// custom-pasteboard container left by a webview copy must yield NO text item instead of
+    /// UTF-16 mojibake.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn native_pasteboard_round_trips_chemdraft_selection_and_skips_webkit_container() {
+        use objc2_foundation::NSData;
+
+        let selection_json = r#"{"kind":"chemdraft-selection","objects":[{"type":"molecule","atoms":[{"el":"C"},{"el":"O"}]}]}"#;
+        write_clipboard_text_items_impl(vec![ClipboardWriteTextItem {
+            r#type: "application/x-chemdraft-selection+json".to_string(),
+            text: selection_json.to_string(),
+        }])
+        .expect("native clipboard write should succeed");
+
+        // What a webview copy leaves behind: binary, null-sprinkled container data.
+        let mut container_bytes: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x00];
+        container_bytes.extend(b"null:acff5040-3cd6-47ec".to_vec());
+        container_bytes.extend(vec![
+            0x00, 0x62, 0x70, 0x00, 0x00, 0x13, 0x37, 0x00, 0x81, 0x92,
+        ]);
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let container_type = NSString::from_str("com.apple.WebKit.custom-pasteboard-data");
+        expect_true(
+            pasteboard
+                .setData_forType(Some(&NSData::with_bytes(&container_bytes)), &container_type),
+        );
+
+        let payload = read_clipboard_payload_impl().expect("native clipboard read should succeed");
+
+        let selection_item = payload
+            .text_items
+            .iter()
+            .find(|item| item.r#type == "application/x-chemdraft-selection+json")
+            .expect("selection flavor should read back");
+        expect_eq(selection_json.to_string(), selection_item.text.clone());
+        expect_true(
+            payload
+                .types
+                .iter()
+                .any(|kind| kind == "com.apple.WebKit.custom-pasteboard-data"),
+        );
+        expect_true(
+            !payload
+                .text_items
+                .iter()
+                .any(|item| item.r#type == "com.apple.WebKit.custom-pasteboard-data"),
+        );
     }
 
     #[test]

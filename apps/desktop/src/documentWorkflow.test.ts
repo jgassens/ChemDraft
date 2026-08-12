@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
-import { atomDisplayLabel } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, mechanismArrowGeometry, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   applyPatch,
@@ -17,6 +17,7 @@ import {
   type ChemDraftDocument,
   type DocumentObject,
   type ElectronMarkObject,
+  type MechanismArrowObject,
   type GraphicObject,
   type GraphicPaint,
   type GroupObject,
@@ -151,11 +152,17 @@ import {
   nativeAtomHitRadiusPx,
   nativeBondLengthPx,
   nativeChargeAssociationRadiusPx,
-  nativeChargeAssociationsForMolecule,
-  nativeChargeByAtomIdFromAssociations,
+  reconcileNativeChargeMarks,
+  copyAsMolfile,
+  copyAsScopeObjects,
+  copyAsScopedDocument,
+  copyAsSmiles,
+  createMechanismArrowBetween,
+  applyMechanismArrowControlPoint,
+  mechanismArrowHandlePoints,
   nativeChargeMarkCenter,
   nativeChargeMarkSizePx,
-  nativeChargePlacementPointForAtom,
+  nativeAtomValidationState,
   nativeBondStyleForToolCommand,
   nativeElementFromAtomLabel,
   nativeElementFromKeyboardKey,
@@ -853,7 +860,7 @@ function cyclopentaneVerticesFromBond(
 function setNativeAtomElement(
   document: ChemDraftDocument,
   atomId: string,
-  element: "H" | "B" | "C" | "N" | "O" | "F" | "P" | "S" | "I"
+  element: "H" | "B" | "C" | "N" | "O" | "F" | "Na" | "P" | "S" | "I"
 ): ChemDraftDocument {
   const molecule = selectedMolecule(document);
   return applyNativeAtomElementTarget(document, {
@@ -1634,6 +1641,33 @@ describe("Phase 4 document workflow", () => {
 
     expect(stretchNativeReactionArrowTo(placed, objectId, { x: 200, y: 220 }, { x: 203, y: 221 })).toBe(placed);
     expect(stretchNativeReactionArrowTo(placed, "missing_object", { x: 0, y: 0 }, { x: 90, y: 0 })).toBe(placed);
+  });
+
+  it("translates a reaction arrow's point anchors when the arrow object itself is dragged", () => {
+    const blank = createPhase4Document("Arrow Drag Fixture");
+    const placed = applyReactionArrowToolAtPoint(blank, { x: 200, y: 220 }, "forward");
+    const objectId = placed.selection.objectIds[0];
+    const before = placed.pages[0].objects[0];
+    if (before.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+
+    // Before the reaction-arrow branch existed, moveDocumentObject fell through to the generic
+    // x/y-only path, leaving start/end (what the rendered line and arrowAnchorPointForObject
+    // actually read) stale — the arrow stayed visually pinned while its selection box drifted.
+    const dragged = moveDocumentObject(placed, objectId, { x: before.x + 60, y: before.y + 25 });
+    const after = dragged.pages[0].objects[0];
+    if (after.type !== "reaction-arrow") {
+      throw new Error("Expected an arrow");
+    }
+
+    expect(after.x).toBeCloseTo(before.x + 60, 5);
+    expect(after.y).toBeCloseTo(before.y + 25, 5);
+    expect(after.start).toMatchObject({ kind: "point", point: { x: 260, y: 245 } });
+    expect(after.end).toMatchObject({
+      kind: "point",
+      point: { x: 260 + nativeReactionArrowDefaultLengthPx, y: 245 }
+    });
   });
 
   it("scales arrow endpoints with the frame instead of only the selection box", () => {
@@ -7865,17 +7899,25 @@ describe("Phase 4 document workflow", () => {
     const relabeled = selectedMolecule(relabeledDocument);
     expect(relabeled.atoms.find((atom) => atom.id === newAtom.id)).toMatchObject({ element: "N" });
 
-    const withCharge = applyChargeToolAtNativeAtom(relabeledDocument, 1, {
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(relabeledDocument, 1, {
       objectId: relabeled.id,
       kind: "atom",
       atomId: newAtom.id,
       distanceToPointer: 0
-    });
+    }));
     const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
     );
-    expect(chargeMark).toMatchObject({ charge: 1 });
+    expect(chargeMark).toMatchObject({ charge: 1, anchor: { kind: "atom", atomId: newAtom.id } });
     expect(withCharge.selection.objectIds).toEqual([chargeMark?.id]);
+    const chargedPasted = withCharge.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === relabeled.id && object.type === "molecule"
+    );
+    expect(chargedPasted?.atoms.find((atom) => atom.id === newAtom.id)).toMatchObject({
+      element: "N",
+      formalCharge: 1,
+      markCharge: 1
+    });
 
     const deletedDocument = applyNativeMoleculeDeleteTarget(relabeledDocument, {
       objectId: relabeled.id,
@@ -8331,6 +8373,42 @@ describe("Phase 4 document workflow", () => {
     ]);
   });
 
+  it("flags an implausibly large formal charge on an unbonded atom instead of treating zero used valence as trivially valid for any magnitude", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Bare Carbon Charge"), { x: 220, y: 260 });
+    const methane = applyNativeMoleculeDeleteTarget(ethane, {
+      objectId: selectedMolecule(ethane).id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      terminalAtomId: "atom_002",
+      distanceToPointer: 0
+    });
+    const bareCarbon = selectedMolecule(methane);
+    expect(bareCarbon.atoms).toEqual([expect.objectContaining({ id: "atom_001" })]);
+
+    // A carbon with no bonds trivially satisfies "0 used <= 0 room" for ANY charge whose
+    // magnitude pushes the octet-derived capacity to 0 — the exact gap a repeated charge-tool
+    // click (or a hand-edited/pasted MOL V3000 CHG value) could reach.
+    const implausible = applyPatches(methane, [{
+      op: "updateObject",
+      objectId: bareCarbon.id,
+      changes: { atoms: bareCarbon.atoms.map((atom) => ({ ...atom, formalCharge: 7 })) }
+    }]);
+
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(implausible))).toMatchObject([
+      { atomId: "atom_001", element: "C", valid: false }
+    ]);
+
+    // A real, drawable single ionic charge on the same bare atom stays valid.
+    const plausible = applyPatches(methane, [{
+      op: "updateObject",
+      objectId: bareCarbon.id,
+      changes: { atoms: bareCarbon.atoms.map((atom) => ({ ...atom, formalCharge: 1 })) }
+    }]);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(plausible))).toEqual([]);
+  });
+
   it("deletes neopentane's central carbon into neutral methane fragments", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
@@ -8394,7 +8472,7 @@ describe("Phase 4 document workflow", () => {
     expect(neutralMolecule.atoms.find((atom) => atom.id === "atom_002")).toBeUndefined();
   });
 
-  it("places and moves charge marks that resolve nearby hypervalent atoms only while close", () => {
+  it("associates a placed charge mark with the nearby hypervalent nitrogen and releases it when moved away", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Movable Charge Resolution"), { x: 300, y: 300 })
@@ -8407,40 +8485,37 @@ describe("Phase 4 document workflow", () => {
     }
     expect(nativeMoleculeInvalidAtomStates(hypervalentMolecule)).toHaveLength(1);
 
-    const withCharge = applyChargeToolAtPoint(neutralHypervalent, 1, {
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtPoint(neutralHypervalent, 1, {
       x: nitrogen.x + 11,
       y: nitrogen.y - 11
-    });
+    }));
     const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
     );
-    if (!chargeMark) {
-      throw new Error("Expected inserted charge mark.");
+    const resolvedMolecule = withCharge.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === hypervalentMolecule.id && object.type === "molecule"
+    );
+    if (!chargeMark || !resolvedMolecule) {
+      throw new Error("Expected inserted charge mark and molecule.");
     }
 
     expect(withCharge.selection.objectIds).toEqual([chargeMark.id]);
     expect(chargeMark.charge).toBe(1);
-    expect(nativeChargeMarkCenter(chargeMark)).toMatchObject({
-      x: nitrogen.x + 11,
-      y: nitrogen.y - 11
-    });
+    expect(chargeMark.anchor).toMatchObject({ kind: "atom", objectId: resolvedMolecule.id, atomId: "atom_001" });
+    const chargedNitrogen = resolvedMolecule.atoms.find((atom) => atom.id === "atom_001");
+    expect(chargedNitrogen).toMatchObject({ element: "N", formalCharge: 1, markCharge: 1 });
+    // The floating mark already draws the plus, so the label does not repeat it — but the
+    // charge is real: validity and the formula both carry it.
+    expect(atomDisplayLabel(chargedNitrogen!, resolvedMolecule.bonds)).toBe("N");
+    expect(resolvedMolecule.chemistry).toMatchObject({ totalCharge: 1 });
+    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule)).toEqual([]);
 
-    const resolvedMolecule = withCharge.pages[0].objects.find((object): object is MoleculeObject =>
-      object.id === hypervalentMolecule.id && object.type === "molecule"
+    // Reconciliation is idempotent: a second pass changes nothing.
+    expect(reconcileNativeChargeMarks(withCharge)).toBe(withCharge);
+
+    const movedAway = reconcileNativeChargeMarks(
+      moveDocumentObject(withCharge, chargeMark.id, { x: nitrogen.x + 120, y: nitrogen.y + 80 })
     );
-    if (!resolvedMolecule) {
-      throw new Error("Expected molecule after charge insertion.");
-    }
-    const associations = nativeChargeAssociationsForMolecule(resolvedMolecule, withCharge.pages[0].objects);
-    const chargeByAtomId = nativeChargeByAtomIdFromAssociations(associations);
-
-    expect(associations).toMatchObject([
-      { chargeObjectId: chargeMark.id, atomId: "atom_001", moleculeId: resolvedMolecule.id, charge: 1 }
-    ]);
-    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule, chargeByAtomId)).toEqual([]);
-    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule)).toHaveLength(1);
-
-    const movedAway = moveDocumentObject(withCharge, chargeMark.id, { x: nitrogen.x + 120, y: nitrogen.y + 80 });
     const movedCharge = movedAway.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.id === chargeMark.id && object.type === "electron-mark"
     );
@@ -8451,15 +8526,13 @@ describe("Phase 4 document workflow", () => {
       throw new Error("Expected moved charge and molecule.");
     }
 
-    expect(nativeChargeAssociationsForMolecule(movedMolecule, movedAway.pages[0].objects)).toEqual([]);
+    expect(movedCharge.anchor.kind).toBe("point");
+    expect(movedMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ formalCharge: 0 });
+    expect(movedMolecule.atoms.find((atom) => atom.id === "atom_001")?.markCharge).toBeUndefined();
     expect(nativeMoleculeInvalidAtomStates(movedMolecule)).toHaveLength(1);
-    expect(nativeChargeMarkCenter(movedCharge)).toMatchObject({
-      x: movedCharge.x + movedCharge.width / 2,
-      y: movedCharge.y + movedCharge.height / 2
-    });
   });
 
-  it("places atom-targeted charges into an open space that resolves matching hypervalence", () => {
+  it("places a movable mark for atom-targeted charges whose association resolves the hypervalence", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Atom Target Charge"), { x: 300, y: 300 })
@@ -8470,23 +8543,13 @@ describe("Phase 4 document workflow", () => {
     if (!nitrogen) {
       throw new Error("Expected hypervalent nitrogen.");
     }
-    const placement = nativeChargePlacementPointForAtom(
-      hypervalentMolecule,
-      nitrogen.id,
-      neutralHypervalent.pages[0].objects,
-      neutralHypervalent.pages[0].width,
-      neutralHypervalent.pages[0].height
-    );
-    if (!placement) {
-      throw new Error("Expected native charge placement.");
-    }
 
-    const withCharge = applyChargeToolAtNativeAtom(neutralHypervalent, 1, {
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(neutralHypervalent, 1, {
       objectId: hypervalentMolecule.id,
       kind: "atom",
       atomId: nitrogen.id,
       distanceToPointer: 0
-    });
+    }));
     const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
     );
@@ -8494,36 +8557,908 @@ describe("Phase 4 document workflow", () => {
       object.id === hypervalentMolecule.id && object.type === "molecule"
     );
     if (!chargeMark || !resolvedMolecule) {
-      throw new Error("Expected atom-targeted charge and molecule.");
+      throw new Error("Expected atom-targeted charge mark and molecule.");
     }
 
     expect(withCharge.selection.objectIds).toEqual([chargeMark.id]);
-    expect(nativeChargeMarkCenter(chargeMark)).toMatchObject(placement);
     expect(pointDistance(nativeChargeMarkCenter(chargeMark), nitrogen)).toBeGreaterThan(nativeChargeMarkSizePx);
     expect(pointDistance(nativeChargeMarkCenter(chargeMark), nitrogen)).toBeLessThanOrEqual(nativeChargeAssociationRadiusPx);
-    const chargeByAtomId = nativeChargeByAtomIdFromAssociations(
-      nativeChargeAssociationsForMolecule(resolvedMolecule, withCharge.pages[0].objects)
-    );
-    expect(chargeByAtomId.get(nitrogen.id)).toBe(1);
-    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule, chargeByAtomId)).toEqual([]);
+    expect(chargeMark.anchor).toMatchObject({ kind: "atom", atomId: nitrogen.id });
+    expect(resolvedMolecule.atoms.find((atom) => atom.id === nitrogen.id)).toMatchObject({ formalCharge: 1, markCharge: 1 });
+    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule)).toEqual([]);
   });
 
-  it("places atom-targeted charges away from the only existing bond when space is obvious", () => {
-    const document = insertNativeSingleBondMolecule(createPhase4Document("Open Charge Placement"), { x: 300, y: 300 });
-    const molecule = selectedMolecule(document);
-    const leftAtom = molecule.atoms.find((atom) => atom.id === "atom_001");
-    if (!leftAtom) {
-      throw new Error("Expected left atom.");
+  it("deprotonates a drawn hydroxyl while its charge mark is close and hands the proton back when it leaves", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Alkoxide Charge"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const oxygen = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!oxygen) {
+      throw new Error("Expected hydroxyl oxygen.");
     }
-    const placement = nativeChargePlacementPointForAtom(
-      molecule,
-      leftAtom.id,
-      document.pages[0].objects,
-      document.pages[0].width,
-      document.pages[0].height
+    expect(atomDisplayLabel(oxygen, molecule.bonds, undefined, molecule.atoms)).toBe("OH");
+    expect(molecule.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
+
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: oxygen.id,
+      distanceToPointer: 0
+    }));
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    const alkoxide = withCharge.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    if (!chargeMark || !alkoxide) {
+      throw new Error("Expected alkoxide molecule and its charge mark.");
+    }
+    const chargedOxygen = alkoxide.atoms.find((atom) => atom.id === oxygen.id);
+
+    expect(chargedOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
+    // Proton removed; the minus is drawn by the mark, not repeated in the label.
+    expect(atomDisplayLabel(chargedOxygen!, alkoxide.bonds, undefined, alkoxide.atoms)).toBe("O");
+    expect(alkoxide.chemistry).toMatchObject({ formula: "CH3O", totalCharge: -1 });
+    expect(nativeMoleculeInvalidAtomStates(alkoxide)).toEqual([]);
+
+    // Drag the mark out of the association radius: the oxygen is neutral OH again — no error
+    // badge, because a bare mark on the canvas is just an annotation.
+    const movedAway = reconcileNativeChargeMarks(
+      moveDocumentObject(withCharge, chargeMark.id, { x: oxygen.x + 140, y: oxygen.y + 90 })
+    );
+    const neutralMolecule = movedAway.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    const neutralOxygen = neutralMolecule?.atoms.find((atom) => atom.id === oxygen.id);
+
+    expect(neutralOxygen).toMatchObject({ formalCharge: 0 });
+    expect(neutralOxygen?.markCharge).toBeUndefined();
+    expect(atomDisplayLabel(neutralOxygen!, neutralMolecule!.bonds, undefined, neutralMolecule!.atoms)).toBe("OH");
+    expect(neutralMolecule?.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
+    expect(nativeMoleculeInvalidAtomStates(neutralMolecule!)).toEqual([]);
+
+    // Deleting the selected mark restores the proton the same way.
+    const deleted = reconcileNativeChargeMarks(deleteSelectedDocumentObjects(withCharge));
+    const deletedMolecule = deleted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    expect(deleted.pages[0].objects.some((object) => object.type === "electron-mark")).toBe(false);
+    expect(deletedMolecule?.atoms.find((atom) => atom.id === oxygen.id)).toMatchObject({ formalCharge: 0 });
+    expect(deletedMolecule?.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
+  });
+
+  it("carries an anchored charge mark along when the molecule (not the mark) is dragged", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Drag Molecule With Charge"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const oxygen = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!oxygen) {
+      throw new Error("Expected hydroxyl oxygen.");
+    }
+
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: oxygen.id,
+      distanceToPointer: 0
+    }));
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!chargeMark) {
+      throw new Error("Expected an alkoxide charge mark.");
+    }
+
+    // Select and drag the whole molecule — the ordinary "reposition my structure" gesture —
+    // rather than the mark. The mark must ride along, not get left behind and lose its charge.
+    const dragged = reconcileNativeChargeMarks(
+      moveDocumentObject(withCharge, molecule.id, { x: molecule.x + 400, y: molecule.y + 400 })
+    );
+    const draggedMolecule = dragged.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    const draggedMark = dragged.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === chargeMark.id && object.type === "electron-mark"
+    );
+    const draggedOxygen = draggedMolecule?.atoms.find((atom) => atom.id === oxygen.id);
+
+    expect(draggedOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
+    expect(draggedMark?.anchor).toMatchObject({ kind: "atom", objectId: molecule.id, atomId: oxygen.id });
+    expect(draggedMolecule?.chemistry).toMatchObject({ formula: "CH3O", totalCharge: -1 });
+  });
+
+  it("moves an anchored mark exactly once when molecule and mark are group-dragged together", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Group Drag Both"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const mark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    if (!mark) {
+      throw new Error("Expected an anchored charge mark.");
+    }
+    const markStart = { x: mark.x, y: mark.y };
+
+    // Select-all then drag: the molecule's mark cascade and the mark's own translate must not
+    // BOTH move it — a double move strands it outside the association radius and the next
+    // reconciliation silently strips the charge.
+    const dragged = reconcileNativeChargeMarks(
+      moveDocumentObjects(withCharge, [molecule.id, mark.id], 50, 40)
+    );
+    const draggedMark = dragged.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const draggedOxygen = (dragged.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    ))?.atoms.find((atom) => atom.id === "atom_002");
+
+    expect(draggedMark!.x - markStart.x).toBeCloseTo(50, 5);
+    expect(draggedMark!.y - markStart.y).toBeCloseTo(40, 5);
+    expect(draggedOxygen).toMatchObject({ formalCharge: -1, markCharge: -1 });
+  });
+
+  it("carries an anchored mark along in a group drag even when only the molecule is in the id list", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Group Drag Molecule Only"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const mark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    )!;
+    const markStart = { x: mark.x, y: mark.y };
+
+    const dragged = reconcileNativeChargeMarks(moveDocumentObjects(withCharge, [molecule.id], 60, 0));
+    const draggedMark = dragged.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const draggedOxygen = (dragged.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    ))?.atoms.find((atom) => atom.id === "atom_002");
+
+    expect(draggedMark!.x - markStart.x).toBeCloseTo(60, 5);
+    expect(draggedOxygen).toMatchObject({ formalCharge: -1, markCharge: -1 });
+  });
+
+  it("translates a fully anchored arrow's controls in a group drag that moves its molecule too", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Group Drag Arrow"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    const withArrow = createMechanismArrowBetween(ethane, "full-headed",
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_002" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    )!;
+    const controlStart = arrow.controlPoints[0];
+
+    // Molecule and arrow group-dragged together: the atoms the arrow anchors to move by the
+    // delta, so the Bezier controls must ride along — the single-drag no-op guard must not fire.
+    const dragged = moveDocumentObjects(withArrow, [molecule.id, arrow.id], 80, 0);
+    const draggedArrow = dragged.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.id === arrow.id && object.type === "mechanism-arrow"
     );
 
-    expect(placement?.x).toBeLessThan(leftAtom.x);
+    expect(draggedArrow!.controlPoints[0].x - controlStart.x).toBeCloseTo(80, 5);
+    expect(draggedArrow!.controlPoints[0].y - controlStart.y).toBeCloseTo(0, 5);
+  });
+
+  it("accepts an ionic charge on an element outside the octet table", () => {
+    const sodium = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Sodium Cation"), { x: 300, y: 300 }),
+      "atom_002",
+      "Na"
+    );
+    const molecule = selectedMolecule(sodium);
+    const deleted = applyNativeMoleculeDeleteTarget(sodium, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      terminalAtomId: "atom_001",
+      distanceToPointer: 0
+    });
+    const bareNa = selectedMolecule(deleted);
+    expect(bareNa.atoms.map((atom) => atom.element)).toEqual(["Na"]);
+
+    // Metals have no octet arithmetic — the expressibility bound only applies to tabled
+    // elements, so the charge tool must still make an Na+ out of a bare sodium atom.
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(deleted, 1, {
+      objectId: bareNa.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const chargedMolecule = charged.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === bareNa.id && object.type === "molecule"
+    );
+    const sodiumAtom = chargedMolecule?.atoms.find((atom) => atom.id === "atom_002");
+    expect(sodiumAtom).toMatchObject({ element: "Na", formalCharge: 1, markCharge: 1 });
+  });
+
+  it("places atom-targeted charge marks at the chain-growth slot, one bond length out", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Charge Placement"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const oxygen = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!oxygen) {
+      throw new Error("Expected oxygen.");
+    }
+
+    const withCharge = applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: oxygen.id,
+      distanceToPointer: 0
+    });
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!chargeMark) {
+      throw new Error("Expected placed charge mark.");
+    }
+
+    // The mark lands where the next chain atom would go: a full bond length from the atom.
+    expect(pointDistance(nativeChargeMarkCenter(chargeMark), oxygen)).toBeCloseTo(nativeBondLengthPx, 0);
+    // Default presentation is the circled glyph — no explicit style override needed.
+    expect(chargeMark.chargeStyle).toBeUndefined();
+    expect(chargeMark.radical).toBeUndefined();
+  });
+
+  it("takes one implicit hydrogen for an associated radical dot and counts it in the formula", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Ethyl Radical"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    expect(molecule.chemistry).toMatchObject({ formula: "C2H6", radicalCount: 0 });
+
+    const withRadical = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(ethane, { kind: "radical-dot" }, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const radicalMolecule = withRadical.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    const radicalCarbon = radicalMolecule?.atoms.find((atom) => atom.id === "atom_002");
+
+    expect(radicalCarbon).toMatchObject({ formalCharge: 0, markRadicals: 1 });
+    expect(radicalMolecule?.chemistry).toMatchObject({ formula: "C2H5", radicalCount: 1, totalCharge: 0 });
+    expect(nativeMoleculeInvalidAtomStates(radicalMolecule!)).toEqual([]);
+
+    // On a labeled heteroatom the hydrogen loss is visible: an alkoxy radical draws "O", not "OH".
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Alkoxy Radical"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const methanolMolecule = selectedMolecule(methanol);
+    const withOxygenRadical = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, { kind: "radical-dot" }, {
+      objectId: methanolMolecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const alkoxyMolecule = withOxygenRadical.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === methanolMolecule.id && object.type === "molecule"
+    );
+    const alkoxyOxygen = alkoxyMolecule?.atoms.find((atom) => atom.id === "atom_002");
+
+    expect(alkoxyOxygen).toMatchObject({ formalCharge: 0, markRadicals: 1 });
+    expect(atomDisplayLabel(alkoxyOxygen!, alkoxyMolecule!.bonds, undefined, alkoxyMolecule!.atoms)).toBe("O");
+    expect(alkoxyMolecule?.chemistry).toMatchObject({ formula: "CH3O", radicalCount: 1, totalCharge: 0 });
+    expect(nativeMoleculeInvalidAtomStates(alkoxyMolecule!)).toEqual([]);
+
+    const markObject = withRadical.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    expect(markObject).toMatchObject({ markKind: "radical-dot", anchor: { kind: "atom", atomId: "atom_002" } });
+  });
+
+  it("applies a radical cation mark as one charge plus one unpaired electron", () => {
+    const trimethylamine = setNativeAtomElement(
+      [-120, 120].reduce(
+        (current, angle) => growFromAtom(current, "atom_001", angle),
+        insertNativeSingleBondMolecule(createPhase4Document("Aminium Radical"), { x: 300, y: 300 })
+      ),
+      "atom_001",
+      "N"
+    );
+    const molecule = selectedMolecule(trimethylamine);
+    expect(molecule.chemistry).toMatchObject({ formula: "C3H9N" });
+
+    const withRadicalCation = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      trimethylamine,
+      { kind: "charge", charge: 1, radical: true },
+      { objectId: molecule.id, kind: "atom", atomId: "atom_001", distanceToPointer: 0 }
+    ));
+    const chargedMolecule = withRadicalCation.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    const nitrogen = chargedMolecule?.atoms.find((atom) => atom.id === "atom_001");
+
+    // Trimethylaminium radical cation: N keeps its three bonds, the charge takes the lone pair's
+    // place, and the radical electron consumes the fourth slot — so no N-H appears.
+    expect(nitrogen).toMatchObject({ formalCharge: 1, markCharge: 1, markRadicals: 1 });
+    expect(atomDisplayLabel(nitrogen!, chargedMolecule!.bonds, undefined, chargedMolecule!.atoms)).toBe("N");
+    expect(chargedMolecule?.chemistry).toMatchObject({ formula: "C3H9N", totalCharge: 1, radicalCount: 1 });
+    expect(nativeMoleculeInvalidAtomStates(chargedMolecule!)).toEqual([]);
+
+    const markObject = withRadicalCation.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    expect(markObject).toMatchObject({ markKind: "charge", charge: 1, radical: true });
+  });
+
+  it("anchors lone pairs for positioning without touching the chemistry", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Lone Pair"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+
+    const withLonePair = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, { kind: "lone-pair" }, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const annotated = withLonePair.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    );
+    const markObject = withLonePair.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+
+    expect(markObject).toMatchObject({ markKind: "lone-pair", anchor: { kind: "atom", atomId: "atom_002" } });
+    const oxygen = annotated?.atoms.find((atom) => atom.id === "atom_002");
+    expect(oxygen).toMatchObject({ formalCharge: 0 });
+    expect(oxygen?.markCharge).toBeUndefined();
+    expect(oxygen?.markRadicals).toBeUndefined();
+    expect(annotated?.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0, radicalCount: 0 });
+  });
+
+  it("anchors electron-push arrows to atoms with handle counts that follow the reach", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Electron Push"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+
+    // Short hop: one Bezier handle.
+    const shortArrowDocument = createMechanismArrowBetween(ethane, "full-headed",
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_002" }
+    );
+    const shortArrow = shortArrowDocument.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+    if (!shortArrow) {
+      throw new Error("Expected short mechanism arrow.");
+    }
+    expect(shortArrowDocument.selection.objectIds).toEqual([shortArrow.id]);
+    expect(shortArrow.arrowKind).toBe("full-headed");
+    expect(shortArrow.source).toMatchObject({ kind: "atom", atomId: "atom_001" });
+    expect(shortArrow.target).toMatchObject({ kind: "atom", atomId: "atom_002" });
+    expect(shortArrow.controlPoints).toHaveLength(1);
+    expect(mechanismArrowHandlePoints(shortArrowDocument.pages[0], shortArrow)).toHaveLength(1);
+
+    // Long reach (a grown chain far away): two handles so the curve can snake.
+    const stretched = growHeptaneChain(ethane);
+    const stretchedMolecule = selectedMolecule(stretched);
+    const lastAtomId = stretchedMolecule.atoms.at(-1)!.id;
+    const longArrowDocument = createMechanismArrowBetween(stretched, "half-headed",
+      { kind: "atom", objectId: stretchedMolecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: stretchedMolecule.id, atomId: lastAtomId }
+    );
+    const longArrow = longArrowDocument.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+    expect(longArrow?.arrowKind).toBe("half-headed");
+    expect(longArrow?.controlPoints).toHaveLength(2);
+
+    // Same endpoint on both ends is refused.
+    expect(createMechanismArrowBetween(ethane, "full-headed",
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" }
+    )).toBe(ethane);
+  });
+
+  it("keeps electron-push arrows attached as the molecule moves and lets handles reshape them", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Anchored Push"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    const withArrow = createMechanismArrowBetween(ethane, "full-headed",
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_002" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+    if (!arrow) {
+      throw new Error("Expected mechanism arrow.");
+    }
+
+    const before = resolvePageAnchorPoint(withArrow.pages[0], arrow.source);
+    const movedDocument = moveDocumentObject(withArrow, molecule.id, { x: molecule.x + 90, y: molecule.y + 40 });
+    const movedArrow = movedDocument.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.id === arrow.id && object.type === "mechanism-arrow"
+    );
+    const after = resolvePageAnchorPoint(movedDocument.pages[0], movedArrow!.source);
+
+    // The endpoints resolve through the atom anchors, so they follow the molecule.
+    expect(after!.x - before!.x).toBeCloseTo(90, 1);
+    expect(after!.y - before!.y).toBeCloseTo(40, 1);
+    expect(mechanismArrowGeometry(movedDocument.pages[0], movedArrow!)).toBeDefined();
+
+    // Dragging a handle reshapes the stored curve.
+    const reshaped = applyMechanismArrowControlPoint(withArrow, arrow.id, 0, { x: 500, y: 180 });
+    const reshapedArrow = reshaped.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.id === arrow.id && object.type === "mechanism-arrow"
+    );
+    expect(reshapedArrow?.controlPoints[0]).toMatchObject({ x: 500, y: 180 });
+    // The bounding box grows to include the new control point.
+    expect(reshapedArrow!.x + reshapedArrow!.width).toBeGreaterThanOrEqual(500);
+    expect(reshapedArrow!.y).toBeLessThanOrEqual(180);
+  });
+
+  it("does not warp a fully atom-anchored arrow's curve when the arrow itself (not its molecule) is dragged", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Drag Arrow Body"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    const withArrow = createMechanismArrowBetween(ethane, "full-headed",
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_002" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+    if (!arrow) {
+      throw new Error("Expected mechanism arrow.");
+    }
+
+    // Both ends are atom-anchored and neither atom moved, so dragging the arrow object itself
+    // (its own x/y, not one of its atoms) has nothing sensible to translate: it must be a no-op
+    // rather than sliding just the control points away from a chord that stayed put.
+    const dragged = moveDocumentObject(withArrow, arrow.id, { x: arrow.x + 150, y: arrow.y });
+    expect(dragged).toBe(withArrow);
+  });
+
+  it("translates a fully atom-anchored arrow's control points during a bulk uniform translate", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Bulk Translate Arrow"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    const withArrow = createMechanismArrowBetween(ethane, "full-headed",
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_002" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+    if (!arrow) {
+      throw new Error("Expected mechanism arrow.");
+    }
+    const originalControlPoint = arrow.controlPoints[0];
+
+    // copyAsScopedDocument's shape: translate every scoped object — including the molecule the
+    // arrow is anchored to — by the same delta. Here only the arrow itself is moved (the
+    // molecule's atoms are left in place) to isolate translateAnchoredGeometry's effect, so the
+    // opt-in must move the control point by the given delta rather than no-op it.
+    const translated = moveDocumentObject(
+      withArrow,
+      arrow.id,
+      { x: arrow.x + 20, y: arrow.y + 30 },
+      { clampToPage: false, translateAnchoredGeometry: true }
+    );
+    const translatedArrow = translated.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.id === arrow.id && object.type === "mechanism-arrow"
+    );
+    expect(translatedArrow?.controlPoints[0].x).toBeCloseTo(originalControlPoint.x + 20, 5);
+    expect(translatedArrow?.controlPoints[0].y).toBeCloseTo(originalControlPoint.y + 30, 5);
+  });
+
+  it("accepts a charge mark as an electron-push endpoint", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Charge To Atom Push"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    if (!chargeMark) {
+      throw new Error("Expected charge mark.");
+    }
+
+    const withArrow = createMechanismArrowBetween(withCharge, "full-headed",
+      { kind: "object", objectId: chargeMark.id },
+      { kind: "atom", objectId: molecule.id, atomId: "atom_001" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+
+    expect(arrow?.source).toMatchObject({ kind: "object", objectId: chargeMark.id });
+    const geometry = mechanismArrowGeometry(withArrow.pages[0], arrow!);
+    expect(geometry?.source).toBeDefined();
+    expect(geometry?.target).toBeDefined();
+  });
+
+  it("serializes the Copy As scope: selection when present, the whole page otherwise", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Copy As Scope"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const withEthane = insertNativeSingleBondMolecule(methanol, { x: 500, y: 300 });
+    const molecules = withEthane.pages[0].objects.filter((object): object is MoleculeObject =>
+      object.type === "molecule"
+    );
+    expect(molecules).toHaveLength(2);
+
+    // Second molecule (plain ethane) is selected → scope is just that molecule.
+    expect(copyAsSmiles(withEthane)).toBe("CC");
+
+    // Nothing selected → the whole page, molecules joined with a dot.
+    const deselected = { ...withEthane, selection: { ...withEthane.selection, objectIds: [] } };
+    expect(copyAsSmiles(deselected)).toBe("CO.CC");
+
+    // A multi-molecule scope merges into one CTAB with every atom present.
+    const merged = copyAsMolfile(deselected, "v2000");
+    expect(merged).toContain("  4  2"); // 4 atoms, 2 bonds in the counts line
+  });
+
+  it("round-trips Copy As MOL V3000 text through the app's own paste path, charges included", () => {
+    const methanolate = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Copy As V3000"), { x: 300, y: 300 }),
+        "atom_002",
+        "O"
+      ),
+      -1,
+      { objectId: "mol_bond_001", kind: "atom", atomId: "atom_002", distanceToPointer: 0 }
+    ));
+    const scoped = { ...methanolate, selection: { ...methanolate.selection, objectIds: [] } };
+
+    const v3000 = copyAsMolfile(scoped, "v3000");
+    expect(v3000).toContain("V30 BEGIN CTAB");
+    expect(v3000).toContain("CHG=-1");
+
+    const pasted = applyClipboardPastePayload(
+      createPhase4Document("V3000 Paste Target"),
+      inspectClipboardPayload({
+        types: ["com.mdli.molfile"],
+        textItems: [{ type: "com.mdli.molfile", text: v3000! }]
+      }),
+      { x: 260, y: 260 }
+    );
+    const pastedMolecule = pasted.document.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule"
+    );
+
+    expect(pastedMolecule?.atoms).toHaveLength(2);
+    expect(pastedMolecule?.atoms.some((atom) => atom.element === "O" && atom.formalCharge === -1)).toBe(true);
+  });
+
+  it("carries anchored charge marks and push arrows along with a selected molecule in Copy As", () => {
+    // Methanolate with its ⊖ mark, plus an electron-push arrow from the mark to the carbon.
+    const methanolate = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Copy As Annotations"), { x: 300, y: 300 }),
+        "atom_002",
+        "O"
+      ),
+      -1,
+      { objectId: "mol_bond_001", kind: "atom", atomId: "atom_002", distanceToPointer: 0 }
+    ));
+    const chargeMark = methanolate.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    const withArrow = createMechanismArrowBetween(methanolate, "full-headed",
+      { kind: "object", objectId: chargeMark!.id },
+      { kind: "atom", objectId: "mol_bond_001", atomId: "atom_001" }
+    );
+
+    // Select ONLY the molecule: the mark (anchored to it) and the arrow (both ends in scope)
+    // must still travel with the copy.
+    const moleculeSelected = {
+      ...withArrow,
+      selection: { ...withArrow.selection, objectIds: ["mol_bond_001"] }
+    };
+    const scopeTypes = copyAsScopeObjects(moleculeSelected).map((object) => object.type).sort();
+    expect(scopeTypes).toEqual(["electron-mark", "mechanism-arrow", "molecule"]);
+
+    const scoped = copyAsScopedDocument(moleculeSelected);
+    const svg = exportPhase4Svg(scoped, { includeWarnings: false }).contents;
+    expect(svg).toContain('data-mark-kind="charge"');
+    expect(svg).toContain('data-mechanism-arrow-kind="full-headed"');
+
+    // The arrow's Bezier control must ride along with the translation onto the fitted page —
+    // a stale control rendered wild arcs sweeping outside the copied image.
+    const scopedArrow = scoped.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    );
+    scopedArrow!.controlPoints.forEach((control) => {
+      expect(control.x).toBeGreaterThanOrEqual(0);
+      expect(control.x).toBeLessThanOrEqual(scoped.pages[0].width);
+      expect(control.y).toBeGreaterThanOrEqual(0);
+      expect(control.y).toBeLessThanOrEqual(scoped.pages[0].height);
+    });
+
+    // Labels export as a halo copy UNDER a fill copy — never paint-order, which Illustrator
+    // ignores (it painted the white halo stroke over the fill, hiding every label).
+    expect(svg).not.toContain("paint-order");
+    expect(svg).not.toContain("dominant-baseline");
+    expect(svg).toContain('dy="0.35em"');
+  });
+
+  it("includes a reaction arrow whose both ends resolve inside a selected pair of molecules", () => {
+    const twoMolecules = insertNativeSingleBondMolecule(
+      insertNativeSingleBondMolecule(createPhase4Document("Reaction Scheme"), { x: 300, y: 300 }),
+      { x: 620, y: 300 }
+    );
+    const [reactant, product] = twoMolecules.pages[0].objects.filter(
+      (object): object is MoleculeObject => object.type === "molecule"
+    );
+    const arrow: DocumentObject = {
+      id: "reaction_arrow_scheme",
+      type: "reaction-arrow",
+      x: 420,
+      y: 300,
+      width: 100,
+      height: 24,
+      rotation: 0,
+      style: {},
+      arrowKind: "forward",
+      start: { kind: "object", objectId: reactant.id },
+      end: { kind: "object", objectId: product.id },
+      labels: []
+    };
+    const withArrow = applyPatches(twoMolecules, [
+      { op: "addObject", pageId: twoMolecules.pages[0].id, object: arrow }
+    ]);
+
+    // Select just the two structures — a natural workflow, since the arrow is a thin target —
+    // and confirm the connecting reaction arrow travels with the copy instead of being dropped.
+    const bothSelected = {
+      ...withArrow,
+      selection: { ...withArrow.selection, objectIds: [reactant.id, product.id] }
+    };
+    const scopeTypes = copyAsScopeObjects(bothSelected).map((object) => object.type).sort();
+    expect(scopeTypes).toEqual(["molecule", "molecule", "reaction-arrow"]);
+  });
+
+  it("pulls a reaction arrow's anchored molecules into scope when only the arrow is selected", () => {
+    const twoMolecules = insertNativeSingleBondMolecule(
+      insertNativeSingleBondMolecule(createPhase4Document("Reaction Scheme Arrow Only"), { x: 300, y: 300 }),
+      { x: 620, y: 300 }
+    );
+    const [reactant, product] = twoMolecules.pages[0].objects.filter(
+      (object): object is MoleculeObject => object.type === "molecule"
+    );
+    const arrow: DocumentObject = {
+      id: "reaction_arrow_scheme_2",
+      type: "reaction-arrow",
+      x: 420,
+      y: 300,
+      width: 100,
+      height: 24,
+      rotation: 0,
+      style: {},
+      arrowKind: "forward",
+      start: { kind: "object", objectId: reactant.id },
+      end: { kind: "object", objectId: product.id },
+      labels: []
+    };
+    const withArrow = applyPatches(twoMolecules, [
+      { op: "addObject", pageId: twoMolecules.pages[0].id, object: arrow }
+    ]);
+
+    // Click directly on the arrow (selecting only it) and Copy As: the arrow needs the
+    // molecules it's anchored to in scope, or it has nothing to resolve its endpoints against.
+    const arrowSelected = {
+      ...withArrow,
+      selection: { ...withArrow.selection, objectIds: [arrow.id] }
+    };
+    const scopeIds = copyAsScopeObjects(arrowSelected).map((object) => object.id).sort();
+    expect(scopeIds).toEqual([arrow.id, product.id, reactant.id].sort());
+  });
+
+  it("leaves an unrelated free-floating reaction arrow out of a molecule's Copy As scope", () => {
+    const withMolecule = insertNativeSingleBondMolecule(createPhase4Document("Free Arrow Exclusion"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(withMolecule);
+    // A plain arrow-tool arrow far away: point-point anchors reference nothing in the scope.
+    const freeArrow = applyReactionArrowToolAtPoint(withMolecule, { x: 700, y: 700 }, "forward");
+    const moleculeSelected = {
+      ...freeArrow,
+      selection: { ...freeArrow.selection, objectIds: [molecule.id] }
+    };
+
+    // Point endpoints ride along but never QUALIFY an arrow for auto-include on their own —
+    // otherwise every free arrow on the page would leak into every copy and inflate its bounds.
+    const scopeTypes = copyAsScopeObjects(moleculeSelected).map((object) => object.type);
+    expect(scopeTypes).toEqual(["molecule"]);
+  });
+
+  it("brings a reverse-pulled molecule's charge marks along when only the arrow is selected", () => {
+    const methanolate = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Arrow Pulls Marks"), { x: 300, y: 300 }),
+        "atom_002",
+        "O"
+      ),
+      -1,
+      { objectId: "mol_bond_001", kind: "atom", atomId: "atom_002", distanceToPointer: 0 }
+    ));
+    const withArrow = createMechanismArrowBetween(methanolate, "full-headed",
+      { kind: "atom", objectId: "mol_bond_001", atomId: "atom_002" },
+      { kind: "atom", objectId: "mol_bond_001", atomId: "atom_001" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    )!;
+
+    // Selecting ONLY the arrow pulls in its anchored molecule — and that molecule's charge mark
+    // must come too, or the copy renders an alkoxide oxygen with no visible minus anywhere.
+    const arrowSelected = {
+      ...withArrow,
+      selection: { ...withArrow.selection, objectIds: [arrow.id] }
+    };
+    const scopeTypes = copyAsScopeObjects(arrowSelected).map((object) => object.type).sort();
+    expect(scopeTypes).toEqual(["electron-mark", "mechanism-arrow", "molecule"]);
+  });
+
+  it("fits the Copy As scoped document page to the selection", () => {
+    const twoMolecules = insertNativeSingleBondMolecule(
+      insertNativeSingleBondMolecule(createPhase4Document("Copy As Fit"), { x: 300, y: 300 }),
+      { x: 620, y: 500 }
+    );
+    const scoped = copyAsScopedDocument(twoMolecules); // second molecule is selected
+
+    expect(scoped.pages[0].objects).toHaveLength(1);
+    const [only] = scoped.pages[0].objects;
+    // Translated to the padded page origin, page fitted to the object.
+    expect(only.x).toBeCloseTo(16, 3);
+    expect(only.y).toBeCloseTo(16, 3);
+    expect(scoped.pages[0].width).toBeCloseTo(only.width + 32, 3);
+    expect(scoped.pages[0].height).toBeCloseTo(only.height + 32, 3);
+    // The SVG of the scoped document renders without warnings machinery blowing up.
+    expect(exportPhase4Svg(scoped, { includeWarnings: false }).contents).toContain("<svg");
+  });
+
+  it("keeps intrinsic drawn or imported charges out of the mark reconciliation", () => {
+    const intrinsicAnion = applyPatches(
+      setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Intrinsic Anion"), { x: 300, y: 300 }),
+        "atom_002",
+        "O"
+      ),
+      []
+    );
+    const molecule = selectedMolecule(intrinsicAnion);
+    const withIntrinsicCharge = applyPatches(
+      intrinsicAnion,
+      [{
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: {
+          atoms: molecule.atoms.map((atom) =>
+            atom.id === "atom_002" ? { ...atom, formalCharge: -1 } : atom
+          )
+        }
+      }]
+    );
+
+    // No marks anywhere: reconciliation must not touch an intrinsic charge (e.g. OPSIN import).
+    expect(reconcileNativeChargeMarks(withIntrinsicCharge)).toBe(withIntrinsicCharge);
+
+    // A copied molecule that carries markCharge but lost its mark sheds the contribution.
+    const orphaned = applyPatches(
+      withIntrinsicCharge,
+      [{
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: {
+          atoms: selectedMolecule(withIntrinsicCharge).atoms.map((atom) =>
+            atom.id === "atom_002" ? { ...atom, formalCharge: -2, markCharge: -1 } : atom
+          )
+        }
+      }]
+    );
+    const reconciled = reconcileNativeChargeMarks(orphaned);
+    const reconciledOxygen = selectedMolecule(reconciled).atoms.find((atom) => atom.id === "atom_002");
+
+    expect(reconciledOxygen).toMatchObject({ formalCharge: -1 });
+    expect(reconciledOxygen?.markCharge).toBeUndefined();
+  });
+
+  it("reconciles charge marks on every page, not just the first", () => {
+    const methanolate = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Later-page Charge"), { x: 300, y: 300 }),
+        "atom_002",
+        "O"
+      ),
+      -1,
+      { objectId: "mol_bond_001", kind: "atom", atomId: "atom_002", distanceToPointer: 0 }
+    ));
+    const firstPage = createPhase4Document("Later-page Charge — blank first page").pages[0];
+
+    // Move the already-reconciled molecule + mark onto page 2, then re-run reconciliation from
+    // an artificially-stale state (the mark contribution zeroed out, as if the atoms had just
+    // been pasted or imported without their mark) — a real page-2 pass must still recompute it.
+    const staleAtoms = methanolate.pages[0].objects.map((object) =>
+      object.type === "molecule"
+        ? { ...object, atoms: object.atoms.map((atom) => ({ ...atom, formalCharge: 0, markCharge: undefined })) }
+        : object
+    );
+    const document: ChemDraftDocument = {
+      ...methanolate,
+      pages: [firstPage, { ...firstPage, id: "page_002", objects: staleAtoms }],
+      selection: { pageId: "page_002", objectIds: [] }
+    };
+
+    const reconciled = reconcileNativeChargeMarks(document);
+    expect(reconciled.pages[0]).toBe(firstPage); // untouched, no marks there
+    const reconciledMolecule = reconciled.pages[1].objects.find(
+      (object): object is MoleculeObject => object.type === "molecule"
+    );
+    const reconciledOxygen = reconciledMolecule?.atoms.find((atom) => atom.id === "atom_002");
+    expect(reconciledOxygen).toMatchObject({ formalCharge: -1, markCharge: -1 });
+  });
+
+  it("accepts drawn anions whose charge explains the open valence instead of flagging them", () => {
+    const benzoateArm = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Benzoate Oxygen"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(benzoateArm);
+
+    const neutralStates = molecule.atoms.map((atom) => nativeAtomValidationState(atom, molecule.bonds));
+    expect(neutralStates.every((state) => state.valid)).toBe(true);
+
+    const anionState = nativeAtomValidationState(
+      molecule.atoms.find((atom) => atom.id === "atom_002")!,
+      molecule.bonds,
+      -1
+    );
+    expect(anionState).toMatchObject({ element: "O", valenceUsed: 1, formalCharge: -1, valid: true });
+
+    const dianionState = nativeAtomValidationState(
+      molecule.atoms.find((atom) => atom.id === "atom_002")!,
+      molecule.bonds,
+      -2
+    );
+    expect(dianionState).toMatchObject({ valid: false, expectedFormalCharge: 0 });
   });
 
   it("uses negative charge marks to resolve neutral tetravalent boron", () => {
@@ -8542,22 +9477,22 @@ describe("Phase 4 document workflow", () => {
       { atomId: "atom_001", element: "B", valenceUsed: 4, formalCharge: 0, expectedFormalCharge: -1, valid: false }
     ]);
 
-    const withNegativeCharge = applyChargeToolAtPoint(neutralBorate, -1, {
+    const withNegativeCharge = reconcileNativeChargeMarks(applyChargeToolAtPoint(neutralBorate, -1, {
       x: boron.x + 11,
       y: boron.y - 11
-    });
+    }));
     const resolvedMolecule = withNegativeCharge.pages[0].objects.find((object): object is MoleculeObject =>
       object.id === molecule.id && object.type === "molecule"
     );
     if (!resolvedMolecule) {
       throw new Error("Expected resolved boron molecule.");
     }
-    const chargeByAtomId = nativeChargeByAtomIdFromAssociations(
-      nativeChargeAssociationsForMolecule(resolvedMolecule, withNegativeCharge.pages[0].objects)
-    );
 
-    expect(chargeByAtomId.get("atom_001")).toBe(-1);
-    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule, chargeByAtomId)).toEqual([]);
+    expect(resolvedMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({
+      formalCharge: -1,
+      markCharge: -1
+    });
+    expect(nativeMoleculeInvalidAtomStates(resolvedMolecule)).toEqual([]);
   });
 
   it("builds 3-methyl-4-tert-butylheptane with correct connectivity and geometry slots", () => {

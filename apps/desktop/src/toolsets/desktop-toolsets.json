@@ -539,30 +539,6 @@
                     "label": "No-Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_No_Reaction"
-                  },
-                  {
-                    "commandId": "tool.art.curvedArrow90",
-                    "label": "Curved Arrow (Gentle)",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Curved"
-                  },
-                  {
-                    "commandId": "tool.art.curvedArrow180",
-                    "label": "Curved Arrow (Pronounced)",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Curved_Pronounced"
-                  },
-                  {
-                    "commandId": "tool.art.fishhookArrow",
-                    "label": "Fishhook Arrow",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Fishhook"
-                  },
-                  {
-                    "commandId": "tool.art.fishhookCurved",
-                    "label": "Curved Fishhook Arrow",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Fishhook_Curved"
                   }
                 ],
                 "id": "arrow-tools"
@@ -727,47 +703,95 @@
               }
             },
             {
-              "commandId": "tool.plus",
-              "title": "Positive Charge Tool",
+              "commandId": "tool.charge",
+              "title": "Charge and Electron Tools",
               "icon": "charge",
-              "assetName": "Custom_Plus",
-              "shortcutDisplay": "+",
+              "assetName": "Custom_CircleMinus",
               "category": "annotation",
-              "id": "tool.plus",
+              "id": "tool.charge",
               "kind": "button",
-              "label": "Positive Charge Tool",
+              "label": "Charge and Electron Tools",
               "primary": {
                 "type": "command",
-                "commandId": "tool.plus"
+                "commandId": "tool.charge"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Charge and electron tools",
+                "columns": 4,
+                "items": [
+                  {
+                    "commandId": "tool.plus",
+                    "label": "Positive Charge (circled)",
+                    "icon": "charge",
+                    "assetName": "Custom_CirclePlus",
+                    "tooltip": {
+                      "title": "Positive Charge Tool",
+                      "shortcut": "+"
+                    }
+                  },
+                  {
+                    "commandId": "tool.minus",
+                    "label": "Negative Charge (circled)",
+                    "icon": "charge",
+                    "assetName": "Custom_CircleMinus",
+                    "tooltip": {
+                      "title": "Negative Charge Tool",
+                      "shortcut": "-"
+                    }
+                  },
+                  {
+                    "commandId": "tool.plusPlain",
+                    "label": "Positive Charge (plain)",
+                    "icon": "charge",
+                    "assetName": "Custom_Plus"
+                  },
+                  {
+                    "commandId": "tool.minusPlain",
+                    "label": "Negative Charge (plain)",
+                    "icon": "charge",
+                    "assetName": "Custom_Minus"
+                  },
+                  {
+                    "commandId": "tool.radicalCation",
+                    "label": "Radical Cation",
+                    "icon": "charge",
+                    "assetName": "Custom_RadicalCation"
+                  },
+                  {
+                    "commandId": "tool.radicalAnion",
+                    "label": "Radical Anion",
+                    "icon": "charge",
+                    "assetName": "Custom_RadicalAnion"
+                  },
+                  {
+                    "commandId": "tool.radical",
+                    "label": "Radical",
+                    "icon": "charge",
+                    "assetName": "Custom_RadicalDot"
+                  },
+                  {
+                    "commandId": "tool.lonePair",
+                    "label": "Lone Pair",
+                    "icon": "charge",
+                    "assetName": "Custom_LonePair"
+                  },
+                  {
+                    "commandId": "tool.mechanismArrow",
+                    "label": "Electron Pair Push Arrow",
+                    "icon": "charge",
+                    "assetName": "Custom_MechanismArrow"
+                  },
+                  {
+                    "commandId": "tool.mechanismFishhook",
+                    "label": "Radical Push Arrow",
+                    "icon": "charge",
+                    "assetName": "Custom_MechanismFishhook"
+                  }
+                ]
+              },
               "tooltip": {
-                "title": "Positive Charge Tool",
-                "shortcut": "+"
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.minus",
-              "title": "Negative Charge Tool",
-              "icon": "charge",
-              "assetName": "Custom_Minus",
-              "shortcutDisplay": "-",
-              "category": "annotation",
-              "id": "tool.minus",
-              "kind": "button",
-              "label": "Negative Charge Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.minus"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Negative Charge Tool",
-                "shortcut": "-"
+                "title": "Charge and Electron Tools"
               },
               "layout": {
                 "colSpan": 1,
@@ -834,7 +858,7 @@
               "tooltip": {
                 "title": "Symbol Tool Group",
                 "shortcut": null,
-                "description": "Stamp a ° symbol. Long-press for other symbols."
+                "description": "Stamp a \u00b0 symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -2321,30 +2345,6 @@
                     "label": "No-Reaction Arrow",
                     "icon": "export",
                     "assetName": "Custom_Arrow_No_Reaction"
-                  },
-                  {
-                    "commandId": "tool.art.curvedArrow90",
-                    "label": "Curved Arrow (Gentle)",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Curved"
-                  },
-                  {
-                    "commandId": "tool.art.curvedArrow180",
-                    "label": "Curved Arrow (Pronounced)",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Curved_Pronounced"
-                  },
-                  {
-                    "commandId": "tool.art.fishhookArrow",
-                    "label": "Fishhook Arrow",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Fishhook"
-                  },
-                  {
-                    "commandId": "tool.art.fishhookCurved",
-                    "label": "Curved Fishhook Arrow",
-                    "icon": "export",
-                    "assetName": "Custom_Arrow_Fishhook_Curved"
                   }
                 ],
                 "id": "arrow-tools"
@@ -2543,47 +2543,95 @@
               }
             },
             {
-              "commandId": "tool.plus",
-              "title": "Positive Charge Tool",
+              "commandId": "tool.charge",
+              "title": "Charge and Electron Tools",
               "icon": "charge",
-              "assetName": "Custom_Plus",
-              "shortcutDisplay": "+",
+              "assetName": "Custom_CircleMinus",
               "category": "annotation",
-              "id": "tool.plus",
+              "id": "tool.charge",
               "kind": "button",
-              "label": "Positive Charge Tool",
+              "label": "Charge and Electron Tools",
               "primary": {
                 "type": "command",
-                "commandId": "tool.plus"
+                "commandId": "tool.charge"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Charge and electron tools",
+                "columns": 4,
+                "items": [
+                  {
+                    "commandId": "tool.plus",
+                    "label": "Positive Charge (circled)",
+                    "icon": "charge",
+                    "assetName": "Custom_CirclePlus",
+                    "tooltip": {
+                      "title": "Positive Charge Tool",
+                      "shortcut": "+"
+                    }
+                  },
+                  {
+                    "commandId": "tool.minus",
+                    "label": "Negative Charge (circled)",
+                    "icon": "charge",
+                    "assetName": "Custom_CircleMinus",
+                    "tooltip": {
+                      "title": "Negative Charge Tool",
+                      "shortcut": "-"
+                    }
+                  },
+                  {
+                    "commandId": "tool.plusPlain",
+                    "label": "Positive Charge (plain)",
+                    "icon": "charge",
+                    "assetName": "Custom_Plus"
+                  },
+                  {
+                    "commandId": "tool.minusPlain",
+                    "label": "Negative Charge (plain)",
+                    "icon": "charge",
+                    "assetName": "Custom_Minus"
+                  },
+                  {
+                    "commandId": "tool.radicalCation",
+                    "label": "Radical Cation",
+                    "icon": "charge",
+                    "assetName": "Custom_RadicalCation"
+                  },
+                  {
+                    "commandId": "tool.radicalAnion",
+                    "label": "Radical Anion",
+                    "icon": "charge",
+                    "assetName": "Custom_RadicalAnion"
+                  },
+                  {
+                    "commandId": "tool.radical",
+                    "label": "Radical",
+                    "icon": "charge",
+                    "assetName": "Custom_RadicalDot"
+                  },
+                  {
+                    "commandId": "tool.lonePair",
+                    "label": "Lone Pair",
+                    "icon": "charge",
+                    "assetName": "Custom_LonePair"
+                  },
+                  {
+                    "commandId": "tool.mechanismArrow",
+                    "label": "Electron Pair Push Arrow",
+                    "icon": "charge",
+                    "assetName": "Custom_MechanismArrow"
+                  },
+                  {
+                    "commandId": "tool.mechanismFishhook",
+                    "label": "Radical Push Arrow",
+                    "icon": "charge",
+                    "assetName": "Custom_MechanismFishhook"
+                  }
+                ]
+              },
               "tooltip": {
-                "title": "Positive Charge Tool",
-                "shortcut": "+"
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.minus",
-              "title": "Negative Charge Tool",
-              "icon": "charge",
-              "assetName": "Custom_Minus",
-              "shortcutDisplay": "-",
-              "category": "annotation",
-              "id": "tool.minus",
-              "kind": "button",
-              "label": "Negative Charge Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.minus"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Negative Charge Tool",
-                "shortcut": "-"
+                "title": "Charge and Electron Tools"
               },
               "layout": {
                 "colSpan": 1,
@@ -2650,7 +2698,7 @@
               "tooltip": {
                 "title": "Symbol Tool Group",
                 "shortcut": null,
-                "description": "Stamp a ° symbol. Long-press for other symbols."
+                "description": "Stamp a \u00b0 symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,

@@ -5,6 +5,13 @@ export interface NativeRasterExportOptions {
   background?: string;
   jpegQuality?: number;
   maxDimensionPx?: number;
+  /**
+   * The CSS pixels-per-inch convention the source SVG's own units represent (96, for every SVG
+   * this app emits). When set, PNG output embeds a pHYs chunk whose density is derived from this
+   * times the scale actually applied — after any maxDimensionPx clamping — so the paste always
+   * reflects the bitmap that was really produced, not the nominal request.
+   */
+  cssPxPerInch?: number;
 }
 
 export interface NativeRasterExportWarning {
@@ -40,7 +47,8 @@ export async function rasterizeSvgNative(
       scale: options.scale,
       background: options.background,
       jpegQuality: options.jpegQuality,
-      maxDimensionPx: options.maxDimensionPx
+      maxDimensionPx: options.maxDimensionPx,
+      cssPxPerInch: options.cssPxPerInch
     }
   });
 

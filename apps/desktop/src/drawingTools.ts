@@ -182,6 +182,14 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click canvas to type", "edit selected text", "Esc exits")
   },
   {
+    commandId: "tool.charge",
+    title: "Charge and Electron Tools",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "long-press button for other symbols", "Esc exits")
+  },
+  {
     commandId: "tool.plus",
     title: "Positive Charge Tool",
     kind: "charge",
@@ -198,6 +206,70 @@ export const coreDrawingToolDefinitions = [
     icon: "charge",
     defaultShortcut: "-",
     usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
+  },
+  {
+    commandId: "tool.plusPlain",
+    title: "Plain Positive Charge Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
+  },
+  {
+    commandId: "tool.minusPlain",
+    title: "Plain Negative Charge Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
+  },
+  {
+    commandId: "tool.radicalCation",
+    title: "Radical Cation Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
+  },
+  {
+    commandId: "tool.radicalAnion",
+    title: "Radical Anion Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "hover atom targets charge", "Esc exits")
+  },
+  {
+    commandId: "tool.radical",
+    title: "Radical Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "hover atom targets electron", "Esc exits")
+  },
+  {
+    commandId: "tool.mechanismArrow",
+    title: "Electron Pair Push Arrow",
+    kind: "arrow",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("drag atom/charge to atom/charge", "drag handles to snake the curve", "Esc exits")
+  },
+  {
+    commandId: "tool.mechanismFishhook",
+    title: "Radical Push Arrow",
+    kind: "arrow",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("drag atom/charge to atom/charge", "drag handles to snake the curve", "Esc exits")
+  },
+  {
+    commandId: "tool.lonePair",
+    title: "Lone Pair Tool",
+    kind: "charge",
+    category: "annotation",
+    icon: "charge",
+    usageHint: usageHint("click atom or canvas", "hover atom targets electrons", "Esc exits")
   },
   {
     commandId: "tool.bracket",
@@ -562,10 +634,6 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.resonanceArrow", "Resonance Arrow", "export", artPathUsageHint],
     ["tool.art.equilibriumArrow", "Equilibrium Arrow", "export", artPathUsageHint],
     ["tool.art.retroArrow", "Retrosynthesis Arrow", "export", artPathUsageHint],
-    ["tool.art.curvedArrow90", "Curved Arrow (Gentle)", "export", artPathUsageHint],
-    ["tool.art.curvedArrow180", "Curved Arrow (Pronounced)", "export", artPathUsageHint],
-    ["tool.art.fishhookArrow", "Fishhook Arrow", "export", artPathUsageHint],
-    ["tool.art.fishhookCurved", "Curved Fishhook Arrow", "export", artPathUsageHint],
     ["tool.art.noReactionArrow", "No-Reaction Arrow", "export", artPathUsageHint],
     ["tool.art.arc270", "Three-quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc270Dashed", "Dashed Three-quarter Arc", "export", artPathUsageHint],

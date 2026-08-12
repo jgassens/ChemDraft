@@ -28,6 +28,12 @@ pub(crate) struct RasterExportRequest {
     background: Option<String>,
     jpeg_quality: Option<u8>,
     max_dimension_px: Option<u32>,
+    /// The physical size, in CSS pixels per inch (96, by the CSS/SVG convention every source SVG
+    /// this app emits is authored in), that the SOURCE SVG's own units represent — NOT the final
+    /// stamped density. The actual density is derived from this times the scale really applied
+    /// (see `target_size`), so a request that gets clamped for `max_dimension_px` still gets a
+    /// truthful density instead of one describing the unclamped size that was asked for.
+    css_px_per_inch: Option<f64>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -73,9 +79,18 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
     let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    let (bytes, encode_warnings) =
+    let (mut bytes, encode_warnings) =
         encode_raster(&pixmap, request.format, background, request.jpeg_quality)?;
     warnings.extend(encode_warnings);
+    if request.format == RasterExportFormat::Png {
+        if let Some(css_px_per_inch) = request.css_px_per_inch {
+            // scale_x/scale_y are the ACTUAL raster-px-per-source-px ratio after any
+            // max-dimension clamping above, so this always matches the bitmap really produced —
+            // never a nominal request that clamping silently made too large.
+            let applied_scale = f64::from((scale_x + scale_y) / 2.0);
+            bytes = png_with_physical_density(bytes, applied_scale * css_px_per_inch)?;
+        }
+    }
 
     Ok(RasterExportResponse {
         bytes,
@@ -291,6 +306,76 @@ fn hex_value(digit: u8) -> u8 {
     }
 }
 
+/// Inserts a pHYs chunk after IHDR so consumers paste an oversampled PNG at its
+/// intended physical size instead of its pixel size. Replaces any existing pHYs.
+fn png_with_physical_density(bytes: Vec<u8>, pixels_per_inch: f64) -> Result<Vec<u8>, String> {
+    if !pixels_per_inch.is_finite() || pixels_per_inch <= 0.0 {
+        return Err("PNG export density must be a positive finite number.".to_string());
+    }
+    const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    if !bytes.starts_with(&PNG_SIGNATURE) {
+        return Err("PNG export density metadata requires a PNG payload.".to_string());
+    }
+
+    let pixels_per_meter = (pixels_per_inch / 0.0254).round();
+    if pixels_per_meter < 1.0 || pixels_per_meter > f64::from(u32::MAX) {
+        return Err("PNG export density is out of the representable range.".to_string());
+    }
+    let pixels_per_meter = pixels_per_meter as u32;
+
+    let mut phys_chunk = Vec::with_capacity(21);
+    phys_chunk.extend_from_slice(&9u32.to_be_bytes());
+    phys_chunk.extend_from_slice(b"pHYs");
+    phys_chunk.extend_from_slice(&pixels_per_meter.to_be_bytes());
+    phys_chunk.extend_from_slice(&pixels_per_meter.to_be_bytes());
+    phys_chunk.push(1); // unit: meter
+    let crc = png_crc32(&phys_chunk[4..]);
+    phys_chunk.extend_from_slice(&crc.to_be_bytes());
+
+    let mut output = Vec::with_capacity(bytes.len() + phys_chunk.len());
+    output.extend_from_slice(&PNG_SIGNATURE);
+    let mut offset = PNG_SIGNATURE.len();
+    let mut inserted = false;
+    while offset + 8 <= bytes.len() {
+        let length = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as usize;
+        let chunk_end = offset
+            .checked_add(12 + length)
+            .filter(|end| *end <= bytes.len())
+            .ok_or("PNG export payload has a malformed chunk length.")?;
+        let chunk_type = &bytes[offset + 4..offset + 8];
+        if chunk_type != b"pHYs" {
+            output.extend_from_slice(&bytes[offset..chunk_end]);
+        }
+        if chunk_type == b"IHDR" && !inserted {
+            output.extend_from_slice(&phys_chunk);
+            inserted = true;
+        }
+        offset = chunk_end;
+    }
+    if !inserted {
+        return Err("PNG export payload is missing its IHDR chunk.".to_string());
+    }
+
+    Ok(output)
+}
+
+fn png_crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
 fn warning(code: &'static str, message: String) -> RasterExportWarning {
     RasterExportWarning {
         code,
@@ -313,6 +398,7 @@ mod tests {
             background: None,
             jpeg_quality: None,
             max_dimension_px: None,
+            css_px_per_inch: None,
         }
     }
 
@@ -341,6 +427,34 @@ mod tests {
     }
 
     #[test]
+    fn png_export_embeds_density_derived_from_the_applied_scale() {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(4.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("PNG export with density should encode");
+
+        assert_eq!(response.width, 256);
+        assert_eq!(response.height, 128);
+        let phys_offset = response
+            .bytes
+            .windows(4)
+            .position(|window| window == b"pHYs")
+            .expect("PNG should contain a pHYs chunk");
+        let data = &response.bytes[phys_offset + 4..phys_offset + 13];
+        let pixels_per_meter = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        // scale 4 on a 96 css-px/inch source is 384 real dpi, not the unrelated 288 (4x72) a
+        // caller might otherwise be tempted to hardcode — 384 / 0.0254 = 15118 px/meter.
+        assert_eq!(pixels_per_meter, 15118);
+        assert_eq!(data[8], 1);
+
+        // The IHDR chunk must still come first and decode cleanly.
+        assert_eq!(&response.bytes[12..16], b"IHDR");
+        image::load_from_memory(&response.bytes).expect("PNG with pHYs should still decode");
+    }
+
+    #[test]
     fn clamps_large_output_dimensions() {
         let response = rasterize_svg_impl(RasterExportRequest {
             scale: Some(100.0),
@@ -352,6 +466,34 @@ mod tests {
         assert_eq!(response.width, 128);
         assert_eq!(response.height, 64);
         assert_eq!(response.warnings[0].code, "raster_dimension_clamped");
+    }
+
+    #[test]
+    fn png_density_reflects_the_scale_actually_applied_after_clamping() {
+        // Request scale 100 on a 96 css-px/inch source, clamped to 128px wide (from 6400px
+        // nominal) — the actually-applied scale is only 128/64 = 2, not the nominal 100, so the
+        // embedded density must reflect 2 * 96 = 192dpi, never a value describing the unclamped
+        // 100x request that was silently cut down.
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(100.0),
+            max_dimension_px: Some(128),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("clamped PNG export with density should encode");
+
+        assert_eq!(response.width, 128);
+        assert_eq!(response.height, 64);
+        let phys_offset = response
+            .bytes
+            .windows(4)
+            .position(|window| window == b"pHYs")
+            .expect("PNG should contain a pHYs chunk");
+        let data = &response.bytes[phys_offset + 4..phys_offset + 13];
+        let pixels_per_meter = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        // 192dpi / 0.0254 = 7559 px/meter (rounded) — NOT 100*96/0.0254 = 377953, which is what
+        // stamping the unclamped nominal request would have produced.
+        assert_eq!(pixels_per_meter, 7559);
     }
 
     #[test]

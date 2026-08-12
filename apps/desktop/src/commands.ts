@@ -119,6 +119,34 @@ export const artBooleanOperationCommandIds = {
   split: "art.boolean.split"
 } as const;
 
+/**
+ * Edit ▸ Copy As — serialize the selection (or the page) to the clipboard in a specific format.
+ * Only formats the shipped engines can actually produce are listed (per the command-registry
+ * rule: no permanently-disabled stubs). SLN, HELM, FASTA, and 3MF await their engines.
+ */
+export const copyAsActions: CommandSpec[] = [
+  { id: "clipboard.copyAs.smiles", title: "Copy As SMILES", icon: "export", shortcut: "Alt+Cmd+C", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.inchi", title: "Copy As InChI", icon: "export", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.inchiKey", title: "Copy As InChI Key", icon: "export", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.cdxml", title: "Copy As CDXML Text", icon: "export", shortcut: "Cmd+D", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.mol", title: "Copy As MOL Text", icon: "export", shortcut: "Alt+Cmd+O", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.molV2000", title: "Copy As MOL V2000 Text", icon: "export", shortcut: "Alt+Shift+Cmd+O", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.svg", title: "Copy As SVG", icon: "export", source: "core", category: "edit" },
+  { id: "clipboard.copyAs.png", title: "Copy As PNG", icon: "export", source: "core", category: "edit" }
+];
+
+/** The Copy As entries as (commandId, menu label) pairs for menu models. */
+export const copyAsMenuItems: ReadonlyArray<{ commandId: string; label: string }> = [
+  { commandId: "clipboard.copyAs.smiles", label: "SMILES" },
+  { commandId: "clipboard.copyAs.inchi", label: "InChI" },
+  { commandId: "clipboard.copyAs.inchiKey", label: "InChI Key" },
+  { commandId: "clipboard.copyAs.cdxml", label: "CDXML Text" },
+  { commandId: "clipboard.copyAs.mol", label: "MOL Text" },
+  { commandId: "clipboard.copyAs.molV2000", label: "MOL V2000 Text" },
+  { commandId: "clipboard.copyAs.svg", label: "SVG" },
+  { commandId: "clipboard.copyAs.png", label: "PNG" }
+];
+
 export const editActions: CommandSpec[] = [
   {
     id: "atom.addSingleBondToHoveredAtom",
@@ -1925,6 +1953,7 @@ export function allShellCommands(
     // latter may carry the title from before a user/plugin toolbar was renamed.
     ...getToolsetToggleActions(registry),
     ...allPaletteCommands(registry),
+    ...copyAsActions,
     ...editActions,
     ...atomElementActions,
     ...viewActions,

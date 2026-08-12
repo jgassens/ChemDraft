@@ -2,6 +2,7 @@ import {
   createElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,6 +25,7 @@ import {
   type NativeArtPoint
 } from "@chemdraft/art-engine";
 import {
+  CSS_PX_PER_INCH,
   DefaultNativeTextStyle,
   applyPatches,
   createDocumentHistory,
@@ -132,6 +134,7 @@ import {
   labelEndpointClearance,
   nativeMoleculeRings,
   nativeMultipleBondGapPx,
+  defaultMechanismArrowControls,
   planMoleculeAtomLabels,
   planPageSvgRender,
   planNativeArtVisual,
@@ -261,6 +264,8 @@ import {
   structureSpin3dCommandId,
   textScriptForCommand,
   textStylePatchForCommand,
+  copyAsActions,
+  copyAsMenuItems,
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
@@ -299,7 +304,10 @@ import {
   clipboardPayloadFromDataTransfer,
   readClipboardPayload,
   writeClipboardDataTransfer,
+  writeClipboardText,
   writeClipboardTextItems,
+  writeClipboardImage,
+  rasterizeSvgInBrowser,
   type ClipboardWriteTextItem
 } from "./clipboard";
 import {
@@ -311,6 +319,13 @@ import {
   applyNativeAtomElementTarget,
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
+  applyMechanismArrowControlPoint,
+  copyAsMolfile,
+  copyAsScopedDocument,
+  copyAsSmiles,
+  createMechanismArrowBetween,
+  type MechanismArrowEndpoint,
+  reconcileNativeChargeMarks,
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeBondDisplayStyleTarget,
   applyNativeDoubleBondSideTarget,
@@ -408,8 +423,6 @@ import {
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   documentObjectProjectedPlaneTilt,
-  nativeChargeAssociationsForMolecule,
-  nativeChargeByAtomIdFromAssociations,
   nativeBondStyleForToolCommand,
   nativeElementFromKeyboardKey,
   nativeMoleculeInvalidAtomStates,
@@ -468,6 +481,7 @@ import {
   selectAllDocumentObjects,
   selectDocumentObject,
   selectDocumentObjectWithinGroup,
+  selectableDocumentObjectIdForSelection,
   selectDocumentObjects,
   toggleDocumentObjectSelection,
   setDocumentPageOrientation,
@@ -519,6 +533,7 @@ import {
   type NativeBondOrderTarget,
   type NativeBondOrderValue,
   type NativeChargeValue,
+  type NativeElectronMarkSpec,
   type NativeMoleculeRingTarget,
   type NativeSingleLetterElement,
   type DocumentAlignMode,
@@ -1307,7 +1322,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "8.8.20.18-claude";
+const CURRENT_BUILD_STAMP = "8.8.20.19-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1554,6 +1569,19 @@ export function MainWindow({
   const freehandArtPreviewPathRef = useRef<SVGPathElement | null>(null);
   const freehandArtPreviewFrameRef = useRef<number | undefined>(undefined);
   const tapeMeasureDragRef = useRef<TapeMeasureDragState | null>(null);
+  const mechanismArrowDragRef = useRef<{
+    pointerId: number;
+    arrowKind: "full-headed" | "half-headed";
+    source: MechanismArrowEndpoint;
+    sourcePoint: ClientPoint;
+    latestPoint: ClientPoint;
+  } | null>(null);
+  const mechanismHandleDragRef = useRef<{
+    pointerId: number;
+    objectId: string;
+    controlIndex: number;
+    startDocument: ChemDraftDocument;
+  } | null>(null);
   const pathArtDrawRef = useRef<PathArtDrawState | null>(null);
   const bezierArtNodeDragRef = useRef<BezierArtNodeDragState | null>(null);
   const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
@@ -1710,8 +1738,10 @@ export function MainWindow({
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
 
+  // Every document entering the app is normalized so charge marks near atoms carry their
+  // chemistry from the first paint — the commit funnels keep it normalized from then on.
   const [documentHistory, setDocumentHistory] = useState(() =>
-    createDocumentHistory(initialDocument ?? createPhase4Document())
+    createDocumentHistory(reconcileNativeChargeMarks(initialDocument ?? createPhase4Document()))
   );
   const document = documentHistory.present;
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
@@ -1821,6 +1851,11 @@ export function MainWindow({
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
   const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
   const [tapeMeasure, setTapeMeasure] = useState<TapeMeasureOverlayState | undefined>();
+  const [mechanismArrowPreview, setMechanismArrowPreview] = useState<{
+    arrowKind: "full-headed" | "half-headed";
+    sourcePoint: ClientPoint;
+    latestPoint: ClientPoint;
+  } | undefined>();
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
@@ -2188,6 +2223,7 @@ export function MainWindow({
   const activeNativeTemplateId = nativeTemplateForToolCommand(activeToolState.activeCommandId);
   const bondToolActive = activeNativeBondToolStyle !== undefined;
   const activeChargeToolValue = chargeValueForToolCommand(activeToolState.activeCommandId);
+  const activeMechanismArrowKind = mechanismArrowKindForToolCommand(activeToolState.activeCommandId);
   const activeNativeArtTool = nativeArtToolForCommand(activeToolState.activeCommandId);
   // An arrow-editing art tool (line/arrow, or a curved/fishhook arrow arc) is active: the arrow under
   // the pointer (or just drawn) keeps its direct-edit dot handles.
@@ -2226,7 +2262,7 @@ export function MainWindow({
     return { ...plannedDisplayPage, objects: svgObjects };
   }, [plannedDisplayPage]);
   const pageSvgRenderPlan = useMemo(() =>
-    markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage)), [editorSvgDisplayPage]);
+    markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage, { anchorResolutionPage: plannedDisplayPage })), [editorSvgDisplayPage, plannedDisplayPage]);
   const nativeMoleculeOverlayFragments = useMemo(() =>
     markFrame("planNativeMoleculeOverlayRender", () => nativeMoleculeOverlayFragmentsByObjectId(plannedDisplayPage)), [plannedDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
@@ -2261,18 +2297,6 @@ export function MainWindow({
     [toolsetRegistry, visibleToolsetIds]
   );
   const ringInspectorOpen = visibleToolsetIds.has(ringInspectorToolsetId);
-  const chargeResolutionByMoleculeId = useMemo(() => {
-    const byMoleculeId = new Map<string, ReadonlyMap<string, number>>();
-    activePage.objects.forEach((object) => {
-      if (object.type !== "molecule") {
-        return;
-      }
-
-      const associations = nativeChargeAssociationsForMolecule(object, activePage.objects);
-      byMoleculeId.set(object.id, nativeChargeByAtomIdFromAssociations(associations));
-    });
-    return byMoleculeId;
-  }, [activePage.objects]);
   const activeTool = activeToolState.activeCommandId;
   const [distributeMode, setDistributeMode] = useState<DocumentDistributeMode>("centers");
   useEffect(() => {
@@ -2374,7 +2398,7 @@ export function MainWindow({
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
-    installDocumentHistory(createDocumentHistory(nextDocument));
+    installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(nextDocument)));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
   }, [installDocumentHistory]);
@@ -2391,7 +2415,7 @@ export function MainWindow({
 
     installDocumentHistory({
       ...currentHistory,
-      present: nextDocument
+      present: reconcileNativeChargeMarks(nextDocument)
     });
     return true;
   }, [installDocumentHistory]);
@@ -2408,7 +2432,7 @@ export function MainWindow({
 
     installDocumentHistory({
       past: [...currentHistory.past, currentHistory.present].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: nextDocument,
+      present: reconcileNativeChargeMarks(nextDocument),
       future: []
     });
     setFileState((current) => {
@@ -2428,7 +2452,7 @@ export function MainWindow({
     const currentHistory = documentHistoryRef.current;
     installDocumentHistory({
       past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: nextDocument,
+      present: reconcileNativeChargeMarks(nextDocument),
       future: []
     });
     setFileState((current) => {
@@ -3246,19 +3270,24 @@ export function MainWindow({
     setStatus("Added single bond to hovered atom");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
-  const addChargeToHoveredNativeAtom = useCallback((charge: NativeChargeValue, explicitTarget?: NativeMoleculeDeleteTarget) => {
+  const addChargeToHoveredNativeAtom = useCallback((
+    spec: NativeElectronMarkSpec | NativeChargeValue,
+    explicitTarget?: NativeMoleculeDeleteTarget
+  ) => {
+    const markSpec: NativeElectronMarkSpec = typeof spec === "number" ? { kind: "charge", charge: spec } : spec;
+    const noun = electronMarkSpecStatusNoun(markSpec);
     const target = explicitTarget
       ?? hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
     if (!target || target.kind !== "atom") {
-      setStatus(charge > 0 ? "No hovered atom for positive charge" : "No hovered atom for negative charge");
+      setStatus(`No hovered atom for ${noun}`);
       return;
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = applyChargeToolAtNativeAtom(currentDocument, charge, target);
+    const nextDocument = applyChargeToolAtNativeAtom(currentDocument, markSpec, target);
     if (nextDocument === currentDocument) {
-      setStatus(charge > 0 ? "Cannot place positive charge on hovered atom" : "Cannot place negative charge on hovered atom");
+      setStatus(`Cannot place ${noun} on hovered atom`);
       return;
     }
 
@@ -3269,7 +3298,7 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-    setStatus(charge > 0 ? "Placed positive charge on hovered atom" : "Placed negative charge on hovered atom");
+    setStatus(`Placed ${noun} on hovered atom`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const cleanUpSelectedStructure = useCallback(() => {
@@ -5279,6 +5308,98 @@ export function MainWindow({
 
     setStatus("Copied ChemDraft selection");
   }, [deleteSelectionAfterClipboardCut]);
+
+  const performCopyAs = useCallback(async (commandId: string) => {
+    const current = documentRef.current;
+    const writeText = async (text: string | undefined, label: string) => {
+      if (!text) {
+        setStatus(`Nothing to copy as ${label}`);
+        return;
+      }
+      const didWrite = await writeClipboardText(text);
+      setStatus(didWrite ? `Copied ${label} to clipboard` : `Copy as ${label} failed: clipboard unavailable`);
+    };
+
+    switch (commandId) {
+      case "clipboard.copyAs.smiles":
+        await writeText(copyAsSmiles(current), "SMILES");
+        return;
+      case "clipboard.copyAs.mol":
+        await writeText(copyAsMolfile(current, "v3000"), "MOL text");
+        return;
+      case "clipboard.copyAs.molV2000":
+        await writeText(copyAsMolfile(current, "v2000"), "MOL V2000 text");
+        return;
+      case "clipboard.copyAs.cdxml":
+        await writeText(exportPhase4Cdxml(copyAsScopedDocument(current)).contents, "CDXML text");
+        return;
+      case "clipboard.copyAs.svg": {
+        const svgContents = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }).contents;
+        // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
+        // picture from public.svg-image, while text editors still get the source via text/plain.
+        // A bare text/plain write pasted into Illustrator as literal markup.
+        const didWrite = await writeClipboardTextItems([
+          { type: "public.svg-image", text: svgContents },
+          { type: "image/svg+xml", text: svgContents },
+          { type: "text/plain", text: svgContents }
+        ]);
+        setStatus(didWrite ? "Copied SVG to clipboard" : "Copy as SVG failed: clipboard unavailable");
+        return;
+      }
+      case "clipboard.copyAs.inchi":
+      case "clipboard.copyAs.inchiKey": {
+        const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
+        const molfile = copyAsMolfile(current, "v2000");
+        if (!molfile) {
+          setStatus(`Nothing to copy as ${label}`);
+          return;
+        }
+        setStatus(`Computing ${label}…`);
+        try {
+          // Same lazy-engine path the analyze command uses: neither the Emscripten glue nor the
+          // 7.5 MB wasm belongs in the startup graph for users who never touch InChI.
+          const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
+          registerRdkitWasmLoader();
+          const { computeStructureIdentifiers } = await import("@chemdraft/rdkit-adapter/identifiers");
+          const identifiers = await computeStructureIdentifiers(molfile);
+          const value = commandId === "clipboard.copyAs.inchi" ? identifiers?.inchi : identifiers?.inchiKey;
+          if (!value) {
+            setStatus(`${label} is unavailable for this structure`);
+            return;
+          }
+          await writeText(value, label);
+        } catch (error) {
+          setStatus(`Copy as ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return;
+      }
+      case "clipboard.copyAs.png": {
+        setStatus("Rendering PNG…");
+        try {
+          const svgResult = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false });
+          // Oversample 4x for sharpness; the exported SVG's units are CSS px (96/inch, not the
+          // 72/inch PDF-point convention), so declaring the true density needs CSS_PX_PER_INCH,
+          // not a hardcoded "288". Both raster paths derive the stamped density from the scale
+          // actually applied (after any size clamping), so the paste always stays the drawn size.
+          const pngBytes = isDesktopRuntime()
+            ? (await rasterizeSvgNative(svgResult.contents, "png", {
+                scale: 4,
+                background: "#ffffff",
+                maxDimensionPx: 8192,
+                cssPxPerInch: CSS_PX_PER_INCH
+              })).bytes
+            : await rasterizeSvgInBrowser(svgResult.contents, 4, CSS_PX_PER_INCH, 8192);
+          const didWrite = await writeClipboardImage(pngBytes);
+          setStatus(didWrite ? "Copied PNG to clipboard" : "Copy as PNG failed: clipboard unavailable");
+        } catch (error) {
+          setStatus(`Copy as PNG failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return;
+      }
+      default:
+        setStatus(`Unknown copy format: ${commandId}`);
+    }
+  }, []);
 
   const pasteClipboard = useCallback(async () => {
     const rawPayload = await readClipboardPayload();
@@ -7406,6 +7527,12 @@ export function MainWindow({
       });
     });
 
+    copyAsActions.forEach((action) => {
+      register(action, async () => {
+        await performCopyAs(action.id);
+      });
+    });
+
     objectStyleActions.forEach((action) => {
       register(action, () => {
         if (!applyObjectStyleCommand(action.id)) {
@@ -7509,6 +7636,7 @@ export function MainWindow({
     applyObjectStyleCommand,
     applyMoleculeInspectorCommand,
     applyTextStyleCommand,
+    performCopyAs,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
     clearDocumentInteractionState,
@@ -8054,12 +8182,28 @@ export function MainWindow({
       event: ClipboardEvent,
       mode: "copy" | "cut"
     ): boolean => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target) || !event.clipboardData) {
+      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target)) {
         return false;
       }
 
       const payload = createSelectionClipboardPayload(documentRef.current);
       if (!payload) {
+        return false;
+      }
+
+      // On desktop, a DataTransfer write of the ChemDraft flavor never reaches other apps as
+      // that flavor: WKWebView serializes custom types into its private, origin-gated
+      // com.apple.WebKit.custom-pasteboard-data blob, and each Tauri window has its own null
+      // origin — so a second ChemDraft instance cannot see the selection and its native
+      // fallback used to "decode" the blob into CJK mojibake text. Write through the native
+      // pasteboard instead, which stores the flavor as a plain string any instance can read.
+      if (isDesktopRuntime()) {
+        event.preventDefault();
+        void copySelectionToClipboard(mode);
+        return true;
+      }
+
+      if (!event.clipboardData) {
         return false;
       }
 
@@ -8143,7 +8287,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, deleteSelectionAfterClipboardCut, pasteClipboard]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -8479,6 +8623,21 @@ export function MainWindow({
     replacePresentDocument(drag.startDocument);
   }, [replacePresentDocument]);
 
+  /** Abandon an in-flight electron-push-arrow drag before it commits. Defined ahead of the
+   *  keydown effect that calls it, so the effect's dependency list can name it. */
+  const cancelMechanismArrowDrag = useCallback((): void => {
+    const drag = mechanismArrowDragRef.current;
+    if (!drag) {
+      return;
+    }
+    mechanismArrowDragRef.current = null;
+    setMechanismArrowPreview(undefined);
+    const page = pageRef.current;
+    if (page?.hasPointerCapture(drag.pointerId)) {
+      page.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -8601,6 +8760,16 @@ export function MainWindow({
         return;
       }
 
+      // Same reasoning as nativePlacementDragRef above: an in-progress electron-push-arrow drag
+      // is armed independently of the active tool, so switching to Select alone would not stop
+      // the eventual pointerup from still placing the arrow the user just tried to cancel.
+      if (event.key === "Escape" && mechanismArrowDragRef.current) {
+        event.preventDefault();
+        cancelMechanismArrowDrag();
+        setStatus("Electron push arrow canceled");
+        return;
+      }
+
       if (
         event.key === "Escape" &&
         activeToolCommandIdRef.current !== "tool.select" &&
@@ -8646,6 +8815,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
     clearNativePathArtDraw,
@@ -9348,8 +9518,8 @@ export function MainWindow({
       : `Applied ${nativeBondToolStatusLabel(bondStyle)} style`);
   }, [commitDocumentChange]);
 
-  const applyChargeDocumentAtPoint = useCallback((charge: NativeChargeValue, point: ClientPoint) => {
-    const nextDocument = applyChargeToolAtPoint(documentRef.current, charge, point);
+  const applyChargeDocumentAtPoint = useCallback((spec: NativeElectronMarkSpec, point: ClientPoint) => {
+    const nextDocument = applyChargeToolAtPoint(documentRef.current, spec, point);
     if (nextDocument !== documentRef.current) {
       commitDocumentChange(nextDocument);
     }
@@ -9359,7 +9529,7 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
     assignHoveredNativeDeleteTarget(undefined);
-    setStatus(charge > 0 ? "Placed positive charge" : "Placed negative charge");
+    setStatus(`Placed ${electronMarkSpecStatusNoun(spec)}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const applyFreeformBondDocumentAtPoint = useCallback((
@@ -10933,6 +11103,71 @@ export function MainWindow({
     setStatus("Measure: drag endpoint");
   }, [clearTransientInteractionChrome]);
 
+  const startMechanismArrowDrag = useCallback((
+    event: ObjectPointerEvent,
+    arrowKind: "full-headed" | "half-headed",
+    source: MechanismArrowEndpoint,
+    sourcePoint: ClientPoint
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    mechanismArrowDragRef.current = {
+      pointerId: event.pointerId,
+      arrowKind,
+      source,
+      sourcePoint,
+      latestPoint: sourcePoint
+    };
+    setMechanismArrowPreview({ arrowKind, sourcePoint, latestPoint: sourcePoint });
+    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    setStatus("Electron push: release on an atom or charge");
+  }, []);
+
+  const startMechanismHandleDrag = useCallback((
+    objectId: string,
+    controlIndex: number,
+    event: PointerEvent<HTMLButtonElement>
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    mechanismHandleDragRef.current = {
+      pointerId: event.pointerId,
+      objectId,
+      controlIndex,
+      startDocument: documentRef.current
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const moveMechanismHandleDrag = useCallback((event: PointerEvent<HTMLButtonElement>) => {
+    const drag = mechanismHandleDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    event.stopPropagation();
+    const point = pagePointFromPointerEvent(event);
+    if (!point) {
+      return;
+    }
+    replacePresentDocument((current) => applyMechanismArrowControlPoint(current, drag.objectId, drag.controlIndex, point));
+  }, [pagePointFromPointerEvent, replacePresentDocument]);
+
+  const endMechanismHandleDrag = useCallback((event: PointerEvent<HTMLButtonElement>) => {
+    const drag = mechanismHandleDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    event.stopPropagation();
+    mechanismHandleDragRef.current = null;
+    if (documentRef.current !== drag.startDocument) {
+      commitDocumentHistoryFrom(drag.startDocument, documentRef.current);
+      setStatus("Adjusted electron push arrow");
+    }
+  }, [commitDocumentHistoryFrom]);
+
   const startSelectionLasso = useCallback((event: ObjectPointerEvent, point: ClientPoint) => {
     event.preventDefault();
     event.stopPropagation();
@@ -11040,7 +11275,35 @@ export function MainWindow({
       return;
     }
 
+    if (activeMechanismArrowKind) {
+      event.preventDefault();
+      event.stopPropagation();
+      const hoveredTarget = hoveredNativeDeleteTargetRef.current;
+      if (hoveredTarget?.kind === "atom") {
+        startMechanismArrowDrag(event, activeMechanismArrowKind, {
+          kind: "atom",
+          objectId: hoveredTarget.objectId,
+          atomId: hoveredTarget.atomId
+        }, point);
+        return;
+      }
+      const chargeSource = chargeMarkEndpointAtPoint(documentRef.current, point);
+      if (chargeSource) {
+        startMechanismArrowDrag(event, activeMechanismArrowKind, chargeSource, point);
+        return;
+      }
+      setStatus("Electron push arrows start on an atom or charge");
+      return;
+    }
+
     if (activeChargeToolValue) {
+      // The hover highlight already promised this press targets the atom, even though a bare
+      // vertex has no DOM glyph and the press lands on the page — honor it before dropping a
+      // floating annotation mark at the raw point.
+      if (hoveredNativeDeleteTargetRef.current?.kind === "atom") {
+        addChargeToHoveredNativeAtom(activeChargeToolValue);
+        return;
+      }
       applyChargeDocumentAtPoint(activeChargeToolValue, point);
       return;
     }
@@ -11144,6 +11407,10 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.atom") {
       event.preventDefault();
       event.stopPropagation();
+      const hoveredTarget = hoveredNativeDeleteTargetRef.current;
+      if (hoveredTarget?.kind === "atom" && startAtomLabelEdit(hoveredTarget, { clearDraft: true })) {
+        return;
+      }
       setStatus("Atom Label Tool: click an atom to edit its label");
       return;
     }
@@ -11151,6 +11418,12 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.text") {
       event.preventDefault();
       event.stopPropagation();
+      // Same hover-honoring rule as the charge tools: a highlighted atom means this press
+      // edits that atom's label, not "drop a text box on top of the molecule".
+      const hoveredTarget = hoveredNativeDeleteTargetRef.current;
+      if (hoveredTarget?.kind === "atom" && startAtomLabelEdit(hoveredTarget, { clearDraft: true })) {
+        return;
+      }
       applyTextDocumentAtPoint(point);
       return;
     }
@@ -11164,12 +11437,15 @@ export function MainWindow({
     }
   }, [
     activeChargeToolValue,
+    activeMechanismArrowKind,
+    startMechanismArrowDrag,
     activeNativeBondDisplayStyle,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
     activeNativeArtTool,
     activeToolState.activeCommandId,
     activeToolState.activeKind,
+    addChargeToHoveredNativeAtom,
     applyChargeDocumentAtPoint,
     applyNativeArtDocumentAtPoint,
     applyNativeTemplateDocumentAtPoint,
@@ -11179,6 +11455,7 @@ export function MainWindow({
     commitDocumentChange,
     document,
     pagePointFromPointerEvent,
+    startAtomLabelEdit,
     startTapeMeasureDrag,
     startSelectionMarquee,
     startSelectionLasso,
@@ -11237,6 +11514,23 @@ export function MainWindow({
       tapeMeasureDrag.dragging = true;
       setTapeMeasure({ ...tapeMeasureDrag });
       setStatus(`Measure: ${formatTapeMeasureDistance(tapeMeasureDrag.startPoint, latestPoint, pageRulerUnit)}`);
+      return;
+    }
+
+    const mechanismDrag = mechanismArrowDragRef.current;
+    if (mechanismDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event);
+      if (point) {
+        mechanismDrag.latestPoint = point;
+        setMechanismArrowPreview({
+          arrowKind: mechanismDrag.arrowKind,
+          sourcePoint: mechanismDrag.sourcePoint,
+          latestPoint: point
+        });
+        // Keep the hover highlight live so the drop target reads exactly like any other hover.
+        updateNativeCanvasHover(documentRef.current, point, event.target);
+      }
       return;
     }
 
@@ -11665,6 +11959,32 @@ export function MainWindow({
       return;
     }
 
+    const mechanismDrag = mechanismArrowDragRef.current;
+    if (mechanismDrag?.pointerId === event.pointerId) {
+      event.stopPropagation();
+      const point = pagePointFromPointerEvent(event) ?? mechanismDrag.latestPoint;
+      mechanismArrowDragRef.current = null;
+      setMechanismArrowPreview(undefined);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      const hoveredTarget = hoveredNativeDeleteTargetRef.current;
+      const dropTarget: MechanismArrowEndpoint | undefined = hoveredTarget?.kind === "atom"
+        ? { kind: "atom", objectId: hoveredTarget.objectId, atomId: hoveredTarget.atomId }
+        : chargeMarkEndpointAtPoint(documentRef.current, point);
+      if (!dropTarget) {
+        setStatus("Electron push arrows end on an atom or charge");
+        return;
+      }
+      const changed = commitDocumentChange((current) =>
+        createMechanismArrowBetween(current, mechanismDrag.arrowKind, mechanismDrag.source, dropTarget)
+      );
+      setStatus(changed
+        ? (mechanismDrag.arrowKind === "half-headed" ? "Placed radical (fishhook) push arrow" : "Placed electron pair push arrow")
+        : "Electron push arrows need two different ends");
+      return;
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -12014,6 +12334,14 @@ export function MainWindow({
   ]);
 
   const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
+    const mechanismDrag = mechanismArrowDragRef.current;
+    if (mechanismDrag?.pointerId === event.pointerId) {
+      mechanismArrowDragRef.current = null;
+      setMechanismArrowPreview(undefined);
+      setStatus("Electron push arrow canceled");
+      return;
+    }
+
     const tapeMeasureDrag = tapeMeasureDragRef.current;
     if (tapeMeasureDrag?.pointerId === event.pointerId) {
       setTapeMeasure(undefined);
@@ -12384,6 +12712,24 @@ export function MainWindow({
       return;
     }
 
+    if (activeMechanismArrowKind && point) {
+      if (object?.type === "electron-mark" && object.markKind === "charge") {
+        startMechanismArrowDrag(event, activeMechanismArrowKind, { kind: "object", objectId }, point);
+        return;
+      }
+      if (object?.type === "molecule" && nativeMoleculeHit?.kind === "atom") {
+        startMechanismArrowDrag(event, activeMechanismArrowKind, {
+          kind: "atom",
+          objectId,
+          atomId: nativeMoleculeHit.atomId
+        }, point);
+        return;
+      }
+      event.stopPropagation();
+      setStatus("Electron push arrows start on an atom or charge");
+      return;
+    }
+
     if (activeChargeToolValue && point && !chargeMarkActive) {
       event.stopPropagation();
       if (nativeMoleculeHit?.kind === "atom") {
@@ -12457,6 +12803,11 @@ export function MainWindow({
 
     if (activeToolState.activeCommandId === "tool.atom" && object?.type === "molecule" && point) {
       if (nativeMoleculeHit?.kind === "atom") {
+        // preventDefault, or the pointerdown's companion mousedown moves focus to the clicked
+        // SVG element as its default action — blurring the just-mounted label editor, whose
+        // blur handler commits and closes it before the user ever sees it. Synthetic-event
+        // tests never catch this: untrusted events carry no default focus behavior.
+        event.preventDefault();
         event.stopPropagation();
         startAtomLabelEdit({ objectId, ...nativeMoleculeHit }, { clearDraft: true });
         return;
@@ -12482,6 +12833,8 @@ export function MainWindow({
 
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "molecule" && point) {
       if (nativeMoleculeHit?.kind === "atom") {
+        // Same mousedown-focus-default hazard as the atom tool branch above.
+        event.preventDefault();
         event.stopPropagation();
         startAtomLabelEdit({ objectId, ...nativeMoleculeHit }, { clearDraft: true });
         return;
@@ -13028,6 +13381,8 @@ export function MainWindow({
     activeToolState.activeCommandId,
     activeToolState.activeKind,
     activeChargeToolValue,
+    activeMechanismArrowKind,
+    startMechanismArrowDrag,
     activeNativeArtTool,
     activeNativeBondDisplayStyle,
     activeNativeBondToolStyle,
@@ -13955,6 +14310,22 @@ export function MainWindow({
     let nextSelectedNativePart: NativeMoleculeSelectionPart | undefined;
     let targetKind: ObjectContextMenuState["targetKind"] = "object";
 
+    // Right-clicking inside an existing multi-object selection keeps that selection
+    // intact so Cut/Copy/Copy As act on everything selected, matching platform menus.
+    const menuPage = currentDocument.pages.find((candidate) =>
+      candidate.objects.some((candidateObject) => candidateObject.id === objectId)
+    );
+    const selectableObjectId = menuPage
+      ? selectableDocumentObjectIdForSelection(menuPage.objects, objectId)
+      : objectId;
+    const preserveMultiSelection =
+      currentDocument.selection.objectIds.length > 1 &&
+      currentDocument.selection.objectIds.includes(selectableObjectId);
+
+    // A precise atom/bond hit resolves the same way whether or not the broader selection is
+    // being preserved — preserveMultiSelection only decides whether the document SELECTION
+    // collapses to this one object below, not whether bond-depth/layer-part menu options are
+    // available for the exact thing the user right-clicked.
     if (object?.type === "molecule" && nativeMoleculeHit) {
       const selectionResolution = nativeContextMenuSelectionResolutionFromHit(
         currentDocument,
@@ -13964,7 +14335,7 @@ export function MainWindow({
       );
       nextSelectedNativePart = selectionResolution.selectedPart;
       targetKind = selectionResolution.targetKind;
-    } else if (object?.type === "molecule" && !nativeMoleculeHit) {
+    } else if (!preserveMultiSelection && object?.type === "molecule" && !nativeMoleculeHit) {
       return;
     }
 
@@ -13974,12 +14345,18 @@ export function MainWindow({
 
     event.preventDefault();
     event.stopPropagation();
-    replacePresentDocument((current) => selectDocumentObject(current, objectId));
+    if (!preserveMultiSelection) {
+      replacePresentDocument((current) => selectDocumentObject(current, objectId));
+    }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
-    setSelectedNativeMoleculePart(nextSelectedNativePart);
+    // The resolved part drives the MENU (targetKind, bondDepthContext) either way, but only a
+    // single-object right-click promotes it to the persistent part selection — under a
+    // preserved multi-selection the document selection stays authoritative, so Delete and other
+    // selection-wide commands keep acting on everything selected, not the hit bond.
+    setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setObjectContextMenu({
@@ -13989,7 +14366,13 @@ export function MainWindow({
       x: event.clientX,
       y: event.clientY
     });
-    setStatus(crossingHit && targetKind !== "object"
+    setStatus(preserveMultiSelection
+      ? (crossingHit && targetKind !== "object"
+          ? `Layer and bond depth options for selected molecule part (${currentDocument.selection.objectIds.length} objects selected)`
+          : targetKind !== "object"
+            ? `Layer options for selected molecule part (${currentDocument.selection.objectIds.length} objects selected)`
+            : `Options for ${currentDocument.selection.objectIds.length} selected objects`)
+      : crossingHit && targetKind !== "object"
         ? "Layer and bond depth options for selected molecule part"
         : targetKind === "object" ? "Layer options for selected object" : "Layer options for selected molecule part");
   }, [
@@ -15155,6 +15538,13 @@ export function MainWindow({
                     rulerUnit={pageRulerUnit}
                   />
                 ) : null}
+                {mechanismArrowPreview ? (
+                  <MechanismArrowPreviewOverlay
+                    preview={mechanismArrowPreview}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                  />
+                ) : null}
                 {selectionMarquee ? (
                   <SelectionMarqueeOverlay
                     startPoint={selectionMarquee.startPoint}
@@ -15248,11 +15638,18 @@ export function MainWindow({
                       transformHandlesEnabled={selectionChromeActive}
                       editingText={activeTextEditObjectId === object.id}
                       editingAtomLabel={activeAtomLabelEdit?.objectId === object.id ? activeAtomLabelEdit : undefined}
-                      chargeByAtomId={object.type === "molecule" ? chargeResolutionByMoleculeId.get(object.id) : undefined}
                       growthPreview={hoveredNativeAtom?.objectId === object.id ? hoveredNativeAtom : undefined}
                       deleteTarget={hoveredNativeDeleteTarget?.objectId === object.id ? hoveredNativeDeleteTarget : undefined}
                       hoverDestructive={activeToolState.activeCommandId === "tool.eraser"}
                       freeformPreview={freeformNativeBond?.objectId === object.id ? freeformNativeBond : undefined}
+                      mechanismHandlesVisible={
+                        (selectionChromeActive || activeMechanismArrowKind !== undefined) &&
+                        document.selection.objectIds.includes(object.id)
+                      }
+                      onMechanismHandlePointerDown={startMechanismHandleDrag}
+                      onMechanismHandlePointerMove={moveMechanismHandleDrag}
+                      onMechanismHandlePointerUp={endMechanismHandleDrag}
+                      onMechanismHandlePointerCancel={endMechanismHandleDrag}
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
@@ -18220,6 +18617,36 @@ export function TapeMeasureOverlay({
   );
 }
 
+function MechanismArrowPreviewOverlay({
+  preview,
+  pageWidth,
+  pageHeight
+}: {
+  preview: { arrowKind: "full-headed" | "half-headed"; sourcePoint: ClientPoint; latestPoint: ClientPoint };
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const controls = defaultMechanismArrowControls(preview.sourcePoint, preview.latestPoint);
+  const pathD = controls.length === 1
+    ? `M ${preview.sourcePoint.x} ${preview.sourcePoint.y} Q ${controls[0].x} ${controls[0].y} ${preview.latestPoint.x} ${preview.latestPoint.y}`
+    : `M ${preview.sourcePoint.x} ${preview.sourcePoint.y} C ${controls[0].x} ${controls[0].y} ${controls[1].x} ${controls[1].y} ${preview.latestPoint.x} ${preview.latestPoint.y}`;
+
+  return (
+    <div className="mechanism-arrow-preview-overlay" aria-hidden="true">
+      <svg
+        className="mechanism-arrow-preview-layer"
+        viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+        style={{
+          width: `calc(${pageWidth}px * var(--page-scale))`,
+          height: `calc(${pageHeight}px * var(--page-scale))`
+        }}
+      >
+        <path className="mechanism-arrow-preview-path" d={pathD} data-arrow-kind={preview.arrowKind} />
+      </svg>
+    </div>
+  );
+}
+
 function CrosshairOverlay({
   horizontalTicks,
   verticalTicks
@@ -18951,20 +19378,120 @@ export function ObjectLayerContextMenu({
   const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
   const hasMultipleBondTargets = (bondDepthContext?.targetBondRefs.length ?? 0) > 1;
 
+  // The menu opens at the pointer, but never off-screen: after mount (and whenever it reopens
+  // elsewhere) the panel is measured and pulled back inside the viewport — a right-click near the
+  // bottom edge opens the menu ABOVE the cursor instead of clipping.
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [clampedPosition, setClampedPosition] = useState(position);
+  useLayoutEffect(() => {
+    const menuElement = menuRef.current;
+    if (!menuElement) {
+      setClampedPosition(position);
+      return;
+    }
+    const margin = 8;
+    const rect = menuElement.getBoundingClientRect();
+    setClampedPosition({
+      x: Math.max(margin, Math.min(position.x, window.innerWidth - rect.width - margin)),
+      y: Math.max(margin, Math.min(position.y, window.innerHeight - rect.height - margin))
+    });
+  }, [position]);
+
+  // Copy As is a fly-out: open on hover or click, measured so it flips left of the parent when
+  // the right edge would clip it and slides up when the bottom would.
+  const [copyAsOpen, setCopyAsOpen] = useState(false);
+  const copyAsParentRef = useRef<HTMLDivElement | null>(null);
+  const copyAsFlyoutRef = useRef<HTMLDivElement | null>(null);
+  const [copyAsFlyoutStyle, setCopyAsFlyoutStyle] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    if (!copyAsOpen) {
+      return;
+    }
+    const parentElement = copyAsParentRef.current;
+    const flyoutElement = copyAsFlyoutRef.current;
+    if (!parentElement || !flyoutElement) {
+      return;
+    }
+    const margin = 8;
+    const parentRect = parentElement.getBoundingClientRect();
+    const flyoutRect = flyoutElement.getBoundingClientRect();
+    const opensLeft = parentRect.right + flyoutRect.width + margin > window.innerWidth;
+    const overflowY = Math.max(0, parentRect.top + flyoutRect.height + margin - window.innerHeight);
+    setCopyAsFlyoutStyle({
+      ...(opensLeft ? { right: "100%" } : { left: "100%" }),
+      top: `${-overflowY}px`
+    });
+  }, [copyAsOpen, clampedPosition]);
+
   return (
     <div
       className="object-context-menu"
       role="menu"
+      ref={menuRef}
       aria-label="Object layer options"
       data-context-object-id={objectId}
       data-context-target-kind={targetKind}
       data-context-layer-index={objectIndex >= 0 ? objectIndex : undefined}
-      style={{ left: `${position.x}px`, top: `${position.y}px` }}
+      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
       }}
     >
+      {(["clipboard.cut", "clipboard.copy", "clipboard.paste"] as const).map((clipboardCommandId) => (
+        <button
+          type="button"
+          role="menuitem"
+          className="object-context-menu-item"
+          key={clipboardCommandId}
+          data-command-id={clipboardCommandId}
+          onClick={() => onInvoke(clipboardCommandId)}
+        >
+          {clipboardCommandId === "clipboard.cut" ? "Cut" : clipboardCommandId === "clipboard.copy" ? "Copy" : "Paste"}
+        </button>
+      ))}
+      <div
+        className="object-context-menu-submenu"
+        ref={copyAsParentRef}
+        onPointerEnter={() => setCopyAsOpen(true)}
+        onPointerLeave={() => setCopyAsOpen(false)}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          aria-haspopup="menu"
+          aria-expanded={copyAsOpen}
+          className="object-context-menu-item object-context-menu-submenu-trigger"
+          data-context-submenu="copy-as"
+          onClick={() => setCopyAsOpen((open) => !open)}
+        >
+          <span>Copy As</span>
+          <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
+        </button>
+        {copyAsOpen ? (
+          <div
+            className="object-context-menu object-context-menu-flyout"
+            role="menu"
+            aria-label="Copy As formats"
+            ref={copyAsFlyoutRef}
+            style={copyAsFlyoutStyle}
+          >
+            {copyAsMenuItems.map((item) => (
+              <button
+                type="button"
+                role="menuitem"
+                className="object-context-menu-item"
+                key={item.commandId}
+                data-command-id={item.commandId}
+                onClick={() => onInvoke(item.commandId)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="object-context-menu-separator" role="separator" />
       {arrowStyleSource ? (
         <>
           <div className="object-context-menu-title">{arrowStyleSource.title}</div>
@@ -20762,11 +21289,15 @@ function DocumentObjectView({
   transformHandlesEnabled,
   editingText,
   editingAtomLabel,
-  chargeByAtomId,
   growthPreview,
   deleteTarget,
   hoverDestructive,
   freeformPreview,
+  mechanismHandlesVisible,
+  onMechanismHandlePointerDown,
+  onMechanismHandlePointerMove,
+  onMechanismHandlePointerUp,
+  onMechanismHandlePointerCancel,
   doubleBondSidePreview,
   nativeMoleculeSvgFragments,
   rotateReadout,
@@ -20831,11 +21362,15 @@ function DocumentObjectView({
   transformHandlesEnabled: boolean;
   editingText: boolean;
   editingAtomLabel?: AtomLabelEditState;
-  chargeByAtomId?: ReadonlyMap<string, number>;
   growthPreview?: HoveredNativeAtom;
   deleteTarget?: NativeMoleculeDeleteTarget;
   hoverDestructive: boolean;
   freeformPreview?: FreeformNativeBondPreview;
+  mechanismHandlesVisible?: boolean;
+  onMechanismHandlePointerDown(objectId: string, controlIndex: number, event: PointerEvent<HTMLButtonElement>): void;
+  onMechanismHandlePointerMove(event: PointerEvent<HTMLButtonElement>): void;
+  onMechanismHandlePointerUp(event: PointerEvent<HTMLButtonElement>): void;
+  onMechanismHandlePointerCancel(event: PointerEvent<HTMLButtonElement>): void;
   doubleBondSidePreview?: NativeDoubleBondSidePreview;
   nativeMoleculeSvgFragments?: readonly PageSvgElementFragment[];
   rotateReadout?: ObjectRotateReadoutState;
@@ -21142,11 +21677,13 @@ function DocumentObjectView({
     if (isNativeMoleculeGraph(object)) {
       const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
       const atomLabelPlanByAtomId = new Map(planMoleculeAtomLabels(object).map((plan) => [plan.atom.id, plan]));
-      const invalidAtomStates = nativeMoleculeInvalidAtomStates(object, chargeByAtomId);
+      // Charge-mark chemistry is reconciled INTO atom.formalCharge on commit, so validity and
+      // labels read the molecule directly; atoms whose charge came from a mark carry markCharge.
+      const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
       const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
-      const resolvedChargeAtomIds = [...(chargeByAtomId?.entries() ?? [])]
-        .filter(([, charge]) => charge !== 0)
-        .map(([atomId]) => atomId);
+      const resolvedChargeAtomIds = object.atoms
+        .filter((atom) => (atom.markCharge ?? 0) !== 0)
+        .map((atom) => atom.id);
       const wholeNativeMoleculeSelected = selected && selectedPart?.objectId !== object.id;
       const selectedBondIds = new Set(
         wholeNativeMoleculeSelected
@@ -21539,6 +22076,39 @@ function DocumentObjectView({
         onPointerLeave={handleObjectPointerLeave}
         onDoubleClick={handleTextDoubleClick}
       />
+    );
+  }
+
+  if (object.type === "mechanism-arrow") {
+    // The curve itself is drawn (and hit) on the page SVG surface; this overlay only carries
+    // the Bezier handles, so the arrow's bounding box never swallows clicks meant for the
+    // molecule it spans.
+    return (
+      <div
+        className={["document-object", "document-object-overlay", "mechanism-arrow-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
+        style={style}
+        data-object-id={object.id}
+        data-layer-index={layerIndex}
+        data-mechanism-arrow-kind={object.arrowKind}
+      >
+        {mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
+          <button
+            type="button"
+            className="mechanism-arrow-handle"
+            key={`mechanism-handle-${object.id}-${controlIndex}`}
+            aria-label={`Electron push arrow handle ${controlIndex + 1}`}
+            data-mechanism-handle-index={controlIndex}
+            style={{
+              left: `calc(${control.x - object.x}px * var(--page-scale))`,
+              top: `calc(${control.y - object.y}px * var(--page-scale))`
+            }}
+            onPointerDown={(event) => onMechanismHandlePointerDown(object.id, controlIndex, event)}
+            onPointerMove={onMechanismHandlePointerMove}
+            onPointerUp={onMechanismHandlePointerUp}
+            onPointerCancel={onMechanismHandlePointerCancel}
+          />
+        )) : null}
+      </div>
     );
   }
 
@@ -25658,16 +26228,67 @@ function moleculeDrawingPrimitive(object: MoleculeObject): "single-bond" | undef
   return object.style.drawingPrimitive === "single-bond" && object.atoms.length === 2 ? "single-bond" : undefined;
 }
 
-function chargeValueForToolCommand(commandId: string): NativeChargeValue | undefined {
-  if (commandId === "tool.plus") {
-    return 1;
+function mechanismArrowKindForToolCommand(commandId: string): "full-headed" | "half-headed" | undefined {
+  if (commandId === "tool.mechanismArrow") {
+    return "full-headed";
   }
-
-  if (commandId === "tool.minus") {
-    return -1;
+  if (commandId === "tool.mechanismFishhook") {
+    return "half-headed";
   }
-
   return undefined;
+}
+
+/** The charge/electron mark under the pointer, as an electron-push endpoint. */
+function chargeMarkEndpointAtPoint(
+  document: ChemDraftDocument,
+  point: ClientPoint
+): MechanismArrowEndpoint | undefined {
+  const hitPaddingPx = 4;
+  const mark = document.pages[0]?.objects.find((object) =>
+    object.type === "electron-mark" &&
+    point.x >= object.x - hitPaddingPx && point.x <= object.x + object.width + hitPaddingPx &&
+    point.y >= object.y - hitPaddingPx && point.y <= object.y + object.height + hitPaddingPx
+  );
+  return mark ? { kind: "object", objectId: mark.id } : undefined;
+}
+
+function chargeValueForToolCommand(commandId: string): NativeElectronMarkSpec | undefined {
+  switch (commandId) {
+    // The group button acts as its most-used member: the circled anion.
+    case "tool.charge":
+      return { kind: "charge", charge: -1 };
+    case "tool.plus":
+      return { kind: "charge", charge: 1 };
+    case "tool.minus":
+      return { kind: "charge", charge: -1 };
+    case "tool.plusPlain":
+      return { kind: "charge", charge: 1, chargeStyle: "plain" };
+    case "tool.minusPlain":
+      return { kind: "charge", charge: -1, chargeStyle: "plain" };
+    case "tool.radicalCation":
+      return { kind: "charge", charge: 1, radical: true };
+    case "tool.radicalAnion":
+      return { kind: "charge", charge: -1, radical: true };
+    case "tool.radical":
+      return { kind: "radical-dot" };
+    case "tool.lonePair":
+      return { kind: "lone-pair" };
+    default:
+      return undefined;
+  }
+}
+
+function electronMarkSpecStatusNoun(spec: NativeElectronMarkSpec): string {
+  if (spec.kind === "radical-dot") {
+    return "radical electron";
+  }
+  if (spec.kind === "lone-pair") {
+    return "lone pair";
+  }
+  if (spec.radical) {
+    return spec.charge > 0 ? "radical cation" : "radical anion";
+  }
+  return spec.charge > 0 ? "positive charge" : "negative charge";
 }
 
 function moleculeAriaLabel(object: MoleculeObject): string {
