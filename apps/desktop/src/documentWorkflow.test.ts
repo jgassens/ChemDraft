@@ -8812,6 +8812,8 @@ describe("Phase 4 document workflow", () => {
     const rawCenter = rawMark ? nativeChargeMarkCenter(rawMark) : undefined;
     expect(rawCenter?.x).toBeCloseTo(expectedCenter.x, 5);
     expect(rawCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+    // The mark's own glyph turns with the drawing, same as a directly-rotated mark would.
+    expect(rawMark?.rotation).toBe(90);
 
     const rotated = reconcileNativeChargeMarks(rotatedRaw);
     const rotatedOxygen = rotated.pages[0].objects.find((object): object is MoleculeObject =>
@@ -8861,6 +8863,9 @@ describe("Phase 4 document workflow", () => {
     const rawCenter = rawMark ? nativeChargeMarkCenter(rawMark) : undefined;
     expect(rawCenter?.x).toBeCloseTo(expectedCenter.x, 5);
     expect(rawCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+    // The glyph resizes with the drawing, same as a directly-scaled mark's box would.
+    expect(rawMark?.width).toBeCloseTo(chargeMark.width * 1.2, 5);
+    expect(rawMark?.height).toBeCloseTo(chargeMark.height * 1.1, 5);
 
     const scaled = reconcileNativeChargeMarks(scaledRaw);
     const scaledOxygen = scaled.pages[0].objects.find((object): object is MoleculeObject =>
@@ -8907,6 +8912,8 @@ describe("Phase 4 document workflow", () => {
     const rawCenter = rawMark ? nativeChargeMarkCenter(rawMark) : undefined;
     expect(rawCenter?.x).toBeCloseTo(expectedCenter.x, 5);
     expect(rawCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+    // Mirroring a glyph at angle θ leaves it at 180−θ, the same rule a directly-flipped mark gets.
+    expect(rawMark?.rotation).toBe(180);
 
     const flipped = reconcileNativeChargeMarks(flippedRaw);
     const flippedOxygen = flipped.pages[0].objects.find((object): object is MoleculeObject =>
@@ -8959,6 +8966,95 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedCenter?.x).toBeCloseTo(expectedCenter.x, 5);
     expect(rotatedCenter?.y).toBeCloseTo(expectedCenter.y, 5);
     expect(rotatedOxygen).toMatchObject({ formalCharge: -1, markCharge: -1 });
+  });
+
+  it("keeps a lone-pair mark's dot pair oriented with the drawing through group rotate and flip", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Rotate Lone Pair Orientation"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const withLonePair = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, { kind: "lone-pair" }, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const mark = withLonePair.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "lone-pair"
+    );
+    if (!mark) {
+      throw new Error("Expected an anchored lone-pair mark.");
+    }
+    const markStart = nativeChargeMarkCenter(mark);
+
+    // A lone pair renders as a dot pair under the mark's own rotation, so the cascade must turn
+    // the glyph with the drawing — carrying only x/y would leave the dots pointing at the lobe
+    // the molecule no longer occupies. Select-all makes this also exercise the dedup skip.
+    const pivot = { x: molecule.x - 180, y: molecule.y + 120 };
+    const rotated = rotateDocumentObjectsAroundPoint(withLonePair, [molecule.id, mark.id], pivot, 90);
+    const rotatedMark = rotated.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const rotatedCenter = rotatedMark ? nativeChargeMarkCenter(rotatedMark) : undefined;
+    expect(rotatedCenter?.x).toBeCloseTo(pivot.x - (markStart.y - pivot.y), 5);
+    expect(rotatedCenter?.y).toBeCloseTo(pivot.y + (markStart.x - pivot.x), 5);
+    expect(rotatedMark?.rotation).toBe(90);
+    expect(rotatedMark?.anchor).toEqual(mark.anchor);
+
+    const flipped = flipDocumentObjectsAroundPoint(withLonePair, [molecule.id, mark.id], pivot, "vertical");
+    const flippedMark = flipped.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const flippedCenter = flippedMark ? nativeChargeMarkCenter(flippedMark) : undefined;
+    expect(flippedCenter?.x).toBeCloseTo(markStart.x, 5);
+    expect(flippedCenter?.y).toBeCloseTo(2 * pivot.y - markStart.y, 5);
+    // Vertical-axis mirror of a glyph at 0° stays 0° (−θ rule) — and must not pick up a stray turn.
+    expect(flippedMark?.rotation).toBe(0);
+  });
+
+  it("still group-transforms a selected mark whose atom anchor is stale instead of freezing it", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Rotate Stale Anchor Mark"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const mark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    if (!mark) {
+      throw new Error("Expected an anchored charge mark.");
+    }
+
+    // Point the anchor at an atom id the molecule doesn't have. The molecule's cascade won't
+    // carry this mark, so the group transform must fall back to transforming it directly —
+    // skipping it in both places would freeze a selected object in place.
+    const stale = applyPatch(withCharge, {
+      op: "updateObject",
+      objectId: mark.id,
+      changes: { anchor: { kind: "atom", objectId: molecule.id, atomId: "atom_gone" } }
+    });
+    const staleMark = stale.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const markStart = nativeChargeMarkCenter(staleMark!);
+
+    const pivot = { x: molecule.x + 240, y: molecule.y - 160 };
+    const rotated = rotateDocumentObjectsAroundPoint(stale, [molecule.id, mark.id], pivot, 90);
+    const rotatedMark = rotated.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const rotatedCenter = rotatedMark ? nativeChargeMarkCenter(rotatedMark) : undefined;
+    expect(rotatedCenter?.x).toBeCloseTo(pivot.x - (markStart.y - pivot.y), 5);
+    expect(rotatedCenter?.y).toBeCloseTo(pivot.y + (markStart.x - pivot.x), 5);
   });
 
   it("accepts an ionic charge on an element outside the octet table", () => {
