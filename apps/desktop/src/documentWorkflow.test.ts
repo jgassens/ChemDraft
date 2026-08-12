@@ -8766,6 +8766,201 @@ describe("Phase 4 document workflow", () => {
     expect(draggedArrow!.controlPoints[0].y - controlStart.y).toBeCloseTo(0, 5);
   });
 
+  it("carries an anchored charge mark along when the molecule (not the mark) is rotated", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Rotate Molecule With Charge"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const oxygen = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!oxygen) {
+      throw new Error("Expected hydroxyl oxygen.");
+    }
+
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: oxygen.id,
+      distanceToPointer: 0
+    }));
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!chargeMark) {
+      throw new Error("Expected an alkoxide charge mark.");
+    }
+    const markStart = nativeChargeMarkCenter(chargeMark);
+
+    // Rotate 90° about a pivot well outside the molecule — the same path the "rotate 90" toolbar
+    // action uses. Only the molecule is in the id list; the mark must ride along via the atom
+    // cascade or the next reconciliation sees it stranded and silently strips the charge.
+    const pivot = { x: oxygen.x + 260, y: oxygen.y - 180 };
+    const rotatedRaw = rotateDocumentObjectsAroundPoint(withCharge, [molecule.id], pivot, 90);
+    const rawMark = rotatedRaw.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === chargeMark.id && object.type === "electron-mark"
+    );
+
+    // The atom anchor must survive untouched — the mark never stopped pointing at this atom.
+    expect(rawMark?.anchor).toEqual(chargeMark.anchor);
+
+    const turn = (point: PagePoint): PagePoint => ({
+      x: pivot.x - (point.y - pivot.y),
+      y: pivot.y + (point.x - pivot.x)
+    });
+    const expectedCenter = turn(markStart);
+    const rawCenter = rawMark ? nativeChargeMarkCenter(rawMark) : undefined;
+    expect(rawCenter?.x).toBeCloseTo(expectedCenter.x, 5);
+    expect(rawCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+
+    const rotated = reconcileNativeChargeMarks(rotatedRaw);
+    const rotatedOxygen = rotated.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    )?.atoms.find((atom) => atom.id === oxygen.id);
+    expect(rotatedOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
+  });
+
+  it("carries an anchored charge mark along when the molecule (not the mark) is scaled", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Scale Molecule With Charge"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const oxygen = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!oxygen) {
+      throw new Error("Expected hydroxyl oxygen.");
+    }
+
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: oxygen.id,
+      distanceToPointer: 0
+    }));
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!chargeMark) {
+      throw new Error("Expected an alkoxide charge mark.");
+    }
+    const markStart = nativeChargeMarkCenter(chargeMark);
+
+    const pivot = { x: oxygen.x - 220, y: oxygen.y + 140 };
+    const scaledRaw = scaleDocumentObjectsAroundPoint(withCharge, [molecule.id], pivot, 1.2, 1.1);
+    const rawMark = scaledRaw.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === chargeMark.id && object.type === "electron-mark"
+    );
+
+    expect(rawMark?.anchor).toEqual(chargeMark.anchor);
+
+    const expectedCenter = {
+      x: pivot.x + (markStart.x - pivot.x) * 1.2,
+      y: pivot.y + (markStart.y - pivot.y) * 1.1
+    };
+    const rawCenter = rawMark ? nativeChargeMarkCenter(rawMark) : undefined;
+    expect(rawCenter?.x).toBeCloseTo(expectedCenter.x, 5);
+    expect(rawCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+
+    const scaled = reconcileNativeChargeMarks(scaledRaw);
+    const scaledOxygen = scaled.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    )?.atoms.find((atom) => atom.id === oxygen.id);
+    expect(scaledOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
+  });
+
+  it("carries an anchored charge mark along when the molecule (not the mark) is flipped", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Flip Molecule With Charge"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const oxygen = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!oxygen) {
+      throw new Error("Expected hydroxyl oxygen.");
+    }
+
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: oxygen.id,
+      distanceToPointer: 0
+    }));
+    const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!chargeMark) {
+      throw new Error("Expected an alkoxide charge mark.");
+    }
+    const markStart = nativeChargeMarkCenter(chargeMark);
+
+    const pivot = { x: oxygen.x + 90, y: oxygen.y - 60 };
+    const flippedRaw = flipDocumentObjectsAroundPoint(withCharge, [molecule.id], pivot, "horizontal");
+    const rawMark = flippedRaw.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === chargeMark.id && object.type === "electron-mark"
+    );
+
+    expect(rawMark?.anchor).toEqual(chargeMark.anchor);
+
+    const expectedCenter = { x: 2 * pivot.x - markStart.x, y: markStart.y };
+    const rawCenter = rawMark ? nativeChargeMarkCenter(rawMark) : undefined;
+    expect(rawCenter?.x).toBeCloseTo(expectedCenter.x, 5);
+    expect(rawCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+
+    const flipped = reconcileNativeChargeMarks(flippedRaw);
+    const flippedOxygen = flipped.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    )?.atoms.find((atom) => atom.id === oxygen.id);
+    expect(flippedOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
+  });
+
+  it("rotates an anchored mark exactly once when molecule and mark are group-rotated together", () => {
+    const methanol = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Group Rotate Both"), { x: 300, y: 300 }),
+      "atom_002",
+      "O"
+    );
+    const molecule = selectedMolecule(methanol);
+    const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const mark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    if (!mark) {
+      throw new Error("Expected an anchored charge mark.");
+    }
+    const markStart = nativeChargeMarkCenter(mark);
+
+    // Select-all then rotate: the molecule's atom cascade and the mark's own around-point
+    // rotation must not BOTH fire — a double rotation would land the mark 180° off (twice the
+    // intended 90°) instead of riding along by exactly the one turn the rest of the group takes.
+    const pivot = { x: molecule.x - 200, y: molecule.y + 150 };
+    const rotated = reconcileNativeChargeMarks(
+      rotateDocumentObjectsAroundPoint(withCharge, [molecule.id, mark.id], pivot, 90)
+    );
+    const rotatedMark = rotated.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.id === mark.id && object.type === "electron-mark"
+    );
+    const rotatedOxygen = rotated.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === molecule.id && object.type === "molecule"
+    )?.atoms.find((atom) => atom.id === "atom_002");
+
+    const turn = (point: PagePoint): PagePoint => ({
+      x: pivot.x - (point.y - pivot.y),
+      y: pivot.y + (point.x - pivot.x)
+    });
+    const expectedCenter = turn(markStart);
+    const rotatedCenter = rotatedMark ? nativeChargeMarkCenter(rotatedMark) : undefined;
+    expect(rotatedCenter?.x).toBeCloseTo(expectedCenter.x, 5);
+    expect(rotatedCenter?.y).toBeCloseTo(expectedCenter.y, 5);
+    expect(rotatedOxygen).toMatchObject({ formalCharge: -1, markCharge: -1 });
+  });
+
   it("accepts an ionic charge on an element outside the octet table", () => {
     const sodium = setNativeAtomElement(
       insertNativeSingleBondMolecule(createPhase4Document("Sodium Cation"), { x: 300, y: 300 }),

@@ -10467,10 +10467,16 @@ function rotateNativeMoleculeGeometryAroundPoint(
       ...rotatePointAround(atom, center, angleRadians)
     }))
   }));
+  const markPatches = anchoredElectronMarkTransformPatches(
+    page.objects,
+    molecule.id,
+    new Set(molecule.atoms.map((atom) => atom.id)),
+    (point) => rotatePointAround(point, center, angleRadians)
+  );
 
-  return applyPatch(
+  return applyPatches(
     document,
-    { op: "updateObject", objectId, changes: nextMolecule },
+    [{ op: "updateObject", objectId, changes: nextMolecule }, ...markPatches],
     { now: phase4Timestamp }
   );
 }
@@ -11384,6 +11390,25 @@ function translateDocumentObjectBy(
   );
 }
 
+/** The ids of electron-marks anchored (by atom) to any molecule id in `moleculeIds`. */
+function anchoredMarkIdsForMoleculeIds(
+  pageObjects: readonly DocumentObject[],
+  moleculeIds: ReadonlySet<string>
+): Set<string> {
+  const markIds = new Set<string>();
+  pageObjects.forEach((object) => {
+    if (
+      object.type === "electron-mark" &&
+      object.anchor.kind === "atom" &&
+      object.anchor.objectId !== undefined &&
+      moleculeIds.has(object.anchor.objectId)
+    ) {
+      markIds.add(object.id);
+    }
+  });
+  return markIds;
+}
+
 /**
  * Expands a moved-id set with the electron-marks anchored to any molecule in it. Marks render
  * from their own stored x/y (not resolved from their anchor atom), so a group translate that
@@ -11398,17 +11423,47 @@ function expandWithAnchoredMarkIds(
   const moleculeIds = new Set(
     pageObjects.filter((object) => object.type === "molecule" && expanded.has(object.id)).map((object) => object.id)
   );
-  pageObjects.forEach((object) => {
-    if (
-      object.type === "electron-mark" &&
-      object.anchor.kind === "atom" &&
-      object.anchor.objectId !== undefined &&
-      moleculeIds.has(object.anchor.objectId)
-    ) {
-      expanded.add(object.id);
-    }
-  });
+  for (const markId of anchoredMarkIdsForMoleculeIds(pageObjects, moleculeIds)) {
+    expanded.add(markId);
+  }
   return expanded;
+}
+
+/**
+ * Patches that carry a molecule's anchored electron-marks along with an around-point transform
+ * (rotate/scale/flip). Marks render from their own stored x/y rather than resolving live from
+ * their anchor atom, so transforming just the molecule strands them outside the association
+ * radius and the next reconciliation silently strips the formalCharge/markCharge they carried —
+ * the same failure `moveDocumentObject`'s molecule branch already guards against for drags. The
+ * mark's anchor is left untouched (still `{ kind: "atom", ... }`) since it never stopped pointing
+ * at that atom.
+ */
+function anchoredElectronMarkTransformPatches(
+  pageObjects: readonly DocumentObject[],
+  moleculeId: string,
+  atomIds: ReadonlySet<string>,
+  transformPoint: (point: PagePoint) => PagePoint
+): DocumentPatch[] {
+  return pageObjects.flatMap((candidate) => {
+    if (
+      candidate.type !== "electron-mark" ||
+      candidate.anchor.kind !== "atom" ||
+      candidate.anchor.objectId !== moleculeId ||
+      candidate.anchor.atomId === undefined ||
+      !atomIds.has(candidate.anchor.atomId)
+    ) {
+      return [];
+    }
+    const nextCenter = transformPoint(nativeChargeMarkCenter(candidate));
+    return [{
+      op: "updateObject" as const,
+      objectId: candidate.id,
+      changes: {
+        x: nextCenter.x - candidate.width / 2,
+        y: nextCenter.y - candidate.height / 2
+      }
+    }];
+  });
 }
 
 /**
@@ -12045,10 +12100,19 @@ function scaleNativeMoleculeObjectAroundPoint(
     scaleX: transform.scaleX * scaleX,
     scaleY: transform.scaleY * scaleY
   });
+  const markPatches = anchoredElectronMarkTransformPatches(
+    page.objects,
+    molecule.id,
+    new Set(molecule.atoms.map((atom) => atom.id)),
+    (point) => ({
+      x: center.x + (point.x - center.x) * scaleX,
+      y: center.y + (point.y - center.y) * scaleY
+    })
+  );
 
-  return applyPatch(
+  return applyPatches(
     document,
-    { op: "updateObject", objectId, changes: resized },
+    [{ op: "updateObject", objectId, changes: resized }, ...markPatches],
     { now: phase4Timestamp }
   );
 }
@@ -12151,8 +12215,18 @@ export function rotateDocumentObjectsAroundPoint(
   }
   const page = firstPage(document);
   const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const moleculeIds = new Set(
+    page.objects.filter((object) => object.type === "molecule" && set.has(object.id)).map((object) => object.id)
+  );
+  const cascadedMarkIds = anchoredMarkIdsForMoleculeIds(page.objects, moleculeIds);
   let next = document;
   for (const object of page.objects) {
+    // A mark anchored to a molecule that's rotating gets carried along by that molecule's own
+    // cascade below — even when the mark is also directly in `set` (e.g. select-all), so it must
+    // not be rotated a second time here.
+    if (object.type === "electron-mark" && cascadedMarkIds.has(object.id)) {
+      continue;
+    }
     if (!set.has(object.id)) {
       continue;
     }
@@ -12178,8 +12252,18 @@ export function scaleDocumentObjectsAroundPoint(
   }
   const page = firstPage(document);
   const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const moleculeIds = new Set(
+    page.objects.filter((object) => object.type === "molecule" && set.has(object.id)).map((object) => object.id)
+  );
+  const cascadedMarkIds = anchoredMarkIdsForMoleculeIds(page.objects, moleculeIds);
   let next = document;
   for (const object of page.objects) {
+    // See the identical comment in rotateDocumentObjectsAroundPoint: the molecule's own cascade
+    // below already carries an anchored mark along, so a mark that's also directly selected must
+    // not be scaled a second time here.
+    if (object.type === "electron-mark" && cascadedMarkIds.has(object.id)) {
+      continue;
+    }
     if (!set.has(object.id)) {
       continue;
     }
@@ -12223,8 +12307,18 @@ export function flipDocumentObjectsAroundPoint(
 
   const page = firstPage(document);
   const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const moleculeIds = new Set(
+    page.objects.filter((object) => object.type === "molecule" && set.has(object.id)).map((object) => object.id)
+  );
+  const cascadedMarkIds = anchoredMarkIdsForMoleculeIds(page.objects, moleculeIds);
   let next = document;
   for (const object of page.objects) {
+    // See the identical comment in rotateDocumentObjectsAroundPoint: the molecule's own cascade
+    // below already carries an anchored mark along, so a mark that's also directly selected must
+    // not be flipped a second time here.
+    if (object.type === "electron-mark" && cascadedMarkIds.has(object.id)) {
+      continue;
+    }
     if (!set.has(object.id)) {
       continue;
     }
@@ -12256,10 +12350,16 @@ function flipNativeMoleculeObjectAroundPoint(
       ...flipPointAroundAxis(atom, center, axis)
     }))
   }));
+  const markPatches = anchoredElectronMarkTransformPatches(
+    page.objects,
+    molecule.id,
+    new Set(molecule.atoms.map((atom) => atom.id)),
+    (point) => flipPointAroundAxis(point, center, axis)
+  );
 
-  return applyPatch(
+  return applyPatches(
     document,
-    { op: "updateObject", objectId, changes: flipped },
+    [{ op: "updateObject", objectId, changes: flipped }, ...markPatches],
     { now: phase4Timestamp }
   );
 }
