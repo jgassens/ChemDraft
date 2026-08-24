@@ -7,7 +7,13 @@ import {
   type Spin3dRefinementMode,
   type Spin3dSettings
 } from "./spin3dSettings";
-import { broadcastSpin3dSettings } from "./window-manager";
+import {
+  loadKeybindingSettings,
+  saveKeybindingSettings,
+  type KeybindingScheme,
+  type KeybindingSettings
+} from "./keybindingSettings";
+import { broadcastKeybindingSettings, broadcastSpin3dSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
   value: T;
@@ -25,6 +31,20 @@ const ENGINES: RadioOption<Spin3dEnginePreference>[] = [
   { value: "auto", title: "Automatic", description: "RDKit ETKDG when available (fast), with automatic fallback to OpenChemLib. Recommended." },
   { value: "rdkit", title: "RDKit ETKDG", description: "Prefer RDKit's fast embedding. Falls back to OpenChemLib only if RDKit can't load." },
   { value: "openchemlib", title: "OpenChemLib (legacy)", description: "Force the original engine. Much slower on large rings; use only to compare geometry." }
+];
+
+const KEYBINDING_SCHEMES: RadioOption<KeybindingScheme>[] = [
+  {
+    value: "chemdraft",
+    title: "ChemDraft",
+    description: "The native ChemDraft shortcuts. Recommended for new users."
+  },
+  {
+    value: "chemdraw",
+    title: "ChemDraw-compatible",
+    description:
+      "Shortcuts and hover hotkeys that mirror ChemDraw's defaults (Space for select, X for the bond tool, hover an atom and press 2 for a carbonyl, l for Cl, b for Br…). For users transitioning from ChemDraw."
+  }
 ];
 
 const FORCE_FIELDS: RadioOption<Spin3dForceField>[] = [
@@ -73,6 +93,7 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 
 export function PreferencesWindow() {
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
+  const [keybindings, setKeybindings] = useState<KeybindingSettings>(() => loadKeybindingSettings());
 
   useEffect(() => {
     document.documentElement.classList.add("preferences-window-html");
@@ -95,11 +116,31 @@ export function PreferencesWindow() {
     void broadcastSpin3dSettings(next);
   };
 
+  // Same discrete-event shape as `update` above — persist + broadcast stay out of the setState
+  // updater so StrictMode double-invocation can't double-write or double-emit.
+  const updateKeybindings = (scheme: KeybindingScheme): void => {
+    const next: KeybindingSettings = { ...keybindings, scheme };
+    setKeybindings(next);
+    saveKeybindingSettings(next);
+    // Every open window rebuilds its shortcut registry live; the main window also
+    // pushes the scheme to the native menu (localStorage persists it).
+    void broadcastKeybindingSettings(next);
+  };
+
   return (
     <main className="preferences-shell">
       <header className="preferences-header">
         <h1>Preferences</h1>
       </header>
+
+      <PreferenceRadioGroup
+        legend="Keyboard shortcuts"
+        hint="Which keyboard scheme the drawing tools and hover hotkeys use. Takes effect immediately."
+        name="keybinding-scheme"
+        options={KEYBINDING_SCHEMES}
+        value={keybindings.scheme}
+        onSelect={updateKeybindings}
+      />
 
       <PreferenceRadioGroup
         legend="3D refinement"

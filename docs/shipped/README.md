@@ -17,6 +17,10 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 **Slices with their own file:**
 
+- [ChemDraw-compatible keybinding scheme](chemdraw-keybinding-scheme.md) — a Preferences toggle that
+  remaps tools, hover hotkeys, and menu chords to match ChemDraw's defaults for migrating users;
+  documents the mapping rules, what is covered, and what is deliberately unmapped.
+
 - [Analyzers: property and prediction suite](analyzers-property-prediction-suite.md) — the Molecular
   Inspector, isotope envelopes, OPSIN and OpenClatura plugin work, Joback estimates, and the pKa
   system. Kept separate because its later sections document how the pKa method behaves today: what it

@@ -234,6 +234,8 @@ body.preferences-window-body #root {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  /* Four sections outgrow the window; the shell scrolls instead of squeezing each section. */
+  overflow-y: auto;
   color: var(--cd-text-primary);
   background: var(--cd-bg-panel-raised);
   font-size: 13px;
@@ -254,7 +256,7 @@ body.preferences-window-body #root {
 
 .preferences-section {
   padding: var(--cd-space-6);
-  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 .preferences-section h2 {

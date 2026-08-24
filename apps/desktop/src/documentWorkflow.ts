@@ -720,6 +720,11 @@ export const nativeElementSymbols = [
 export type NativeElementSymbol = typeof nativeElementSymbols[number];
 export const nativeSingleLetterElements = ["H", "B", "C", "N", "O", "F", "P", "S", "I"] as const;
 export type NativeSingleLetterElement = typeof nativeSingleLetterElements[number];
+/** Elements reachable by keyboard hotkey. The single letters type themselves in the ChemDraft
+ *  scheme; the two-letter symbols are reachable through the ChemDraw-compatible scheme's hover
+ *  hotkeys (b→Br, C/l→Cl, L→Li, S→Si) and through command-bound toolbar buttons. */
+export const nativeHotkeyElements = [...nativeSingleLetterElements, "Cl", "Br", "Li", "Si"] as const;
+export type NativeHotkeyElement = typeof nativeHotkeyElements[number];
 
 export interface NativeAtomValidationState {
   atomId: string;
@@ -788,6 +793,13 @@ export function nativeElementFromKeyboardKey(key: string): NativeSingleLetterEle
   return nativeSingleLetterElementSet.has(normalized)
     ? normalized as NativeSingleLetterElement
     : undefined;
+}
+
+const nativeHotkeyElementSet = new Set<string>(nativeHotkeyElements);
+
+/** Parse an exact element symbol (case-sensitive, e.g. "Cl") from the hotkey element set. */
+export function nativeHotkeyElementFromSymbol(value: string): NativeHotkeyElement | undefined {
+  return nativeHotkeyElementSet.has(value) ? value as NativeHotkeyElement : undefined;
 }
 
 export function normalizeNativeAtomElementLabel(value: string): string {

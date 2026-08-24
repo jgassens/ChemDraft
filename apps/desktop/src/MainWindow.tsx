@@ -425,6 +425,7 @@ import {
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
   nativeElementFromKeyboardKey,
+  nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
   nativeMoleculePartBounds,
   nativeGraphicCornerRadiusEditPoint,
@@ -535,7 +536,7 @@ import {
   type NativeChargeValue,
   type NativeElectronMarkSpec,
   type NativeMoleculeRingTarget,
-  type NativeSingleLetterElement,
+  type NativeHotkeyElement,
   type DocumentAlignMode,
   type DocumentDistributeAxis,
   type DocumentDistributeMode,
@@ -581,7 +582,9 @@ import {
   setToolbarsMenu,
   toolsetCommandSpecsSignature,
   PREFERENCES_WINDOW_KIND,
+  listenForKeybindingSettings,
   listenForSpin3dSettings,
+  pushKeybindingSchemeToNativeMenu,
   toggleSpin3dDebuggerWindow,
   togglePreferencesWindow,
   closeToolsetWindow,
@@ -612,6 +615,8 @@ import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
 import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
+import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
@@ -2305,16 +2310,44 @@ export function MainWindow({
       setTapeMeasure(undefined);
     }
   }, [activeTool]);
+  const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  const keybindingSchemeRef = useRef(keybindingScheme);
+  useEffect(() => {
+    keybindingSchemeRef.current = keybindingScheme;
+    // The native macOS menu carries its own accelerators; keep them in step with the scheme.
+    void pushKeybindingSchemeToNativeMenu(keybindingScheme);
+  }, [keybindingScheme]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForKeybindingSettings((next) => setKeybindingScheme(next.scheme)).then((listener) => {
+      if (disposed) {
+        listener();
+        return;
+      }
+      unlisten = listener;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
   const toolCommandSpecs = useMemo(
-    () => withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
-    [toolsetRegistry]
+    () => applyKeybindingSchemeToCommands(
+      withStandaloneDrawingToolCommands(getToolsetCommandSpecs(toolsetRegistry)),
+      keybindingScheme
+    ),
+    [keybindingScheme, toolsetRegistry]
   );
   const shellCommandSpecs = useMemo(
-    () => allShellCommands(document, selectedMolecule, {
-      availability: { canUndo, canRedo },
-      registry: toolsetRegistry
-    }),
-    [canRedo, canUndo, document, selectedMolecule, toolsetRegistry]
+    () => applyKeybindingSchemeToCommands(
+      allShellCommands(document, selectedMolecule, {
+        availability: { canUndo, canRedo },
+        registry: toolsetRegistry
+      }),
+      keybindingScheme
+    ),
+    [canRedo, canUndo, document, keybindingScheme, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -2330,7 +2363,7 @@ export function MainWindow({
     void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
   }, [shellCommandSpecsSignature]);
   const shortcutCommands = useMemo(
-    () => [
+    () => applyKeybindingSchemeToCommands([
       ...quickActions,
       ...layerActions,
       ...editActions,
@@ -2340,8 +2373,8 @@ export function MainWindow({
       ...pageOrientationActions,
       ...textToolbarActions,
       ...toolbarCustomizationActions
-    ],
-    [layerActions, quickActions, toolCommandSpecs]
+    ], keybindingScheme),
+    [keybindingScheme, layerActions, quickActions, toolCommandSpecs]
   );
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(shortcutCommands),
@@ -3189,7 +3222,33 @@ export function MainWindow({
     setStatus(`Set hovered bond to ${order}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
-  const setHoveredNativeAtomElement = useCallback((element: NativeSingleLetterElement) => {
+  const setHoveredNativeBondDisplayStyle = useCallback((bondStyle: NativeBondDisplayStyle) => {
+    const currentDocument = documentRef.current;
+    const target = hoveredNativeDeleteTargetRef.current
+      ?? nativeDeleteTargetFromSelectionPart(currentDocument, selectedNativeMoleculePart);
+    if (!target || target.kind !== "bond") {
+      setStatus(`No hovered bond for ${bondStyle} display`);
+      return;
+    }
+
+    const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
+    const nextDocument = applyNativeBondDisplayStyleTarget(selectedDocument, target, bondStyle);
+    if (nextDocument === selectedDocument) {
+      setStatus(`Cannot set hovered bond to ${bondStyle}`);
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setStatus(`Set hovered bond display to ${bondStyle}`);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+
+  const setHoveredNativeAtomElement = useCallback((element: NativeHotkeyElement) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
     if (!target || target.kind !== "atom") {
@@ -7273,6 +7332,14 @@ export function MainWindow({
           return;
         }
 
+        if (action.id.startsWith("bond.setHoveredBondDisplay.")) {
+          const bondStyle = action.id.replace("bond.setHoveredBondDisplay.", "");
+          if (bondStyle === "wedge" || bondStyle === "hashed" || bondStyle === "dashed" || bondStyle === "bold") {
+            setHoveredNativeBondDisplayStyle(bondStyle);
+          }
+          return;
+        }
+
         if (action.id === "atom.addCarbonylToHoveredAtom") {
           addCarbonylToHoveredNativeAtom();
           return;
@@ -7380,7 +7447,7 @@ export function MainWindow({
     atomElementActions.forEach((action) => {
       register(action, () => {
         const element = action.id.replace("atom.setHoveredElement.", "");
-        const parsed = nativeElementFromKeyboardKey(element);
+        const parsed = nativeHotkeyElementFromSymbol(element);
         if (parsed) {
           setHoveredNativeAtomElement(parsed);
         }
@@ -8786,7 +8853,8 @@ export function MainWindow({
           documentRef.current,
           selectedNativeMoleculePart,
           hoveredNativeDeleteTargetRef.current,
-          event.key
+          event.key,
+          keybindingSchemeRef.current
         );
         if (hoveredTargetCommandId) {
           event.preventDefault();
@@ -15225,7 +15293,8 @@ export function MainWindow({
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
-        pluginMenuItems: pluginRuntime.pluginMenuItems
+        pluginMenuItems: pluginRuntime.pluginMenuItems,
+        keybindingScheme
       }),
     [
       rulersVisible,
@@ -15233,6 +15302,7 @@ export function MainWindow({
       canUndo,
       canRedo,
       document.selection.objectIds.length,
+      keybindingScheme,
       selectedMolecule,
       visibleToolsetIds,
       toolsetRegistry,
@@ -18098,8 +18168,15 @@ export function shouldOpenMoleculeEditorFromObjectClick(
 
 export function hoveredNativeTargetShortcutCommand(
   target: NativeMoleculeDeleteTarget | undefined,
-  key: string
+  key: string,
+  scheme: KeybindingScheme = "chemdraft"
 ): string | undefined {
+  if (scheme === "chemdraw") {
+    return target?.kind === "atom" || target?.kind === "bond"
+      ? chemDrawHoveredTargetHotkeyCommand(target.kind, key)
+      : undefined;
+  }
+
   if (target?.kind === "bond") {
     if (key === "1") {
       return "bond.setHoveredBondOrder.single";
@@ -18138,11 +18215,13 @@ export function activeNativeTargetShortcutCommand(
   document: ChemDraftDocument,
   selectedPart: NativeMoleculeSelectionPart | undefined,
   hoveredTarget: NativeMoleculeDeleteTarget | undefined,
-  key: string
+  key: string,
+  scheme: KeybindingScheme = "chemdraft"
 ): string | undefined {
   return hoveredNativeTargetShortcutCommand(
     hoveredTarget ?? nativeDeleteTargetFromSelectionPart(document, selectedPart),
-    key
+    key,
+    scheme
   );
 }
 

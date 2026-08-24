@@ -6,6 +6,7 @@ import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
+import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
@@ -450,6 +451,51 @@ export async function listenForSpin3dSettings(handler: (settings: Spin3dSettings
 
 function isSpin3dSettingsPayload(payload: unknown): payload is Spin3dSettings {
   return isSpin3dSettings(payload);
+}
+
+/** Cross-window event carrying the updated keybinding scheme from Preferences → every window. */
+export const KEYBINDING_SETTINGS_EVENT = "chemdraft://keybinding-settings";
+
+/** Broadcast a keybinding-scheme change so every open window rebuilds its shortcut registry live.
+ *  localStorage is the source of truth across reloads; this event is the live-sync channel. */
+export async function broadcastKeybindingSettings(settings: KeybindingSettings): Promise<void> {
+  dispatchDomToolsetEvent(KEYBINDING_SETTINGS_EVENT, settings);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, settings);
+}
+
+export async function listenForKeybindingSettings(
+  handler: (settings: KeybindingSettings) => void
+): Promise<Unlisten> {
+  const unlistenDom = listenForDomToolsetEvent(KEYBINDING_SETTINGS_EVENT, (event) => {
+    if (isKeybindingSettings(event.detail)) handler(event.detail);
+  });
+  if (!isDesktopRuntime()) {
+    return unlistenDom;
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenTauri = await listen<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, (event) => {
+    if (isKeybindingSettings(event.payload)) handler(event.payload);
+  });
+  return () => {
+    unlistenDom();
+    unlistenTauri();
+  };
+}
+
+/** Tell the Rust side to rebuild the native menu with accelerators for the given scheme. */
+export async function pushKeybindingSchemeToNativeMenu(scheme: KeybindingScheme): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_keybinding_scheme", { scheme }).catch(() => undefined);
 }
 
 export async function listToolsetWindowStates(): Promise<ToolsetWindowState[]> {

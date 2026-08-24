@@ -22,10 +22,10 @@ import {
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
-  nativeSingleLetterElements,
+  nativeHotkeyElements,
   selectedGroupObjectIds,
   selectedArtBooleanEligibleObjectIds,
-  type NativeSingleLetterElement
+  type NativeHotkeyElement
 } from "./documentWorkflow";
 import {
   desktopToolsetRegistry,
@@ -184,6 +184,38 @@ export const editActions: CommandSpec[] = [
     description: "Set the hovered native bond to a triple bond"
   },
   {
+    id: "bond.setHoveredBondDisplay.wedge",
+    title: "Set Hovered Bond Display: Wedge",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a wedge stereo bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.hashed",
+    title: "Set Hovered Bond Display: Hashed",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a hashed stereo bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.dashed",
+    title: "Set Hovered Bond Display: Dashed",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a dashed bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.bold",
+    title: "Set Hovered Bond Display: Bold",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a bold bond"
+  },
+  {
     id: "atom.addCarbonylToHoveredAtom",
     title: "Add Carbonyl to Hovered Carbon",
     icon: "bond",
@@ -228,11 +260,11 @@ export const editActions: CommandSpec[] = [
   }
 ];
 
-export function atomElementCommandId(element: NativeSingleLetterElement): string {
+export function atomElementCommandId(element: NativeHotkeyElement): string {
   return `atom.setHoveredElement.${element}`;
 }
 
-export const atomElementActions: CommandSpec[] = nativeSingleLetterElements.map((element) => ({
+export const atomElementActions: CommandSpec[] = nativeHotkeyElements.map((element) => ({
   id: atomElementCommandId(element),
   title: `Set Hovered Atom: ${element}`,
   icon: "atom",

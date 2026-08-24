@@ -144,6 +144,25 @@ struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
 #[derive(Default)]
 struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)>);
 
+/// Which keyboard-shortcut scheme the app runs under (mirrors the webview's persisted setting; JS
+/// pushes it on startup and on change via `set_keybinding_scheme`). Read at menu-build time so the
+/// few native accelerators that differ between the schemes stay in step with the webview registry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum KeybindingScheme {
+    #[default]
+    ChemDraft,
+    ChemDraw,
+}
+
+#[derive(Default)]
+struct KeybindingSchemeState(std::sync::Mutex<KeybindingScheme>);
+
+fn current_keybinding_scheme<R: Runtime>(app: &tauri::AppHandle<R>) -> KeybindingScheme {
+    app.try_state::<KeybindingSchemeState>()
+        .and_then(|state| state.0.lock().ok().map(|guard| *guard))
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolsetWindowPosition {
@@ -310,6 +329,7 @@ pub fn run() {
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
+        .manage(KeybindingSchemeState::default())
         // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
         // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
         // handler rather than adding a scheme — a new scheme would be a new origin, and M35 measured
@@ -461,6 +481,7 @@ pub fn run() {
             set_toolbars_menu,
             focus_main_document_window,
             set_menu_checked,
+            set_keybinding_scheme,
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
@@ -2273,6 +2294,29 @@ fn sync_plugin_menu_items(
 /// current plugin menu items. Toolbar rows and View-toggle state come from `ToolbarsMenuModel` (what
 /// `set_toolbars_menu` last stored), so a plugin sync never resets the Toolbars submenu or the View
 /// checkmarks while JS remains the source of truth for both.
+/// Store the webview-owned keybinding scheme and rebuild the native menu so its accelerators match.
+/// JS pushes this on startup and whenever the Preferences toggle changes; the scheme itself is
+/// persisted by the webview (localStorage), so Rust only mirrors it.
+#[tauri::command]
+fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), String> {
+    let parsed = match scheme.as_str() {
+        "chemdraft" => KeybindingScheme::ChemDraft,
+        "chemdraw" => KeybindingScheme::ChemDraw,
+        other => return Err(format!("unknown keybinding scheme: {other}")),
+    };
+    let state = app.state::<KeybindingSchemeState>();
+    let changed = {
+        let mut guard = state.0.lock().map_err(|error| error.to_string())?;
+        let changed = *guard != parsed;
+        *guard = parsed;
+        changed
+    };
+    if changed {
+        reinstall_app_menu(&app)?;
+    }
+    Ok(())
+}
+
 fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let app = app.clone();
     app.clone()
@@ -2416,7 +2460,10 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "export.open",
                         "Export...",
                         true,
-                        Some("CmdOrCtrl+Shift+E"),
+                        Some(match current_keybinding_scheme(app) {
+                            KeybindingScheme::ChemDraft => "CmdOrCtrl+Shift+E",
+                            KeybindingScheme::ChemDraw => "Ctrl+Command+E",
+                        }),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(target_os = "macos")]
@@ -2663,13 +2710,17 @@ fn create_view_menu<R: Runtime>(
     let preferences_separator = PredefinedMenuItem::separator(app)?;
     // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
     // re-check these while the feature is off, desyncing the menu from the document.
+    let scheme = current_keybinding_scheme(app);
     let show_rulers = CheckMenuItem::with_id(
         app,
         "view.toggleRulers",
         "Show Rulers",
         true,
         view_state.rulers_visible,
-        Some("CmdOrCtrl+R"),
+        Some(match scheme {
+            KeybindingScheme::ChemDraft => "CmdOrCtrl+R",
+            KeybindingScheme::ChemDraw => "CmdOrCtrl+;",
+        }),
     )?;
     let show_crosshairs = CheckMenuItem::with_id(
         app,
@@ -2677,7 +2728,10 @@ fn create_view_menu<R: Runtime>(
         "Show Crosshairs",
         true,
         view_state.crosshairs_visible,
-        Some("CmdOrCtrl+Shift+R"),
+        Some(match scheme {
+            KeybindingScheme::ChemDraft => "CmdOrCtrl+Shift+R",
+            KeybindingScheme::ChemDraw => "Alt+CmdOrCtrl+X",
+        }),
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let debugger_separator = PredefinedMenuItem::separator(app)?;

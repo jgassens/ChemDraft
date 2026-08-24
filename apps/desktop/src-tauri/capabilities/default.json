@@ -27,6 +27,7 @@
     "allow-set-toolbars-menu",
     "allow-focus-main-document-window",
     "allow-set-menu-checked",
+    "allow-set-keybinding-scheme",
     "allow-plugin-storage-read",
     "allow-plugin-storage-write",
     "allow-open-plugin-panel-window",
