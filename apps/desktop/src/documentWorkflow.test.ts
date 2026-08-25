@@ -136,6 +136,7 @@ import {
   insertNativeBracket,
   insertNativeReactionArrow,
   planNativeChainVertices,
+  planNativeFlexibleChainVertices,
   type PagePoint,
   insertNativeSymbolGlyph,
   insertNativeTextObject,
@@ -1380,6 +1381,118 @@ describe("Phase 4 document workflow", () => {
     expect(grown.selection.objectIds).toEqual([molecule.id]);
 
     expect(applyNativeChainTool(seeded, { x: 0, y: 0 }, undefined, { objectId: "missing", atomId: "atom_001" })).toBe(seeded);
+  });
+
+  it("plans a flexible chain that matches the straight planner on a straight path and bends on a curved one", () => {
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+
+    // A straight pointer path reproduces the straight planner exactly.
+    const straightPath = [0, 1, 2, 3, 4].map((step) => ({ x: 100 + reach * step, y: 100 }));
+    const flexibleStraight = planNativeFlexibleChainVertices({
+      start: { x: 100, y: 100 },
+      path: straightPath,
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    const straight = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      dragPoint: { x: 100 + reach * 4, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(flexibleStraight).toHaveLength(straight.length);
+    flexibleStraight.forEach((vertex, index) => {
+      expect(vertex.x).toBeCloseTo(straight[index].x, 6);
+      expect(vertex.y).toBeCloseTo(straight[index].y, 6);
+    });
+
+    // An L-shaped path bends the chain: every bond keeps its exact length, and the later
+    // vertices head down the second leg instead of continuing along the first.
+    const corner = { x: 100 + reach * 4, y: 100 };
+    const lPath = [
+      { x: 100, y: 100 },
+      corner,
+      { x: corner.x, y: 100 + reach * 4 }
+    ];
+    const bent = planNativeFlexibleChainVertices({
+      start: { x: 100, y: 100 },
+      path: lPath,
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(bent).toHaveLength(9);
+    for (let index = 1; index < bent.length; index += 1) {
+      expect(Math.hypot(bent[index].x - bent[index - 1].x, bent[index].y - bent[index - 1].y)).toBeCloseTo(22, 6);
+    }
+    // First leg runs along +x near y=100; the tail has turned to run down +y near x=corner.x.
+    expect(bent[2].y).toBeCloseTo(100, 6);
+    expect(bent[2].x).toBeGreaterThan(100);
+    const tail = bent[bent.length - 1];
+    expect(tail.y).toBeGreaterThan(corner.y + reach * 2);
+
+    // A sub-threshold path behaves like the straight tool's single conventional segment.
+    const short = planNativeFlexibleChainVertices({
+      start: { x: 100, y: 100 },
+      path: [{ x: 100, y: 100 }, { x: 103, y: 100 }],
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(short).toHaveLength(2);
+
+    // The runaway cap holds for absurd paths too.
+    expect(planNativeFlexibleChainVertices({
+      start: { x: 0, y: 0 },
+      path: [{ x: 0, y: 0 }, { x: 1_000_000, y: 0 }],
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    }).length).toBeLessThanOrEqual(201);
+  });
+
+  it("draws a flexible chain along the pointer path via applyNativeChainTool options", () => {
+    const blank = createPhase4Document("Flexible Chain Fixture");
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const start = { x: 200, y: 220 };
+    const corner = { x: 200 + reach * 3, y: 220 };
+    const end = { x: corner.x, y: 220 + reach * 3 };
+    const drawn = applyNativeChainTool(blank, start, end, undefined, {
+      pathPoints: [start, corner, end]
+    });
+    const chain = drawn.pages[0].objects[0];
+    expect(chain.type).toBe("molecule");
+    if (chain.type !== "molecule") {
+      throw new Error("Expected a flexible chain molecule");
+    }
+    expect(chain.atoms).toHaveLength(7);
+    expect(chain.bonds).toHaveLength(6);
+    expect(chain.bonds.every((bond) => bond.order === "single")).toBe(true);
+    // The chain actually turned the corner rather than riding the straight start→end axis: some
+    // atoms sit near the first leg's y, and the last atoms sit near the second leg's x.
+    const atoms = chain.atoms;
+    expect(Math.abs(atoms[2].y - 220)).toBeLessThan(22);
+    expect(Math.abs(atoms[atoms.length - 1].x - corner.x)).toBeLessThan(2 * 22);
+    expect(atoms[atoms.length - 1].y).toBeGreaterThan(220 + reach);
+
+    // Anchored growth follows the path too, appending to the existing molecule.
+    const seeded = insertNativeSingleBondMolecule(blank, { x: 300, y: 300 });
+    const molecule = seeded.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected a molecule fixture");
+    }
+    const anchorAtom = molecule.atoms[molecule.atoms.length - 1];
+    const anchorCorner = { x: anchorAtom.x + reach * 2, y: anchorAtom.y };
+    const grown = applyNativeChainTool(
+      seeded,
+      { x: anchorAtom.x, y: anchorAtom.y },
+      { x: anchorCorner.x, y: anchorAtom.y + reach * 2 },
+      { objectId: molecule.id, atomId: anchorAtom.id },
+      { pathPoints: [{ x: anchorAtom.x, y: anchorAtom.y }, anchorCorner, { x: anchorCorner.x, y: anchorAtom.y + reach * 2 }] }
+    );
+    const grownMolecule = grown.pages[0].objects[0];
+    if (grownMolecule.type !== "molecule") {
+      throw new Error("Expected the grown molecule");
+    }
+    expect(grownMolecule.atoms).toHaveLength(molecule.atoms.length + 4);
+    expect(grownMolecule.bonds).toHaveLength(molecule.bonds.length + 4);
   });
 
   it("never leaves a bond-less carbon when the chain cannot leave the page", () => {

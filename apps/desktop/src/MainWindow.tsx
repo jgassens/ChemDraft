@@ -756,6 +756,10 @@ type NativePlacementDragState = {
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
   chainAnchor?: NativeChainAnchor;
+  /** Flexible chain variant: the zig-zag follows the accumulated pointer path. */
+  chainFlexible?: boolean;
+  /** Pointer path (page coords) accumulated across the drag for the flexible chain. */
+  chainPath?: ClientPoint[];
   artLineCommandId?: string;
   dragging: boolean;
 };
@@ -9488,7 +9492,7 @@ export function MainWindow({
       | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
-      | { kind: "chain"; anchor?: NativeChainAnchor }
+      | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
   ): boolean => {
     const startDocument = documentRef.current;
@@ -9520,6 +9524,8 @@ export function MainWindow({
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
+      chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
+      chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
       dragging: false
     };
@@ -9860,6 +9866,19 @@ export function MainWindow({
       // WITHOUT the flag so `structure`/`chemistry` are re-derived once — hardcoding it here meant a
       // dragged chain committed with the pre-drag SMILES, and any later editor round-trip or SMILES
       // export silently dropped the appended chain.
+      if (drag.chainFlexible && drag.chainPath) {
+        // Accumulate the pointer path (thinned to ~1.5 page px so a slow drag doesn't balloon it).
+        // Preview and commit both re-plan from the same full path, so they always agree; the commit
+        // frame re-calls with the same final point, which the distance guard makes a no-op.
+        const last = drag.chainPath[drag.chainPath.length - 1];
+        if (!last || Math.hypot(point.x - last.x, point.y - last.y) >= 1.5) {
+          drag.chainPath.push(point);
+        }
+        return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
+          preview: options.preview,
+          pathPoints: [...drag.chainPath, point]
+        });
+      }
       return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
         preview: options.preview
       });
@@ -11439,10 +11458,12 @@ export function MainWindow({
       }
     }
 
-    if (activeToolState.activeCommandId === "tool.chain") {
+    if (activeToolState.activeCommandId === "tool.chain" || activeToolState.activeCommandId === "tool.chainFlexible") {
       event.preventDefault();
       event.stopPropagation();
-      if (!startNativePlacementDrag(event, point, { kind: "chain" })) {
+      const flexible = activeToolState.activeCommandId === "tool.chainFlexible";
+      if (!startNativePlacementDrag(event, point, { kind: "chain", flexible })) {
+        // Click-only fallback: no path yet, so both variants drop the same one-segment chain.
         const nextDocument = applyNativeChainTool(documentRef.current, point);
         if (nextDocument !== documentRef.current) {
           commitDocumentChange(nextDocument);
@@ -12828,7 +12849,7 @@ export function MainWindow({
     }
 
     if (
-      activeToolState.activeCommandId === "tool.chain" &&
+      (activeToolState.activeCommandId === "tool.chain" || activeToolState.activeCommandId === "tool.chainFlexible") &&
       object?.type === "molecule" &&
       point &&
       nativeMoleculeHit?.kind === "atom"
@@ -12837,7 +12858,8 @@ export function MainWindow({
       event.stopPropagation();
       const started = startNativePlacementDrag(event, point, {
         kind: "chain",
-        anchor: { objectId, atomId: nativeMoleculeHit.atomId }
+        anchor: { objectId, atomId: nativeMoleculeHit.atomId },
+        flexible: activeToolState.activeCommandId === "tool.chainFlexible"
       });
       if (!started) {
         // The press was consumed — stopPropagation above means no other handler will answer for it.
@@ -18011,7 +18033,7 @@ function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
     return nativeArtToolForCommand(drag.artLineCommandId)?.title.toLowerCase() ?? "line";
   }
   if (drag.kind === "chain") {
-    return "carbon chain";
+    return drag.chainFlexible ? "flexible carbon chain" : "carbon chain";
   }
   return drag.kind === "template" && drag.templateId
     ? `${nativeTemplateStatusLabel(drag.templateId)} template`

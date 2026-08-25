@@ -124,6 +124,14 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("press and drag on canvas or atom", "drag length sets the carbon count", "Esc exits")
   },
   {
+    commandId: "tool.chainFlexible",
+    title: "Flexible Chain Tool",
+    kind: "bond",
+    category: "structure",
+    icon: "chainFlexible",
+    usageHint: usageHint("press and drag on canvas or atom", "the chain bends to follow the pointer path", "Esc exits")
+  },
+  {
     commandId: "tool.atom",
     title: "Atom Label Tool",
     kind: "atom",

@@ -301,10 +301,38 @@
                 "type": "command",
                 "commandId": "tool.chain"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Chain tools",
+                "columns": 2,
+                "items": [
+                  {
+                    "commandId": "tool.chain",
+                    "label": "Chain",
+                    "icon": "chain",
+                    "assetName": "Custom_Draw_Line",
+                    "tooltip": {
+                      "title": "Chain Tool",
+                      "shortcut": "C",
+                      "description": "Zig-zag chain along a straight drag; drag length sets the carbon count."
+                    }
+                  },
+                  {
+                    "commandId": "tool.chainFlexible",
+                    "label": "Flexible Chain",
+                    "icon": "chainFlexible",
+                    "tooltip": {
+                      "title": "Flexible Chain Tool",
+                      "description": "Chain that bends to follow the pointer path as you drag."
+                    }
+                  }
+                ],
+                "id": "chain-tools"
+              },
               "tooltip": {
                 "title": "Chain Tool",
-                "shortcut": "C"
+                "shortcut": "C",
+                "description": "Draw a carbon chain. Long-press for chain variants."
               },
               "layout": {
                 "colSpan": 1,
@@ -2097,10 +2125,38 @@
                 "type": "command",
                 "commandId": "tool.chain"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Chain tools",
+                "columns": 2,
+                "items": [
+                  {
+                    "commandId": "tool.chain",
+                    "label": "Chain",
+                    "icon": "chain",
+                    "assetName": "Custom_Draw_Line",
+                    "tooltip": {
+                      "title": "Chain Tool",
+                      "shortcut": "C",
+                      "description": "Zig-zag chain along a straight drag; drag length sets the carbon count."
+                    }
+                  },
+                  {
+                    "commandId": "tool.chainFlexible",
+                    "label": "Flexible Chain",
+                    "icon": "chainFlexible",
+                    "tooltip": {
+                      "title": "Flexible Chain Tool",
+                      "description": "Chain that bends to follow the pointer path as you drag."
+                    }
+                  }
+                ],
+                "id": "chain-tools"
+              },
               "tooltip": {
                 "title": "Chain Tool",
-                "shortcut": "C"
+                "shortcut": "C",
+                "description": "Draw a carbon chain. Long-press for chain variants."
               },
               "layout": {
                 "colSpan": 1,

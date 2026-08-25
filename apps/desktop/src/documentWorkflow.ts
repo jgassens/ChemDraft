@@ -1054,6 +1054,13 @@ export interface NativeChainToolOptions {
    * this flag and derives once, so what lands in the document is always fully derived.
    */
   preview?: boolean;
+  /**
+   * Flexible-chain variant: the full pointer path of the drag (press point first). When present
+   * with at least two points, the zig-zag snakes along this path instead of riding the single
+   * straight press→pointer axis. The same path must be passed on preview and commit so both plan
+   * identical vertices.
+   */
+  pathPoints?: readonly PagePoint[];
 }
 
 /** Backstop for a drag with no page bounds; a full-page chain is far shorter than this. */
@@ -1113,10 +1120,140 @@ export function planNativeChainVertices(input: {
   return vertices;
 }
 
+/** Flexible-chain vertex plan: the zig-zag axis follows the pointer *path* instead of one straight
+ *  press→pointer vector, so the chain bends wherever the drag turns. The path is resampled into
+ *  axis stations every `reachPerSegment` of arc length; each bond keeps its exact length and steps
+ *  ±half the zig-zag angle about the local path tangent, so a straight drag reproduces
+ *  `planNativeChainVertices` exactly and a curved drag snakes with the pointer. */
+export function planNativeFlexibleChainVertices(input: {
+  start: PagePoint;
+  /** Pointer path from the press point to the current pointer, in page coordinates. */
+  path: readonly PagePoint[];
+  bondLengthPx: number;
+  chainAngleDegrees: number;
+  /** When given, the walk stops rather than stepping off the page. */
+  pageBounds?: { width: number; height: number };
+}): PagePoint[] {
+  const segmentLength = Math.max(8, input.bondLengthPx);
+  const halfRadians = degreesToRadians((180 - clamp(input.chainAngleDegrees, 1, 179)) / 2);
+  const reachPerSegment = segmentLength * Math.cos(halfRadians);
+
+  // Collapse pointer jitter: drop consecutive path points closer than a page pixel.
+  const path: PagePoint[] = [];
+  for (const point of input.path) {
+    const last = path[path.length - 1];
+    if (!last || Math.hypot(point.x - last.x, point.y - last.y) >= 1) {
+      path.push(point);
+    }
+  }
+
+  const arcLengths = [0];
+  for (let index = 1; index < path.length; index += 1) {
+    arcLengths.push(arcLengths[index - 1] + Math.hypot(path[index].x - path[index - 1].x, path[index].y - path[index - 1].y));
+  }
+  const totalLength = arcLengths[arcLengths.length - 1] ?? 0;
+
+  // Degenerate or sub-threshold drags behave exactly like the straight tool: one conventional
+  // segment aimed at the pointer.
+  if (path.length < 2 || totalLength < reachPerSegment * 0.75) {
+    return planNativeChainVertices({
+      start: input.start,
+      dragPoint: path.length >= 2 ? path[path.length - 1] : undefined,
+      bondLengthPx: input.bondLengthPx,
+      chainAngleDegrees: input.chainAngleDegrees,
+      pageBounds: input.pageBounds
+    });
+  }
+
+  const segmentCount = Math.min(maxNativeChainSegments, Math.max(1, Math.round(totalLength / reachPerSegment)));
+  const pointAtArcLength = (target: number): PagePoint => {
+    const s = clamp(target, 0, totalLength);
+    let index = 1;
+    while (index < arcLengths.length - 1 && arcLengths[index] < s) {
+      index += 1;
+    }
+    const spanStart = arcLengths[index - 1];
+    const spanLength = arcLengths[index] - spanStart;
+    const t = spanLength < 1e-9 ? 0 : (s - spanStart) / spanLength;
+    return {
+      x: path[index - 1].x + (path[index].x - path[index - 1].x) * t,
+      y: path[index - 1].y + (path[index].y - path[index - 1].y) * t
+    };
+  };
+
+  // Local axis direction per chain segment: the chord between neighboring arc-length stations.
+  // Stations past the path's end collapse onto its endpoint, so trailing segments (the rounding
+  // remainder) reuse the final tangent.
+  const stations: PagePoint[] = [];
+  for (let index = 0; index <= segmentCount; index += 1) {
+    stations.push(pointAtArcLength(index * reachPerSegment));
+  }
+  const tangentAngles: number[] = [];
+  for (let index = 0; index < segmentCount; index += 1) {
+    const dx = stations[index + 1].x - stations[index].x;
+    const dy = stations[index + 1].y - stations[index].y;
+    tangentAngles.push(
+      Math.hypot(dx, dy) < 1e-9
+        ? tangentAngles[index - 1] ?? 0
+        : Math.atan2(dy, dx)
+    );
+  }
+
+  const bounds = input.pageBounds;
+  const inBounds = (point: PagePoint): boolean =>
+    !bounds || (point.x >= 0 && point.y >= 0 && point.x <= bounds.width && point.y <= bounds.height);
+  const step = (from: PagePoint, angle: number): PagePoint => ({
+    x: from.x + Math.cos(angle) * segmentLength,
+    y: from.y + Math.sin(angle) * segmentLength
+  });
+
+  // Same edge-aware first-step side choice as the straight planner.
+  let phase = -1;
+  if (!inBounds(step(input.start, tangentAngles[0] - halfRadians)) && inBounds(step(input.start, tangentAngles[0] + halfRadians))) {
+    phase = 1;
+  }
+
+  const vertices: PagePoint[] = [{ x: input.start.x, y: input.start.y }];
+  for (let index = 1; index <= segmentCount; index += 1) {
+    const previous = vertices[index - 1];
+    const next = step(previous, tangentAngles[index - 1] + (index % 2 === 1 ? phase : -phase) * halfRadians);
+    if (!inBounds(next)) {
+      break;
+    }
+    vertices.push(next);
+  }
+  return vertices;
+}
+
+/** Route a chain plan through the straight or flexible planner depending on whether the gesture
+ *  carried a pointer path. The straight planner's inputs pass through unchanged. */
+function planChainVerticesForOptions(
+  input: {
+    start: PagePoint;
+    dragPoint?: PagePoint;
+    bondLengthPx: number;
+    chainAngleDegrees: number;
+    pageBounds?: { width: number; height: number };
+  },
+  options: NativeChainToolOptions
+): PagePoint[] {
+  if (options.pathPoints && options.pathPoints.length >= 2) {
+    return planNativeFlexibleChainVertices({
+      start: input.start,
+      path: options.pathPoints,
+      bondLengthPx: input.bondLengthPx,
+      chainAngleDegrees: input.chainAngleDegrees,
+      pageBounds: input.pageBounds
+    });
+  }
+  return planNativeChainVertices(input);
+}
+
 /** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
  *  appends carbons to that molecule using the molecule's own bond length and chain angle;
- *  otherwise it seeds a new native molecule from the synthetic preset. Pure — the caller previews
- *  with replacePresentDocument and commits once. */
+ *  otherwise it seeds a new native molecule from the synthetic preset. With `options.pathPoints`
+ *  (the flexible variant) the zig-zag follows the pointer path instead of a straight axis. Pure —
+ *  the caller previews with replacePresentDocument and commits once. */
 export function applyNativeChainTool(
   document: ChemDraftDocument,
   startPoint: PagePoint,
@@ -1136,13 +1273,13 @@ export function applyNativeChainTool(
     }
 
     const style = nativeDrawingStyleFromObjectStyle(molecule.style);
-    const vertices = planNativeChainVertices({
+    const vertices = planChainVerticesForOptions({
       start: { x: sourceAtom.x, y: sourceAtom.y },
       dragPoint,
       bondLengthPx: style.bondLengthPx,
       chainAngleDegrees: style.chainAngleDegrees,
       pageBounds: { width: page.width, height: page.height }
-    });
+    }, options);
 
     const current = appendNativeCarbonVertices(molecule, sourceAtom.id, vertices.slice(1), options.preview);
     if (!current) {
@@ -1164,13 +1301,13 @@ export function applyNativeChainTool(
     x: clamp(startPoint.x, 0, page.width),
     y: clamp(startPoint.y, 0, page.height)
   };
-  const vertices = planNativeChainVertices({
+  const vertices = planChainVerticesForOptions({
     start,
     dragPoint,
     bondLengthPx: presetStyle.bondLengthPx,
     chainAngleDegrees: presetStyle.chainAngleDegrees,
     pageBounds: { width: page.width, height: page.height }
-  });
+  }, options);
   if (vertices.length < 2) {
     // Every direction out of the press point left the page. A single vertex is not a chain — it is a
     // bond-less carbon the user never asked for, and one they would have to hunt down to delete.
