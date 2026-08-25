@@ -3454,7 +3454,8 @@ function ToolbarPaletteItem({
             enabled: command.enabled !== false,
             active: command.id === activeTool,
             disabledReason: command.disabledReason,
-            shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut
+            // `||` (not `??`): an empty string is the keybinding scheme's "unbound" sentinel.
+            shortcutLabel: command.shortcutLabel || command.shortcut || command.defaultShortcut || undefined
           }))
         }
       });
@@ -3751,7 +3752,8 @@ function ToolbarPaletteItem({
         >
           {submenuCommands.map((command) => {
             const disabled = command.enabled === false;
-            const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
+            // `||` (not `??`): an empty string is the keybinding scheme's "unbound" sentinel.
+            const itemShortcut = command.shortcutLabel || command.shortcut || command.defaultShortcut || undefined;
             const itemText = disabled
               ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
               : command.title;

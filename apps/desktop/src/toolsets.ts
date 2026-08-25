@@ -538,9 +538,16 @@ export function toolsetItemToPaletteItem(
   const liveCommand = preferCommandPresentation && primary.type === "command"
     ? primary.command
     : undefined;
-  const tooltipShortcut = liveCommand
+  // The merged command wins over the manifest tooltip text: a keybinding-scheme remap (or a
+  // plugin override) rewrites the command's shortcut while the manifest still carries the
+  // ChemDraft-native key. An empty-string shortcut is the scheme's "unbound" sentinel — it
+  // survives the `override ?? base` merges above, and normalizes to null here so tooltips show
+  // no shortcut at all.
+  const tooltipShortcut = (liveCommand
     ? liveCommand.shortcut ?? liveCommand.defaultShortcut ?? null
-    : item.tooltip.shortcut ?? (primary.type === "command" ? primary.command.shortcut : null) ?? null;
+    : (primary.type === "command" ? primary.command.shortcut ?? primary.command.defaultShortcut ?? null : null)
+      ?? item.tooltip.shortcut
+      ?? null) || null;
 
   return {
     id: item.id,
@@ -563,7 +570,11 @@ export function toolsetItemToPaletteItem(
       title: liveCommand?.title ?? item.tooltip.title,
       description: liveCommand ? liveCommand.description ?? null : item.tooltip.description ?? null,
       shortcut: tooltipShortcut,
-      shortcutLabel: liveCommand?.shortcutLabel ?? compactMacShortcutLabel(tooltipShortcut ?? undefined) ?? null
+      shortcutLabel:
+        (liveCommand?.shortcutLabel || null)
+        ?? (primary.type === "command" ? primary.command.shortcutLabel || null : null)
+        ?? compactMacShortcutLabel(tooltipShortcut ?? undefined)
+        ?? null
     },
     layout: item.layout,
     disabledReason: liveCommand ? liveCommand.disabledReason : item.disabledReason,
@@ -670,7 +681,7 @@ function mergeToolsetCommandSpec(
   };
 }
 
-function compactMacShortcutLabel(shortcut: string | undefined): string | undefined {
+export function compactMacShortcutLabel(shortcut: string | undefined): string | undefined {
   if (!shortcut) {
     return undefined;
   }
@@ -683,11 +694,12 @@ function compactMacShortcutLabel(shortcut: string | undefined): string | undefin
   const parts = trimmed.split("+").map((part) => part.trim()).filter((part) => part.length > 0);
   const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
   const key = parts.find((part) => !["cmd", "command", "ctrl", "control", "shift", "alt", "option", "meta"].includes(part.toLowerCase()));
+  // Mac convention orders modifiers ⌃⌥⇧⌘.
   const modifierLabel = [
+    lowerParts.has("ctrl") || lowerParts.has("control") ? "⌃" : "",
     lowerParts.has("alt") || lowerParts.has("option") ? "⌥" : "",
     lowerParts.has("shift") ? "⇧" : "",
-    lowerParts.has("cmd") || lowerParts.has("command") || lowerParts.has("meta") ? "⌘" : "",
-    lowerParts.has("ctrl") || lowerParts.has("control") ? "⌃" : ""
+    lowerParts.has("cmd") || lowerParts.has("command") || lowerParts.has("meta") ? "⌘" : ""
   ].join("");
 
   return modifierLabel.length > 0 && key ? `${modifierLabel}${key}` : trimmed;

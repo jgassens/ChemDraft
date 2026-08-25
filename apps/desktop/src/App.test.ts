@@ -1665,6 +1665,36 @@ describe("ChemDraft desktop shell", () => {
     expect(layoutRegistry.conflicts()).toEqual([]);
   });
 
+  it("shows the ChemDraw-scheme shortcuts in palette tooltips, not the manifest's ChemDraft keys", () => {
+    // The regression: functional bindings were remapped but tooltips still read the manifest's
+    // static shortcut text (V/M/C/L…), because the transformed spec's cleared fields lost the
+    // `override ?? base` merges against the manifest-derived base.
+    const commands = applyKeybindingSchemeToCommands(allShellCommands(createPhase4Document()), "chemdraw");
+    const overrides = new Map(commands.map((command) => [command.id, command] as const));
+    const items = getToolsetItemGroups("core.main", desktopToolsetRegistry, overrides).flat();
+    const tooltipFor = (id: string) => items.find((item) => item.id === id)?.tooltip;
+
+    expect(tooltipFor("tool.select")?.shortcutLabel).toBe("Space");
+    expect(tooltipFor("tool.bond")?.shortcutLabel).toBe("X");
+    expect(tooltipFor("tool.chain")?.shortcutLabel).toBe("⇧X");
+    expect(tooltipFor("tool.text")?.shortcutLabel).toBe("T");
+    // Unbound keys show no shortcut at all — not the stale ChemDraft key.
+    expect(tooltipFor("tool.lasso")?.shortcut).toBeNull();
+    expect(tooltipFor("tool.lasso")?.shortcutLabel).toBeNull();
+    expect(tooltipFor("tool.cyclopentane")?.shortcut).toBeNull();
+
+    // The default scheme still shows the ChemDraft keys.
+    const chemdraftItems = getToolsetItemGroups(
+      "core.main",
+      desktopToolsetRegistry,
+      new Map(allShellCommands(createPhase4Document()).map((command) => [command.id, command] as const))
+    ).flat();
+    const chemdraftTooltip = (id: string) => chemdraftItems.find((item) => item.id === id)?.tooltip;
+    expect(chemdraftTooltip("tool.select")?.shortcutLabel).toBe("V");
+    expect(chemdraftTooltip("tool.chain")?.shortcutLabel).toBe("C");
+    expect(chemdraftTooltip("tool.lasso")?.shortcutLabel).toBe("L");
+  });
+
   it("keeps the chemdraft scheme byte-identical through the scheme transform", () => {
     const commands = allShellCommands(createPhase4Document());
     expect(applyKeybindingSchemeToCommands(commands, "chemdraft")).toEqual(commands);

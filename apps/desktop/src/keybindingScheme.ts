@@ -19,6 +19,7 @@
 
 import type { CommandSpec } from "./commands";
 import type { KeybindingScheme } from "./keybindingSettings";
+import { compactMacShortcutLabel } from "./toolsets";
 
 /**
  * Registry-level overrides for the ChemDraw scheme. `null` unbinds a default
@@ -81,11 +82,14 @@ export function applyKeybindingSchemeToCommands(
     const override = CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES[command.id];
     return {
       ...command,
-      shortcut: override ?? undefined,
-      // The engine falls back `shortcut ?? defaultShortcut`, so a cleared binding must
-      // clear both or the ChemDraft default would quietly come back.
-      defaultShortcut: override ?? undefined,
-      shortcutLabel: undefined
+      // Empty string — NOT undefined — is the "unbound" sentinel. Transformed specs are later
+      // merged over manifest-derived bases with `override.field ?? base.field` semantics
+      // (toolsets.ts), where undefined resurrects the stale ChemDraft key in tooltips; "" survives
+      // those merges, reads as "no shortcut" everywhere downstream (registry, tooltips, flyouts),
+      // and clears both fields the shortcut engine falls back through.
+      shortcut: override ?? "",
+      defaultShortcut: override ?? "",
+      shortcutLabel: override ? compactMacShortcutLabel(override) ?? override : ""
     };
   });
 }
