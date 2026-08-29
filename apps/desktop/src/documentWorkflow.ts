@@ -10506,6 +10506,40 @@ function transformGraphicFreehandPoints(
   });
 }
 
+/**
+ * Pivot for rotating a partial selection, matching ChemDraw's behavior (verified against its
+ * fragment rotation): a fragment that meets the unselected remainder through exactly one of its
+ * own atoms rotates about THAT junction atom — the junction and its attachment bond to the rest
+ * stay put while the substituents swing around it. A selection with no junction (whole molecule,
+ * detached island) or several junctions ("no terminal atoms" — a mid-chain slice, a ring bond)
+ * returns undefined and rotates about the selection box's center as before.
+ */
+export function nativeMoleculePartRotationPivot(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget
+): PagePoint | undefined {
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  if (targetAtomIds.size === 0 || targetAtomIds.size === molecule.atoms.length) {
+    return undefined;
+  }
+
+  const junctionAtomIds = new Set<string>();
+  molecule.bonds.forEach((bond) => {
+    const fromSelected = targetAtomIds.has(bond.fromAtomId);
+    const toSelected = targetAtomIds.has(bond.toAtomId);
+    if (fromSelected !== toSelected) {
+      junctionAtomIds.add(fromSelected ? bond.fromAtomId : bond.toAtomId);
+    }
+  });
+  if (junctionAtomIds.size !== 1) {
+    return undefined;
+  }
+
+  const junctionId = [...junctionAtomIds][0];
+  const junction = molecule.atoms.find((atom) => atom.id === junctionId);
+  return junction ? { x: junction.x, y: junction.y } : undefined;
+}
+
 export function rotateNativeMoleculeParts(
   document: ChemDraftDocument,
   target: NativeMoleculePartMoveTarget,
@@ -10525,7 +10559,7 @@ export function rotateNativeMoleculeParts(
     return document;
   }
 
-  const center = objectCenter(bounds);
+  const center = nativeMoleculePartRotationPivot(molecule, target) ?? objectCenter(bounds);
   const angleRadians = angleDegrees * Math.PI / 180;
   const rotated = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
     ...molecule,

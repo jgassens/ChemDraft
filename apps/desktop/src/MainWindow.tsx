@@ -428,6 +428,7 @@ import {
   nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
   nativeMoleculePartBounds,
+  nativeMoleculePartRotationPivot,
   nativeGraphicCornerRadiusEditPoint,
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
@@ -13632,9 +13633,12 @@ export function MainWindow({
       objectId,
       target: selectedFragmentTarget,
       startDocument: selectedDocument,
-      centerPoint: selectedFragmentBounds
-        ? documentObjectCenter(selectedFragmentBounds)
-        : object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object),
+      // A fragment attached to the rest through one junction swings about that junction atom;
+      // the pointer's angle is measured about the same pivot the rotation applies around.
+      centerPoint: (selectedFragmentBounds && selectedFragmentTarget && object.type === "molecule"
+        ? nativeMoleculePartRotationPivot(object, selectedFragmentTarget) ?? documentObjectCenter(selectedFragmentBounds)
+        : undefined)
+        ?? (object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object)),
       startPoint: point,
       startRotationDegrees: object.type === "molecule"
         ? selectedFragmentTarget ? 0 : nativeMoleculeTransformState(object).rotationDegrees
@@ -13823,9 +13827,12 @@ export function MainWindow({
       objectId,
       target: selectedFragmentTarget,
       startDocument: selectedDocument,
-      centerPoint: selectedFragmentBounds
-        ? documentObjectCenter(selectedFragmentBounds)
-        : object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object),
+      // A fragment attached to the rest through one junction swings about that junction atom;
+      // the pointer's angle is measured about the same pivot the rotation applies around.
+      centerPoint: (selectedFragmentBounds && selectedFragmentTarget && object.type === "molecule"
+        ? nativeMoleculePartRotationPivot(object, selectedFragmentTarget) ?? documentObjectCenter(selectedFragmentBounds)
+        : undefined)
+        ?? (object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object)),
       axisAngleRad: 0,
       startPoint: point,
       startTiltXRad,

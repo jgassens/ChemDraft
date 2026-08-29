@@ -198,6 +198,7 @@ import {
   rotateDocumentObjectsAroundPoint,
   rotateSelectedDocumentObjects90,
   rotateNativeMoleculeObjectAroundPoint,
+  nativeMoleculePartRotationPivot,
   rotateNativeMoleculeParts,
   selectedGroupObjectIds,
   tiltNativeMoleculeProjectedPlane,
@@ -3074,10 +3075,22 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
     expect(rotatedMolecule.structure).toBe(molecule.structure);
     expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
+    // The selected fragment (atoms 2+3) meets the rest through atom_002 — its single junction —
+    // so it rotates ABOUT atom_002, ChemDraw-style: the junction and its attachment bond to
+    // atom_001 stay put, atom_003 sweeps 90° around the junction, and no bond stretches (the
+    // old bbox-center pivot dragged atom_002 away from atom_001 and stretched bond_001).
     expect(moleculeAtom(rotatedMolecule, "atom_001")).toEqual(atom1);
-    expect(pointDistance(moleculeAtom(rotatedMolecule, "atom_002"), atom2)).toBeGreaterThan(0);
-    expect(pointDistance(moleculeAtom(rotatedMolecule, "atom_003"), atom3)).toBeGreaterThan(0);
-    expect(moleculeBondLength(rotatedMolecule, "bond_001")).not.toBeCloseTo(nativeBondLengthPx, 2);
+    expect(moleculeAtom(rotatedMolecule, "atom_002").x).toBeCloseTo(atom2.x, 6);
+    expect(moleculeAtom(rotatedMolecule, "atom_002").y).toBeCloseTo(atom2.y, 6);
+    const swept90 = {
+      x: atom2.x - (atom3.y - atom2.y),
+      y: atom2.y + (atom3.x - atom2.x)
+    };
+    expect(moleculeAtom(rotatedMolecule, "atom_003").x).toBeCloseTo(swept90.x, 6);
+    expect(moleculeAtom(rotatedMolecule, "atom_003").y).toBeCloseTo(swept90.y, 6);
+    rotatedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(rotatedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 6);
+    });
 
     const cleaned = cleanUpSelectedNativeMolecule2d(rotated);
     const cleanedMolecule = selectedMolecule(cleaned);
@@ -3087,6 +3100,43 @@ describe("Phase 4 document workflow", () => {
       expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
+  it("keeps the bbox-center pivot for part rotations with zero or multiple junctions", () => {
+    // Whole-molecule part selection: no unselected remainder, no junction — center pivot.
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Pivot Fallbacks"), { x: 200, y: 220 });
+    const seedMolecule = selectedMolecule(seed);
+    expect(nativeMoleculePartRotationPivot(seedMolecule, {
+      objectId: seedMolecule.id,
+      kind: "parts",
+      atomIds: seedMolecule.atoms.map((atom) => atom.id),
+      bondIds: seedMolecule.bonds.map((bond) => bond.id)
+    })).toBeUndefined();
+
+    // A ring bond touches the rest of the ring through BOTH its atoms — two junctions, so a
+    // rigid swing must distort something either way; the pivot stays the selection center.
+    const ring = insertNativeTemplateMolecule(createPhase4Document("Pivot Ring"), { x: 300, y: 300 }, "cyclohexane");
+    const ringMolecule = selectedMolecule(ring);
+    expect(nativeMoleculePartRotationPivot(ringMolecule, {
+      objectId: ringMolecule.id,
+      kind: "bond",
+      bondId: ringMolecule.bonds[0].id
+    })).toBeUndefined();
+
+    // A terminal fragment with one junction pivots exactly on its own junction atom (the
+    // selected atom the boundary bond touches), so the attachment bond never moves.
+    const chain = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Pivot Chain"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const chainMolecule = selectedMolecule(chain);
+    const junction = moleculeAtom(chainMolecule, "atom_002");
+    expect(nativeMoleculePartRotationPivot(chainMolecule, {
+      objectId: chainMolecule.id,
+      kind: "bond",
+      bondId: "bond_002"
+    })).toEqual({ x: junction.x, y: junction.y });
   });
 
   it("stretches a selected native molecule independently on X and Y without changing bonds", () => {
