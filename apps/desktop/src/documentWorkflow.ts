@@ -963,22 +963,26 @@ export function createNativeSingleBondMolecule(
   options: NativeBondToolOptions = {}
 ): MoleculeObject {
   const page = firstPage(document);
+  // The first bond lands at the zig-zag half-angle (30° above horizontal for the default 120°
+  // chain angle), rising left-to-right — ChemDraw's first-bond orientation — rather than flat.
+  const halfDx = (nativeBondLength / 2) * Math.cos(Math.PI / 6);
+  const halfDy = (nativeBondLength / 2) * Math.sin(Math.PI / 6);
   const center = {
-    x: clamp(point.x, nativeBondLength / 2, page.width - nativeBondLength / 2),
-    y: clamp(point.y, 0, page.height)
+    x: clamp(point.x, halfDx, page.width - halfDx),
+    y: clamp(point.y, halfDy, page.height - halfDy)
   };
   const leftAtom = {
     id: "atom_001",
     element: "C",
-    x: center.x - nativeBondLength / 2,
-    y: center.y,
+    x: center.x - halfDx,
+    y: center.y + halfDy,
     formalCharge: 0
   } satisfies MoleculeAtom;
   const rightAtom = {
     id: "atom_002",
     element: "C",
-    x: center.x + nativeBondLength / 2,
-    y: center.y,
+    x: center.x + halfDx,
+    y: center.y - halfDy,
     formalCharge: 0
   } satisfies MoleculeAtom;
   const atoms = [leftAtom, rightAtom];
@@ -2888,12 +2892,15 @@ function nativeTemplateGeometry(
   }
 
   if (templateId === "cyclohexane") {
-    const atoms = regularNativeRingAtoms(center, 6, 0);
+    // Vertex at the top (flat left/right sides) — the orientation ChemDraw stamps and the one
+    // journals draw, so hotkey sprouts from the top/bottom vertices head vertically and the
+    // side-vertex sprouts head out diagonally.
+    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2);
     return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
   }
 
   if (templateId === "benzene") {
-    const atoms = regularNativeRingAtoms(center, 6, 0);
+    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2);
     return {
       atoms,
       bonds: nativeRingBonds(atoms, (index, fromAtom, toAtom) => {
@@ -7016,10 +7023,38 @@ export function nativeChargePlacementPointForAtom(
     ?.point;
 }
 
+/** The growth the on-canvas arrow is showing: where the new atom lands, or which existing atom
+ *  the guided growth would connect to. Hotkeys pass this so the committed bond is exactly the
+ *  previewed one. */
+export interface NativeBondGrowthPlan {
+  newAtomPoint: PagePoint;
+  targetAtomId?: string;
+  /** Unit vector of the previewed growth direction. */
+  direction: PagePoint;
+}
+
+/** Pure-geometry growth plan for an explicit atom (no pointer steering): what the hotkeys use
+ *  when no growth arrow is on screen. */
+function nativeBondGrowthPlanForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  pageWidth: number,
+  pageHeight: number
+): NativeBondGrowthPlan | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return undefined;
+  }
+  const preview = previewNativeMoleculeBondGrowth(molecule, atom, pageWidth, pageHeight);
+  return preview && preview.atomId === atomId
+    ? { newAtomPoint: preview.newAtomPoint, targetAtomId: preview.targetAtomId, direction: preview.direction }
+    : undefined;
+}
+
 export function applySingleBondToolAtNativeAtom(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  steeringPoint?: PagePoint
+  plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -7038,14 +7073,19 @@ export function applySingleBondToolAtNativeAtom(
     return document;
   }
 
-  const preview = previewNativeMoleculeBondGrowth(molecule, steeringPoint ?? atom, page.width, page.height);
-  if (!preview) {
+  // When the on-canvas growth arrow is showing for this atom, commit exactly what it previews
+  // (the hotkey must never contradict the arrow). Without an arrow, plan from the atom's own
+  // position: the sprout comes off the atom the user sees highlighted (a pointer a few pixels
+  // off used to pick a different atom, or nothing), and with no pointer offset the planner
+  // picks the pure geometric direction — ChemDraw's hotkey behavior.
+  const planned = plan ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
+  if (!planned) {
     return document;
   }
 
-  const extended = preview.targetAtomId
-    ? connectNativeCarbonAtoms(molecule, preview.atomId, preview.targetAtomId)
-    : extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint);
+  const extended = planned.targetAtomId
+    ? connectNativeCarbonAtoms(molecule, target.atomId, planned.targetAtomId)
+    : extendNativeCarbonGraph(molecule, target.atomId, planned.newAtomPoint);
   if (!extended) {
     return document;
   }
@@ -7063,7 +7103,7 @@ export function applySingleBondToolAtNativeAtom(
 export function applyNativeCarbonylAtAtomTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  steeringPoint?: PagePoint
+  plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -7077,7 +7117,7 @@ export function applyNativeCarbonylAtAtomTarget(
     return document;
   }
 
-  const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, steeringPoint);
+  const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, plan);
   if (!nextMolecule) {
     return document;
   }
@@ -15211,12 +15251,53 @@ function addNativeCarbonylToAtom(
   sourceAtomId: string,
   pageWidth: number,
   pageHeight: number,
-  steeringPoint?: PagePoint
+  plan?: NativeBondGrowthPlan
+): MoleculeObject | undefined {
+  const direct = addCarbonylOxygenToAtom(molecule, sourceAtomId, pageWidth, pageHeight, plan?.direction);
+  if (direct) {
+    return direct;
+  }
+
+  // The hovered atom can't carry the C=O itself (an aromatic ring carbon, a heteroatom, a
+  // charged atom…). ChemDraw's carbonyl hotkey then sprouts a NEW carbon along the atom's best
+  // open direction and puts the C=O on that carbon — the aldehyde substituent — with the oxygen
+  // along the new carbon's own open bisector. Mirror that instead of refusing. When the growth
+  // arrow is showing, the new carbon lands exactly where the arrow points.
+  const planned = (plan && !plan.targetAtomId ? plan : undefined)
+    ?? nativeBondGrowthPlanForAtom(molecule, sourceAtomId, pageWidth, pageHeight);
+  if (!planned || planned.targetAtomId) {
+    return undefined;
+  }
+  const grown = extendNativeCarbonGraph(molecule, sourceAtomId, planned.newAtomPoint);
+  if (!grown) {
+    return undefined;
+  }
+  const previousIds = new Set(molecule.atoms.map((atom) => atom.id));
+  const sprouted = grown.atoms.find((atom) => !previousIds.has(atom.id));
+  return sprouted
+    ? addCarbonylOxygenToAtom(grown, sprouted.id, pageWidth, pageHeight)
+    : undefined;
+}
+
+/** Attach a double-bonded oxygen directly to the given carbon, along the carbon's largest open
+ *  angle (matching where the bond-growth arrow points). Returns undefined when the atom is not a
+ *  neutral carbon with two free valences. */
+function addCarbonylOxygenToAtom(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  pageWidth: number,
+  pageHeight: number,
+  direction?: PagePoint
 ): MoleculeObject | undefined {
   const sourceAtom = molecule.atoms.find((atom) => atom.id === sourceAtomId);
   if (!sourceAtom || nativeElementFromAtomLabel(sourceAtom.element) !== "C") {
     return undefined;
   }
+  // Without an explicit (arrow) direction, place the oxygen where the bond-growth planner would
+  // grow — the ± chain-angle candidates, ties rising — so the C=O sits at 120° off an existing
+  // bond exactly like a hotkey-sprouted single bond (and like ChemDraw), not flat-opposite.
+  const plannedDirection = direction
+    ?? nativeBondGrowthPlanForAtom(molecule, sourceAtomId, pageWidth, pageHeight)?.direction;
 
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const nextCarbonValence = (valenceUsage.get(sourceAtomId) ?? 0) + nativeBondOrderValue.double;
@@ -15231,7 +15312,7 @@ function addNativeCarbonylToAtom(
     y: 0,
     formalCharge: 0
   };
-  const oxygenPoint = carbonylOxygenPointForAtom(molecule, sourceAtomId, pageWidth, pageHeight, steeringPoint);
+  const oxygenPoint = carbonylOxygenPointForAtom(molecule, sourceAtomId, pageWidth, pageHeight, plannedDirection);
   const newAtom = {
     ...oxygenAtom,
     x: oxygenPoint.x,
@@ -15256,16 +15337,19 @@ function carbonylOxygenPointForAtom(
   atomId: string,
   pageWidth: number,
   pageHeight: number,
-  steeringPoint?: PagePoint
+  direction?: PagePoint
 ): PagePoint {
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
     return { x: nativeBondLength, y: 0 };
   }
 
-  const steeredDistance = steeringPoint ? distance(atom, steeringPoint) : 0;
-  const angle = steeredDistance > 0.01
-    ? Math.atan2((steeringPoint?.y ?? atom.y) - atom.y, (steeringPoint?.x ?? atom.x) - atom.x)
+  // With a growth arrow on screen the oxygen goes exactly where the arrow points; otherwise it
+  // bisects the atom's largest open angle — pure geometry, like ChemDraw's hotkey. The pointer's
+  // few-pixel offset from the atom center is grip noise, not aim, and steering by it used to
+  // shove the C=O into whatever the cursor happened to overlap (often the ring).
+  const angle = direction
+    ? Math.atan2(direction.y, direction.x)
     : largestOpenAngle(neighborAnglesForAtom(molecule, atomId)) ?? -Math.PI / 2;
   const point = {
     x: atom.x + Math.cos(angle) * nativeBondLength,

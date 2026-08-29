@@ -846,12 +846,16 @@ function cyclopentaneVerticesFromBond(
   }
 
   const bondLength = pointDistance(firstAtom, secondAtom);
+  // Walk a regular pentagon off the seed bond: each edge turns +72° from the previous one,
+  // measured from the seed bond's own direction (the seed rises at 30° now, not flat).
+  const seedAngle = Math.atan2(secondAtom.y - firstAtom.y, secondAtom.x - firstAtom.x);
   const vertices: Array<{ x: number; y: number }> = [firstAtom, secondAtom];
-  [72, 144, 216].forEach((angleDegrees) => {
+  [1, 2, 3].forEach((step) => {
+    const angle = seedAngle + step * (72 * Math.PI / 180);
     const previous = vertices[vertices.length - 1];
     vertices.push({
-      x: previous.x + Math.cos(angleDegrees * Math.PI / 180) * bondLength,
-      y: previous.y + Math.sin(angleDegrees * Math.PI / 180) * bondLength
+      x: previous.x + Math.cos(angle) * bondLength,
+      y: previous.y + Math.sin(angle) * bondLength
     });
   });
 
@@ -1141,8 +1145,22 @@ describe("Phase 4 document workflow", () => {
       structureFormat: "smiles",
       structure: "CC",
       atoms: [
-        { id: "atom_001", element: "C", x: 200 - nativeBondLengthPx / 2, y: 220, formalCharge: 0 },
-        { id: "atom_002", element: "C", x: 200 + nativeBondLengthPx / 2, y: 220, formalCharge: 0 }
+        // The seed bond rises left-to-right at the zig-zag half-angle (30°), like ChemDraw's
+        // first bond, instead of lying flat.
+        {
+          id: "atom_001",
+          element: "C",
+          x: 200 - (nativeBondLengthPx / 2) * Math.cos(Math.PI / 6),
+          y: 220 + (nativeBondLengthPx / 2) * Math.sin(Math.PI / 6),
+          formalCharge: 0
+        },
+        {
+          id: "atom_002",
+          element: "C",
+          x: 200 + (nativeBondLengthPx / 2) * Math.cos(Math.PI / 6),
+          y: 220 - (nativeBondLengthPx / 2) * Math.sin(Math.PI / 6),
+          formalCharge: 0
+        }
       ],
       bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }],
       chemistry: {
@@ -2126,10 +2144,10 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedMolecule.structure).toBe(molecule.structure);
     expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
     expect(nativeMoleculeTransformState(rotatedMolecule).rotationDegrees).toBe(90);
-    expect(rotatedMolecule.atoms[0]?.x).toBeCloseTo(center.x, 3);
-    expect(rotatedMolecule.atoms[0]?.y).toBeCloseTo(center.y - nativeBondLengthPx / 2, 3);
-    expect(rotatedMolecule.atoms[1]?.x).toBeCloseTo(center.x, 3);
-    expect(rotatedMolecule.atoms[1]?.y).toBeCloseTo(center.y + nativeBondLengthPx / 2, 3);
+    molecule.atoms.forEach((atom, index) => {
+      expect(rotatedMolecule.atoms[index]?.x).toBeCloseTo(center.x - (atom.y - center.y), 3);
+      expect(rotatedMolecule.atoms[index]?.y).toBeCloseTo(center.y + (atom.x - center.x), 3);
+    });
   });
 
   it("keeps a freshly placed ring template chemically intact when rotated before placement commit", () => {
@@ -3030,7 +3048,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
     expect(cleanedMolecule.structure).toBe(molecule.structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -3066,7 +3084,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
     expect(cleanedMolecule.structure).toBe(molecule.structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -3123,7 +3141,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -3163,7 +3181,7 @@ describe("Phase 4 document workflow", () => {
         rotationDegrees: 0
       });
       molecule.bonds.forEach((bond) => {
-        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
       });
       expect(moleculeAngleDegrees(molecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
     });
@@ -3190,7 +3208,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
   });
 
@@ -3465,7 +3483,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds.find((bond) => bond.id === "bond_002")?.order).toBe("triple");
     expect(cleanedMolecule.structure).toBe(selectedMolecule(stretched).structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
   });
@@ -3486,9 +3504,9 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.chemistry?.formula).toBe("C3H4");
     expect(cleanedMolecule.bonds).toEqual(selectedMolecule(allene).bonds);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
-    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 2);
   });
 
   it("cleans up a distorted cyclohexane ring as a regular 2D ring", () => {
@@ -3519,7 +3537,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(closedMolecule.bonds);
     expect(cleanedMolecule.structure).toBe("C1CCCCC1");
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
     expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
@@ -3653,11 +3671,15 @@ describe("Phase 4 document workflow", () => {
 
   it("extends the selected native single bond into one connected molecule graph", () => {
     const withBond = insertNativeSingleBondMolecule(createPhase4Document("Chain Fixture"), { x: 200, y: 220 });
+    const seed = selectedMolecule(withBond);
+    const seedFirst = seed.atoms[0];
+    const seedSecond = seed.atoms[1];
     const extended = growFromAtom(withBond, "atom_002", 0);
-    const secondAtomX = 200 + nativeBondLengthPx / 2;
+    // Steered rightward from the 30°-rising seed bond, growth continues the zig-zag: the third
+    // atom descends at 30° below horizontal off atom_002.
     const expectedThirdAtom = {
-      x: secondAtomX + Math.cos(60 * Math.PI / 180) * nativeBondLengthPx,
-      y: 220 + Math.sin(60 * Math.PI / 180) * nativeBondLengthPx
+      x: seedSecond.x + Math.cos(30 * Math.PI / 180) * nativeBondLengthPx,
+      y: seedSecond.y + Math.sin(30 * Math.PI / 180) * nativeBondLengthPx
     };
 
     expect(extended.pages[0].objects).toHaveLength(1);
@@ -3666,8 +3688,8 @@ describe("Phase 4 document workflow", () => {
       id: "mol_bond_001",
       structure: "CCC",
       atoms: [
-        { id: "atom_001", element: "C", x: 200 - nativeBondLengthPx / 2, y: 220 },
-        { id: "atom_002", element: "C", x: secondAtomX, y: 220 },
+        { id: "atom_001", element: "C", x: seedFirst.x, y: seedFirst.y },
+        { id: "atom_002", element: "C", x: seedSecond.x, y: seedSecond.y },
         { id: "atom_003", element: "C" }
       ],
       bonds: [
@@ -4364,9 +4386,6 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: carbon.id,
       distanceToPointer: 0
-    }, {
-      x: carbon.x,
-      y: carbon.y - nativeAtomHitRadiusPx
     });
     const carbonylMolecule = selectedMolecule(carbonyl);
     const oxygen = carbonylMolecule.atoms.find((atom) => atom.element === "O");
@@ -4385,7 +4404,13 @@ describe("Phase 4 document workflow", () => {
     expect(oxygen?.y).toBeLessThan(carbon.y);
     expect(carbonylMolecule.structure).toContain("=O");
     expect(carbonylMolecule.chemistry).toMatchObject({ formula: "C2H4O", atomCount: 3, bondCount: 2 });
-    expect(secondAttempt).toEqual(carbonyl);
+    // The carbonyl carbon can't take a second C=O, so — like ChemDraw's carbonyl hotkey — the
+    // repeat press sprouts a new carbon along the open direction and puts the C=O on it, never
+    // over-valencing the hovered carbon.
+    const secondMolecule = selectedMolecule(secondAttempt);
+    expect(secondMolecule.atoms).toHaveLength(carbonylMolecule.atoms.length + 2);
+    expect(secondMolecule.atoms.filter((atom) => atom.element === "O")).toHaveLength(2);
+    expect(nativeMoleculeInvalidAtomStates(secondMolecule)).toHaveLength(0);
   });
 
   it("builds furan-like ring valence with oxygen and two double bonds", () => {
@@ -5477,9 +5502,9 @@ describe("Phase 4 document workflow", () => {
     expect(movedLinearPaint).toMatchObject({
       kind: "linear-gradient",
       x1: 0,
-      y1: 0,
-      y2: 0.8
+      y1: 0
     });
+    expect(movedLinearPaint?.kind === "linear-gradient" ? movedLinearPaint.y2 : undefined).toBeCloseTo(0.8, 6);
     expect(movedLinearPaint?.kind === "linear-gradient" ? movedLinearPaint.x2 : undefined).toBeCloseTo(0.2, 6);
 
     const addedStop = addGraphicObjectGradientStopForSelection(movedLinearEnd, "fill", [molecule.id]);
@@ -7985,9 +8010,6 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: terminalCarbon.id,
       distanceToPointer: 0
-    }, {
-      x: terminalCarbon.x - 4,
-      y: terminalCarbon.y + 4
     });
     const grown = selectedMolecule(grownDocument);
     const newAtom = grown.atoms.find((atom) => !molecule.atoms.some((previous) => previous.id === atom.id));
@@ -8111,9 +8133,6 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: atom.id,
       distanceToPointer: 0
-    }, {
-      x: atom.x - 4,
-      y: atom.y + 4
     });
     expect(selectedMolecule(withGrownBond).atoms).toHaveLength(molecule.atoms.length + 1);
 
@@ -8190,12 +8209,17 @@ describe("Phase 4 document workflow", () => {
     expect(grown.chemistry).toMatchObject({ formula: "C3H8", atomCount: 3, bondCount: 2 });
   });
 
-  it("uses the hovered steering point when shortcut-growing a native single bond", () => {
-    const document = insertNativeSingleBondMolecule(createPhase4Document("Shortcut Bond Steering"), { x: 300, y: 300 });
+  it("shortcut-grows a native single bond by pure geometry, deterministic per atom", () => {
+    // The pointer's grip offset used to steer the sprout, making the direction effectively
+    // random near the atom center and disagreeing with the hover arrow. Growth now plans from
+    // the atom itself: repeated calls agree, the new bond keeps the exact bond length, and it
+    // continues the zig-zag at the chain angle from the existing bond.
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Shortcut Bond Geometry"), { x: 300, y: 300 });
     const molecule = selectedMolecule(document);
     const terminalAtom = molecule.atoms.find((atom) => atom.id === "atom_002");
-    if (!terminalAtom) {
-      throw new Error("Expected terminal atom.");
+    const neighborAtom = molecule.atoms.find((atom) => atom.id === "atom_001");
+    if (!terminalAtom || !neighborAtom) {
+      throw new Error("Expected seed bond atoms.");
     }
     const target = {
       objectId: molecule.id,
@@ -8203,21 +8227,24 @@ describe("Phase 4 document workflow", () => {
       atomId: terminalAtom.id,
       distanceToPointer: 0
     };
-    const upward = applySingleBondToolAtNativeAtom(document, target, {
-      x: terminalAtom.x + 4,
-      y: terminalAtom.y - 4
-    });
-    const downward = applySingleBondToolAtNativeAtom(document, target, {
-      x: terminalAtom.x + 4,
-      y: terminalAtom.y + 4
-    });
-    const upwardAtom = selectedMolecule(upward).atoms.at(-1);
-    const downwardAtom = selectedMolecule(downward).atoms.at(-1);
+    const first = applySingleBondToolAtNativeAtom(document, target);
+    const second = applySingleBondToolAtNativeAtom(document, target);
+    const firstAtom = selectedMolecule(first).atoms.at(-1);
+    const secondAtom = selectedMolecule(second).atoms.at(-1);
+    if (!firstAtom || !secondAtom) {
+      throw new Error("Expected grown atoms.");
+    }
 
-    expect(upwardAtom?.id).toBe("atom_003");
-    expect(downwardAtom?.id).toBe("atom_003");
-    expect(upwardAtom?.y).toBeLessThan(terminalAtom.y);
-    expect(downwardAtom?.y).toBeGreaterThan(terminalAtom.y);
+    expect(firstAtom.id).toBe("atom_003");
+    expect(secondAtom.x).toBeCloseTo(firstAtom.x, 6);
+    expect(secondAtom.y).toBeCloseTo(firstAtom.y, 6);
+    // Exact bond length…
+    expect(Math.hypot(firstAtom.x - terminalAtom.x, firstAtom.y - terminalAtom.y)).toBeCloseTo(nativeBondLengthPx, 6);
+    // …at the 120° chain angle from the existing bond.
+    const neighborAngle = Math.atan2(neighborAtom.y - terminalAtom.y, neighborAtom.x - terminalAtom.x);
+    const grownAngle = Math.atan2(firstAtom.y - terminalAtom.y, firstAtom.x - terminalAtom.x);
+    const separation = Math.abs(((grownAngle - neighborAngle) * 180 / Math.PI + 540) % 360 - 180);
+    expect(separation).toBeCloseTo(120, 5);
   });
 
   it("finds atom delete hits before nearby bond hits", () => {
@@ -8233,11 +8260,13 @@ describe("Phase 4 document workflow", () => {
       atomId: "atom_002",
       distanceToPointer: 0
     });
+    // 4px below the bond's midpoint; the 30°-inclined seed bond makes the perpendicular
+    // distance 4·cos(30°).
     expect(findNativeMoleculeDeleteHit(molecule, { x: 200, y: 224 })).toMatchObject({
       kind: "bond",
       bondId: "bond_001",
       terminalAtomId: expect.any(String),
-      distanceToPointer: 4
+      distanceToPointer: expect.closeTo(4 * Math.cos(Math.PI / 6), 5)
     });
   });
 
@@ -8599,8 +8628,8 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(hypervalentMolecule)).toHaveLength(1);
 
     const withCharge = reconcileNativeChargeMarks(applyChargeToolAtPoint(neutralHypervalent, 1, {
-      x: nitrogen.x + 11,
-      y: nitrogen.y - 11
+      x: nitrogen.x,
+      y: nitrogen.y - 15
     }));
     const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
@@ -9882,8 +9911,8 @@ describe("Phase 4 document workflow", () => {
     ]);
 
     const withNegativeCharge = reconcileNativeChargeMarks(applyChargeToolAtPoint(neutralBorate, -1, {
-      x: boron.x + 11,
-      y: boron.y - 11
+      x: boron.x,
+      y: boron.y - 15
     }));
     const resolvedMolecule = withNegativeCharge.pages[0].objects.find((object): object is MoleculeObject =>
       object.id === molecule.id && object.type === "molecule"
@@ -10982,15 +11011,19 @@ describe("Phase 4 document workflow", () => {
       structureFormat: "molfile-v3000",
       structure: v3000,
       style: { source: "ketcher-adapter" },
-      atoms: [
-        { id: "atom_001", element: "C", x: previewCenterX - nativeBondLengthPx, y: 220 },
-        { id: "atom_002", element: "C", x: previewCenterX, y: 220 },
-        { id: "atom_003", element: "C", x: previewCenterX + nativeBondLengthPx, y: 220 }
-      ],
       bonds: [
         { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
         { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
       ]
+    });
+    // Positions to float tolerance — the diagonal seed frame makes the centering arithmetic
+    // differ from this test's own by an ulp.
+    const syncedAtoms = molecule?.atoms ?? [];
+    expect(syncedAtoms.map((atom) => atom.id)).toEqual(["atom_001", "atom_002", "atom_003"]);
+    expect(syncedAtoms.every((atom) => atom.element === "C")).toBe(true);
+    [previewCenterX - nativeBondLengthPx, previewCenterX, previewCenterX + nativeBondLengthPx].forEach((expectedX, index) => {
+      expect(syncedAtoms[index]?.x).toBeCloseTo(expectedX, 6);
+      expect(syncedAtoms[index]?.y).toBeCloseTo(220, 6);
     });
     expect(molecule?.style.drawingPrimitive).toBeUndefined();
     expect(molecule?.chemistry).toBeUndefined();

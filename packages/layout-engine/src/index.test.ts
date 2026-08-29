@@ -63,13 +63,15 @@ describe("layout-engine molecule growth planning", () => {
       clickPoint: { x: 300, y: 220 }
     });
 
+    // The click sits on the axis, so the two ±120° candidates tie — and ties break UPWARD
+    // (page y grows downward), matching ChemDraw's rising sprouts.
     expect(plan?.sourceAtomId).toBe("atom_002");
     expect(plan?.terminalAtomId).toBe("atom_002");
     expect(plan?.neighborAtomIds).toEqual(["atom_001"]);
     expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
     expect(plan?.direction.x).toBeCloseTo(0.5, 3);
-    expect(plan?.direction.y).toBeCloseTo(0.866, 3);
+    expect(plan?.direction.y).toBeCloseTo(-0.866, 3);
   });
 
   it("uses the click side to choose between the two 120-degree candidates", () => {
@@ -143,9 +145,11 @@ describe("layout-engine molecule growth planning", () => {
       clickPoint: { x: 210, y: 220 }
     });
 
+    // Inward along the axis, both ±120° candidates align equally with the click — the tie
+    // breaks upward.
     expect(plan?.terminalAtomId).toBe("atom_002");
     expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
   });
 
   it("offers ring closure when the selected 120-degree endpoint lands on an existing atom", () => {
@@ -342,7 +346,7 @@ describe("layout-engine molecule growth planning", () => {
     });
 
     expect(plan?.newAtomPoint.x).toBe(816);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
   });
 
   it("plans free-angle growth at the default bond length before custom-length breakaway", () => {

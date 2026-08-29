@@ -565,7 +565,19 @@ function extensionDirection(input: ExtensionDirectionInput): LayoutPoint {
       direction: directionFromAngle(angle),
       score: scoreDirectionCandidate(angle, input, clickDirection)
     }))
-    .sort((left, right) => right.score - left.score || left.angle - right.angle);
+    .sort((left, right) => {
+      const scoreDifference = right.score - left.score;
+      if (Math.abs(scoreDifference) > 1e-9) {
+        return scoreDifference;
+      }
+      // Exact ties (the symmetric ± chain-angle pair on an unsteered atom) break UPWARD —
+      // page y grows downward, so the smaller y-component wins — matching how ChemDraw's
+      // hotkey sprouts rise by default rather than droop.
+      if (Math.abs(left.direction.y - right.direction.y) > 1e-9) {
+        return left.direction.y - right.direction.y;
+      }
+      return left.angle - right.angle;
+    });
 
   return scored[0]?.direction ?? clickDirection ?? { x: 1, y: 0 };
 }
@@ -577,7 +589,11 @@ function directionCandidates(
   targetBondAngleDegrees: number
 ): number[] {
   if (neighbors.length === 0) {
-    return [clickDirection ? angleFromDirection(clickDirection) : 0];
+    // A bare atom's first bond sprouts up-and-to-the-right at the zig-zag half-angle
+    // (30° above horizontal for the default 120° chain angle) — matching ChemDraw's first
+    // bond, instead of a flat horizontal stick.
+    const firstBondAngle = -(Math.PI - degreesToRadians(targetBondAngleDegrees)) / 2;
+    return [clickDirection ? angleFromDirection(clickDirection) : firstBondAngle];
   }
 
   const targetAngle = degreesToRadians(targetBondAngleDegrees);

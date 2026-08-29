@@ -725,6 +725,8 @@ type HoveredNativeAtom = {
   direction: ClientPoint;
   candidateDirections: ClientPoint[];
   newAtomPoint: ClientPoint;
+  /** Existing atom the previewed growth would connect to instead of adding a new one. */
+  targetAtomId?: string;
 };
 type FreeformNativeBondPreview = {
   objectId: string;
@@ -1660,7 +1662,6 @@ export function MainWindow({
   const spinDirtyRef = useRef(false);
   const spinRafRef = useRef<number | null>(null);
   const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
-  const hoveredNativeAtomPointRef = useRef<{ objectId: string; point: ClientPoint } | undefined>(undefined);
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
   const chemistryAdapter = useMemo(() => createRdkitAdapter(), []);
@@ -1824,6 +1825,12 @@ export function MainWindow({
   const [rulersVisible, setRulersVisible] = useState(initialRulersVisible);
   const [crosshairsVisible, setCrosshairsVisible] = useState(initialCrosshairsVisible);
   const [hoveredNativeAtom, setHoveredNativeAtom] = useState<HoveredNativeAtom | undefined>();
+  // Live mirror for the hover hotkeys ('1'/'2'): when the growth arrow is on screen they commit
+  // exactly what it previews, so keydown handlers need the current value without re-subscribing.
+  const hoveredNativeAtomStateRef = useRef<HoveredNativeAtom | undefined>(undefined);
+  useEffect(() => {
+    hoveredNativeAtomStateRef.current = hoveredNativeAtom;
+  }, [hoveredNativeAtom]);
   const [hoveredNativeDeleteTarget, setHoveredNativeDeleteTarget] = useState<NativeMoleculeDeleteTarget | undefined>();
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
@@ -2387,7 +2394,6 @@ export function MainWindow({
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
     if (!target || target.kind !== "atom") {
-      hoveredNativeAtomPointRef.current = undefined;
     }
     setHoveredNativeDeleteTarget(target);
   }, []);
@@ -3284,10 +3290,11 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const steeringPoint = hoveredNativeAtomPointRef.current?.objectId === target.objectId
-      ? hoveredNativeAtomPointRef.current.point
+    const arrow = hoveredNativeAtomStateRef.current;
+    const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
+      ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applyNativeCarbonylAtAtomTarget(currentDocument, target, steeringPoint);
+    const nextDocument = applyNativeCarbonylAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
       setStatus("Cannot add C=O to hovered atom");
       return;
@@ -3313,10 +3320,11 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const steeringPoint = hoveredNativeAtomPointRef.current?.objectId === target.objectId
-      ? hoveredNativeAtomPointRef.current.point
+    const arrow = hoveredNativeAtomStateRef.current;
+    const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
+      ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applySingleBondToolAtNativeAtom(currentDocument, target, steeringPoint);
+    const nextDocument = applySingleBondToolAtNativeAtom(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
       setStatus("Cannot add a single bond to hovered atom");
       return;
@@ -9669,7 +9677,8 @@ export function MainWindow({
       atomId: target.preview.atomId,
       direction: target.preview.direction,
       candidateDirections: target.preview.candidateDirections,
-      newAtomPoint: target.preview.newAtomPoint
+      newAtomPoint: target.preview.newAtomPoint,
+      targetAtomId: target.preview.targetAtomId
     } : undefined);
   }, [bondToolActive]);
 
@@ -9703,9 +9712,6 @@ export function MainWindow({
           hitToleranceForScale(viewportRef.current.scale)
         );
     assignHoveredNativeDeleteTarget(target);
-    hoveredNativeAtomPointRef.current = target?.kind === "atom"
-      ? { objectId: target.objectId, point }
-      : undefined;
     // Capture the hover for a template click to reuse verbatim, so the committed placement
     // matches the painted highlight (no per-object recompute that can flip bond->atom).
     templateHoverTargetRef.current = activeNativeTemplateId && target
@@ -13072,7 +13078,6 @@ export function MainWindow({
         setActiveGraphicTransformObjectId(undefined);
         setSelectedGraphicPathNode(undefined);
         setActiveAtomLabelEdit(undefined);
-        hoveredNativeAtomPointRef.current = undefined;
         setHoveredNativeAtom(undefined);
         setFreeformNativeBond(undefined);
         setNativeDoubleBondSidePreview(undefined);
@@ -13130,7 +13135,6 @@ export function MainWindow({
         });
         clearTransientInteractionChrome();
         setActiveGraphicTransformObjectId(undefined);
-        hoveredNativeAtomPointRef.current = undefined;
         // The double-clicked molecule is now selected whole, so drop any native part(s) it held
         // (e.g. the bond the first press toggled on) while leaving other molecules' parts intact.
         setSelectedNativeMoleculeParts((current) =>
@@ -13184,9 +13188,7 @@ export function MainWindow({
         clearTransientInteractionChrome();
         if (nativeMoleculeHit && additiveItem.kind !== "object") {
           assignHoveredNativeDeleteTarget({ objectId, ...nativeMoleculeHit });
-          hoveredNativeAtomPointRef.current = nativeMoleculeHit.kind === "atom" ? { objectId, point } : undefined;
         } else {
-          hoveredNativeAtomPointRef.current = undefined;
         }
         setSelectedNativeMoleculeParts(nextSelection.nativeMoleculeParts);
         setStatus(selectionStatusLabel({
@@ -13231,7 +13233,6 @@ export function MainWindow({
         replacePresentDocument(selectedDocument);
         clearTransientInteractionChrome();
         setActiveGraphicTransformObjectId(undefined);
-        hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(dragIntent.target);
         nativePartDragRef.current = {
           pointerId: event.pointerId,
@@ -13261,7 +13262,6 @@ export function MainWindow({
         setFreeformNativeBond(undefined);
         setNativeDoubleBondSidePreview(undefined);
         assignHoveredNativeDeleteTarget({ objectId, ...nativeMoleculeHit });
-        hoveredNativeAtomPointRef.current = nativeMoleculeHit.kind === "atom" ? { objectId, point } : undefined;
         setSelectedNativeMoleculePart(nativeSelectionFromHit(objectId, nativeMoleculeHit));
         setStatus(nativeMoleculeHit.kind === "atom" ? "Selected atom" : "Selected bond");
         return;
@@ -13278,7 +13278,6 @@ export function MainWindow({
         setFreeformNativeBond(undefined);
         setNativeDoubleBondSidePreview(undefined);
         assignHoveredNativeDeleteTarget(undefined);
-        hoveredNativeAtomPointRef.current = undefined;
         setSelectedNativeMoleculePart(nativeMoleculeRingHit);
         setStatus("Selected ring");
         return;
