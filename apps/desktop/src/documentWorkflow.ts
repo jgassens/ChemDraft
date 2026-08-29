@@ -10506,19 +10506,13 @@ function transformGraphicFreehandPoints(
   });
 }
 
-/**
- * Pivot for rotating a partial selection, matching ChemDraw's behavior (verified against its
- * fragment rotation): a fragment that meets the unselected remainder through exactly one of its
- * own atoms rotates about THAT junction atom — the junction and its attachment bond to the rest
- * stay put while the substituents swing around it. A selection with no junction (whole molecule,
- * detached island) or several junctions ("no terminal atoms" — a mid-chain slice, a ring bond)
- * returns undefined and rotates about the selection box's center as before.
- */
-export function nativeMoleculePartRotationPivot(
+/** The selected atom through which a partial selection meets the unselected remainder, when
+ *  there is exactly one such atom. Undefined for whole-molecule selections, detached islands,
+ *  and selections attached at several junctions. */
+function nativeMoleculePartJunctionAtomId(
   molecule: MoleculeObject,
-  target: NativeMoleculePartMoveTarget
-): PagePoint | undefined {
-  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  targetAtomIds: ReadonlySet<string>
+): string | undefined {
   if (targetAtomIds.size === 0 || targetAtomIds.size === molecule.atoms.length) {
     return undefined;
   }
@@ -10531,13 +10525,211 @@ export function nativeMoleculePartRotationPivot(
       junctionAtomIds.add(fromSelected ? bond.fromAtomId : bond.toAtomId);
     }
   });
-  if (junctionAtomIds.size !== 1) {
+  return junctionAtomIds.size === 1 ? [...junctionAtomIds][0] : undefined;
+}
+
+/**
+ * Pivot for rotating a partial selection, matching ChemDraw's behavior (verified against its
+ * fragment rotation): a fragment that meets the unselected remainder through exactly one of its
+ * own atoms rotates about THAT junction atom — the junction and its attachment bond to the rest
+ * stay put while the substituents swing around it. A selection with no junction (whole molecule,
+ * detached island) or several junctions ("no terminal atoms" — a mid-chain slice, a ring bond)
+ * returns undefined and rotates about the selection box's center as before.
+ */
+export function nativeMoleculePartRotationPivot(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget
+): PagePoint | undefined {
+  const junctionId = nativeMoleculePartJunctionAtomId(molecule, nativeMoleculePartAtomIds(molecule, target));
+  if (!junctionId) {
     return undefined;
   }
-
-  const junctionId = [...junctionAtomIds][0];
   const junction = molecule.atoms.find((atom) => atom.id === junctionId);
   return junction ? { x: junction.x, y: junction.y } : undefined;
+}
+
+/** How close a drag must get before the canonical-geometry magnet engages. */
+export const nativeDragSnapAngleToleranceDegrees = 6;
+export const nativeDragSnapLengthTolerancePx = 3;
+export const nativeRotationSnapToleranceDegrees = 3;
+
+/** Canonical drawing directions repeat every 30° (the 120° zig-zag lives on this grid). */
+const canonicalAngleGridDegrees = 30;
+
+function wrapDegrees180(value: number): number {
+  return ((value + 180) % 360 + 360) % 360 - 180;
+}
+
+/** Nearest canonical direction to `rawDegrees`: the 30° grid, plus ±120° off each supplied base
+ *  direction (an anchor atom's other bonds, which may sit off-grid). Undefined when nothing is
+ *  within `toleranceDegrees`. */
+function nearestCanonicalAngleDegrees(
+  rawDegrees: number,
+  relativeBaseDegrees: readonly number[],
+  toleranceDegrees: number
+): number | undefined {
+  let best: number | undefined;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  const consider = (candidate: number) => {
+    const delta = Math.abs(wrapDegrees180(rawDegrees - candidate));
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = candidate;
+    }
+  };
+  consider(Math.round(rawDegrees / canonicalAngleGridDegrees) * canonicalAngleGridDegrees);
+  relativeBaseDegrees.forEach((base) => {
+    consider(base + 120);
+    consider(base - 120);
+  });
+  return best !== undefined && bestDelta <= toleranceDegrees ? best : undefined;
+}
+
+/**
+ * Magnetic snap for dragging an atom (or a fragment attached through one atom): when the dragged
+ * boundary atom comes close to canonical geometry relative to its stationary neighbor — a bond
+ * direction on the 30° grid or at 120° off the neighbor's other bonds, or the style's exact bond
+ * length — the delta is adjusted so the drop lands exactly there. Selections with no stationary
+ * neighbor (whole molecule) or several dragged boundary atoms (mid-chain slices) pass through
+ * unchanged.
+ */
+export function snapNativeMoleculePartDragDelta(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget,
+  delta: PagePoint
+): PagePoint {
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  if (targetAtomIds.size === 0) {
+    return delta;
+  }
+
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const boundaryPairs: Array<{ selectedId: string; neighborId: string }> = [];
+  molecule.bonds.forEach((bond) => {
+    const fromSelected = targetAtomIds.has(bond.fromAtomId);
+    const toSelected = targetAtomIds.has(bond.toAtomId);
+    if (fromSelected !== toSelected) {
+      boundaryPairs.push(fromSelected
+        ? { selectedId: bond.fromAtomId, neighborId: bond.toAtomId }
+        : { selectedId: bond.toAtomId, neighborId: bond.fromAtomId });
+    }
+  });
+  const draggedBoundaryIds = new Set(boundaryPairs.map((pair) => pair.selectedId));
+  if (boundaryPairs.length === 0 || draggedBoundaryIds.size !== 1) {
+    return delta;
+  }
+
+  const draggedAtom = atomById.get([...draggedBoundaryIds][0]);
+  if (!draggedAtom) {
+    return delta;
+  }
+  const proposed = { x: draggedAtom.x + delta.x, y: draggedAtom.y + delta.y };
+
+  // The nearest stationary neighbor anchors the snap (a lone atom in a chain has one on each
+  // side; the closer one is the bond the user is visibly shaping).
+  const anchors = boundaryPairs
+    .map((pair) => atomById.get(pair.neighborId))
+    .filter((atom): atom is MoleculeAtom => atom !== undefined)
+    .sort((left, right) =>
+      Math.hypot(left.x - proposed.x, left.y - proposed.y) - Math.hypot(right.x - proposed.x, right.y - proposed.y)
+    );
+  const anchor = anchors[0];
+  if (!anchor) {
+    return delta;
+  }
+
+  const run = { x: proposed.x - anchor.x, y: proposed.y - anchor.y };
+  const runLength = Math.hypot(run.x, run.y);
+  if (runLength < 1e-6) {
+    return delta;
+  }
+
+  const stationaryBaseAngles = molecule.bonds.flatMap((bond) => {
+    const otherId = bond.fromAtomId === anchor.id
+      ? bond.toAtomId
+      : bond.toAtomId === anchor.id ? bond.fromAtomId : undefined;
+    if (!otherId || otherId === draggedAtom.id || targetAtomIds.has(otherId)) {
+      return [];
+    }
+    const other = atomById.get(otherId);
+    return other ? [Math.atan2(other.y - anchor.y, other.x - anchor.x) * 180 / Math.PI] : [];
+  });
+
+  const rawAngleDegrees = Math.atan2(run.y, run.x) * 180 / Math.PI;
+  const snappedAngleDegrees = nearestCanonicalAngleDegrees(
+    rawAngleDegrees,
+    stationaryBaseAngles,
+    nativeDragSnapAngleToleranceDegrees
+  );
+  const bondLengthPx = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  const snappedLength = Math.abs(runLength - bondLengthPx) <= nativeDragSnapLengthTolerancePx
+    ? bondLengthPx
+    : undefined;
+  if (snappedAngleDegrees === undefined && snappedLength === undefined) {
+    return delta;
+  }
+
+  const angleRadians = (snappedAngleDegrees ?? rawAngleDegrees) * Math.PI / 180;
+  const length = snappedLength ?? runLength;
+  const snappedPoint = {
+    x: anchor.x + Math.cos(angleRadians) * length,
+    y: anchor.y + Math.sin(angleRadians) * length
+  };
+  return {
+    x: delta.x + snappedPoint.x - proposed.x,
+    y: delta.y + snappedPoint.y - proposed.y
+  };
+}
+
+/**
+ * Magnetic snap for rotating a partial selection. A junction-pivoted fragment clicks into place
+ * when its first rotating bond off the junction reaches a canonical direction (the 30° grid, or
+ * 120° off the junction's stationary bonds); a center-pivoted selection clicks at 15° steps.
+ */
+export function snapNativeMoleculePartRotationDegrees(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget,
+  angleDegrees: number
+): number {
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  const junctionId = nativeMoleculePartJunctionAtomId(molecule, targetAtomIds);
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const junction = junctionId ? atomById.get(junctionId) : undefined;
+
+  if (!junction) {
+    const stepped = Math.round(angleDegrees / 15) * 15;
+    return Math.abs(wrapDegrees180(angleDegrees - stepped)) <= nativeRotationSnapToleranceDegrees
+      ? stepped
+      : angleDegrees;
+  }
+
+  let referenceAngle: number | undefined;
+  const stationaryBaseAngles: number[] = [];
+  molecule.bonds.forEach((bond) => {
+    const otherId = bond.fromAtomId === junction.id
+      ? bond.toAtomId
+      : bond.toAtomId === junction.id ? bond.fromAtomId : undefined;
+    if (!otherId) {
+      return;
+    }
+    const other = atomById.get(otherId);
+    if (!other) {
+      return;
+    }
+    const angle = Math.atan2(other.y - junction.y, other.x - junction.x) * 180 / Math.PI;
+    if (targetAtomIds.has(otherId)) {
+      referenceAngle = referenceAngle ?? angle;
+    } else {
+      stationaryBaseAngles.push(angle);
+    }
+  });
+  if (referenceAngle === undefined) {
+    return angleDegrees;
+  }
+
+  const rotatedAngle = referenceAngle + angleDegrees;
+  const snapped = nearestCanonicalAngleDegrees(rotatedAngle, stationaryBaseAngles, nativeRotationSnapToleranceDegrees);
+  return snapped === undefined ? angleDegrees : angleDegrees + wrapDegrees180(snapped - rotatedAngle);
 }
 
 export function rotateNativeMoleculeParts(

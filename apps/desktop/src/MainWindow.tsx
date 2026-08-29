@@ -429,6 +429,8 @@ import {
   nativeMoleculeInvalidAtomStates,
   nativeMoleculePartBounds,
   nativeMoleculePartRotationPivot,
+  snapNativeMoleculePartDragDelta,
+  snapNativeMoleculePartRotationDegrees,
   nativeGraphicCornerRadiusEditPoint,
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
@@ -10104,12 +10106,25 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, graphicGradientDocumentFromDrag, replacePresentDocument]);
 
-  const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
+  // Fragment rotations click onto canonical directions (30° grid, 120° off the junction's
+  // stationary bonds); center-pivoted part rotations click at 15° steps.
+  const objectRotateDragDegrees = useCallback((drag: ObjectRotateDragState, point: ClientPoint): number => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+    if (!drag.target) {
+      return degrees;
+    }
+    const molecule = findDocumentObject(drag.startDocument, drag.objectId);
+    return molecule?.type === "molecule"
+      ? snapNativeMoleculePartRotationDegrees(molecule, drag.target, degrees)
+      : degrees;
+  }, []);
+
+  const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
+    const degrees = objectRotateDragDegrees(drag, point);
     return drag.target
       ? rotateNativeMoleculeParts(drag.startDocument, drag.target, degrees)
       : rotateDocumentObject(drag.startDocument, drag.objectId, degrees);
-  }, []);
+  }, [objectRotateDragDegrees]);
 
   // Snapshot the molecule's persisted Spin 3D model for a whole-molecule rotate drag.
   // Returns undefined unless a valid (graph-matching) model is present and its conformer
@@ -10235,7 +10250,8 @@ export function MainWindow({
   const previewObjectRotateDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint) => {
     markFrame("previewObjectRotateDrag", () => {
       drag.latestPoint = point;
-      const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      // The readout shows the same (snapped) angle the drag will commit.
+      const degrees = objectRotateDragDegrees(drag, point);
       if (objectRotateReadoutTimeoutRef.current !== undefined) {
         window.clearTimeout(objectRotateReadoutTimeoutRef.current);
       }
@@ -10266,7 +10282,7 @@ export function MainWindow({
       clearObjectTransformPreview(drag.pointerId);
       replacePresentDocument(objectRotateDocumentFromDrag(drag, point));
     });
-  }, [clearObjectTransformPreview, objectRotateDocumentFromDrag, replacePresentDocument, scheduleObjectTransformPreview]);
+  }, [clearObjectTransformPreview, objectRotateDocumentFromDrag, objectRotateDragDegrees, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const showProjectedPlaneTiltReadout = useCallback((
     objectId: string,
@@ -10843,11 +10859,19 @@ export function MainWindow({
     return true;
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
-  const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument =>
-    moveNativeMoleculeParts(drag.startDocument, drag.target, {
+  const nativePartDocumentFromDrag = useCallback((drag: NativePartDragState, point: ClientPoint): ChemDraftDocument => {
+    const rawDelta = {
       x: point.x - drag.startPoint.x,
       y: point.y - drag.startPoint.y
-    }), []);
+    };
+    // Magnetic canonical-geometry snap: the drop clicks onto exact bond length / canonical
+    // angles when the drag comes close, so hand-placed geometry lands "correct".
+    const molecule = findDocumentObject(drag.startDocument, drag.objectId);
+    const delta = molecule?.type === "molecule"
+      ? snapNativeMoleculePartDragDelta(molecule, drag.target, rawDelta)
+      : rawDelta;
+    return moveNativeMoleculeParts(drag.startDocument, drag.target, delta);
+  }, []);
 
   const previewNativePartDrag = useCallback((drag: NativePartDragState, point: ClientPoint) => {
     drag.latestPoint = point;

@@ -200,6 +200,8 @@ import {
   rotateNativeMoleculeObjectAroundPoint,
   nativeMoleculePartRotationPivot,
   rotateNativeMoleculeParts,
+  snapNativeMoleculePartDragDelta,
+  snapNativeMoleculePartRotationDegrees,
   selectedGroupObjectIds,
   tiltNativeMoleculeProjectedPlane,
   tiltNativeMoleculeObjectsProjectedPlane,
@@ -3100,6 +3102,118 @@ describe("Phase 4 document workflow", () => {
       expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
+  it("snaps a dragged atom onto canonical angles and the exact bond length", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Drag Snap"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const anchor = moleculeAtom(molecule, "atom_001");
+    const dragged = moleculeAtom(molecule, "atom_002");
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_002" };
+    const deltaTo = (point: { x: number; y: number }) => ({ x: point.x - dragged.x, y: point.y - dragged.y });
+    const landing = (delta: { x: number; y: number }) => ({ x: dragged.x + delta.x, y: dragged.y + delta.y });
+
+    // 4° off the horizontal grid direction and 1.5px short of the bond length: both snap.
+    const nearFlat = deltaTo({
+      x: anchor.x + Math.cos(4 * Math.PI / 180) * (nativeBondLengthPx - 1.5),
+      y: anchor.y + Math.sin(4 * Math.PI / 180) * (nativeBondLengthPx - 1.5)
+    });
+    const snappedFlat = landing(snapNativeMoleculePartDragDelta(molecule, target, nearFlat));
+    expect(snappedFlat.x).toBeCloseTo(anchor.x + nativeBondLengthPx, 6);
+    expect(snappedFlat.y).toBeCloseTo(anchor.y, 6);
+
+    // Angle snaps while a clearly non-canonical length is left alone.
+    const nearFlatLong = deltaTo({
+      x: anchor.x + Math.cos(-4 * Math.PI / 180) * 31,
+      y: anchor.y + Math.sin(-4 * Math.PI / 180) * 31
+    });
+    const snappedDirection = landing(snapNativeMoleculePartDragDelta(molecule, target, nearFlatLong));
+    expect(snappedDirection.y).toBeCloseTo(anchor.y, 6);
+    expect(Math.hypot(snappedDirection.x - anchor.x, snappedDirection.y - anchor.y)).toBeCloseTo(31, 6);
+
+    // 15° sits exactly between grid points (7.5° from each) and 30px is off-length: no snap.
+    const offCanonical = deltaTo({
+      x: anchor.x + Math.cos(15 * Math.PI / 180) * 30,
+      y: anchor.y + Math.sin(15 * Math.PI / 180) * 30
+    });
+    expect(snapNativeMoleculePartDragDelta(molecule, target, offCanonical)).toEqual(offCanonical);
+  });
+
+  it("snaps a dragged atom at 120 degrees off an anchor's off-grid bond, and skips multi-boundary drags", () => {
+    // Skew the anchor's other bond off the 30° grid, then drag the far atom near the ±120°
+    // direction relative to it — the relative candidate must win over the grid.
+    const chain = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Relative Snap"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const skewed = moveNativeMoleculeParts(chain, {
+      objectId: selectedMolecule(chain).id,
+      kind: "atom",
+      atomId: "atom_001"
+    }, { x: 5, y: 9 });
+    const molecule = selectedMolecule(skewed);
+    const anchor = moleculeAtom(molecule, "atom_002");
+    const base = moleculeAtom(molecule, "atom_001");
+    const dragged = moleculeAtom(molecule, "atom_003");
+    const baseAngle = Math.atan2(base.y - anchor.y, base.x - anchor.x) * 180 / Math.PI;
+    const relativeAngle = baseAngle + 120;
+    // 1.1° from the relative candidate (and >2.5° from any grid multiple by construction).
+    const rawAngle = relativeAngle - 1.1;
+    const proposed = {
+      x: anchor.x + Math.cos(rawAngle * Math.PI / 180) * 27,
+      y: anchor.y + Math.sin(rawAngle * Math.PI / 180) * 27
+    };
+    const delta = snapNativeMoleculePartDragDelta(molecule, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_003"
+    }, { x: proposed.x - dragged.x, y: proposed.y - dragged.y });
+    const snapped = { x: dragged.x + delta.x, y: dragged.y + delta.y };
+    const snappedAngle = Math.atan2(snapped.y - anchor.y, snapped.x - anchor.x) * 180 / Math.PI;
+    const wrappedDifference = Math.abs(((snappedAngle - relativeAngle + 540) % 360 + 360) % 360 - 180);
+    expect(wrappedDifference).toBeCloseTo(0, 5);
+
+    // A selection whose boundary crosses at two different dragged atoms passes through unchanged.
+    const fourChain = growFromAtom(chain, "atom_003", 0);
+    const fourMolecule = selectedMolecule(fourChain);
+    const midSlice = {
+      objectId: fourMolecule.id,
+      kind: "parts" as const,
+      atomIds: ["atom_002", "atom_003"] as const,
+      bondIds: ["bond_002"] as const
+    };
+    const rawDelta = { x: 7.3, y: -4.1 };
+    expect(snapNativeMoleculePartDragDelta(fourMolecule, midSlice, rawDelta)).toEqual(rawDelta);
+  });
+
+  it("snaps part rotations onto canonical directions", () => {
+    // Junction-pivoted fragment: the rotating bond clicks onto the 30° grid.
+    const chain = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Rotate Snap"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(chain);
+    const junction = moleculeAtom(molecule, "atom_002");
+    const swinging = moleculeAtom(molecule, "atom_003");
+    const referenceAngle = Math.atan2(swinging.y - junction.y, swinging.x - junction.x) * 180 / Math.PI;
+    const fragment = { objectId: molecule.id, kind: "bond" as const, bondId: "bond_002" };
+    const canonicalTarget = Math.round((referenceAngle + 40) / 30) * 30;
+    const shortOfCanonical = canonicalTarget - referenceAngle - 2;
+    expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, shortOfCanonical))
+      .toBeCloseTo(canonicalTarget - referenceAngle, 6);
+    // Far from any canonical direction: unchanged (grid points sit 30° apart, 15 - 2 = 13° away).
+    const betweenCanonicals = canonicalTarget - referenceAngle - 13;
+    expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, betweenCanonicals)).toBe(betweenCanonicals);
+
+    // Center-pivoted selection (a ring bond) clicks at 15° steps.
+    const ring = insertNativeTemplateMolecule(createPhase4Document("Rotate Snap Ring"), { x: 300, y: 300 }, "cyclohexane");
+    const ringMolecule = selectedMolecule(ring);
+    const ringBond = { objectId: ringMolecule.id, kind: "bond" as const, bondId: ringMolecule.bonds[0].id };
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 13.8)).toBe(15);
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 22)).toBe(22);
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, -44)).toBe(-45);
   });
 
   it("keeps the bbox-center pivot for part rotations with zero or multiple junctions", () => {
