@@ -4144,6 +4144,123 @@ describe("Phase 4 document workflow", () => {
     expect(freeformMolecule.structure).toBe("CCC");
   });
 
+  it("bonds across molecule objects by merging them — a typed metal coordinates to its ligand", () => {
+    // A drawn ethane and a text-typed naked Zn: two separate molecule objects.
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Zinc Coordination"), { x: 300, y: 300 });
+    const ligand = selectedMolecule(withLigand);
+    const targetAtom = ligand.atoms.find((atom) => atom.id === "atom_002");
+    if (!targetAtom) {
+      throw new Error("Expected ligand atom.");
+    }
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = document.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule object.");
+    }
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+
+    // Dragging a dashed bond from the Zn onto the ligand atom merges the objects and bonds them.
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      document,
+      znMolecule.id,
+      znMolecule.atoms[0].id,
+      { x: targetAtom.x, y: targetAtom.y },
+      { bondStyle: "dashed" }
+    );
+    const molecules = bonded.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    expect(molecules).toHaveLength(1);
+    const merged = molecules[0];
+
+    // Ids re-minted without collisions (both objects started at atom_001).
+    expect(new Set(merged.atoms.map((atom) => atom.id)).size).toBe(merged.atoms.length);
+    expect(new Set(merged.bonds.map((bond) => bond.id)).size).toBe(merged.bonds.length);
+    const seamBond = merged.bonds.find((bond) => bond.display?.bondStyle === "dashed");
+    const seamElements = [
+      merged.atoms.find((atom) => atom.id === seamBond?.fromAtomId)?.element,
+      merged.atoms.find((atom) => atom.id === seamBond?.toAtomId)?.element
+    ].sort();
+    expect(seamElements).toEqual(["C", "Zn"]);
+    // The dashed coordinate bond is dative: no valence complaints anywhere, and the carbon
+    // keeps its full hydrogen count (formula still counts ethane's six H plus the zinc).
+    expect(nativeMoleculeInvalidAtomStates(merged)).toEqual([]);
+    expect(merged.chemistry).toMatchObject({ formula: "C2H6Zn", atomCount: 3 });
+
+    // The reverse drag (ligand atom onto the metal) merges the same way.
+    const reverseBonded = applyFreeformSingleBondToolAtPoint(
+      document,
+      ligand.id,
+      "atom_002",
+      { x: znMolecule.atoms[0].x, y: znMolecule.atoms[0].y },
+      { bondStyle: "dashed" }
+    );
+    const reverseMolecules = reverseBonded.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    expect(reverseMolecules).toHaveLength(1);
+    expect(reverseMolecules[0].atoms.map((atom) => atom.element).sort()).toEqual(["C", "C", "Zn"]);
+  });
+
+  it("re-anchors charge marks from an absorbed molecule onto the merged host", () => {
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Anchored Merge"), { x: 300, y: 300 });
+    const ligand = selectedMolecule(withLigand);
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule object.");
+    }
+    const document = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(converted, 1, {
+      objectId: znMolecule.id,
+      kind: "atom",
+      atomId: znMolecule.atoms[0].id,
+      distanceToPointer: 0
+    }));
+    const mark = document.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    expect(mark?.anchor).toMatchObject({ objectId: znMolecule.id });
+
+    // Drag from the ligand onto the Zn: the Zn molecule is absorbed, and the mark follows.
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      document,
+      ligand.id,
+      "atom_002",
+      { x: znMolecule.atoms[0].x, y: znMolecule.atoms[0].y },
+      { bondStyle: "dashed" }
+    );
+    const mergedMark = bonded.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    const merged = bonded.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const mergedZn = merged?.atoms.find((atom) => atom.element === "Zn");
+    expect(mergedMark?.anchor).toMatchObject({ objectId: ligand.id, atomId: mergedZn?.id });
+    expect(mergedZn).toMatchObject({ formalCharge: 1 });
+  });
+
+  it("treats dashed bonds as dative for valence and drawn hydrogens", () => {
+    const bond = (id: string, to: string, order: "single" | "double" = "single", dashed = false) => ({
+      id, fromAtomId: "a1", toAtomId: to, order,
+      ...(dashed ? { display: { bondStyle: "dashed" as const } } : {})
+    });
+    const nitrogen = { id: "a1", element: "N", x: 0, y: 0, formalCharge: 0 };
+
+    // Pyridine-style N (three covalent bonds) plus a dashed coordinate bond: still valid, still "N".
+    const coordinated = [bond("b1", "c1"), bond("b2", "c2", "double"), bond("b3", "zn", "single", true)];
+    expect(nativeAtomValidationState(nitrogen, coordinated)).toMatchObject({ valid: true, valenceUsed: 3 });
+    // A fourth COVALENT bond still correctly demands the +1.
+    const quaternized = [bond("b1", "c1"), bond("b2", "c2", "double"), bond("b3", "c3")];
+    expect(nativeAtomValidationState(nitrogen, [...quaternized, bond("b4", "c4")])).toMatchObject({ valid: false });
+
+    // The drawn hydrogen count ignores the dashed contact too: an amine N dash-bonded to a
+    // metal keeps its NH2.
+    expect(atomDisplayLabel(nitrogen, [bond("b1", "c1"), bond("b2", "zn", "single", true)])).toBe("NH2");
+  });
+
   it("breaks freeform drag into custom length after a larger pull", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Custom Freeform Bond"), { x: 200, y: 220 });
     const molecule = selectedMolecule(document);

@@ -465,6 +465,7 @@ import {
   scaleDocumentObjectsAroundPoint,
   ungroupSelectedDocumentObjects,
   moveNativeMoleculeParts,
+  findForeignNativeMoleculeBondTarget,
   openNativeDocument,
   previewNativeMoleculeBondGrowth,
   previewNativeMoleculeFreeformBondGrowth,
@@ -9970,13 +9971,16 @@ export function MainWindow({
     }
 
     const page = sourceDocument.pages[0];
+    // Hovering another molecule's atom snaps the rubber band onto it — the drop will merge
+    // the two objects and bond across them, so the preview should already point there.
+    const foreignTarget = findForeignNativeMoleculeBondTarget(page, molecule.id, point);
     const preview = previewNativeMoleculeFreeformBondGrowth(
       molecule,
       drag.atomId,
-      point,
+      foreignTarget?.atomPoint ?? point,
       page.width,
       page.height,
-      { forceCustomLength: drag.freeformUnlocked }
+      { forceCustomLength: drag.freeformUnlocked || foreignTarget !== undefined }
     );
     if (preview?.customLength) {
       drag.freeformUnlocked = true;

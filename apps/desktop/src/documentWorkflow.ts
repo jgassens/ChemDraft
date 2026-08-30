@@ -7049,6 +7049,31 @@ export function applyFreeformSingleBondToolAtPoint(
     return document;
   }
 
+  // A drop on another molecule object's atom joins the two: merge that object into this one
+  // (re-minting its ids) and bond across the seam — how a typed metal atom coordinates to a
+  // drawn ligand.
+  const foreign = findForeignNativeMoleculeBondTarget(page, molecule.id, point);
+  if (foreign) {
+    const merged = mergeNativeMoleculeObjects(molecule, foreign.molecule);
+    const mergedTargetAtomId = merged?.atomIdMap.get(foreign.atomId);
+    const connected = merged && mergedTargetAtomId
+      ? connectNativeCarbonAtoms(merged.molecule, sourceAtomId, mergedTargetAtomId, options)
+      : undefined;
+    if (!merged || !connected) {
+      return document;
+    }
+    return applyPatches(
+      document,
+      [
+        { op: "updateObject", objectId: molecule.id, changes: connected },
+        ...remapAnchorsAfterMoleculeMerge(page, foreign.molecule.id, molecule.id, merged.atomIdMap, merged.bondIdMap),
+        { op: "removeObject", objectId: foreign.molecule.id },
+        { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+      ],
+      { now: phase4Timestamp }
+    );
+  }
+
   const preview = previewNativeMoleculeFreeformBondGrowth(
     molecule,
     sourceAtomId,
@@ -16117,6 +16142,139 @@ function neighborAnglesForAtom(molecule: MoleculeObject, atomId: string): number
     .map((neighbor) => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
 }
 
+/**
+ * The atom another molecule object offers as a bond endpoint at `point` — how a dragged bond
+ * reaches across objects (a typed "Zn" is its own one-atom molecule until a bond joins it to
+ * the ligand). Nearest hit wins across every other editable molecule on the page.
+ */
+export function findForeignNativeMoleculeBondTarget(
+  page: DocumentPage,
+  excludeObjectId: string,
+  point: PagePoint
+): { molecule: MoleculeObject; atomId: string; atomPoint: PagePoint } | undefined {
+  const hits = page.objects
+    .filter((object): object is MoleculeObject => object.type === "molecule" && object.id !== excludeObjectId)
+    .map((molecule) => ({ molecule, hit: findNativeMoleculeAtomHit(molecule, point) }))
+    .filter((entry): entry is { molecule: MoleculeObject; hit: NonNullable<ReturnType<typeof findNativeMoleculeAtomHit>> } =>
+      entry.hit !== undefined && entry.hit.availableBonds > 0
+    )
+    .sort((left, right) => left.hit.distance - right.hit.distance || left.molecule.id.localeCompare(right.molecule.id));
+  const target = hits[0];
+  if (!target) {
+    return undefined;
+  }
+  const atom = target.molecule.atoms.find((candidate) => candidate.id === target.hit.atomId);
+  return atom ? { molecule: target.molecule, atomId: target.hit.atomId, atomPoint: { x: atom.x, y: atom.y } } : undefined;
+}
+
+/**
+ * Absorb one molecule object into another so a bond can join them: the absorbed atoms and
+ * bonds are re-minted onto fresh ids in the host's id space (every molecule starts at
+ * atom_001, so ids collide), and its per-atom/per-bond style colors follow the remap.
+ */
+function mergeNativeMoleculeObjects(
+  host: MoleculeObject,
+  absorbed: MoleculeObject
+): { molecule: MoleculeObject; atomIdMap: ReadonlyMap<string, string>; bondIdMap: ReadonlyMap<string, string> } | undefined {
+  if (!isEditableNativeMoleculeGraph(host) || !isEditableNativeMoleculeGraph(absorbed)) {
+    return undefined;
+  }
+
+  const atomIdMap = new Map<string, string>();
+  const usedAtomIds = host.atoms.map((atom) => atom.id);
+  const atoms = [...host.atoms];
+  absorbed.atoms.forEach((atom) => {
+    const id = nextIndexedId("atom", usedAtomIds);
+    usedAtomIds.push(id);
+    atomIdMap.set(atom.id, id);
+    atoms.push({ ...atom, id });
+  });
+
+  const bondIdMap = new Map<string, string>();
+  const usedBondIds = host.bonds.map((bond) => bond.id);
+  const bonds = [...host.bonds];
+  absorbed.bonds.forEach((bond) => {
+    const id = nextIndexedId("bond", usedBondIds);
+    usedBondIds.push(id);
+    bondIdMap.set(bond.id, id);
+    bonds.push({
+      ...bond,
+      id,
+      fromAtomId: atomIdMap.get(bond.fromAtomId) ?? bond.fromAtomId,
+      toAtomId: atomIdMap.get(bond.toAtomId) ?? bond.toAtomId
+    });
+  });
+
+  const remapColorKeys = (
+    hostColors: Readonly<Record<string, string>> | undefined,
+    absorbedColors: Readonly<Record<string, string>> | undefined,
+    idMap: ReadonlyMap<string, string>
+  ): Record<string, string> | undefined => {
+    const merged: Record<string, string> = { ...(hostColors ?? {}) };
+    Object.entries(absorbedColors ?? {}).forEach(([id, color]) => {
+      const mapped = idMap.get(id);
+      if (mapped) {
+        merged[mapped] = color;
+      }
+    });
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  };
+  const atomLabelColors = remapColorKeys(host.style.atomLabelColors, absorbed.style.atomLabelColors, atomIdMap);
+  const bondColors = remapColorKeys(host.style.bondColors, absorbed.style.bondColors, bondIdMap);
+  const style = {
+    ...host.style,
+    ...(atomLabelColors ? { atomLabelColors } : {}),
+    ...(bondColors ? { bondColors } : {})
+  };
+
+  return {
+    molecule: refreshNativeSingleBondGraph({ ...host, style }, atoms, bonds),
+    atomIdMap,
+    bondIdMap
+  };
+}
+
+/** Anchor-carrying objects re-pointed from an absorbed molecule onto its merged host. */
+function remapAnchorsAfterMoleculeMerge(
+  page: DocumentPage,
+  absorbedObjectId: string,
+  hostObjectId: string,
+  atomIdMap: ReadonlyMap<string, string>,
+  bondIdMap: ReadonlyMap<string, string>
+): DocumentPatch[] {
+  const remapAnchor = (anchor: Anchor): Anchor => (
+    anchor.objectId === absorbedObjectId
+      ? {
+          ...anchor,
+          objectId: hostObjectId,
+          ...(anchor.atomId ? { atomId: atomIdMap.get(anchor.atomId) ?? anchor.atomId } : {}),
+          ...(anchor.bondId ? { bondId: bondIdMap.get(anchor.bondId) ?? anchor.bondId } : {})
+        }
+      : anchor
+  );
+
+  return page.objects.flatMap((object): DocumentPatch[] => {
+    if (object.type === "electron-mark" && object.anchor.objectId === absorbedObjectId) {
+      return [{ op: "updateObject", objectId: object.id, changes: { anchor: remapAnchor(object.anchor) } }];
+    }
+    if (object.type === "mechanism-arrow" && (object.source.objectId === absorbedObjectId || object.target.objectId === absorbedObjectId)) {
+      return [{
+        op: "updateObject",
+        objectId: object.id,
+        changes: { source: remapAnchor(object.source), target: remapAnchor(object.target) }
+      }];
+    }
+    if (object.type === "reaction-arrow" && (object.start.objectId === absorbedObjectId || object.end.objectId === absorbedObjectId)) {
+      return [{
+        op: "updateObject",
+        objectId: object.id,
+        changes: { start: remapAnchor(object.start), end: remapAnchor(object.end) }
+      }];
+    }
+    return [];
+  });
+}
+
 function connectNativeCarbonAtoms(
   molecule: MoleculeObject,
   sourceAtomId: string,
@@ -17575,13 +17733,22 @@ function atomDegreeMap(
   return degrees;
 }
 
+/**
+ * A dashed bond depicts a dative or partial interaction — a coordinate bond to a metal, a
+ * hydrogen bond, a forming/breaking bond — and occupies no covalent valence slot on either
+ * atom: pyridine's N keeps its three bonds and no badge while dash-bonded to a zinc.
+ */
+function nativeBondValenceContribution(bond: MoleculeBond): number {
+  return bond.display?.bondStyle === "dashed" ? 0 : nativeBondOrderValue[bond.order] ?? 1;
+}
+
 function atomBondOrderUsageMap(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): ReadonlyMap<string, number> {
   const usage = new Map(atoms.map((atom) => [atom.id, 0]));
   bonds.forEach((bond) => {
-    const value = nativeBondOrderValue[bond.order] ?? 1;
+    const value = nativeBondValenceContribution(bond);
     usage.set(bond.fromAtomId, (usage.get(bond.fromAtomId) ?? 0) + value);
     usage.set(bond.toAtomId, (usage.get(bond.toAtomId) ?? 0) + value);
   });
@@ -17592,7 +17759,7 @@ function atomBondOrderUsageMap(
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly MoleculeBond[]): number {
   return bonds.reduce((sum, bond) => (
     bond.fromAtomId === atomId || bond.toAtomId === atomId
-      ? sum + (nativeBondOrderValue[bond.order] ?? 1)
+      ? sum + nativeBondValenceContribution(bond)
       : sum
   ), 0);
 }

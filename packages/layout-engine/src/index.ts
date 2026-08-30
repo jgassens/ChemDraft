@@ -5119,7 +5119,9 @@ function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefi
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {
   return bonds.reduce((sum, bond) => (
     bond.fromAtomId === atomId || bond.toAtomId === atomId
-      ? sum + (nativeBondOrderValue[bond.order] ?? 1)
+      // Dashed = dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
+      // drawn hydrogen count ignores it — same rule as the valence checker's.
+      ? sum + (bond.display?.bondStyle === "dashed" ? 0 : nativeBondOrderValue[bond.order] ?? 1)
       : sum
   ), 0);
 }
