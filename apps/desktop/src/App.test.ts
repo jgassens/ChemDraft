@@ -5444,8 +5444,9 @@ describe("ChemDraft desktop shell", () => {
         objectCount: 1,
         targetKind: "atom",
         atomWarning: {
-          target: { objectId: "mol_warn", kind: "atom", atomId: "atom_001", distanceToPointer: 0 },
-          suppressed: false
+          scope: [{ objectId: "mol_warn", atomIds: ["atom_001"] }],
+          suppressed: false,
+          count: 1
         },
         position: { x: 20, y: 30 },
         onInvoke: () => undefined
@@ -5462,14 +5463,33 @@ describe("ChemDraft desktop shell", () => {
         objectCount: 1,
         targetKind: "atom",
         atomWarning: {
-          target: { objectId: "mol_warn", kind: "atom", atomId: "atom_001", distanceToPointer: 0 },
-          suppressed: true
+          scope: [{ objectId: "mol_warn", atomIds: ["atom_001"] }],
+          suppressed: true,
+          count: 1
         },
         position: { x: 20, y: 30 },
         onInvoke: () => undefined
       })
     );
     expect(suppressedMarkup).toContain("Restore Warning");
+
+    // Multi-warning scopes pluralize.
+    const pluralMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_warn",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "object",
+        atomWarning: {
+          scope: [{ objectId: "mol_warn" }],
+          suppressed: false,
+          count: 3
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(pluralMarkup).toContain("Clear Warnings");
 
     // No warning context, no item.
     const plainMarkup = renderToStaticMarkup(

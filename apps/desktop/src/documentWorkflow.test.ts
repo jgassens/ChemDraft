@@ -89,6 +89,7 @@ import {
   applyNativeAtomElementTarget,
   applyNativeAtomLabelClearTarget,
   applyNativeAtomWarningSuppression,
+  applyNativeWarningSuppressionToScope,
   nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
@@ -4325,6 +4326,40 @@ describe("Phase 4 document workflow", () => {
     const restoredMolecule = selectedMolecule(restored);
     expect(restoredMolecule.atoms[0].warningSuppressed).toBeUndefined();
     expect(nativeMoleculeInvalidAtomStates(restoredMolecule)).toHaveLength(1);
+  });
+
+  it("clears warnings across a selection scope — whole molecule or just the selected atoms", () => {
+    // Ethane with BOTH atoms literal-labeled N: two hypovalent flags in one molecule.
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Scoped Warnings"), { x: 300, y: 300 });
+    const document = setNativeAtomElement(
+      setNativeAtomElement(ethane, "atom_001", "N", { literal: true }),
+      "atom_002",
+      "N",
+      { literal: true }
+    );
+    const molecule = selectedMolecule(document);
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(2);
+
+    // Partial scope: only the listed atom is silenced; the other keeps its badge.
+    const partial = applyNativeWarningSuppressionToScope(document, [{ objectId: molecule.id, atomIds: ["atom_001"] }], true);
+    const partialMolecule = selectedMolecule(partial);
+    expect(partialMolecule.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+    expect(partialMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(partialMolecule)).toMatchObject([{ atomId: "atom_002" }]);
+
+    // Whole-molecule scope: every current warning goes; restoring the same scope brings both back.
+    const whole = applyNativeWarningSuppressionToScope(document, [{ objectId: molecule.id }], true);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole))).toEqual([]);
+    const restored = applyNativeWarningSuppressionToScope(whole, [{ objectId: molecule.id }], false);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(restored))).toHaveLength(2);
+
+    // Clearing suppresses only atoms that CURRENTLY warn: a valid carbon in scope keeps its
+    // voice for future mistakes.
+    const mixed = setNativeAtomElement(document, "atom_002", "C");
+    const mixedCleared = applyNativeWarningSuppressionToScope(mixed, [{ objectId: molecule.id }], true);
+    const mixedMolecule = selectedMolecule(mixedCleared);
+    expect(mixedMolecule.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+    expect(mixedMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
   });
 
   it("treats dashed bonds as dative for valence and drawn hydrogens", () => {

@@ -8493,6 +8493,63 @@ export function nativeAtomHasExplicitLabel(atom: MoleculeAtom): boolean {
  * first — matching how chemists think of erasing an "O" or "CH3" back to the carbon skeleton —
  * and a second Delete then removes the atom itself.
  */
+/** One molecule's share of a Clear/Restore Warnings action: all atoms, or just the listed ones. */
+export type NativeWarningSuppressionScope = { objectId: string; atomIds?: readonly string[] };
+
+/**
+ * Dismiss (or restore) valence warnings across a selection scope. Each entry covers one
+ * molecule — the whole molecule when `atomIds` is omitted (whole-object selection), or only
+ * the listed atoms (partial selection). Clearing suppresses only atoms that CURRENTLY warn,
+ * so a valid atom keeps its voice for future mistakes; restoring lifts any suppression in
+ * scope.
+ */
+export function applyNativeWarningSuppressionToScope(
+  document: ChemDraftDocument,
+  scope: readonly NativeWarningSuppressionScope[],
+  suppressed: boolean
+): ChemDraftDocument {
+  return scope.reduce((current, entry) => {
+    const page = firstPage(current);
+    const molecule = page.objects.find((object): object is MoleculeObject =>
+      object.id === entry.objectId && object.type === "molecule"
+    );
+    if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+      return current;
+    }
+
+    const invalidAtomIds = new Set(nativeMoleculeInvalidAtomStates(molecule).map((state) => state.atomId));
+    const inScope = (atom: MoleculeAtom) => entry.atomIds === undefined || entry.atomIds.includes(atom.id);
+    let changed = false;
+    const atoms = molecule.atoms.map((atom) => {
+      if (!inScope(atom)) {
+        return atom;
+      }
+      if (suppressed) {
+        if (atom.warningSuppressed !== true && invalidAtomIds.has(atom.id)) {
+          changed = true;
+          return { ...atom, warningSuppressed: true };
+        }
+        return atom;
+      }
+      if (atom.warningSuppressed === true) {
+        changed = true;
+        const { warningSuppressed: _warningSuppressed, ...rest } = atom;
+        return rest;
+      }
+      return atom;
+    });
+    if (!changed) {
+      return current;
+    }
+
+    return applyPatch(
+      current,
+      { op: "updateObject", objectId: molecule.id, changes: refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds) },
+      { now: phase4Timestamp }
+    );
+  }, document);
+}
+
 /**
  * Dismiss (or restore) one atom's valence warning from the context menu. Suppression is a
  * per-atom mark: the checker reports the atom valid, so the badge disappears and no warning

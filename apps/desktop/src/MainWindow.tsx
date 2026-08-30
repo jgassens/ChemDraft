@@ -331,6 +331,7 @@ import {
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeAtomWarningSuppression,
+  applyNativeWarningSuppressionToScope,
   applyNativeAtomSproutTarget,
   applyNativeBondDisplayStyleTarget,
   applyNativeRingAttachAtAtomTarget,
@@ -543,6 +544,7 @@ import {
   type NativeMoleculeDeleteHit,
   type NativeDoubleBondSide,
   type NativeMoleculeDeleteTarget,
+  type NativeWarningSuppressionScope,
   type NativeBondOrderTarget,
   type NativeAtomSproutKind,
   type NativeBondGrowthPlan,
@@ -1149,8 +1151,8 @@ type ObjectContextMenuState = {
   objectId: string;
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
   bondDepthContext?: BondDepthContext;
-  /** Present when the right-clicked atom carries (or has dismissed) a valence warning. */
-  atomWarning?: { target: NativeMoleculeDeleteTarget; suppressed: boolean };
+  /** Present when the right-clicked scope carries (or has dismissed) valence warnings. */
+  atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number };
   x: number;
   y: number;
 };
@@ -14658,21 +14660,46 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     const atomWarning = (() => {
-      if (object.type !== "molecule" || nativeMoleculeHit?.kind !== "atom") {
-        return undefined;
-      }
-      const atom = object.atoms.find((candidate) => candidate.id === nativeMoleculeHit.atomId);
-      if (!atom) {
-        return undefined;
-      }
-      const suppressed = atom.warningSuppressed === true;
-      const invalid = nativeMoleculeInvalidAtomStates(object).some((state) => state.atomId === atom.id);
-      return suppressed || invalid
-        ? {
-            target: { objectId: object.id, kind: "atom" as const, atomId: atom.id, distanceToPointer: 0 },
-            suppressed
+      // Whole-object selections (including multi-select) scope to every selected molecule;
+      // a partial selection scopes to exactly the selected parts' atoms.
+      const scope: NativeWarningSuppressionScope[] = [];
+      if (preserveMultiSelection || targetKind === "object") {
+        const objectIds = preserveMultiSelection ? currentDocument.selection.objectIds : [objectId];
+        for (const id of objectIds) {
+          const candidate = findDocumentObject(currentDocument, id);
+          if (candidate?.type === "molecule") {
+            scope.push({ objectId: id });
           }
-        : undefined;
+        }
+      } else if (object.type === "molecule" && nextSelectedNativePart) {
+        const atomIds = nativeWarningScopeAtomIds(object, nextSelectedNativePart);
+        if (atomIds.length > 0) {
+          scope.push({ objectId: object.id, atomIds });
+        }
+      }
+      let flagged = 0;
+      let suppressedCount = 0;
+      for (const entry of scope) {
+        const molecule = findDocumentObject(currentDocument, entry.objectId);
+        if (molecule?.type !== "molecule") {
+          continue;
+        }
+        const invalidIds = new Set(nativeMoleculeInvalidAtomStates(molecule).map((state) => state.atomId));
+        for (const atom of molecule.atoms) {
+          if (entry.atomIds !== undefined && !entry.atomIds.includes(atom.id)) {
+            continue;
+          }
+          if (atom.warningSuppressed === true) {
+            suppressedCount += 1;
+          } else if (invalidIds.has(atom.id)) {
+            flagged += 1;
+          }
+        }
+      }
+      if (flagged === 0 && suppressedCount === 0) {
+        return undefined;
+      }
+      return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount };
     })();
     setObjectContextMenu({
       objectId,
@@ -16224,13 +16251,14 @@ export function MainWindow({
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
             if (commandId === "atom.toggleWarningSuppression" && menu?.atomWarning) {
-              const { target, suppressed } = menu.atomWarning;
+              const { scope, suppressed, count } = menu.atomWarning;
               const changed = commitDocumentChange((current) =>
-                applyNativeAtomWarningSuppression(current, target, !suppressed)
+                applyNativeWarningSuppressionToScope(current, scope, !suppressed)
               );
+              const noun = count === 1 ? "warning" : `${count} warnings`;
               setStatus(changed
-                ? suppressed ? "Restored atom warning" : "Cleared atom warning"
-                : "Atom warning unchanged");
+                ? suppressed ? `Restored ${noun}` : `Cleared ${noun}`
+                : "Warnings unchanged");
               return;
             }
             if (menu && applyArrowStyleDefaultCommand(commandId, menu.objectId)) {
@@ -19834,7 +19862,9 @@ export function ObjectLayerContextMenu({
             data-command-id="atom.toggleWarningSuppression"
             onClick={() => onInvoke("atom.toggleWarningSuppression")}
           >
-            {atomWarning.suppressed ? "Restore Warning" : "Clear Warning"}
+            {atomWarning.suppressed
+              ? atomWarning.count === 1 ? "Restore Warning" : "Restore Warnings"
+              : atomWarning.count === 1 ? "Clear Warning" : "Clear Warnings"}
           </button>
           <div className="object-context-menu-separator" role="separator" />
         </>
@@ -20850,6 +20880,27 @@ function nativeSelectionAtomIds(part: NativeMoleculeSelectionPart | undefined): 
   }
 
   return part?.kind === "parts" ? [...part.atomIds] : [];
+}
+
+/** Every atom a selection part covers for warning actions — bond parts include their endpoints. */
+function nativeWarningScopeAtomIds(molecule: MoleculeObject, part: NativeMoleculeSelectionPart): string[] {
+  const bondEndpointIds = (bondIds: readonly string[]): string[] =>
+    bondIds.flatMap((bondId) => {
+      const bond = molecule.bonds.find((candidate) => candidate.id === bondId);
+      return bond ? [bond.fromAtomId, bond.toAtomId] : [];
+    });
+  switch (part.kind) {
+    case "atom":
+      return [part.atomId];
+    case "bond":
+      return bondEndpointIds([part.bondId]);
+    case "ring":
+      return [...part.atomIds];
+    case "rings":
+      return [...new Set(part.rings.flatMap((ring) => [...ring.atomIds]))];
+    case "parts":
+      return [...new Set([...part.atomIds, ...bondEndpointIds(part.bondIds)])];
+  }
 }
 
 function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): string[] {
