@@ -3,6 +3,7 @@ import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import { atomDisplayLabel, mechanismArrowGeometry, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
+  DefaultNativeDrawingStyle,
   applyPatch,
   applyPatchWithHistory,
   applyPatches,
@@ -4500,7 +4501,7 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(document).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ element: "C" });
   });
 
-  it("makes hovered carbon labels explicit with implicit hydrogens when pressing C", () => {
+  it("makes hovered carbon labels explicit when pressing C", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Explicit Carbon"), { x: 200, y: 220 });
     const molecule = selectedMolecule(document);
     const explicitCarbon = applyNativeAtomElementTarget(document, {
@@ -4516,7 +4517,8 @@ describe("Phase 4 document workflow", () => {
     }
 
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
-    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
+    // Labels are literal: the explicit carbon shows "C" (the model still counts its hydrogens).
+    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("C");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
@@ -8678,7 +8680,7 @@ describe("Phase 4 document workflow", () => {
       { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" }
     ]);
     expect(molecule.structure).toBe("C.CC");
-    expect(molecule.chemistry).toMatchObject({ formula: "C3H10", atomCount: 3, bondCount: 1 });
+    expect(molecule.chemistry).toMatchObject({ formula: "C3H6", atomCount: 3, bondCount: 1 });
     expect(getSelectedMolecule(butane)?.atoms).toHaveLength(4);
   });
 
@@ -8775,7 +8777,7 @@ describe("Phase 4 document workflow", () => {
     expect(methaneMolecule.atoms.map((atom) => atom.id)).toEqual(["atom_001"]);
     expect(methaneMolecule.bonds).toEqual([]);
     expect(methaneMolecule.structure).toBe("C");
-    expect(methaneMolecule.chemistry).toMatchObject({ formula: "CH4", atomCount: 1, bondCount: 0 });
+    expect(methaneMolecule.chemistry).toMatchObject({ formula: "C", atomCount: 1, bondCount: 0 });
 
     const empty = applyNativeMoleculeDeleteTarget(methane, {
       objectId: methaneMolecule.id,
@@ -8786,6 +8788,33 @@ describe("Phase 4 document workflow", () => {
 
     expect(empty.pages[0].objects).toEqual([]);
     expect(empty.selection.objectIds).toEqual([]);
+  });
+
+  it("counts condensed atom labels verbatim in the formula instead of inventing hydrogens", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Condensed Label Formula"), { x: 220, y: 260 });
+
+    // A typed "CH3" label IS its own recipe: no implicit H on top, no empty contribution.
+    const naked = applyNativeMoleculeDeleteTarget(ethane, {
+      objectId: selectedMolecule(ethane).id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      terminalAtomId: "atom_002",
+      distanceToPointer: 0
+    });
+    const methyl = setNativeAtomElement(naked, "atom_001", "CH3");
+    expect(selectedMolecule(methyl).chemistry).toMatchObject({ formula: "CH3", atomCount: 1 });
+
+    // Bonded condensed label: CH3–CO2H reads as acetic acid (the skeleton carbon still gets
+    // its implicit hydrogens; the label contributes exactly what it spells).
+    const aceticAcid = setNativeAtomElement(ethane, "atom_002", "CO2H");
+    expect(selectedMolecule(aceticAcid).chemistry).toMatchObject({ formula: "C2H4O2", atomCount: 2 });
+
+    // Abbreviations with non-element tokens stay uncounted (no wrong guesses) — a lone one
+    // falls back to the empty-formula sentinel.
+    const abbreviation = setNativeAtomElement(naked, "atom_001", "OMe");
+    expect(selectedMolecule(abbreviation).chemistry).toMatchObject({ formula: "C0H0", atomCount: 1 });
   });
 
   it("deletes a lassoed fragment (atoms plus their incident bonds) and rebuilds the remaining graph", () => {
@@ -8952,7 +8981,7 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.atoms.map((atom) => atom.id)).toEqual(["atom_002", "atom_003", "atom_004", "atom_005"]);
     expect(molecule.bonds).toEqual([]);
     expect(molecule.structure).toBe("C.C.C.C");
-    expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
+    expect(molecule.chemistry).toMatchObject({ formula: "C4", atomCount: 4, bondCount: 0, totalCharge: 0 });
     // The orphaned carbons render bare and each carries the incomplete-valence flag — they are
     // unfinished atoms to rebuild from, not four phantom methanes.
     expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
@@ -9109,7 +9138,10 @@ describe("Phase 4 document workflow", () => {
     if (!oxygen) {
       throw new Error("Expected hydroxyl oxygen.");
     }
-    expect(atomDisplayLabel(oxygen, molecule.bonds, undefined, molecule.atoms)).toBe("OH");
+    // Labels are literal by default; opt into the drawn hydrogen count to watch the proton
+    // come and go on the label itself (the formula assertions track the model regardless).
+    const showHydrogens = { ...DefaultNativeDrawingStyle, atomLabelHideImplicitHydrogens: false };
+    expect(atomDisplayLabel(oxygen, molecule.bonds, showHydrogens, molecule.atoms)).toBe("OH");
     expect(molecule.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
 
     const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
@@ -9131,7 +9163,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(chargedOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
     // Proton removed; the minus is drawn by the mark, not repeated in the label.
-    expect(atomDisplayLabel(chargedOxygen!, alkoxide.bonds, undefined, alkoxide.atoms)).toBe("O");
+    expect(atomDisplayLabel(chargedOxygen!, alkoxide.bonds, showHydrogens, alkoxide.atoms)).toBe("O");
     expect(alkoxide.chemistry).toMatchObject({ formula: "CH3O", totalCharge: -1 });
     expect(nativeMoleculeInvalidAtomStates(alkoxide)).toEqual([]);
 
@@ -9147,7 +9179,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(neutralOxygen).toMatchObject({ formalCharge: 0 });
     expect(neutralOxygen?.markCharge).toBeUndefined();
-    expect(atomDisplayLabel(neutralOxygen!, neutralMolecule!.bonds, undefined, neutralMolecule!.atoms)).toBe("OH");
+    expect(atomDisplayLabel(neutralOxygen!, neutralMolecule!.bonds, showHydrogens, neutralMolecule!.atoms)).toBe("OH");
     expect(neutralMolecule?.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
     expect(nativeMoleculeInvalidAtomStates(neutralMolecule!)).toEqual([]);
 

@@ -161,7 +161,7 @@ describe("SVG export serialization", () => {
 
     expect(result.contents).toContain('data-object-id="mol_svg_hardened"');
     expect(result.contents.match(/data-bond-id="bond_001"/g) ?? []).toHaveLength(1);
-    expect(result.contents).toContain('data-atom-label="OH"');
+    expect(result.contents).toContain('data-atom-label="O"');
     expect(result.contents).not.toContain("native-bond-hit-target");
     expect(result.contents).not.toContain("native-bond-hover-decorator");
     expect(result.contents).not.toContain("native-atom-hit-target");
@@ -249,7 +249,7 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('data-molecule-effect-source="true" filter="url(#molecule-effects-mol_svg_effects)"');
     expect(result.contents).toContain('data-molecule-effect="sketch"');
     expect(result.contents).not.toContain("molecule-effect-source-label");
-    expect(result.contents).toContain('data-atom-label="OH"');
+    expect(result.contents).toContain('data-atom-label="O"');
     expect(result.contents).toContain('data-object-id="mol_svg_effects"');
     expect(result.contents).not.toContain("native-bond-hit-target");
   });

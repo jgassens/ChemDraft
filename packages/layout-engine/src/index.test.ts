@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ChemDraftSyntheticStylePreset,
+  DefaultNativeDrawingStyle,
   createEmptyDocument,
   nativeDrawingStyleFromObjectStyle,
   stylePresetToObjectStyle,
@@ -2516,7 +2517,10 @@ describe("layout-engine page SVG planner", () => {
       ],
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
-        bondLengthPx: 28
+        bondLengthPx: 28,
+        // Opt into the auto-drawn hydrogen so the label reads "OH" — wide enough to trim a hash
+        // off the bond, which is the behavior under test.
+        atomLabelHideImplicitHydrogens: false
       }
     });
     const hashes = planPageSvgRender(pageWithObjects([molecule])).fragments
@@ -3689,44 +3693,49 @@ describe("implicit hydrogens and formal charge", () => {
     id: `b_${id}`, fromAtomId: "a1", toAtomId: id, order: "single" as const
   });
 
-  it("counts implicit hydrogens against the CHARGED valence, not the neutral one", () => {
-    // A charge changes how many bonds an atom wants, so counting against the neutral valence
-    // invented hydrogens that are not there: an alkoxide drew as "OH-" and a trisubstituted
-    // carbocation as "CH+". Both are different molecules from the ones the user drew.
+  // Labels are literal by default; the opt-in style re-enables the auto-drawn hydrogen count.
+  const showHydrogens = { ...DefaultNativeDrawingStyle, atomLabelHideImplicitHydrogens: false };
 
-    // Alkoxide: one bond, no hydrogen.
-    expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")])).toBe("O-");
-    // Neutral alcohol oxygen with one bond keeps its hydrogen.
-    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("OH");
-
-    // Carbocation with three bonds: no hydrogen.
-    expect(atomDisplayLabel(atom("C", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C+");
-    // Carbanion also takes three bonds.
-    expect(atomDisplayLabel(atom("C", -1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C-");
-
-    // Ammonium takes four bonds, so a fully substituted one has no hydrogen and is not
-    // over-counted as hypervalent either.
-    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3"), bondTo("c4")])).toBe("N+");
-    // Protonated amine: three bonds on N+ leaves one hydrogen.
-    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("NH+");
-
-    // A halide anion takes no bonds and no hydrogen.
-    expect(atomDisplayLabel(atom("Cl", -1), [])).toBe("Cl-");
-    // A naked NEUTRAL halogen is an unfinished atom, not implicit HCl — it stays bare.
-    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("Cl");
-  });
-
-  it("labels naked neutral atoms bare and bonded atoms with implicit hydrogens", () => {
-    // Degree-0 neutral atoms are unfinished (typed onto the canvas, or orphaned by deletion):
-    // they show the bare symbol — the valence checker flags them — instead of pretending to be
-    // complete implicit hydrides.
+  it("labels atoms literally by default — no auto-drawn hydrogens", () => {
+    // Typing "N" shows "N"; a chemist who wants "NH2" types it as the label. The chemical
+    // model still carries the implicit hydrogens for bonded atoms.
+    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("O");
+    expect(atomDisplayLabel(atom("S", 0), [bondTo("c1")])).toBe("S");
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("N+");
+    // Naked neutral atoms are unfinished (flagged by the valence checker) and stay bare.
     expect(atomDisplayLabel(atom("O", 0), [])).toBe("O");
     expect(atomDisplayLabel(atom("N", 0), [])).toBe("N");
     expect(atomDisplayLabel(atom("C", 0), [])).toBe("C");
-    // With a bond, implicit hydrogens fill in as before.
-    expect(atomDisplayLabel(atom("S", 0), [bondTo("c1")])).toBe("SH");
-    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("OH");
-    // Charged naked atoms are deliberate ions and keep the charged-valence fill.
-    expect(atomDisplayLabel(atom("O", 1), [])).toBe("OH3+");
+    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("Cl");
+  });
+
+  it("counts opt-in implicit hydrogens against the CHARGED valence, not the neutral one", () => {
+    // With the style toggle on, the drawn hydrogen count must follow the charge: counting
+    // against the neutral valence invented hydrogens that are not there (an alkoxide drew as
+    // "OH-", a trisubstituted carbocation as "CH+").
+
+    // Alkoxide: one bond, no hydrogen.
+    expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")], showHydrogens)).toBe("O-");
+    // Neutral alcohol oxygen with one bond keeps its hydrogen.
+    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")], showHydrogens)).toBe("OH");
+
+    // Carbocation with three bonds: no hydrogen.
+    expect(atomDisplayLabel(atom("C", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], showHydrogens)).toBe("C+");
+    // Carbanion also takes three bonds.
+    expect(atomDisplayLabel(atom("C", -1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], showHydrogens)).toBe("C-");
+
+    // Ammonium takes four bonds, so a fully substituted one has no hydrogen and is not
+    // over-counted as hypervalent either.
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3"), bondTo("c4")], showHydrogens)).toBe("N+");
+    // Protonated amine: three bonds on N+ leaves one hydrogen.
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], showHydrogens)).toBe("NH+");
+
+    // A halide anion takes no bonds and no hydrogen.
+    expect(atomDisplayLabel(atom("Cl", -1), [], showHydrogens)).toBe("Cl-");
+    // Even opted in, a naked NEUTRAL atom stays bare — it is unfinished, not implicit HCl.
+    expect(atomDisplayLabel(atom("Cl", 0), [], showHydrogens)).toBe("Cl");
+    expect(atomDisplayLabel(atom("C", 0), [], showHydrogens)).toBe("C");
+    // Charged naked atoms are deliberate ions and keep the charged-valence fill when shown.
+    expect(atomDisplayLabel(atom("O", 1), [], showHydrogens)).toBe("OH3+");
   });
 });

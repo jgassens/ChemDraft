@@ -4330,9 +4330,9 @@ describe("ChemDraft desktop shell", () => {
     // background rect); the selection highlight must still paint above that group so it reads.
     const labelGroupIndex = markup.indexOf('class="native-atom-label"');
     const selectionBlobIndex = markup.indexOf("native-molecule-selection-blob");
-    const labelTextIndex = markup.indexOf('data-atom-label="OH"');
+    const labelTextIndex = markup.indexOf('data-atom-label="O"');
 
-    expect(markup).toContain('data-atom-label="OH"');
+    expect(markup).toContain('data-atom-label="O"');
     expect(markup).toContain('data-selected-atom-id="atom_002"');
     expect(labelGroupIndex).toBeGreaterThan(-1);
     expect(selectionBlobIndex).toBeGreaterThan(labelGroupIndex);
@@ -4482,7 +4482,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain('stroke="#b3261e"');
     expect(markup).toContain('fill="#c75c12"');
-    expect(markup).toContain('data-atom-label="NH2"');
+    expect(markup).toContain('data-atom-label="N"');
     expect(appCss).not.toMatch(/\\.native-bond-line\\s*{[^}]*stroke\\s*:/);
     expect(appCss).not.toMatch(/\\.native-atom-label\\s*{[^}]*fill\\s*:/);
   });
@@ -4550,12 +4550,22 @@ describe("ChemDraft desktop shell", () => {
   it("renders bonded non-carbon atom labels from native molecule state", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Oxygen Render"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects[0];
-    const updated = applyNativeAtomElementTarget(document, {
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected molecule fixture.");
+    }
+    const oxygen = applyNativeAtomElementTarget(document, {
       objectId: molecule.id,
       kind: "atom",
       atomId: "atom_002",
       distanceToPointer: 0
     }, "O");
+    // Labels are literal by default; this render test opts back into the drawn hydrogen
+    // count so the multi-run "OH" label path stays exercised.
+    const updated = applyPatch(oxygen, {
+      op: "updateObject",
+      objectId: molecule.id,
+      changes: { style: { ...molecule.style, atomLabelHideImplicitHydrogens: false } }
+    });
     const markup = renderToStaticMarkup(
       createElement(MainWindow, {
         initialDocument: updated,
@@ -4826,8 +4836,10 @@ describe("ChemDraft desktop shell", () => {
         { id: "atom_o1", element: "C", x: 430, y: 180, formalCharge: 0 },
         { id: "atom_o2", element: "C", x: 485, y: 135, formalCharge: 0 },
         { id: "atom_o3", element: "C", x: 500, y: 220, formalCharge: 0 },
-        { id: "atom_ch4", element: "C", x: 230, y: 300, formalCharge: -1 },
-        { id: "atom_oh2", element: "O", x: 360, y: 300, formalCharge: 1 }
+        // Arbitrary typed labels (not element symbols): they render literally with the
+        // charge affix appended, covering the subscript-digit run without implicit H.
+        { id: "atom_ch4", element: "CH3", x: 230, y: 300, formalCharge: -1 },
+        { id: "atom_oh2", element: "OH3", x: 360, y: 300, formalCharge: 1 }
       ],
       bonds: [
         { id: "bond_b1", fromAtomId: "atom_b", toAtomId: "atom_b1", order: "single" },
@@ -4920,7 +4932,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup.match(/data-atom-label="C"/g) ?? []).toHaveLength(4);
     expect(markup.match(/native-atom-invalid-marker/g) ?? []).toHaveLength(4);
     expect(markup).toContain('data-structure="C.C.C.C"');
-    expect(markup).toContain("Molecule C4H16");
+    expect(markup).toContain("Molecule C4");
     expect(markup).not.toContain("native-bond-line");
   });
 

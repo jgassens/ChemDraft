@@ -145,9 +145,9 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain('stroke-linecap="butt"');
     expect(result.contents).toContain('font-family="Arial, Helvetica, sans-serif"');
     expect(result.contents).toContain('fill="#c75c12"');
-    expect(result.contents).toContain('data-atom-label="OH"');
+    expect(result.contents).toContain('data-atom-label="O"');
     expect(result.contents).toContain('data-atom-label-run="normal"');
-    expect(result.contents).toContain(">OH</text>");
+    expect(result.contents).toContain(">O</text>");
     expect(result.contents).toContain("<rect");
   });
 
@@ -349,36 +349,36 @@ describe("exportDocumentToSvg", () => {
   });
 
   it("exports condensed atom labels with numeric subscripts", () => {
-    // A methyl anion: charged naked atoms keep their implicit-hydrogen fill (a NEUTRAL naked C
-    // now stays a bare, flagged "C"), so the carbanion exercises the subscript run.
-    const methanideMolecule = {
+    // Labels are literal, so the subscript run comes from a typed condensed label ("CH3" as the
+    // atom's own label text), not from auto-drawn implicit hydrogens.
+    const methylLabelMolecule = {
       ...moleculeObject(),
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
         source: "chemdraft-native-drawing"
       },
-      structure: "[CH3-]",
-      atoms: [{ id: "atom_001", element: "C", x: 120, y: 160, formalCharge: -1 }],
+      structure: "C",
+      atoms: [{ id: "atom_001", element: "CH3", x: 120, y: 160, formalCharge: 0 }],
       bonds: [],
       chemistry: {
-        formula: "CH3-",
+        formula: "CH3",
         atomCount: 1,
         bondCount: 0,
-        totalCharge: -1,
+        totalCharge: 0,
         isotopeLabels: [],
         stereochemistry: [],
         warnings: []
       }
     } satisfies MoleculeObject;
     const document = applyPatch(
-      createEmptyDocument({ title: "Methanide Export", now: timestamp }),
-      { op: "addObject", pageId: "page_001", object: methanideMolecule },
+      createEmptyDocument({ title: "Methyl Label Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: methylLabelMolecule },
       { now: timestamp }
     );
 
     const result = exportDocumentToSvg(document);
 
-    expect(result.contents).toContain('data-atom-label="CH3-"');
+    expect(result.contents).toContain('data-atom-label="CH3"');
     expect(result.contents).toContain('data-atom-label-run="normal"');
     expect(result.contents).toContain(">CH</text>");
     expect(result.contents).toContain('data-atom-label-run="subscript"');

@@ -16635,6 +16635,32 @@ function moleculeGeometryFromAtoms(atoms: readonly MoleculeAtom[]): Pick<Molecul
   };
 }
 
+/**
+ * Parse an arbitrary atom label as a condensed formula of known elements ("CH3" → C1 H3,
+ * "CO2H" → C1 O2 H1). Undefined when any token is not a plain element symbol ("OMe", "Ph",
+ * "R1") — abbreviations contribute nothing rather than a wrong count.
+ */
+function parseCondensedLabelFormula(label: string): Map<string, number> | undefined {
+  const trimmed = label.trim();
+  if (!/^(?:[A-Z][a-z]?\d*)+$/.test(trimmed)) {
+    return undefined;
+  }
+
+  const counts = new Map<string, number>();
+  for (const token of trimmed.matchAll(/([A-Z][a-z]?)(\d*)/g)) {
+    if (!token[1]) {
+      continue;
+    }
+    const element = nativeElementFromAtomLabel(token[1]);
+    if (!element) {
+      return undefined;
+    }
+    counts.set(element, (counts.get(element) ?? 0) + (token[2] ? Number(token[2]) : 1));
+  }
+
+  return counts.size > 0 ? counts : undefined;
+}
+
 function nativeSingleBondGraphMetadata(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
@@ -16648,14 +16674,23 @@ function nativeSingleBondGraphMetadata(
   atoms.forEach((atom) => {
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
+      // A condensed label is its own recipe — count exactly what it spells, no implicit H.
+      parseCondensedLabelFormula(atom.element)?.forEach((count, labelElement) => {
+        elementCounts.set(labelElement, (elementCounts.get(labelElement) ?? 0) + count);
+      });
       return;
     }
     elementCounts.set(element, (elementCounts.get(element) ?? 0) + 1);
 
-    if (element !== "H") {
+    // A naked neutral atom (no bonds, no charge, no radicals) is an unfinished atom — it is
+    // flagged invalid and its label stays bare, so the formula must not invent hydrogens for it
+    // either: a lone typed "C" is C, not CH4.
+    const valenceUsed = valenceUsage.get(atom.id) ?? 0;
+    const nakedNeutralAtom = valenceUsed === 0 && atom.formalCharge === 0 && (atom.markRadicals ?? 0) === 0;
+    if (element !== "H" && !nakedNeutralAtom) {
       const implicitHydrogens = nativeImplicitHydrogenCount(
         element,
-        valenceUsage.get(atom.id) ?? 0,
+        valenceUsed,
         atom.formalCharge,
         atom.markRadicals ?? 0
       );

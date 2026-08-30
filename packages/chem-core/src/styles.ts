@@ -102,7 +102,10 @@ export const ChemDraftSyntheticStylePreset = {
     atomLabelAlignment: "automatic",
     atomLabelPlacement: "automatic",
     atomLabelShowTerminalCarbons: false,
-    atomLabelHideImplicitHydrogens: false
+    // Labels are literal by default: typing "N" shows "N" (implicit hydrogens stay in the
+    // chemical model but are not auto-drawn); the per-molecule style toggle re-enables the
+    // classic "NH2"-style display.
+    atomLabelHideImplicitHydrogens: true
   }
 } as const satisfies ChemDraftStylePreset;
 
