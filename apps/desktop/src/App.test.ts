@@ -4810,7 +4810,7 @@ describe("ChemDraft desktop shell", () => {
         source: "chemdraft-native-drawing"
       },
       structureFormat: "smiles",
-      structure: "[B-]([C])([C])([C])[C].[N+]([C])([C])([C])[C].[O+]([C])([C])[C].C.O",
+      structure: "[B-]([C])([C])([C])[C].[N+]([C])([C])([C])[C].[O+]([C])([C])[C].[CH3-].[OH3+]",
       atoms: [
         { id: "atom_b", element: "B", x: 180, y: 180, formalCharge: -1 },
         { id: "atom_b1", element: "C", x: 130, y: 180, formalCharge: 0 },
@@ -4826,8 +4826,8 @@ describe("ChemDraft desktop shell", () => {
         { id: "atom_o1", element: "C", x: 430, y: 180, formalCharge: 0 },
         { id: "atom_o2", element: "C", x: 485, y: 135, formalCharge: 0 },
         { id: "atom_o3", element: "C", x: 500, y: 220, formalCharge: 0 },
-        { id: "atom_ch4", element: "C", x: 230, y: 300, formalCharge: 0 },
-        { id: "atom_oh2", element: "O", x: 360, y: 300, formalCharge: 0 }
+        { id: "atom_ch4", element: "C", x: 230, y: 300, formalCharge: -1 },
+        { id: "atom_oh2", element: "O", x: 360, y: 300, formalCharge: 1 }
       ],
       bonds: [
         { id: "bond_b1", fromAtomId: "atom_b", toAtomId: "atom_b1", order: "single" },
@@ -4868,16 +4868,16 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
-    for (const label of ["B-", "N+", "O+", "CH4", "OH2"]) {
+    for (const label of ["B-", "N+", "O+", "CH3-", "OH3+"]) {
       expect(markup).toContain(`data-atom-label="${label}"`);
     }
-    expect(markup.match(/data-atom-label-run="charge"/g) ?? []).toHaveLength(3);
+    expect(markup.match(/data-atom-label-run="charge"/g) ?? []).toHaveLength(5);
     expect(markup.match(/data-atom-label-run="subscript"/g) ?? []).toHaveLength(2);
     expect(markup.match(/text-anchor="middle">[BNO]<\/text>/g) ?? []).toHaveLength(3);
     expect(markup).not.toContain("native-atom-invalid-marker");
   });
 
-  it("renders disconnected methane labels after deleting a central native carbon", () => {
+  it("renders bare, flagged carbon labels after deleting a central native carbon", () => {
     const growFromAtom = (document: ReturnType<typeof insertNativeSingleBondMolecule>, atomId: string, angleDegrees: number) => {
       const molecule = document.pages[0].objects[0];
       if (molecule.type !== "molecule") {
@@ -4916,8 +4916,9 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
-    expect(markup.match(/data-atom-label="CH4"/g) ?? []).toHaveLength(4);
-    expect(markup.match(/data-atom-label-run="subscript"[^>]*>4<\/text>/g) ?? []).toHaveLength(4);
+    // Orphaned carbons render bare with the incomplete-valence badge, not as phantom methanes.
+    expect(markup.match(/data-atom-label="C"/g) ?? []).toHaveLength(4);
+    expect(markup.match(/native-atom-invalid-marker/g) ?? []).toHaveLength(4);
     expect(markup).toContain('data-structure="C.C.C.C"');
     expect(markup).toContain("Molecule C4H16");
     expect(markup).not.toContain("native-bond-line");

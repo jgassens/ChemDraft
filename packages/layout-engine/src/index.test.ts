@@ -3712,14 +3712,21 @@ describe("implicit hydrogens and formal charge", () => {
 
     // A halide anion takes no bonds and no hydrogen.
     expect(atomDisplayLabel(atom("Cl", -1), [])).toBe("Cl-");
-    // Neutral HCl keeps its hydrogen.
-    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("ClH");
+    // A naked NEUTRAL halogen is an unfinished atom, not implicit HCl — it stays bare.
+    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("Cl");
   });
 
-  it("still labels neutral atoms exactly as before", () => {
-    expect(atomDisplayLabel(atom("O", 0), [])).toBe("OH2");
-    expect(atomDisplayLabel(atom("N", 0), [])).toBe("NH3");
-    expect(atomDisplayLabel(atom("C", 0), [])).toBe("CH4");
+  it("labels naked neutral atoms bare and bonded atoms with implicit hydrogens", () => {
+    // Degree-0 neutral atoms are unfinished (typed onto the canvas, or orphaned by deletion):
+    // they show the bare symbol — the valence checker flags them — instead of pretending to be
+    // complete implicit hydrides.
+    expect(atomDisplayLabel(atom("O", 0), [])).toBe("O");
+    expect(atomDisplayLabel(atom("N", 0), [])).toBe("N");
+    expect(atomDisplayLabel(atom("C", 0), [])).toBe("C");
+    // With a bond, implicit hydrogens fill in as before.
     expect(atomDisplayLabel(atom("S", 0), [bondTo("c1")])).toBe("SH");
+    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("OH");
+    // Charged naked atoms are deliberate ions and keep the charged-valence fill.
+    expect(atomDisplayLabel(atom("O", 1), [])).toBe("OH3+");
   });
 });

@@ -500,6 +500,7 @@ import {
   updateNativeTextObjectScriptRange,
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
+  convertNativeTextObjectToAtom,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
   updateNativeGraphicLinearGradientHandle,
@@ -5563,6 +5564,24 @@ export function MainWindow({
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
   }, [replacePresentDocument]);
+
+  const finishActiveNativeTextEdit = useCallback(() => {
+    const objectId = activeTextEditObjectId;
+    setActiveTextEditObjectId(undefined);
+    if (!objectId) {
+      return;
+    }
+    // A text box holding exactly an element symbol becomes a real naked atom on commit — it
+    // joins the molecule model with hover hotkeys and valence checking instead of staying inert
+    // text drawn near the structure.
+    const currentDocument = documentRef.current;
+    const converted = convertNativeTextObjectToAtom(currentDocument, objectId);
+    if (converted !== currentDocument) {
+      commitDocumentChange(converted);
+      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
+      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+    }
+  }, [activeTextEditObjectId, commitDocumentChange]);
 
   const startTextObjectEdit = useCallback((objectId: string) => {
     const currentDocument = documentRef.current;
@@ -15922,7 +15941,7 @@ export function MainWindow({
                       onContextMenu={handleObjectContextMenu}
                       onTextChange={updateTextObjectContent}
                       onTextEditStart={startTextObjectEdit}
-                      onTextEditFinish={() => setActiveTextEditObjectId(undefined)}
+                      onTextEditFinish={finishActiveNativeTextEdit}
                       onTextSelectionChange={recordTextSelection}
                       onTextResizeStart={startTextResize}
                       onAtomLabelChange={updateAtomLabelDraft}

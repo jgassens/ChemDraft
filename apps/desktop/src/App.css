@@ -5299,12 +5299,14 @@ textarea:focus-visible,
   z-index: 4;
   min-width: 0.75em;
   height: 1.15em;
-  padding: 0;
+  padding: 0 1px;
   border: 0;
   border-bottom: 1.5px solid var(--cd-accent-border-soft);
   border-radius: 0;
   outline: none;
-  background: transparent;
+  /* Opaque page background: the molecule renders the live-applied label underneath at the same
+     anchor, and a transparent input showed both — the draft typed over the old glyph. */
+  background: var(--cd-bg-page);
   color: #111111;
   caret-color: var(--cd-accent);
   line-height: 1;

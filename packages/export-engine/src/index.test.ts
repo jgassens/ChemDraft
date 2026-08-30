@@ -349,40 +349,42 @@ describe("exportDocumentToSvg", () => {
   });
 
   it("exports condensed atom labels with numeric subscripts", () => {
-    const methaneMolecule = {
+    // A methyl anion: charged naked atoms keep their implicit-hydrogen fill (a NEUTRAL naked C
+    // now stays a bare, flagged "C"), so the carbanion exercises the subscript run.
+    const methanideMolecule = {
       ...moleculeObject(),
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
         source: "chemdraft-native-drawing"
       },
-      structure: "C",
-      atoms: [{ id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 }],
+      structure: "[CH3-]",
+      atoms: [{ id: "atom_001", element: "C", x: 120, y: 160, formalCharge: -1 }],
       bonds: [],
       chemistry: {
-        formula: "CH4",
+        formula: "CH3-",
         atomCount: 1,
         bondCount: 0,
-        totalCharge: 0,
+        totalCharge: -1,
         isotopeLabels: [],
         stereochemistry: [],
         warnings: []
       }
     } satisfies MoleculeObject;
     const document = applyPatch(
-      createEmptyDocument({ title: "Methane Export", now: timestamp }),
-      { op: "addObject", pageId: "page_001", object: methaneMolecule },
+      createEmptyDocument({ title: "Methanide Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: methanideMolecule },
       { now: timestamp }
     );
 
     const result = exportDocumentToSvg(document);
 
-    expect(result.contents).toContain('data-atom-label="CH4"');
+    expect(result.contents).toContain('data-atom-label="CH3-"');
     expect(result.contents).toContain('data-atom-label-run="normal"');
     expect(result.contents).toContain(">CH</text>");
     expect(result.contents).toContain('data-atom-label-run="subscript"');
     expect(result.contents).toContain('font-size="10.8"');
-    expect(result.contents).toContain(">4</text>");
-    expect(result.contents).not.toContain(">CH4</text>");
+    expect(result.contents).toContain(">3</text>");
+    expect(result.contents).not.toContain(">CH3</text>");
   });
 
   it("exports explicit quaternary ammonium as a compact charge affix", () => {

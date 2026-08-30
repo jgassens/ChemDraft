@@ -142,6 +142,7 @@ import {
   planNativeFlexibleChainVertices,
   type PagePoint,
   insertNativeSymbolGlyph,
+  convertNativeTextObjectToAtom,
   insertNativeTextObject,
   nativeArtToolForCommand,
   nativeBracketDefaultSize,
@@ -3114,6 +3115,8 @@ describe("Phase 4 document workflow", () => {
       objectId: molecule.id,
       kind: "bond" as const,
       bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
       distanceToPointer: 0
     };
 
@@ -4515,10 +4518,46 @@ describe("Phase 4 document workflow", () => {
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
-  it("labels isolated neutral common atoms with implicit hydrogens", () => {
-    expect(atomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
-    expect(atomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
-    expect(atomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("OH2");
+  it("converts committed element-symbol text into a naked flagged atom", () => {
+    const document = insertNativeTextObject(createPhase4Document("Text To Atom"), { x: 300, y: 300 }, "C");
+    const textObject = document.pages[0].objects.find((object) => object.type === "text");
+    if (!textObject) {
+      throw new Error("Expected text object.");
+    }
+
+    const converted = convertNativeTextObjectToAtom(document, textObject.id);
+    const molecule = selectedMolecule(converted);
+    expect(converted.pages[0].objects.some((object) => object.id === textObject.id)).toBe(false);
+    expect(molecule.atoms).toHaveLength(1);
+    expect(molecule.atoms[0]).toMatchObject({ element: "C", labelVisible: true, formalCharge: 0 });
+    expect(molecule.bonds).toHaveLength(0);
+    // Bare label + the incomplete-valence flag: the user's naked carbon.
+    expect(atomDisplayLabel(molecule.atoms[0], molecule.bonds)).toBe("C");
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
+
+    // Lower-case and two-letter symbols canonicalize ("fe" → Fe); Fe has no valence table entry,
+    // so it converts without a flag.
+    const ironText = insertNativeTextObject(createPhase4Document("Iron Text"), { x: 300, y: 300 }, "fe");
+    const ironObject = ironText.pages[0].objects.find((object) => object.type === "text");
+    const iron = selectedMolecule(convertNativeTextObjectToAtom(ironText, ironObject?.id ?? ""));
+    expect(iron.atoms[0]).toMatchObject({ element: "Fe" });
+
+    // Non-element text stays a text object.
+    const prose = insertNativeTextObject(createPhase4Document("Prose Text"), { x: 300, y: 300 }, "hello");
+    const proseObject = prose.pages[0].objects.find((object) => object.type === "text");
+    expect(convertNativeTextObjectToAtom(prose, proseObject?.id ?? "")).toBe(prose);
+  });
+
+  it("labels isolated neutral common atoms bare and flags them incomplete", () => {
+    // A naked neutral atom is an unfinished atom (typed onto the canvas, or orphaned by a
+    // delete) — bare symbol plus the invalid badge, not an implicit hydride.
+    expect(atomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("C");
+    expect(atomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("N");
+    expect(atomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("O");
+    expect(nativeAtomValidationState({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toMatchObject({
+      valid: false,
+      invalidReason: expect.stringContaining("has no bonds")
+    });
   });
 
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
@@ -8862,7 +8901,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(plausible))).toEqual([]);
   });
 
-  it("deletes neopentane's central carbon into neutral methane fragments", () => {
+  it("deletes neopentane's central carbon into bare, flagged carbon fragments", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Delete Neopentane Center"), { x: 300, y: 300 })
@@ -8879,12 +8918,15 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.bonds).toEqual([]);
     expect(molecule.structure).toBe("C.C.C.C");
     expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
+    // The orphaned carbons render bare and each carries the incomplete-valence flag — they are
+    // unfinished atoms to rebuild from, not four phantom methanes.
     expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
-      "CH4",
-      "CH4",
-      "CH4",
-      "CH4"
+      "C",
+      "C",
+      "C",
+      "C"
     ]);
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(4);
     expect(molecule.atoms.some((atom) => atom.element === "H")).toBe(false);
   });
 

@@ -877,6 +877,20 @@ export function nativeAtomValidationState(
     };
   }
 
+  // A naked atom — no bonds, no radicals, no charge that would make the bare atom a deliberate
+  // ion — is flagged: a lone neutral "C" typed on the canvas hasn't got its valence yet, and the
+  // exclamation badge is the honest signal while the user builds onto it.
+  if (valenceUsed === 0 && effectiveFormalCharge === 0 && (nativeAtomValence[element] ?? 0) > 0) {
+    return {
+      atomId: atom.id,
+      element,
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: false,
+      invalidReason: `${element} atom ${atom.id} has no bonds.`
+    };
+  }
+
   return {
     atomId: atom.id,
     element,
@@ -4190,6 +4204,79 @@ export function insertNativeTextObject(
     [
       { op: "addObject", pageId: page.id, object },
       { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/**
+ * When a committed text box holds exactly an element symbol ("C", "fe", "Br"…), turn it into a
+ * real naked atom: a one-atom molecule at the text's position, participating in hover hotkeys,
+ * bonding, and valence checking (a bare neutral atom shows the invalid badge until it gains
+ * bonds). Any other text stays a text object.
+ */
+export function convertNativeTextObjectToAtom(
+  document: ChemDraftDocument,
+  objectId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = page.objects.find((candidate): candidate is TextObject =>
+    candidate.id === objectId && candidate.type === "text"
+  );
+  if (!object) {
+    return document;
+  }
+
+  const raw = object.text.trim();
+  const normalized = normalizeNativeAtomElementLabel(raw);
+  if (raw.length === 0 || nativeElementFromAtomLabel(normalized) === undefined) {
+    return document;
+  }
+
+  const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+  const atom: MoleculeAtom = {
+    id: "atom_001",
+    element: normalized,
+    x: center.x,
+    y: center.y,
+    formalCharge: 0,
+    // Bare carbons render invisible by default; a typed naked atom must show its symbol.
+    ...(normalized === "C" ? { labelVisible: true } : {})
+  };
+  const geometry = moleculeGeometryFromAtoms([atom]);
+  const molecule = normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, "mol_atom"),
+    type: "molecule",
+    x: geometry.x,
+    y: geometry.y,
+    width: geometry.width,
+    height: geometry.height,
+    rotation: 0,
+    transform: defaultNativeMoleculeTransform,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "chemdraft-native-drawing"
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    structureFormat: "smiles",
+    structure: nativeSingleBondGraphSmiles([atom], []),
+    chemistry: nativeSingleBondGraphMetadata([atom], []),
+    atoms: [atom],
+    bonds: [],
+    superatoms: [],
+    rGroups: []
+  });
+
+  return applyPatches(
+    document,
+    [
+      { op: "removeObject", objectId },
+      { op: "addObject", pageId: page.id, object: molecule },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
   );
