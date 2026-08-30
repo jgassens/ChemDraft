@@ -21475,6 +21475,24 @@ function renderPageSvgFragment(
   );
 }
 
+/** Drop one fragment subtree (by key) from a rendered fragment tree — used to hide the edited
+ *  atom's rendered label while the label editor is open, so the draft in the input is the only
+ *  visible text (the live-applied label can be wider than the input, e.g. "C" → "CH3"). */
+function stripPageSvgFragmentByKey(
+  fragment: PageSvgElementFragment,
+  key: string
+): PageSvgElementFragment {
+  if (!fragment.children.some((child) => child.key === key || child.kind === "element")) {
+    return fragment;
+  }
+  return {
+    ...fragment,
+    children: fragment.children
+      .filter((child) => child.key !== key)
+      .map((child) => child.kind === "element" ? stripPageSvgFragmentByKey(child, key) : child)
+  };
+}
+
 function renderStaticPageSvgFragment(
   fragment: PageSvgFragment
 ): ReturnType<typeof createElement> | string {
@@ -22137,7 +22155,12 @@ function DocumentObjectView({
                 data-native-molecule-overlay-visual="true"
                 transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}
               >
-                {nativeMoleculeSvgFragments.map((fragment) => renderStaticPageSvgFragment(fragment))}
+                {(editingAtomLabel
+                  ? nativeMoleculeSvgFragments
+                      .filter((fragment) => fragment.key !== `label-${object.id}-${editingAtomLabel.atomId}`)
+                      .map((fragment) => stripPageSvgFragmentByKey(fragment, `label-${object.id}-${editingAtomLabel.atomId}`))
+                  : nativeMoleculeSvgFragments
+                ).map((fragment) => renderStaticPageSvgFragment(fragment))}
               </g>
             ) : null}
             {selectionBlob}
