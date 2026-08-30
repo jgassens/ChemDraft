@@ -17,7 +17,7 @@
  *      scheme changes (`set_keybinding_scheme`).
  */
 
-import type { CommandSpec } from "./commands";
+import { numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
 import type { KeybindingScheme } from "./keybindingSettings";
 import { compactMacShortcutLabel } from "./toolsets";
 
@@ -104,8 +104,9 @@ function atomElementCommand(element: string): string {
  * Only the subset with a ChemDraft equivalent appears here.
  */
 const CHEMDRAW_ATOM_HOTKEYS: Readonly<Record<string, string>> = {
-  "1": "atom.addSingleBondToHoveredAtom",
-  "2": "atom.addCarbonylToHoveredAtom",
+  ...numericAtomDrawingHotkeys,
+  // "3/a" on the cheat sheet: both attach a benzene ring at the atom.
+  a: numericAtomDrawingHotkeys["3"],
   "+": "atom.addPositiveChargeToHoveredAtom",
   "-": "atom.addNegativeChargeToHoveredAtom",
   h: atomElementCommand("H"),
@@ -131,9 +132,9 @@ const CHEMDRAW_ATOM_HOTKEYS: Readonly<Record<string, string>> = {
  * even-hash styles both map onto ChemDraft's single hashed style.
  */
 const CHEMDRAW_BOND_HOTKEYS: Readonly<Record<string, string>> = {
-  "1": "bond.setHoveredBondOrder.single",
-  "2": "bond.setHoveredBondOrder.double",
-  "3": "bond.setHoveredBondOrder.triple",
+  ...numericBondDrawingHotkeys,
+  // ChemDraw fuses benzene onto a bond with "a".
+  a: "bond.fuseRingAtHoveredBond.benzene",
   w: "bond.setHoveredBondDisplay.wedge",
   h: "bond.setHoveredBondDisplay.hashed",
   H: "bond.setHoveredBondDisplay.hashed",

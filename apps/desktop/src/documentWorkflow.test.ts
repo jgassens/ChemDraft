@@ -81,7 +81,10 @@ import {
   applyEditorSaveResultToSelectedObject,
   applyFreeformSingleBondToolAtPoint,
   applyNativeBondDisplayStyleTarget,
+  applyNativeAtomSproutTarget,
   applyNativeCarbonylAtAtomTarget,
+  applyNativeRingAttachAtAtomTarget,
+  applyNativeRingFuseAtBondTarget,
   applyNativeAtomElementTarget,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
@@ -3102,6 +3105,136 @@ describe("Phase 4 document workflow", () => {
       expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
+  it("fuses numeric-hotkey rings onto a hovered bond", () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Ring Fuse Hotkeys"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(seed);
+    const bondTarget = {
+      objectId: molecule.id,
+      kind: "bond" as const,
+      bondId: "bond_001",
+      distanceToPointer: 0
+    };
+
+    ([["cyclobutane", 4], ["cyclopentane", 5], ["cyclohexane", 6], ["cycloheptane", 7], ["cyclooctane", 8]] as const)
+      .forEach(([templateId, size]) => {
+        const fused = selectedMolecule(applyNativeRingFuseAtBondTarget(seed, bondTarget, templateId));
+        expect(fused.atoms).toHaveLength(size);
+        expect(fused.bonds).toHaveLength(size);
+        expect(nativeMoleculeInvalidAtomStates(fused)).toHaveLength(0);
+      });
+
+    // Chairs fuse through their dedicated geometry.
+    const chair = selectedMolecule(applyNativeRingFuseAtBondTarget(seed, bondTarget, "chairCyclohexaneA"));
+    expect(chair.atoms).toHaveLength(6);
+    expect(chair.bonds).toHaveLength(6);
+
+    // Benzene fuses aromatically: three double bonds after normalization.
+    const aromatic = selectedMolecule(applyNativeRingFuseAtBondTarget(seed, bondTarget, "benzene"));
+    expect(aromatic.atoms).toHaveLength(6);
+    expect(aromatic.bonds.filter((bond) => bond.order === "double")).toHaveLength(3);
+
+    // Atom targets pass through untouched.
+    expect(applyNativeRingFuseAtBondTarget(seed, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    }, "cyclohexane")).toBe(seed);
+  });
+
+  it("attaches numeric-hotkey rings at a hovered atom sharing that atom", () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Ring Attach Hotkeys"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(seed);
+    const atomTarget = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    const withCyclohexyl = selectedMolecule(applyNativeRingAttachAtAtomTarget(seed, atomTarget, "cyclohexane"));
+    expect(withCyclohexyl.atoms).toHaveLength(2 + 5);
+    expect(withCyclohexyl.bonds).toHaveLength(1 + 6);
+    // The hovered atom itself is a ring member: it now carries three bonds.
+    const sharedDegree = withCyclohexyl.bonds.filter((bond) =>
+      bond.fromAtomId === "atom_002" || bond.toAtomId === "atom_002"
+    ).length;
+    expect(sharedDegree).toBe(3);
+
+    const withPhenylene = selectedMolecule(applyNativeRingAttachAtAtomTarget(seed, atomTarget, "benzene"));
+    expect(withPhenylene.atoms).toHaveLength(7);
+    expect(withPhenylene.bonds.filter((bond) => bond.order === "double").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("sprouts stereo bonds, methylidene, and gem-dimethyl from numeric hotkeys", () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Sprout Hotkeys"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(seed);
+    const atomTarget = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    const wedge = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "wedge"));
+    expect(wedge.atoms).toHaveLength(3);
+    expect(wedge.bonds.at(-1)?.display?.bondStyle).toBe("wedge");
+
+    const hashed = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "hashed"));
+    expect(hashed.bonds.at(-1)?.display?.bondStyle).toBe("hashed");
+
+    const methylidene = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "methylidene"));
+    expect(methylidene.atoms).toHaveLength(3);
+    expect(methylidene.bonds.at(-1)?.order).toBe("double");
+    expect(nativeMoleculeInvalidAtomStates(methylidene)).toHaveLength(0);
+
+    const gem = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "gemDimethyl"));
+    expect(gem.atoms).toHaveLength(4);
+    expect(gem.bonds.filter((bond) =>
+      bond.fromAtomId === "atom_002" || bond.toAtomId === "atom_002"
+    )).toHaveLength(3);
+
+    // Methylidene refuses when the carbon lacks two free valences (here: after the gem-dimethyl
+    // the source carbon has three bonds).
+    const gemDocument = applyNativeAtomSproutTarget(seed, atomTarget, "gemDimethyl");
+    expect(applyNativeAtomSproutTarget(gemDocument, atomTarget, "methylidene")).toBe(gemDocument);
+  });
+
+  it("builds and closes a hexagon from repeated cyclic-bond (0) presses", () => {
+    let document = insertNativeSingleBondMolecule(createPhase4Document("Cyclic Hotkey"), { x: 300, y: 300 });
+    const objectId = selectedMolecule(document).id;
+    // Press 0 on the fresh tip four times: each press grows one carbon, curling consistently.
+    for (let press = 0; press < 4; press += 1) {
+      const tip = selectedMolecule(document).atoms.at(-1);
+      if (!tip) {
+        throw new Error("Expected chain tip.");
+      }
+      document = applyNativeAtomSproutTarget(document, {
+        objectId,
+        kind: "atom",
+        atomId: tip.id,
+        distanceToPointer: 0
+      }, "cyclic");
+    }
+    expect(selectedMolecule(document).atoms).toHaveLength(6);
+    expect(selectedMolecule(document).bonds).toHaveLength(5);
+
+    // The fifth press lands on the starting atom and closes the ring instead of stacking.
+    const tip = selectedMolecule(document).atoms.at(-1);
+    if (!tip) {
+      throw new Error("Expected chain tip.");
+    }
+    const closed = selectedMolecule(applyNativeAtomSproutTarget(document, {
+      objectId,
+      kind: "atom",
+      atomId: tip.id,
+      distanceToPointer: 0
+    }, "cyclic"));
+    expect(closed.atoms).toHaveLength(6);
+    expect(closed.bonds).toHaveLength(6);
+    expect(closed.structure).toBe("C1CCCCC1");
   });
 
   it("snaps a dragged atom onto canonical angles and the exact bond length", () => {

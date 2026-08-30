@@ -184,6 +184,134 @@ export const editActions: CommandSpec[] = [
     description: "Set the hovered native bond to a triple bond"
   },
   {
+    id: "atom.attachRingToHoveredAtom.benzene",
+    title: "Attach Benzene at Hovered Atom",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Attach a benzene ring sharing the hovered atom"
+  },
+  {
+    id: "atom.attachRingToHoveredAtom.cyclohexane",
+    title: "Attach Cyclohexane at Hovered Atom",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Attach a cyclohexane ring sharing the hovered atom"
+  },
+  {
+    id: "atom.attachRingToHoveredAtom.cyclopentane",
+    title: "Attach Cyclopentane at Hovered Atom",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Attach a cyclopentane ring sharing the hovered atom"
+  },
+  {
+    id: "atom.sproutStereoBondAtHoveredAtom.wedge",
+    title: "Add Wedge Bond to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow a bold wedge (up) bond from the hovered atom"
+  },
+  {
+    id: "atom.sproutStereoBondAtHoveredAtom.hashed",
+    title: "Add Hashed Bond to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow a hashed (down) bond from the hovered atom"
+  },
+  {
+    id: "atom.sproutMethylideneAtHoveredAtom",
+    title: "Add Methylidene to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow an exocyclic C=CH2 from the hovered carbon atom"
+  },
+  {
+    id: "atom.sproutGemDimethylAtHoveredAtom",
+    title: "Add gem-Dimethyl to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow two methyl groups from the hovered atom"
+  },
+  {
+    id: "atom.addCyclicBondToHoveredAtom",
+    title: "Add Cyclic Bond to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow a bond that keeps turning — repeated presses trace and close a ring"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.benzene",
+    title: "Fuse Benzene at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a benzene ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclobutane",
+    title: "Fuse 4-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclobutane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclopentane",
+    title: "Fuse 5-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclopentane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclohexane",
+    title: "Fuse 6-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclohexane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cycloheptane",
+    title: "Fuse 7-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cycloheptane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclooctane",
+    title: "Fuse 8-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclooctane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.chairCyclohexaneA",
+    title: "Fuse Chair Cyclohexane at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a chair cyclohexane onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.chairCyclohexaneB",
+    title: "Fuse Flipped Chair Cyclohexane at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse the flipped chair cyclohexane onto the hovered bond"
+  },
+  {
     id: "bond.setHoveredBondDisplay.wedge",
     title: "Set Hovered Bond Display: Wedge",
     icon: "bond",
@@ -259,6 +387,34 @@ export const editActions: CommandSpec[] = [
     description: "Delete the selected object, or the hovered native atom or bond"
   }
 ];
+
+/** ChemDraw's numeric drawing hotkeys over a hovered ATOM (shared by both keybinding schemes). */
+export const numericAtomDrawingHotkeys: Readonly<Record<string, string>> = {
+  "0": "atom.addCyclicBondToHoveredAtom",
+  "1": "atom.addSingleBondToHoveredAtom",
+  "2": "atom.addCarbonylToHoveredAtom",
+  "3": "atom.attachRingToHoveredAtom.benzene",
+  "4": "atom.sproutStereoBondAtHoveredAtom.wedge",
+  "5": "atom.sproutStereoBondAtHoveredAtom.hashed",
+  "6": "atom.attachRingToHoveredAtom.cyclohexane",
+  "7": "atom.attachRingToHoveredAtom.cyclopentane",
+  "8": "atom.sproutMethylideneAtHoveredAtom",
+  "9": "atom.sproutGemDimethylAtHoveredAtom"
+};
+
+/** ChemDraw's numeric drawing hotkeys over a hovered BOND (shared by both keybinding schemes). */
+export const numericBondDrawingHotkeys: Readonly<Record<string, string>> = {
+  "1": "bond.setHoveredBondOrder.single",
+  "2": "bond.setHoveredBondOrder.double",
+  "3": "bond.setHoveredBondOrder.triple",
+  "4": "bond.fuseRingAtHoveredBond.cyclobutane",
+  "5": "bond.fuseRingAtHoveredBond.cyclopentane",
+  "6": "bond.fuseRingAtHoveredBond.cyclohexane",
+  "7": "bond.fuseRingAtHoveredBond.cycloheptane",
+  "8": "bond.fuseRingAtHoveredBond.cyclooctane",
+  "9": "bond.fuseRingAtHoveredBond.chairCyclohexaneA",
+  "0": "bond.fuseRingAtHoveredBond.chairCyclohexaneB"
+};
 
 export function atomElementCommandId(element: NativeHotkeyElement): string {
   return `atom.setHoveredElement.${element}`;

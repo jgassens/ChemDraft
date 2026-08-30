@@ -1921,6 +1921,21 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "c")).toBe("atom.setHoveredElement.C");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "t")).toBeUndefined();
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "c")).toBeUndefined();
+    // ChemDraw's numeric drawing hotkeys work in both schemes.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "2")).toBe("atom.addCarbonylToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "3")).toBe("atom.attachRingToHoveredAtom.benzene");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "4")).toBe("atom.sproutStereoBondAtHoveredAtom.wedge");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "5")).toBe("atom.sproutStereoBondAtHoveredAtom.hashed");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "6")).toBe("atom.attachRingToHoveredAtom.cyclohexane");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "7")).toBe("atom.attachRingToHoveredAtom.cyclopentane");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "8")).toBe("atom.sproutMethylideneAtHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "9")).toBe("atom.sproutGemDimethylAtHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "0")).toBe("atom.addCyclicBondToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "4")).toBe("bond.fuseRingAtHoveredBond.cyclobutane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "6")).toBe("bond.fuseRingAtHoveredBond.cyclohexane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "8")).toBe("bond.fuseRingAtHoveredBond.cyclooctane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "9")).toBe("bond.fuseRingAtHoveredBond.chairCyclohexaneA");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "0")).toBe("bond.fuseRingAtHoveredBond.chairCyclohexaneB");
 
     const document = insertNativeSingleBondMolecule(createPhase4Document("Selected Bond Shortcut"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
@@ -1964,6 +1979,14 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "1", "chemdraw")).toBe("atom.addSingleBondToHoveredAtom");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "2", "chemdraw")).toBe("atom.addCarbonylToHoveredAtom");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "k", "chemdraw")).toBeUndefined();
+    // The numeric sprout row and its "a" aliases.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "3", "chemdraw")).toBe("atom.attachRingToHoveredAtom.benzene");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "a", "chemdraw")).toBe("atom.attachRingToHoveredAtom.benzene");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "6", "chemdraw")).toBe("atom.attachRingToHoveredAtom.cyclohexane");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "0", "chemdraw")).toBe("atom.addCyclicBondToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "5", "chemdraw")).toBe("bond.fuseRingAtHoveredBond.cyclopentane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "a", "chemdraw")).toBe("bond.fuseRingAtHoveredBond.benzene");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "0", "chemdraw")).toBe("bond.fuseRingAtHoveredBond.chairCyclohexaneB");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "+", "chemdraw")).toBe("atom.addPositiveChargeToHoveredAtom");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "-", "chemdraw")).toBe("atom.addNegativeChargeToHoveredAtom");
 

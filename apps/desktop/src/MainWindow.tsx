@@ -173,6 +173,8 @@ import {
 import {
   atomElementActions,
   atomElementCommandId,
+  numericAtomDrawingHotkeys,
+  numericBondDrawingHotkeys,
   artBooleanOperationCommandIds,
   createLayerActions,
   createQuickActions,
@@ -327,7 +329,10 @@ import {
   type MechanismArrowEndpoint,
   reconcileNativeChargeMarks,
   applyDocumentObjectProjectedPlaneTilt,
+  applyNativeAtomSproutTarget,
   applyNativeBondDisplayStyleTarget,
+  applyNativeRingAttachAtAtomTarget,
+  applyNativeRingFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
@@ -535,6 +540,8 @@ import {
   type NativeDoubleBondSide,
   type NativeMoleculeDeleteTarget,
   type NativeBondOrderTarget,
+  type NativeAtomSproutKind,
+  type NativeBondGrowthPlan,
   type NativeBondOrderValue,
   type NativeChargeValue,
   type NativeElectronMarkSpec,
@@ -3283,6 +3290,61 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(`Set hovered atom to ${element}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
+
+  const hoveredGrowthArrowPlan = useCallback((target: NativeMoleculeDeleteTarget): NativeBondGrowthPlan | undefined => {
+    const arrow = hoveredNativeAtomStateRef.current;
+    return arrow && target.kind === "atom" && arrow.objectId === target.objectId && arrow.atomId === target.atomId
+      ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
+      : undefined;
+  }, []);
+
+  const applyHoveredNativeTargetEdit = useCallback((
+    expectedKind: "atom" | "bond",
+    statusNoun: string,
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument
+  ) => {
+    const target = hoveredNativeDeleteTargetRef.current
+      ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
+    if (!target || target.kind !== expectedKind) {
+      setStatus(`No hovered ${expectedKind} for ${statusNoun}`);
+      return;
+    }
+
+    const currentDocument = documentRef.current;
+    const nextDocument = edit(currentDocument, target);
+    if (nextDocument === currentDocument) {
+      setStatus(`Cannot add ${statusNoun} here`);
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setSelectedNativeMoleculePart(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setStatus(`Added ${statusNoun}`);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+
+  const sproutAtHoveredNativeAtom = useCallback((kind: NativeAtomSproutKind, statusNoun: string) => {
+    applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
+      applyNativeAtomSproutTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+    );
+  }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
+
+  const attachRingAtHoveredNativeAtom = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
+    applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
+      applyNativeRingAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
+    );
+  }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
+
+  const fuseRingAtHoveredNativeBond = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
+    applyHoveredNativeTargetEdit("bond", statusNoun, (document, target) =>
+      applyNativeRingFuseAtBondTarget(document, target, templateId)
+    );
+  }, [applyHoveredNativeTargetEdit]);
 
   const addCarbonylToHoveredNativeAtom = useCallback(() => {
     const target = hoveredNativeDeleteTargetRef.current
@@ -7352,6 +7414,49 @@ export function MainWindow({
           if (bondStyle === "wedge" || bondStyle === "hashed" || bondStyle === "dashed" || bondStyle === "bold") {
             setHoveredNativeBondDisplayStyle(bondStyle);
           }
+          return;
+        }
+
+        if (action.id.startsWith("atom.attachRingToHoveredAtom.")) {
+          const templateId = action.id.replace("atom.attachRingToHoveredAtom.", "");
+          if (templateId === "benzene" || templateId === "cyclohexane" || templateId === "cyclopentane") {
+            attachRingAtHoveredNativeAtom(templateId, `${templateId} ring`);
+          }
+          return;
+        }
+
+        if (action.id.startsWith("bond.fuseRingAtHoveredBond.")) {
+          const templateId = action.id.replace("bond.fuseRingAtHoveredBond.", "");
+          if (
+            templateId === "benzene" || templateId === "cyclobutane" || templateId === "cyclopentane" ||
+            templateId === "cyclohexane" || templateId === "cycloheptane" || templateId === "cyclooctane" ||
+            templateId === "chairCyclohexaneA" || templateId === "chairCyclohexaneB"
+          ) {
+            fuseRingAtHoveredNativeBond(templateId, `fused ${templateId} ring`);
+          }
+          return;
+        }
+
+        if (action.id.startsWith("atom.sproutStereoBondAtHoveredAtom.")) {
+          const stereo = action.id.replace("atom.sproutStereoBondAtHoveredAtom.", "");
+          if (stereo === "wedge" || stereo === "hashed") {
+            sproutAtHoveredNativeAtom(stereo, `${stereo} bond`);
+          }
+          return;
+        }
+
+        if (action.id === "atom.sproutMethylideneAtHoveredAtom") {
+          sproutAtHoveredNativeAtom("methylidene", "methylidene");
+          return;
+        }
+
+        if (action.id === "atom.sproutGemDimethylAtHoveredAtom") {
+          sproutAtHoveredNativeAtom("gemDimethyl", "gem-dimethyl");
+          return;
+        }
+
+        if (action.id === "atom.addCyclicBondToHoveredAtom") {
+          sproutAtHoveredNativeAtom("cyclic", "cyclic bond");
           return;
         }
 
@@ -18230,24 +18335,17 @@ export function hoveredNativeTargetShortcutCommand(
   }
 
   if (target?.kind === "bond") {
-    if (key === "1") {
-      return "bond.setHoveredBondOrder.single";
-    }
-    if (key === "2") {
-      return "bond.setHoveredBondOrder.double";
-    }
-    if (key === "3") {
-      return "bond.setHoveredBondOrder.triple";
-    }
-    return undefined;
+    return Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key)
+      ? numericBondDrawingHotkeys[key]
+      : undefined;
   }
 
   if (target?.kind !== "atom") {
     return undefined;
   }
 
-  if (key === "1") {
-    return "atom.addSingleBondToHoveredAtom";
+  if (Object.prototype.hasOwnProperty.call(numericAtomDrawingHotkeys, key)) {
+    return numericAtomDrawingHotkeys[key];
   }
   if (key.toLowerCase() === "k") {
     return "atom.addCarbonylToHoveredAtom";

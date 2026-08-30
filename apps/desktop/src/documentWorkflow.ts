@@ -238,8 +238,12 @@ export interface NativeFreeformBondGrowthPreview extends NativeBondGrowthPreview
 export type NativeBondDisplayStyle = NonNullable<NonNullable<MoleculeBond["display"]>["bondStyle"]>;
 export type NativeBondToolStyle = "solid" | NativeBondDisplayStyle;
 export type NativeMoleculeTemplateId =
+  | "cyclopropane"
+  | "cyclobutane"
   | "cyclopentane"
   | "cyclohexane"
+  | "cycloheptane"
+  | "cyclooctane"
   | "benzene"
   | "chairCyclohexaneA"
   | "chairCyclohexaneB";
@@ -2886,8 +2890,14 @@ function nativeTemplateGeometry(
   center: PagePoint,
   templateId: NativeMoleculeTemplateId
 ): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } {
-  if (templateId === "cyclopentane") {
-    const atoms = regularNativeRingAtoms(center, 5, -Math.PI / 2);
+  if (
+    templateId === "cyclopropane" ||
+    templateId === "cyclobutane" ||
+    templateId === "cyclopentane" ||
+    templateId === "cycloheptane" ||
+    templateId === "cyclooctane"
+  ) {
+    const atoms = regularNativeRingAtoms(center, nativeTemplateRingSize(templateId), -Math.PI / 2);
     return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
   }
 
@@ -3526,7 +3536,20 @@ function nativeChairTemplateCrowding(
 }
 
 function nativeTemplateRingSize(templateId: NativeMoleculeTemplateId): number {
-  return templateId === "cyclopentane" ? 5 : 6;
+  switch (templateId) {
+    case "cyclopropane":
+      return 3;
+    case "cyclobutane":
+      return 4;
+    case "cyclopentane":
+      return 5;
+    case "cycloheptane":
+      return 7;
+    case "cyclooctane":
+      return 8;
+    default:
+      return 6;
+  }
 }
 
 function nativeTemplateRingBondDisplay(
@@ -7130,6 +7153,256 @@ export function applyNativeCarbonylAtAtomTarget(
     ],
     { now: phase4Timestamp }
   );
+}
+
+/** ChemDraw-style numeric sprout hotkeys: what pressing 4/5/8/9/0 over an atom builds. */
+export type NativeAtomSproutKind = "wedge" | "hashed" | "methylidene" | "gemDimethyl" | "cyclic";
+
+function nativeMoleculeForPartTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): { page: ChemDraftDocument["pages"][number]; molecule: MoleculeObject } | undefined {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  return molecule && isEditableNativeMoleculeGraph(molecule) ? { page, molecule } : undefined;
+}
+
+function nativeMoleculePatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  next: MoleculeObject | undefined
+): ChemDraftDocument {
+  if (!next) {
+    return document;
+  }
+  return applyPatches(
+    document,
+    [
+      { op: "updateObject", objectId: molecule.id, changes: next },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/**
+ * Numeric atom sprout hotkeys (ChemDraw parity): 4/5 grow a wedge/hashed stereo methyl along the
+ * growth-arrow direction, 8 grows =CH2, 9 grows a gem-dimethyl pair, and 0 grows a bond in
+ * "cyclic mode" — each press turns the same way as the previous chain vertex, so repeated presses
+ * trace a ring and close it onto the starting atom.
+ */
+export function applyNativeAtomSproutTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  kind: NativeAtomSproutKind,
+  plan?: NativeBondGrowthPlan
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (!located) {
+    return document;
+  }
+  const { page, molecule } = located;
+  const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
+  if (!sourceAtom) {
+    return document;
+  }
+
+  const growthPlan = (plan && !plan.targetAtomId ? plan : undefined)
+    ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
+
+  if (kind === "wedge" || kind === "hashed") {
+    if (!growthPlan || growthPlan.targetAtomId) {
+      return document;
+    }
+    const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint, {
+      bondStyle: kind === "wedge" ? "wedge" : "hashed"
+    });
+    return nativeMoleculePatched(document, page, molecule, grown);
+  }
+
+  if (kind === "methylidene") {
+    // The sprouted C=C consumes two valences on the source atom, like the carbonyl.
+    const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
+    const nextValence = (valenceUsage.get(target.atomId) ?? 0) + nativeBondOrderValue.double;
+    if (
+      nativeElementFromAtomLabel(sourceAtom.element) !== "C" ||
+      sourceAtom.formalCharge !== 0 ||
+      nativeAtomFormalChargeForValence("C", nextValence) !== 0 ||
+      !growthPlan || growthPlan.targetAtomId
+    ) {
+      return document;
+    }
+    const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
+    if (!grown) {
+      return document;
+    }
+    const newAtom = grown.atoms[grown.atoms.length - 1];
+    const bonds = grown.bonds.map((bond) =>
+      (bond.fromAtomId === target.atomId && bond.toAtomId === newAtom.id) ||
+      (bond.fromAtomId === newAtom.id && bond.toAtomId === target.atomId)
+        ? nativeBondWithOrderAndDisplay(grown, bond, "double")
+        : bond
+    );
+    return nativeMoleculePatched(document, page, molecule, refreshNativeSingleBondGraph(grown, grown.atoms, bonds));
+  }
+
+  if (kind === "gemDimethyl") {
+    if (!growthPlan || growthPlan.targetAtomId) {
+      return document;
+    }
+    const first = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
+    if (!first) {
+      return document;
+    }
+    const secondPlan = nativeBondGrowthPlanForAtom(first, target.atomId, page.width, page.height);
+    const second = secondPlan && !secondPlan.targetAtomId
+      ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
+      : undefined;
+    return nativeMoleculePatched(document, page, molecule, second ?? first);
+  }
+
+  // Cyclic mode ("0"): continue the chain, turning the same 60° direction the chain last turned,
+  // so successive presses walk a hexagon; when the next vertex lands on an existing atom, close
+  // the ring instead of stacking a duplicate.
+  const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+  const bondLengthPx = drawingStyle.bondLengthPx;
+  const neighbors = molecule.bonds
+    .map((bond) => bond.fromAtomId === target.atomId
+      ? bond.toAtomId
+      : bond.toAtomId === target.atomId ? bond.fromAtomId : undefined)
+    .filter((atomId): atomId is string => atomId !== undefined)
+    .map((atomId) => molecule.atoms.find((atom) => atom.id === atomId))
+    .filter((atom): atom is MoleculeAtom => atom !== undefined);
+
+  let outgoingDegrees: number | undefined;
+  if (neighbors.length === 1) {
+    const neighbor = neighbors[0];
+    const incomingDegrees = Math.atan2(sourceAtom.y - neighbor.y, sourceAtom.x - neighbor.x) * 180 / Math.PI;
+    const grandNeighbor = molecule.bonds
+      .map((bond) => bond.fromAtomId === neighbor.id
+        ? bond.toAtomId
+        : bond.toAtomId === neighbor.id ? bond.fromAtomId : undefined)
+      .filter((atomId): atomId is string => atomId !== undefined && atomId !== target.atomId)
+      .map((atomId) => molecule.atoms.find((atom) => atom.id === atomId))
+      .find((atom): atom is MoleculeAtom => atom !== undefined);
+    if (grandNeighbor) {
+      const previousDegrees = Math.atan2(neighbor.y - grandNeighbor.y, neighbor.x - grandNeighbor.x) * 180 / Math.PI;
+      const previousTurn = ((incomingDegrees - previousDegrees + 540) % 360 + 360) % 360 - 180;
+      const turnSign = Math.abs(previousTurn) < 1e-3 ? -1 : Math.sign(previousTurn);
+      outgoingDegrees = incomingDegrees + turnSign * 60;
+    } else {
+      // First cyclic press off a lone bond: start the curl upward.
+      const upward = incomingDegrees - 60;
+      const downward = incomingDegrees + 60;
+      outgoingDegrees = Math.sin(upward * Math.PI / 180) <= Math.sin(downward * Math.PI / 180) ? upward : downward;
+    }
+  }
+
+  if (outgoingDegrees === undefined) {
+    if (!growthPlan) {
+      return document;
+    }
+    const grown = growthPlan.targetAtomId
+      ? connectNativeCarbonAtoms(molecule, target.atomId, growthPlan.targetAtomId)
+      : extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
+    return nativeMoleculePatched(document, page, molecule, grown);
+  }
+
+  const nextPoint = {
+    x: clamp(sourceAtom.x + Math.cos(outgoingDegrees * Math.PI / 180) * bondLengthPx, 0, page.width),
+    y: clamp(sourceAtom.y + Math.sin(outgoingDegrees * Math.PI / 180) * bondLengthPx, 0, page.height)
+  };
+  const closure = molecule.atoms.find((atom) =>
+    atom.id !== target.atomId &&
+    Math.hypot(atom.x - nextPoint.x, atom.y - nextPoint.y) <= bondLengthPx * 0.3 &&
+    !nativeBondExistsBetween(molecule, target.atomId, atom.id) &&
+    canConnectNativeAtoms(molecule, target.atomId, atom.id)
+  );
+  const grown = closure
+    ? connectNativeCarbonAtoms(molecule, target.atomId, closure.id)
+    : extendNativeCarbonGraph(molecule, target.atomId, nextPoint);
+  return nativeMoleculePatched(document, page, molecule, grown);
+}
+
+/** Attach a ring template at the hovered atom (the atom becomes a shared ring vertex), oriented
+ *  along the growth arrow's direction — pressing 3/6/7 over an atom, ChemDraw-style. */
+export function applyNativeRingAttachAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId,
+  plan?: NativeBondGrowthPlan
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (!located) {
+    return document;
+  }
+  const { page, molecule } = located;
+  const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
+  if (!sourceAtom) {
+    return document;
+  }
+  const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
+    ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
+    ?? { x: 0, y: -1 };
+  const orientationPoint = {
+    x: sourceAtom.x + direction.x * nativeBondLength,
+    y: sourceAtom.y + direction.y * nativeBondLength
+  };
+  const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
+  return nativeMoleculePatched(document, page, molecule, attached);
+}
+
+/** Fuse a ring template onto the hovered bond, bulging away from the molecule's body — pressing
+ *  4–8 (ring sizes) or 9/0 (chairs) over a bond, ChemDraw-style. */
+export function applyNativeRingFuseAtBondTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId
+): ChemDraftDocument {
+  if (target.kind !== "bond") {
+    return document;
+  }
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (!located) {
+    return document;
+  }
+  const { page, molecule } = located;
+  const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
+  const fromAtom = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
+  const toAtom = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
+  if (!bond || !fromAtom || !toAtom) {
+    return document;
+  }
+
+  const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
+  const centroid = molecule.atoms.reduce(
+    (sum, atom) => ({ x: sum.x + atom.x / molecule.atoms.length, y: sum.y + atom.y / molecule.atoms.length }),
+    { x: 0, y: 0 }
+  );
+  const away = { x: midpoint.x - centroid.x, y: midpoint.y - centroid.y };
+  const awayLength = Math.hypot(away.x, away.y);
+  // Prefer the side of the bond facing away from the molecule's body; a perfectly symmetric
+  // bond (fresh two-atom molecule) falls back to the bond's normal.
+  const normal = { x: -(toAtom.y - fromAtom.y), y: toAtom.x - fromAtom.x };
+  const normalLength = Math.hypot(normal.x, normal.y) || 1;
+  const outward = awayLength > 1e-3
+    ? { x: away.x / awayLength, y: away.y / awayLength }
+    : { x: normal.x / normalLength, y: normal.y / normalLength };
+  const orientationPoint = {
+    x: midpoint.x + outward.x * nativeBondLength,
+    y: midpoint.y + outward.y * nativeBondLength
+  };
+  const fused = fuseNativeTemplateRingToBond(molecule, target.bondId, orientationPoint, templateId);
+  return nativeMoleculePatched(document, page, molecule, fused);
 }
 
 function addChargeMarkAtPoint(
