@@ -37,6 +37,9 @@ export const CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES: Readonly<Record<string, string
   "tool.benzene": "J",
   "tool.bracket": "Shift+T",
   "tool.reactionArrow": "E",
+  // ChemDraft's E-for-eraser must not shadow ChemDraw's E (the arrow tool above; and over an
+  // atom, ChemDraw's e/E place ethyl/ester labels — neither means erase).
+  "tool.eraser": null,
   "tool.cyclopentane": null, // frees R; ChemDraw has no cyclopentane hotkey
   "tool.plus": null, // +/- act on the hovered atom only, never switch tools
   "tool.minus": null,

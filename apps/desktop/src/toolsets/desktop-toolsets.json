@@ -87,7 +87,7 @@
               "submenu": null,
               "tooltip": {
                 "title": "Eraser Tool",
-                "shortcut": null
+                "shortcut": "E"
               },
               "layout": {
                 "colSpan": 1,
@@ -2851,7 +2851,7 @@
               "submenu": null,
               "tooltip": {
                 "title": "Eraser",
-                "shortcut": null
+                "shortcut": "E"
               },
               "layout": {
                 "colSpan": 1,

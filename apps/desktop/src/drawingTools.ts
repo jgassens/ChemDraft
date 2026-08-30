@@ -71,6 +71,7 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "select",
+    defaultShortcut: "E",
     usageHint: usageHint("click or drag over objects", "drag marquee deletes touched", "Esc exits")
   },
   {
