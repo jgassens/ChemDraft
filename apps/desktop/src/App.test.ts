@@ -5436,6 +5436,55 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("Move Object to Back");
   });
 
+  it("offers Clear Warning / Restore Warning on flagged atoms in the context menu", () => {
+    const warningMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_warn",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "atom",
+        atomWarning: {
+          target: { objectId: "mol_warn", kind: "atom", atomId: "atom_001", distanceToPointer: 0 },
+          suppressed: false
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(warningMarkup).toContain('data-command-id="atom.toggleWarningSuppression"');
+    expect(warningMarkup).toContain("Clear Warning");
+    expect(warningMarkup).not.toContain("Restore Warning");
+
+    const suppressedMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_warn",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "atom",
+        atomWarning: {
+          target: { objectId: "mol_warn", kind: "atom", atomId: "atom_001", distanceToPointer: 0 },
+          suppressed: true
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(suppressedMarkup).toContain("Restore Warning");
+
+    // No warning context, no item.
+    const plainMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_plain",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "atom",
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(plainMarkup).not.toContain("atom.toggleWarningSuppression");
+  });
+
   it("renders bond depth controls in the object context menu", () => {
     const markup = renderToStaticMarkup(
       createElement(ObjectLayerContextMenu, {

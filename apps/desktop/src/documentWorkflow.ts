@@ -695,6 +695,8 @@ export const smilesPasteBondLengthPx = 28;
 export const nativeAtomHitRadiusPx = 8;
 export const nativeChargeMarkSizePx = 18;
 export const nativeChargeAssociationRadiusPx = nativeBondLengthPx * 1.15;
+/** Stacking the charge tool tops out here — beyond ±9 is a typo, not chemistry. */
+export const nativeChargeMarkMaxMagnitude = 9;
 
 const nativeBondLength = nativeBondLengthPx;
 const nativeCarbonSingleBondLengthAngstrom = 1.56;
@@ -894,6 +896,18 @@ export function nativeAtomValidationState(
   const element = nativeElementFromAtomLabel(atom.element);
   // Unpaired electrons from associated radical marks occupy bonding slots like bonds do.
   const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds) + (atom.markRadicals ?? 0);
+
+  // The user dismissed this atom's warning from the context menu — report it valid so no
+  // badge renders and no warning is stored, whatever the arithmetic says.
+  if (atom.warningSuppressed === true) {
+    return {
+      atomId: atom.id,
+      element: element ?? (atom.element.trim() || "(blank)"),
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: true
+    };
+  }
 
   if (!element) {
     const symbol = atom.element.trim() || "(blank)";
@@ -7183,13 +7197,74 @@ export function applyChargeToolAtNativeAtom(
     return document;
   }
 
+  // Charges STACK: applying the tool to an atom that already carries a charge mark bumps that
+  // mark (+ on ⊕ gives 2+, − on 2+ gives + again, − on ⊕ removes the mark) instead of piling
+  // up overlapping ±1 marks. That is how a Zn earns its 2+.
+  const normalized = normalizeElectronMarkSpec(spec);
+  if (normalized.kind === "charge") {
+    const existing = nativeAssociatedChargeMarkForAtom(page, molecule, target.atomId);
+    if (existing) {
+      const current = nativeChargeValue(existing.charge) ?? 0;
+      const next = current + normalized.charge;
+      if (Math.abs(next) > nativeChargeMarkMaxMagnitude) {
+        return document;
+      }
+      return applyPatches(
+        document,
+        next === 0
+          ? [{ op: "removeObject", objectId: existing.id }]
+          : [
+              {
+                op: "updateObject",
+                objectId: existing.id,
+                changes: { charge: next, ...(normalized.radical ? { radical: true } : {}) }
+              },
+              { op: "setSelection", pageId: page.id, objectIds: [existing.id] }
+            ],
+        { now: phase4Timestamp }
+      );
+    }
+  }
+
   const point = nativeChargePlacementPointForAtom(molecule, target.atomId, page.objects, page.width, page.height);
   return point
-    ? addChargeMarkAtPoint(document, page.id, normalizeElectronMarkSpec(spec), point, {
+    ? addChargeMarkAtPoint(document, page.id, normalized, point, {
         objectId: molecule.id,
         atomId: target.atomId
       })
     : document;
+}
+
+/**
+ * The charge mark currently charging this atom: an anchor match wins, else the nearest charge
+ * mark inside the same association radius the reconciliation uses.
+ */
+function nativeAssociatedChargeMarkForAtom(
+  page: DocumentPage,
+  molecule: MoleculeObject,
+  atomId: string
+): ElectronMarkObject | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return undefined;
+  }
+  const marks = page.objects.filter((object): object is ElectronMarkObject =>
+    object.type === "electron-mark" && object.markKind === "charge"
+  );
+  const anchored = marks.find((mark) =>
+    mark.anchor.kind === "atom" && mark.anchor.objectId === molecule.id && mark.anchor.atomId === atomId
+  );
+  if (anchored) {
+    return anchored;
+  }
+  const radius = Math.max(
+    nativeChargeAssociationRadiusPx,
+    nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 1.15
+  );
+  return marks
+    .map((mark) => ({ mark, distance: distance(nativeChargeMarkCenter(mark), atom) }))
+    .filter((entry) => entry.distance <= radius)
+    .sort((left, right) => left.distance - right.distance)[0]?.mark;
 }
 
 export function nativeChargePlacementPointForAtom(
@@ -8418,6 +8493,48 @@ export function nativeAtomHasExplicitLabel(atom: MoleculeAtom): boolean {
  * first — matching how chemists think of erasing an "O" or "CH3" back to the carbon skeleton —
  * and a second Delete then removes the atom itself.
  */
+/**
+ * Dismiss (or restore) one atom's valence warning from the context menu. Suppression is a
+ * per-atom mark: the checker reports the atom valid, so the badge disappears and no warning
+ * is stored, until the user restores it.
+ */
+export function applyNativeAtomWarningSuppression(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  suppressed: boolean
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+  const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
+  if (!atom || (atom.warningSuppressed === true) === suppressed) {
+    return document;
+  }
+
+  const atoms = molecule.atoms.map((candidate) => {
+    if (candidate.id !== target.atomId) {
+      return candidate;
+    }
+    const { warningSuppressed: _warningSuppressed, ...rest } = candidate;
+    return suppressed ? { ...rest, warningSuppressed: true } : rest;
+  });
+  const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
 export function applyNativeAtomLabelClearTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget
@@ -17538,12 +17655,11 @@ function atomChargeLabelSuffix(charge: number): string {
   return magnitude === 1 ? sign : `${magnitude}${sign}`;
 }
 
-function nativeChargeValue(charge: number | undefined): NativeChargeValue | undefined {
-  if (charge === 1 || charge === -1) {
-    return charge;
-  }
-
-  return undefined;
+/** A drawable mark charge: any nonzero integer up to |9| — 2+ zincs, 3- phosphates. */
+function nativeChargeValue(charge: number | undefined): number | undefined {
+  return typeof charge === "number" && Number.isInteger(charge) && charge !== 0 && Math.abs(charge) <= nativeChargeMarkMaxMagnitude
+    ? charge
+    : undefined;
 }
 
 /**
@@ -17577,6 +17693,13 @@ function nativeAtomChargeSupportsValence(
   valenceUsed: number,
   formalCharge: number
 ): boolean {
+  // Elements outside the covalent valence tables (transition metals, alkali/alkaline-earth)
+  // have variable oxidation states the octet math cannot bound: any charge mark associates —
+  // a solid-bonded Zn still takes its 2+.
+  if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    return true;
+  }
+
   const maxValence = nativeAtomMaxValence[element];
   if (maxValence !== undefined && valenceUsed > maxValence) {
     return false;

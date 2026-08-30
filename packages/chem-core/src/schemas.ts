@@ -328,6 +328,12 @@ export const MoleculeAtomSchema = z
      * hotkeys stay implicit-hydrogen atoms and never set this.
      */
     labelLiteral: z.boolean().optional(),
+    /**
+     * The user dismissed this atom's valence warning from the context menu: the checker still
+     * runs but reports the atom valid, so no badge renders and no warning is stored. Restore
+     * from the same menu.
+     */
+    warningSuppressed: z.boolean().optional(),
     labelOffset: PointSchema.optional()
   })
   .strict();

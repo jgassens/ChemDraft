@@ -88,6 +88,7 @@ import {
   applyNativeRingFuseAtBondTarget,
   applyNativeAtomElementTarget,
   applyNativeAtomLabelClearTarget,
+  applyNativeAtomWarningSuppression,
   nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
@@ -4240,6 +4241,90 @@ describe("Phase 4 document workflow", () => {
     const mergedZn = merged?.atoms.find((atom) => atom.element === "Zn");
     expect(mergedMark?.anchor).toMatchObject({ objectId: ligand.id, atomId: mergedZn?.id });
     expect(mergedZn).toMatchObject({ formalCharge: 1 });
+  });
+
+  it("stacks the charge tool into multi-magnitude marks — a Zn earns its 2+", () => {
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Zinc 2+"), { x: 300, y: 300 });
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule.");
+    }
+    const target = { objectId: znMolecule.id, kind: "atom" as const, atomId: znMolecule.atoms[0].id, distanceToPointer: 0 };
+    const marks = (document: ChemDraftDocument) =>
+      document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+        object.type === "electron-mark" && object.markKind === "charge"
+      );
+
+    // First + places the mark; the second + bumps the SAME mark to 2+ instead of stacking a twin.
+    const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(converted, 1, target));
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, target));
+    expect(marks(twice)).toHaveLength(1);
+    expect(marks(twice)[0]).toMatchObject({ charge: 2 });
+    const chargedZn = (twice.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === znMolecule.id
+    ))?.atoms[0];
+    expect(chargedZn).toMatchObject({ element: "Zn", formalCharge: 2, markCharge: 2 });
+
+    // − steps back down, and the final − removes the mark entirely.
+    const down = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(twice, -1, target));
+    expect(marks(down)[0]).toMatchObject({ charge: 1 });
+    const cleared = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(down, -1, target));
+    expect(marks(cleared)).toHaveLength(0);
+
+    // A metal keeps its charge even when covalently bonded: merge Zn onto the ligand with a
+    // SOLID bond, re-apply 2+, and the association still holds (variable oxidation states).
+    const ligand = selectedMolecule(withLigand);
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      converted,
+      znMolecule.id,
+      znMolecule.atoms[0].id,
+      { x: ligand.atoms.find((atom) => atom.id === "atom_002")?.x ?? 0, y: ligand.atoms.find((atom) => atom.id === "atom_002")?.y ?? 0 }
+    );
+    const merged = bonded.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const mergedZn = merged?.atoms.find((atom) => atom.element === "Zn");
+    if (!merged || !mergedZn) {
+      throw new Error("Expected merged zinc.");
+    }
+    const mergedTarget = { objectId: merged.id, kind: "atom" as const, atomId: mergedZn.id, distanceToPointer: 0 };
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(bonded, 1, mergedTarget)),
+      1,
+      mergedTarget
+    ));
+    const solidBondedZn = charged.pages[0].objects
+      .filter((object): object is MoleculeObject => object.type === "molecule")[0]
+      ?.atoms.find((atom) => atom.element === "Zn");
+    expect(solidBondedZn).toMatchObject({ formalCharge: 2 });
+  });
+
+  it("clears and restores an atom's valence warning", () => {
+    const znText = insertNativeTextObject(createPhase4Document("Warning Suppression"), { x: 300, y: 300 }, "N");
+    const textObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(znText, textObject?.id ?? "");
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+
+    // The literal typed lone N is flagged...
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
+    expect(molecule.chemistry?.warnings).toHaveLength(1);
+
+    // ...Clear Warning silences the badge and the stored warning...
+    const cleared = applyNativeAtomWarningSuppression(document, target, true);
+    const clearedMolecule = selectedMolecule(cleared);
+    expect(clearedMolecule.atoms[0]).toMatchObject({ warningSuppressed: true });
+    expect(nativeMoleculeInvalidAtomStates(clearedMolecule)).toEqual([]);
+    expect(clearedMolecule.chemistry?.warnings).toEqual([]);
+
+    // ...and Restore Warning brings it back.
+    const restored = applyNativeAtomWarningSuppression(cleared, target, false);
+    const restoredMolecule = selectedMolecule(restored);
+    expect(restoredMolecule.atoms[0].warningSuppressed).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(restoredMolecule)).toHaveLength(1);
   });
 
   it("treats dashed bonds as dative for valence and drawn hydrogens", () => {

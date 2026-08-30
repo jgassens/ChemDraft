@@ -330,6 +330,7 @@ import {
   reconcileNativeChargeMarks,
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
+  applyNativeAtomWarningSuppression,
   applyNativeAtomSproutTarget,
   applyNativeBondDisplayStyleTarget,
   applyNativeRingAttachAtAtomTarget,
@@ -1148,6 +1149,8 @@ type ObjectContextMenuState = {
   objectId: string;
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
   bondDepthContext?: BondDepthContext;
+  /** Present when the right-clicked atom carries (or has dismissed) a valence warning. */
+  atomWarning?: { target: NativeMoleculeDeleteTarget; suppressed: boolean };
   x: number;
   y: number;
 };
@@ -14654,10 +14657,28 @@ export function MainWindow({
     setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
+    const atomWarning = (() => {
+      if (object.type !== "molecule" || nativeMoleculeHit?.kind !== "atom") {
+        return undefined;
+      }
+      const atom = object.atoms.find((candidate) => candidate.id === nativeMoleculeHit.atomId);
+      if (!atom) {
+        return undefined;
+      }
+      const suppressed = atom.warningSuppressed === true;
+      const invalid = nativeMoleculeInvalidAtomStates(object).some((state) => state.atomId === atom.id);
+      return suppressed || invalid
+        ? {
+            target: { objectId: object.id, kind: "atom" as const, atomId: atom.id, distanceToPointer: 0 },
+            suppressed
+          }
+        : undefined;
+    })();
     setObjectContextMenu({
       objectId,
       targetKind,
       bondDepthContext: bondDepthContextFromNativeSelection(nextSelectedNativePart, pageSvgRenderPlan.crossings, currentDocument),
+      ...(atomWarning ? { atomWarning } : {}),
       x: event.clientX,
       y: event.clientY
     });
@@ -16193,6 +16214,7 @@ export function MainWindow({
           objectCount={activePage.objects.length}
           targetKind={objectContextMenu.targetKind}
           bondDepthContext={objectContextMenu.bondDepthContext}
+          atomWarning={objectContextMenu.atomWarning}
           arrowStyleSource={(() => {
             const menuObject = findDocumentObject(document, objectContextMenu.objectId);
             return menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
@@ -16201,6 +16223,16 @@ export function MainWindow({
           onInvoke={(commandId) => {
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (commandId === "atom.toggleWarningSuppression" && menu?.atomWarning) {
+              const { target, suppressed } = menu.atomWarning;
+              const changed = commitDocumentChange((current) =>
+                applyNativeAtomWarningSuppression(current, target, !suppressed)
+              );
+              setStatus(changed
+                ? suppressed ? "Restored atom warning" : "Cleared atom warning"
+                : "Atom warning unchanged");
+              return;
+            }
             if (menu && applyArrowStyleDefaultCommand(commandId, menu.objectId)) {
               return;
             }
@@ -19659,6 +19691,7 @@ export function ObjectLayerContextMenu({
   objectCount,
   targetKind,
   bondDepthContext,
+  atomWarning,
   arrowStyleSource,
   position,
   onInvoke
@@ -19668,6 +19701,7 @@ export function ObjectLayerContextMenu({
   objectCount: number;
   targetKind: ObjectContextMenuState["targetKind"];
   bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
+  atomWarning?: ObjectContextMenuState["atomWarning"];
   /** Present when the clicked object is an arrow whose look can become the tool's default. */
   arrowStyleSource?: { title: string };
   position: ClientPoint;
@@ -19791,6 +19825,20 @@ export function ObjectLayerContextMenu({
         ) : null}
       </div>
       <div className="object-context-menu-separator" role="separator" />
+      {atomWarning ? (
+        <>
+          <button
+            type="button"
+            role="menuitem"
+            className="object-context-menu-item"
+            data-command-id="atom.toggleWarningSuppression"
+            onClick={() => onInvoke("atom.toggleWarningSuppression")}
+          >
+            {atomWarning.suppressed ? "Restore Warning" : "Clear Warning"}
+          </button>
+          <div className="object-context-menu-separator" role="separator" />
+        </>
+      ) : null}
       {arrowStyleSource ? (
         <>
           <div className="object-context-menu-title">{arrowStyleSource.title}</div>

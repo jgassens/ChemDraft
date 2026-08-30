@@ -3086,10 +3086,14 @@ export function textObjectSpansForRendering(object: TextObject): TextSpan[] {
  * and a `radical` charge carries the unpaired-electron dot beside the sign (•+ / •−).
  */
 function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
-  const charge = object.charge === -1 ? -1 : 1;
+  const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
+    ? object.charge
+    : 1;
+  const sign = rawCharge < 0 ? -1 : 1;
+  const magnitude = Math.min(9, Math.abs(rawCharge));
   const centerX = object.x + object.width / 2;
   const centerY = object.y + object.height / 2;
-  const radius = Math.min(object.width, object.height) * 0.32;
+  const radius = Math.min(object.width, object.height) * (magnitude > 1 ? 0.42 : 0.32);
   const barHalf = radius * 0.55;
   const strokeWidth = 1.5;
   const circled = object.chargeStyle !== "plain" && object.radical !== true;
@@ -3106,27 +3110,41 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }));
   }
 
-  const signHalf = circled ? barHalf : radius * 0.85;
-  const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
-  children.push(elementFragment("line", `charge-bar-${object.id}`, {
-    x1: signX - signHalf,
-    y1: centerY,
-    x2: signX + signHalf,
-    y2: centerY,
-    stroke: "#111111",
-    "stroke-width": strokeWidth,
-    "stroke-linecap": "round"
-  }));
-  if (charge > 0) {
-    children.push(elementFragment("line", `charge-bar-vertical-${object.id}`, {
-      x1: signX,
-      y1: centerY - signHalf,
-      x2: signX,
-      y2: centerY + signHalf,
+  if (magnitude > 1) {
+    // Multi-magnitude marks read as text ("2+", "3−") — vector bars can't carry the numeral.
+    children.push(elementFragment("text", `charge-count-${object.id}`, {
+      x: centerX,
+      y: centerY,
+      "text-anchor": "middle",
+      "dominant-baseline": "central",
+      "font-family": "Arial, Helvetica, sans-serif",
+      "font-size": radius * 1.35,
+      "font-weight": 700,
+      fill: "#111111"
+    }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
+  } else {
+    const signHalf = circled ? barHalf : radius * 0.85;
+    const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    children.push(elementFragment("line", `charge-bar-${object.id}`, {
+      x1: signX - signHalf,
+      y1: centerY,
+      x2: signX + signHalf,
+      y2: centerY,
       stroke: "#111111",
       "stroke-width": strokeWidth,
       "stroke-linecap": "round"
     }));
+    if (sign > 0) {
+      children.push(elementFragment("line", `charge-bar-vertical-${object.id}`, {
+        x1: signX,
+        y1: centerY - signHalf,
+        x2: signX,
+        y2: centerY + signHalf,
+        stroke: "#111111",
+        "stroke-width": strokeWidth,
+        "stroke-linecap": "round"
+      }));
+    }
   }
   if (object.radical === true) {
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
@@ -3139,7 +3157,7 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     "data-mark-kind": "charge",
-    "data-charge": charge,
+    "data-charge": sign * magnitude,
     "data-charge-style": circled ? "circled" : "plain",
     ...(object.radical === true ? { "data-charge-radical": "true" } : {}),
     transform: rotationTransform(object)
