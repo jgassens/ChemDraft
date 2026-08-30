@@ -749,11 +749,17 @@ const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   N: 3,
   O: 2,
   F: 1,
+  Al: 3,
   Si: 4,
   P: 3,
   S: 2,
   Cl: 1,
+  Ge: 4,
+  As: 3,
+  Se: 2,
   Br: 1,
+  Sn: 4,
+  Te: 2,
   I: 1
 };
 const nativeAtomMaxValence: Partial<Record<NativeElementSymbol, number>> = {
@@ -763,13 +769,36 @@ const nativeAtomMaxValence: Partial<Record<NativeElementSymbol, number>> = {
   N: 4,
   O: 3,
   F: 1,
+  Al: 4,
   Si: 4,
   P: 5,
   S: 6,
-  Cl: 1,
-  Br: 1,
-  I: 1
+  // The heavy halogens reach the hypervalent I(III)/I(V)/I(VII) family — periodinanes and
+  // PhI(OAc)2 are everyday reagents, not drawing errors.
+  Cl: 7,
+  Ge: 4,
+  As: 5,
+  Se: 6,
+  Br: 7,
+  Sn: 4,
+  Te: 6,
+  I: 7
 };
+/**
+ * Sanity ceilings for the d-block: the highest coordination number each metal is known to
+ * reach in any isolable complex (generous on purpose). Transition metals have VARIABLE
+ * oxidation states and dative/eta bonding, so no single "correct" valence exists to check a
+ * drawing against — V(II) through V(V) are all real, V(CO)6 has six bonds at oxidation state
+ * zero, and a bare metal atom is a legitimate species (catalysts). The only honest complaint
+ * is a bond count beyond anything known, so metals flag hypervalence past this ceiling and
+ * are never flagged hypovalent or naked.
+ */
+const nativeMetalMaxCoordination: Partial<Record<NativeElementSymbol, number>> = {
+  Sc: 7, Ti: 8, V: 7, Cr: 7, Mn: 7, Fe: 7, Co: 7, Ni: 7, Cu: 6, Zn: 6,
+  Y: 9, Zr: 8, Nb: 8, Mo: 8, Tc: 9, Ru: 8, Rh: 7, Pd: 6, Ag: 6, Cd: 7,
+  La: 10, Hf: 8, Ta: 8, W: 9, Re: 9, Os: 9, Ir: 8, Pt: 6, Au: 6, Hg: 6
+};
+// Standard atomic weights; exact = the most abundant isotope's mass.
 const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exact: number }>> = {
   H: { average: 1.008, exact: 1.00782503223 },
   B: { average: 10.81, exact: 11.00930536 },
@@ -777,12 +806,48 @@ const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exa
   N: { average: 14.007, exact: 14.00307400443 },
   O: { average: 15.999, exact: 15.99491461957 },
   F: { average: 18.998, exact: 18.99840316273 },
+  Al: { average: 26.982, exact: 26.98153853 },
   Si: { average: 28.085, exact: 27.97692653465 },
   P: { average: 30.974, exact: 30.97376199842 },
   S: { average: 32.06, exact: 31.9720711744 },
   Cl: { average: 35.45, exact: 34.968852682 },
+  Sc: { average: 44.956, exact: 44.95590828 },
+  Ti: { average: 47.867, exact: 47.94794198 },
+  V: { average: 50.942, exact: 50.94395704 },
+  Cr: { average: 51.996, exact: 51.94050623 },
+  Mn: { average: 54.938, exact: 54.93804391 },
+  Fe: { average: 55.845, exact: 55.93493633 },
+  Co: { average: 58.933, exact: 58.93319429 },
+  Ni: { average: 58.693, exact: 57.93534241 },
+  Cu: { average: 63.546, exact: 62.92959772 },
+  Zn: { average: 65.38, exact: 63.92914201 },
+  Ge: { average: 72.63, exact: 73.921177761 },
+  As: { average: 74.922, exact: 74.92159457 },
+  Se: { average: 78.971, exact: 79.9165218 },
   Br: { average: 79.904, exact: 78.9183376 },
-  I: { average: 126.904, exact: 126.9044719 }
+  Y: { average: 88.906, exact: 88.9058403 },
+  Zr: { average: 91.224, exact: 89.9046977 },
+  Nb: { average: 92.906, exact: 92.906373 },
+  Mo: { average: 95.95, exact: 97.90540482 },
+  Tc: { average: 98, exact: 97.9072124 },
+  Ru: { average: 101.07, exact: 101.9043441 },
+  Rh: { average: 102.906, exact: 102.905498 },
+  Pd: { average: 106.42, exact: 105.9034804 },
+  Ag: { average: 107.868, exact: 106.9050916 },
+  Cd: { average: 112.414, exact: 113.90336509 },
+  Sn: { average: 118.71, exact: 119.90220163 },
+  Te: { average: 127.6, exact: 129.906222748 },
+  I: { average: 126.904, exact: 126.9044719 },
+  La: { average: 138.905, exact: 138.9063563 },
+  Hf: { average: 178.486, exact: 179.946557 },
+  Ta: { average: 180.948, exact: 180.9479958 },
+  W: { average: 183.84, exact: 183.95093092 },
+  Re: { average: 186.207, exact: 186.9557501 },
+  Os: { average: 190.23, exact: 191.961477 },
+  Ir: { average: 192.217, exact: 192.9629216 },
+  Pt: { average: 195.084, exact: 194.9647917 },
+  Au: { average: 196.967, exact: 196.96656879 },
+  Hg: { average: 200.592, exact: 201.9706434 }
 };
 const nativeBondOrderValue: Record<MoleculeBond["order"], number> = {
   single: 1,
@@ -859,6 +924,20 @@ export function nativeAtomValidationState(
   }
 
   if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    // Transition metals: variable oxidation states make hypovalence unjudgeable (a bare Pd is
+    // a catalyst, not an error), but a bond count beyond the element's highest known
+    // coordination number is a drawing mistake worth the badge.
+    const metalCeiling = nativeMetalMaxCoordination[element];
+    if (metalCeiling !== undefined && valenceUsed > metalCeiling) {
+      return {
+        atomId: atom.id,
+        element,
+        valenceUsed,
+        formalCharge: effectiveFormalCharge,
+        valid: false,
+        invalidReason: `${element} atom ${atom.id} has ${valenceUsed} bonds; ${element} is not known beyond ${metalCeiling}-coordinate.`
+      };
+    }
     return {
       atomId: atom.id,
       element,
@@ -17430,7 +17509,7 @@ function nativeAtomFormalChargeForValence(
     return 0;
   }
 
-  if (element === "B" && valenceUsed === 4) {
+  if ((element === "B" || element === "Al") && valenceUsed === 4) {
     return -1;
   }
 
@@ -17438,15 +17517,21 @@ function nativeAtomFormalChargeForValence(
     return 1;
   }
 
-  if (element === "P" && valenceUsed === 4) {
+  if ((element === "P" || element === "As") && valenceUsed === 4) {
     return 1;
   }
 
-  if (element === "P" && valenceUsed === 5) {
+  // Neutral hypervalent states: P(V)/As(V), the S/Se/Te (IV) and (VI) families, and the heavy
+  // halogens' (III)/(V)/(VII) — lambda-3/-5 iodanes up through periodate.
+  if ((element === "P" || element === "As") && valenceUsed === 5) {
     return 0;
   }
 
-  if (element === "S" && (valenceUsed === 4 || valenceUsed === 6)) {
+  if ((element === "S" || element === "Se" || element === "Te") && (valenceUsed === 4 || valenceUsed === 6)) {
+    return 0;
+  }
+
+  if ((element === "Cl" || element === "Br" || element === "I") && (valenceUsed === 3 || valenceUsed === 5 || valenceUsed === 7)) {
     return 0;
   }
 

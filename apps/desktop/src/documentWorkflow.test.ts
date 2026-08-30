@@ -4607,6 +4607,67 @@ describe("Phase 4 document workflow", () => {
     expect(nativeAtomValidationState(drawn, [])).toMatchObject({ valid: true });
   });
 
+  it("checks transition metals only against their coordination ceiling", () => {
+    const bonds = (count: number) => Array.from({ length: count }, (_, index) => ({
+      id: `b_${index}`,
+      fromAtomId: "atom_001",
+      toAtomId: `c${index}`,
+      order: "single" as const
+    }));
+    const vanadium = (literal: boolean) => ({
+      id: "atom_001", element: "V", x: 0, y: 0, formalCharge: 0, ...(literal ? { labelLiteral: true } : {})
+    });
+
+    // Metals have no single correct valence — V(II) through V(V) and V(CO)6 are all real —
+    // so any plausible coordination passes, a naked typed metal is a legitimate species
+    // (catalysts), and only a bond count beyond anything known earns the badge.
+    expect(nativeAtomValidationState(vanadium(false), bonds(4))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(vanadium(false), bonds(6))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(vanadium(true), [])).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(vanadium(false), bonds(8))).toMatchObject({
+      valid: false,
+      invalidReason: expect.stringContaining("not known beyond 7-coordinate")
+    });
+    // No phantom hydrogens on metals, ever.
+    expect(atomDisplayLabel(vanadium(false), [])).toBe("V");
+
+    // Group ceilings differ: Pd caps at 6 while Re reaches the 9-coordinate hydride.
+    const metal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0 });
+    expect(nativeAtomValidationState(metal("Pd"), bonds(7))).toMatchObject({ valid: false });
+    expect(nativeAtomValidationState(metal("Re"), bonds(9))).toMatchObject({ valid: true });
+  });
+
+  it("accepts hypervalent heavy halogens and chalcogens at their real oxidation states", () => {
+    const bonds = (count: number, orders: ("single" | "double")[] = []) =>
+      Array.from({ length: count }, (_, index) => ({
+        id: `b_${index}`,
+        fromAtomId: "atom_001",
+        toAtomId: `c${index}`,
+        order: orders[index] ?? "single" as const
+      }));
+    const atomOf = (element: string, formalCharge = 0) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge });
+
+    // Lambda-3 iodanes (PhI(OAc)2) and lambda-5 periodinanes (DMP) are reagents, not errors.
+    expect(nativeAtomValidationState(atomOf("I"), bonds(3))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(atomOf("I"), bonds(5))).toMatchObject({ valid: true });
+    // Even valences on a neutral halogen still need a charge (iodonium is I+ with two bonds).
+    expect(nativeAtomValidationState(atomOf("I"), bonds(2))).toMatchObject({ valid: false });
+    expect(nativeAtomValidationState(atomOf("I", 1), bonds(2))).toMatchObject({ valid: true });
+
+    // Selenoxide-style Se(IV) and selenone Se(VI) pass; Se(III) neutral does not.
+    expect(nativeAtomValidationState(atomOf("Se"), bonds(4))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(atomOf("Se"), bonds(6))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(atomOf("Se"), bonds(3))).toMatchObject({ valid: false });
+
+    // The selenium analog of a thiol draws its hydrogen; a literal typed "Se" stays bare and
+    // flagged until its two bonds arrive.
+    expect(atomDisplayLabel(atomOf("Se"), bonds(1))).toBe("SeH");
+    expect(nativeAtomValidationState({ ...atomOf("Se"), labelLiteral: true }, [])).toMatchObject({
+      valid: false,
+      invalidReason: expect.stringContaining("has 0 of 2 bonds")
+    });
+  });
+
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),

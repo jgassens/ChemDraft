@@ -5031,11 +5031,17 @@ const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> =
   N: 5,
   O: 6,
   F: 7,
+  Al: 3,
   Si: 4,
   P: 5,
   S: 6,
   Cl: 7,
+  Ge: 4,
+  As: 5,
+  Se: 6,
   Br: 7,
+  Sn: 4,
+  Te: 6,
   I: 7
 };
 
