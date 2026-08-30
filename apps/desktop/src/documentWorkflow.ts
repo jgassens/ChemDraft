@@ -10586,12 +10586,13 @@ function nearestCanonicalAngleDegrees(
 }
 
 /**
- * Magnetic snap for dragging an atom (or a fragment attached through one atom): when the dragged
- * boundary atom comes close to canonical geometry relative to its stationary neighbor — a bond
- * direction on the 30° grid or at 120° off the neighbor's other bonds, or the style's exact bond
- * length — the delta is adjusted so the drop lands exactly there. Selections with no stationary
- * neighbor (whole molecule) or several dragged boundary atoms (mid-chain slices) pass through
- * unchanged.
+ * Magnetic snap for dragging any partial selection: every bond crossing the selection boundary
+ * (dragged atom ↔ stationary neighbor) is a snap candidate. When a boundary bond comes close to
+ * canonical geometry — a direction on the 30° grid or at 120° off its anchor's other stationary
+ * bonds, or the style's exact bond length — the whole selection's delta is adjusted so that bond
+ * lands exactly there; when several boundary bonds could snap (a mid-chain slice touches the rest
+ * on both sides), the one needing the smallest nudge wins. Whole-molecule selections have no
+ * boundary and pass through unchanged.
  */
 export function snapNativeMoleculePartDragDelta(
   molecule: MoleculeObject,
@@ -10614,71 +10615,68 @@ export function snapNativeMoleculePartDragDelta(
         : { selectedId: bond.toAtomId, neighborId: bond.fromAtomId });
     }
   });
-  const draggedBoundaryIds = new Set(boundaryPairs.map((pair) => pair.selectedId));
-  if (boundaryPairs.length === 0 || draggedBoundaryIds.size !== 1) {
+  if (boundaryPairs.length === 0) {
     return delta;
   }
 
-  const draggedAtom = atomById.get([...draggedBoundaryIds][0]);
-  if (!draggedAtom) {
-    return delta;
-  }
-  const proposed = { x: draggedAtom.x + delta.x, y: draggedAtom.y + delta.y };
+  const bondLengthPx = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  let best: { delta: PagePoint; adjustment: number } | undefined;
 
-  // The nearest stationary neighbor anchors the snap (a lone atom in a chain has one on each
-  // side; the closer one is the bond the user is visibly shaping).
-  const anchors = boundaryPairs
-    .map((pair) => atomById.get(pair.neighborId))
-    .filter((atom): atom is MoleculeAtom => atom !== undefined)
-    .sort((left, right) =>
-      Math.hypot(left.x - proposed.x, left.y - proposed.y) - Math.hypot(right.x - proposed.x, right.y - proposed.y)
-    );
-  const anchor = anchors[0];
-  if (!anchor) {
-    return delta;
-  }
-
-  const run = { x: proposed.x - anchor.x, y: proposed.y - anchor.y };
-  const runLength = Math.hypot(run.x, run.y);
-  if (runLength < 1e-6) {
-    return delta;
-  }
-
-  const stationaryBaseAngles = molecule.bonds.flatMap((bond) => {
-    const otherId = bond.fromAtomId === anchor.id
-      ? bond.toAtomId
-      : bond.toAtomId === anchor.id ? bond.fromAtomId : undefined;
-    if (!otherId || otherId === draggedAtom.id || targetAtomIds.has(otherId)) {
-      return [];
+  boundaryPairs.forEach((pair) => {
+    const draggedAtom = atomById.get(pair.selectedId);
+    const anchor = atomById.get(pair.neighborId);
+    if (!draggedAtom || !anchor) {
+      return;
     }
-    const other = atomById.get(otherId);
-    return other ? [Math.atan2(other.y - anchor.y, other.x - anchor.x) * 180 / Math.PI] : [];
+    const proposed = { x: draggedAtom.x + delta.x, y: draggedAtom.y + delta.y };
+    const run = { x: proposed.x - anchor.x, y: proposed.y - anchor.y };
+    const runLength = Math.hypot(run.x, run.y);
+    if (runLength < 1e-6) {
+      return;
+    }
+
+    // Canonical bases relative to this anchor: its other bonds that stay put during the drag.
+    const stationaryBaseAngles = molecule.bonds.flatMap((bond) => {
+      const otherId = bond.fromAtomId === anchor.id
+        ? bond.toAtomId
+        : bond.toAtomId === anchor.id ? bond.fromAtomId : undefined;
+      if (!otherId || otherId === draggedAtom.id || targetAtomIds.has(otherId)) {
+        return [];
+      }
+      const other = atomById.get(otherId);
+      return other ? [Math.atan2(other.y - anchor.y, other.x - anchor.x) * 180 / Math.PI] : [];
+    });
+
+    const rawAngleDegrees = Math.atan2(run.y, run.x) * 180 / Math.PI;
+    const snappedAngleDegrees = nearestCanonicalAngleDegrees(
+      rawAngleDegrees,
+      stationaryBaseAngles,
+      nativeDragSnapAngleToleranceDegrees
+    );
+    const snappedLength = Math.abs(runLength - bondLengthPx) <= nativeDragSnapLengthTolerancePx
+      ? bondLengthPx
+      : undefined;
+    if (snappedAngleDegrees === undefined && snappedLength === undefined) {
+      return;
+    }
+
+    const angleRadians = (snappedAngleDegrees ?? rawAngleDegrees) * Math.PI / 180;
+    const length = snappedLength ?? runLength;
+    const snappedPoint = {
+      x: anchor.x + Math.cos(angleRadians) * length,
+      y: anchor.y + Math.sin(angleRadians) * length
+    };
+    const candidate = {
+      x: delta.x + snappedPoint.x - proposed.x,
+      y: delta.y + snappedPoint.y - proposed.y
+    };
+    const adjustment = Math.hypot(candidate.x - delta.x, candidate.y - delta.y);
+    if (!best || adjustment < best.adjustment) {
+      best = { delta: candidate, adjustment };
+    }
   });
 
-  const rawAngleDegrees = Math.atan2(run.y, run.x) * 180 / Math.PI;
-  const snappedAngleDegrees = nearestCanonicalAngleDegrees(
-    rawAngleDegrees,
-    stationaryBaseAngles,
-    nativeDragSnapAngleToleranceDegrees
-  );
-  const bondLengthPx = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
-  const snappedLength = Math.abs(runLength - bondLengthPx) <= nativeDragSnapLengthTolerancePx
-    ? bondLengthPx
-    : undefined;
-  if (snappedAngleDegrees === undefined && snappedLength === undefined) {
-    return delta;
-  }
-
-  const angleRadians = (snappedAngleDegrees ?? rawAngleDegrees) * Math.PI / 180;
-  const length = snappedLength ?? runLength;
-  const snappedPoint = {
-    x: anchor.x + Math.cos(angleRadians) * length,
-    y: anchor.y + Math.sin(angleRadians) * length
-  };
-  return {
-    x: delta.x + snappedPoint.x - proposed.x,
-    y: delta.y + snappedPoint.y - proposed.y
-  };
+  return best?.delta ?? delta;
 }
 
 /**

@@ -3174,7 +3174,8 @@ describe("Phase 4 document workflow", () => {
     const wrappedDifference = Math.abs(((snappedAngle - relativeAngle + 540) % 360 + 360) % 360 - 180);
     expect(wrappedDifference).toBeCloseTo(0, 5);
 
-    // A selection whose boundary crosses at two different dragged atoms passes through unchanged.
+    // A mid-chain slice touches the rest on BOTH sides; the boundary bond needing the smallest
+    // nudge clicks onto canonical geometry (the slice itself stays rigid — one shared delta).
     const fourChain = growFromAtom(chain, "atom_003", 0);
     const fourMolecule = selectedMolecule(fourChain);
     const midSlice = {
@@ -3184,7 +3185,20 @@ describe("Phase 4 document workflow", () => {
       bondIds: ["bond_002"] as const
     };
     const rawDelta = { x: 7.3, y: -4.1 };
-    expect(snapNativeMoleculePartDragDelta(fourMolecule, midSlice, rawDelta)).toEqual(rawDelta);
+    const snappedDelta = snapNativeMoleculePartDragDelta(fourMolecule, midSlice, rawDelta);
+    expect(snappedDelta).not.toEqual(rawDelta);
+    const gridDistance = (fromAtom: { x: number; y: number }, toAtom: { x: number; y: number }) => {
+      const angle = Math.atan2(toAtom.y - fromAtom.y, toAtom.x - fromAtom.x) * 180 / Math.PI;
+      const offGrid = ((angle % 30) + 30) % 30;
+      return Math.min(offGrid, 30 - offGrid);
+    };
+    const slicedB = { x: moleculeAtom(fourMolecule, "atom_002").x + snappedDelta.x, y: moleculeAtom(fourMolecule, "atom_002").y + snappedDelta.y };
+    const slicedC = { x: moleculeAtom(fourMolecule, "atom_003").x + snappedDelta.x, y: moleculeAtom(fourMolecule, "atom_003").y + snappedDelta.y };
+    const boundaryGridDistances = [
+      gridDistance(moleculeAtom(fourMolecule, "atom_001"), slicedB),
+      gridDistance(moleculeAtom(fourMolecule, "atom_004"), slicedC)
+    ];
+    expect(Math.min(...boundaryGridDistances)).toBeCloseTo(0, 6);
   });
 
   it("snaps part rotations onto canonical directions", () => {
