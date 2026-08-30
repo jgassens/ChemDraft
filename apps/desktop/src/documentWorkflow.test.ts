@@ -86,6 +86,8 @@ import {
   applyNativeRingAttachAtAtomTarget,
   applyNativeRingFuseAtBondTarget,
   applyNativeAtomElementTarget,
+  applyNativeAtomLabelClearTarget,
+  nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
@@ -4516,6 +4518,39 @@ describe("Phase 4 document workflow", () => {
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
     expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
+  });
+
+  it("clears an atom's label back to a skeleton carbon instead of deleting the atom", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Label Delete"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(document);
+    const withOxygen = setNativeAtomElement(document, "atom_002", "O");
+    const target = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    const cleared = selectedMolecule(applyNativeAtomLabelClearTarget(withOxygen, target));
+    // The atom survives with its bond; only the label reverts to an invisible carbon.
+    expect(cleared.atoms).toHaveLength(2);
+    expect(cleared.bonds).toHaveLength(1);
+    expect(cleared.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ element: "C" });
+    expect(cleared.atoms.find((atom) => atom.id === "atom_002")?.labelVisible).toBeUndefined();
+    expect(cleared.structure).toBe("CC");
+
+    // An explicit C label clears the same way (back to the invisible vertex)…
+    const explicitCarbon = applyNativeAtomElementTarget(document, target, "C");
+    expect(selectedMolecule(explicitCarbon).atoms.find((atom) => atom.id === "atom_002")?.labelVisible).toBe(true);
+    const hiddenAgain = applyNativeAtomLabelClearTarget(explicitCarbon, target);
+    expect(selectedMolecule(hiddenAgain).atoms.find((atom) => atom.id === "atom_002")?.labelVisible).toBeUndefined();
+
+    // …while a plain skeleton carbon has no label to clear, so the caller falls through to the
+    // real atom delete.
+    expect(applyNativeAtomLabelClearTarget(document, target)).toBe(document);
+    expect(nativeAtomHasExplicitLabel({ id: "a", element: "C", x: 0, y: 0, formalCharge: 0 })).toBe(false);
+    expect(nativeAtomHasExplicitLabel({ id: "a", element: "O", x: 0, y: 0, formalCharge: 0 })).toBe(true);
+    expect(nativeAtomHasExplicitLabel({ id: "a", element: "C", x: 0, y: 0, formalCharge: 0, labelVisible: true })).toBe(true);
   });
 
   it("converts committed element-symbol text into a naked flagged atom", () => {

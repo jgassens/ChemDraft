@@ -329,6 +329,7 @@ import {
   type MechanismArrowEndpoint,
   reconcileNativeChargeMarks,
   applyDocumentObjectProjectedPlaneTilt,
+  applyNativeAtomLabelClearTarget,
   applyNativeAtomSproutTarget,
   applyNativeBondDisplayStyleTarget,
   applyNativeRingAttachAtAtomTarget,
@@ -3088,6 +3089,25 @@ export function MainWindow({
     const selectionTakesPrecedence = selectedDeleteTargets.length > 1
       || selectedDeleteTargets.some((part) => part.kind === "parts");
     const target = selectionTakesPrecedence ? undefined : hoveredNativeDeleteTargetRef.current;
+
+    // Deleting a LABELED atom strips the label first (O, N, CH3, an explicit C…) and reverts it
+    // to a plain skeleton carbon — the atom itself only goes on the next Delete. Hover and
+    // selection stay put so that second Delete lands without re-aiming.
+    const labelClearTarget = target?.kind === "atom"
+      ? target
+      : !target && selectedDeleteTargets.length === 1 && selectedDeleteTargets[0]!.kind === "atom"
+        ? { objectId: selectedDeleteTargets[0]!.objectId, kind: "atom" as const, atomId: selectedDeleteTargets[0]!.atomId, distanceToPointer: 0 }
+        : undefined;
+    if (labelClearTarget) {
+      const cleared = applyNativeAtomLabelClearTarget(currentDocument, labelClearTarget);
+      if (cleared !== currentDocument) {
+        commitDocumentChange(cleared);
+        setActiveAtomLabelEdit(undefined);
+        setStatus("Deleted atom label");
+        return;
+      }
+    }
+
     if (!target && selectedDeleteTargets.length > 0) {
       let nextDocument = currentDocument;
       for (const deleteTarget of selectedDeleteTargets) {

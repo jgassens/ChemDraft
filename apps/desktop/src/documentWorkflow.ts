@@ -8279,6 +8279,52 @@ export function applyNativeDoubleBondSideTarget(
   );
 }
 
+/** Whether the atom carries an explicit label a chemist would see as deletable: a heteroatom or
+ *  arbitrary text label, or a carbon with its symbol explicitly shown. Plain skeleton carbons
+ *  (invisible C vertices) have no label to delete. */
+export function nativeAtomHasExplicitLabel(atom: MoleculeAtom): boolean {
+  return normalizeNativeAtomElementLabel(atom.element) !== "C" || atom.labelVisible === true;
+}
+
+/**
+ * Delete an atom's LABEL, not the atom: revert it to a plain skeleton carbon (invisible C
+ * vertex), keeping its bonds and position. Pressing Delete over a labeled atom routes here
+ * first — matching how chemists think of erasing an "O" or "CH3" back to the carbon skeleton —
+ * and a second Delete then removes the atom itself.
+ */
+export function applyNativeAtomLabelClearTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
+  if (!atom || !nativeAtomHasExplicitLabel(atom)) {
+    return document;
+  }
+
+  const atoms = molecule.atoms.map((candidate) =>
+    candidate.id === target.atomId ? nativeAtomWithElement(candidate, "C", false) : candidate
+  );
+  const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
 export function applyNativeAtomElementTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
