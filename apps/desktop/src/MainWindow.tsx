@@ -5565,9 +5565,32 @@ export function MainWindow({
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
   }, [replacePresentDocument]);
 
-  const finishActiveNativeTextEdit = useCallback(() => {
-    const objectId = activeTextEditObjectId;
-    setActiveTextEditObjectId(undefined);
+  // Catch-all for the element-symbol conversion: a text edit can end through MANY paths (Escape,
+  // blur, a tool switch, clicking elsewhere — some of which clear the state from canvas pointer
+  // handlers before any blur fires, and WKWebView's focus timing makes blur-only commits
+  // unreliable). Whatever ended the edit, convert the object it was editing.
+  const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const previous = previousTextEditObjectIdRef.current;
+    previousTextEditObjectIdRef.current = activeTextEditObjectId;
+    if (!previous || previous === activeTextEditObjectId) {
+      return;
+    }
+    const currentDocument = documentRef.current;
+    const converted = convertNativeTextObjectToAtom(currentDocument, previous);
+    if (converted !== currentDocument) {
+      commitDocumentChange(converted);
+      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
+      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+    }
+  }, [activeTextEditObjectId, commitDocumentChange]);
+
+  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
+    // The editor's blur passes its own object id: a click-away clears activeTextEditObjectId in a
+    // canvas pointer handler BEFORE the blur fires, so relying on the state alone silently
+    // skipped the commit-time conversion for the most natural gesture.
+    const objectId = finishedObjectId ?? activeTextEditObjectId;
+    setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
     if (!objectId) {
       return;
     }
@@ -21656,7 +21679,7 @@ function DocumentObjectView({
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
   onTextEditStart(objectId: string): void;
-  onTextEditFinish(): void;
+  onTextEditFinish(objectId?: string): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   onTextResizeStart(objectId: string, edge: TextResizeEdge, event: PointerEvent<HTMLButtonElement>): void;
   onAtomLabelChange(state: AtomLabelEditState, text: string): void;
@@ -21780,7 +21803,7 @@ function DocumentObjectView({
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      onTextEditFinish();
+      onTextEditFinish(object.id);
       return;
     }
 
@@ -22487,6 +22510,9 @@ function DocumentObjectView({
                 }
                 recordTextEditorSelection(event.currentTarget);
               }}
+              // Click-away commits like Escape does (element-symbol text becomes an atom). The
+              // explicit id matters: canvas pointer handlers clear the edit state before blur.
+              onBlur={() => onTextEditFinish(object.id)}
               onKeyDown={handleTextKeyDown}
               onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
               onSelect={(event) => recordTextEditorSelection(event.currentTarget)}
