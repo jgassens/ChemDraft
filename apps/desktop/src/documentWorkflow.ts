@@ -832,6 +832,23 @@ export function nativeAtomValidationState(
 
   if (!element) {
     const symbol = atom.element.trim() || "(blank)";
+    // A literal condensed label spelling one heavy element plus hydrogens ("NH2", "OH2",
+    // "CH3") is checkable: its own hydrogens count toward the valence, so a naked typed
+    // "OH2" is complete water while a naked neutral "CH3" is a flagged methyl fragment.
+    // Multi-heavy labels ("CO2H") and abbreviations ("OMe") are superatoms — not checked.
+    if (atom.labelLiteral === true) {
+      const spelled = nativeSingleHeavyElementLabelValence(symbol);
+      if (spelled && !nativeLiteralAtomValenceComplete(spelled.element, valenceUsed + spelled.hydrogens, effectiveFormalCharge)) {
+        return {
+          atomId: atom.id,
+          element: symbol,
+          valenceUsed,
+          formalCharge: effectiveFormalCharge,
+          valid: false,
+          invalidReason: `${symbol} atom ${atom.id} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`
+        };
+      }
+    }
     return {
       atomId: atom.id,
       element: symbol,
@@ -877,17 +894,19 @@ export function nativeAtomValidationState(
     };
   }
 
-  // A naked atom — no bonds, no radicals, no charge that would make the bare atom a deliberate
-  // ion — is flagged: a lone neutral "C" typed on the canvas hasn't got its valence yet, and the
-  // exclamation badge is the honest signal while the user builds onto it.
-  if (valenceUsed === 0 && effectiveFormalCharge === 0 && (nativeAtomValence[element] ?? 0) > 0) {
+  // A literal label (typed with the text tool) has no implicit hydrogens to fill the
+  // remainder, so its drawn bonds (plus radicals) must land on a complete valence state by
+  // themselves — a lone typed "N" is a flagged hypovalent atom until three bonds arrive.
+  // This is the ONLY path that can produce a hypovalent atom: drawn atoms and hotkey
+  // relabels keep the skeletal implicit-hydrogen convention and never trip it.
+  if (atom.labelLiteral === true && !nativeLiteralAtomValenceComplete(element, valenceUsed, effectiveFormalCharge)) {
     return {
       atomId: atom.id,
       element,
       valenceUsed,
       formalCharge: effectiveFormalCharge,
       valid: false,
-      invalidReason: `${element} atom ${atom.id} has no bonds.`
+      invalidReason: `${element} atom ${atom.id} has ${valenceUsed} of ${nativeAtomValenceForCharge(element, effectiveFormalCharge)} bonds.`
     };
   }
 
@@ -4240,6 +4259,9 @@ export function convertNativeTextObjectToAtom(
     x: center.x,
     y: center.y,
     formalCharge: 0,
+    // A typed label is literal: no implicit hydrogens, and the valence badge stays until the
+    // atom's bonds actually satisfy it.
+    labelLiteral: true,
     // Bare carbons render invisible by default; a typed naked atom must show its symbol.
     ...(normalized === "C" ? { labelVisible: true } : {})
   };
@@ -8328,7 +8350,8 @@ export function applyNativeAtomLabelClearTarget(
 export function applyNativeAtomElementTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  element: string
+  element: string,
+  options: { literal?: boolean } = {}
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -8345,16 +8368,24 @@ export function applyNativeAtomElementTarget(
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
   const normalizedElement = normalizeNativeAtomElementLabel(element);
   const labelVisible = normalizedElement === "C";
+  // Only the text tool passes literal: a typed label means exactly what it says. A hotkey
+  // relabel omits it and thereby CLEARS the flag — pressing an element key over any atom
+  // always yields the ordinary implicit-hydrogen atom.
+  const literal = options.literal === true;
   if (!atom || normalizedElement.length === 0) {
     return document;
   }
 
-  if (atom.element === normalizedElement && (atom.labelVisible === true) === labelVisible) {
+  if (
+    atom.element === normalizedElement &&
+    (atom.labelVisible === true) === labelVisible &&
+    (atom.labelLiteral === true) === literal
+  ) {
     return document;
   }
 
   const atoms = molecule.atoms.map((candidate) =>
-    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible) : candidate
+    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal) : candidate
   );
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
 
@@ -16034,12 +16065,16 @@ function connectNativeCarbonAtoms(
 function nativeAtomWithElement(
   atom: MoleculeAtom,
   element: string,
-  labelVisible: boolean
+  labelVisible: boolean,
+  labelLiteral = false
 ): MoleculeAtom {
-  const { labelVisible: _labelVisible, ...baseAtom } = atom;
-  return labelVisible
-    ? { ...baseAtom, element, labelVisible: true }
-    : { ...baseAtom, element };
+  const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, ...baseAtom } = atom;
+  return {
+    ...baseAtom,
+    element,
+    ...(labelVisible ? { labelVisible: true } : {}),
+    ...(labelLiteral ? { labelLiteral: true } : {})
+  };
 }
 
 function isNativeBondOrderValue(order: MoleculeBond["order"]): order is NativeBondOrderValue {
@@ -16682,12 +16717,11 @@ function nativeSingleBondGraphMetadata(
     }
     elementCounts.set(element, (elementCounts.get(element) ?? 0) + 1);
 
-    // A naked neutral atom (no bonds, no charge, no radicals) is an unfinished atom — it is
-    // flagged invalid and its label stays bare, so the formula must not invent hydrogens for it
-    // either: a lone typed "C" is C, not CH4.
+    // A literal label (typed with the text tool) contributes exactly what it says — the
+    // formula must not invent hydrogens for it: a lone typed "C" is C, not CH4. Drawn atoms
+    // keep the skeletal convention and count their implicit hydrogens.
     const valenceUsed = valenceUsage.get(atom.id) ?? 0;
-    const nakedNeutralAtom = valenceUsed === 0 && atom.formalCharge === 0 && (atom.markRadicals ?? 0) === 0;
-    if (element !== "H" && !nakedNeutralAtom) {
+    if (element !== "H" && atom.labelLiteral !== true) {
       const implicitHydrogens = nativeImplicitHydrogenCount(
         element,
         valenceUsed,
@@ -17332,6 +17366,50 @@ function nativeAtomSuggestedChargeForValence(
     nativeAtomChargeSupportsValence(element, valenceUsed, charge)
   );
   return candidate ?? nativeAtomFormalChargeForValence(element, valenceUsed);
+}
+
+/**
+ * Whether a bond count is a COMPLETE H-free valence state for this element/charge — the test
+ * literal (text-typed) atoms must pass, since nothing fills their remainder with implicit
+ * hydrogens. Complete means the octet-derived count for the charge, or one of the neutral
+ * hypervalent states (P(V), S(IV), S(VI)) the octet arithmetic cannot express.
+ */
+function nativeLiteralAtomValenceComplete(
+  element: NativeElementSymbol,
+  valenceUsed: number,
+  formalCharge: number
+): boolean {
+  if (valenceUsed === nativeAtomValenceForCharge(element, formalCharge)) {
+    return true;
+  }
+  return valenceUsed > (nativeAtomValence[element] ?? 0) &&
+    nativeAtomFormalChargeForValence(element, valenceUsed) === formalCharge;
+}
+
+/**
+ * Read a condensed label as ONE heavy element plus its spelled hydrogens ("NH2" → N + 2,
+ * "OH" → O + 1). Undefined for anything else — multiple heavy atoms, abbreviations, pure-H
+ * labels — which stay unchecked superatoms.
+ */
+function nativeSingleHeavyElementLabelValence(
+  label: string
+): { element: NativeElementSymbol; hydrogens: number } | undefined {
+  const counts = parseCondensedLabelFormula(label);
+  if (!counts) {
+    return undefined;
+  }
+
+  const heavyElements = [...counts.keys()].filter((element) => element !== "H");
+  const heavy = heavyElements[0];
+  if (heavyElements.length !== 1 || counts.get(heavy) !== 1) {
+    return undefined;
+  }
+  const element = heavy as NativeElementSymbol;
+  if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    return undefined;
+  }
+
+  return { element, hydrogens: counts.get("H") ?? 0 };
 }
 
 function nativeAtomFormalChargeForValence(

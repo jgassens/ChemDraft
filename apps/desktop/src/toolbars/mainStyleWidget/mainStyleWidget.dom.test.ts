@@ -191,7 +191,7 @@ describe("MainStyleWidget variants", () => {
 
   it("enables the implicit-hydrogen toggle once an atom actually renders a label", () => {
     const { document: moleculeDocument, molecule } = moleculeSelection();
-    // Terminal carbons on → the two carbons render "C" labels, which the hydrogen toggle can act on.
+    // Terminal carbons on → the two carbons render CH3, which implicit hydrogens can act on.
     const labelled = applyPatches(moleculeDocument, [{
       op: "updateObject",
       objectId: molecule.id,
@@ -209,14 +209,12 @@ describe("MainStyleWidget variants", () => {
       throw new Error("Expected the implicit-hydrogen toggle.");
     }
     expect(showHydrogens.disabled).toBe(false);
-    // Labels are literal by default (hideImplicitHydrogens on), so the toggle starts unlit;
-    // pressing it opts the molecule into drawn hydrogen counts.
-    expect(showHydrogens.getAttribute("aria-pressed")).toBe("false");
+    expect(showHydrogens.getAttribute("aria-pressed")).toBe("true");
     act(() => {
       showHydrogens.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       showHydrogens.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(onInvoke).toHaveBeenCalledWith("molecule.atomLabel.hideImplicitHydrogens:false");
+    expect(onInvoke).toHaveBeenCalledWith("molecule.atomLabel.hideImplicitHydrogens:true");
   });
 
   it("renders the shape layout for a plain graphic and targets fill or stroke", async () => {

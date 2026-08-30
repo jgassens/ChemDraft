@@ -145,9 +145,9 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain('stroke-linecap="butt"');
     expect(result.contents).toContain('font-family="Arial, Helvetica, sans-serif"');
     expect(result.contents).toContain('fill="#c75c12"');
-    expect(result.contents).toContain('data-atom-label="O"');
+    expect(result.contents).toContain('data-atom-label="OH"');
     expect(result.contents).toContain('data-atom-label-run="normal"');
-    expect(result.contents).toContain(">O</text>");
+    expect(result.contents).toContain(">OH</text>");
     expect(result.contents).toContain("<rect");
   });
 

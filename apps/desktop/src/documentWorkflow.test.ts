@@ -875,7 +875,8 @@ function cyclopentaneVerticesFromBond(
 function setNativeAtomElement(
   document: ChemDraftDocument,
   atomId: string,
-  element: "H" | "B" | "C" | "N" | "O" | "F" | "Na" | "P" | "S" | "I"
+  element: string,
+  options: { literal?: boolean } = {}
 ): ChemDraftDocument {
   const molecule = selectedMolecule(document);
   return applyNativeAtomElementTarget(document, {
@@ -883,7 +884,7 @@ function setNativeAtomElement(
     kind: "atom",
     atomId,
     distanceToPointer: 0
-  }, element);
+  }, element, options);
 }
 
 function cycleNativeBondOrder(document: ChemDraftDocument, bondId: string): ChemDraftDocument {
@@ -4517,8 +4518,9 @@ describe("Phase 4 document workflow", () => {
     }
 
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
-    // Labels are literal: the explicit carbon shows "C" (the model still counts its hydrogens).
-    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("C");
+    // A hotkey relabel is an ordinary implicit-hydrogen atom: the explicit terminal carbon
+    // draws its hydrogens ("CH3"), unlike a text-typed literal label.
+    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
@@ -4585,16 +4587,24 @@ describe("Phase 4 document workflow", () => {
     expect(convertNativeTextObjectToAtom(prose, proseObject?.id ?? "")).toBe(prose);
   });
 
-  it("labels isolated neutral common atoms bare and flags them incomplete", () => {
-    // A naked neutral atom is an unfinished atom (typed onto the canvas, or orphaned by a
-    // delete) — bare symbol plus the invalid badge, not an implicit hydride.
-    expect(atomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("C");
-    expect(atomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("N");
-    expect(atomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("O");
-    expect(nativeAtomValidationState({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toMatchObject({
+  it("labels literal typed atoms bare and flags them hypovalent; drawn atoms stay hydrides", () => {
+    // Only the text tool creates literal atoms: bare symbol, no invented hydrogens, and the
+    // incomplete-valence badge until real bonds arrive.
+    const literal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0, labelLiteral: true });
+    expect(atomDisplayLabel(literal("C"), [])).toBe("C");
+    expect(atomDisplayLabel(literal("N"), [])).toBe("N");
+    expect(atomDisplayLabel(literal("O"), [])).toBe("O");
+    expect(nativeAtomValidationState(literal("C"), [])).toMatchObject({
       valid: false,
-      invalidReason: expect.stringContaining("has no bonds")
+      invalidReason: expect.stringContaining("has 0 of 4 bonds")
     });
+    expect(nativeAtomValidationState(literal("N"), [])).toMatchObject({ valid: false });
+
+    // A drawn (non-literal) lone atom keeps the skeletal convention: it reads as the implicit
+    // hydride and is never invalid — hotkeys and deletes cannot create flagged atoms.
+    const drawn = { id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 };
+    expect(atomDisplayLabel(drawn, [])).toBe("NH3");
+    expect(nativeAtomValidationState(drawn, [])).toMatchObject({ valid: true });
   });
 
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
@@ -8680,7 +8690,7 @@ describe("Phase 4 document workflow", () => {
       { id: "bond_003", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" }
     ]);
     expect(molecule.structure).toBe("C.CC");
-    expect(molecule.chemistry).toMatchObject({ formula: "C3H6", atomCount: 3, bondCount: 1 });
+    expect(molecule.chemistry).toMatchObject({ formula: "C3H10", atomCount: 3, bondCount: 1 });
     expect(getSelectedMolecule(butane)?.atoms).toHaveLength(4);
   });
 
@@ -8777,7 +8787,7 @@ describe("Phase 4 document workflow", () => {
     expect(methaneMolecule.atoms.map((atom) => atom.id)).toEqual(["atom_001"]);
     expect(methaneMolecule.bonds).toEqual([]);
     expect(methaneMolecule.structure).toBe("C");
-    expect(methaneMolecule.chemistry).toMatchObject({ formula: "C", atomCount: 1, bondCount: 0 });
+    expect(methaneMolecule.chemistry).toMatchObject({ formula: "CH4", atomCount: 1, bondCount: 0 });
 
     const empty = applyNativeMoleculeDeleteTarget(methane, {
       objectId: methaneMolecule.id,
@@ -8965,7 +8975,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(plausible))).toEqual([]);
   });
 
-  it("deletes neopentane's central carbon into bare, flagged carbon fragments", () => {
+  it("deletes neopentane's central carbon into four implicit methanes", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Delete Neopentane Center"), { x: 300, y: 300 })
@@ -8981,16 +8991,16 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.atoms.map((atom) => atom.id)).toEqual(["atom_002", "atom_003", "atom_004", "atom_005"]);
     expect(molecule.bonds).toEqual([]);
     expect(molecule.structure).toBe("C.C.C.C");
-    expect(molecule.chemistry).toMatchObject({ formula: "C4", atomCount: 4, bondCount: 0, totalCharge: 0 });
-    // The orphaned carbons render bare and each carries the incomplete-valence flag — they are
-    // unfinished atoms to rebuild from, not four phantom methanes.
+    expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
+    // Drawn atoms keep the skeletal convention even when orphaned: each lone carbon reads as
+    // an implicit methane with no valence flag — only text-typed literal atoms can be invalid.
     expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
-      "C",
-      "C",
-      "C",
-      "C"
+      "CH4",
+      "CH4",
+      "CH4",
+      "CH4"
     ]);
-    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(4);
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toEqual([]);
     expect(molecule.atoms.some((atom) => atom.element === "H")).toBe(false);
   });
 

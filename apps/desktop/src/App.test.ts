@@ -4330,9 +4330,9 @@ describe("ChemDraft desktop shell", () => {
     // background rect); the selection highlight must still paint above that group so it reads.
     const labelGroupIndex = markup.indexOf('class="native-atom-label"');
     const selectionBlobIndex = markup.indexOf("native-molecule-selection-blob");
-    const labelTextIndex = markup.indexOf('data-atom-label="O"');
+    const labelTextIndex = markup.indexOf('data-atom-label="OH"');
 
-    expect(markup).toContain('data-atom-label="O"');
+    expect(markup).toContain('data-atom-label="OH"');
     expect(markup).toContain('data-selected-atom-id="atom_002"');
     expect(labelGroupIndex).toBeGreaterThan(-1);
     expect(selectionBlobIndex).toBeGreaterThan(labelGroupIndex);
@@ -4482,7 +4482,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain('stroke="#b3261e"');
     expect(markup).toContain('fill="#c75c12"');
-    expect(markup).toContain('data-atom-label="N"');
+    expect(markup).toContain('data-atom-label="NH2"');
     expect(appCss).not.toMatch(/\\.native-bond-line\\s*{[^}]*stroke\\s*:/);
     expect(appCss).not.toMatch(/\\.native-atom-label\\s*{[^}]*fill\\s*:/);
   });
@@ -4889,7 +4889,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("native-atom-invalid-marker");
   });
 
-  it("renders bare, flagged carbon labels after deleting a central native carbon", () => {
+  it("renders implicit methane labels after deleting a central native carbon", () => {
     const growFromAtom = (document: ReturnType<typeof insertNativeSingleBondMolecule>, atomId: string, angleDegrees: number) => {
       const molecule = document.pages[0].objects[0];
       if (molecule.type !== "molecule") {
@@ -4928,11 +4928,12 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
-    // Orphaned carbons render bare with the incomplete-valence badge, not as phantom methanes.
-    expect(markup.match(/data-atom-label="C"/g) ?? []).toHaveLength(4);
-    expect(markup.match(/native-atom-invalid-marker/g) ?? []).toHaveLength(4);
+    // Orphaned DRAWN carbons keep the skeletal convention: four implicit methanes, no
+    // valence badges — only text-typed literal atoms can be invalid.
+    expect(markup.match(/data-atom-label="CH4"/g) ?? []).toHaveLength(4);
+    expect(markup).not.toContain("native-atom-invalid-marker");
     expect(markup).toContain('data-structure="C.C.C.C"');
-    expect(markup).toContain("Molecule C4");
+    expect(markup).toContain("Molecule C4H16");
     expect(markup).not.toContain("native-bond-line");
   });
 

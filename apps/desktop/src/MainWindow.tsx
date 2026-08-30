@@ -1123,6 +1123,7 @@ type AtomLabelEditState = {
   objectId: string;
   atomId: string;
   initialElement: string;
+  initialLiteral: boolean;
   draft: string;
 };
 type AtomLabelEditOptions = {
@@ -5032,6 +5033,7 @@ export function MainWindow({
       objectId: target.objectId,
       atomId: target.atomId,
       initialElement: atom.element,
+      initialLiteral: atom.labelLiteral === true,
       draft: options.clearDraft ? "" : atom.element
     });
     setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "atom", atomId: target.atomId });
@@ -5053,12 +5055,14 @@ export function MainWindow({
     }
 
     replacePresentDocument((current) =>
+      // Text-typed labels are literal: they draw exactly as typed, contribute no implicit
+      // hydrogens, and are valence-checked without them.
       applyNativeAtomElementTarget(current, {
         objectId: state.objectId,
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, draft)
+      }, draft, { literal: true })
     );
   }, [replacePresentDocument]);
 
@@ -5069,7 +5073,7 @@ export function MainWindow({
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, state.initialElement)
+      }, state.initialElement, { literal: state.initialLiteral })
     );
     setActiveAtomLabelEdit(undefined);
     setStatus("Atom label unchanged");

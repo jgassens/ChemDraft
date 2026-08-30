@@ -4974,15 +4974,11 @@ export function atomDisplayLabel(
   }
   const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
   const formalCharge = atom.formalCharge;
-  // A naked neutral atom (no bonds, no charge, no radicals) stays BARE regardless of the
-  // implicit-hydrogen style — a typed lone "C" is an unfinished atom awaiting bonds (and
-  // flagged invalid), not an implicit methane.
-  const nakedNeutralAtom = valenceUsed === 0 && formalCharge === 0 && (atom.markRadicals ?? 0) === 0;
-  // Labels are literal by default (atomLabelHideImplicitHydrogens defaults on): typing "N"
-  // shows "N", and a chemist who wants "NH2" types it. The style toggle re-enables the
-  // classic auto-drawn hydrogen count per molecule. Each unpaired electron from an associated
-  // radical mark occupies a bonding slot.
-  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens || nakedNeutralAtom
+  // A literal label (typed with the text tool) means exactly what it says — no auto-drawn
+  // hydrogen count ever. Everything else follows the classic skeletal convention: the
+  // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
+  // unpaired electron from an associated radical mark occupies a bonding slot.
+  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens || atom.labelLiteral === true
     ? ""
     : implicitHydrogenLabel(Math.max(
         0,
