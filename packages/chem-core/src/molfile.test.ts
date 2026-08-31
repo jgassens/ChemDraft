@@ -10,7 +10,7 @@ type AtomSpec = {
   charge?: number;
   markRadicals?: number;
 };
-type BondSpec = { id: string; from: string; to: string; order?: MoleculeBond["order"]; style?: "wedge" | "hashed" };
+type BondSpec = { id: string; from: string; to: string; order?: MoleculeBond["order"]; style?: "wedge" | "hashed" | "dashed" };
 
 function molecule(atoms: AtomSpec[], bonds: BondSpec[]): MoleculeObject {
   return {
@@ -171,5 +171,90 @@ describe("moleculeToMolfileV3000 — radicals and charges", () => {
   it("omits RAD= for a non-radical atom", () => {
     const flat = molecule([{ id: "a0", element: "C", x: 0, y: 0 }], []);
     expect(moleculeToMolfileV3000(flat)).not.toContain("RAD=");
+  });
+});
+
+describe("dative (dashed) bonds", () => {
+  const dative = molecule(
+    [
+      { id: "a0", element: "N", x: 0, y: 0 },
+      { id: "a1", element: "Zn", x: 1.5, y: 0 }
+    ],
+    [{ id: "b1", from: "a0", to: "a1", style: "dashed" }]
+  );
+
+  it("V3000 writes them as coordination bond type 9 on the same endpoints, without warning", () => {
+    const warnings: string[] = [];
+    const mf = moleculeToMolfileV3000(dative, { warnings });
+    // Bond line: index 1, type 9, atoms 1-2 — so a CTfile-aware reader restores the dative bond.
+    expect(mf).toMatch(/M {2}V30 1 9 1 2\n/);
+    expect(warnings).toEqual([]);
+  });
+
+  it("V2000 has no coordination type: it flattens to a single bond and says so", () => {
+    const warnings: string[] = [];
+    const mf = moleculeToMolfileV2000(dative, { warnings });
+    // bond b1: atoms 1-2, order code 1 (single) — the loss is announced, not silent (§5.7/§14).
+    expect(mf).toMatch(/\n\s{2}1\s{2}2\s{2}1\s{2}0/);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("V2000 has no coordination bond type");
+  });
+
+  it("a plain single bond stays type 1 in V3000 and warns about nothing", () => {
+    const plain = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "C", x: 1.5, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    const warnings: string[] = [];
+    expect(moleculeToMolfileV3000(plain, { warnings })).toMatch(/M {2}V30 1 1 1 2\n/);
+    expect(moleculeToMolfileV2000(plain, { warnings })).toMatch(/\n\s{2}1\s{2}2\s{2}1\s{2}0/);
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe("non-element atom labels", () => {
+  const condensed = molecule(
+    [
+      { id: "a0", element: "C", x: 0, y: 0 },
+      { id: "a1", element: "CH3", x: 1.5, y: 0 },
+      { id: "a2", element: "CO2H", x: 3, y: 0 }
+    ],
+    [
+      { id: "b1", from: "a0", to: "a1" },
+      { id: "b2", from: "a1", to: "a2" }
+    ]
+  );
+
+  it("V2000 writes a dummy atom with a warning instead of an invalid element symbol", () => {
+    const warnings: string[] = [];
+    const mf = moleculeToMolfileV2000(condensed, { warnings });
+    const countsLine = mf.split("\n").findIndex((l) => l.includes("V2000"));
+    const atomLines = mf.split("\n").slice(countsLine + 1, countsLine + 4);
+    expect(atomLines[0]).toContain("C  ");
+    expect(atomLines[1]).toContain("*  ");
+    expect(atomLines[2]).toContain("*  ");
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('"CH3"');
+    expect(warnings[1]).toContain('"CO2H"');
+  });
+
+  it("V2000 atom lines stay fixed-width when a four-character label is replaced", () => {
+    // "CO2H".padEnd(3) would have overflowed the 3-char element column and shifted every field.
+    const mf = moleculeToMolfileV2000(condensed);
+    const countsLine = mf.split("\n").findIndex((l) => l.includes("V2000"));
+    const atomLines = mf.split("\n").slice(countsLine + 1, countsLine + 4);
+    const widths = new Set(atomLines.map((line) => line.length));
+    expect(widths.size).toBe(1);
+  });
+
+  it("V3000 writes the dummy atom and warns the same way", () => {
+    const warnings: string[] = [];
+    const mf = moleculeToMolfileV3000(condensed, { warnings });
+    expect(mf).toContain("M  V30 2 * ");
+    expect(mf).toContain("M  V30 3 * ");
+    expect(warnings).toHaveLength(2);
   });
 });

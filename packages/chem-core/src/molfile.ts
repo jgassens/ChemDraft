@@ -23,6 +23,12 @@
  *   - Isotopes (`M  ISO`) are not represented in `MoleculeAtom` and are therefore not written.
  *     A round-trip through this writer loses them.
  *   - `unknown` bond order has no V2000 encoding and is written as single (code 1).
+ *   - Dative (dashed) bonds have no V2000 encoding: V2000 writes them as single bonds with a
+ *     warning; V3000 preserves them as bond type 9 (coordination), which CTfile-aware parsers
+ *     read back as dative.
+ *   - An atom label that is not an element symbol (a condensed label like "CH3", an
+ *     abbreviation like "Ph") writes as a dummy atom ("*") with a warning — the group the label
+ *     spells is not represented in the molfile.
  *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
  *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
  */
@@ -32,6 +38,13 @@ import type { MoleculeBond, MoleculeObject } from "./schemas";
 export interface MolfileWriteOptions {
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
   fromDocFrame?: boolean;
+  /**
+   * Collects concise, human-readable notes about lossy emissions — V2000 dative bonds flattened
+   * to single, non-element labels written as dummy atoms (AGENTS.md §5.7/§14: never degrade
+   * quietly). Callers that cannot surface warnings (the 3D-spin relayout, stereo perception)
+   * omit it and get the previous behavior.
+   */
+  warnings?: string[];
 }
 
 const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
@@ -41,6 +54,56 @@ const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
   aromatic: 4,
   unknown: 1
 };
+
+/**
+ * A dashed bond depicts a dative/coordination interaction (zero covalent valence on either atom).
+ * V3000 spells it as bond type 9, the CTfile coordination type, so the file round-trips; V2000
+ * has no coordination type, so there it degrades to a plain single bond and the writer warns.
+ */
+function isDativeBond(bond: MoleculeBond): boolean {
+  return bond.display?.bondStyle === "dashed";
+}
+
+function v3000BondTypeCode(bond: MoleculeBond): number {
+  return isDativeBond(bond) ? 9 : BOND_ORDER_CODE[bond.order];
+}
+
+/**
+ * Every IUPAC element symbol plus the CTfile dummy atom "*". The molfile atom column must hold
+ * one of these — never a display label. chem-core keeps its own table because the app's element
+ * list (`nativeElementSymbols` in documentWorkflow) lives above the package boundary.
+ */
+const MOLFILE_ATOM_SYMBOLS = new Set([
+  "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+  "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+  "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+  "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+  "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+  "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+  "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+  "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+  "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
+  "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
+  "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
+  "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og",
+  "*"
+]);
+
+/**
+ * The symbol for the molfile atom column. A label that is not an element symbol (a condensed
+ * label like "CH3", an abbreviation like "Ph") written verbatim is an invalid molfile — and at
+ * four or more characters it overflows V2000's fixed 3-char column, corrupting every field that
+ * follows. Write a dummy atom and warn instead (AGENTS.md §5.7/§14).
+ */
+function molfileAtomSymbol(atom: { element: string }, warnings?: string[]): string {
+  if (MOLFILE_ATOM_SYMBOLS.has(atom.element)) {
+    return atom.element;
+  }
+  warnings?.push(
+    `Atom label "${atom.element}" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile.`
+  );
+  return "*";
+}
 
 function f10_4(value: number): string {
   // Guard -0 and non-finite so the column never corrupts.
@@ -117,6 +180,13 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
   const chiralFlag = hasStereo ? 1 : 0;
 
+  const dativeBondCount = writableBonds.filter(isDativeBond).length;
+  if (dativeBondCount > 0) {
+    options.warnings?.push(
+      `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
+    );
+  }
+
   const lines: string[] = ["", "  ChemDraft", ""];
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
@@ -124,7 +194,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
     const z = f10_4(0);
-    lines.push(`${x}${y}${z} ${atom.element.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
+    lines.push(`${x}${y}${z} ${molfileAtomSymbol(atom, options.warnings).padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
   }
 
   for (const bond of writableBonds) {
@@ -185,7 +255,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const radicalCode = mdlRadicalCode(atom.markRadicals);
     const radical = radicalCode !== 0 ? ` RAD=${radicalCode}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${atom.element} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}`
+      `M  V30 ${index + 1} ${molfileAtomSymbol(atom, options.warnings)} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}`
     );
   });
 
@@ -194,7 +264,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const stereo = wedgeStereoFlag(bond);
     const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : "";
     lines.push(
-      `M  V30 ${index + 1} ${BOND_ORDER_CODE[bond.order]} ${atomIndex.get(bond.fromAtomId)!} ${atomIndex.get(bond.toAtomId)!}${config}`
+      `M  V30 ${index + 1} ${v3000BondTypeCode(bond)} ${atomIndex.get(bond.fromAtomId)!} ${atomIndex.get(bond.toAtomId)!}${config}`
     );
   });
   lines.push("M  V30 END BOND", "M  V30 END CTAB", "M  END");

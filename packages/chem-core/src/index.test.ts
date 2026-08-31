@@ -722,6 +722,59 @@ describe("native document validation and serialization", () => {
     });
   });
 
+  it("accepts optional atom label-literal and warning-suppressed flags", () => {
+    const molecule = {
+      ...moleculeObject(),
+      atoms: [
+        { id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0, labelLiteral: true, warningSuppressed: true },
+        { id: "atom_002", element: "C", x: 22, y: 0, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+
+    // Both flags survive the JSON round trip.
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      atoms: [
+        { id: "atom_001", labelLiteral: true, warningSuppressed: true },
+        { id: "atom_002" }
+      ]
+    });
+
+    // The app only ever writes `true` — clearing a flag removes the key — so an atom without
+    // the flags serializes without them.
+    const serialized = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ atoms: Array<Record<string, unknown>> }> }>;
+    };
+    const [flagged, plain] = serialized.pages[0].objects[0].atoms;
+    expect(flagged).toMatchObject({ labelLiteral: true, warningSuppressed: true });
+    expect(plain).not.toHaveProperty("labelLiteral");
+    expect(plain).not.toHaveProperty("warningSuppressed");
+  });
+
+  it("frames unrecognized atom keys as a possible newer-version file", () => {
+    const molecule = {
+      ...moleculeObject(),
+      atoms: [{ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+    const serialized = JSON.parse(serializeDocument(document)) as {
+      pages: Array<{ objects: Array<{ atoms: Array<Record<string, unknown>> }> }>;
+    };
+    // A newer build's field lands on the atom; this build's strict schema must reject it with the hint.
+    serialized.pages[0].objects[0].atoms[0].futureField = true;
+
+    expect(() => deserializeDocument(JSON.stringify(serialized))).toThrow(/saved by a newer version/);
+  });
+
   it("accepts optional molecule transform state metadata", () => {
     const molecule = {
       ...moleculeObject(),

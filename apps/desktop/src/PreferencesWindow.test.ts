@@ -33,6 +33,10 @@ describe("PreferencesWindow", () => {
       expect(markup).toContain(title);
     }
     expect(markup).toContain("Requires the RDKit engine");
+    // The ChemDraw scheme description quotes ambiguous key names (React SSR escapes them as
+    // &quot;) and calls out case sensitivity.
+    expect(markup).toContain("&quot;l&quot; for Cl");
+    expect(markup).toContain("Case matters for element keys: B = boron, b = Br");
   });
 
   it("reflects persisted settings as one selected option per group", () => {

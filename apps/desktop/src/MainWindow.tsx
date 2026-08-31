@@ -330,7 +330,6 @@ import {
   reconcileNativeChargeMarks,
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
-  applyNativeAtomWarningSuppression,
   applyNativeWarningSuppressionToScope,
   applyNativeAtomSproutTarget,
   applyNativeBondDisplayStyleTarget,
@@ -432,6 +431,8 @@ import {
   pastedStructureDepictionFromMolfile,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
+  nativeAtomChargeStackAtCap,
+  nativeChargeMarkMaxMagnitude,
   nativeElementFromKeyboardKey,
   nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
@@ -1352,7 +1353,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "8.12.12.48-claude";
+const CURRENT_BUILD_STAMP = "8.31.11.52-kimi";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1981,6 +1982,11 @@ export function MainWindow({
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
+  // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
+  // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
+  // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
+  // exists); the render-body assignment keeps the binding current without a stale closure.
+  const rederiveNativeCanvasHoverRef = useRef<(sourceDocument: ChemDraftDocument) => void>(() => undefined);
   const selectedNativeMoleculePartRef = useRef<NativeMoleculeSelectionPart | undefined>(undefined);
   const selectedNativeMoleculePartsRef = useRef<NativeMoleculeSelectionPart[]>([]);
   // Latest visible-toolset set, read synchronously in toggleToolset to decide whether a toggle is
@@ -3451,7 +3457,11 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const nextDocument = applyChargeToolAtNativeAtom(currentDocument, markSpec, target);
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot place ${noun} on hovered atom`);
+      // A refused INCREMENT is not a refused mark: at the ±9 cap the mark is already on the
+      // atom, so name the cap instead of claiming the charge could not be placed.
+      setStatus(nativeAtomChargeStackAtCap(currentDocument, markSpec, target)
+        ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
+        : `Cannot place ${noun} on hovered atom`);
       return;
     }
 
@@ -3459,11 +3469,21 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
-    setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
-    assignHoveredNativeDeleteTarget(undefined);
-    setStatus(`Placed ${noun} on hovered atom`);
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+    // Charge marks STACK on repeated presses (up to the ±9 cap) while the pointer does not move
+    // between presses — so re-derive the hover from the last canvas pointer position through the
+    // same path pointermove uses, rather than clearing it and leaving the next press dead.
+    rederiveNativeCanvasHoverRef.current(nextDocument);
+    // Both placement paths select the mark they placed/bumped, so the committed document names
+    // the stacked magnitude ("Placed positive charge 2+ on hovered atom").
+    const placedMarkId = nextDocument.selection.objectIds[0];
+    const placedMark = placedMarkId ? findDocumentObject(nextDocument, placedMarkId) : undefined;
+    const placedNoun = placedMark?.type === "electron-mark" && placedMark.markKind === "charge" &&
+        typeof placedMark.charge === "number"
+      ? electronMarkSpecStatusNoun(markSpec, placedMark.charge)
+      : noun;
+    setStatus(`Placed ${placedNoun} on hovered atom`);
+  }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const cleanUpSelectedStructure = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -5478,25 +5498,34 @@ export function MainWindow({
 
   const performCopyAs = useCallback(async (commandId: string) => {
     const current = documentRef.current;
-    const writeText = async (text: string | undefined, label: string) => {
+    const writeText = async (text: string | undefined, label: string, warnings: readonly string[] = []) => {
       if (!text) {
         setStatus(`Nothing to copy as ${label}`);
         return;
       }
       const didWrite = await writeClipboardText(text);
-      setStatus(didWrite ? `Copied ${label} to clipboard` : `Copy as ${label} failed: clipboard unavailable`);
+      // Lossy-copy warnings (dative bonds flattened, dummy-atom labels) ride the copy result so
+      // the status bar never reports a silent success (AGENTS.md §6.7).
+      const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+      setStatus(didWrite ? `Copied ${label} to clipboard${warningSuffix}` : `Copy as ${label} failed: clipboard unavailable`);
     };
 
     switch (commandId) {
-      case "clipboard.copyAs.smiles":
-        await writeText(copyAsSmiles(current), "SMILES");
+      case "clipboard.copyAs.smiles": {
+        const warnings: string[] = [];
+        await writeText(copyAsSmiles(current, warnings), "SMILES", warnings);
         return;
-      case "clipboard.copyAs.mol":
-        await writeText(copyAsMolfile(current, "v3000"), "MOL text");
+      }
+      case "clipboard.copyAs.mol": {
+        const warnings: string[] = [];
+        await writeText(copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
         return;
-      case "clipboard.copyAs.molV2000":
-        await writeText(copyAsMolfile(current, "v2000"), "MOL V2000 text");
+      }
+      case "clipboard.copyAs.molV2000": {
+        const warnings: string[] = [];
+        await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
         return;
+      }
       case "clipboard.copyAs.cdxml":
         await writeText(exportPhase4Cdxml(copyAsScopedDocument(current)).contents, "CDXML text");
         return;
@@ -9941,6 +9970,18 @@ export function MainWindow({
     bondToolActive,
     updateBondGrowthPreview
   ]);
+
+  // Charge-mark hotkeys stack on repeated presses while the pointer stays put, so a charge commit
+  // re-derives the hover from the last canvas pointer position through the SAME path pointermove
+  // uses — never a duplicate derivation, and a press over empty canvas still clears the hover.
+  const rederiveNativeCanvasHoverFromLastPointer = useCallback((sourceDocument: ChemDraftDocument) => {
+    const clientPoint = lastCanvasPointerClientPointRef.current;
+    // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
+    // resolve the element at the pointer the way a real pointer event's target would report it.
+    const eventTarget = clientPoint ? window.document.elementFromPoint(clientPoint.x, clientPoint.y) : undefined;
+    updateNativeCanvasHover(sourceDocument, clientPoint ? pagePointFromClientPoint(clientPoint) : undefined, eventTarget);
+  }, [pagePointFromClientPoint, updateNativeCanvasHover]);
+  rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
@@ -22534,7 +22575,14 @@ function DocumentObjectView({
   }
 
   if (object.type === "electron-mark" && object.markKind === "charge") {
-    const charge = object.charge === -1 ? -1 : 1;
+    // Sign × magnitude, the same value the layout-engine charge fragment reports in data-charge
+    // and draws as the numeral: a mark reading "2+" must announce 2, not ±1.
+    const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
+      ? object.charge
+      : 1;
+    const charge = (rawCharge < 0 ? -1 : 1) * Math.min(nativeChargeMarkMaxMagnitude, Math.abs(rawCharge));
+    const magnitude = Math.abs(charge);
+    const magnitudeText = magnitude > 1 ? ` ${magnitude}${charge > 0 ? "+" : "-"}` : "";
     return (
       <div
         className={["document-object", "document-object-overlay", "charge-mark-object", selected ? "selected" : ""].filter(Boolean).join(" ")}
@@ -22542,7 +22590,7 @@ function DocumentObjectView({
         data-object-id={object.id}
         data-layer-index={layerIndex}
         data-charge={charge}
-        aria-label={charge > 0 ? "Positive charge" : "Negative charge"}
+        aria-label={`${charge > 0 ? "Positive" : "Negative"} charge${magnitudeText}`}
         onPointerDown={handleObjectPointerDown}
         onPointerMove={handleObjectPointerMove}
         onPointerUp={handleObjectPointerUp}
@@ -26702,17 +26750,23 @@ function chargeValueForToolCommand(commandId: string): NativeElectronMarkSpec | 
   }
 }
 
-function electronMarkSpecStatusNoun(spec: NativeElectronMarkSpec): string {
+export function electronMarkSpecStatusNoun(spec: NativeElectronMarkSpec, placedCharge?: number): string {
   if (spec.kind === "radical-dot") {
     return "radical electron";
   }
   if (spec.kind === "lone-pair") {
     return "lone pair";
   }
+  // The spec carries only the ±1 increment; `placedCharge` is the stacked total on the mark after
+  // the commit. A multi-magnitude mark is named with its numeral ("positive charge 2+"), matching
+  // what the layout-engine charge fragment draws.
+  const charge = placedCharge ?? spec.charge;
+  const magnitude = Math.abs(charge);
+  const suffix = magnitude > 1 ? ` ${magnitude}${charge > 0 ? "+" : "-"}` : "";
   if (spec.radical) {
-    return spec.charge > 0 ? "radical cation" : "radical anion";
+    return `${charge > 0 ? "radical cation" : "radical anion"}${suffix}`;
   }
-  return spec.charge > 0 ? "positive charge" : "negative charge";
+  return `${charge > 0 ? "positive charge" : "negative charge"}${suffix}`;
 }
 
 function moleculeAriaLabel(object: MoleculeObject): string {

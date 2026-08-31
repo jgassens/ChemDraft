@@ -195,7 +195,10 @@ export function shouldIgnoreShortcutTarget(target: EventTarget | null): boolean 
     return true;
   }
 
-  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  // Buttons too: Space/Enter ACTIVATE a focused button, so a global binding on the same key
+  // (ChemDraw scheme: Space → select tool) would otherwise double-fire the press. Activatable
+  // chrome owns its keys — palette buttons invoke through their own keydown handler.
+  return Boolean(target.closest("input, textarea, select, button, [contenteditable='true']"));
 }
 
 export function detectShortcutPlatform(): ShortcutPlatform {

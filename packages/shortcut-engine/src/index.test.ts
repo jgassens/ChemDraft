@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+// (jsdom: shouldIgnoreShortcutTarget tests need real Element/HTMLElement globals.)
+
 import { describe, expect, it } from "vitest";
 import {
   createShortcutRegistry,
@@ -5,7 +8,8 @@ import {
   normalizeShortcut,
   parseShortcutDisplay,
   shortcutChord,
-  shortcutsFromCommands
+  shortcutsFromCommands,
+  shouldIgnoreShortcutTarget
 } from "./index";
 
 describe("shortcut-engine", () => {
@@ -115,5 +119,39 @@ describe("the space key", () => {
     expect(registry.resolve({ key: " ", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false }))
       .toBe("tool.pan");
     expect(keyboardEventChord({ key: " " })).toBe(" ");
+  });
+});
+
+describe("shouldIgnoreShortcutTarget", () => {
+  it("ignores a focused button so Space activates it without also firing a bound tool", () => {
+    // ChemDraw scheme binds Space → select tool. Without `button` in the ignore list, pressing
+    // Space on a focused palette button both activated the button AND switched tools — one press,
+    // two actions. (The palette button's own keydown handler invokes its command; it does not
+    // depend on the global handler.)
+    const button = window.document.createElement("button");
+    window.document.body.append(button);
+    expect(shouldIgnoreShortcutTarget(button)).toBe(true);
+
+    // A child node of the button resolves through closest().
+    const label = window.document.createElement("span");
+    button.append(label);
+    expect(shouldIgnoreShortcutTarget(label)).toBe(true);
+  });
+
+  it("still ignores form fields and contenteditable, and still allows plain canvas chrome", () => {
+    const input = window.document.createElement("input");
+    const textarea = window.document.createElement("textarea");
+    const editable = window.document.createElement("div");
+    // The attribute, not the property: jsdom does not compute `isContentEditable`, and the
+    // attribute is what the ignore list's selector matches.
+    editable.setAttribute("contenteditable", "true");
+    const plain = window.document.createElement("div");
+    window.document.body.append(input, textarea, editable, plain);
+
+    expect(shouldIgnoreShortcutTarget(input)).toBe(true);
+    expect(shouldIgnoreShortcutTarget(textarea)).toBe(true);
+    expect(shouldIgnoreShortcutTarget(editable)).toBe(true);
+    expect(shouldIgnoreShortcutTarget(plain)).toBe(false);
+    expect(shouldIgnoreShortcutTarget(null)).toBe(false);
   });
 });

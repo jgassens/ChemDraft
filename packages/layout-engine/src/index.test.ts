@@ -6,6 +6,7 @@ import {
   stylePresetToObjectStyle,
   type DocumentObject,
   type DocumentPage,
+  type ElectronMarkObject,
   type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
@@ -1125,6 +1126,124 @@ describe("layout-engine page SVG planner", () => {
         "line|charge_snapshot|electron-mark|329|165.832|329|172.168",
       ]
     `);
+  });
+
+  const chargeMarkObject = (
+    id: string,
+    charge: number,
+    overrides: Partial<ElectronMarkObject> = {}
+  ): ElectronMarkObject => ({
+    id,
+    type: "electron-mark",
+    x: 320,
+    y: 160,
+    width: 18,
+    height: 18,
+    rotation: 0,
+    style: {},
+    markKind: "charge",
+    anchor: { kind: "point", point: { x: 329, y: 169 } },
+    charge,
+    ...overrides
+  });
+
+  const plannedChargeMark = (id: string, charge: number, overrides: Partial<ElectronMarkObject> = {}) =>
+    planPageSvgRender(pageWithObjects([chargeMarkObject(id, charge, overrides)])).fragments
+      .filter((fragment) => fragment.attrs["data-object-id"] === id);
+
+  const fragmentsByTag = (fragments: PageSvgElementFragment[], tag: string) =>
+    fragments.filter((fragment) => fragment.tag === tag);
+
+  const numeralText = (numeral: PageSvgElementFragment | undefined) =>
+    numeral?.children.map((child) => (child.kind === "text" ? child.text : "")).join("");
+
+  it("renders a multi-magnitude charge mark as a circled numeral glyph", () => {
+    // planPageSvgRender flattens the object wrapper, so each of the mark's primitives lands in
+    // the top-level stream carrying the object's data-* attributes.
+    const fragments = plannedChargeMark("charge_double", 2);
+
+    // The reported charge is sign × magnitude, and the glyph keeps the circled default style.
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-mark-kind": "charge",
+      "data-charge": 2,
+      "data-charge-style": "circled"
+    });
+
+    const ring = fragmentsByTag(fragments, "circle");
+    const numeral = fragmentsByTag(fragments, "text");
+    expect(ring).toHaveLength(1);
+    expect(numeral).toHaveLength(1);
+    // Multi-magnitude marks use the larger 0.42·min radius so the ring clears the numeral.
+    expect(ring[0]?.attrs.r).toBe(18 * 0.42);
+    // Vector bars can't carry the count, so the mark is bold centered text — no bar lines.
+    expect(numeral[0]?.attrs).toMatchObject({
+      x: 329,
+      y: 169,
+      "text-anchor": "middle",
+      "dominant-baseline": "central",
+      "font-size": 18 * 0.42 * 1.35,
+      "font-weight": 700
+    });
+    expect(numeralText(numeral[0])).toBe("2+");
+    expect(fragmentsByTag(fragments, "line")).toHaveLength(0);
+  });
+
+  it("renders a negative multi-magnitude charge mark with the minus numeral", () => {
+    const fragments = plannedChargeMark("charge_triple_minus", -3);
+
+    expect(fragments[0]?.attrs["data-charge"]).toBe(-3);
+    const numeral = fragmentsByTag(fragments, "text");
+    expect(numeral).toHaveLength(1);
+    expect(numeralText(numeral[0])).toBe("3−");
+    expect(fragmentsByTag(fragments, "line")).toHaveLength(0);
+  });
+
+  it("keeps ±1 charge marks as circled vector bars with no numeral", () => {
+    for (const charge of [1, -1]) {
+      const fragments = plannedChargeMark(`charge_${charge > 0 ? "plus" : "minus"}`, charge);
+
+      expect(fragments[0]?.attrs["data-charge"]).toBe(charge);
+      expect(fragmentsByTag(fragments, "text")).toHaveLength(0);
+      // The ring plus the − bar, and a second vertical bar for +.
+      expect(fragmentsByTag(fragments, "circle")).toHaveLength(1);
+      expect(fragmentsByTag(fragments, "line")).toHaveLength(charge > 0 ? 2 : 1);
+    }
+  });
+
+  it("places the radical dot clear of a multi-magnitude numeral glyph", () => {
+    const fragments = plannedChargeMark("charge_radical_double", 2, { radical: true });
+
+    // A radical mark is uncircled: no ring, and the fragments advertise the radical form.
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-charge": 2,
+      "data-charge-style": "plain",
+      "data-charge-radical": "true"
+    });
+    expect(fragments.some((fragment) => fragment.key.startsWith("charge-circle-"))).toBe(false);
+
+    const numeral = fragmentsByTag(fragments, "text");
+    expect(numeral).toHaveLength(1);
+    expect(numeralText(numeral[0])).toBe("2+");
+
+    const dot = fragments.find((fragment) => fragment.key.startsWith("charge-radical-"));
+    expect(dot?.attrs.cy).toBe(169);
+    expect(dot?.attrs.r).toBe(2.1);
+    // The dot offset derives from the numeral's half-extent (font-size × two bold glyphs) plus
+    // the dot radius and clearance — not the circled-mark 0.75·radius — so it clears the glyph
+    // edge instead of landing on it.
+    const fontSize = Number(numeral[0]?.attrs["font-size"]);
+    const dotCx = Number(dot?.attrs.cx);
+    expect(dotCx).toBeCloseTo(329 - (fontSize * 0.6 + 3.1), 6);
+    expect(dotCx + 2.1).toBeLessThanOrEqual(329 - fontSize * 0.6);
+  });
+
+  it("keeps the radical dot at the tuned 0.75·radius offset for a ±1 mark", () => {
+    const fragments = plannedChargeMark("charge_radical_single", 1, { radical: true });
+
+    expect(fragments[0]?.attrs["data-charge-style"]).toBe("plain");
+    expect(fragments[0]?.attrs["data-charge-radical"]).toBe("true");
+    const dot = fragments.find((fragment) => fragment.key.startsWith("charge-radical-"));
+    expect(Number(dot?.attrs.cx)).toBeCloseTo(329 - 18 * 0.32 * 0.75, 6);
   });
 
   it("plans atom-label visibility, implicit hydrogens, colors, and transparent backgrounds", () => {
@@ -2514,12 +2633,11 @@ describe("layout-engine page SVG planner", () => {
       bonds: [
         { id: "bond_hash", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "hashed" } }
       ],
+      // The preset already draws implicit hydrogens, so the oxygen label reads "OH" — wide
+      // enough to trim a hash off the bond, which is the behavior under test.
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
-        bondLengthPx: 28,
-        // Opt into the auto-drawn hydrogen so the label reads "OH" — wide enough to trim a hash
-        // off the bond, which is the behavior under test.
-        atomLabelHideImplicitHydrogens: false
+        bondLengthPx: 28
       }
     });
     const hashes = planPageSvgRender(pageWithObjects([molecule])).fragments

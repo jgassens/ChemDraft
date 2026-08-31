@@ -175,6 +175,37 @@ describe("clipboard-adapter", () => {
     ]);
   });
 
+  it("parses a V3000 coordination bond (type 9) as a dashed single bond", () => {
+    // ChemDraft's own V3000 writer emits dative bonds as type 9; reading one back must restore
+    // the native representation (single order + dashed display style), not an "unknown" order.
+    const dativeV3000 = [
+      "ChemDraft V3000",
+      "  ChemDraft",
+      "",
+      "  0  0  0  0  0  0            999 V3000",
+      "M  V30 BEGIN CTAB",
+      "M  V30 COUNTS 3 2 0 0 0",
+      "M  V30 BEGIN ATOM",
+      "M  V30 1 Zn 0.0000 0.0000 0.0000 0",
+      "M  V30 2 C 1.5000 0.0000 0.0000 0",
+      "M  V30 3 C 2.2500 -1.2990 0.0000 0",
+      "M  V30 END ATOM",
+      "M  V30 BEGIN BOND",
+      "M  V30 1 9 1 2",
+      "M  V30 2 1 2 3",
+      "M  V30 END BOND",
+      "M  V30 END CTAB",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(dativeV3000);
+
+    expect(graph.bonds).toEqual([
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", bondStyle: "dashed" },
+      { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
+    ]);
+  });
+
   it("prioritizes molecule payloads before plain text", () => {
     const detected = inspectClipboardPayload({
       types: ["public.utf8-plain-text"],

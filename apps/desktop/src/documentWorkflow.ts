@@ -787,13 +787,16 @@ const nativeAtomMaxValence: Partial<Record<NativeElementSymbol, number>> = {
   I: 7
 };
 /**
- * Sanity ceilings for the d-block: the highest coordination number each metal is known to
- * reach in any isolable complex (generous on purpose). Transition metals have VARIABLE
- * oxidation states and dative/eta bonding, so no single "correct" valence exists to check a
- * drawing against — V(II) through V(V) are all real, V(CO)6 has six bonds at oxidation state
- * zero, and a bare metal atom is a legitimate species (catalysts). The only honest complaint
- * is a bond count beyond anything known, so metals flag hypervalence past this ceiling and
- * are never flagged hypovalent or naked.
+ * Sanity ceilings for the d-block: roughly the highest coordination number each metal reaches in
+ * isolable complexes — generous on purpose, and not a hard literature record (La is listed at
+ * 10, yet [La(NO3)6]3- is 12-coordinate). Transition metals have VARIABLE oxidation states and
+ * dative/eta bonding, so no single "correct" valence exists to check a drawing against — V(II)
+ * through V(V) are all real, V(CO)6 has six bonds at oxidation state zero, and a bare metal atom
+ * is a legitimate species (catalysts). The only honest complaint is a bond count beyond anything
+ * plausible, so metals flag hypervalence past this ceiling and are never flagged hypovalent or
+ * naked. In practice the growth tools cap every atom at `nativeAtomInvalidGrowthLimit` (8), so
+ * ceilings above 8 (Tc/Re/W at 9, La at 10) are unreachable by drawing and act as documentation
+ * of intent for imported structures.
  */
 const nativeMetalMaxCoordination: Partial<Record<NativeElementSymbol, number>> = {
   Sc: 7, Ti: 8, V: 7, Cr: 7, Mn: 7, Fe: 7, Co: 7, Ni: 7, Cu: 6, Zn: 6,
@@ -1093,10 +1096,16 @@ export function createNativeSingleBondMolecule(
   options: NativeBondToolOptions = {}
 ): MoleculeObject {
   const page = firstPage(document);
-  // The first bond lands at the zig-zag half-angle (30° above horizontal for the default 120°
-  // chain angle), rising left-to-right — ChemDraw's first-bond orientation — rather than flat.
-  const halfDx = (nativeBondLength / 2) * Math.cos(Math.PI / 6);
-  const halfDy = (nativeBondLength / 2) * Math.sin(Math.PI / 6);
+  const objectStyle = stylePresetToObjectStyle(ChemDraftSyntheticStylePreset);
+  // The first bond lands at the zig-zag half-angle — (180° − chainAngleDegrees)/2, 30° above
+  // horizontal for the default 120° chain angle — rising left-to-right, ChemDraw's first-bond
+  // orientation, rather than flat. The angle comes from the same preset style the new molecule
+  // carries, so a custom chain angle reshapes the first bond too (layout-engine's growth planner
+  // derives the same half-angle from its targetBondAngleDegrees).
+  const chainAngleDegrees = nativeDrawingStyleFromObjectStyle(objectStyle).chainAngleDegrees;
+  const firstBondHalfAngleRadians = degreesToRadians((180 - clamp(chainAngleDegrees, 1, 179)) / 2);
+  const halfDx = (nativeBondLength / 2) * Math.cos(firstBondHalfAngleRadians);
+  const halfDy = (nativeBondLength / 2) * Math.sin(firstBondHalfAngleRadians);
   const center = {
     x: clamp(point.x, halfDx, page.width - halfDx),
     y: clamp(point.y, halfDy, page.height - halfDy)
@@ -1135,7 +1144,7 @@ export function createNativeSingleBondMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...objectStyle,
       source: "chemdraft-native-drawing",
       drawingPrimitive: "single-bond"
     },
@@ -4324,8 +4333,10 @@ export function insertNativeTextObject(
 /**
  * When a committed text box holds exactly an element symbol ("C", "fe", "Br"…), turn it into a
  * real naked atom: a one-atom molecule at the text's position, participating in hover hotkeys,
- * bonding, and valence checking (a bare neutral atom shows the invalid badge until it gains
- * bonds). Any other text stays a text object.
+ * bonding, and valence checking. A bare neutral atom of a covalent-table element shows the
+ * invalid badge until it gains bonds; elements outside the covalent valence tables (all d-block
+ * metals, the noble gases) have no single correct valence to violate, so they convert unflagged
+ * by design. Any other text stays a text object.
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
@@ -4836,7 +4847,9 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
         // explicitly refuses this same collapse citing AGENTS.md section 5.7. Flattening an
         // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
         order: bond.order,
-        wedge: bond.bondStyle ?? null
+        // Dative (dashed) bonds parse with a display style, not a wedge — they fall to null here
+        // and keep their style through the structural insert path.
+        wedge: bond.bondStyle === "wedge" || bond.bondStyle === "hashed" ? bond.bondStyle : null
       }];
     })
   };
@@ -7236,8 +7249,46 @@ export function applyChargeToolAtNativeAtom(
 }
 
 /**
+ * True when stacking `spec` onto the atom's existing charge mark would exceed the ±9 cap
+ * (`nativeChargeMarkMaxMagnitude`) — the one `applyChargeToolAtNativeAtom` refusal where a mark IS
+ * already sitting on the atom and only the increment was refused. Lets the caller tell "already at
+ * the cap" apart from "no mark could be placed here" instead of reporting a generic failure.
+ * Mirrors the stacking math in `applyChargeToolAtNativeAtom`; keep the two in step.
+ */
+export function nativeAtomChargeStackAtCap(
+  document: ChemDraftDocument,
+  spec: NativeElectronMarkSpec | NativeChargeValue,
+  target: NativeMoleculeDeleteTarget
+): boolean {
+  if (target.kind !== "atom") {
+    return false;
+  }
+
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
+  );
+  const normalized = normalizeElectronMarkSpec(spec);
+  if (!molecule || normalized.kind !== "charge") {
+    return false;
+  }
+
+  const existing = nativeAssociatedChargeMarkForAtom(page, molecule, target.atomId);
+  if (!existing) {
+    return false;
+  }
+  return Math.abs((nativeChargeValue(existing.charge) ?? 0) + normalized.charge) > nativeChargeMarkMaxMagnitude;
+}
+
+/**
  * The charge mark currently charging this atom: an anchor match wins, else the nearest charge
- * mark inside the same association radius the reconciliation uses.
+ * mark that belongs to THIS molecule object within the same association radius the
+ * reconciliation uses. The fallback must not reach across molecule objects: in a tight
+ * coordination complex a mark hovering over molecule A's metal can sit within a bond length of
+ * molecule B's ligand atom, and counting it would bump A's mark when the user charges B's atom.
+ * Reconciliation re-anchors associated marks on every commit, so a mark that belongs to an atom
+ * carries an atom anchor; a still-floating point mark belongs to no molecule and is left for a
+ * fresh mark, not a bump.
  */
 function nativeAssociatedChargeMarkForAtom(
   page: DocumentPage,
@@ -7262,6 +7313,9 @@ function nativeAssociatedChargeMarkForAtom(
     nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 1.15
   );
   return marks
+    .filter((mark) =>
+      (mark.anchor.kind === "atom" || mark.anchor.kind === "object") && mark.anchor.objectId === molecule.id
+    )
     .map((mark) => ({ mark, distance: distance(nativeChargeMarkCenter(mark), atom) }))
     .filter((entry) => entry.distance <= radius)
     .sort((left, right) => left.distance - right.distance)[0]?.mark;
@@ -7478,9 +7532,11 @@ function nativeMoleculePatched(
 
 /**
  * Numeric atom sprout hotkeys (ChemDraw parity): 4/5 grow a wedge/hashed stereo methyl along the
- * growth-arrow direction, 8 grows =CH2, 9 grows a gem-dimethyl pair, and 0 grows a bond in
- * "cyclic mode" — each press turns the same way as the previous chain vertex, so repeated presses
- * trace a ring and close it onto the starting atom.
+ * growth-arrow direction, 8 grows =CH2, 9 grows a gem-dimethyl pair (all-or-nothing: an atom
+ * without room for BOTH methyls refuses, since a lone partial methyl would commit silently),
+ * and 0 grows a bond in "cyclic mode" — each press turns the same way as the previous chain
+ * vertex by the supplement of the molecule's chain angle, so repeated presses trace a ring and
+ * close it onto the starting atom.
  */
 export function applyNativeAtomSproutTarget(
   document: ChemDraftDocument,
@@ -7541,6 +7597,14 @@ export function applyNativeAtomSproutTarget(
   }
 
   if (kind === "gemDimethyl") {
+    // All-or-nothing: the hotkey promises a PAIR of methyls, and the only signal the caller can
+    // surface is the reference-equality refusal ("Cannot add gem-dimethyl here") — committing one
+    // methyl when the second cannot be planned would read as success. So an atom without two free
+    // growth slots refuses up front, and a failed second plan refuses the whole sprout.
+    const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
+    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0) < 2) {
+      return document;
+    }
     if (!growthPlan || growthPlan.targetAtomId) {
       return document;
     }
@@ -7552,14 +7616,16 @@ export function applyNativeAtomSproutTarget(
     const second = secondPlan && !secondPlan.targetAtomId
       ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
       : undefined;
-    return nativeMoleculePatched(document, page, molecule, second ?? first);
+    return nativeMoleculePatched(document, page, molecule, second);
   }
 
-  // Cyclic mode ("0"): continue the chain, turning the same 60° direction the chain last turned,
-  // so successive presses walk a hexagon; when the next vertex lands on an existing atom, close
-  // the ring instead of stacking a duplicate.
+  // Cyclic mode ("0"): continue the chain, turning the same way the chain last turned by the
+  // supplement of the molecule's own chain angle (180° − chainAngleDegrees, so 60° for the
+  // default 120°), so successive presses walk a regular polygon with that interior angle; when
+  // the next vertex lands on an existing atom, close the ring instead of stacking a duplicate.
   const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
   const bondLengthPx = drawingStyle.bondLengthPx;
+  const chainTurnDegrees = 180 - clamp(drawingStyle.chainAngleDegrees, 1, 179);
   const neighbors = molecule.bonds
     .map((bond) => bond.fromAtomId === target.atomId
       ? bond.toAtomId
@@ -7583,11 +7649,11 @@ export function applyNativeAtomSproutTarget(
       const previousDegrees = Math.atan2(neighbor.y - grandNeighbor.y, neighbor.x - grandNeighbor.x) * 180 / Math.PI;
       const previousTurn = ((incomingDegrees - previousDegrees + 540) % 360 + 360) % 360 - 180;
       const turnSign = Math.abs(previousTurn) < 1e-3 ? -1 : Math.sign(previousTurn);
-      outgoingDegrees = incomingDegrees + turnSign * 60;
+      outgoingDegrees = incomingDegrees + turnSign * chainTurnDegrees;
     } else {
       // First cyclic press off a lone bond: start the curl upward.
-      const upward = incomingDegrees - 60;
-      const downward = incomingDegrees + 60;
+      const upward = incomingDegrees - chainTurnDegrees;
+      const downward = incomingDegrees + chainTurnDegrees;
       outgoingDegrees = Math.sin(upward * Math.PI / 180) <= Math.sin(downward * Math.PI / 180) ? upward : downward;
     }
   }
@@ -15712,28 +15778,62 @@ export function copyAsMergedMolecule(
   return { ...molecules[0], atoms, bonds };
 }
 
-export function copyAsSmiles(document: ChemDraftDocument): string | undefined {
-  const parts = copyAsScopeMolecules(document)
+/**
+ * SMILES for the copy scope. `warningsOut`, when given, collects the fidelity gaps SMILES cannot
+ * express (AGENTS.md §6.7: no silent lossy copy): dative (dashed) bonds copied as plain single
+ * bonds — SMILES has no coordination bond, and dot-disconnecting would falsify component counts,
+ * so the bond is kept and the warning says what was lost — and condensed-label atoms that no
+ * single SMILES atom can spell, copied as dummy `[*]` atoms.
+ */
+export function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): string | undefined {
+  const molecules = copyAsScopeMolecules(document);
+  const parts = molecules
     .map((molecule) =>
       molecule.structureFormat === "smiles" && molecule.structure
         ? molecule.structure
         : nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds)
     )
     .filter((smiles) => smiles.length > 0);
+  if (warningsOut) {
+    const dativeBondCount = molecules.reduce((sum, molecule) =>
+      sum + molecule.bonds.filter((bond) => bond.display?.bondStyle === "dashed").length, 0);
+    if (dativeBondCount > 0) {
+      warningsOut.push(
+        `SMILES has no dative/coordination bond: ${dativeBondCount} dashed bond${dativeBondCount === 1 ? "" : "s"} copied as plain single.`
+      );
+    }
+    const unspellableLabels = [...new Set(molecules.flatMap((molecule) =>
+      molecule.atoms
+        .filter((atom) =>
+          nativeElementFromAtomLabel(atom.element) === undefined &&
+          nativeSingleHeavyElementLabelValence(atom.element) === undefined
+        )
+        .map((atom) => atom.element)
+    ))];
+    unspellableLabels.forEach((label) => {
+      warningsOut.push(`Atom label "${label}" cannot be spelled as a single SMILES atom; copied as a dummy atom [*].`);
+    });
+  }
   return parts.length > 0 ? parts.join(".") : undefined;
 }
 
+/**
+ * The copy scope as one merged molfile. `warningsOut` receives the writer's lossy-emission notes
+ * (V2000 flattens dative bonds to single; non-element labels write as dummy atoms) — V3000 keeps
+ * dative bonds as coordination type 9 and stays silent about them.
+ */
 export function copyAsMolfile(
   document: ChemDraftDocument,
-  flavor: "v2000" | "v3000"
+  flavor: "v2000" | "v3000",
+  warningsOut?: string[]
 ): string | undefined {
   const merged = copyAsMergedMolecule(copyAsScopeMolecules(document));
   if (!merged) {
     return undefined;
   }
   return flavor === "v2000"
-    ? moleculeToMolfileV2000(merged, { fromDocFrame: true })
-    : moleculeToMolfileV3000(merged, { fromDocFrame: true });
+    ? moleculeToMolfileV2000(merged, { fromDocFrame: true, warnings: warningsOut })
+    : moleculeToMolfileV3000(merged, { fromDocFrame: true, warnings: warningsOut });
 }
 
 const copyAsPagePaddingPx = 16;
@@ -16319,7 +16419,10 @@ function neighborAnglesForAtom(molecule: MoleculeObject, atomId: string): number
 /**
  * The atom another molecule object offers as a bond endpoint at `point` — how a dragged bond
  * reaches across objects (a typed "Zn" is its own one-atom molecule until a bond joins it to
- * the ligand). Nearest hit wins across every other editable molecule on the page.
+ * the ligand). Nearest hit wins across every other molecule on the page whose hit atom still has
+ * a free growth slot. "Editable" is NOT part of the filter: a nearer non-editable molecule (an
+ * imported structure preview) shadows a farther editable one — the connect attempt then fails
+ * rather than reaching past it.
  */
 export function findForeignNativeMoleculeBondTarget(
   page: DocumentPage,
@@ -16393,8 +16496,8 @@ function mergeNativeMoleculeObjects(
     });
     return Object.keys(merged).length > 0 ? merged : undefined;
   };
-  const atomLabelColors = remapColorKeys(host.style.atomLabelColors, absorbed.style.atomLabelColors, atomIdMap);
-  const bondColors = remapColorKeys(host.style.bondColors, absorbed.style.bondColors, bondIdMap);
+  const atomLabelColors = remapColorKeys(styleColorMap(host.style.atomLabelColors), styleColorMap(absorbed.style.atomLabelColors), atomIdMap);
+  const bondColors = remapColorKeys(styleColorMap(host.style.bondColors), styleColorMap(absorbed.style.bondColors), bondIdMap);
   const style = {
     ...host.style,
     ...(atomLabelColors ? { atomLabelColors } : {}),
@@ -16853,7 +16956,7 @@ function parseV3000MoleculeGraph(
   previous: MoleculeObject
 ): Pick<MoleculeObject, "atoms" | "bonds"> | undefined {
   const rawAtoms: Array<{ sourceId: string; element: string; x: number; y: number; formalCharge: number }> = [];
-  const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"] }> = [];
+  const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; dative: boolean }> = [];
   let section: "atom" | "bond" | undefined;
 
   for (const rawLine of molfile.split(/\r?\n/)) {
@@ -16902,7 +17005,9 @@ function parseV3000MoleculeGraph(
       sourceId,
       fromSourceId,
       toSourceId,
-      order: bondOrderFromV3000(rawOrder)
+      order: bondOrderFromV3000(rawOrder),
+      // V3000 bond type 9 is the coordination (dative) bond — restore the dashed display style.
+      dative: rawOrder === "9"
     });
   }
 
@@ -16940,7 +17045,8 @@ function parseV3000MoleculeGraph(
       id: previous.bonds[index]?.id ?? nextOrdinalId("bond", index),
       fromAtomId,
       toAtomId,
-      order: bond.order
+      order: bond.order,
+      ...(bond.dative ? { display: { bondStyle: "dashed" as const } } : {})
     } satisfies MoleculeBond];
   });
 
@@ -17014,6 +17120,11 @@ function bondOrderFromV3000(value: string): MoleculeBond["order"] {
   if (value === "4") {
     return "aromatic";
   }
+  // Type 9 is the V3000 coordination (dative) bond. The native model carries dative as the
+  // dashed display style on a single bond, not as a bond order — the caller adds the style.
+  if (value === "9") {
+    return "single";
+  }
 
   return "unknown";
 }
@@ -17084,7 +17195,13 @@ function moleculeGeometryFromAtoms(atoms: readonly MoleculeAtom[]): Pick<Molecul
 /**
  * Parse an arbitrary atom label as a condensed formula of known elements ("CH3" → C1 H3,
  * "CO2H" → C1 O2 H1). Undefined when any token is not a plain element symbol ("OMe", "Ph",
- * "R1") — abbreviations contribute nothing rather than a wrong count.
+ * "R1") — those abbreviations contribute nothing rather than a wrong count.
+ *
+ * Honest limitation: a label that DOES tokenize into element symbols is counted as those
+ * elements, so abbreviations that collide with element symbols are miscounted — "OAc" reads as
+ * O + Ac (actinium), "Ts" as tennessine, "Pr" as praseodymium, "Am"/"No" likewise. That affects
+ * only the formula/mass bookkeeping here; valence never consults this parse
+ * (`nativeSingleHeavyElementLabelValence` applies its own stricter check).
  */
 function parseCondensedLabelFormula(label: string): Map<string, number> | undefined {
   const trimmed = label.trim();
@@ -17186,11 +17303,11 @@ export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bond
   if (atoms.length === 0) {
     return "";
   }
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const smilesByAtomId = nativeAtomSmilesById(atoms, bonds);
   const adjacency = nativeAdjacency(atoms, bonds);
   const bondByAtomPair = nativeBondByAtomPair(bonds);
   const components = nativeComponents(atoms, adjacency);
-  const singleCycleSmiles = renderSingleCycleWithBranchesSmiles(atoms, bonds, components, adjacency, atomById, bondByAtomPair);
+  const singleCycleSmiles = renderSingleCycleWithBranchesSmiles(atoms, bonds, components, adjacency, smilesByAtomId, bondByAtomPair);
   if (singleCycleSmiles) {
     return singleCycleSmiles;
   }
@@ -17200,17 +17317,17 @@ export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bond
     // ring — goes through the general DFS spanning-tree writer. The former fallback here
     // concatenated bare atom symbols, which SMILES reads as a bonded chain, silently turning
     // every multi-ring molecule into an acyclic one (10-carbon naphthalene → "CCCCCCCCCC").
-    return nativeGeneralGraphSmiles(components, adjacency, atomById, bondByAtomPair);
+    return nativeGeneralGraphSmiles(components, adjacency, smilesByAtomId, bondByAtomPair);
   }
 
   return components.map((componentIds) => {
     if (componentIds.length === 1) {
-      return nativeAtomSmiles(atomById.get(componentIds[0]));
+      return smilesByAtomId.get(componentIds[0]) ?? "C";
     }
 
     const componentAtoms = atoms.filter((atom) => componentIds.includes(atom.id));
     const mainPath = longestNativePath(componentAtoms, adjacency);
-    return renderNativePath(mainPath, adjacency, atomById, bondByAtomPair);
+    return renderNativePath(mainPath, adjacency, smilesByAtomId, bondByAtomPair);
   }).join(".");
 }
 
@@ -17218,28 +17335,29 @@ export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bond
  * General SMILES writer for arbitrary connected graphs. It builds a depth-first spanning tree
  * and turns each non-tree ("back") edge into a ring-closure digit, so it linearizes any ring
  * system — fused, bridged, or spiro — that the single-cycle renderer above cannot. Bond orders
- * come from `bondOrderSymbol` and atom labels/charges from `nativeAtomSmiles`; it is a pure
- * graph→string function with no OpenChemLib dependency, keeping OCL worker-only.
+ * come from `bondOrderSymbol` and atom tokens from the precomputed `smilesByAtomId` map (see
+ * `nativeAtomSmilesById`); it is a pure graph→string function with no OpenChemLib dependency,
+ * keeping OCL worker-only.
  */
 function nativeGeneralGraphSmiles(
   components: readonly (readonly string[])[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   return components
-    .map((componentIds) => renderConnectedGraphSmiles(componentIds, adjacency, atomById, bondByAtomPair))
+    .map((componentIds) => renderConnectedGraphSmiles(componentIds, adjacency, smilesByAtomId, bondByAtomPair))
     .join(".");
 }
 
 function renderConnectedGraphSmiles(
   componentIds: readonly string[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   if (componentIds.length <= 1) {
-    return nativeAtomSmiles(atomById.get(componentIds[0]));
+    return smilesByAtomId.get(componentIds[0]) ?? "C";
   }
 
   const rootAtomId = [...componentIds].sort()[0];
@@ -17313,7 +17431,7 @@ function renderConnectedGraphSmiles(
     const branches = renderedChildren.slice(0, -1).map((child) => `(${child})`).join("");
     const continuation = renderedChildren.length > 0 ? renderedChildren[renderedChildren.length - 1] : "";
 
-    return `${nativeAtomSmiles(atomById.get(atomId))}${ringClosures}${branches}${continuation}`;
+    return `${smilesByAtomId.get(atomId) ?? "C"}${ringClosures}${branches}${continuation}`;
   };
 
   return emitAtom(rootAtomId);
@@ -17328,7 +17446,7 @@ function renderSingleCycleWithBranchesSmiles(
   bonds: readonly MoleculeBond[],
   components: readonly (readonly string[])[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string | undefined {
   if (components.length !== 1 || atoms.length < 3 || bonds.length !== atoms.length) {
@@ -17374,7 +17492,7 @@ function renderSingleCycleWithBranchesSmiles(
   }
 
   return cyclePath.map((atomId, index) => {
-    const symbol = nativeAtomSmiles(atomById.get(atomId));
+    const symbol = smilesByAtomId.get(atomId) ?? "C";
     const previousAtomId = cyclePath[index - 1];
     const bondPrefix = previousAtomId ? bondOrderSymbol(bondByAtomPair.get(atomPairKey(previousAtomId, atomId))?.order) : "";
     const ringClosure = index === 0 || index === cyclePath.length - 1 ? "1" : "";
@@ -17384,7 +17502,7 @@ function renderSingleCycleWithBranchesSmiles(
       .sort((left, right) =>
         subtreeSize(right, atomId, adjacency) - subtreeSize(left, atomId, adjacency) || left.localeCompare(right)
       )
-      .map((branchId) => `(${renderNativeBranch(branchId, atomId, adjacency, atomById, bondByAtomPair)})`)
+      .map((branchId) => `(${renderNativeBranch(branchId, atomId, adjacency, smilesByAtomId, bondByAtomPair)})`)
       .join("");
     return `${bondPrefix}${symbol}${ringClosure}${branches}`;
   }).join("");
@@ -17637,7 +17755,7 @@ function pathBetweenAtoms(
 function renderNativePath(
   path: readonly string[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   return path.map((atomId, index) => {
@@ -17649,8 +17767,8 @@ function renderNativePath(
       .sort((left, right) =>
         subtreeSize(right, atomId, adjacency) - subtreeSize(left, atomId, adjacency) || left.localeCompare(right)
       );
-    return `${bondPrefix}${nativeAtomSmiles(atomById.get(atomId))}${branches.map((branchId) =>
-      `(${renderNativeBranch(branchId, atomId, adjacency, atomById, bondByAtomPair)})`
+    return `${bondPrefix}${smilesByAtomId.get(atomId) ?? "C"}${branches.map((branchId) =>
+      `(${renderNativeBranch(branchId, atomId, adjacency, smilesByAtomId, bondByAtomPair)})`
     ).join("")}`;
   }).join("");
 }
@@ -17659,7 +17777,7 @@ function renderNativeBranch(
   atomId: string,
   parentAtomId: string,
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   const bondPrefix = bondOrderSymbol(bondByAtomPair.get(atomPairKey(parentAtomId, atomId))?.order);
@@ -17668,8 +17786,8 @@ function renderNativeBranch(
     .sort((left, right) =>
       subtreeSize(right, atomId, adjacency) - subtreeSize(left, atomId, adjacency) || left.localeCompare(right)
     );
-  return `${bondPrefix}${nativeAtomSmiles(atomById.get(atomId))}${branches.map((branchId) =>
-    `(${renderNativeBranch(branchId, atomId, adjacency, atomById, bondByAtomPair)})`
+  return `${bondPrefix}${smilesByAtomId.get(atomId) ?? "C"}${branches.map((branchId) =>
+    `(${renderNativeBranch(branchId, atomId, adjacency, smilesByAtomId, bondByAtomPair)})`
   ).join("")}`;
 }
 
@@ -17684,16 +17802,105 @@ function bondOrderSymbol(order: MoleculeBond["order"] | undefined): string {
   return "";
 }
 
-function nativeAtomSmiles(atom: MoleculeAtom | undefined): string {
+/**
+ * The SMILES "organic subset" — the only elements that may appear UNBRACKETED. Anything else
+ * (Zn, Li, Si, …) written bare is either invalid SMILES or, worse, valid-but-wrong: a literal
+ * typed "C" emitted bare reparses as methane, a typed "N" as ammonia.
+ */
+const smilesOrganicSubset = new Set(["B", "C", "N", "O", "P", "S", "F", "Cl", "Br", "I"]);
+
+/**
+ * One atom's SMILES token. Neutral organic-subset drawn atoms stay bare (ethanol stays "CCO");
+ * everything that bare emission would misrepresent is bracketed:
+ * - charged atoms: `[N+]`, `[Zn+2]` (brackets already carry the charge; parsers add no implicit H);
+ * - literal (text-typed) atoms: `[C]`, `[N]` — a bracket atom gets NO implicit hydrogens, which is
+ *   exactly the literal contract: the label means what it says (verified against OpenChemLib:
+ *   `[C]` reparses to C, bare `C` to CH4);
+ * - hydrogen: `[H]`;
+ * - non-subset elements: `[Zn]`, `[Li]`, `[SiH2]` — bracketed, with the skeletal implicit
+ *   hydrogens SPELLED (bracket atoms get none from the parser), so a drawn silane carbon analog
+ *   keeps its hydrogens. The count is the same derivation the formula and the drawn label use.
+ *
+ * `implicitHydrogens` matters only for that last case; `nativeAtomSmilesById` computes it.
+ */
+/**
+ * A bracket atom's charge in SMILES order — sign then magnitude (`[Zn+2]`). The DISPLAY
+ * convention is the reverse ("2+", `atomChargeLabelSuffix`); writing that into SMILES makes
+ * the string invalid, and the mistake only became reachable when charge marks learned to
+ * stack past ±1.
+ */
+function smilesChargeSuffix(charge: number): string {
+  if (charge === 0) {
+    return "";
+  }
+  const sign = charge > 0 ? "+" : "-";
+  const magnitude = Math.abs(charge);
+  return magnitude === 1 ? sign : `${sign}${magnitude}`;
+}
+
+function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0): string {
   if (!atom) {
     return "C";
   }
 
-  if (atom.formalCharge !== 0) {
-    return `[${atom.element}${atomChargeLabelSuffix(atom.formalCharge)}]`;
+  const element = nativeElementFromAtomLabel(atom.element);
+  if (!element) {
+    // Condensed labels store the whole group in the atom's element string ("CH3", "CO2H", "Ph").
+    // A single SMILES atom can spell only labels that reduce to ONE heavy element plus its
+    // hydrogens ("CH3" → "[CH3]", "NH2" → "[NH2]") — exactly what the label says. Anything else
+    // (multi-heavy "CO2H", abbreviations like "Ph") has no single-atom spelling: emit a dummy
+    // atom so the SMILES stays parseable, and let the Copy As path warn that the label exported
+    // as [*] rather than silently writing "CH3" (which a SMILES parser reads as C + garbage).
+    const spelled = nativeSingleHeavyElementLabelValence(atom.element);
+    if (!spelled) {
+      return `[*${smilesChargeSuffix(atom.formalCharge)}]`;
+    }
+    const hydrogens = spelled.hydrogens > 0 ? `H${spelled.hydrogens === 1 ? "" : spelled.hydrogens}` : "";
+    return `[${spelled.element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
   }
 
-  return atom.element === "H" ? "[H]" : atom.element;
+  if (atom.formalCharge !== 0) {
+    return `[${element}${smilesChargeSuffix(atom.formalCharge)}]`;
+  }
+
+  if (element === "H") {
+    return "[H]";
+  }
+
+  if (atom.labelLiteral === true) {
+    return `[${element}]`;
+  }
+
+  if (!smilesOrganicSubset.has(element)) {
+    const hydrogens = implicitHydrogens > 0 ? `H${implicitHydrogens === 1 ? "" : implicitHydrogens}` : "";
+    return `[${element}${hydrogens}]`;
+  }
+
+  return element;
+}
+
+/**
+ * Per-atom SMILES tokens for the graph writers above, precomputed in one pass: the bracketed
+ * non-subset form must spell the atom's implicit hydrogens, and that count depends on the whole
+ * bond set (`atomBondOrderUsageMap`), not on the atom alone.
+ */
+function nativeAtomSmilesById(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): Map<string, string> {
+  const valenceUsage = atomBondOrderUsageMap(atoms, bonds);
+  return new Map(atoms.map((atom) => {
+    const element = nativeElementFromAtomLabel(atom.element);
+    const needsSpelledHydrogens = element !== undefined &&
+      element !== "H" &&
+      atom.formalCharge === 0 &&
+      atom.labelLiteral !== true &&
+      !smilesOrganicSubset.has(element);
+    const implicitHydrogens = needsSpelledHydrogens
+      ? nativeImplicitHydrogenCount(element, valenceUsage.get(atom.id) ?? 0, 0, atom.markRadicals ?? 0)
+      : 0;
+    return [atom.id, nativeAtomSmiles(atom, implicitHydrogens)] as const;
+  }));
 }
 
 function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
@@ -17788,8 +17995,11 @@ function nativeAtomSuggestedChargeForValence(
 /**
  * Whether a bond count is a COMPLETE H-free valence state for this element/charge — the test
  * literal (text-typed) atoms must pass, since nothing fills their remainder with implicit
- * hydrogens. Complete means the octet-derived count for the charge, or one of the neutral
- * hypervalent states (P(V), S(IV), S(VI)) the octet arithmetic cannot express.
+ * hydrogens. Complete means the octet-derived count for the charge, or any bond count whose
+ * canonical charge for that count matches (`nativeAtomFormalChargeForValence`): the neutral
+ * hypervalent states the octet arithmetic cannot express (P(V), As(V), the S/Se/Te (IV)/(VI)
+ * family, halogen (III)/(V)/(VII)) and charged states like ammonium. That list is illustrative,
+ * not exhaustive.
  */
 function nativeLiteralAtomValenceComplete(
   element: NativeElementSymbol,

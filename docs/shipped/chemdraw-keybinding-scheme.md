@@ -35,26 +35,67 @@ applied live to every window, default remains `chemdraft`.
 ## What the ChemDraw scheme covers
 
 - **Tools:** Space → select, `x` → bond, `Shift+X` → chain, `j` → benzene, `t` → text,
-  `Shift+T` → bracket, `e` → reaction arrow. ChemDraft's single-letter tool keys (V/L/M/C/R/+/−)
-  are released.
+  `Shift+T` → bracket, `e` → reaction arrow. ChemDraft's single-letter tool keys (V/L/M/C/R/E/+/−)
+  are released — E belongs to the arrow tool in this scheme, so the eraser (which holds E in the
+  ChemDraft scheme) is unbound here.
 - **Hovered atom:** element relabels (`h c n o f p s i` plus `w`→N, `q`→O, `l`/`C`→Cl, `b`→Br,
-  `B`→B, `L`→Li, `S`→Si), `1` grow bond, `2` carbonyl, `+`/`−` charge. The element set gained
+  `B`→B, `L`→Li, `S`→Si), `+`/`−` charge, and the full numeric drawing row: `1` grow bond,
+  `2` carbonyl (sprouting a new carbon to carry the C=O when the hovered atom can't),
+  `3`/`a` attach benzene, `4`/`5` wedge/hashed methyl sprouts, `6` cyclohexane, `7` cyclopentane,
+  `8` methylidene C=CH2, `9` gem-dimethyl, and `0` cyclic bond (each press turns the same 60° the
+  chain last turned, so repeated presses trace and close a ring). Sprouts are placed by pure
+  geometry — open-space bisectors and ±chain-angle candidates, ties breaking upward — and commit
+  the growth arrow's exact plan when a bond tool's arrow is on screen. The element set gained
   Cl/Br/Li/Si commands (`nativeHotkeyElements` in `documentWorkflow.ts`) — the model always
   supported them; only the keyboard surface was single-letter.
-- **Hovered bond:** `1`/`2`/`3` order, plus new display commands `bond.setHoveredBondDisplay.*`
-  (`w` wedge, `h`/`H`/`W` hashed, `d` dashed, `b` bold).
+- **Hovered bond:** `1`/`2`/`3` order, ring fusion `4`–`8` (four- to eight-membered rings,
+  bulging away from the molecule body), `9`/`0` the two chair cyclohexanes, `a` fuse benzene,
+  plus new display commands `bond.setHoveredBondDisplay.*` (`w` wedge, `h`/`H`/`W` hashed,
+  `d` dashed, `b` bold).
 - **Menus:** Export `Ctrl+Cmd+E`, zoom `Shift+Cmd+<`/`>`, rulers `Cmd+;`, crosshairs `Alt+Cmd+X`,
   front/back `Cmd+[`/`Cmd+]` (ChemDraw's orientation; the one-step variants are unbound), flip
   `Shift+Cmd+H`/`V`. Chords the apps already share (Cmd+N/O/S, clipboard, Copy As, `Cmd+D` CDXML,
   `Shift+Cmd+K` cleanup, group/ungroup, align/distribute) stay put.
+- **Tool keys are global; element and numeric keys are hover-scoped.** Space, `x`, `j`, `t`, `e`
+  and the other tool keys switch tools no matter what the pointer hovers — pressing `e` over an
+  atom arms the arrow tool (ChemDraw's ethyl/ester label on `e`/`E` is a deliberate gap, see
+  below), it does not relabel the atom. Element and numeric keys act only on the hovered atom or
+  bond and do nothing over empty canvas.
+
+The numeric row is **not scheme-gated**: the tables (`numericAtomDrawingHotkeys` /
+`numericBondDrawingHotkeys` in `commands.ts`) are shared, so those hover hotkeys are equally live
+under the default ChemDraft scheme — `hoveredNativeTargetShortcutCommand` in `MainWindow.tsx`
+consults the same tables ahead of its legacy fallbacks. Carbonyl, historically `k` over an atom
+in the ChemDraft scheme, is `2` in both schemes; `k` keeps working under ChemDraft only.
 
 ## Deliberately not mapped
 
-Nickname labels (`m`→Me, `O`→OMe, Boc/Cbz/Fmoc…), ring/fragment sprouts onto atoms (benzene,
-cyclohexane, alkyne, t-Bu…), ring fusion onto bonds, wedge-direction sprouts (`4`/`5`), dialogs
-(`=`, `/`), and tools ChemDraft lacks (TLC plate, orbitals, cyclopentadiene). Nicknames in ChemDraw
-expand to real structure; a text-label imitation would change chemical identity, which cleanup/layout
-code is forbidden to do. Revisit when structural abbreviations exist.
+Nickname labels (`m`→Me, `O`→OMe, Boc/Cbz/Fmoc… — including the ethyl/ester labels ChemDraw puts
+on `e`/`E` over an atom), the fragment sprouts ChemDraft has no template for (t-Bu on `k`,
+alkyne), dialogs (`=`, `/`), and tools ChemDraft lacks (TLC plate, orbitals, cyclopentadiene).
+Nicknames in ChemDraw expand to real structure; a text-label imitation would change chemical
+identity, which cleanup/layout code is forbidden to do. Revisit when structural abbreviations
+exist.
+
+## Compatibility notes
+
+This branch also changed the document schema and two rendering semantics, which matters when a
+document moves between this build and an older one. The per-slice entries in
+`docs/shipped/README.md` ("ChemDraw-parity drawing interactions") carry the same notes next to
+the features that caused them.
+
+- **`labelLiteral` / `warningSuppressed` atoms fail to open in older builds.** Both are new
+  optional keys on the atom schema, which is `.strict()`, so the load fails with a validation
+  error naming the unrecognized key. Re-saving from an older build is not possible (it can't
+  open the file); strip the keys to downgrade.
+- **Charge marks with magnitude >1 degrade silently in older builds.** The mark schema always
+  accepted any integer, so the file opens — but the old renderer drew every mark as a plain ±1
+  glyph and the old charge reconciliation recognized nothing beyond ±1, so the mark's
+  contribution is recomputed away on load: a stored 2+ reads as +.
+- **Pre-branch dashed bonds reinterpret as dative on open.** Dashed bonds now occupy no covalent
+  valence slot, so labels on atoms with dashed contacts may gain implicit hydrogens the moment
+  the document opens, and the stored formula keeps its pre-branch value until the first edit
+  re-derives it.
 
 ## Tests
 

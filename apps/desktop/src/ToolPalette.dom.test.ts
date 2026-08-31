@@ -1033,6 +1033,46 @@ describe("ToolPalette spacer items", () => {
     // The command button still renders normally alongside it.
     expect(container.querySelector('button[data-command-id="tool.bond"]')).not.toBeNull();
   });
+
+  it("activates a palette button from Space/Enter keydown through the button's own handler", () => {
+    // No global shortcut handler is mounted here, so an invoke can only come from the button
+    // itself — which is what lets the global handler ignore button targets (Space → select tool
+    // in the ChemDraw scheme) without breaking palette keyboard activation.
+    const item: ToolbarPaletteItemModel = {
+      id: "tool.bond",
+      kind: "button",
+      label: "Bond",
+      primary: { type: "command", command: { id: "tool.bond", title: "Bond", icon: "bond", source: "core", category: "tool" } as CommandSpec },
+      submenu: null,
+      tooltip: { title: "Bond" },
+      layout: { colSpan: 1, rowSpan: 1 }
+    };
+    const onInvoke = vi.fn();
+    act(() => {
+      root.render(createElement(ToolPalette, { itemGroups: [[item]], orientation: "horizontal", onInvoke }));
+    });
+
+    const bondButton = container.querySelector<HTMLButtonElement>('button[data-command-id="tool.bond"]');
+    if (!bondButton) {
+      throw new Error("Expected bond button.");
+    }
+
+    // preventDefault on keydown is what suppresses the button's native Space-keyup click, so the
+    // command fires exactly once per press.
+    let spaceDefaulted = false;
+    act(() => {
+      spaceDefaulted = !bondButton.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    });
+    expect(spaceDefaulted).toBe(true);
+    expect(onInvoke).toHaveBeenCalledTimes(1);
+    expect(onInvoke).toHaveBeenLastCalledWith("tool.bond");
+
+    act(() => {
+      bondButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onInvoke).toHaveBeenCalledTimes(2);
+    expect(onInvoke).toHaveBeenLastCalledWith("tool.bond");
+  });
 });
 
 describe("titleMonogram", () => {

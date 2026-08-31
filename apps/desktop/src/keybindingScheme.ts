@@ -3,9 +3,14 @@
  *
  * The mapping is behavioral: each entry pairs a ChemDraft command with the key
  * ChemDraw users expect for the equivalent action, so muscle memory transfers.
- * ChemDraw actions with no ChemDraft equivalent (nickname labels such as OMe,
- * ring-sprout hotkeys, dialog hotkeys) are simply absent — the keys do nothing
- * rather than doing something surprising.
+ * The numeric drawing row IS mapped: ring attach/fuse, wedge/hash sprouts,
+ * carbonyl, gem-dimethyl, and the cyclic-bond key live in
+ * `numericAtomDrawingHotkeys`/`numericBondDrawingHotkeys` (commands.ts) and are
+ * spread into the hover tables below — and into the default ChemDraft scheme's
+ * hover ladder, which consults the same tables. ChemDraw actions with no
+ * ChemDraft equivalent (nickname labels such as OMe, fragment sprouts beyond
+ * the numeric row such as t-Bu, dialog hotkeys) are simply absent — the keys
+ * do nothing rather than doing something surprising.
  *
  * Three surfaces are remapped:
  *   1. Registry shortcuts (tool switching + menu chords) via
@@ -79,7 +84,7 @@ export function applyKeybindingSchemeToCommands(
     return [...commands];
   }
   return commands.map((command) => {
-    if (!(command.id in CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES)) {
+    if (!Object.prototype.hasOwnProperty.call(CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES, command.id)) {
       return command;
     }
     const override = CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES[command.id];

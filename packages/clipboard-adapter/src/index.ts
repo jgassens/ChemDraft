@@ -84,8 +84,9 @@ export interface ParsedClipboardBond {
   toAtomId: string;
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
   /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
-   *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`. */
-  bondStyle?: "wedge" | "hashed";
+   *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`.
+   *  "dashed" is not stereo: it marks a V3000 coordination (dative) bond, type 9. */
+  bondStyle?: "wedge" | "hashed" | "dashed";
 }
 
 export interface ParsedMolfileGraph {
@@ -551,7 +552,9 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
 
       const cfgMatch = line.match(/\bCFG=(\d+)/);
       const cfg = cfgMatch ? Number(cfgMatch[1]) : 0;
-      const bondStyle = cfg === 1 ? "wedge" : cfg === 3 ? "hashed" : undefined; // CFG 2 = either
+      // Type 9 is a coordination (dative) bond: it reads back as a single bond with the dashed
+      // display style, and a dative bond carries no wedge/hash stereo (CFG stays with real types).
+      const bondStyle = orderCode === 9 ? "dashed" : cfg === 1 ? "wedge" : cfg === 3 ? "hashed" : undefined; // CFG 2 = either
       bonds.push({
         id: bondId(index),
         fromAtomId: atomId(fromIndex),
@@ -737,6 +740,11 @@ function bondOrderFromMolfile(code: number): ParsedClipboardBond["order"] {
   }
   if (code === 4) {
     return "aromatic";
+  }
+  // V3000 bond type 9 is the coordination (dative) bond. The native model carries dative as the
+  // dashed display style on a single bond, not as a bond order — the V3000 caller adds the style.
+  if (code === 9) {
+    return "single";
   }
   return "unknown";
 }

@@ -3147,8 +3147,13 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }
   }
   if (object.radical === true) {
+    // The dot rides left of the glyph it modifies. The 0.75·radius offset was tuned against the
+    // circled ± ring; the multi-magnitude numeral glyph ("2+") is wider than that ring, so its
+    // offset derives from the text's half-extent (two bold glyphs at the 1.35·radius font size)
+    // plus the dot radius and a unit of clearance — otherwise the dot lands on the numeral's edge.
+    const radicalDotOffset = magnitude > 1 ? radius * 1.35 * 0.6 + 3.1 : radius * 0.75;
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
-      cx: centerX - radius * 0.75,
+      cx: centerX - radicalDotOffset,
       cy: centerY,
       r: 2.1,
       fill: "#111111"

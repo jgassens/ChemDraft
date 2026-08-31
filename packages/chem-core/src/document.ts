@@ -110,7 +110,13 @@ export function migrateDocument(candidate: unknown): ChemDraftDocument {
     }
   }
 
-  throw new Error(`Unsupported or invalid ChemDraft document: ${formatValidationIssues(result.issues)}`);
+  const detail = formatValidationIssues(result.issues);
+  // Strict schemas reject keys written by newer builds (e.g. labelLiteral). Name that case so a
+  // one-way-door file reads as a version problem, not corruption.
+  const newerVersionHint = /unrecognized key/i.test(detail)
+    ? " The file may have been saved by a newer version of ChemDraft."
+    : "";
+  throw new Error(`Unsupported or invalid ChemDraft document: ${detail}${newerVersionHint}`);
 }
 
 export function cloneDocument(document: ChemDraftDocument): ChemDraftDocument {

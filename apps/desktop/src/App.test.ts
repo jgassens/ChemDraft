@@ -10,6 +10,7 @@ import {
   createDocumentHistory,
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
+  type ChemDraftDocument,
   type DocumentObject,
   type GraphicObject,
   type MoleculeObject
@@ -57,6 +58,7 @@ import {
 } from "./commands";
 import {
   applyAnalysisToSelectedMolecule,
+  applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
   applyDocumentObjectProjectedPlaneTilt,
   applyFreeformSingleBondToolAtPoint,
@@ -82,6 +84,7 @@ import {
   nativeGraphicPathEditPoints,
   nativePolylinePathDocument,
   openNativeDocument,
+  reconcileNativeChargeMarks,
   reorderSelectedDocumentObject,
   selectDocumentObjectWithinGroup,
   selectDocumentObjects,
@@ -101,6 +104,7 @@ import {
   activeNativeTargetShortcutCommand,
   cumulativeObjectResizeScale,
   cumulativeRotationReadoutDegrees,
+  electronMarkSpecStatusNoun,
   hoveredNativeTargetShortcutCommand,
   objectResizeReadoutPercent,
   objectResizeInputDraftPercent,
@@ -2006,6 +2010,76 @@ describe("ChemDraft desktop shell", () => {
     // No hovered target → hover hotkeys stay inert (matches ChemDraw's hotspot requirement).
     expect(hoveredNativeTargetShortcutCommand(undefined, "c", "chemdraw")).toBeUndefined();
     expect(chemDrawHoveredTargetHotkeyCommand("atom", "toString")).toBeUndefined();
+  });
+
+  it("keeps the hovered atom live across charge-hotkey commits, so repeated presses stack", () => {
+    // Regression: the charge-hotkey commit used to CLEAR the hover target, and hover was only
+    // re-derived on the next pointermove — so a second "+" over a stationary, unselected atom
+    // announced "No hovered atom for positive charge" while the pointer was visibly on the atom.
+    // The commit now re-derives the hover from the last canvas pointer position through the same
+    // derivation pointermove uses (mainWindowSource assertion), and this exercises that exact
+    // chain: derive hover → commit → re-derive on the committed document → press again.
+    // (A full MainWindow hover simulation is impractical here — jsdom has no layout, and the
+    // hover path is driven by window pointermove listeners over the rendered page.)
+    expect(mainWindowSource).toContain("rederiveNativeCanvasHoverRef.current(nextDocument)");
+
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Charge Hotkey Stacking"), { x: 300, y: 300 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected molecule fixture.");
+    }
+    const atom = molecule.atoms[0];
+    const hoverAtAtom = (source: ChemDraftDocument) =>
+      nativeMoleculeCanvasHoverTarget(source, { x: atom.x, y: atom.y });
+
+    const firstTarget = hoverAtAtom(document);
+    expect(firstTarget).toMatchObject({ objectId: molecule.id, kind: "atom", atomId: atom.id });
+
+    const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, firstTarget!));
+
+    // The re-derived hover on the committed document must resolve the SAME atom: the charge mark
+    // placed beside it is not a molecule object and never shadows it.
+    const secondTarget = hoverAtAtom(once);
+    expect(secondTarget).toMatchObject({ objectId: molecule.id, kind: "atom", atomId: atom.id });
+
+    // …so the second press stacks onto the same mark instead of dying on a cleared hover.
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, secondTarget!));
+    const marks = twice.pages[0].objects.filter((object) =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toMatchObject({ charge: 2 });
+  });
+
+  it("names the ±9 limit when a charge-hotkey increment is refused at the cap", () => {
+    // The cap refusal used to read "Cannot place positive charge on hovered atom" even though the
+    // mark WAS on the atom — it was the increment past ±9 that was refused. The query itself is
+    // covered in documentWorkflow.test.ts; this guards the MainWindow wiring of the message.
+    expect(mainWindowSource).toContain("nativeAtomChargeStackAtCap(currentDocument, markSpec, target)");
+    expect(mainWindowSource).toContain("Charge is already at the ±");
+  });
+
+  it("names the stacked magnitude in the charge status noun", () => {
+    // The spec carries only the ±1 increment; given the mark's stacked total, the status names
+    // it ("Placed positive charge 2+ on hovered atom"), matching the numeral the mark draws.
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1 })).toBe("positive charge");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: -1 })).toBe("negative charge");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1 }, 2)).toBe("positive charge 2+");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: -1 }, -3)).toBe("negative charge 3-");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1, radical: true }, 2)).toBe("radical cation 2+");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1, chargeStyle: "plain" })).toBe("positive charge");
+    expect(electronMarkSpecStatusNoun({ kind: "radical-dot" })).toBe("radical electron");
+    expect(electronMarkSpecStatusNoun({ kind: "lone-pair" })).toBe("lone pair");
+  });
+
+  it("routes copy-as SMILES/MOL fidelity warnings to the status bar", () => {
+    // The copy writers collect lossy-conversion notes into an optional out-channel; the MainWindow
+    // call sites pass it and the confirmation carries the warnings, so a dative bond flattened by
+    // SMILES/V2000 (or a label copied as a dummy atom) is never a silent success.
+    expect(mainWindowSource).toContain("copyAsSmiles(current, warnings)");
+    expect(mainWindowSource).toContain('copyAsMolfile(current, "v3000", warnings)');
+    expect(mainWindowSource).toContain('copyAsMolfile(current, "v2000", warnings)');
+    expect(mainWindowSource).toContain("`Copied ${label} to clipboard${warningSuffix}`");
   });
 
   it("defines minimal command-backed page-size and orientation controls", () => {
@@ -4561,8 +4635,10 @@ describe("ChemDraft desktop shell", () => {
       atomId: "atom_002",
       distanceToPointer: 0
     }, "O");
-    // Labels are literal by default; this render test opts back into the drawn hydrogen
-    // count so the multi-run "OH" label path stays exercised.
+    // Drawn atoms show their implicit hydrogens by default (`atomLabelHideImplicitHydrogens`
+    // is false in the default style; literalness is per-atom via `labelLiteral`, and the
+    // hotkey relabel above clears it). Pin the style on the object so the multi-run "OH"
+    // label path stays exercised.
     const updated = applyPatch(oxygen, {
       op: "updateObject",
       objectId: molecule.id,
@@ -4806,6 +4882,54 @@ describe("ChemDraft desktop shell", () => {
     expect(resolvedMarkup).not.toContain("native-atom-invalid-marker");
     expect(unresolvedMarkup).not.toContain('data-resolved-charge-atom-ids="atom_n"');
     expect(unresolvedMarkup).toContain('data-invalid-atom-id="atom_n"');
+  });
+
+  it("labels multi-magnitude charge marks with their real charge for assistive tech", () => {
+    // The overlay used to clamp any charge to ±1, so a mark drawn as "2+" carried
+    // data-charge="1" and announced "Positive charge". It now reports sign × magnitude, matching
+    // the layout-engine charge fragment that draws the numeral.
+    const dication = {
+      id: "charge_double",
+      type: "electron-mark",
+      x: 260,
+      y: 180,
+      width: 18,
+      height: 18,
+      rotation: 0,
+      style: { source: "test-charge" },
+      markKind: "charge",
+      anchor: { kind: "point", point: { x: 269, y: 189 } },
+      charge: 2
+    } satisfies DocumentObject;
+    const trianion = {
+      ...dication,
+      id: "charge_triple_minus",
+      anchor: { kind: "point", point: { x: 320, y: 189 } },
+      x: 311,
+      charge: -3
+    } satisfies DocumentObject;
+    const document = applyPatches(
+      createPhase4Document("Charge Mark Labels"),
+      [
+        { op: "addObject", pageId: "page_001", object: dication },
+        { op: "addObject", pageId: "page_001", object: trianion }
+      ],
+      { now: "2026-05-29T00:00:00.000Z" }
+    );
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-charge="2"');
+    expect(markup).toContain('aria-label="Positive charge 2+"');
+    expect(markup).toContain('data-charge="-3"');
+    expect(markup).toContain('aria-label="Negative charge 3-"');
+    // A ±1 mark keeps the plain label (no numeral, matching the drawn glyph).
+    expect(markup).not.toContain('aria-label="Positive charge 1+"');
   });
 
   it("stress-renders charged and hydrogen-count atom labels without recentering the element glyph", () => {
