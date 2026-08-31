@@ -4570,6 +4570,28 @@ describe("Phase 4 document workflow", () => {
     expect(mixedMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
   });
 
+  it("applies nickname labels verbatim with honest chemistry", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Nickname Label"), { x: 300, y: 300 });
+
+    // Opaque abbreviation: the label reads Et, is never valence-flagged, and contributes
+    // nothing to the formula (the remaining skeleton carbon keeps its methyl hydrogens).
+    const ethyl = setNativeAtomElement(ethane, "atom_002", "Et");
+    const ethylMolecule = selectedMolecule(ethyl);
+    const ethylAtom = ethylMolecule.atoms.find((atom) => atom.id === "atom_002");
+    expect(ethylAtom).toMatchObject({ element: "Et" });
+    expect(atomDisplayLabel(ethylAtom!, ethylMolecule.bonds)).toBe("Et");
+    expect(nativeMoleculeInvalidAtomStates(ethylMolecule)).toEqual([]);
+    expect(ethylMolecule.chemistry).toMatchObject({ formula: "CH3" });
+
+    // Condensed nickname that spells real elements: CF3 counts in the formula.
+    const trifluoromethyl = setNativeAtomElement(ethane, "atom_002", "CF3");
+    expect(selectedMolecule(trifluoromethyl).chemistry).toMatchObject({ formula: "C2H3F3" });
+
+    // "MgBr" parses as magnesium + bromine — the Grignard label carries its formula.
+    const grignard = setNativeAtomElement(ethane, "atom_002", "MgBr");
+    expect(selectedMolecule(grignard).chemistry).toMatchObject({ formula: "CH3BrMg" });
+  });
+
   it("treats dashed bonds as dative for valence and drawn hydrogens", () => {
     const bond = (id: string, to: string, order: "single" | "double" = "single", dashed = false) => ({
       id, fromAtomId: "a1", toAtomId: to, order,

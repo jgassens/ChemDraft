@@ -2007,6 +2007,23 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "d", "chemdraw")).toBe("bond.setHoveredBondDisplay.dashed");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "c", "chemdraw")).toBeUndefined();
 
+    // Nickname labels: verbatim text labels on the hovered atom, case-sensitive like the
+    // element keys. `e` over an atom is Et — the arrow tool only gets `e` with nothing hovered.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "e", "chemdraw")).toBe("atom.setHoveredLabel.Et");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "E", "chemdraw")).toBe("atom.setHoveredLabel.CO2Me");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "m", "chemdraw")).toBe("atom.setHoveredLabel.Me");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "O", "chemdraw")).toBe("atom.setHoveredLabel.OMe");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "P", "chemdraw")).toBe("atom.setHoveredLabel.Ph");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "y", "chemdraw")).toBe("atom.setHoveredLabel.Boc");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "x", "chemdraw")).toBe("atom.setHoveredLabel.X");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "Z", "chemdraw")).toBe("atom.setHoveredLabel.N3");
+    // A→Ac stays unmapped: "Ac" normalizes to actinium (the abbreviation/element collision).
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "A", "chemdraw")).toBeUndefined();
+    // Nicknames are atom-only; over a bond, `e` falls through (to the arrow tool binding).
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "e", "chemdraw")).toBeUndefined();
+    // The default ChemDraft scheme keeps `e` free for the eraser, hovering or not.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "e")).toBeUndefined();
+
     // No hovered target → hover hotkeys stay inert (matches ChemDraw's hotspot requirement).
     expect(hoveredNativeTargetShortcutCommand(undefined, "c", "chemdraw")).toBeUndefined();
     expect(chemDrawHoveredTargetHotkeyCommand("atom", "toString")).toBeUndefined();

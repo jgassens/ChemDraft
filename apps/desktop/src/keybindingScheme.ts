@@ -7,10 +7,12 @@
  * carbonyl, gem-dimethyl, and the cyclic-bond key live in
  * `numericAtomDrawingHotkeys`/`numericBondDrawingHotkeys` (commands.ts) and are
  * spread into the hover tables below — and into the default ChemDraft scheme's
- * hover ladder, which consults the same tables. ChemDraw actions with no
- * ChemDraft equivalent (nickname labels such as OMe, fragment sprouts beyond
- * the numeric row such as t-Bu, dialog hotkeys) are simply absent — the keys
- * do nothing rather than doing something surprising.
+ * hover ladder, which consults the same tables. Nickname labels (e→Et, O→OMe,
+ * Boc/Cbz/Fmoc…) ARE mapped, as verbatim text labels rather than structural
+ * expansions. ChemDraw actions with no ChemDraft equivalent (fragment sprouts
+ * beyond the numeric row such as t-Bu, dialog hotkeys, and A→Ac — an
+ * element-symbol collision) are simply absent — the keys do nothing rather
+ * than doing something surprising.
  *
  * Three surfaces are remapped:
  *   1. Registry shortcuts (tool switching + menu chords) via
@@ -22,7 +24,7 @@
  *      scheme changes (`set_keybinding_scheme`).
  */
 
-import { numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
+import { atomLabelCommandId, numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
 import type { KeybindingScheme } from "./keybindingSettings";
 import { compactMacShortcutLabel } from "./toolsets";
 
@@ -132,7 +134,29 @@ const CHEMDRAW_ATOM_HOTKEYS: Readonly<Record<string, string>> = {
   C: atomElementCommand("Cl"),
   l: atomElementCommand("Cl"),
   L: atomElementCommand("Li"),
-  S: atomElementCommand("Si")
+  S: atomElementCommand("Si"),
+  // Nickname labels, derived behaviorally from the installed ChemDraw's hotkey table: each
+  // places the label VERBATIM as a superatom-style text label (see `nativeNicknameLabels` for
+  // the chemistry caveats, and for why `A`→Ac is deliberately absent). The hover ladder runs
+  // before the registry, so `e` here wins over the arrow tool exactly while an atom is hovered
+  // — the same split ChemDraw makes — and `x` likewise yields the X label over an atom while
+  // switching to the bond tool anywhere else.
+  d: atomLabelCommandId("D"),
+  e: atomLabelCommandId("Et"),
+  E: atomLabelCommandId("CO2Me"),
+  F: atomLabelCommandId("CF3"),
+  H: atomLabelCommandId("Cbz"),
+  m: atomLabelCommandId("Me"),
+  M: atomLabelCommandId("MgBr"),
+  N: atomLabelCommandId("NO2"),
+  O: atomLabelCommandId("OMe"),
+  P: atomLabelCommandId("Ph"),
+  Q: atomLabelCommandId("Fmoc"),
+  r: atomLabelCommandId("R"),
+  x: atomLabelCommandId("X"),
+  y: atomLabelCommandId("Boc"),
+  Z: atomLabelCommandId("N3"),
+  "!": atomLabelCommandId("?")
 };
 
 /**

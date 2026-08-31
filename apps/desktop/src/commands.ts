@@ -420,6 +420,33 @@ export function atomElementCommandId(element: NativeHotkeyElement): string {
   return `atom.setHoveredElement.${element}`;
 }
 
+/**
+ * ChemDraw-parity nickname labels placed by hover hotkeys. Each sets the hovered atom's label
+ * VERBATIM — a superatom-style text label, not an element and not a structural expansion. The
+ * condensed ones that spell real formulas (CF3, NO2, N3, MgBr) count in the molecular formula;
+ * opaque abbreviations (Et, Ph, Boc…) contribute nothing and export to SMILES/molfile as a
+ * warned dummy atom. "Ac" is deliberately ABSENT: it normalizes to actinium, and silently
+ * turning an acetyl into a metal is the abbreviation/element collision the formula path already
+ * documents — leave `A` unmapped until that policy exists.
+ */
+export const nativeNicknameLabels = [
+  "D", "Et", "CO2Me", "CF3", "Cbz", "Me", "MgBr", "NO2", "OMe", "Ph", "Fmoc", "R", "X", "Boc", "N3", "?"
+] as const;
+export type NativeNicknameLabel = typeof nativeNicknameLabels[number];
+
+export function atomLabelCommandId(label: string): string {
+  return `atom.setHoveredLabel.${label}`;
+}
+
+export const atomNicknameLabelActions: CommandSpec[] = nativeNicknameLabels.map((label) => ({
+  id: atomLabelCommandId(label),
+  title: `Label Hovered Atom: ${label}`,
+  icon: "atom",
+  source: "core",
+  category: "edit",
+  description: `Set the hovered native atom's label to ${label}`
+}));
+
 export const atomElementActions: CommandSpec[] = nativeHotkeyElements.map((element) => ({
   id: atomElementCommandId(element),
   title: `Set Hovered Atom: ${element}`,
@@ -2144,6 +2171,7 @@ export function allShellCommands(
     ...copyAsActions,
     ...editActions,
     ...atomElementActions,
+    ...atomNicknameLabelActions,
     ...viewActions,
     ...pageSizeActions,
     pageCustomSizeAction,

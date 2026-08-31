@@ -39,7 +39,9 @@ applied live to every window, default remains `chemdraft`.
   are released — E belongs to the arrow tool in this scheme, so the eraser (which holds E in the
   ChemDraft scheme) is unbound here.
 - **Hovered atom:** element relabels (`h c n o f p s i` plus `w`→N, `q`→O, `l`/`C`→Cl, `b`→Br,
-  `B`→B, `L`→Li, `S`→Si), `+`/`−` charge, and the full numeric drawing row: `1` grow bond,
+  `B`→B, `L`→Li, `S`→Si), nickname labels (`d`→D, `e`→Et, `E`→CO2Me, `F`→CF3, `H`→Cbz, `m`→Me,
+  `M`→MgBr, `N`→NO2, `O`→OMe, `P`→Ph, `Q`→Fmoc, `r`→R, `x`→X, `y`→Boc, `Z`→N3, `!`→?), `+`/`−`
+  charge, and the full numeric drawing row: `1` grow bond,
   `2` carbonyl (sprouting a new carbon to carry the C=O when the hovered atom can't),
   `3`/`a` attach benzene, `4`/`5` wedge/hashed methyl sprouts, `6` cyclohexane, `7` cyclopentane,
   `8` methylidene C=CH2, `9` gem-dimethyl, and `0` cyclic bond (each press turns the same 60° the
@@ -56,11 +58,11 @@ applied live to every window, default remains `chemdraft`.
   front/back `Cmd+[`/`Cmd+]` (ChemDraw's orientation; the one-step variants are unbound), flip
   `Shift+Cmd+H`/`V`. Chords the apps already share (Cmd+N/O/S, clipboard, Copy As, `Cmd+D` CDXML,
   `Shift+Cmd+K` cleanup, group/ungroup, align/distribute) stay put.
-- **Tool keys are global; element and numeric keys are hover-scoped.** Space, `x`, `j`, `t`, `e`
-  and the other tool keys switch tools no matter what the pointer hovers — pressing `e` over an
-  atom arms the arrow tool (ChemDraw's ethyl/ester label on `e`/`E` is a deliberate gap, see
-  below), it does not relabel the atom. Element and numeric keys act only on the hovered atom or
-  bond and do nothing over empty canvas.
+- **Hover wins over tools, exactly as in ChemDraw.** Element, nickname, and numeric keys act on
+  the hovered atom or bond; the same key with nothing hovered falls through to its tool binding.
+  So `e` over an atom places the Et label and `e` over empty canvas arms the arrow tool; `x`
+  likewise splits between the X label and the bond tool. Space, `j`, `t` and the other keys with
+  no hover meaning switch tools regardless.
 
 The numeric row is **not scheme-gated**: the tables (`numericAtomDrawingHotkeys` /
 `numericBondDrawingHotkeys` in `commands.ts`) are shared, so those hover hotkeys are equally live
@@ -68,14 +70,23 @@ under the default ChemDraft scheme — `hoveredNativeTargetShortcutCommand` in `
 consults the same tables ahead of its legacy fallbacks. Carbonyl, historically `k` over an atom
 in the ChemDraft scheme, is `2` in both schemes; `k` keeps working under ChemDraft only.
 
+## Nickname labels: verbatim, not structural
+
+The nickname hotkeys place the label VERBATIM as a superatom-style text label — ChemDraw expands
+them to real structure; ChemDraft does not (yet). The chemistry is handled honestly rather than
+silently: labels that spell a condensed formula of real elements (CF3, NO2, N3, MgBr) count in
+the molecular formula, opaque abbreviations (Et, Me, Ph, Boc, Cbz, Fmoc, OMe, CO2Me, R, X, D, ?)
+contribute nothing, and both kinds export to SMILES/molfile as a warned dummy atom (`[*]`/`*`)
+when no single-atom spelling exists. `D` is a plain label, not a modeled deuterium isotope.
+Nickname atoms are never valence-flagged (only the text tool creates literal checked atoms).
+
 ## Deliberately not mapped
 
-Nickname labels (`m`→Me, `O`→OMe, Boc/Cbz/Fmoc… — including the ethyl/ester labels ChemDraw puts
-on `e`/`E` over an atom), the fragment sprouts ChemDraft has no template for (t-Bu on `k`,
-alkyne), dialogs (`=`, `/`), and tools ChemDraft lacks (TLC plate, orbitals, cyclopentadiene).
-Nicknames in ChemDraw expand to real structure; a text-label imitation would change chemical
-identity, which cleanup/layout code is forbidden to do. Revisit when structural abbreviations
-exist.
+`A`→Ac is absent: "Ac" normalizes to the element actinium, and silently turning an acetyl label
+into a metal is the abbreviation/element collision documented in `parseCondensedLabelFormula` —
+unmapped until that policy exists. Also absent: the fragment sprouts ChemDraft has no template
+for (t-Bu on `k`, alkyne), dialogs (`=`, `/`), and tools ChemDraft lacks (TLC plate, orbitals,
+cyclopentadiene).
 
 ## Compatibility notes
 

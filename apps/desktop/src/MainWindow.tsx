@@ -172,6 +172,7 @@ import {
 } from "@chemdraft/export-engine";
 import {
   atomElementActions,
+  atomNicknameLabelActions,
   atomElementCommandId,
   numericAtomDrawingHotkeys,
   numericBondDrawingHotkeys,
@@ -3323,6 +3324,29 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
     setStatus(`Set hovered atom to ${element}`);
+  }, [commitDocumentChange, selectedNativeMoleculePart]);
+
+  const setHoveredNativeAtomLabel = useCallback((label: string) => {
+    const target = hoveredNativeDeleteTargetRef.current
+      ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
+    if (!target || target.kind !== "atom") {
+      setStatus(`No hovered atom for ${label}`);
+      return;
+    }
+
+    const currentDocument = documentRef.current;
+    const nextDocument = applyNativeAtomElementTarget(currentDocument, target, label);
+    if (nextDocument === currentDocument) {
+      setStatus(`Cannot label hovered atom ${label}`);
+      return;
+    }
+
+    commitDocumentChange(nextDocument);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    setFreeformNativeBond(undefined);
+    setStatus(`Labeled hovered atom ${label}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const hoveredGrowthArrowPlan = useCallback((target: NativeMoleculeDeleteTarget): NativeBondGrowthPlan | undefined => {
@@ -7675,6 +7699,12 @@ export function MainWindow({
       });
     });
 
+    atomNicknameLabelActions.forEach((action) => {
+      register(action, () => {
+        setHoveredNativeAtomLabel(action.id.replace("atom.setHoveredLabel.", ""));
+      });
+    });
+
     const objectStyleCommandIds = new Set(objectStyleActions.map((action) => action.id));
 
     toolCommandSpecs.forEach((tool) => {
@@ -7954,6 +7984,7 @@ export function MainWindow({
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
     setHoveredNativeAtomElement,
+    setHoveredNativeAtomLabel,
     setHoveredNativeBondOrder,
     toggleToolset,
     toolCommandSpecs,
