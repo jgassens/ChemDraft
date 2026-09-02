@@ -14,6 +14,7 @@ import {
   atomDisplayLabel,
   atomDegrees,
   atomLabelAnchorOffset,
+  atomLabelLayout,
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
   depthCuedLabelColor,
@@ -1289,6 +1290,245 @@ describe("layout-engine page SVG planner", () => {
       fill: "#c75c12",
       "font-style": "italic"
     });
+  });
+
+  it("preserves established trailing-subscript and leading-hydrogen label geometry", () => {
+    const drawingStyle = {
+      ...ChemDraftSyntheticStylePreset.drawing,
+      atomLabelPlacement: "above" as const
+    };
+    const atom = { id: "atom_label_baseline", element: "N", x: 120, y: 160, formalCharge: 0 };
+
+    expect(Object.fromEntries(
+      ["NH2", "CH3", "OH", "OH-", "NH3+", "H2N"].map((label) => {
+        const layout = atomLabelLayout(label, drawingStyle);
+        return [label, {
+          layout,
+          anchor: atomLabelAnchorOffset(atom, label, drawingStyle, layout)
+        }];
+      })
+    )).toMatchInlineSnapshot(`
+      {
+        "CH3": {
+          "anchor": {
+            "x": 0,
+            "y": -16.658,
+          },
+          "layout": {
+            "bounds": {
+              "height": 22.816000000000003,
+              "width": 28.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "CH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "3",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+            ],
+          },
+        },
+        "H2N": {
+          "anchor": {
+            "x": 0,
+            "y": -16.658,
+          },
+          "layout": {
+            "bounds": {
+              "height": 22.816000000000003,
+              "width": 28.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "HN",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "2",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+            ],
+          },
+        },
+        "NH2": {
+          "anchor": {
+            "x": 0,
+            "y": -16.658,
+          },
+          "layout": {
+            "bounds": {
+              "height": 22.816000000000003,
+              "width": 28.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "NH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "2",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+            ],
+          },
+        },
+        "NH3+": {
+          "anchor": {
+            "x": 0,
+            "y": -19.64,
+          },
+          "layout": {
+            "bounds": {
+              "height": 28.78,
+              "width": 35.650000000000006,
+              "x": -11.3,
+              "y": -16.064,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "NH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "3",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+              {
+                "script": "superscript",
+                "text": "+",
+                "textAnchor": "start",
+                "x": 15.75,
+                "y": -7.199999999999999,
+              },
+            ],
+          },
+        },
+        "OH": {
+          "anchor": {
+            "x": 0,
+            "y": -15.350000000000001,
+          },
+          "layout": {
+            "bounds": {
+              "height": 20.200000000000003,
+              "width": 22.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "OH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+            ],
+          },
+        },
+        "OH-": {
+          "anchor": {
+            "x": 0,
+            "y": -18.332,
+          },
+          "layout": {
+            "bounds": {
+              "height": 26.164,
+              "width": 30.400000000000002,
+              "x": -11.3,
+              "y": -16.064,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "OH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "superscript",
+                "text": "-",
+                "textAnchor": "start",
+                "x": 10.5,
+                "y": -7.199999999999999,
+              },
+            ],
+          },
+        },
+      }
+    `);
+  });
+
+  it.each(["CO2Me", "CO2H"])("lays out every body run in order for %s", (label) => {
+    const layout = atomLabelLayout(label, ChemDraftSyntheticStylePreset.drawing);
+
+    expect(layout.runs.map(({ text, script }) => ({ text, script }))).toEqual([
+      { text: "CO", script: "normal" },
+      { text: "2", script: "subscript" },
+      { text: label.slice(3), script: "normal" }
+    ]);
+    expect(layout.runs[2]!.x).toBeGreaterThan(layout.runs[1]!.x);
+  });
+
+  it("emits an interior-digit nickname label in source order in the page render plan", () => {
+    const molecule = moleculeObject({
+      id: "mol_interior_digit_label",
+      structure: "COC",
+      atoms: [
+        {
+          id: "atom_nickname",
+          element: "CO2Me",
+          x: 140,
+          y: 180,
+          formalCharge: 0,
+          labelLiteral: true
+        }
+      ],
+      bonds: []
+    });
+
+    const renderedCharacters = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs.class === "native-atom-label-run")
+      .flatMap((fragment) => fragment.children)
+      .filter((fragment) => fragment.kind === "text")
+      .flatMap((fragment) => Array.from(fragment.text));
+
+    expect(renderedCharacters).toEqual(["C", "O", "2", "M", "e"]);
   });
 
   it("places an alcohol hydrogen away from its right-hand bond and anchors the oxygen at the atom", () => {

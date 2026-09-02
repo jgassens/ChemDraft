@@ -3081,9 +3081,10 @@ export function textObjectSpansForRendering(object: TextObject): TextSpan[] {
 }
 
 /**
- * Charge and electron symbols, drawn as vectors so the circled forms stay crisp at any zoom.
- * The default charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant —
- * and a `radical` charge carries the unpaired-electron dot beside the sign (•+ / •−).
+ * Single charge and electron symbols use vector strokes so their circled forms stay crisp at any
+ * zoom, while multi-magnitude marks use a text glyph such as "2+" or "3−". The default single
+ * charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant — and a `radical`
+ * charge carries the unpaired-electron dot beside the sign (•+ / •−).
  */
 function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
   const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
@@ -4757,15 +4758,24 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
       drawingStyle
     );
   }
-  const baseText = bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label;
-  const suffixRuns = bodyRuns.filter((run) => run.script !== "normal");
-  const baseWidth = atomLabelRunWidth({ text: baseText, script: "normal" }, drawingStyle);
+  // A leading hydrogen count retains its established grouped-base geometry because that label
+  // family has a separate placement contract from ordinary left-to-right body runs.
+  const preservesLeadingHydrogenGeometry = /^H\d+[A-Z][a-z]?$/.test(splitAtomLabelCharge(label).body);
+  const baseRun = preservesLeadingHydrogenGeometry
+    ? {
+        text: bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label,
+        script: "normal" as const
+      }
+    : bodyRuns.find((run) => run.script === "normal") ?? { text: label, script: "normal" as const };
+  const followingRuns = preservesLeadingHydrogenGeometry
+    ? bodyRuns.filter((run) => run.script !== "normal")
+    : bodyRuns.slice(bodyRuns.indexOf(baseRun) + 1);
+  const baseWidth = atomLabelRunWidth(baseRun, drawingStyle);
   const baseHalfWidth = baseWidth / 2;
   const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
   const runs: AtomLabelLayoutRun[] = [
     {
-      text: baseText,
-      script: "normal",
+      ...baseRun,
       x: 0,
       y: 0,
       textAnchor: "middle"
@@ -4776,12 +4786,14 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
   let bottom = baseHalfHeight;
   let cursor = baseHalfWidth + drawingStyle.atomLabelFontSizePx * 0.04;
 
-  for (const run of suffixRuns) {
+  for (const run of followingRuns) {
     const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
     const width = atomLabelRunWidth(run, drawingStyle);
     const y = run.script === "subscript"
       ? drawingStyle.atomLabelFontSizePx * 0.34
-      : -drawingStyle.atomLabelFontSizePx * 0.42;
+      : run.script === "superscript"
+        ? -drawingStyle.atomLabelFontSizePx * 0.42
+        : 0;
     runs.push({
       ...run,
       x: cursor,
