@@ -23,13 +23,16 @@ import {
   nativeMoleculeRings
 } from "@chemdraft/layout-engine";
 import { inchRulerUnit } from "@chemdraft/viewport-engine";
+import { isValidToolsetCommandId } from "@chemdraft/toolset-registry";
 import {
   allShellCommands,
   atomElementActions,
+  atomNicknameLabelActions,
   createLayerActions,
   createQuickActions,
   editActions,
   normalizeHexColor,
+  nicknameLabelByCommandId,
   objectColorForCommand,
   objectCustomColorCommandId,
   objectGradientDeleteStopCommandId,
@@ -1426,6 +1429,20 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("Validate Selected Structure");
   });
 
+  it("keeps every toolbar-eligible app command id schema-valid", () => {
+    const commands = [
+      ...allShellCommands(createPhase4Document()),
+      ...getToolsetCommandSpecs()
+    ];
+
+    commands.forEach((command) => {
+      expect(
+        isValidToolsetCommandId(command.id),
+        `${command.id} must satisfy the toolset command-id schema`
+      ).toBe(true);
+    });
+  });
+
   it("inserts native art objects with selectable color and projected-plane tilt style", () => {
     const document = createPhase4Document("Native Art");
     const created = createNativeArtGraphicObject(document, { x: 140, y: 160 }, "tool.art.rectGloss");
@@ -1888,6 +1905,31 @@ describe("ChemDraft desktop shell", () => {
     expect(atomElementActions.every((command) => command.shortcut === undefined)).toBe(true);
   });
 
+  it("keeps nickname command ids stable while encoding the unknown label safely", () => {
+    expect(atomNicknameLabelActions.map((command) => command.id)).toEqual([
+      "atom.setHoveredLabel.D",
+      "atom.setHoveredLabel.Et",
+      "atom.setHoveredLabel.CO2Me",
+      "atom.setHoveredLabel.CF3",
+      "atom.setHoveredLabel.Cbz",
+      "atom.setHoveredLabel.Me",
+      "atom.setHoveredLabel.MgBr",
+      "atom.setHoveredLabel.NO2",
+      "atom.setHoveredLabel.OMe",
+      "atom.setHoveredLabel.Ph",
+      "atom.setHoveredLabel.Fmoc",
+      "atom.setHoveredLabel.R",
+      "atom.setHoveredLabel.X",
+      "atom.setHoveredLabel.Boc",
+      "atom.setHoveredLabel.N3",
+      "atom.setHoveredLabel.unknown"
+    ]);
+    expect(atomNicknameLabelActions.at(-1)).toMatchObject({
+      title: "Label Hovered Atom: ?",
+      description: "Set the hovered native atom's label to ?"
+    });
+  });
+
   it("defines command-backed hovered atom growth and charge actions", () => {
     expect(editActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "atom.addSingleBondToHoveredAtom", shortcut: "1" }),
@@ -2017,6 +2059,37 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "y", "chemdraw")).toBe("atom.setHoveredLabel.Boc");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "x", "chemdraw")).toBe("atom.setHoveredLabel.X");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "Z", "chemdraw")).toBe("atom.setHoveredLabel.N3");
+    const unknownLabelCommandId = hoveredNativeTargetShortcutCommand(atomTarget, "!", "chemdraw");
+    expect(unknownLabelCommandId).toBe("atom.setHoveredLabel.unknown");
+
+    // The registered handler consumes the reverse lookup instead of treating the schema-safe
+    // command token as label text, so the atom still receives the visible question mark.
+    expect(mainWindowSource).toContain("const label = nicknameLabelByCommandId.get(action.id);");
+    expect(mainWindowSource).toContain("setHoveredNativeAtomLabel(label);");
+    const unknownLabel = unknownLabelCommandId
+      ? nicknameLabelByCommandId.get(unknownLabelCommandId)
+      : undefined;
+    expect(unknownLabel).toBe("?");
+    const seeded = insertNativeSingleBondMolecule(
+      createPhase4Document("Unknown Nickname Shortcut"),
+      { x: 200, y: 220 }
+    );
+    const seededMolecule = seeded.pages[0].objects.find(
+      (object): object is MoleculeObject => object.type === "molecule"
+    );
+    if (!seededMolecule || !unknownLabel) {
+      throw new Error("Expected a native molecule and unknown nickname mapping.");
+    }
+    const labeled = applyNativeAtomElementTarget(seeded, {
+      objectId: seededMolecule.id,
+      kind: "atom",
+      atomId: seededMolecule.atoms[0].id,
+      distanceToPointer: 0
+    }, unknownLabel);
+    const labeledMolecule = labeled.pages[0].objects.find(
+      (object): object is MoleculeObject => object.id === seededMolecule.id && object.type === "molecule"
+    );
+    expect(labeledMolecule?.atoms[0].element).toBe("?");
     // A→Ac stays unmapped: "Ac" normalizes to actinium (the abbreviation/element collision).
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "A", "chemdraw")).toBeUndefined();
     // Nicknames are atom-only; over a bond, `e` falls through (to the arrow tool binding).

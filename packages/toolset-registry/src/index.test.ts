@@ -9,6 +9,7 @@ import {
   createToolbarsMenuModel,
   createToolsetToggleCommandDefinitions,
   createToolsetToggleCommandId,
+  isValidToolsetCommandId,
   normalizeToolsetItem,
   parseToolsetLayoutState,
   parseToolsetManifest,
@@ -50,6 +51,11 @@ const pluginToolset: ToolsetDefinition = {
 };
 
 describe("toolset registry", () => {
+  it("validates command ids through the public command-id contract", () => {
+    expect(isValidToolsetCommandId("atom.setHoveredLabel.unknown")).toBe(true);
+    expect(isValidToolsetCommandId("atom.setHoveredLabel.?")).toBe(false);
+  });
+
   it("validates typed toolset definitions", () => {
     expect(ToolsetDefinitionSchema.parse(fixtureToolset).id).toBe("core.fixture");
   });

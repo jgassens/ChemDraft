@@ -434,12 +434,19 @@ export const nativeNicknameLabels = [
 ] as const;
 export type NativeNicknameLabel = typeof nativeNicknameLabels[number];
 
-export function atomLabelCommandId(label: string): string {
-  return `atom.setHoveredLabel.${label}`;
+export function atomLabelCommandId(label: NativeNicknameLabel): string {
+  // The visible unknown label is punctuation, but toolbar customization persists command IDs
+  // through a schema that permits only alphanumeric tokens between separators.
+  const token = label === "?" ? "unknown" : label;
+  return `atom.setHoveredLabel.${token}`;
 }
 
-export const atomNicknameLabelActions: CommandSpec[] = nativeNicknameLabels.map((label) => ({
-  id: atomLabelCommandId(label),
+export const nicknameLabelByCommandId: ReadonlyMap<string, NativeNicknameLabel> = new Map(
+  nativeNicknameLabels.map((label) => [atomLabelCommandId(label), label])
+);
+
+export const atomNicknameLabelActions: CommandSpec[] = [...nicknameLabelByCommandId].map(([id, label]) => ({
+  id,
   title: `Label Hovered Atom: ${label}`,
   icon: "atom",
   source: "core",
