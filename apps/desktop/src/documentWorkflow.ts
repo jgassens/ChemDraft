@@ -945,14 +945,19 @@ export function nativeAtomValidationState(
     // a catalyst, not an error), but a bond count beyond the element's highest known
     // coordination number is a drawing mistake worth the badge.
     const metalCeiling = nativeMetalMaxCoordination[element];
-    if (metalCeiling !== undefined && valenceUsed > metalCeiling) {
+    // Coordination counts ligand attachments, including dashed dative contacts, rather than
+    // covalent valence; radical slots still occupy one site just as they do in valence checking.
+    const coordinationUsed = bonds.reduce((count, bond) => (
+      bond.fromAtomId === atom.id || bond.toAtomId === atom.id ? count + 1 : count
+    ), atom.markRadicals ?? 0);
+    if (metalCeiling !== undefined && coordinationUsed > metalCeiling) {
       return {
         atomId: atom.id,
         element,
         valenceUsed,
         formalCharge: effectiveFormalCharge,
         valid: false,
-        invalidReason: `${element} atom ${atom.id} has ${valenceUsed} bonds; ${element} is not known beyond ${metalCeiling}-coordinate.`
+        invalidReason: `${element} atom ${atom.id} has ${coordinationUsed} bonds; ${element} is not known beyond ${metalCeiling}-coordinate.`
       };
     }
     return {
@@ -7145,6 +7150,11 @@ export function applyNativeBondDisplayStyleTarget(
 
   const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
   if (!bond || bond.display?.bondStyle === bondStyle) {
+    return document;
+  }
+  // Dashed bonds are dative chemistry rather than decoration, and the interchange writers cannot
+  // represent a double or higher-order coordination bond without silently changing its meaning.
+  if (bondStyle === "dashed" && bond.order !== "single") {
     return document;
   }
 

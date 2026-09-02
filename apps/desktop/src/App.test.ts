@@ -2048,6 +2048,10 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "b", "chemdraw")).toBe("bond.setHoveredBondDisplay.bold");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "d", "chemdraw")).toBe("bond.setHoveredBondDisplay.dashed");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "c", "chemdraw")).toBeUndefined();
+    // MainWindow's canvas hover path has no jsdom layout harness, so pin both user-facing outcomes
+    // through the same source-wiring assertions used by the other hover-hotkey status tests.
+    expect(mainWindowSource).toContain('setStatus("Dashed (dative) display needs a single bond")');
+    expect(mainWindowSource).toContain('"Set hovered bond to dashed (dative): no covalent valence on either atom"');
 
     // Nickname labels: verbatim text labels on the hovered atom, case-sensitive like the
     // element keys. `e` over an atom is Et — the arrow tool only gets `e` with nothing hovered.

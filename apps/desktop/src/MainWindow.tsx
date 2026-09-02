@@ -1355,7 +1355,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.1.20.55-codex";
+const CURRENT_BUILD_STAMP = "9.1.20.56-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3287,6 +3287,14 @@ export function MainWindow({
       return;
     }
 
+    const targetBond = currentDocument.pages[0]?.objects
+      .find((object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule")
+      ?.bonds.find((bond) => bond.id === target.bondId);
+    if (bondStyle === "dashed" && targetBond && targetBond.order !== "single") {
+      setStatus("Dashed (dative) display needs a single bond");
+      return;
+    }
+
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeBondDisplayStyleTarget(selectedDocument, target, bondStyle);
     if (nextDocument === selectedDocument) {
@@ -3301,7 +3309,9 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered bond display to ${bondStyle}`);
+    setStatus(bondStyle === "dashed"
+      ? "Set hovered bond to dashed (dative): no covalent valence on either atom"
+      : `Set hovered bond display to ${bondStyle}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeAtomElement = useCallback((element: NativeHotkeyElement) => {

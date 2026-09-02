@@ -5102,6 +5102,22 @@ describe("Phase 4 document workflow", () => {
     const metal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0 });
     expect(nativeAtomValidationState(metal("Pd"), bonds(7))).toMatchObject({ valid: false });
     expect(nativeAtomValidationState(metal("Re"), bonds(9))).toMatchObject({ valid: true });
+
+    // Dashed contacts contribute no covalent valence, but each ligand still occupies one
+    // coordination site at the metal ceiling.
+    const dashedBonds = (count: number) => bonds(count).map((bond) => ({
+      ...bond,
+      display: { bondStyle: "dashed" as const }
+    }));
+    expect(nativeAtomValidationState(metal("Zn"), dashedBonds(6))).toMatchObject({
+      valid: true,
+      valenceUsed: 0
+    });
+    expect(nativeAtomValidationState(metal("Zn"), dashedBonds(7))).toMatchObject({
+      valid: false,
+      valenceUsed: 0,
+      invalidReason: expect.stringContaining("not known beyond 6-coordinate")
+    });
   });
 
   it("accepts hypervalent heavy halogens and chalcogens at their real oxidation states", () => {
@@ -9676,8 +9692,8 @@ describe("Phase 4 document workflow", () => {
     if (!oxygen) {
       throw new Error("Expected hydroxyl oxygen.");
     }
-    // Labels are literal by default; opt into the drawn hydrogen count to watch the proton
-    // come and go on the label itself (the formula assertions track the model regardless).
+    // Hotkey relabels never create literal atoms, so show the drawn atom's implicit hydrogen to
+    // watch the proton come and go on the label itself (the formula tracks the model regardless).
     const showHydrogens = { ...DefaultNativeDrawingStyle, atomLabelHideImplicitHydrogens: false };
     expect(atomDisplayLabel(oxygen, molecule.bonds, showHydrogens, molecule.atoms)).toBe("OH");
     expect(molecule.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
@@ -11047,6 +11063,7 @@ describe("Phase 4 document workflow", () => {
     const molecule = selectedMolecule(document);
 
     expect(molecule.bonds[0].display?.bondStyle).toBe("wedge");
+    expect(molecule.chemistry).toMatchObject({ formula: "C2H6" });
 
     const bond = molecule.bonds[0];
     const dashed = applyNativeBondDisplayStyleTarget(document, {
@@ -11059,6 +11076,29 @@ describe("Phase 4 document workflow", () => {
     }, "dashed");
 
     expect(selectedMolecule(dashed).bonds[0].display?.bondStyle).toBe("dashed");
+    // C2H8 is by design for a dative dash: neither endpoint spends covalent valence, and the
+    // hovered-bond status explicitly discloses that chemistry change to the user.
+    expect(selectedMolecule(dashed).chemistry).toMatchObject({ formula: "C2H8" });
+  });
+
+  it("refuses to apply dative dashed display to a non-single bond", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Double Bond Dative Refusal"),
+      { x: 200, y: 220 }
+    );
+    const bond = selectedMolecule(document).bonds[0];
+    const doubleBondDocument = setNativeBondOrder(document, bond.id, "double");
+    const doubleBond = selectedMolecule(doubleBondDocument).bonds[0];
+    const dashed = applyNativeBondDisplayStyleTarget(doubleBondDocument, {
+      objectId: selectedMolecule(doubleBondDocument).id,
+      kind: "bond",
+      bondId: doubleBond.id,
+      fromAtomId: doubleBond.fromAtomId,
+      toAtomId: doubleBond.toAtomId,
+      distanceToPointer: 0
+    }, "dashed");
+
+    expect(dashed).toBe(doubleBondDocument);
   });
 
   it("applies styled bond metadata to freeform native bond growth", () => {
