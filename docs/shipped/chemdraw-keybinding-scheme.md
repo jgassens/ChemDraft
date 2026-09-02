@@ -53,16 +53,21 @@ applied live to every window, default remains `chemdraft`.
 - **Hovered bond:** `1`/`2`/`3` order, ring fusion `4`–`8` (four- to eight-membered rings,
   bulging away from the molecule body), `9`/`0` the two chair cyclohexanes, `a` fuse benzene,
   plus new display commands `bond.setHoveredBondDisplay.*` (`w` wedge, `h`/`H`/`W` hashed,
-  `d` dashed, `b` bold).
+  `d` sets the dative (dashed) style, which on this branch removes the bond's covalent valence
+  from both atoms, so implicit hydrogens and the formula change with it (the status line says so),
+  and it applies only to single bonds — a double or triple bond refuses the dashed style; `b` sets
+  bold.)
 - **Menus:** Export `Ctrl+Cmd+E`, zoom `Shift+Cmd+<`/`>`, rulers `Cmd+;`, crosshairs `Alt+Cmd+X`,
   front/back `Cmd+[`/`Cmd+]` (ChemDraw's orientation; the one-step variants are unbound), flip
   `Shift+Cmd+H`/`V`. Chords the apps already share (Cmd+N/O/S, clipboard, Copy As, `Cmd+D` CDXML,
   `Shift+Cmd+K` cleanup, group/ungroup, align/distribute) stay put.
 - **Hover wins over tools, exactly as in ChemDraw.** Element, nickname, and numeric keys act on
-  the hovered atom or bond; the same key with nothing hovered falls through to its tool binding.
-  So `e` over an atom places the Et label and `e` over empty canvas arms the arrow tool; `x`
-  likewise splits between the X label and the bond tool. Space, `j`, `t` and the other keys with
-  no hover meaning switch tools regardless.
+  the hovered atom or bond; when nothing is hovered, they act on the currently selected atom or
+  bond instead (a single selected part), the same way ChemDraw applies hotkeys to a selection. Only
+  when nothing is hovered and no atom or bond is selected does the key fall through to its tool
+  binding. So `e` over an atom (or with an atom selected) places the Et label while `e` over empty
+  canvas with nothing selected arms the arrow tool; `x` splits the same way between the X label and
+  the bond tool. Space, `j`, `t` and the other keys with no hover meaning switch tools regardless.
 
 The numeric row is **not scheme-gated**: the tables (`numericAtomDrawingHotkeys` /
 `numericBondDrawingHotkeys` in `commands.ts`) are shared, so those hover hotkeys are equally live
@@ -79,6 +84,11 @@ the molecular formula, opaque abbreviations (Et, Me, Ph, Boc, Cbz, Fmoc, OMe, CO
 contribute nothing, and both kinds export to SMILES/molfile as a warned dummy atom (`[*]`/`*`)
 when no single-atom spelling exists. `D` is a plain label, not a modeled deuterium isotope.
 Nickname atoms are never valence-flagged (only the text tool creates literal checked atoms).
+Nickname atoms are superatoms to the drawing tools as well as to the exporters: the bond tool's
+growth arrow, the numeric sprout and ring hotkeys, and cross-molecule bonding all refuse a nickname
+atom because it has no known free valence (`nativeAtomAvailableBondCount` is zero for a non-element
+label). To grow from it, relabel it to an element first. Charge marks attach to nickname atoms and
+count in the formula and SMILES (`[*+]`), and the label's valence is never checked.
 
 ## Deliberately not mapped
 

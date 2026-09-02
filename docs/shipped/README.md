@@ -83,7 +83,8 @@ coordination number earns the badge (V past 7, Pd past 6, Re allowed its 9-coord
 and all thirty metals carry standard atomic weights so metal-containing formulas get real masses.
 Main-group coverage extended to Al, Ge, As, Se, Sn, Te with the neutral-plus-hypervalent model,
 and the heavy halogens' ceiling rose to 7 so lambda-3/-5 iodanes (Dess–Martin, PhI(OAc)2) stop
-reading as drawing errors.
+reading as drawing errors. Dashed display is accepted only on single bonds; the serializers write a
+dashed non-single bond with its real order plus a warning.
 
 Compatibility: documents drawn before this branch reinterpret existing dashed bonds as dative on
 open — labels on atoms with dashed contacts may gain implicit hydrogens immediately, and the
