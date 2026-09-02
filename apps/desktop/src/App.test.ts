@@ -122,6 +122,7 @@ import {
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  nativePlaceholderAtomStatus,
   nativePathDirname,
   nativePathJoin,
   nativePathWithBasename,
@@ -2174,6 +2175,16 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('copyAsMolfile(current, "v3000", warnings)');
     expect(mainWindowSource).toContain('copyAsMolfile(current, "v2000", warnings)');
     expect(mainWindowSource).toContain("`Copied ${label} to clipboard${warningSuffix}`");
+  });
+
+  it("reports placeholder validation without claiming dummy-atom properties replaced the drawing", () => {
+    expect(nativePlaceholderAtomStatus([])).toBeUndefined();
+    expect(nativePlaceholderAtomStatus(["CF3"])).toBe(
+      '1 placeholder atom ([*] for "CF3"); formula and properties kept from the drawing'
+    );
+    expect(mainWindowSource).toContain("nativeMoleculeUnspellableLabels(molecule)");
+    expect(mainWindowSource).toContain("`Validated with ${placeholderNote}`");
+    expect(mainWindowSource).toContain("`${formatAnalysisRunStatus(run)}${placeholderNote ? `; ${placeholderNote}` : \"\"}`");
   });
 
   it("defines minimal command-backed page-size and orientation controls", () => {

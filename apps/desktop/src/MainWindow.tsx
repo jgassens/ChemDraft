@@ -344,6 +344,7 @@ import {
   applyNativeMoleculePartDeleteTarget,
   applyEditorSaveResultToSelectedMolecule,
   applyAnalysisToSelectedMolecule,
+  nativeMoleculeUnspellableLabels,
   applyFreeformSingleBondToolAtPoint,
   applyNativeTemplateToolAtTarget,
   applyNativeTemplateToolAtPoint,
@@ -1355,7 +1356,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.1.20.56-codex";
+const CURRENT_BUILD_STAMP = "9.1.20.57-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1701,7 +1702,12 @@ export function MainWindow({
   }, []);
 
   const runMolecularProperties = useCallback(
-    async (format: string, structure: string, interpretationOverride: string | undefined): Promise<void> => {
+    async (
+      format: string,
+      structure: string,
+      interpretationOverride: string | undefined,
+      unspellableLabels: readonly string[] = []
+    ): Promise<void> => {
       const client = analysisClient();
       if (!client) {
         setStatus("Analysis is unavailable in this runtime");
@@ -1733,7 +1739,8 @@ export function MainWindow({
         // What these numbers describe, so the pane can say when they stop describing it.
         setAnalysisSubject(structure);
         setAnalysisInterpretation(interpretationOverride);
-        setStatus(formatAnalysisRunStatus(run));
+        const placeholderNote = nativePlaceholderAtomStatus(unspellableLabels);
+        setStatus(`${formatAnalysisRunStatus(run)}${placeholderNote ? `; ${placeholderNote}` : ""}`);
       } finally {
         if (!superseded) setAnalysisBusy(false);
       }
@@ -2178,7 +2185,12 @@ export function MainWindow({
     (interpretationId: string | undefined) => {
       const molecule = getSelectedMolecule(document);
       if (!molecule) return;
-      void runMolecularProperties(molecule.structureFormat, molecule.structure, interpretationId);
+      void runMolecularProperties(
+        molecule.structureFormat,
+        molecule.structure,
+        interpretationId,
+        nativeMoleculeUnspellableLabels(molecule)
+      );
     },
     [document, runMolecularProperties]
   );
@@ -7486,7 +7498,12 @@ export function MainWindow({
             setStatus("Molecular Inspector opened — select a structure to analyse it");
             return;
           }
-          await runMolecularProperties(molecule.structureFormat, molecule.structure, analysisInterpretation);
+          await runMolecularProperties(
+            molecule.structureFormat,
+            molecule.structure,
+            analysisInterpretation,
+            nativeMoleculeUnspellableLabels(molecule)
+          );
           return;
         }
         if (action.id === "chemistry.validateSelection") {
@@ -7512,9 +7529,11 @@ export function MainWindow({
           setLastAnalysis(analysis);
 
           if (analysis.validation.valid) {
+            const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
             const analyzed = applyAnalysisToSelectedMolecule(document, analysis);
             commitDocumentChange(analyzed);
-            setStatus(formatAnalysisStatus(analysis));
+            const placeholderNote = nativePlaceholderAtomStatus(unspellableLabels);
+            setStatus(placeholderNote ? `Validated with ${placeholderNote}` : formatAnalysisStatus(analysis));
             return;
           }
 
@@ -26614,6 +26633,16 @@ function formatAnalysisStatus(analysis: StructureAnalysisResult): string {
   const mass = analysis.properties.averageMass ? `, avg mass ${analysis.properties.averageMass.toFixed(3)}` : "";
   const warningText = analysis.validation.warnings.length > 0 ? ` with ${analysis.validation.warnings.length} warning(s)` : "";
   return `Validated ${formula}${mass}${warningText}`;
+}
+
+export function nativePlaceholderAtomStatus(labels: readonly string[]): string | undefined {
+  if (labels.length === 0) {
+    return undefined;
+  }
+  const placeholderAtoms = labels
+    .map((label) => `[*] for "${label}"`)
+    .join(", ");
+  return `${labels.length} placeholder atom${labels.length === 1 ? "" : "s"} (${placeholderAtoms}); formula and properties kept from the drawing`;
 }
 
 function findDocumentObject(document: ChemDraftDocument, objectId: string): DocumentObject | undefined {

@@ -7902,7 +7902,10 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
 
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
-      return false;
+      // Nicknames and condensed labels are superatoms outside the element valence tables. They
+      // still own nearby charge/radical marks; only the distance can be judged without inventing
+      // valence rules for labels such as Me, N3, or Ph.
+      return true;
     }
 
     if (contribution.charge === 0 && contribution.radicals === 0) {
@@ -15431,6 +15434,12 @@ export function applyAnalysisToSelectedMolecule(
   if (!selectedMolecule) {
     throw new Error("Cannot apply chemistry analysis: no molecule is selected.");
   }
+  if (nativeMoleculeUnspellableLabels(selectedMolecule).length > 0) {
+    // The native drawing remains authoritative when its SMILES contains dummy atoms. Applying an
+    // engine result for [*] would silently replace the formula of labels such as CF3 or Ph with
+    // properties of the placeholder graph.
+    return document;
+  }
 
   return applyPatch(
     document,
@@ -15788,6 +15797,16 @@ export function copyAsMergedMolecule(
   return { ...molecules[0], atoms, bonds };
 }
 
+/** Labels whose native atoms have to become dummy `[*]` atoms in SMILES. */
+export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): string[] {
+  return [...new Set(molecule.atoms
+    .filter((atom) =>
+      nativeElementFromAtomLabel(atom.element) === undefined &&
+      nativeSingleHeavyElementLabelValence(atom.element) === undefined
+    )
+    .map((atom) => atom.element))];
+}
+
 /**
  * SMILES for the copy scope. `warningsOut`, when given, collects the fidelity gaps SMILES cannot
  * express (AGENTS.md §6.7: no silent lossy copy): dative (dashed) bonds copied as plain single
@@ -15812,14 +15831,7 @@ export function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]
         `SMILES has no dative/coordination bond: ${dativeBondCount} dashed bond${dativeBondCount === 1 ? "" : "s"} copied as plain single.`
       );
     }
-    const unspellableLabels = [...new Set(molecules.flatMap((molecule) =>
-      molecule.atoms
-        .filter((atom) =>
-          nativeElementFromAtomLabel(atom.element) === undefined &&
-          nativeSingleHeavyElementLabelValence(atom.element) === undefined
-        )
-        .map((atom) => atom.element)
-    ))];
+    const unspellableLabels = [...new Set(molecules.flatMap(nativeMoleculeUnspellableLabels))];
     unspellableLabels.forEach((label) => {
       warningsOut.push(`Atom label "${label}" cannot be spelled as a single SMILES atom; copied as a dummy atom [*].`);
     });
@@ -17822,7 +17834,7 @@ const smilesOrganicSubset = new Set(["B", "C", "N", "O", "P", "S", "F", "Cl", "B
 /**
  * One atom's SMILES token. Neutral organic-subset drawn atoms stay bare (ethanol stays "CCO");
  * everything that bare emission would misrepresent is bracketed:
- * - charged atoms: `[N+]`, `[Zn+2]` (brackets already carry the charge; parsers add no implicit H);
+ * - charged atoms: `[NH3+]`, `[Zn+2]` (brackets already carry the charge; parsers add no implicit H);
  * - literal (text-typed) atoms: `[C]`, `[N]` — a bracket atom gets NO implicit hydrogens, which is
  *   exactly the literal contract: the label means what it says (verified against OpenChemLib:
  *   `[C]` reparses to C, bare `C` to CH4);
@@ -17831,7 +17843,8 @@ const smilesOrganicSubset = new Set(["B", "C", "N", "O", "P", "S", "F", "Cl", "B
  *   hydrogens SPELLED (bracket atoms get none from the parser), so a drawn silane carbon analog
  *   keeps its hydrogens. The count is the same derivation the formula and the drawn label use.
  *
- * `implicitHydrogens` matters only for that last case; `nativeAtomSmilesById` computes it.
+ * `implicitHydrogens` matters for every non-literal element atom written in brackets;
+ * `nativeAtomSmilesById` computes it.
  */
 /**
  * A bracket atom's charge in SMILES order — sign then magnitude (`[Zn+2]`). The DISPLAY
@@ -17870,7 +17883,8 @@ function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0)
   }
 
   if (atom.formalCharge !== 0) {
-    return `[${element}${smilesChargeSuffix(atom.formalCharge)}]`;
+    const hydrogens = implicitHydrogens > 0 ? `H${implicitHydrogens === 1 ? "" : implicitHydrogens}` : "";
+    return `[${element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
   }
 
   if (element === "H") {
@@ -17891,8 +17905,8 @@ function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0)
 
 /**
  * Per-atom SMILES tokens for the graph writers above, precomputed in one pass: the bracketed
- * non-subset form must spell the atom's implicit hydrogens, and that count depends on the whole
- * bond set (`atomBondOrderUsageMap`), not on the atom alone.
+ * charged/non-subset form must spell the atom's implicit hydrogens, and that count depends on the
+ * whole bond set (`atomBondOrderUsageMap`), not on the atom alone.
  */
 function nativeAtomSmilesById(
   atoms: readonly MoleculeAtom[],
@@ -17903,11 +17917,15 @@ function nativeAtomSmilesById(
     const element = nativeElementFromAtomLabel(atom.element);
     const needsSpelledHydrogens = element !== undefined &&
       element !== "H" &&
-      atom.formalCharge === 0 &&
       atom.labelLiteral !== true &&
-      !smilesOrganicSubset.has(element);
+      (atom.formalCharge !== 0 || !smilesOrganicSubset.has(element));
     const implicitHydrogens = needsSpelledHydrogens
-      ? nativeImplicitHydrogenCount(element, valenceUsage.get(atom.id) ?? 0, 0, atom.markRadicals ?? 0)
+      ? nativeImplicitHydrogenCount(
+          element,
+          valenceUsage.get(atom.id) ?? 0,
+          atom.formalCharge,
+          atom.markRadicals ?? 0
+        )
       : 0;
     return [atom.id, nativeAtomSmiles(atom, implicitHydrogens)] as const;
   }));

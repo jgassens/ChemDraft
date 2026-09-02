@@ -181,6 +181,7 @@ import {
   nativeTemplateForToolCommand,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
+  nativeMoleculeUnspellableLabels,
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
@@ -4590,6 +4591,77 @@ describe("Phase 4 document workflow", () => {
     // "MgBr" parses as magnesium + bromine — the Grignard label carries its formula.
     const grignard = setNativeAtomElement(ethane, "atom_002", "MgBr");
     expect(selectedMolecule(grignard).chemistry).toMatchObject({ formula: "CH3BrMg" });
+  });
+
+  it("keeps an anchored charge when its atom is relabeled to a nickname", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Charged Nickname"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    const target = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(ethane, 1, target));
+    const relabeled = reconcileNativeChargeMarks(applyNativeAtomElementTarget(charged, target, "Me"));
+    const relabeledMolecule = moleculeById(relabeled, molecule.id);
+    const mark = relabeled.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+
+    expect(relabeledMolecule.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({
+      element: "Me",
+      formalCharge: 1,
+      markCharge: 1
+    });
+    expect(mark?.anchor).toMatchObject({ kind: "atom", objectId: molecule.id, atomId: "atom_002" });
+  });
+
+  it("associates a positive charge with an N3 nickname and writes the charged dummy atom", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Charged N3"), { x: 300, y: 300 });
+    const labeled = setNativeAtomElement(ethane, "atom_002", "N3");
+    const molecule = selectedMolecule(labeled);
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(labeled, 1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const chargedMolecule = moleculeById(charged, molecule.id);
+
+    expect(chargedMolecule.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({
+      element: "N3",
+      formalCharge: 1,
+      markCharge: 1
+    });
+    expect(nativeSingleBondGraphSmiles(chargedMolecule.atoms, chargedMolecule.bonds)).toBe("C[*+]");
+  });
+
+  it("still refuses a third positive charge on a two-bond carbon", () => {
+    const propane = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Carbon Charge Refusal"), { x: 300, y: 300 }),
+      "atom_002",
+      0
+    );
+    const molecule = selectedMolecule(propane);
+    const target = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+    const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(propane, 1, target));
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, target));
+    const thirdAttempt = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(twice, 1, target));
+    const carbon = moleculeById(thirdAttempt, molecule.id).atoms.find((atom) => atom.id === "atom_002");
+    const mark = thirdAttempt.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+
+    expect(moleculeById(twice, molecule.id).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ formalCharge: 2 });
+    expect(carbon).toMatchObject({ element: "C", formalCharge: 0 });
+    expect(carbon?.markCharge).toBeUndefined();
+    expect(mark?.anchor).toMatchObject({ kind: "point" });
   });
 
   it("treats dashed bonds as dative for valence and drawn hydrogens", () => {
@@ -11871,6 +11943,45 @@ describe("Phase 4 document workflow", () => {
     expect(getSelectedMolecule(document)?.chemistry).toBeUndefined();
   });
 
+  it("keeps native chemistry when validation analyzed dummy atoms for an unspellable label", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Placeholder Analysis"), { x: 300, y: 300 });
+    const labeled = setNativeAtomElement(ethane, "atom_002", "CF3");
+    const chemistryBefore = selectedMolecule(labeled).chemistry;
+    const analyzed = applyAnalysisToSelectedMolecule(labeled, {
+      input: { format: "smiles", value: "C[*]" },
+      validation: { valid: true, errors: [], warnings: [] },
+      properties: {
+        formula: "CH3",
+        averageMass: 15.035,
+        exactMass: 15.0235,
+        totalCharge: 0,
+        atomCount: 2,
+        bondCount: 1,
+        stereochemistry: []
+      },
+      warnings: []
+    });
+
+    expect(analyzed).toBe(labeled);
+    expect(selectedMolecule(analyzed).chemistry).toEqual(chemistryBefore);
+    expect(selectedMolecule(analyzed).chemistry).toMatchObject({ formula: "C2H3F3" });
+  });
+
+  it("identifies exactly the labels that SMILES has to replace with dummy atoms", () => {
+    const molecule = selectedMolecule(
+      insertNativeSingleBondMolecule(createPhase4Document("Unspellable Labels"), { x: 300, y: 300 })
+    );
+    const withLabel = (label: string): MoleculeObject => ({
+      ...molecule,
+      atoms: [{ ...molecule.atoms[0], element: label }]
+    });
+
+    expect(nativeMoleculeUnspellableLabels(withLabel("CF3"))).toEqual(["CF3"]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("CH3"))).toEqual([]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("NH2"))).toEqual([]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("Ph"))).toEqual(["Ph"]);
+  });
+
   it("applies an editor adapter save result through a selected-object document patch", () => {
     const document = insertAdapterFallbackMolecule(createPhase4Document("Editor Fixture"));
     const selected = getSelectedMolecule(document);
@@ -13636,6 +13747,15 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     };
   };
 
+  const reparseFormulaAndCharge = (smiles: string): { formula: string; totalCharge: number } => {
+    const molecule = OCL.Molecule.fromSmiles(smiles);
+    let totalCharge = 0;
+    for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+      totalCharge += molecule.getAtomCharge(atom);
+    }
+    return { formula: molecule.getMolecularFormula().formula, totalCharge };
+  };
+
   it("linearizes fused naphthalene into a two-ring SMILES that OpenChemLib reparses to C10H8", () => {
     const { atoms, bonds } = fusedBicyclicSkeleton([
       ["a01", "a02"], ["a03", "a04"], ["a05", "a10"], ["a06", "a07"], ["a08", "a09"]
@@ -13747,6 +13867,34 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
 
     expect(smiles).toBe("[SiH3]C");
     expect(reparse(smiles)).toEqual({ formula: "CH6Si", ringCount: 0 });
+  });
+
+  it("spells charged bracket-atom hydrogens so OpenChemLib preserves formula and charge", () => {
+    const ethylammoniumAtoms: MoleculeAtom[] = [
+      { id: "c1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "c2", element: "C", x: 22, y: 0, formalCharge: 0 },
+      { id: "n1", element: "N", x: 44, y: 0, formalCharge: 1 }
+    ];
+    const ethylammoniumBonds: MoleculeBond[] = [
+      { id: "b1", fromAtomId: "c1", toAtomId: "c2", order: "single" },
+      { id: "b2", fromAtomId: "c2", toAtomId: "n1", order: "single" }
+    ];
+    const ethylammonium = nativeSingleBondGraphSmiles(ethylammoniumAtoms, ethylammoniumBonds);
+    expect(ethylammonium).toBe("CC[NH3+]");
+    expect(reparseFormulaAndCharge(ethylammonium)).toEqual({ formula: "C2H8N", totalCharge: 1 });
+
+    const methoxide = nativeSingleBondGraphSmiles([
+      { id: "c1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "o1", element: "O", x: 22, y: 0, formalCharge: -1 }
+    ], [{ id: "b1", fromAtomId: "c1", toAtomId: "o1", order: "single" }]);
+    expect(methoxide).toBe("C[O-]");
+    expect(reparseFormulaAndCharge(methoxide)).toEqual({ formula: "CH3O", totalCharge: -1 });
+
+    const ammoniumRadicalCation = nativeSingleBondGraphSmiles([
+      { id: "n1", element: "N", x: 0, y: 0, formalCharge: 1, markRadicals: 1 }
+    ], []);
+    expect(ammoniumRadicalCation).toBe("[NH3+]");
+    expect(reparseFormulaAndCharge(ammoniumRadicalCation)).toEqual({ formula: "H3N", totalCharge: 1 });
   });
 
   it("spells a one-heavy-element condensed label exactly ('CH3' → [CH3], ethane when bonded)", () => {
