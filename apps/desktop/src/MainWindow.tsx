@@ -1356,7 +1356,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.1.20.57-codex";
+const CURRENT_BUILD_STAMP = "9.1.20.50-sol";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -14766,23 +14766,15 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     const atomWarning = (() => {
-      // Whole-object selections (including multi-select) scope to every selected molecule;
-      // a partial selection scopes to exactly the selected parts' atoms.
-      const scope: NativeWarningSuppressionScope[] = [];
-      if (preserveMultiSelection || targetKind === "object") {
-        const objectIds = preserveMultiSelection ? currentDocument.selection.objectIds : [objectId];
-        for (const id of objectIds) {
-          const candidate = findDocumentObject(currentDocument, id);
-          if (candidate?.type === "molecule") {
-            scope.push({ objectId: id });
-          }
-        }
-      } else if (object.type === "molecule" && nextSelectedNativePart) {
-        const atomIds = nativeWarningScopeAtomIds(object, nextSelectedNativePart);
-        if (atomIds.length > 0) {
-          scope.push({ objectId: object.id, atomIds });
-        }
-      }
+      const scope = nativeWarningSuppressionScopeForSelection(
+        currentDocument,
+        preserveMultiSelection
+          ? selectedNativeMoleculeParts
+          : nextSelectedNativePart ? [nextSelectedNativePart] : [],
+        objectId,
+        targetKind,
+        preserveMultiSelection
+      );
       let flagged = 0;
       let suppressedCount = 0;
       for (const entry of scope) {
@@ -14829,7 +14821,8 @@ export function MainWindow({
     pagePointFromPointerEvent,
     pageSvgRenderPlan.crossings,
     replacePresentDocument,
-    selectedNativeMoleculePart
+    selectedNativeMoleculePart,
+    selectedNativeMoleculeParts
   ]);
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
@@ -21007,6 +21000,53 @@ function nativeWarningScopeAtomIds(molecule: MoleculeObject, part: NativeMolecul
     case "parts":
       return [...new Set([...part.atomIds, ...bondEndpointIds(part.bondIds)])];
   }
+}
+
+/**
+ * Build the warning-action scope from the selection encoding. A selected native part must
+ * remain narrower than its host molecule even though the policy also stores that molecule's
+ * object id; otherwise a cross-molecule part selection silently becomes a whole-object action.
+ */
+export function nativeWarningSuppressionScopeForSelection(
+  document: ChemDraftDocument,
+  parts: readonly NativeMoleculeSelectionPart[],
+  clickedObjectId: string,
+  targetKind: "object" | NativeMoleculeSelectionPart["kind"],
+  preserveMultiSelection: boolean
+): NativeWarningSuppressionScope[] {
+  const objectIds = preserveMultiSelection ? document.selection.objectIds : [clickedObjectId];
+  const partsByObjectId = new Map<string, NativeMoleculeSelectionPart[]>();
+  for (const part of parts) {
+    const current = partsByObjectId.get(part.objectId) ?? [];
+    current.push(part);
+    partsByObjectId.set(part.objectId, current);
+  }
+
+  const scope: NativeWarningSuppressionScope[] = [];
+  for (const objectId of objectIds) {
+    const molecule = findDocumentObject(document, objectId);
+    if (molecule?.type !== "molecule") {
+      continue;
+    }
+
+    const selectedParts = partsByObjectId.get(objectId) ?? [];
+    if (!preserveMultiSelection && targetKind === "object") {
+      scope.push({ objectId });
+      continue;
+    }
+    if (selectedParts.length === 0) {
+      if (preserveMultiSelection) {
+        scope.push({ objectId });
+      }
+      continue;
+    }
+
+    const atomIds = [...new Set(selectedParts.flatMap((part) => nativeWarningScopeAtomIds(molecule, part)))];
+    if (atomIds.length > 0) {
+      scope.push({ objectId, atomIds });
+    }
+  }
+  return scope;
 }
 
 function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): string[] {

@@ -68,6 +68,7 @@ import {
   applyGraphicObjectColorToSelection,
   applyGraphicObjectOpacityToSelection,
   applyNativeAtomElementTarget,
+  applyNativeWarningSuppressionToScope,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
@@ -85,6 +86,7 @@ import {
   nativeBondLengthPx,
   nativeFreehandStrokeDocument,
   nativeGraphicPathEditPoints,
+  nativeMoleculeInvalidAtomStates,
   nativePolylinePathDocument,
   openNativeDocument,
   reconcileNativeChargeMarks,
@@ -122,6 +124,7 @@ import {
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  nativeWarningSuppressionScopeForSelection,
   nativePlaceholderAtomStatus,
   nativePathDirname,
   nativePathJoin,
@@ -5732,6 +5735,88 @@ describe("ChemDraft desktop shell", () => {
       })
     );
     expect(plainMarkup).not.toContain("atom.toggleWarningSuppression");
+  });
+
+  it("scopes warning suppression to selected atoms across multiple molecules", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Cross-molecule Warning Scope"), { x: 200, y: 220 });
+    let document = insertNativeSingleBondMolecule(first, { x: 320, y: 220 });
+    const molecules = document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    if (molecules.length !== 2) {
+      throw new Error("Expected two native molecule fixtures.");
+    }
+
+    for (const molecule of molecules) {
+      for (const atom of molecule.atoms) {
+        document = applyNativeAtomElementTarget(document, {
+          objectId: molecule.id,
+          kind: "atom",
+          atomId: atom.id,
+          distanceToPointer: 0
+        }, "N", { literal: true });
+      }
+    }
+    document = selectDocumentObjects(document, document.pages[0].id, molecules.map((molecule) => molecule.id));
+
+    const selectedAtomIds = molecules.map((molecule) => molecule.atoms[0].id);
+    const scope = nativeWarningSuppressionScopeForSelection(
+      document,
+      molecules.map((molecule, index) => ({
+        objectId: molecule.id,
+        kind: "atom" as const,
+        atomId: selectedAtomIds[index]
+      })),
+      molecules[1].id,
+      "atom",
+      true
+    );
+    expect(scope).toEqual(molecules.map((molecule, index) => ({
+      objectId: molecule.id,
+      atomIds: [selectedAtomIds[index]]
+    })));
+
+    const cleared = applyNativeWarningSuppressionToScope(document, scope, true);
+    for (const [index, molecule] of molecules.entries()) {
+      const clearedMolecule = cleared.pages[0].objects.find((object): object is MoleculeObject =>
+        object.id === molecule.id && object.type === "molecule"
+      );
+      expect(clearedMolecule?.atoms.find((atom) => atom.id === selectedAtomIds[index])?.warningSuppressed).toBe(true);
+      expect(clearedMolecule?.atoms.find((atom) => atom.id === molecule.atoms[1].id)?.warningSuppressed).toBeUndefined();
+      expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule).map((state) => state.atomId) : [])
+        .toEqual([molecule.atoms[1].id]);
+    }
+  });
+
+  it("keeps whole-molecule warning scope for a whole-object multi-selection", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Whole-molecule Warning Scope"), { x: 200, y: 220 });
+    const document = insertNativeSingleBondMolecule(first, { x: 320, y: 220 });
+    const molecules = document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const selectedDocument = selectDocumentObjects(
+      document,
+      document.pages[0].id,
+      molecules.map((molecule) => molecule.id)
+    );
+
+    expect(nativeWarningSuppressionScopeForSelection(
+      selectedDocument,
+      [],
+      molecules[1].id,
+      "atom",
+      true
+    )).toEqual(molecules.map((molecule) => ({ objectId: molecule.id })));
+  });
+
+  it("keeps a single partial warning scope limited to that molecule's selected atom", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Single Warning Scope"), { x: 200, y: 220 });
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const atomId = molecule.atoms[0].id;
+
+    expect(nativeWarningSuppressionScopeForSelection(
+      document,
+      [{ objectId: molecule.id, kind: "atom", atomId }],
+      molecule.id,
+      "atom",
+      false
+    )).toEqual([{ objectId: molecule.id, atomIds: [atomId] }]);
   });
 
   it("renders bond depth controls in the object context menu", () => {
