@@ -119,6 +119,58 @@ describe("clipboard-adapter", () => {
     expect(graph.bonds[2].bondStyle).toBeUndefined();
   });
 
+  it("parses a nonstandard V2000 coordination type 9 as a dashed single bond and warns", () => {
+    const dativeV2000 = [
+      "ChemDraft dative",
+      "  ChemDraft",
+      "",
+      "  2  1  0  0  0  0            999 V2000",
+      "    0.0000    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.5000    0.0000    0.0000 Zn  0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  9  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(dativeV2000);
+
+    expect(graph.bonds).toEqual([
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", bondStyle: "dashed" }
+    ]);
+    expect(graph.warnings).toEqual([
+      {
+        code: "clipboard.v2000_coordination_bond",
+        message: "V2000 bond 1 uses coordination type 9; read as a dative (dashed) single bond."
+      }
+    ]);
+  });
+
+  it("keeps ordinary and query V2000 bond order codes unchanged", () => {
+    const orderCodesV2000 = [
+      "ChemDraft bond orders",
+      "  ChemDraft",
+      "",
+      "  6  5  0  0  0  0            999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    2.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    3.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    4.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    5.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  0  0  0  0",
+      "  2  3  2  0  0  0  0",
+      "  3  4  3  0  0  0  0",
+      "  4  5  4  0  0  0  0",
+      "  5  6  8  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(orderCodesV2000);
+
+    expect(graph.bonds.map((bond) => bond.order)).toEqual(["single", "double", "triple", "aromatic", "unknown"]);
+    expect(graph.bonds.every((bond) => bond.bondStyle === undefined)).toBe(true);
+    expect(graph.warnings).toEqual([]);
+  });
+
   it("treats atom-block charges as zero once any M CHG line is present (V2000 spec)", () => {
     // Atom 1 carries a legacy atom-block charge (code 3 = +1); atom 2 is named in M CHG.
     // Per spec the presence of any M CHG line voids ALL atom-block charges, so atom 1 must

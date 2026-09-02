@@ -85,7 +85,7 @@ export interface ParsedClipboardBond {
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
   /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
    *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`.
-   *  "dashed" is not stereo: it marks a V3000 coordination (dative) bond, type 9. */
+   *  "dashed" is not stereo: it marks a coordination (dative) bond, type 9. */
   bondStyle?: "wedge" | "hashed" | "dashed";
 }
 
@@ -399,7 +399,16 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       throw new Error(`V2000 bond ${index + 1} has invalid atom references.`);
     }
 
-    const bondStyle = bondStyleFromV2000Stereo(stereoCode);
+    // Some writers use the V3000 coordination type in V2000 bond blocks. Preserve its dative
+    // meaning exactly as the V3000 reader does, because treating it as an ordinary single bond
+    // would silently change the interaction into a covalent bond.
+    const bondStyle = orderCode === 9 ? "dashed" : bondStyleFromV2000Stereo(stereoCode);
+    if (orderCode === 9) {
+      warnings.push({
+        code: "clipboard.v2000_coordination_bond",
+        message: `V2000 bond ${index + 1} uses coordination type 9; read as a dative (dashed) single bond.`
+      });
+    }
     return {
       id: bondId(index + 1),
       fromAtomId: atomId(fromIndex),
@@ -741,8 +750,8 @@ function bondOrderFromMolfile(code: number): ParsedClipboardBond["order"] {
   if (code === 4) {
     return "aromatic";
   }
-  // V3000 bond type 9 is the coordination (dative) bond. The native model carries dative as the
-  // dashed display style on a single bond, not as a bond order — the V3000 caller adds the style.
+  // Bond type 9 is the coordination (dative) bond. The native model carries dative as the dashed
+  // display style on a single bond, not as a bond order — each format-specific caller adds the style.
   if (code === 9) {
     return "single";
   }

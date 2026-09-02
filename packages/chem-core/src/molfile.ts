@@ -23,9 +23,10 @@
  *   - Isotopes (`M  ISO`) are not represented in `MoleculeAtom` and are therefore not written.
  *     A round-trip through this writer loses them.
  *   - `unknown` bond order has no V2000 encoding and is written as single (code 1).
- *   - Dative (dashed) bonds have no V2000 encoding: V2000 writes them as single bonds with a
- *     warning; V3000 preserves them as bond type 9 (coordination), which CTfile-aware parsers
- *     read back as dative.
+ *   - Dative (dashed single) bonds have no V2000 encoding: V2000 writes them as single bonds with
+ *     a warning; V3000 preserves them as bond type 9 (coordination), which CTfile-aware parsers
+ *     read back as dative. Dashed display on another bond order is omitted with a warning rather
+ *     than replacing that bond's chemical order with a coordination bond.
  *   - An atom label that is not an element symbol (a condensed label like "CH3", an
  *     abbreviation like "Ph") writes as a dummy atom ("*") with a warning — the group the label
  *     spells is not represented in the molfile.
@@ -40,9 +41,9 @@ export interface MolfileWriteOptions {
   fromDocFrame?: boolean;
   /**
    * Collects concise, human-readable notes about lossy emissions — V2000 dative bonds flattened
-   * to single, non-element labels written as dummy atoms (AGENTS.md §5.7/§14: never degrade
-   * quietly). Callers that cannot surface warnings (the 3D-spin relayout, stereo perception)
-   * omit it and get the previous behavior.
+   * to single, incompatible dashed display omitted, non-element labels written as dummy atoms
+   * (AGENTS.md §5.7/§14: never degrade quietly). Callers that cannot surface warnings (the 3D-spin
+   * relayout, stereo perception) omit it and get the previous behavior.
    */
   warnings?: string[];
 }
@@ -56,16 +57,31 @@ const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
 };
 
 /**
- * A dashed bond depicts a dative/coordination interaction (zero covalent valence on either atom).
- * V3000 spells it as bond type 9, the CTfile coordination type, so the file round-trips; V2000
- * has no coordination type, so there it degrades to a plain single bond and the writer warns.
+ * A dashed single bond depicts a dative/coordination interaction (zero covalent valence on either
+ * atom). V3000 spells it as bond type 9, the CTfile coordination type, so the file round-trips;
+ * V2000 has no coordination type, so there it degrades to a plain single bond and the writer warns.
+ * Requiring single order prevents display styling on a multiple bond from deleting its bond order.
  */
 function isDativeBond(bond: MoleculeBond): boolean {
-  return bond.display?.bondStyle === "dashed";
+  return bond.order === "single" && bond.display?.bondStyle === "dashed";
 }
 
 function v3000BondTypeCode(bond: MoleculeBond): number {
   return isDativeBond(bond) ? 9 : BOND_ORDER_CODE[bond.order];
+}
+
+/**
+ * A dashed display on a non-single bond cannot mean coordination without destroying its chemical
+ * order. Keep the order and report the lost display style instead of silently changing chemistry.
+ */
+function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], warnings?: string[]): void {
+  for (const bond of bonds) {
+    if (bond.display?.bondStyle === "dashed" && bond.order !== "single") {
+      warnings?.push(
+        `Dashed display on a ${bond.order} bond is not a coordination bond; written as a ${bond.order} bond, dashed style not preserved.`
+      );
+    }
+  }
 }
 
 /**
@@ -181,6 +197,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const chiralFlag = hasStereo ? 1 : 0;
 
   const dativeBondCount = writableBonds.filter(isDativeBond).length;
+  warnUnsupportedDashedBondStyles(writableBonds, options.warnings);
   if (dativeBondCount > 0) {
     options.warnings?.push(
       `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
@@ -239,6 +256,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     (bond) => atomIndex.has(bond.fromAtomId) && atomIndex.has(bond.toAtomId)
   );
   const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
+  warnUnsupportedDashedBondStyles(writableBonds, options.warnings);
 
   const lines: string[] = [
     "",

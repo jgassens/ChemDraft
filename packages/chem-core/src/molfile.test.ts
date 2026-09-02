@@ -200,6 +200,39 @@ describe("dative (dashed) bonds", () => {
     expect(warnings[0]).toContain("V2000 has no coordination bond type");
   });
 
+  it("preserves a dashed double bond's order in V3000 and warns that its display is omitted", () => {
+    const dashedDouble = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "O", x: 1.5, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1", order: "double", style: "dashed" }]
+    );
+    const warnings: string[] = [];
+
+    expect(moleculeToMolfileV3000(dashedDouble, { warnings })).toMatch(/M {2}V30 1 2 1 2\n/);
+    expect(warnings).toEqual([
+      "Dashed display on a double bond is not a coordination bond; written as a double bond, dashed style not preserved."
+    ]);
+  });
+
+  it("preserves a dashed double bond's order in V2000 without counting it as dative", () => {
+    const dashedDouble = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "O", x: 1.5, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1", order: "double", style: "dashed" }]
+    );
+    const warnings: string[] = [];
+
+    expect(moleculeToMolfileV2000(dashedDouble, { warnings })).toMatch(/\n\s{2}1\s{2}2\s{2}2\s{2}0/);
+    expect(warnings).toEqual([
+      "Dashed display on a double bond is not a coordination bond; written as a double bond, dashed style not preserved."
+    ]);
+    expect(warnings.join(" ")).not.toContain("V2000 has no coordination bond type");
+  });
+
   it("a plain single bond stays type 1 in V3000 and warns about nothing", () => {
     const plain = molecule(
       [
