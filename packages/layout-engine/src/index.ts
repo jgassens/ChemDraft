@@ -5012,12 +5012,14 @@ export function atomDisplayLabel(
   // A literal label (typed with the text tool) means exactly what it says — no auto-drawn
   // hydrogen count ever. Everything else follows the classic skeletal convention: the
   // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
-  // unpaired electron from an associated radical mark occupies a bonding slot.
+  // unpaired electron from an associated radical mark occupies a bonding slot, and a dative
+  // bond from a pyrrole-type N–H costs that proton (see `dativeDeprotonationCount`).
   const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens || atom.labelLiteral === true
     ? ""
     : implicitHydrogenLabel(Math.max(
         0,
         nativeAtomValenceForCharge(element, formalCharge) - valenceUsed - (atom.markRadicals ?? 0)
+          - dativeDeprotonationCount(atom, bonds, atoms)
       ));
 
   if (element === "C" && formalCharge === 0) {
@@ -5153,6 +5155,55 @@ function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefi
 
   const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
   return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate as NativeElementSymbol : undefined;
+}
+
+/**
+ * Hydrogens a dative (dashed) bond costs its donor — the same rule documentWorkflow applies to the
+ * formula (`nativeDativeDeprotonationCount`), kept in step so label and formula agree. A donor with
+ * a lone pair to give (pyridine or amine N, ether or aqua O) keeps its hydrogens; a pyrrole-type
+ * N–H (two single bonds, each neighbour carrying a multiple bond: imidazole, pyrazole, pyrrole,
+ * indole) has no free pair and coordinates only deprotonated, so the label reads N, not NH.
+ */
+function dativeDeprotonationCount(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): number {
+  if (nativeElementFromAtomLabel(atom.element) !== "N" || atom.formalCharge !== 0 || atom.labelLiteral === true) {
+    return 0;
+  }
+  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const covalentNeighborIds: string[] = [];
+  let donatesToMetal = false;
+  let covalentAllSingle = true;
+  bonds.forEach((bond) => {
+    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
+      return;
+    }
+    const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
+    if (bond.display?.bondStyle === "dashed") {
+      const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
+      // A metal is an element outside the covalent valence table (d-block, alkali, alkaline earth).
+      if (neighborElement && neighborElement !== "H" && nativeAtomValenceElectrons[neighborElement] === undefined) {
+        donatesToMetal = true;
+      }
+      return;
+    }
+    covalentNeighborIds.push(neighborId);
+    if (bond.order !== "single") {
+      covalentAllSingle = false;
+    }
+  });
+  if (!donatesToMetal || covalentNeighborIds.length !== 2 || !covalentAllSingle) {
+    return 0;
+  }
+  const conjugated = covalentNeighborIds.every((neighborId) => bonds.some((bond) =>
+    (bond.fromAtomId === neighborId || bond.toAtomId === neighborId) &&
+    bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id &&
+    bond.display?.bondStyle !== "dashed" &&
+    (bond.order === "double" || bond.order === "aromatic")
+  ));
+  return conjugated ? 1 : 0;
 }
 
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {

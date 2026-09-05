@@ -84,7 +84,10 @@ and all thirty metals carry standard atomic weights so metal-containing formulas
 Main-group coverage extended to Al, Ge, As, Se, Sn, Te with the neutral-plus-hypervalent model,
 and the heavy halogens' ceiling rose to 7 so lambda-3/-5 iodanes (Dess–Martin, PhI(OAc)2) stop
 reading as drawing errors. Dashed display is accepted only on single bonds; the serializers write a
-dashed non-single bond with its real order plus a warning.
+dashed non-single bond with its real order plus a warning. A pyrrole-type N–H (imidazole, pyrazole,
+pyrrole, indole) that carries a dative bond to a metal is drawn deprotonated — the label reads N,
+the formula loses that hydrogen, the atom stays neutral — because such a nitrogen has no free pair
+to donate and coordinates only as its conjugate base; pyridine and amine donors keep their hydrogens.
 
 Compatibility: documents drawn before this branch reinterpret existing dashed bonds as dative on
 open — labels on atoms with dashed contacts may gain implicit hydrogens immediately, and the

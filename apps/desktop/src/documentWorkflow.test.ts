@@ -14029,3 +14029,73 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     expect(smiles).toBe("[*]");
   });
 });
+
+describe("dative donors and their hydrogens", () => {
+  function complexDocument(kind: "imidazole" | "amine"): { document: ChemDraftDocument; objectId: string } {
+    const atoms: MoleculeAtom[] = kind === "imidazole"
+      ? [
+          { id: "n1", element: "N", x: 100, y: 100, formalCharge: 0 },
+          { id: "c2", element: "C", x: 130, y: 80, formalCharge: 0 },
+          { id: "n3", element: "N", x: 160, y: 100, formalCharge: 0 },
+          { id: "c4", element: "C", x: 150, y: 135, formalCharge: 0 },
+          { id: "c5", element: "C", x: 110, y: 135, formalCharge: 0 },
+          { id: "zn", element: "Zn", x: 70, y: 70, formalCharge: 0 }
+        ]
+      : [
+          { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
+          { id: "n1", element: "N", x: 130, y: 100, formalCharge: 0 },
+          { id: "zn", element: "Zn", x: 160, y: 100, formalCharge: 0 }
+        ];
+    const bonds: MoleculeBond[] = kind === "imidazole"
+      ? [
+          { id: "b1", fromAtomId: "n1", toAtomId: "c2", order: "single" },
+          { id: "b2", fromAtomId: "c2", toAtomId: "n3", order: "double" },
+          { id: "b3", fromAtomId: "n3", toAtomId: "c4", order: "single" },
+          { id: "b4", fromAtomId: "c4", toAtomId: "c5", order: "double" },
+          { id: "b5", fromAtomId: "c5", toAtomId: "n1", order: "single" },
+          { id: "b_zn", fromAtomId: "n1", toAtomId: "zn", order: "single" }
+        ]
+      : [
+          { id: "b1", fromAtomId: "c1", toAtomId: "n1", order: "single" },
+          { id: "b_zn", fromAtomId: "n1", toAtomId: "zn", order: "single" }
+        ];
+    const molecule: MoleculeObject = {
+      id: `mol_${kind}`, type: "molecule", x: 60, y: 60, width: 120, height: 90, rotation: 0,
+      style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+    };
+    const base = createPhase4Document("Dative donors");
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+    return { document, objectId: molecule.id };
+  }
+  const hydrogenCount = (molecule: MoleculeObject) => Number((/H(\d*)/.exec(molecule.chemistry?.formula ?? "")?.[1] ?? (molecule.chemistry?.formula?.includes("H") ? "1" : "0")) || 0);
+  const makeDative = (document: ChemDraftDocument, objectId: string) =>
+    applyNativeBondDisplayStyleTarget(document, { objectId, kind: "bond", bondId: "b_zn", fromAtomId: "n1", toAtomId: "zn", distanceToPointer: 0 }, "dashed");
+
+  it("an imidazole N–H donating to zinc loses its proton: label N, one fewer H in the formula, still neutral", () => {
+    const { document, objectId } = complexDocument("imidazole");
+    // Solid N–Zn as the reference: the nitrogen has three covalent bonds and no hydrogen.
+    const solid = makeDative(document, objectId);
+    // Turning that bond dative must NOT give the hydrogen back — the dashed bond is imidazolate binding.
+    const reference = applyNativeBondDisplayStyleTarget(solid, { objectId, kind: "bond", bondId: "b_zn", fromAtomId: "n1", toAtomId: "zn", distanceToPointer: 0 }, "bold");
+    const dative = moleculeById(solid, objectId);
+    const bold = moleculeById(reference, objectId);
+    expect(hydrogenCount(dative)).toBe(hydrogenCount(bold));
+    expect(dative.atoms.find((atom) => atom.id === "n1")?.formalCharge).toBe(0);
+    expect(nativeSingleBondGraphSmiles(dative.atoms, dative.bonds)).not.toContain("[NH");
+    expect(nativeMoleculeInvalidAtomStates(dative)).toEqual([]);
+  });
+
+  it("an amine NH2 donating to zinc keeps both hydrogens", () => {
+    const { document, objectId } = complexDocument("amine");
+    const dativeDocument = makeDative(document, objectId);
+    // The hand-built fixture carries no chemistry until an edit refreshes it, so the solid
+    // reference is the same bond with a bold style rather than the raw fixture.
+    const solid = moleculeById(applyNativeBondDisplayStyleTarget(dativeDocument, { objectId, kind: "bond", bondId: "b_zn", fromAtomId: "n1", toAtomId: "zn", distanceToPointer: 0 }, "bold"), objectId);
+    const dative = moleculeById(dativeDocument, objectId);
+    // Solid C–N–Zn leaves one H on the nitrogen; the dative bond frees a slot, so NH2.
+    expect(hydrogenCount(dative)).toBe(hydrogenCount(solid) + 1);
+  });
+});

@@ -1689,6 +1689,53 @@ describe("layout-engine page SVG planner", () => {
     expect(atomLabelAnchorOffset(molecule.atoms[0]!, "C", drawingStyle)).toEqual({ x: 8, y: -6 });
   });
 
+  it("takes the proton off a pyrrole-type N–H that donates a dative bond to a metal, and only that one", () => {
+    // Imidazole: N1 is pyrrole-type (two single ring bonds, each neighbour in a double bond), N3
+    // is pyridine-type. A dashed bond from N1 to zinc means imidazolate coordination — no free pair
+    // to donate — so the label reads N; a dashed bond from an amine NH2 or to a non-metal costs nothing.
+    const imidazole = (dativeTo: "Zn" | "C") => moleculeObject({
+      atoms: [
+        { id: "n1", element: "N", x: 100, y: 100, formalCharge: 0 },
+        { id: "c2", element: "C", x: 130, y: 80, formalCharge: 0 },
+        { id: "n3", element: "N", x: 160, y: 100, formalCharge: 0 },
+        { id: "c4", element: "C", x: 150, y: 135, formalCharge: 0 },
+        { id: "c5", element: "C", x: 110, y: 135, formalCharge: 0 },
+        { id: "m", element: dativeTo, x: 70, y: 70, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "n1", toAtomId: "c2", order: "single" },
+        { id: "b2", fromAtomId: "c2", toAtomId: "n3", order: "double" },
+        { id: "b3", fromAtomId: "n3", toAtomId: "c4", order: "single" },
+        { id: "b4", fromAtomId: "c4", toAtomId: "c5", order: "double" },
+        { id: "b5", fromAtomId: "c5", toAtomId: "n1", order: "single" },
+        { id: "b6", fromAtomId: "n1", toAtomId: "m", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelHideImplicitHydrogens: false }
+    });
+    const label = (molecule: ReturnType<typeof moleculeObject>, atomId: string) =>
+      atomDisplayLabel(molecule.atoms.find((atom) => atom.id === atomId)!, molecule.bonds, nativeDrawingStyleFromObjectStyle(molecule.style), molecule.atoms);
+
+    const toZinc = imidazole("Zn");
+    expect(label(toZinc, "n1")).toBe("N");
+    expect(label(toZinc, "n3")).toBe("N");
+    // A dashed bond to a carbon is a partial bond, not a coordination: the N–H stays.
+    expect(label(imidazole("C"), "n1")).toBe("NH");
+
+    const amine = moleculeObject({
+      atoms: [
+        { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "n1", element: "N", x: 130, y: 100, formalCharge: 0 },
+        { id: "zn", element: "Zn", x: 160, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "c1", toAtomId: "n1", order: "single" },
+        { id: "b2", fromAtomId: "n1", toAtomId: "zn", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelHideImplicitHydrogens: false }
+    });
+    expect(label(amine, "n1")).toBe("NH2");
+  });
+
   it("draws the carbon at the end of a dashed (dative) bond as a plain stick, not a labeled CH4", () => {
     // A dashed bond contributes no covalent valence, so a carbon whose only bond is dashed has
     // valenceUsed 0 exactly like a naked atom. Only a carbon with NO bond is naked; the dashed

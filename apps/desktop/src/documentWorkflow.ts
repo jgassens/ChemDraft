@@ -17367,12 +17367,12 @@ function nativeSingleBondGraphMetadata(
     // keep the skeletal convention and count their implicit hydrogens.
     const valenceUsed = valenceUsage.get(atom.id) ?? 0;
     if (element !== "H" && atom.labelLiteral !== true) {
-      const implicitHydrogens = nativeImplicitHydrogenCount(
+      const implicitHydrogens = Math.max(0, nativeImplicitHydrogenCount(
         element,
         valenceUsed,
         atom.formalCharge,
         atom.markRadicals ?? 0
-      );
+      ) - nativeDativeDeprotonationCount(atom, bonds, atoms));
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
@@ -18015,12 +18015,12 @@ function nativeAtomSmilesById(
       atom.labelLiteral !== true &&
       (atom.formalCharge !== 0 || !smilesOrganicSubset.has(element));
     const implicitHydrogens = needsSpelledHydrogens
-      ? nativeImplicitHydrogenCount(
+      ? Math.max(0, nativeImplicitHydrogenCount(
           element,
           valenceUsage.get(atom.id) ?? 0,
           atom.formalCharge,
           atom.markRadicals ?? 0
-        )
+        ) - nativeDativeDeprotonationCount(atom, bonds, atoms))
       : 0;
     return [atom.id, nativeAtomSmiles(atom, implicitHydrogens)] as const;
   }));
@@ -18064,6 +18064,61 @@ function nativeImplicitHydrogenCount(
   radicals = 0
 ): number {
   return Math.max(0, nativeAtomValenceForCharge(element, formalCharge) - valenceUsed - radicals);
+}
+
+/**
+ * Hydrogens a dative bond costs its donor. A dashed bond to a metal is a lone-pair donation and
+ * costs nothing when the donor has a pair to give: pyridine and amine nitrogens, ether and aqua
+ * oxygens keep every hydrogen they had. A pyrrole-type nitrogen — two single bonds, each into a
+ * conjugated neighbour: the N–H of imidazole, pyrazole, pyrrole, indole — has no free pair (its
+ * "lone pair" is the aromatic sextet) and coordinates only as its conjugate base. Drawing the
+ * dative bond therefore takes the proton off: the label reads N instead of NH, the formula loses
+ * one H, and the atom stays neutral — the dashed bond IS the imidazolate–metal interaction.
+ * Oxygen is deliberately left alone: an O–H donor can be an aqua/alcohol adduct or a
+ * hydroxo/alkoxo ligand, and that is the chemist's call, not a drawing rule. The layout engine's
+ * label derivation mirrors this rule (`dativeDeprotonationCount` there) so label and formula agree.
+ */
+function nativeDativeDeprotonationCount(
+  atom: MoleculeAtom,
+  bonds: readonly MoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): number {
+  if (nativeElementFromAtomLabel(atom.element) !== "N" || atom.formalCharge !== 0 || atom.labelLiteral === true) {
+    return 0;
+  }
+  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const covalentNeighborIds: string[] = [];
+  let donatesToMetal = false;
+  let covalentAllSingle = true;
+  bonds.forEach((bond) => {
+    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
+      return;
+    }
+    const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
+    if (bond.display?.bondStyle === "dashed") {
+      const neighbor = atomById.get(neighborId);
+      if (neighbor && isNativeMetalAtom(neighbor)) {
+        donatesToMetal = true;
+      }
+      return;
+    }
+    covalentNeighborIds.push(neighborId);
+    if (bond.order !== "single") {
+      covalentAllSingle = false;
+    }
+  });
+  if (!donatesToMetal || covalentNeighborIds.length !== 2 || !covalentAllSingle) {
+    return 0;
+  }
+  // Pyrrole-type: each covalent neighbour carries a multiple bond of its own — the ring's
+  // conjugation — so the nitrogen's pair is part of the π system, not available to donate.
+  const conjugated = covalentNeighborIds.every((neighborId) => bonds.some((bond) =>
+    (bond.fromAtomId === neighborId || bond.toAtomId === neighborId) &&
+    bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id &&
+    bond.display?.bondStyle !== "dashed" &&
+    (bond.order === "double" || bond.order === "aromatic")
+  ));
+  return conjugated ? 1 : 0;
 }
 
 /**
