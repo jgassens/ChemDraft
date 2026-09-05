@@ -173,6 +173,7 @@ import {
   mechanismArrowHandlePoints,
   nativeChargeMarkCenter,
   nativeChargeMarkMaxMagnitude,
+  nativeChargeStackRefusal,
   nativeAtomChargeStackAtCap,
   nativeChargeMarkSizePx,
   nativeAtomValidationState,
@@ -253,7 +254,8 @@ import {
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
   updateNativeGraphicRadialGradientHandle,
-  nativeSingleBondGraphSmiles
+  nativeSingleBondGraphSmiles,
+  type NativeMoleculeDeleteTarget
 } from "./documentWorkflow";
 import * as OCL from "openchemlib";
 
@@ -4617,9 +4619,135 @@ describe("Phase 4 document workflow", () => {
     expect(solidBondedZn).toMatchObject({ formalCharge: 2 });
   });
 
+  it("refuses a stack the atom's valence cannot carry, instead of writing one the reconcile strips", () => {
+    const chargeMarks = (document: ChemDraftDocument) =>
+      document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+        object.type === "electron-mark" && object.markKind === "charge"
+      );
+
+    // A bare carbon carries +1 through +4 (C4+ is an expressible octet state) and must stop
+    // there. Before this check, the fifth press wrote +5 to the mark, the reconcile refused to
+    // associate it, detached it, and reset the atom from +4 to NEUTRAL — while the status bar
+    // reported "Placed positive charge 5+".
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Stack Refusal"), { x: 300, y: 300 });
+    const methane = applyNativeMoleculeDeleteTarget(ethane, {
+      objectId: selectedMolecule(ethane).id, kind: "bond", bondId: "bond_001",
+      fromAtomId: "atom_001", toAtomId: "atom_002", terminalAtomId: "atom_002", distanceToPointer: 0
+    });
+    const carbon = { objectId: selectedMolecule(methane).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    let document = methane;
+    for (let press = 0; press < 4; press += 1) {
+      expect(nativeChargeStackRefusal(document, 1, carbon)).toBeUndefined();
+      document = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, carbon));
+    }
+    expect(moleculeById(document, carbon.objectId).atoms[0]).toMatchObject({ formalCharge: 4, markCharge: 4 });
+    expect(nativeChargeStackRefusal(document, 1, carbon)).toBe("valence");
+    expect(applyChargeToolAtNativeAtom(document, 1, carbon)).toBe(document);
+    // Nothing moved: the atom keeps its +4, the mark keeps its anchor, and − still steps down.
+    expect(chargeMarks(document)[0].anchor.kind).toBe("atom");
+    expect(nativeChargeStackRefusal(document, -1, carbon)).toBeUndefined();
+
+    // Ammonium: a four-bond nitrogen carries exactly +1. The second press used to strip that +1
+    // (leaving a neutral hypervalent N with an invalid badge) and float a "2+" beside it.
+    const quaternary = [-120, 120, 180].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Ammonium Refusal"), { x: 300, y: 300 })
+    );
+    const nitrogenDocument = setNativeAtomElement(quaternary, "atom_001", "N");
+    const nitrogen = { objectId: selectedMolecule(nitrogenDocument).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    const ammonium = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(nitrogenDocument, 1, nitrogen));
+    expect(moleculeById(ammonium, nitrogen.objectId).atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ formalCharge: 1 });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(ammonium, nitrogen.objectId))).toEqual([]);
+    expect(nativeChargeStackRefusal(ammonium, 1, nitrogen)).toBe("valence");
+    expect(applyChargeToolAtNativeAtom(ammonium, 1, nitrogen)).toBe(ammonium);
+    expect(chargeMarks(ammonium)).toHaveLength(1);
+  });
+
+  it("never bumps a mark that belongs to a neighbouring atom", () => {
+    // A three-bond centre in 120° geometry: its mark lands at the growth slot, one bond length
+    // from the centre AND one bond length from two neighbours — inside the association radius.
+    // Pressing − on such a neighbour used to find the centre's ⊕ through the proximity
+    // fallback, sum +1 + (−1) = 0, and DELETE it; the neighbour never got its charge.
+    const center = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Neighbour Mark"), { x: 300, y: 300 })
+    );
+    const molecule = selectedMolecule(center);
+    const centerTarget = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(center, 1, centerTarget));
+    const centerMark = charged.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!centerMark) {
+      throw new Error("Expected the centre's charge mark.");
+    }
+
+    // The precondition that makes this test mean something: a neighbour really is in radius.
+    const markCenter = nativeChargeMarkCenter(centerMark);
+    const radius = Math.max(nativeChargeAssociationRadiusPx, nativeBondLengthPx * 1.15);
+    const neighbour = moleculeById(charged, molecule.id).atoms
+      .filter((atom) => atom.id !== "atom_001")
+      .map((atom) => ({ atom, gap: Math.hypot(atom.x - markCenter.x, atom.y - markCenter.y) }))
+      .sort((left, right) => left.gap - right.gap)[0];
+    expect(neighbour.gap).toBeLessThanOrEqual(radius);
+
+    const pressed = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(charged, -1, {
+      objectId: molecule.id, kind: "atom", atomId: neighbour.atom.id, distanceToPointer: 0
+    }));
+    const marks = pressed.pages[0].objects.filter((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    expect(marks).toHaveLength(2);
+    expect(moleculeById(pressed, molecule.id).atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ formalCharge: 1 });
+    expect(moleculeById(pressed, molecule.id).atoms.find((atom) => atom.id === neighbour.atom.id)).toMatchObject({ formalCharge: -1 });
+  });
+
+  it("moves only the magnitude when stacking — the mark keeps its own identity", () => {
+    const zincDocument = () => {
+      const text = insertNativeTextObject(createPhase4Document("Mark Identity"), { x: 300, y: 300 }, "Zn");
+      const textObject = text.pages[0].objects.find((object) => object.type === "text");
+      const seeded = convertNativeTextObjectToAtom(text, textObject?.id ?? "");
+      const molecule = selectedMolecule(seeded);
+      return { seeded, target: { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0].id, distanceToPointer: 0 } };
+    };
+    const onlyMark = (document: ChemDraftDocument) => {
+      const marks = document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+        object.type === "electron-mark" && object.markKind === "charge"
+      );
+      expect(marks).toHaveLength(1);
+      return marks[0];
+    };
+    const stack = (document: ChemDraftDocument, spec: Parameters<typeof applyChargeToolAtNativeAtom>[1], target: NativeMoleculeDeleteTarget) =>
+      reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, spec, target));
+
+    // A radical cation bumped by the plain + tool stays a radical: the press adds charge, it
+    // does not take the unpaired electron away.
+    const radicalFirst = zincDocument();
+    let document = stack(radicalFirst.seeded, { kind: "charge", charge: 1, radical: true }, radicalFirst.target);
+    document = stack(document, 1, radicalFirst.target);
+    expect(onlyMark(document)).toMatchObject({ charge: 2, radical: true });
+    expect(moleculeById(document, radicalFirst.target.objectId).atoms[0]).toMatchObject({ formalCharge: 2, markRadicals: 1 });
+
+    // A plain ⊕ bumped by the •+ tool stays plain: the press must never add an unpaired
+    // electron — and a bonding slot — to an atom that did not have one.
+    const plainFirst = zincDocument();
+    document = stack(plainFirst.seeded, 1, plainFirst.target);
+    document = stack(document, { kind: "charge", charge: 1, radical: true }, plainFirst.target);
+    expect(onlyMark(document)).toMatchObject({ charge: 2 });
+    expect(onlyMark(document).radical).toBeUndefined();
+    expect(moleculeById(document, plainFirst.target.objectId).atoms[0].markRadicals ?? 0).toBe(0);
+
+    // An uncircled sign bumped by the default (circled) tool keeps its style.
+    const uncircled = zincDocument();
+    document = stack(uncircled.seeded, { kind: "charge", charge: 1, chargeStyle: "plain" }, uncircled.target);
+    document = stack(document, 1, uncircled.target);
+    expect(onlyMark(document)).toMatchObject({ charge: 2, chargeStyle: "plain" });
+  });
+
   it("reports the ±9 stacking cap so the caller can name it instead of misreporting a refusal", () => {
     // A naked Zn atom: metals sit outside the covalent valence tables, so every increment through
-    // ±9 stays associated (a carbon's mark detaches past +3 and would stop stacking early).
+    // ±9 is carried (a carbon is refused past +4 — see the valence-refusal test — and would never
+    // reach the cap).
     const znTextDocument = insertNativeTextObject(createPhase4Document("Charge Cap"), { x: 300, y: 300 }, "Zn");
     const znTextObject = znTextDocument.pages[0].objects.find((object) => object.type === "text");
     const seeded = convertNativeTextObjectToAtom(znTextDocument, znTextObject?.id ?? "");
@@ -4874,16 +5002,20 @@ describe("Phase 4 document workflow", () => {
     };
     const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(propane, 1, target));
     const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, target));
-    const thirdAttempt = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(twice, 1, target));
-    const carbon = moleculeById(thirdAttempt, molecule.id).atoms.find((atom) => atom.id === "atom_002");
+    // The refusal happens at the tool, not at the reconcile: the third press is a no-op, so the
+    // carbon KEEPS its +2 and its anchored mark. (It used to write +3, which the reconcile then
+    // detached — leaving a neutral carbon beside a floating "3+".)
+    const thirdAttempt = applyChargeToolAtNativeAtom(twice, 1, target);
+    expect(thirdAttempt).toBe(twice);
+    expect(nativeChargeStackRefusal(twice, 1, target)).toBe("valence");
+    const carbon = moleculeById(reconcileNativeChargeMarks(thirdAttempt), molecule.id).atoms.find((atom) => atom.id === "atom_002");
     const mark = thirdAttempt.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
     );
 
     expect(moleculeById(twice, molecule.id).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ formalCharge: 2 });
-    expect(carbon).toMatchObject({ element: "C", formalCharge: 0 });
-    expect(carbon?.markCharge).toBeUndefined();
-    expect(mark?.anchor).toMatchObject({ kind: "point" });
+    expect(carbon).toMatchObject({ element: "C", formalCharge: 2, markCharge: 2 });
+    expect(mark?.anchor).toMatchObject({ kind: "atom", atomId: "atom_002" });
   });
 
   it("treats dashed bonds as dative for valence and drawn hydrogens", () => {

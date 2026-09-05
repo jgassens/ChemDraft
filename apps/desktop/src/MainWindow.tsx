@@ -433,8 +433,8 @@ import {
   pastedStructureDepictionFromMolfile,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
-  nativeAtomChargeStackAtCap,
   nativeChargeMarkMaxMagnitude,
+  nativeChargeStackRefusal,
   nativeElementFromKeyboardKey,
   nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
@@ -3503,11 +3503,15 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const nextDocument = applyChargeToolAtNativeAtom(currentDocument, markSpec, target);
     if (nextDocument === currentDocument) {
-      // A refused INCREMENT is not a refused mark: at the ±9 cap the mark is already on the
-      // atom, so name the cap instead of claiming the charge could not be placed.
-      setStatus(nativeAtomChargeStackAtCap(currentDocument, markSpec, target)
+      // A refused INCREMENT is not a refused mark: the mark is already on the atom, so name
+      // what stopped the press — the ±9 cap, or a valence that cannot carry one more — instead
+      // of claiming the charge could not be placed.
+      const refusal = nativeChargeStackRefusal(currentDocument, markSpec, target);
+      setStatus(refusal === "cap"
         ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
-        : `Cannot place ${noun} on hovered atom`);
+        : refusal === "valence"
+          ? `Hovered atom cannot carry ${noun} at its current valence`
+          : `Cannot place ${noun} on hovered atom`);
       return;
     }
 

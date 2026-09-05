@@ -7225,29 +7225,25 @@ export function applyChargeToolAtNativeAtom(
   // mark (+ on ⊕ gives 2+, − on 2+ gives + again, − on ⊕ removes the mark) instead of piling
   // up overlapping ±1 marks. That is how a Zn earns its 2+.
   const normalized = normalizeElectronMarkSpec(spec);
-  if (normalized.kind === "charge") {
-    const existing = nativeAssociatedChargeMarkForAtom(page, molecule, target.atomId);
-    if (existing) {
-      const current = nativeChargeValue(existing.charge) ?? 0;
-      const next = current + normalized.charge;
-      if (Math.abs(next) > nativeChargeMarkMaxMagnitude) {
-        return document;
-      }
-      return applyPatches(
-        document,
-        next === 0
-          ? [{ op: "removeObject", objectId: existing.id }]
-          : [
-              {
-                op: "updateObject",
-                objectId: existing.id,
-                changes: { charge: next, ...(normalized.radical ? { radical: true } : {}) }
-              },
-              { op: "setSelection", pageId: page.id, objectIds: [existing.id] }
-            ],
-        { now: phase4Timestamp }
-      );
+  const plan = nativeChargeStackPlan(page, molecule, target.atomId, normalized);
+  if (plan) {
+    if (plan.refusal) {
+      return document;
     }
+    return applyPatches(
+      document,
+      plan.next === 0
+        ? [{ op: "removeObject", objectId: plan.existing.id }]
+        : [
+            // Only the magnitude moves. The mark keeps its own identity — a radical ion stays a
+            // radical ion, a plain sign stays plain — because a tool variant describes the mark
+            // it would PLACE, not a rewrite of one already on the atom. Nothing here can add an
+            // unpaired electron to an atom that did not have one.
+            { op: "updateObject", objectId: plan.existing.id, changes: { charge: plan.next } },
+            { op: "setSelection", pageId: page.id, objectIds: [plan.existing.id] }
+          ],
+      { now: phase4Timestamp }
+    );
   }
 
   const point = nativeChargePlacementPointForAtom(molecule, target.atomId, page.objects, page.width, page.height);
@@ -7260,46 +7256,103 @@ export function applyChargeToolAtNativeAtom(
 }
 
 /**
- * True when stacking `spec` onto the atom's existing charge mark would exceed the ±9 cap
- * (`nativeChargeMarkMaxMagnitude`) — the one `applyChargeToolAtNativeAtom` refusal where a mark IS
- * already sitting on the atom and only the increment was refused. Lets the caller tell "already at
- * the cap" apart from "no mark could be placed here" instead of reporting a generic failure.
- * Mirrors the stacking math in `applyChargeToolAtNativeAtom`; keep the two in step.
+ * Why a press on an atom that already carries a charge mark was refused — the increment, not
+ * the mark: "cap" is the ±9 limit (`nativeChargeMarkMaxMagnitude`), "valence" is a total the
+ * element cannot carry at its current bond usage. Lets the caller name the reason instead of
+ * reporting that no mark could be placed.
  */
+export type NativeChargeStackRefusal = "cap" | "valence";
+
+/**
+ * What a charge-tool press does to the mark an atom already carries, and whether it is refused.
+ * One computation feeds both the apply and the status line, so the reason MainWindow names is
+ * always the reason the apply actually refused for.
+ */
+function nativeChargeStackPlan(
+  page: DocumentPage,
+  molecule: MoleculeObject,
+  atomId: string,
+  spec: NativeElectronMarkSpec
+): { existing: ElectronMarkObject; next: number; refusal?: NativeChargeStackRefusal } | undefined {
+  if (spec.kind !== "charge") {
+    return undefined;
+  }
+  const existing = nativeAssociatedChargeMarkForAtom(page, molecule, atomId);
+  if (!existing) {
+    return undefined;
+  }
+  const current = nativeChargeValue(existing.charge) ?? 0;
+  const next = current + spec.charge;
+  if (Math.abs(next) > nativeChargeMarkMaxMagnitude) {
+    return { existing, next, refusal: "cap" };
+  }
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (next !== 0 && atom) {
+    // An atom-anchored mark is already reconciled into formalCharge, so the press moves the
+    // atom by the delta. An object-anchored one found by proximity is not yet counted, so the
+    // atom would end up carrying its intrinsic charge plus the whole mark.
+    const candidate = existing.anchor.kind === "atom"
+      ? atom.formalCharge + spec.charge
+      : atom.formalCharge - (atom.markCharge ?? 0) + next;
+    if (!nativeAtomCanCarryCharge(molecule, atom, candidate)) {
+      return { existing, next, refusal: "valence" };
+    }
+  }
+  return { existing, next };
+}
+
+/**
+ * Whether the atom's element admits this total formal charge at its current bond usage — the
+ * same test the mark reconciliation applies. Checked BEFORE a stack is written, so the charge
+ * tool never bumps a mark to a magnitude the very next commit would strip back off the atom
+ * (five presses on a carbon used to reset it from +4 to neutral while reporting "Placed 5+").
+ * Superatom labels stay permissive, exactly as they are in the reconciliation.
+ */
+function nativeAtomCanCarryCharge(molecule: MoleculeObject, atom: MoleculeAtom, charge: number): boolean {
+  const element = nativeElementFromAtomLabel(atom.element);
+  if (!element) {
+    return true;
+  }
+  const usage = nativeAtomBondOrderUsage(atom.id, molecule.bonds) + (atom.markRadicals ?? 0);
+  return nativeAtomChargeSupportsValence(element, usage, charge);
+}
+
+export function nativeChargeStackRefusal(
+  document: ChemDraftDocument,
+  spec: NativeElectronMarkSpec | NativeChargeValue,
+  target: NativeMoleculeDeleteTarget
+): NativeChargeStackRefusal | undefined {
+  if (target.kind !== "atom") {
+    return undefined;
+  }
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
+  );
+  if (!molecule) {
+    return undefined;
+  }
+  return nativeChargeStackPlan(page, molecule, target.atomId, normalizeElectronMarkSpec(spec))?.refusal;
+}
+
 export function nativeAtomChargeStackAtCap(
   document: ChemDraftDocument,
   spec: NativeElectronMarkSpec | NativeChargeValue,
   target: NativeMoleculeDeleteTarget
 ): boolean {
-  if (target.kind !== "atom") {
-    return false;
-  }
-
-  const page = firstPage(document);
-  const molecule = page.objects.find((object): object is MoleculeObject =>
-    object.id === target.objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
-  );
-  const normalized = normalizeElectronMarkSpec(spec);
-  if (!molecule || normalized.kind !== "charge") {
-    return false;
-  }
-
-  const existing = nativeAssociatedChargeMarkForAtom(page, molecule, target.atomId);
-  if (!existing) {
-    return false;
-  }
-  return Math.abs((nativeChargeValue(existing.charge) ?? 0) + normalized.charge) > nativeChargeMarkMaxMagnitude;
+  return nativeChargeStackRefusal(document, spec, target) === "cap";
 }
 
 /**
- * The charge mark currently charging this atom: an anchor match wins, else the nearest charge
- * mark that belongs to THIS molecule object within the same association radius the
- * reconciliation uses. The fallback must not reach across molecule objects: in a tight
- * coordination complex a mark hovering over molecule A's metal can sit within a bond length of
- * molecule B's ligand atom, and counting it would bump A's mark when the user charges B's atom.
- * Reconciliation re-anchors associated marks on every commit, so a mark that belongs to an atom
- * carries an atom anchor; a still-floating point mark belongs to no molecule and is left for a
- * fresh mark, not a bump.
+ * The charge mark currently charging this atom: an anchor match wins, else the nearest
+ * OBJECT-anchored mark of THIS molecule within the same association radius the reconciliation
+ * uses. The fallback must not reach across molecule objects: in a tight coordination complex a
+ * mark hovering over molecule A's metal can sit within a bond length of molecule B's ligand
+ * atom, and counting it would bump A's mark when the user charges B's atom. Nor may it reach
+ * another atom's mark inside this molecule: reconciliation re-anchors every associated mark on
+ * its atom, so an atom-anchored mark is that atom's charge, and a neighbour sits one bond length
+ * away — inside this radius. Atom-anchored marks are therefore matched by anchor only; a
+ * still-floating point mark belongs to no molecule and is left for a fresh mark, not a bump.
  */
 function nativeAssociatedChargeMarkForAtom(
   page: DocumentPage,
@@ -7324,9 +7377,7 @@ function nativeAssociatedChargeMarkForAtom(
     nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 1.15
   );
   return marks
-    .filter((mark) =>
-      (mark.anchor.kind === "atom" || mark.anchor.kind === "object") && mark.anchor.objectId === molecule.id
-    )
+    .filter((mark) => mark.anchor.kind === "object" && mark.anchor.objectId === molecule.id)
     .map((mark) => ({ mark, distance: distance(nativeChargeMarkCenter(mark), atom) }))
     .filter((entry) => entry.distance <= radius)
     .sort((left, right) => left.distance - right.distance)[0]?.mark;

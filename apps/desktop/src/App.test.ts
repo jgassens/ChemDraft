@@ -2149,12 +2149,14 @@ describe("ChemDraft desktop shell", () => {
     expect(marks[0]).toMatchObject({ charge: 2 });
   });
 
-  it("names the ±9 limit when a charge-hotkey increment is refused at the cap", () => {
-    // The cap refusal used to read "Cannot place positive charge on hovered atom" even though the
-    // mark WAS on the atom — it was the increment past ±9 that was refused. The query itself is
-    // covered in documentWorkflow.test.ts; this guards the MainWindow wiring of the message.
-    expect(mainWindowSource).toContain("nativeAtomChargeStackAtCap(currentDocument, markSpec, target)");
+  it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
+    // A refused increment used to read "Cannot place positive charge on hovered atom" even though
+    // the mark WAS on the atom — it was the increment that was refused, past ±9 or past what the
+    // element can carry. The query itself is covered in documentWorkflow.test.ts; this guards the
+    // MainWindow wiring of both messages.
+    expect(mainWindowSource).toContain("nativeChargeStackRefusal(currentDocument, markSpec, target)");
     expect(mainWindowSource).toContain("Charge is already at the ±");
+    expect(mainWindowSource).toContain("cannot carry ${noun} at its current valence");
   });
 
   it("names the stacked magnitude in the charge status noun", () => {
