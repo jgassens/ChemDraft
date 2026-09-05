@@ -7,6 +7,7 @@ import {
   applyPatch,
   applyPatchWithHistory,
   applyPatches,
+  nativeDrawingStyleFromObjectStyle,
   createDocumentHistory,
   deserializeDocument,
   inchesToCssPx,
@@ -3845,6 +3846,32 @@ describe("Phase 4 document workflow", () => {
       ]);
       return { document, molecule: moleculeById(document, molecule.id) };
     }
+
+    it("2D cleanup's engine route is a fixed point: a second run changes nothing, and a shrunk drawing comes back to the style's bond length", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const styleBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      // Shrink the drawing to two thirds, the way repeated runs of an earlier build had left the
+      // owner's complex: the 2D route must bring it back, not preserve the drift.
+      const shrunk = applyPatches(document, [{
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: { atoms: molecule.atoms.map((atom) => ({ ...atom, x: 200 + (atom.x - 200) * 2 / 3, y: 150 + (atom.y - 150) * 2 / 3 })) }
+      }]);
+      const once = applyNativeMoleculeEngineRelayout(shrunk, molecule.id, relayoutMolfile2D, { targetBondLengthPx: styleBondLength });
+      const onceMolecule = moleculeById(once, molecule.id);
+      const covalent = onceMolecule.bonds.filter((bond) => bond.display?.bondStyle !== "dashed").map((bond) => moleculeBondLength(onceMolecule, bond.id));
+      covalent.forEach((length) => expect(length).toBeCloseTo(styleBondLength, 0));
+
+      // Running again from the cleaned state moves nothing: the metal is not re-settled against
+      // the engine's fresh row of ligands (that walked the molecule a step per run), and the
+      // scale is the style's, not whatever the previous run happened to leave.
+      const twice = applyNativeMoleculeEngineRelayout(once, molecule.id, relayoutMolfile2D, { targetBondLengthPx: styleBondLength });
+      const twiceMolecule = moleculeById(twice, molecule.id);
+      onceMolecule.atoms.forEach((atom, index) => {
+        expect(twiceMolecule.atoms[index]!.x, atom.id).toBeCloseTo(atom.x, 1);
+        expect(twiceMolecule.atoms[index]!.y, atom.id).toBeCloseTo(atom.y, 1);
+      });
+    });
 
     it("engine re-layout folds a chelating ligand around its metal instead of parking the metal to one side", () => {
       const { document, molecule } = zincTpaSplayedFixture();

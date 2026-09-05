@@ -3585,10 +3585,15 @@ export function MainWindow({
       try {
         const { relayoutMolfile2D } = await import("@chemdraft/ocl-adapter");
         const changed = commitDocumentChange((current) =>
-          engineTargetIds.reduce(
-            (next, objectId) => applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D),
-            cleanUpNativeMolecules2d(current, nativeTargetIds)
-          )
+          engineTargetIds.reduce((next, objectId) => {
+            // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
+            // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
+            const target = findDocumentObject(next, objectId);
+            const targetBondLengthPx = target?.type === "molecule"
+              ? nativeDrawingStyleFromObjectStyle(target.style).bondLengthPx
+              : undefined;
+            return applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D, { targetBondLengthPx });
+          }, cleanUpNativeMolecules2d(current, nativeTargetIds))
         );
         setStatus(cleanedStatus(changed));
       } catch (error) {
