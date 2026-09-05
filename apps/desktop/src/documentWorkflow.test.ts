@@ -3694,6 +3694,114 @@ describe("Phase 4 document workflow", () => {
       });
     });
 
+    /** A tetrakis(2-methylimidazole)zinc complex as a user drew it: four imidazole rings on
+     *  dative (dashed) bonds to one Zn. Four separate rings joined through the metal give the
+     *  component a cyclomatic number of 4, so the polygon+tree pass declines it; before the
+     *  engine route existed, 2D cleanup did nothing at all on drawings like this. */
+    function zincTetrakisImidazoleFixture(): { document: ChemDraftDocument; molecule: MoleculeObject } {
+      const atomRows: ReadonlyArray<readonly [string, string, number, number]> = [
+        ["atom_003", "C", 194.3, 84.3], ["atom_004", "N", 201.5, 105.1], ["atom_005", "C", 184.0, 118.4],
+        ["atom_006", "N", 166.0, 105.8], ["atom_007", "C", 172.3, 84.8], ["atom_008", "Zn", 237.9, 126.0],
+        ["atom_009", "N", 256.9, 115.0], ["atom_010", "C", 259.2, 93.2], ["atom_011", "C", 280.8, 88.6],
+        ["atom_012", "N", 291.8, 107.6], ["atom_013", "C", 277.0, 124.0], ["atom_014", "N", 163.5, 188.8],
+        ["atom_015", "N", 280.8, 195.9], ["atom_016", "C", 165.1, 210.7], ["atom_017", "C", 144.7, 219.0],
+        ["atom_018", "N", 130.5, 202.2], ["atom_019", "C", 142.1, 183.5], ["atom_020", "C", 302.8, 197.6],
+        ["atom_021", "N", 308.0, 219.0], ["atom_022", "C", 289.2, 230.5], ["atom_023", "C", 272.5, 216.2],
+        ["atom_024", "C", 184.5, 140.4], ["atom_025", "C", 133.8, 163.1], ["atom_026", "C", 317.0, 180.8],
+        ["atom_027", "C", 281.6, 145.5]
+      ];
+      const bondRows: ReadonlyArray<readonly [string, string, string, "single" | "double", boolean]> = [
+        ["bond_001", "atom_003", "atom_004", "single", false], ["bond_002", "atom_004", "atom_005", "single", false],
+        ["bond_003", "atom_005", "atom_006", "double", false], ["bond_004", "atom_006", "atom_007", "single", false],
+        ["bond_005", "atom_007", "atom_003", "double", false], ["bond_006", "atom_004", "atom_008", "single", true],
+        ["bond_007", "atom_008", "atom_009", "single", true], ["bond_008", "atom_009", "atom_010", "single", false],
+        ["bond_009", "atom_010", "atom_011", "double", false], ["bond_010", "atom_011", "atom_012", "single", false],
+        ["bond_011", "atom_012", "atom_013", "double", false], ["bond_012", "atom_013", "atom_009", "single", false],
+        ["bond_013", "atom_008", "atom_014", "single", true], ["bond_014", "atom_008", "atom_015", "single", true],
+        ["bond_015", "atom_014", "atom_016", "single", false], ["bond_016", "atom_016", "atom_017", "double", false],
+        ["bond_017", "atom_017", "atom_018", "single", false], ["bond_018", "atom_018", "atom_019", "double", false],
+        ["bond_019", "atom_019", "atom_014", "single", false], ["bond_020", "atom_015", "atom_020", "single", false],
+        ["bond_021", "atom_020", "atom_021", "double", false], ["bond_022", "atom_021", "atom_022", "single", false],
+        ["bond_023", "atom_022", "atom_023", "double", false], ["bond_024", "atom_023", "atom_015", "single", false],
+        ["bond_025", "atom_005", "atom_024", "single", false], ["bond_026", "atom_019", "atom_025", "single", false],
+        ["bond_027", "atom_020", "atom_026", "single", false], ["bond_028", "atom_013", "atom_027", "single", false]
+      ];
+      const molecule: MoleculeObject = {
+        id: "mol_zinc_imidazoles",
+        type: "molecule",
+        x: 130,
+        y: 84,
+        width: 190,
+        height: 150,
+        rotation: 0,
+        style: { fillColor: "none" },
+        structureFormat: "smiles",
+        structure: "C=1N(C(=NC1)C)[Zn](N1C=CN=C1C)(N1C=CN=C1C)N1C(=NC=C1)C",
+        atoms: atomRows.map(([id, element, x, y]) => ({ id, element, x, y, formalCharge: 0 })),
+        bonds: bondRows.map(([id, fromAtomId, toAtomId, order, dashed]) => ({
+          id, fromAtomId, toAtomId, order, ...(dashed ? { display: { bondStyle: "dashed" as const } } : {})
+        })),
+        superatoms: [],
+        rGroups: []
+      };
+      const base = createPhase4Document("Zinc Cluster");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      return { document, molecule: moleculeById(document, molecule.id) };
+    }
+
+    it("engine re-layout of a zinc coordination complex: clean ligands around a centred metal, dative bonds kept", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      // Four rings joined through the metal: the polygon+tree pass declines this (cleanup routes it
+      // to the engine), and the routing predicate must say so.
+      expect(moleculeHasFusedRingSystem(molecule)).toBe(true);
+      expect(cleanUpNativeMolecules2d(document, [molecule.id])).toBe(document);
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      const isDative = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+
+      // The four dative bonds survive on their endpoints; nothing else gained or lost a style.
+      expect(relaidMolecule.bonds.filter(isDative).map((bond) => bond.id).sort()).toEqual(["bond_006", "bond_007", "bond_013", "bond_014"]);
+
+      // Covalent bonds are uniform and scaled to the drawing's own covalent mean — the long
+      // metal-ligand bonds must not drag that scale down.
+      const covalentBefore = molecule.bonds.filter((bond) => !isDative(bond)).map((bond) => moleculeBondLength(molecule, bond.id));
+      const meanBefore = covalentBefore.reduce((sum, value) => sum + value, 0) / covalentBefore.length;
+      const covalentAfter = relaidMolecule.bonds.filter((bond) => !isDative(bond)).map((bond) => moleculeBondLength(relaidMolecule, bond.id));
+      const meanAfter = covalentAfter.reduce((sum, value) => sum + value, 0) / covalentAfter.length;
+      expect(meanAfter).toBeCloseTo(meanBefore, 0);
+      covalentAfter.forEach((length) => expect(Math.abs(length - meanAfter) / meanAfter).toBeLessThan(0.1));
+
+      // No ligand collides with another (sent as plain single bonds, the engine tangled them):
+      // no two atoms closer than half a bond length. (The hand-built fixture carries no chemistry
+      // metadata, so the shared usability helper is not used here.)
+      relaidMolecule.atoms.forEach((atom, index) => {
+        relaidMolecule.atoms.slice(index + 1).forEach((other) => {
+          expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`).toBeGreaterThan(meanAfter * 0.5);
+        });
+      });
+
+      // The metal sits in its donor pocket (the engine alone parks it to one side on long dashed
+      // bonds): it is near the donor centroid, every Zn–N reach is of the same order, and the
+      // donors spread around it rather than clustering on one side.
+      const zinc = relaidMolecule.atoms.find((atom) => atom.element === "Zn")!;
+      const donors = relaidMolecule.bonds.filter(isDative).map((bond) =>
+        relaidMolecule.atoms.find((atom) => atom.id === (bond.fromAtomId === zinc.id ? bond.toAtomId : bond.fromAtomId))!
+      );
+      const reach = donors.map((donor) => Math.hypot(donor.x - zinc.x, donor.y - zinc.y));
+      const meanReach = reach.reduce((sum, value) => sum + value, 0) / reach.length;
+      const centroid = { x: donors.reduce((sum, donor) => sum + donor.x, 0) / donors.length, y: donors.reduce((sum, donor) => sum + donor.y, 0) / donors.length };
+      expect(Math.hypot(centroid.x - zinc.x, centroid.y - zinc.y)).toBeLessThan(meanReach * 0.5);
+      reach.forEach((value) => expect(value / meanReach).toBeGreaterThan(0.5));
+      reach.forEach((value) => expect(value / meanReach).toBeLessThan(1.6));
+      const angles = donors.map((donor) => Math.atan2(donor.y - zinc.y, donor.x - zinc.x)).sort((left, right) => left - right);
+      const gaps = angles.map((angle, index) => (index === angles.length - 1 ? angles[0] + 2 * Math.PI : angles[index + 1]) - angle);
+      gaps.forEach((gap) => expect(gap).toBeGreaterThan(Math.PI / 4));
+    });
+
     it("maps the engine frame back faithfully: y flips, engine wedges replace old ones, other styles survive", () => {
       const document = insertNativeSingleBondMolecule(createPhase4Document("Relayout Mapping"), { x: 200, y: 220 });
       const molecule = selectedMolecule(document);

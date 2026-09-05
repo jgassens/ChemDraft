@@ -13805,7 +13805,11 @@ export function applyNativeMoleculeEngineRelayout(
     return document;
   }
 
-  const depiction = relayout(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+  // Dative (dashed) bonds go to the engine as coordination type 9: OpenChemLib reads that as its
+  // metal-ligand bond and keeps such bonds out of ring perception, so a coordination complex lays
+  // out as clean ligands around a metal. Sent as plain single bonds instead, every chelate becomes
+  // a literal ring and the inventor tangles the ligands into each other.
+  const depiction = relayout(moleculeToMolfileV2000(molecule, { fromDocFrame: true, coordinationBondsAsType9: true }));
   if (depiction.atoms.length !== molecule.atoms.length) {
     throw new Error(
       `Engine re-layout returned ${depiction.atoms.length} atoms for a ${molecule.atoms.length}-atom structure.`
@@ -13821,7 +13825,17 @@ export function applyNativeMoleculeEngineRelayout(
   // Engine frame is y-UP; the document draws y-DOWN (the coordinate-frame contract: negate y, never
   // swap wedges).
   const enginePoints = depiction.atoms.map((atom) => ({ x: atom.x, y: -atom.y }));
+  // The scale is matched on COVALENT bonds only. The engine draws metal-ligand bonds two to four
+  // times longer than a covalent bond, so letting them into the mean would shrink every ligand
+  // bond in a coordination complex to fit the drawing's mean; a molecule with nothing but dative
+  // bonds falls back to all of them.
+  const indexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
+  const dativePairKeys = new Set(molecule.bonds
+    .filter((bond) => bond.display?.bondStyle === "dashed")
+    .map((bond) => atomPairKey(`${indexById.get(bond.fromAtomId)}`, `${indexById.get(bond.toAtomId)}`)));
+  const preferCovalent = molecule.bonds.some((bond) => bond.display?.bondStyle !== "dashed");
   const engineBondLengths = depiction.bonds
+    .filter((bond) => !preferCovalent || !dativePairKeys.has(atomPairKey(`${bond.from}`, `${bond.to}`)))
     .map((bond) => {
       const from = enginePoints[bond.from];
       const to = enginePoints[bond.to];
@@ -13829,6 +13843,7 @@ export function applyNativeMoleculeEngineRelayout(
     })
     .filter((length) => length > 0.001);
   const currentBondLengths = molecule.bonds
+    .filter((bond) => !preferCovalent || bond.display?.bondStyle !== "dashed")
     .map((bond) => {
       const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
       const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
@@ -13849,7 +13864,7 @@ export function applyNativeMoleculeEngineRelayout(
   const engineCenter = averagePagePoint(enginePoints);
   const currentCenter = averagePagePoint(molecule.atoms);
 
-  const atoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
+  const engineAtoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
     const { z: _z, ...flatAtom } = atom;
     return {
       ...flatAtom,
@@ -13857,6 +13872,7 @@ export function applyNativeMoleculeEngineRelayout(
       y: roundGeometryCoordinate(currentCenter.y + (enginePoints[index].y - engineCenter.y) * scale)
     };
   });
+  const atoms = settleNativeMetalsInDonorPockets(engineAtoms, molecule.bonds, targetBondLength);
 
   // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint
   // atom indices (bond order in the emitted molfile matches molecule.bonds minus dangling entries,
@@ -13930,6 +13946,85 @@ export function applyNativeMoleculeEngineRelayout(
   return applyPatches(document, [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }], {
     now: phase4Timestamp
   });
+}
+
+/**
+ * After an engine re-layout of a coordination complex, pull each metal into the pocket its dative
+ * donors form. OpenChemLib lays the ligands out with the metal-ligand bonds excluded from ring
+ * perception (which is what keeps chelate rings from being drawn as literal polygons), but it then
+ * parks the metal wherever the ligand geometry leaves room, often well outside its donor set on
+ * long dashed bonds. When the donors surround a point at roughly one bond length, the metal
+ * belongs there: the point that minimises the spread of metal-donor distances about the target
+ * bond length is found by a short gradient descent from the donor centroid. The move is refused
+ * when that point would sit within 0.7 bond lengths of any non-donor atom, so a donor set the
+ * engine left one-sided keeps the engine's position instead of gaining an overlap. Only atoms
+ * outside the covalent valence tables (the metals) with at least two dative donors are moved.
+ */
+function settleNativeMetalsInDonorPockets(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const donorsByMetalId = new Map<string, MoleculeAtom[]>();
+  bonds.forEach((bond) => {
+    if (bond.display?.bondStyle !== "dashed") {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metal = atomById.get(metalId);
+      const donor = atomById.get(donorId);
+      if (!metal || !donor || !isNativeMetalAtom(metal)) {
+        continue;
+      }
+      donorsByMetalId.set(metalId, [...(donorsByMetalId.get(metalId) ?? []), donor]);
+    }
+  });
+  if (donorsByMetalId.size === 0 || !(bondLengthPx > 0)) {
+    return [...atoms];
+  }
+
+  const settled = new Map<string, PagePoint>();
+  donorsByMetalId.forEach((donors, metalId) => {
+    if (donors.length < 2) {
+      return;
+    }
+    let point = averagePagePoint(donors);
+    for (let iteration = 0; iteration < 200; iteration += 1) {
+      let gradientX = 0;
+      let gradientY = 0;
+      donors.forEach((donor) => {
+        const dx = point.x - donor.x;
+        const dy = point.y - donor.y;
+        const radius = Math.hypot(dx, dy) || 1e-6;
+        const factor = 2 * (radius - bondLengthPx) / radius;
+        gradientX += factor * dx;
+        gradientY += factor * dy;
+      });
+      point = { x: point.x - 0.1 * gradientX, y: point.y - 0.1 * gradientY };
+    }
+    const donorIds = new Set(donors.map((donor) => donor.id));
+    const clearance = atoms
+      .filter((atom) => atom.id !== metalId && !donorIds.has(atom.id))
+      .reduce((closest, atom) => Math.min(closest, distance(atom, point)), Number.POSITIVE_INFINITY);
+    if (clearance >= bondLengthPx * 0.7) {
+      settled.set(metalId, point);
+    }
+  });
+
+  return atoms.map((atom) => {
+    const point = settled.get(atom.id);
+    return point
+      ? { ...atom, x: roundGeometryCoordinate(point.x), y: roundGeometryCoordinate(point.y) }
+      : atom;
+  });
+}
+
+/** An element outside the covalent valence tables: the d-block, alkali and alkaline-earth metals,
+ *  lanthanides — anything whose bonds are coordination rather than octet chemistry. */
+function isNativeMetalAtom(atom: MoleculeAtom): boolean {
+  const element = nativeElementFromAtomLabel(atom.element);
+  return element !== undefined && element !== "H" && nativeAtomValence[element] === undefined;
 }
 
 // ── 3D spin → flatten commit (Phase 5) ──────────────────────────────────────

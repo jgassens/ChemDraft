@@ -3545,25 +3545,56 @@ export function MainWindow({
       return;
     }
 
-    const changed = commitDocumentChange((current) => cleanUpNativeMolecules2d(current, targetObjectIds));
-    setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(undefined);
-    setActiveAtomLabelEdit(undefined);
-    setHoveredNativeAtom(undefined);
-    setSelectedNativeMoleculePart(undefined);
-    assignHoveredNativeDeleteTarget(undefined);
-    setFreeformNativeBond(undefined);
-    setNativeDoubleBondSidePreview(undefined);
-    setObjectContextMenu(undefined);
+    const resetCleanupChrome = () => {
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      setSelectedNativeMoleculePart(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      setObjectContextMenu(undefined);
+    };
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
-    // Multi-ring systems are deliberately left as drawn by the 2D pass (its polygon+tree layout
-    // would shear them) — tell the user where the full re-layout lives.
-    const hasFusedTarget = targetObjectIds.some((targetId) => {
-      const target = findDocumentObject(documentRef.current, targetId);
+    const cleanedStatus = (changed: boolean) =>
+      changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`;
+
+    // The polygon+tree pass idealises single-ring components in place. Anything with more than
+    // one ring per component (fused, bridged, spiro, several rings joined through chains or a
+    // metal centre) is beyond it — it used to leave those exactly as drawn and point the user at
+    // 3D Cleanup, which for a zinc cluster meant the command did nothing. Those molecules now go
+    // through the engine re-layout, with their dative bonds as metal-ligand bonds, so a
+    // coordination complex comes out as ligands around a metal. Both halves land in ONE history
+    // entry, and the engine's lazy load only happens when such a target exists.
+    const engineTargetIds = targetObjectIds.filter((targetId) => {
+      const target = findDocumentObject(currentDocument, targetId);
       return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
     });
-    const fusedHint = hasFusedTarget ? " — fused rings kept as drawn; use 3D Cleanup for a full re-layout" : "";
-    setStatus(changed ? `Cleaned up selected ${targetLabel}${fusedHint}` : `Selected ${targetLabel} already clean${fusedHint}`);
+    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId));
+    if (engineTargetIds.length === 0) {
+      const changed = commitDocumentChange((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
+      resetCleanupChrome();
+      setStatus(cleanedStatus(changed));
+      return;
+    }
+
+    resetCleanupChrome();
+    setStatus(`Cleaning up selected ${targetLabel}…`);
+    void (async () => {
+      try {
+        const { relayoutMolfile2D } = await import("@chemdraft/ocl-adapter");
+        const changed = commitDocumentChange((current) =>
+          engineTargetIds.reduce(
+            (next, objectId) => applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D),
+            cleanUpNativeMolecules2d(current, nativeTargetIds)
+          )
+        );
+        setStatus(cleanedStatus(changed));
+      } catch (error) {
+        setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    })();
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
