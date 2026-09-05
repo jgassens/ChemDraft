@@ -13805,44 +13805,77 @@ export function applyNativeMoleculeEngineRelayout(
     return document;
   }
 
-  // Dative (dashed) bonds go to the engine as coordination type 9: OpenChemLib reads that as its
-  // metal-ligand bond and keeps such bonds out of ring perception, so a coordination complex lays
-  // out as clean ligands around a metal. Sent as plain single bonds instead, every chelate becomes
-  // a literal ring and the inventor tangles the ligands into each other.
-  const depiction = relayout(moleculeToMolfileV2000(molecule, { fromDocFrame: true, coordinationBondsAsType9: true }));
-  if (depiction.atoms.length !== molecule.atoms.length) {
+  // Free metals — coordination centres that carry only dative bonds — are placed by this function,
+  // not by the engine. Given the metal, OpenChemLib either treats every chelate as a literal fused
+  // ring and tangles the ligands, or (as a metal-ligand bond) bends the ligand rings while it fits
+  // the metal in. Given the bare ligand it lays out a clean, uniform organic skeleton; the metals
+  // are then folded into their chelate pockets and monodentate ligands arranged around them below.
+  const dashedBondsById = molecule.bonds.filter((bond) => bond.display?.bondStyle === "dashed");
+  const covalentDegreeById = new Map<string, number>();
+  molecule.bonds.forEach((bond) => {
+    if (bond.display?.bondStyle === "dashed") {
+      return;
+    }
+    covalentDegreeById.set(bond.fromAtomId, (covalentDegreeById.get(bond.fromAtomId) ?? 0) + 1);
+    covalentDegreeById.set(bond.toAtomId, (covalentDegreeById.get(bond.toAtomId) ?? 0) + 1);
+  });
+  const freeMetalIds = new Set(molecule.atoms
+    .filter((atom) =>
+      isNativeMetalAtom(atom) &&
+      (covalentDegreeById.get(atom.id) ?? 0) === 0 &&
+      dashedBondsById.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id))
+    .map((atom) => atom.id));
+  const ligandAtoms = molecule.atoms.filter((atom) => !freeMetalIds.has(atom.id));
+  const ligandBonds = molecule.bonds.filter((bond) => !freeMetalIds.has(bond.fromAtomId) && !freeMetalIds.has(bond.toAtomId));
+  if (ligandAtoms.length === 0) {
+    return document;
+  }
+  const ligandToOriginalIndex = ligandAtoms.map((atom) => molecule.atoms.indexOf(atom));
+  // Dashed bonds between non-metals (partial bonds, hydrogen bonds) write as plain singles here,
+  // which is what a layout wants: the atoms stay adjacent. The writer's warnings are not surfaced —
+  // nothing chemical leaves this function, only coordinates come back.
+  const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
+  const depiction = relayout(moleculeToMolfileV2000(ligand, { fromDocFrame: true }));
+  if (depiction.atoms.length !== ligandAtoms.length) {
     throw new Error(
-      `Engine re-layout returned ${depiction.atoms.length} atoms for a ${molecule.atoms.length}-atom structure.`
+      `Engine re-layout returned ${depiction.atoms.length} atoms for a ${ligandAtoms.length}-atom structure.`
     );
   }
   depiction.atoms.forEach((atom, index) => {
-    const expected = molecule.atoms[index].element;
+    const expected = ligandAtoms[index].element;
     if (atom.element.toUpperCase() !== expected.toUpperCase()) {
       throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
     }
   });
+  // Engine bonds re-indexed onto the molecule's own atom order.
+  const engineBonds = depiction.bonds.map((bond) => ({
+    ...bond,
+    from: ligandToOriginalIndex[bond.from],
+    to: ligandToOriginalIndex[bond.to]
+  }));
 
   // Engine frame is y-UP; the document draws y-DOWN (the coordinate-frame contract: negate y, never
   // swap wedges).
-  const enginePoints = depiction.atoms.map((atom) => ({ x: atom.x, y: -atom.y }));
-  // The scale is matched on COVALENT bonds only. The engine draws metal-ligand bonds two to four
-  // times longer than a covalent bond, so letting them into the mean would shrink every ligand
-  // bond in a coordination complex to fit the drawing's mean; a molecule with nothing but dative
-  // bonds falls back to all of them.
+  const enginePointByIndex = new Map<number, PagePoint>();
+  depiction.atoms.forEach((atom, index) => {
+    enginePointByIndex.set(ligandToOriginalIndex[index], { x: atom.x, y: -atom.y });
+  });
+  // The scale is matched on COVALENT bonds: a dashed bond drawn between non-metals is not a
+  // structural length, and the metals' bonds are not in the engine's picture at all. A molecule
+  // with nothing but dashed bonds falls back to all of them.
   const indexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
-  const dativePairKeys = new Set(molecule.bonds
-    .filter((bond) => bond.display?.bondStyle === "dashed")
+  const dativePairKeys = new Set(dashedBondsById
     .map((bond) => atomPairKey(`${indexById.get(bond.fromAtomId)}`, `${indexById.get(bond.toAtomId)}`)));
-  const preferCovalent = molecule.bonds.some((bond) => bond.display?.bondStyle !== "dashed");
-  const engineBondLengths = depiction.bonds
+  const preferCovalent = ligandBonds.some((bond) => bond.display?.bondStyle !== "dashed");
+  const engineBondLengths = engineBonds
     .filter((bond) => !preferCovalent || !dativePairKeys.has(atomPairKey(`${bond.from}`, `${bond.to}`)))
     .map((bond) => {
-      const from = enginePoints[bond.from];
-      const to = enginePoints[bond.to];
+      const from = enginePointByIndex.get(bond.from);
+      const to = enginePointByIndex.get(bond.to);
       return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
     })
     .filter((length) => length > 0.001);
-  const currentBondLengths = molecule.bonds
+  const currentBondLengths = ligandBonds
     .filter((bond) => !preferCovalent || bond.display?.bondStyle !== "dashed")
     .map((bond) => {
       const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
@@ -13856,30 +13889,43 @@ export function applyNativeMoleculeEngineRelayout(
   // Repeated resize operations and malformed imports can leave a graph with nonzero but sub-pixel
   // bonds. Preserving that "scale" makes the clean depiction effectively disappear after rounding.
   // Clamp only collapsed drawings to the same conservative minimum accepted by freeform drawing;
-  // normal small/large user scales remain unchanged.
+  // normal small/large user scales remain unchanged. A ligand-less drawing (bare metals joined by
+  // dashed bonds) has no engine bonds to measure; the drawing's own mean stands in.
   const targetBondLength = Math.max(currentBondLength, freeformMinimumBondLength);
   const engineBondLength = mean(engineBondLengths);
   const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
 
-  const engineCenter = averagePagePoint(enginePoints);
-  const currentCenter = averagePagePoint(molecule.atoms);
+  const engineCenter = averagePagePoint([...enginePointByIndex.values()]);
+  const currentCenter = averagePagePoint(ligandAtoms);
 
   const engineAtoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
     const { z: _z, ...flatAtom } = atom;
-    return {
-      ...flatAtom,
-      x: roundGeometryCoordinate(currentCenter.x + (enginePoints[index].x - engineCenter.x) * scale),
-      y: roundGeometryCoordinate(currentCenter.y + (enginePoints[index].y - engineCenter.y) * scale)
-    };
+    const enginePoint = enginePointByIndex.get(index);
+    // A free metal keeps its drawn position for now; the placement passes below move it.
+    return enginePoint
+      ? {
+          ...flatAtom,
+          x: roundGeometryCoordinate(currentCenter.x + (enginePoint.x - engineCenter.x) * scale),
+          y: roundGeometryCoordinate(currentCenter.y + (enginePoint.y - engineCenter.y) * scale)
+        }
+      : flatAtom;
   });
-  const atoms = settleNativeMetalsInDonorPockets(engineAtoms, molecule.bonds, targetBondLength);
+  const atoms = arrangeNativeMonodentateLigands(
+    settleNativeMetalsInDonorPockets(
+      foldNativeLigandsAroundMetals(engineAtoms, molecule.bonds, targetBondLength),
+      molecule.bonds,
+      targetBondLength
+    ),
+    molecule.bonds,
+    targetBondLength
+  );
 
   // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint
   // atom indices (bond order in the emitted molfile matches molecule.bonds minus dangling entries,
   // so pair keys are the robust join).
   const atomIndexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
   const engineBondByPair = new Map(
-    depiction.bonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
+    engineBonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
   );
   const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
     const fromIndex = atomIndexById.get(bond.fromAtomId);
@@ -13989,27 +14035,43 @@ function settleNativeMetalsInDonorPockets(
     if (donors.length < 2) {
       return;
     }
-    let point = averagePagePoint(donors);
-    for (let iteration = 0; iteration < 200; iteration += 1) {
-      let gradientX = 0;
-      let gradientY = 0;
-      donors.forEach((donor) => {
-        const dx = point.x - donor.x;
-        const dy = point.y - donor.y;
-        const radius = Math.hypot(dx, dy) || 1e-6;
-        const factor = 2 * (radius - bondLengthPx) / radius;
-        gradientX += factor * dx;
-        gradientY += factor * dy;
-      });
-      point = { x: point.x - 0.1 * gradientX, y: point.y - 0.1 * gradientY };
+    // Every other atom counts for clearance, donors included: a metal sitting on its donor is a
+    // clash like any other, and a well-formed pocket keeps its donors a bond length away anyway.
+    const others = atoms.filter((atom) => atom.id !== metalId);
+    const clearanceAt = (point: PagePoint) =>
+      others.reduce((closest, atom) => Math.min(closest, distance(atom, point)), Number.POSITIVE_INFINITY);
+    const reachError = (point: PagePoint) =>
+      donors.reduce((sum, donor) => sum + (distance(point, donor) - bondLengthPx) ** 2, 0);
+    const pocket = nativeDonorPocketPoint(donors, bondLengthPx);
+    if (clearanceAt(pocket) >= bondLengthPx * 0.7) {
+      settled.set(metalId, pocket);
+      return;
     }
-    const donorIds = new Set(donors.map((donor) => donor.id));
-    const clearance = atoms
-      .filter((atom) => atom.id !== metalId && !donorIds.has(atom.id))
-      .reduce((closest, atom) => Math.min(closest, distance(atom, point)), Number.POSITIVE_INFINITY);
-    if (clearance >= bondLengthPx * 0.7) {
-      settled.set(metalId, point);
+    // The pocket is occupied. The engine's own position is no refuge either once the ligand
+    // has been folded around it, so choose the clash-free spot nearest the pocket in reach:
+    // sample rings around the donor centroid and keep the best clear one; failing that, the
+    // engine position if it is clear; failing that, whichever candidate clears the most.
+    const centroid = averagePagePoint(donors);
+    const candidates: PagePoint[] = [];
+    [1, 1.5, 2, 2.5].forEach((radiusFactor) => {
+      for (let step = 0; step < 12; step += 1) {
+        const angle = step * Math.PI / 6;
+        candidates.push({
+          x: centroid.x + Math.cos(angle) * bondLengthPx * radiusFactor,
+          y: centroid.y + Math.sin(angle) * bondLengthPx * radiusFactor
+        });
+      }
+    });
+    const clear = candidates.filter((candidate) => clearanceAt(candidate) >= bondLengthPx * 0.7);
+    if (clear.length > 0) {
+      settled.set(metalId, clear.reduce((best, candidate) => (reachError(candidate) < reachError(best) ? candidate : best)));
+      return;
     }
+    const engine = atomById.get(metalId)!;
+    if (clearanceAt(engine) >= bondLengthPx * 0.7) {
+      return;
+    }
+    settled.set(metalId, candidates.reduce((best, candidate) => (clearanceAt(candidate) > clearanceAt(best) ? candidate : best)));
   });
 
   return atoms.map((atom) => {
@@ -14018,6 +14080,534 @@ function settleNativeMetalsInDonorPockets(
       ? { ...atom, x: roundGeometryCoordinate(point.x), y: roundGeometryCoordinate(point.y) }
       : atom;
   });
+}
+
+/** The point that minimises the spread of donor distances about one bond length: a short gradient
+ *  descent from the donor centroid. Where a metal belongs once its donors surround a pocket. */
+function nativeDonorPocketPoint(donors: readonly PagePoint[], bondLengthPx: number): PagePoint {
+  let point = averagePagePoint(donors);
+  for (let iteration = 0; iteration < 80; iteration += 1) {
+    let gradientX = 0;
+    let gradientY = 0;
+    donors.forEach((donor) => {
+      const dx = point.x - donor.x;
+      const dy = point.y - donor.y;
+      const radius = Math.hypot(dx, dy) || 1e-6;
+      const factor = 2 * (radius - bondLengthPx) / radius;
+      gradientX += factor * dx;
+      gradientY += factor * dy;
+    });
+    point = { x: point.x - 0.1 * gradientX, y: point.y - 0.1 * gradientY };
+  }
+  return point;
+}
+
+/**
+ * Fold a coordination complex's ligand arms around their metals. The engine lays the ligand out as
+ * an organic molecule with the metal-ligand bonds ignored, so a chelating ligand's donors point
+ * wherever its arms happen to fall and the metal ends up parked to one side on long dashed bonds.
+ * This pass treats every acyclic covalent single bond as a hinge — a bridge of the covalent graph,
+ * moving the smaller side — and tries, for each hinge, a mirror of that side across the bond and
+ * rotations of it about either end in 60° steps. A move is kept when it lowers an energy made of
+ * three terms: how far each metal's donors sit from one bond length around the best pocket point,
+ * overlaps between non-bonded atoms, and pinched angles between an atom's covalent neighbours.
+ * Greedy rounds continue until no hinge improves. Metals with covalent bonds of their own are left
+ * to the engine (they are part of the skeleton, not free coordination centres), and a ligand
+ * without such a metal is returned untouched — bond lengths and ring shapes are preserved exactly
+ * because every move is rigid. `settleNativeMetalsInDonorPockets` then places the metals.
+ */
+function foldNativeLigandsAroundMetals(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const L = bondLengthPx;
+  if (!(L > 0) || atoms.length < 3) {
+    return [...atoms];
+  }
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const covalentDegree = new Map<string, number>();
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    covalentDegree.set(bond.fromAtomId, (covalentDegree.get(bond.fromAtomId) ?? 0) + 1);
+    covalentDegree.set(bond.toAtomId, (covalentDegree.get(bond.toAtomId) ?? 0) + 1);
+  });
+  const donorIndicesByMetal = new Map<number, number[]>();
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metalIndex = indexById.get(metalId);
+      const donorIndex = indexById.get(donorId);
+      const metal = metalIndex === undefined ? undefined : atoms[metalIndex];
+      if (metalIndex === undefined || donorIndex === undefined || !metal || !isNativeMetalAtom(metal) || (covalentDegree.get(metalId) ?? 0) > 0) {
+        continue;
+      }
+      donorIndicesByMetal.set(metalIndex, [...(donorIndicesByMetal.get(metalIndex) ?? []), donorIndex]);
+    }
+  });
+  const metals = [...donorIndicesByMetal.entries()].filter(([, donors]) => donors.length >= 2);
+  if (metals.length === 0) {
+    return [...atoms];
+  }
+  const metalIndexSet = new Set(metals.map(([metalIndex]) => metalIndex));
+
+  // Covalent adjacency and its bridges (Tarjan): the hinges.
+  const adjacency: number[][] = atoms.map(() => []);
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    adjacency[from].push(to);
+    adjacency[to].push(from);
+  });
+  const discovery = new Array<number>(atoms.length).fill(-1);
+  const low = new Array<number>(atoms.length).fill(0);
+  const bridges: Array<[number, number]> = [];
+  let clock = 0;
+  const visit = (node: number, parent: number) => {
+    discovery[node] = clock;
+    low[node] = clock;
+    clock += 1;
+    for (const next of adjacency[node]) {
+      if (next === parent) {
+        continue;
+      }
+      if (discovery[next] === -1) {
+        visit(next, node);
+        low[node] = Math.min(low[node], low[next]);
+        if (low[next] > discovery[node]) {
+          bridges.push([node, next]);
+        }
+      } else {
+        low[node] = Math.min(low[node], discovery[next]);
+      }
+    }
+  };
+  atoms.forEach((_, index) => {
+    if (discovery[index] === -1) {
+      visit(index, -1);
+    }
+  });
+
+  const sideOf = (start: number, blockedFrom: number, blockedTo: number): number[] => {
+    const seen = new Set<number>([start]);
+    const stack = [start];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const next of adjacency[node]) {
+        if ((node === blockedFrom && next === blockedTo) || (node === blockedTo && next === blockedFrom) || seen.has(next)) {
+          continue;
+        }
+        seen.add(next);
+        stack.push(next);
+      }
+    }
+    return [...seen];
+  };
+  type Hinge = { axisFrom: number; axisTo: number; moving: number[] };
+  const donorIndexSet = new Set(metals.flatMap(([, donors]) => donors));
+  const hinges: Hinge[] = [];
+  bridges.forEach(([left, right]) => {
+    const leftSide = sideOf(left, left, right);
+    const rightSide = sideOf(right, left, right);
+    // Move the smaller side; a lone terminal atom has nothing to fold, and a side with no donor
+    // on it (an alkyl tail, a substituent) has no reason to leave the engine's clean placement.
+    const [axisFrom, axisTo, moving] = leftSide.length <= rightSide.length
+      ? [right, left, leftSide]
+      : [left, right, rightSide];
+    if (moving.length >= 2 && moving.some((index) => donorIndexSet.has(index))) {
+      hinges.push({ axisFrom, axisTo, moving });
+    }
+  });
+  if (hinges.length === 0 || hinges.length > 80) {
+    return [...atoms];
+  }
+
+  const bondedPairs = new Set<string>();
+  bonds.forEach((bond) => {
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from !== undefined && to !== undefined) {
+      bondedPairs.add(`${Math.min(from, to)}:${Math.max(from, to)}`);
+    }
+  });
+  const minimumNeighborAngle = Math.PI * 50 / 180;
+
+  const energy = (points: PagePoint[], hardReject: boolean, fixedMetals?: ReadonlyMap<number, PagePoint>): number => {
+    const placed = points.map((point) => ({ ...point }));
+    let total = 0;
+    metals.forEach(([metalIndex, donorIndices]) => {
+      const donors = donorIndices.map((index) => placed[index]);
+      const pocket = fixedMetals?.get(metalIndex) ?? nativeDonorPocketPoint(donors, L);
+      placed[metalIndex] = pocket;
+      donors.forEach((donor) => {
+        total += 3 * ((distance(pocket, donor) - L) / L) ** 2;
+      });
+    });
+    for (let i = 0; i < placed.length; i += 1) {
+      for (let j = i + 1; j < placed.length; j += 1) {
+        if (bondedPairs.has(`${i}:${j}`)) {
+          continue;
+        }
+        const gap = distance(placed[i], placed[j]);
+        // Two atoms on top of each other is never an acceptable final answer, but the search has
+        // to pass through clashes to fold an arm, so the hard rejection inside half a bond length
+        // applies only to the polish; the anneal sees a steep but finite penalty out to 0.9 L.
+        if (hardReject && gap < 0.5 * L) {
+          return Number.POSITIVE_INFINITY;
+        }
+        if (gap < 0.9 * L) {
+          total += 20 * ((0.9 * L - gap) / L) ** 2;
+        }
+      }
+    }
+    adjacency.forEach((neighbors, index) => {
+      for (let a = 0; a < neighbors.length; a += 1) {
+        for (let b = a + 1; b < neighbors.length; b += 1) {
+          const center = placed[index];
+          const first = placed[neighbors[a]];
+          const second = placed[neighbors[b]];
+          const angle = Math.abs(wrapDegrees180(
+            (Math.atan2(first.y - center.y, first.x - center.x) - Math.atan2(second.y - center.y, second.x - center.x)) * 180 / Math.PI
+          )) * Math.PI / 180;
+          if (angle < minimumNeighborAngle) {
+            total += 2 * ((minimumNeighborAngle - angle) / minimumNeighborAngle) ** 2;
+          }
+        }
+      }
+    });
+    return total;
+  };
+
+  const rotated = (point: PagePoint, pivot: PagePoint, radians: number): PagePoint => {
+    const dx = point.x - pivot.x;
+    const dy = point.y - pivot.y;
+    return { x: pivot.x + dx * Math.cos(radians) - dy * Math.sin(radians), y: pivot.y + dx * Math.sin(radians) + dy * Math.cos(radians) };
+  };
+  const mirrored = (point: PagePoint, axisFrom: PagePoint, axisTo: PagePoint): PagePoint => {
+    const ax = axisTo.x - axisFrom.x;
+    const ay = axisTo.y - axisFrom.y;
+    const length = Math.hypot(ax, ay) || 1e-6;
+    const ux = ax / length;
+    const uy = ay / length;
+    const dx = point.x - axisFrom.x;
+    const dy = point.y - axisFrom.y;
+    const along = dx * ux + dy * uy;
+    const px = axisFrom.x + along * ux;
+    const py = axisFrom.y + along * uy;
+    return { x: 2 * px - point.x, y: 2 * py - point.y };
+  };
+  const candidates = (points: PagePoint[], hinge: Hinge): PagePoint[][] => {
+    const movingSet = new Set(hinge.moving);
+    const results: PagePoint[][] = [];
+    const transform = (apply: (point: PagePoint, index: number) => PagePoint) =>
+      points.map((point, index) => (movingSet.has(index) ? apply(point, index) : point));
+    results.push(transform((point) => mirrored(point, points[hinge.axisFrom], points[hinge.axisTo])));
+    // 30° steps: the 60° grid alone cannot bring a pyridine nitrogen onto a pocket that the
+    // amine's own 120° geometry places between grid points.
+    for (const degrees of [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]) {
+      const radians = degrees * Math.PI / 180;
+      results.push(transform((point) => rotated(point, points[hinge.axisFrom], radians)));
+      results.push(transform((point, index) => (index === hinge.axisTo ? point : rotated(point, points[hinge.axisTo], radians))));
+    }
+    return results;
+  };
+
+  // Folding a chelate is a coupled problem: where an arm should go depends on where the metal
+  // sits, and where the metal sits depends on the arms. Decouple it by alternating. First put
+  // each metal beside the donor it has on the rigid core (the atoms no hinge moves — a bridging
+  // phenoxide, an amine on the backbone), one bond length out along that donor's open bisector,
+  // spreading several metals on one donor apart. With the metals held fixed, fold every hinge
+  // greedily toward those targets; then re-settle each metal into the pocket its donors now form
+  // and fold again. Three cycles are plenty; the last pass applies the hard clash rule.
+  const greedyFold = (start: PagePoint[], fixedMetals: ReadonlyMap<number, PagePoint> | undefined, hardReject: boolean): PagePoint[] => {
+    let points = start;
+    let best = energy(points, hardReject, fixedMetals);
+    for (let round = 0; round < 8; round += 1) {
+      let improved = false;
+      for (const hinge of hinges) {
+        let bestCandidate: PagePoint[] | undefined;
+        let bestCandidateEnergy = best;
+        for (const candidate of candidates(points, hinge)) {
+          const candidateEnergy = energy(candidate, hardReject, fixedMetals);
+          if (candidateEnergy < bestCandidateEnergy - 1e-6) {
+            bestCandidateEnergy = candidateEnergy;
+            bestCandidate = candidate;
+          }
+        }
+        if (bestCandidate) {
+          points = bestCandidate;
+          best = bestCandidateEnergy;
+          improved = true;
+        }
+      }
+      if (!improved) {
+        break;
+      }
+    }
+    return points;
+  };
+
+  const movable = new Set(hinges.flatMap((hinge) => hinge.moving));
+  // The direction a metal should sit from its anchor donor: the donor's open bisector when it has
+  // one, otherwise (a symmetric tertiary amine has none) the direction with the most room.
+  const openDirection = (index: number, points: PagePoint[]): number => {
+    const neighbors = adjacency[index];
+    const center = points[index];
+    const sumX = neighbors.reduce((sum, neighbor) => sum + (points[neighbor].x - center.x), 0);
+    const sumY = neighbors.reduce((sum, neighbor) => sum + (points[neighbor].y - center.y), 0);
+    if (neighbors.length > 0 && Math.hypot(sumX, sumY) > 0.3 * L) {
+      return Math.atan2(-sumY, -sumX);
+    }
+    let bestAngle = 0;
+    let bestClearance = -1;
+    for (let step = 0; step < 12; step += 1) {
+      const angle = step * Math.PI / 6;
+      const probe = { x: center.x + Math.cos(angle) * L, y: center.y + Math.sin(angle) * L };
+      const clearance = points.reduce((closest, point, other) =>
+        (other === index || metalIndexSet.has(other) ? closest : Math.min(closest, distance(point, probe))), Number.POSITIVE_INFINITY);
+      if (clearance > bestClearance) {
+        bestClearance = clearance;
+        bestAngle = angle;
+      }
+    }
+    return bestAngle;
+  };
+  const initialMetals = (points: PagePoint[]): Map<number, PagePoint> => {
+    const placement = new Map<number, PagePoint>();
+    const metalsByCoreDonor = new Map<number, number[]>();
+    metals.forEach(([metalIndex, donorIndices]) => {
+      const coreDonors = donorIndices.filter((index) => !movable.has(index));
+      if (coreDonors.length === 0) {
+        placement.set(metalIndex, nativeDonorPocketPoint(donorIndices.map((index) => points[index]), L));
+        return;
+      }
+      const anchor = coreDonors[0];
+      metalsByCoreDonor.set(anchor, [...(metalsByCoreDonor.get(anchor) ?? []), metalIndex]);
+    });
+    metalsByCoreDonor.forEach((metalIndices, anchor) => {
+      const bisector = openDirection(anchor, points);
+      const spread = Math.PI * 70 / 180;
+      metalIndices.forEach((metalIndex, position) => {
+        const angle = bisector + (position - (metalIndices.length - 1) / 2) * spread;
+        placement.set(metalIndex, { x: points[anchor].x + Math.cos(angle) * L, y: points[anchor].y + Math.sin(angle) * L });
+      });
+    });
+    return placement;
+  };
+
+  const enginePoints: PagePoint[] = atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  let points = enginePoints;
+  let fixedMetals = initialMetals(points);
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    points = greedyFold(points, fixedMetals, false);
+    const resettled = new Map<number, PagePoint>();
+    metals.forEach(([metalIndex, donorIndices]) => {
+      resettled.set(metalIndex, nativeDonorPocketPoint(donorIndices.map((index) => points[index]), L));
+    });
+    fixedMetals = resettled;
+  }
+  const polished = greedyFold(points, undefined, true);
+  points = Number.isFinite(energy(polished, true)) ? polished : enginePoints;
+
+  return atoms.map((atom, index) => (
+    metalIndexSet.has(index)
+      ? atom
+      : { ...atom, x: roundGeometryCoordinate(points[index].x), y: roundGeometryCoordinate(points[index].y) }
+  ));
+}
+
+/**
+ * Arrange monodentate ligands around their metal. The engine lays out a ligand that is its own
+ * covalent fragment (an imidazole, a pyridine, a phosphine) wherever it lays out disconnected
+ * fragments — in a row — so after the metal has been settled, every fragment that reaches the
+ * metal through exactly one dative bond and no other metal is moved as a rigid body: its donor
+ * atom lands one bond length from the metal on an evenly spaced slot chosen nearest the direction
+ * the drawing already had it in, and the fragment is turned so its body points away from the
+ * metal. Chelating fragments (two or more donors to the metal) were folded and settled already
+ * and stay put; their donor directions are kept clear of the slots. Bridging fragments (a donor
+ * bond to a second metal) stay put too.
+ */
+function arrangeNativeMonodentateLigands(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const L = bondLengthPx;
+  if (!(L > 0)) {
+    return [...atoms];
+  }
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const adjacency: number[][] = atoms.map(() => []);
+  const covalentDegree = new Map<number, number>();
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    adjacency[from].push(to);
+    adjacency[to].push(from);
+    covalentDegree.set(from, (covalentDegree.get(from) ?? 0) + 1);
+    covalentDegree.set(to, (covalentDegree.get(to) ?? 0) + 1);
+  });
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  let componentCount = 0;
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const stack = [start];
+    componentOf[start] = componentCount;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      adjacency[node].forEach((next) => {
+        if (componentOf[next] === -1) {
+          componentOf[next] = componentCount;
+          stack.push(next);
+        }
+      });
+    }
+    componentCount += 1;
+  });
+
+  // Dative edges: metal index -> donor indices, and per fragment which metals it reaches.
+  const donorsByMetal = new Map<number, number[]>();
+  const metalsByComponent = new Map<number, Set<number>>();
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metalIndex = indexById.get(metalId);
+      const donorIndex = indexById.get(donorId);
+      if (metalIndex === undefined || donorIndex === undefined) {
+        continue;
+      }
+      const metal = atoms[metalIndex];
+      if (!isNativeMetalAtom(metal) || (covalentDegree.get(metalIndex) ?? 0) > 0) {
+        continue;
+      }
+      donorsByMetal.set(metalIndex, [...(donorsByMetal.get(metalIndex) ?? []), donorIndex]);
+      const component = componentOf[donorIndex];
+      metalsByComponent.set(component, new Set([...(metalsByComponent.get(component) ?? []), metalIndex]));
+    }
+  });
+  if (donorsByMetal.size === 0) {
+    return [...atoms];
+  }
+
+  const points: PagePoint[] = atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  const angleOf = (from: PagePoint, to: PagePoint) => Math.atan2(to.y - from.y, to.x - from.x);
+  const angularGap = (left: number, right: number) => Math.abs(wrapDegrees180((left - right) * 180 / Math.PI)) * Math.PI / 180;
+  const moved = new Set<number>();
+
+  donorsByMetal.forEach((donorIndices, metalIndex) => {
+    const metal = points[metalIndex];
+    const donorsByComponent = new Map<number, number[]>();
+    donorIndices.forEach((donorIndex) => {
+      const component = componentOf[donorIndex];
+      donorsByComponent.set(component, [...(donorsByComponent.get(component) ?? []), donorIndex]);
+    });
+    const fixedDirections: number[] = [];
+    const monodentate: Array<{ component: number; donor: number; direction: number }> = [];
+    donorsByComponent.forEach((componentDonors, component) => {
+      const bridging = (metalsByComponent.get(component)?.size ?? 0) > 1;
+      const componentAtoms = atoms.map((_, index) => index).filter((index) => componentOf[index] === component);
+      if (componentDonors.length === 1 && !bridging && componentAtoms.length >= 2 && !componentAtoms.some((index) => moved.has(index))) {
+        monodentate.push({ component, donor: componentDonors[0], direction: angleOf(metal, points[componentDonors[0]]) });
+      } else {
+        componentDonors.forEach((donorIndex) => fixedDirections.push(angleOf(metal, points[donorIndex])));
+      }
+    });
+    if (monodentate.length === 0) {
+      return;
+    }
+
+    // Slots: evenly spaced when every donor is monodentate; otherwise the 30° grid with the
+    // sectors around chelate donors removed. Each fragment takes the free slot nearest to where
+    // the drawing already had it.
+    let slots: number[];
+    if (fixedDirections.length === 0) {
+      const count = monodentate.length;
+      const origin = monodentate[0].direction;
+      slots = Array.from({ length: count }, (_, index) => origin + index * 2 * Math.PI / count);
+    } else {
+      slots = Array.from({ length: 12 }, (_, index) => index * Math.PI / 6)
+        .filter((slot) => fixedDirections.every((fixed) => angularGap(slot, fixed) >= Math.PI * 50 / 180));
+    }
+    monodentate.forEach((fragment) => {
+      if (slots.length === 0) {
+        return;
+      }
+      const slot = slots.reduce((best, candidate) => (angularGap(candidate, fragment.direction) < angularGap(best, fragment.direction) ? candidate : best));
+      slots = slots.filter((candidate) => angularGap(candidate, slot) > Math.PI / 6 + 1e-9);
+
+      const donor = points[fragment.donor];
+      const neighbors = adjacency[fragment.donor].map((index) => points[index]);
+      // The fragment body should point away from the metal: its donor's neighbours, on average,
+      // lie along the slot direction.
+      const bodyDirection = neighbors.length > 0
+        ? Math.atan2(
+            neighbors.reduce((sum, point) => sum + (point.y - donor.y), 0),
+            neighbors.reduce((sum, point) => sum + (point.x - donor.x), 0)
+          )
+        : slot;
+      const rotation = slot - bodyDirection;
+      const target = { x: metal.x + Math.cos(slot) * L, y: metal.y + Math.sin(slot) * L };
+      const fragmentIndices = atoms.map((_, index) => index).filter((index) => componentOf[index] === fragment.component);
+      const placeFragment = (mirror: boolean): PagePoint[] => fragmentIndices.map((index) => {
+        const point = points[index];
+        const dx = point.x - donor.x;
+        const dy = point.y - donor.y;
+        const local = { x: dx * Math.cos(rotation) - dy * Math.sin(rotation), y: dx * Math.sin(rotation) + dy * Math.cos(rotation) };
+        if (mirror) {
+          // Reflect across the metal→donor axis (the slot direction) so the fragment's
+          // substituents swing to the other side.
+          const ux = Math.cos(slot);
+          const uy = Math.sin(slot);
+          const along = local.x * ux + local.y * uy;
+          local.x = 2 * along * ux - local.x;
+          local.y = 2 * along * uy - local.y;
+        }
+        return { x: target.x + local.x, y: target.y + local.y };
+      });
+      // A 2-substituted ligand can put its substituent on either side of the metal–donor line;
+      // keep the orientation that stays clearer of everything already placed.
+      const fragmentSet = new Set(fragmentIndices);
+      const clearance = (placed: PagePoint[]): number => placed.reduce((closest, point) =>
+        Math.min(closest, points.reduce((inner, other, index) =>
+          (fragmentSet.has(index) || index === metalIndex ? inner : Math.min(inner, distance(point, other))), Number.POSITIVE_INFINITY)),
+        Number.POSITIVE_INFINITY);
+      const straight = placeFragment(false);
+      const mirrored = placeFragment(true);
+      const chosen = clearance(mirrored) > clearance(straight) + 1e-6 ? mirrored : straight;
+      fragmentIndices.forEach((index, position) => {
+        points[index] = chosen[position];
+        moved.add(index);
+      });
+    });
+  });
+
+  return atoms.map((atom, index) => (
+    moved.has(index)
+      ? { ...atom, x: roundGeometryCoordinate(points[index].x), y: roundGeometryCoordinate(points[index].y) }
+      : atom
+  ));
 }
 
 /** An element outside the covalent valence tables: the d-block, alkali and alkaline-earth metals,

@@ -46,14 +46,6 @@ export interface MolfileWriteOptions {
    * relayout, stereo perception) omit it and get the previous behavior.
    */
   warnings?: string[];
-  /**
-   * V2000 only: write dative (dashed single) bonds as bond type 9, the CTfile coordination type,
-   * instead of flattening them to single with a warning. V2000 proper has no such type, so this is
-   * NOT for interchange files; it is for layout engines that understand it (OpenChemLib reads 9 as
-   * its metal-ligand bond and keeps those bonds out of ring perception, which is what makes a
-   * coordination complex lay out as ligands around a metal instead of a tangle of chelate rings).
-   */
-  coordinationBondsAsType9?: boolean;
 }
 
 const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
@@ -206,7 +198,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   const dativeBondCount = writableBonds.filter(isDativeBond).length;
   warnUnsupportedDashedBondStyles(writableBonds, options.warnings);
-  if (dativeBondCount > 0 && !options.coordinationBondsAsType9) {
+  if (dativeBondCount > 0) {
     options.warnings?.push(
       `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
     );
@@ -225,8 +217,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   for (const bond of writableBonds) {
     const from = atomIndex.get(bond.fromAtomId)!;
     const to = atomIndex.get(bond.toAtomId)!;
-    const bondCode = options.coordinationBondsAsType9 && isDativeBond(bond) ? 9 : BOND_ORDER_CODE[bond.order];
-    lines.push(`${i3(from)}${i3(to)}${i3(bondCode)}${i3(wedgeStereoFlag(bond))}  0  0  0`);
+    lines.push(`${i3(from)}${i3(to)}${i3(BOND_ORDER_CODE[bond.order])}${i3(wedgeStereoFlag(bond))}  0  0  0`);
   }
 
   // Charge property lines: up to 8 (atom, charge) pairs per "M  CHG" line.

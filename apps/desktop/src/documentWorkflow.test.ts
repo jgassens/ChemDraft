@@ -3802,6 +3802,93 @@ describe("Phase 4 document workflow", () => {
       gaps.forEach((gap) => expect(gap).toBeGreaterThan(Math.PI / 4));
     });
 
+    /** Zinc on a tris(2-pyridylmethyl)amine (TPA) ligand, drawn with the three arms splayed
+     *  straight out so no donor is anywhere near the metal. A chelate like this is the case the
+     *  engine alone gets wrong: it lays the ligand out flat and parks the metal to one side. */
+    function zincTpaSplayedFixture(): { document: ChemDraftDocument; molecule: MoleculeObject } {
+      const atoms: MoleculeAtom[] = [{ id: "n_amine", element: "N", x: 300, y: 300, formalCharge: 0 }];
+      const bonds: MoleculeBond[] = [];
+      [-90, 30, 150].forEach((degrees, arm) => {
+        const radians = degrees * Math.PI / 180;
+        const bond = 28;
+        const along = (k: number) => ({ x: 300 + Math.cos(radians) * bond * k, y: 300 + Math.sin(radians) * bond * k });
+        const ch2 = along(1);
+        // A regular hexagon two bonds out along the arm: ring atom 0 (C2) faces the CH2, atom 1 is
+        // the pyridine N. Sane input geometry matters — the engine partly keeps coordinates it
+        // considers reasonable, so a deliberately broken ring would come back distorted.
+        const center = along(3);
+        const ids = ["c_ch2", "c_py2", "n_py", "c_py3", "c_py4", "c_py5", "c_py6"].map((name) => `${name}_${arm}`);
+        atoms.push({ id: ids[0], element: "C", x: ch2.x, y: ch2.y, formalCharge: 0 });
+        const ringIds = ids.slice(1);
+        ringIds.forEach((id, index) => {
+          const angle = radians + Math.PI + index * Math.PI / 3;
+          atoms.push({ id, element: index === 1 ? "N" : "C", x: center.x + Math.cos(angle) * bond, y: center.y + Math.sin(angle) * bond, formalCharge: 0 });
+        });
+        bonds.push({ id: `b_amine_${arm}`, fromAtomId: "n_amine", toAtomId: ids[0], order: "single" });
+        bonds.push({ id: `b_ch2_${arm}`, fromAtomId: ids[0], toAtomId: ids[1], order: "single" });
+        ringIds.forEach((id, index) => {
+          const next = ringIds[(index + 1) % ringIds.length];
+          bonds.push({ id: `b_ring_${arm}_${index}`, fromAtomId: id, toAtomId: next, order: index % 2 === 0 ? "double" : "single" });
+        });
+        bonds.push({ id: `b_zn_${arm}`, fromAtomId: "zn", toAtomId: ids[2], order: "single", display: { bondStyle: "dashed" } });
+      });
+      atoms.push({ id: "zn", element: "Zn", x: 300, y: 420, formalCharge: 0 });
+      bonds.push({ id: "b_zn_amine", fromAtomId: "zn", toAtomId: "n_amine", order: "single", display: { bondStyle: "dashed" } });
+      const molecule: MoleculeObject = {
+        id: "mol_zn_tpa", type: "molecule", x: 100, y: 100, width: 400, height: 400, rotation: 0,
+        style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+      };
+      const base = createPhase4Document("Zinc TPA");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      return { document, molecule: moleculeById(document, molecule.id) };
+    }
+
+    it("engine re-layout folds a chelating ligand around its metal instead of parking the metal to one side", () => {
+      const { document, molecule } = zincTpaSplayedFixture();
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      const isDative = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+
+      const covalentBonds = relaidMolecule.bonds.filter((bond) => !isDative(bond));
+      const covalent = covalentBonds.map((bond) => moleculeBondLength(relaidMolecule, bond.id));
+      const L = covalent.reduce((sum, value) => sum + value, 0) / covalent.length;
+      // Rigid hinge moves only: every covalent bond keeps exactly the proportion the engine gave
+      // it. (The engine's own output for this star-shaped ligand is not perfectly uniform — it
+      // shears two rings to keep three identical arms apart — so the check is against the engine's
+      // bare-ligand layout, not against a single ideal length.)
+      const ligandAtoms = molecule.atoms.filter((atom) => atom.element !== "Zn");
+      const ligandBonds = molecule.bonds.filter((bond) => !isDative(bond));
+      const engineOnly = relayoutMolfile2D(moleculeToMolfileV2000({ ...molecule, atoms: ligandAtoms, bonds: ligandBonds }, { fromDocFrame: true }));
+      const engineLengths = engineOnly.bonds.map((bond) => Math.hypot(engineOnly.atoms[bond.to].x - engineOnly.atoms[bond.from].x, engineOnly.atoms[bond.to].y - engineOnly.atoms[bond.from].y));
+      const engineMean = engineLengths.reduce((sum, value) => sum + value, 0) / engineLengths.length;
+      covalentBonds.forEach((bond, index) => {
+        const engineIndex = engineOnly.bonds.findIndex((candidate) =>
+          (ligandAtoms[candidate.from].id === bond.fromAtomId && ligandAtoms[candidate.to].id === bond.toAtomId) ||
+          (ligandAtoms[candidate.to].id === bond.fromAtomId && ligandAtoms[candidate.from].id === bond.toAtomId));
+        expect(engineIndex, bond.id).toBeGreaterThanOrEqual(0);
+        expect(covalent[index] / L).toBeCloseTo(engineLengths[engineIndex] / engineMean, 2);
+      });
+
+      // All four donors end up around the metal at roughly bond length — the pocket exists — and
+      // nothing was folded on top of anything else.
+      const zinc = relaidMolecule.atoms.find((atom) => atom.element === "Zn")!;
+      const reach = relaidMolecule.bonds.filter(isDative).map((bond) => {
+        const donor = relaidMolecule.atoms.find((atom) => atom.id === (bond.fromAtomId === zinc.id ? bond.toAtomId : bond.fromAtomId))!;
+        return Math.hypot(donor.x - zinc.x, donor.y - zinc.y) / L;
+      });
+      expect(reach).toHaveLength(4);
+      reach.forEach((value) => expect(value).toBeGreaterThan(0.6));
+      reach.forEach((value) => expect(value).toBeLessThan(2));
+      relaidMolecule.atoms.forEach((atom, index) => {
+        relaidMolecule.atoms.slice(index + 1).forEach((other) => {
+          expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`).toBeGreaterThan(L * 0.5);
+        });
+      });
+    });
+
     it("maps the engine frame back faithfully: y flips, engine wedges replace old ones, other styles survive", () => {
       const document = insertNativeSingleBondMolecule(createPhase4Document("Relayout Mapping"), { x: 200, y: 220 });
       const molecule = selectedMolecule(document);

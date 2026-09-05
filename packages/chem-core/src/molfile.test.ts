@@ -200,26 +200,6 @@ describe("dative (dashed) bonds", () => {
     expect(warnings[0]).toContain("V2000 has no coordination bond type");
   });
 
-  it("V2000 with coordinationBondsAsType9 writes the dative bond as type 9 for a layout engine, without the flattening warning", () => {
-    // Not an interchange format: OpenChemLib reads type 9 as its metal-ligand bond, which is what
-    // the engine re-layout needs to lay a coordination complex out as ligands around a metal.
-    const warnings: string[] = [];
-    const mf = moleculeToMolfileV2000(dative, { warnings, coordinationBondsAsType9: true });
-    expect(mf).toMatch(/\n\s{2}1\s{2}2\s{2}9\s{2}0/);
-    expect(warnings).toEqual([]);
-
-    // A dashed DOUBLE bond is not dative: the option leaves it alone and the display warning stays.
-    const dashedDouble = molecule(
-      [
-        { id: "a0", element: "C", x: 0, y: 0 },
-        { id: "a1", element: "O", x: 1.5, y: 0 }
-      ],
-      [{ id: "b1", from: "a0", to: "a1", order: "double", style: "dashed" }]
-    );
-    const doubleWarnings: string[] = [];
-    expect(moleculeToMolfileV2000(dashedDouble, { warnings: doubleWarnings, coordinationBondsAsType9: true })).toMatch(/\n\s{2}1\s{2}2\s{2}2\s{2}0/);
-    expect(doubleWarnings).toHaveLength(1);
-  });
 
   it("preserves a dashed double bond's order in V3000 and warns that its display is omitted", () => {
     const dashedDouble = molecule(
