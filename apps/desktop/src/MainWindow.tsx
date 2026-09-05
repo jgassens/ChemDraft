@@ -115,7 +115,6 @@ import {
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
-  atomDisplayLabel,
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
   atomLabelLayout,
@@ -1356,7 +1355,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.1.20.50-sol";
+const CURRENT_BUILD_STAMP = "9.5.15.23-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3564,8 +3563,9 @@ export function MainWindow({
     // one ring per component (fused, bridged, spiro, several rings joined through chains or a
     // metal centre) is beyond it — it used to leave those exactly as drawn and point the user at
     // 3D Cleanup, which for a zinc cluster meant the command did nothing. Those molecules now go
-    // through the engine re-layout, with their dative bonds as metal-ligand bonds, so a
-    // coordination complex comes out as ligands around a metal. Both halves land in ONE history
+    // through the engine re-layout, which lays out the ligand skeleton and then places the metals
+    // inside their ligands, so a coordination complex comes out as ligands around a metal. Both
+    // halves land in ONE history
     // entry, and the engine's lazy load only happens when such a target exists.
     const engineTargetIds = targetObjectIds.filter((targetId) => {
       const target = findDocumentObject(currentDocument, targetId);
@@ -9890,8 +9890,19 @@ export function MainWindow({
     target: NativeBondOrderTarget,
     bondStyle: NativeBondDisplayStyle
   ) => {
-    const nextDocument = applyNativeBondDisplayStyleTarget(documentRef.current, target, bondStyle);
-    if (nextDocument !== documentRef.current) {
+    const currentDocument = documentRef.current;
+    // Same rule and same words as the hover hotkey: dashed is the dative style, single bonds only,
+    // and applying it removes covalent valence from both atoms — say so rather than reporting the
+    // refusal as "already applied".
+    const targetBond = currentDocument.pages[0]?.objects
+      .find((object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule")
+      ?.bonds.find((bond) => bond.id === target.bondId);
+    if (bondStyle === "dashed" && targetBond && targetBond.order !== "single") {
+      setStatus("Dashed (dative) display needs a single bond");
+      return;
+    }
+    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle);
+    if (nextDocument !== currentDocument) {
       commitDocumentChange(nextDocument);
     }
     setActiveEditorObjectId(undefined);
@@ -9900,9 +9911,11 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
-    setStatus(nextDocument === documentRef.current
+    setStatus(nextDocument === currentDocument
       ? `${nativeBondToolStatusLabel(bondStyle)} already applied`
-      : `Applied ${nativeBondToolStatusLabel(bondStyle)} style`);
+      : bondStyle === "dashed"
+        ? "Set bond to dashed (dative): no covalent valence on either atom"
+        : `Applied ${nativeBondToolStatusLabel(bondStyle)} style`);
   }, [commitDocumentChange]);
 
   const applyChargeDocumentAtPoint = useCallback((spec: NativeElectronMarkSpec, point: ClientPoint) => {

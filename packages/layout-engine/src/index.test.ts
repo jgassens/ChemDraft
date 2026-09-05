@@ -1689,6 +1689,18 @@ describe("layout-engine page SVG planner", () => {
     expect(atomLabelAnchorOffset(molecule.atoms[0]!, "C", drawingStyle)).toEqual({ x: 8, y: -6 });
   });
 
+  it("keeps a leading digit run (a typed 13C) to the left of the symbol instead of dropping it", () => {
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(ChemDraftSyntheticStylePreset));
+    const layout = atomLabelLayout("13C", drawingStyle);
+    expect(layout.runs.map(({ text, script }) => ({ text, script }))).toEqual([
+      { text: "13", script: "subscript" },
+      { text: "C", script: "normal" }
+    ]);
+    expect(layout.runs[0]!.x).toBeLessThan(layout.runs[1]!.x);
+    // The box grows to the left to hold the leading run.
+    expect(layout.bounds.x).toBeLessThan(atomLabelLayout("C", drawingStyle).bounds.x);
+  });
+
   it("takes the proton off a pyrrole-type N–H that donates a dative bond to a metal, and only that one", () => {
     // Imidazole: N1 is pyrrole-type (two single ring bonds, each neighbour in a double bond), N3
     // is pyridine-type. A dashed bond from N1 to zinc means imidazolate coordination — no free pair

@@ -14117,6 +14117,66 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
   });
 });
 
+describe("ring hotkeys on nickname atoms", () => {
+  it("refuses to attach a ring at a nickname (superatom) label, as the shipped doc says", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Nickname ring"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(base);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[1]!.id, distanceToPointer: 0 };
+    const labeled = applyNativeAtomElementTarget(base, target, "Ph");
+    expect(applyNativeRingAttachAtAtomTarget(labeled, target, "benzene")).toBe(labeled);
+    // An element label at the same atom still grows the ring.
+    const carbon = applyNativeAtomElementTarget(labeled, target, "N");
+    expect(applyNativeRingAttachAtAtomTarget(carbon, target, "benzene")).not.toBe(carbon);
+  });
+});
+
+describe("engine re-layout keeps covalently bound metals in the skeleton", () => {
+  it("does not drag a ZnCl2 into the pocket of its imidazole donors", () => {
+    // Zn with two covalent chlorides and two dative imidazoles: the metal is part of the skeleton
+    // the engine lays out, so its Zn–Cl bonds must keep the engine's length.
+    const atoms: MoleculeAtom[] = [
+      { id: "zn", element: "Zn", x: 300, y: 300, formalCharge: 0 },
+      { id: "cl1", element: "Cl", x: 270, y: 280, formalCharge: 0 },
+      { id: "cl2", element: "Cl", x: 330, y: 280, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [
+      { id: "b_cl1", fromAtomId: "zn", toAtomId: "cl1", order: "single" },
+      { id: "b_cl2", fromAtomId: "zn", toAtomId: "cl2", order: "single" }
+    ];
+    [0, 1].forEach((arm) => {
+      const ox = 240 + arm * 120;
+      const ids = ["n1", "c2", "n3", "c4", "c5"].map((name) => `${name}_${arm}`);
+      const ring = [0, 1, 2, 3, 4].map((k) => ({ x: ox + Math.cos(-Math.PI / 2 + k * 2 * Math.PI / 5) * 24, y: 380 + Math.sin(-Math.PI / 2 + k * 2 * Math.PI / 5) * 24 }));
+      ids.forEach((id, index) => atoms.push({ id, element: index === 0 || index === 2 ? "N" : "C", x: ring[index].x, y: ring[index].y, formalCharge: 0 }));
+      bonds.push({ id: `r1_${arm}`, fromAtomId: ids[0], toAtomId: ids[1], order: "single" });
+      bonds.push({ id: `r2_${arm}`, fromAtomId: ids[1], toAtomId: ids[2], order: "double" });
+      bonds.push({ id: `r3_${arm}`, fromAtomId: ids[2], toAtomId: ids[3], order: "single" });
+      bonds.push({ id: `r4_${arm}`, fromAtomId: ids[3], toAtomId: ids[4], order: "double" });
+      bonds.push({ id: `r5_${arm}`, fromAtomId: ids[4], toAtomId: ids[0], order: "single" });
+      bonds.push({ id: `d_${arm}`, fromAtomId: "zn", toAtomId: ids[0], order: "single", display: { bondStyle: "dashed" } });
+    });
+    const molecule: MoleculeObject = {
+      id: "mol_zncl2", type: "molecule", x: 200, y: 250, width: 200, height: 160, rotation: 0,
+      style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+    };
+    const base = createPhase4Document("ZnCl2 imidazoles");
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+
+    const relaid = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D), molecule.id);
+    const covalent = relaid.bonds.filter((bond) => bond.display?.bondStyle !== "dashed").map((bond) => moleculeBondLength(relaid, bond.id));
+    const L = covalent.reduce((sum, value) => sum + value, 0) / covalent.length;
+    ["b_cl1", "b_cl2"].forEach((bondId) => expect(Math.abs(moleculeBondLength(relaid, bondId) - L) / L).toBeLessThan(0.15));
+    relaid.atoms.forEach((atom, index) => {
+      relaid.atoms.slice(index + 1).forEach((other) => {
+        expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`).toBeGreaterThan(L * 0.5);
+      });
+    });
+  });
+});
+
 describe("dative donors and their hydrogens", () => {
   function complexDocument(kind: "imidazole" | "amine"): { document: ChemDraftDocument; objectId: string } {
     const atoms: MoleculeAtom[] = kind === "imidazole"
@@ -14171,7 +14231,11 @@ describe("dative donors and their hydrogens", () => {
     const bold = moleculeById(reference, objectId);
     expect(hydrogenCount(dative)).toBe(hydrogenCount(bold));
     expect(dative.atoms.find((atom) => atom.id === "n1")?.formalCharge).toBe(0);
-    expect(nativeSingleBondGraphSmiles(dative.atoms, dative.bonds)).not.toContain("[NH");
+    // The SMILES agrees with the formula: reparsed through OpenChemLib, the dative form has the
+    // same composition as the solid-bonded form (no hydrogen invented for the nitrogen).
+    const reparse = (smiles: string) => OCL.Molecule.fromSmiles(smiles).getMolecularFormula().formula;
+    expect(reparse(nativeSingleBondGraphSmiles(dative.atoms, dative.bonds)))
+      .toBe(reparse(nativeSingleBondGraphSmiles(bold.atoms, bold.bonds)));
     expect(nativeMoleculeInvalidAtomStates(dative)).toEqual([]);
   });
 

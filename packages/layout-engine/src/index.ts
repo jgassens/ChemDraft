@@ -4770,6 +4770,9 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
   const followingRuns = preservesLeadingHydrogenGeometry
     ? bodyRuns.filter((run) => run.script !== "normal")
     : bodyRuns.slice(bodyRuns.indexOf(baseRun) + 1);
+  // Runs before the first normal run (a typed "13C" or "2H") go to the LEFT of the base, in
+  // order; they used to be dropped outright.
+  const leadingRuns = preservesLeadingHydrogenGeometry ? [] : bodyRuns.slice(0, bodyRuns.indexOf(baseRun));
   const baseWidth = atomLabelRunWidth(baseRun, drawingStyle);
   const baseHalfWidth = baseWidth / 2;
   const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
@@ -4781,19 +4784,38 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
       textAnchor: "middle"
     }
   ];
+  let left = -baseHalfWidth;
   let right = baseHalfWidth;
   let top = -baseHalfHeight;
   let bottom = baseHalfHeight;
   let cursor = baseHalfWidth + drawingStyle.atomLabelFontSizePx * 0.04;
+  const scriptY = (script: AtomLabelScript): number => script === "subscript"
+    ? drawingStyle.atomLabelFontSizePx * 0.34
+    : script === "superscript"
+      ? -drawingStyle.atomLabelFontSizePx * 0.42
+      : 0;
+
+  let leadingCursor = -baseHalfWidth - drawingStyle.atomLabelFontSizePx * 0.04;
+  for (const run of [...leadingRuns].reverse()) {
+    const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+    const width = atomLabelRunWidth(run, drawingStyle);
+    const y = scriptY(run.script);
+    runs.unshift({
+      ...run,
+      x: leadingCursor,
+      y,
+      textAnchor: "end"
+    });
+    left = Math.min(left, leadingCursor - width);
+    top = Math.min(top, y - fontSize * 0.52);
+    bottom = Math.max(bottom, y + fontSize * 0.52);
+    leadingCursor -= width + drawingStyle.atomLabelFontSizePx * 0.03;
+  }
 
   for (const run of followingRuns) {
     const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
     const width = atomLabelRunWidth(run, drawingStyle);
-    const y = run.script === "subscript"
-      ? drawingStyle.atomLabelFontSizePx * 0.34
-      : run.script === "superscript"
-        ? -drawingStyle.atomLabelFontSizePx * 0.42
-        : 0;
+    const y = scriptY(run.script);
     runs.push({
       ...run,
       x: cursor,
@@ -4830,9 +4852,9 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
       : 0;
   return {
     bounds: {
-      x: -baseHalfWidth + horizontalShift - padding,
+      x: left + horizontalShift - padding,
       y: top - padding,
-      width: right + baseHalfWidth + padding * 2,
+      width: right - left + padding * 2,
       height: bottom - top + padding * 2
     },
     runs: horizontalShift === 0
@@ -5158,13 +5180,13 @@ function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefi
 }
 
 /**
- * Hydrogens a dative (dashed) bond costs its donor — the same rule documentWorkflow applies to the
- * formula (`nativeDativeDeprotonationCount`), kept in step so label and formula agree. A donor with
+ * Hydrogens a dative (dashed) bond costs its donor. The formula in documentWorkflow imports this
+ * same function, so label and formula cannot drift apart. A donor with
  * a lone pair to give (pyridine or amine N, ether or aqua O) keeps its hydrogens; a pyrrole-type
  * N–H (two single bonds, each neighbour carrying a multiple bond: imidazole, pyrazole, pyrrole,
  * indole) has no free pair and coordinates only deprotonated, so the label reads N, not NH.
  */
-function dativeDeprotonationCount(
+export function dativeDeprotonationCount(
   atom: MoleculeAtom,
   bonds: readonly CoreMoleculeBond[],
   atoms: readonly MoleculeAtom[]
