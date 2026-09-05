@@ -5022,9 +5022,13 @@ export function atomDisplayLabel(
 
   if (element === "C" && formalCharge === 0) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
+    // "Naked" means no bond at all, not zero covalent valence: a dashed (dative) bond
+    // contributes no valence, so testing valenceUsed here labeled the carbon at the end of
+    // every dashed bond as CH4 instead of drawing a plain stick.
+    const bonded = bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
     const shouldShowCarbon =
       atom.labelVisible === true ||
-      valenceUsed === 0 ||
+      !bonded ||
       (atom.labelVisible !== false && drawingStyle.atomLabelShowTerminalCarbons && terminalCarbon);
     if (!shouldShowCarbon) {
       return undefined;

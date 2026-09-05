@@ -1689,6 +1689,29 @@ describe("layout-engine page SVG planner", () => {
     expect(atomLabelAnchorOffset(molecule.atoms[0]!, "C", drawingStyle)).toEqual({ x: 8, y: -6 });
   });
 
+  it("draws the carbon at the end of a dashed (dative) bond as a plain stick, not a labeled CH4", () => {
+    // A dashed bond contributes no covalent valence, so a carbon whose only bond is dashed has
+    // valenceUsed 0 exactly like a naked atom. Only a carbon with NO bond is naked; the dashed
+    // bond's carbon is a skeleton vertex and must render unlabeled like any other stick end.
+    const molecule = moleculeObject({
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 160, y: 160, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 240, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelShowTerminalCarbons: false, atomLabelHideImplicitHydrogens: false }
+    });
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+
+    expect(atomDisplayLabel(molecule.atoms[0]!, molecule.bonds, drawingStyle, molecule.atoms)).toBeUndefined();
+    expect(atomDisplayLabel(molecule.atoms[1]!, molecule.bonds, drawingStyle, molecule.atoms)).toBeUndefined();
+    // A genuinely naked carbon (no bond at all) still shows its symbol.
+    expect(atomDisplayLabel(molecule.atoms[2]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("CH4");
+  });
+
   it("resolves native drawing styles per object", () => {
     const page = pageWithObjects([
       moleculeObject({
