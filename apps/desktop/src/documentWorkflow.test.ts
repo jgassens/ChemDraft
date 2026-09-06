@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
-import { atomDisplayLabel, mechanismArrowGeometry, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   DefaultNativeDrawingStyle,
@@ -183,6 +183,8 @@ import {
   nativeTemplateForToolCommand,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
+  nativeElementSymbols,
+  nativeElementMass,
   nativeMoleculeUnspellableLabels,
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
@@ -4742,6 +4744,182 @@ describe("Phase 4 document workflow", () => {
     document = stack(uncircled.seeded, { kind: "charge", charge: 1, chargeStyle: "plain" }, uncircled.target);
     document = stack(document, 1, uncircled.target);
     expect(onlyMark(document)).toMatchObject({ charge: 2, chargeStyle: "plain" });
+  });
+
+  it("does not carry a dismissed valence warning onto a relabelled atom", () => {
+    // Three bonds on atom_001, labelled F with the text tool: flagged, then dismissed.
+    const threeBonds = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Dismissal Scope"), { x: 300, y: 300 })
+    );
+    const fluorine = setNativeAtomElement(threeBonds, "atom_001", "F", { literal: true });
+    const target = { objectId: selectedMolecule(fluorine).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(fluorine)).map((state) => state.atomId)).toEqual(["atom_001"]);
+    const dismissed = applyNativeAtomWarningSuppression(fluorine, target, true);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(dismissed))).toEqual([]);
+
+    // Relabelled to a (still invalid) three-bond oxygen: a different atom, its own badge. The
+    // dismissal used to ride along and silence an error the user never saw, for good.
+    const oxygen = setNativeAtomElement(dismissed, "atom_001", "O", { literal: true });
+    const oxygenAtom = selectedMolecule(oxygen).atoms.find((atom) => atom.id === "atom_001");
+    expect(oxygenAtom).toMatchObject({ element: "O" });
+    expect(oxygenAtom?.warningSuppressed).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(oxygen)).map((state) => state.atomId)).toEqual(["atom_001"]);
+
+    // Retyping the SAME element changes nothing about the atom, so the dismissal stays.
+    const retyped = setNativeAtomElement(dismissed, "atom_001", "F", { literal: true });
+    expect(selectedMolecule(retyped).atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+
+    // Delete-to-carbon is a relabel too: the skeleton carbon starts with a clean slate.
+    const cleared = selectedMolecule(applyNativeAtomLabelClearTarget(dismissed, target));
+    expect(cleared.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "C" });
+    expect(cleared.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBeUndefined();
+  });
+
+  it("leaves a bond-less labelled atom for the atom delete instead of turning it into methane", () => {
+    // A typed "Zn" is a one-atom molecule. Delete used to strip the label to a bare carbon — which
+    // draws as CH4 — and only a second Delete removed it.
+    const znText = insertNativeTextObject(createPhase4Document("Naked Delete"), { x: 300, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0].id, distanceToPointer: 0 };
+    expect(nativeAtomHasExplicitLabel(molecule.atoms[0])).toBe(true);
+    expect(applyNativeAtomLabelClearTarget(document, target)).toBe(document);
+    // The real delete the caller falls through to removes the atom outright.
+    const deleted = applyNativeMoleculeDeleteTarget(document, target);
+    expect(deleted.pages[0].objects.some((object) => object.id === molecule.id && object.type === "molecule"
+      && (object as MoleculeObject).atoms.length > 0)).toBe(false);
+  });
+
+  it("weighs every element the formula lists — no atom is silently skipped", () => {
+    // CH3Li: the L hotkey's lithium used to weigh nothing (a 32% error), the formula still said CH3Li.
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Alkali Mass"), { x: 300, y: 300 });
+    const methyllithium = selectedMolecule(setNativeAtomElement(ethane, "atom_002", "Li"));
+    expect(methyllithium.chemistry).toMatchObject({ formula: "CH3Li", averageMass: 21.975, exactMass: 22.03948 });
+
+    // An MgBr nickname counts Mg + Br through the condensed-label parser and now weighs both.
+    const grignard = selectedMolecule(setNativeAtomElement(ethane, "atom_002", "MgBr"));
+    expect(grignard.chemistry).toMatchObject({ averageMass: 119.244, exactMass: 117.92685 });
+
+    // The table is complete over the parser's element list; a symbol it lacked would throw
+    // rather than weigh nothing.
+    nativeElementSymbols.forEach((symbol) => {
+      const mass = nativeElementMass(symbol);
+      expect(mass.average).toBeGreaterThan(0);
+      expect(mass.exact).toBeGreaterThan(0);
+    });
+    expect(() => nativeElementMass("Xx")).toThrow(/No atomic mass/);
+  });
+
+  it("lets a dative bond change order — it contributes no valence before or after", () => {
+    // A pyridine-style N: three covalent bonds, then a dashed (dative) bond to a Zn.
+    const threeBonds = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Dative Order"), { x: 300, y: 300 })
+    );
+    const nitrogen = setNativeAtomElement(threeBonds, "atom_001", "N");
+    const ligand = selectedMolecule(nitrogen);
+    const znText = insertNativeTextObject(nitrogen, { x: 300, y: 180 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const zn = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!zn) {
+      throw new Error("Expected zinc molecule.");
+    }
+    const complex = applyFreeformSingleBondToolAtPoint(converted, ligand.id, "atom_001", { x: zn.atoms[0].x, y: zn.atoms[0].y }, { bondStyle: "dashed" });
+    const merged = moleculeById(complex, ligand.id);
+    const dative = merged.bonds.find((bond) => bond.display?.bondStyle === "dashed");
+    if (!dative) {
+      throw new Error("Expected the dashed bond.");
+    }
+    expect(nativeMoleculeInvalidAtomStates(merged)).toEqual([]);
+
+    // Setting it to double used to be refused ("3 − 1 + 2 = 4" read as N⁺) although the bond
+    // keeps its dashed style and still contributes 0 — the N stays a valid neutral N.
+    const raised = applyNativeMoleculeBondOrderValueTarget(complex, {
+      objectId: ligand.id, kind: "bond", bondId: dative.id, fromAtomId: dative.fromAtomId, toAtomId: dative.toAtomId,
+      terminalAtomId: dative.toAtomId, distanceToPointer: 0
+    }, "double");
+    expect(raised).not.toBe(complex);
+    const raisedBond = moleculeById(raised, ligand.id).bonds.find((bond) => bond.id === dative.id);
+    expect(raisedBond).toMatchObject({ order: "double", display: { bondStyle: "dashed" } });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(raised, ligand.id))).toEqual([]);
+  });
+
+  it("carries every per-atom, per-bond and per-ring style override of an absorbed molecule", () => {
+    const base = createPhase4Document("Merge Styles");
+    const ring = benzeneRingMolecule();
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+    const withRing = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: ring },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [ring.id] }
+    ]);
+    const styledRing = applyMoleculeRingFillColor(
+      applyPatches(withRing, [{
+        op: "updateObject", objectId: ring.id,
+        changes: { style: {
+          ...ring.style,
+          atomLabelColors: { atom_002: "#c75c12" },
+          atomLabelFontSizes: { atom_002: 18 },
+          atomIndicatorShowAtomNumbersByAtomId: { atom_003: true },
+          bondBoldWidths: { bond_001: 4.5 },
+          bondColors: { bond_004: "#1f5fbf" },
+          bondIndicatorShowQueryByBondId: { bond_005: false }
+        } }
+      }]),
+      { objectId: ring.id, kind: "ring", ringKey },
+      "#d02626"
+    );
+    const ringStyleBefore = (moleculeById(styledRing, ring.id).style.ringStyles as Record<string, unknown>)[ringKey];
+    expect(ringStyleBefore).toBeDefined();
+
+    // The host: an ethane far from the ring, with a per-bond override of its own that must survive.
+    const withEthane = insertNativeSingleBondMolecule(styledRing, { x: 560, y: 560 });
+    const ethane = selectedMolecule(withEthane);
+    const hostStyled = applyPatches(withEthane, [{
+      op: "updateObject", objectId: ethane.id,
+      changes: { style: { ...ethane.style, bondBoldWidths: { bond_001: 2.5 } } }
+    }]);
+
+    // Drag a bond from the ethane onto ring atom_001: the ring is absorbed into the ethane.
+    const ringAtom = ring.atoms[0];
+    const bonded = applyFreeformSingleBondToolAtPoint(hostStyled, ethane.id, "atom_002", { x: ringAtom.x, y: ringAtom.y });
+    expect(bonded.pages[0].objects.some((object) => object.id === ring.id)).toBe(false);
+    const merged = moleculeById(bonded, ethane.id);
+    expect(merged.atoms).toHaveLength(8);
+    const mergedAtomIds = new Set(merged.atoms.map((atom) => atom.id));
+    const mergedBondIds = new Set(merged.bonds.map((bond) => bond.id));
+    const style = merged.style as Record<string, Record<string, unknown>>;
+
+    // Each absorbed map arrives keyed by the ring parts' NEW ids (never the colliding old ones),
+    // with the value intact. Before, only the two colour maps did; the rest vanished.
+    const onlyEntry = (map: Record<string, unknown> | undefined, ids: Set<string>, excluded?: string) => {
+      const entries = Object.entries(map ?? {}).filter(([id]) => id !== excluded);
+      expect(entries).toHaveLength(1);
+      expect(ids.has(entries[0]![0])).toBe(true);
+      return entries[0]!;
+    };
+    expect(onlyEntry(style.atomLabelColors, mergedAtomIds)[1]).toBe("#c75c12");
+    expect(onlyEntry(style.atomLabelFontSizes, mergedAtomIds)[1]).toBe(18);
+    expect(onlyEntry(style.atomIndicatorShowAtomNumbersByAtomId, mergedAtomIds)[1]).toBe(true);
+    expect(onlyEntry(style.bondColors, mergedBondIds)[1]).toBe("#1f5fbf");
+    expect(onlyEntry(style.bondIndicatorShowQueryByBondId, mergedBondIds)[1]).toBe(false);
+    // The font size and colour landed on the same (relabelled) atom, as they started.
+    expect(Object.keys(style.atomLabelFontSizes!)).toEqual(Object.keys(style.atomLabelColors!));
+    // The host's own per-bond entry is kept beside the absorbed one.
+    expect(style.bondBoldWidths!.bond_001).toBe(2.5);
+    expect(onlyEntry(style.bondBoldWidths, mergedBondIds, "bond_001")[1]).toBe(4.5);
+
+    // The ring style is re-keyed to the ring's new bond ids — the key the layout engine now
+    // looks it up by — so the fill survives the merge instead of being pruned as stale.
+    const mergedRing = nativeMoleculeRings(merged);
+    expect(mergedRing).toHaveLength(1);
+    expect(Object.keys(style.ringStyles!)).toEqual([mergedRing[0]!.ringKey]);
+    expect(style.ringStyles![mergedRing[0]!.ringKey]).toEqual(ringStyleBefore);
+    expect(mergedRing[0]!.ringKey).not.toBe(ringKey);
   });
 
   it("reports the ±9 stacking cap so the caller can name it instead of misreporting a refusal", () => {

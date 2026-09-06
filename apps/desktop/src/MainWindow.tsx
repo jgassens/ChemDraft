@@ -435,6 +435,7 @@ import {
   nativeBondStyleForToolCommand,
   nativeChargeMarkMaxMagnitude,
   nativeChargeStackRefusal,
+  stereoPerceptionMolfile,
   nativeElementFromKeyboardKey,
   nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
@@ -3696,7 +3697,9 @@ export function MainWindow({
     }
     if (flattenTarget) {
       try {
-        const molfile = moleculeToMolfileV2000(flattenTarget, { fromDocFrame: true });
+        // The same spelling flatten uses for its read-back, so the centers found here are the
+        // centers the guard can hold to (abbreviated labels as R-groups, not dummy carbons).
+        const molfile = stereoPerceptionMolfile(flattenTarget);
         const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
         perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
@@ -3816,7 +3819,8 @@ export function MainWindow({
     const molecule = findDocumentObject(sourceDocument, objectId);
     if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
     try {
-      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
+      const molfile = stereoPerceptionMolfile(molecule);
       const perAtom = perceive(molfile);
       let stereoCenterAtomIds: ReadonlySet<string> | undefined;
       if (perAtom.length === molecule.atoms.length) {

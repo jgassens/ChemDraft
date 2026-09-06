@@ -471,3 +471,37 @@ describe("ocl-adapter — perceiveStereoCentersFromMolfile", () => {
     expect(perceived.some((atom) => atom.isStereoCenter)).toBe(false);
   });
 });
+
+describe("abbreviated labels in perception molfiles", () => {
+  // A center bearing an abbreviation, a drawn methyl, a wedged Cl and an implicit H. Written as
+  // the export dummy "*", OpenChemLib reads the abbreviation as a CARBON: two identical
+  // substituents, no descriptor — and the flatten read-back guard has nothing to hold on to.
+  const center = (labels: [string, string]): MoleculeObject => ({
+    id: "m", type: "molecule", x: 0, y: 0, width: 0, height: 0, rotation: 0, style: {},
+    structureFormat: "molfile-v2000", structure: "",
+    atoms: [
+      { id: "c", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "s1", element: labels[0], x: 1, y: 0, formalCharge: 0 },
+      { id: "s2", element: labels[1], x: -0.5, y: 0.87, formalCharge: 0 },
+      { id: "cl", element: "Cl", x: -0.5, y: -0.87, formalCharge: 0 }
+    ],
+    bonds: [
+      { id: "b1", fromAtomId: "c", toAtomId: "s1", order: "single" },
+      { id: "b2", fromAtomId: "c", toAtomId: "s2", order: "single" },
+      { id: "b3", fromAtomId: "c", toAtomId: "cl", order: "single", display: { bondStyle: "wedge" } }
+    ],
+    superatoms: [], rGroups: []
+  });
+  const descriptorOf = (labels: [string, string], abbreviations?: "dummy" | "rgroup") =>
+    perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(center(labels), { abbreviations }))[0]!.descriptor;
+
+  it("keeps a center's CIP descriptor when the abbreviation is written as an R-group", () => {
+    expect(descriptorOf(["Ph", "C"])).toBe("unspecified"); // the dummy reads as a second methyl
+    expect(descriptorOf(["Ph", "C"], "rgroup")).toMatch(/^[RS]$/);
+  });
+
+  it("ranks two different abbreviations apart, and two equal ones together", () => {
+    expect(descriptorOf(["Ph", "Et"], "rgroup")).toMatch(/^[RS]$/);
+    expect(descriptorOf(["Ph", "Ph"], "rgroup")).toBe("unspecified");
+  });
+});

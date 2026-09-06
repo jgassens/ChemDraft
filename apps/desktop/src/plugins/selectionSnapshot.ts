@@ -27,8 +27,12 @@ export function pluginFacingStructure(
     try {
       return {
         structureFormat: "molfile-v2000",
-        // Native atoms live in the document (y-down) frame; molfiles are y-up.
-        structure: moleculeToMolfileV2000(molecule, { fromDocFrame: true })
+        // Native atoms live in the document (y-down) frame; molfiles are y-up. An abbreviated
+        // label ("Ph", "OMe") is handed over as an R-group pseudo-atom, not the export dummy "*":
+        // the plugin's OpenChemLib reads "*" as a carbon and would predict for a molecule the
+        // user did not draw, with nothing to tell it otherwise. An R-group is honestly "a group
+        // this file does not spell" (AGENTS.md §10: no fake chemistry).
+        structure: moleculeToMolfileV2000(molecule, { fromDocFrame: true, abbreviations: "rgroup" })
       };
     } catch {
       // >999 atoms/bonds or other writer limit: fall back to whatever the object already carries

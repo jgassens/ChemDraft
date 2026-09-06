@@ -29,7 +29,8 @@
  *     than replacing that bond's chemical order with a coordination bond.
  *   - An atom label that is not an element symbol (a condensed label like "CH3", an
  *     abbreviation like "Ph") writes as a dummy atom ("*") with a warning — the group the label
- *     spells is not represented in the molfile.
+ *     spells is not represented in the molfile. Consumers inside the app that RANK atoms (CIP
+ *     perception, the plugin hand-off) ask for `abbreviations: "rgroup"` instead; see the option.
  *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
  *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
  */
@@ -46,6 +47,22 @@ export interface MolfileWriteOptions {
    * relayout, stereo perception) omit it and get the previous behavior.
    */
   warnings?: string[];
+  /**
+   * How an atom whose label is not an element symbol ("Ph", "CH3", "CO2H") is written.
+   *
+   * - `"dummy"` (default): the CTfile dummy atom "*". Right for a file that leaves the app —
+   *   every reader parses it — but OpenChemLib reads "*" as a CARBON, so inside the app it is
+   *   wrong for anything that ranks substituents: a center bearing "Ph" and a methyl reads as
+   *   two identical carbons and stops being a stereocenter.
+   * - `"rgroup"`: an R-group pseudo-atom — `R#` with an `M  RGP` entry (V2000) or `RGROUPS=`
+   *   (V3000) — numbered per distinct label in first-seen order, so equal labels rank equal and
+   *   different labels rank apart from each other and from every element. Still a standard
+   *   molfile. OpenChemLib tells R1–R16 apart (a seventeenth label reads as "?", still no
+   *   element) and honours only the V2000 form, so perception must use V2000.
+   *
+   * Either way the group itself is not represented, and the writer warns.
+   */
+  abbreviations?: "dummy" | "rgroup";
 }
 
 const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
@@ -106,19 +123,41 @@ const MOLFILE_ATOM_SYMBOLS = new Set([
 ]);
 
 /**
- * The symbol for the molfile atom column. A label that is not an element symbol (a condensed
- * label like "CH3", an abbreviation like "Ph") written verbatim is an invalid molfile — and at
- * four or more characters it overflows V2000's fixed 3-char column, corrupting every field that
- * follows. Write a dummy atom and warn instead (AGENTS.md §5.7/§14).
+ * The symbols for the molfile atom column, in atom order, plus the R-group assignments that
+ * `abbreviations: "rgroup"` produced. A label that is not an element symbol (a condensed label
+ * like "CH3", an abbreviation like "Ph") written verbatim is an invalid molfile — and at four or
+ * more characters it overflows V2000's fixed 3-char column, corrupting every field that follows.
+ * Write a placeholder and warn instead (AGENTS.md §5.7/§14): the dummy atom "*" by default, or an
+ * R-group numbered per distinct label so readers keep the labels apart (see the option).
  */
-function molfileAtomSymbol(atom: { element: string }, warnings?: string[]): string {
-  if (MOLFILE_ATOM_SYMBOLS.has(atom.element)) {
-    return atom.element;
-  }
-  warnings?.push(
-    `Atom label "${atom.element}" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile.`
-  );
-  return "*";
+function molfileAtomSymbols(
+  atoms: readonly { element: string }[],
+  options: MolfileWriteOptions
+): { symbols: string[]; rgroups: { atomNumber: number; rgroup: number }[] } {
+  const rgroupByLabel = new Map<string, number>();
+  const rgroups: { atomNumber: number; rgroup: number }[] = [];
+  const symbols = atoms.map((atom, index) => {
+    if (MOLFILE_ATOM_SYMBOLS.has(atom.element)) {
+      return atom.element;
+    }
+    if (options.abbreviations === "rgroup") {
+      let rgroup = rgroupByLabel.get(atom.element);
+      if (rgroup === undefined) {
+        rgroup = rgroupByLabel.size + 1;
+        rgroupByLabel.set(atom.element, rgroup);
+      }
+      rgroups.push({ atomNumber: index + 1, rgroup });
+      options.warnings?.push(
+        `Atom label "${atom.element}" is not an element symbol; written as R-group placeholder R${rgroup} — the label's group is not represented in the molfile.`
+      );
+      return "R#";
+    }
+    options.warnings?.push(
+      `Atom label "${atom.element}" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile.`
+    );
+    return "*";
+  });
+  return { symbols, rgroups };
 }
 
 function f10_4(value: number): string {
@@ -207,12 +246,13 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const lines: string[] = ["", "  ChemDraft", ""];
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
-  for (const atom of atoms) {
+  const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
+  atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
     const z = f10_4(0);
-    lines.push(`${x}${y}${z} ${molfileAtomSymbol(atom, options.warnings).padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
-  }
+    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
+  });
 
   for (const bond of writableBonds) {
     const from = atomIndex.get(bond.fromAtomId)!;
@@ -238,6 +278,14 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     const chunk = radicals.slice(i, i + 8);
     const body = chunk.map((entry) => `${i4(entry.atomNumber)}${i4(entry.radicalCode)}`).join("");
     lines.push(`M  RAD${i3(chunk.length)}${body}`);
+  }
+
+  // R-group property lines: (atom, R-group number) pairs, the CTfile "M  RGP" shape. Only ever
+  // present when `abbreviations: "rgroup"` placed an "R#" atom.
+  for (let i = 0; i < rgroups.length; i += 8) {
+    const chunk = rgroups.slice(i, i + 8);
+    const body = chunk.map((entry) => `${i4(entry.atomNumber)}${i4(entry.rgroup)}`).join("");
+    lines.push(`M  RGP${i3(chunk.length)}${body}`);
   }
 
   lines.push("M  END");
@@ -268,12 +316,16 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     "M  V30 BEGIN ATOM"
   ];
 
+  const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
+  const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
     const radicalCode = mdlRadicalCode(atom.markRadicals);
     const radical = radicalCode !== 0 ? ` RAD=${radicalCode}` : "";
+    const rgroup = rgroupByAtomNumber.get(index + 1);
+    const rgroups30 = rgroup !== undefined ? ` RGROUPS=(1 ${rgroup})` : "";
     lines.push(
-      `M  V30 ${index + 1} ${molfileAtomSymbol(atom, options.warnings)} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}`
+      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}${rgroups30}`
     );
   });
 

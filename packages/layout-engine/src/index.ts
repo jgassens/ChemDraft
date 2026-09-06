@@ -2017,8 +2017,17 @@ function moleculeRingPathD(
   ].join(" ");
 }
 
-function moleculeFillCycleKey(bondIds: readonly string[]): string {
+/**
+ * The key a ring's style is stored under in `molecule.style.ringStyles`: the ring's bond ids,
+ * sorted and "|"-joined. Exported with its inverse so a molecule merge can re-key an absorbed
+ * ring's style onto the bond ids it receives in the host.
+ */
+export function moleculeFillCycleKey(bondIds: readonly string[]): string {
   return [...bondIds].sort().join("|");
+}
+
+export function moleculeFillCycleKeyBondIds(ringKey: string): string[] {
+  return ringKey.split("|");
 }
 
 function moleculeFillCycleSortKey(cycle: MoleculeFillRingCycle): string {

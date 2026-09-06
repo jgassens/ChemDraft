@@ -111,6 +111,8 @@ import {
 import {
   findNearestAtomAtPoint,
   findNearestBondHit,
+  moleculeFillCycleKey,
+  moleculeFillCycleKeyBondIds,
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
@@ -805,18 +807,35 @@ const nativeMetalMaxCoordination: Partial<Record<NativeElementSymbol, number>> =
   La: 10, Hf: 8, Ta: 8, W: 9, Re: 9, Os: 9, Ir: 8, Pt: 6, Au: 6, Hg: 6
 };
 // Standard atomic weights; exact = the most abundant isotope's mass.
-const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exact: number }>> = {
+/**
+ * Standard atomic weight (IUPAC abridged) and the exact mass of the most abundant isotope, for
+ * EVERY element the label parser can produce — the type is a complete `Record`, so adding a
+ * symbol to `nativeElementSymbols` without a mass here fails to compile. It used to be a partial
+ * table with a `?? 0` fallback, and the formula would list an atom (CH3Li, an MgBr label) whose
+ * mass the molecular weight silently omitted. Elements with no stable isotope carry the mass
+ * number and exact mass of their longest-lived isotope, the usual convention for a weight.
+ */
+const nativeAtomMass: Record<NativeElementSymbol, { average: number; exact: number }> = {
   H: { average: 1.008, exact: 1.00782503223 },
+  He: { average: 4.0026, exact: 4.00260325413 },
+  Li: { average: 6.94, exact: 7.0160034366 },
+  Be: { average: 9.0122, exact: 9.012183065 },
   B: { average: 10.81, exact: 11.00930536 },
   C: { average: 12.011, exact: 12 },
   N: { average: 14.007, exact: 14.00307400443 },
   O: { average: 15.999, exact: 15.99491461957 },
   F: { average: 18.998, exact: 18.99840316273 },
+  Ne: { average: 20.18, exact: 19.9924401762 },
+  Na: { average: 22.99, exact: 22.989769282 },
+  Mg: { average: 24.305, exact: 23.985041697 },
   Al: { average: 26.982, exact: 26.98153853 },
   Si: { average: 28.085, exact: 27.97692653465 },
   P: { average: 30.974, exact: 30.97376199842 },
   S: { average: 32.06, exact: 31.9720711744 },
   Cl: { average: 35.45, exact: 34.968852682 },
+  Ar: { average: 39.948, exact: 39.9623831237 },
+  K: { average: 39.098, exact: 38.9637064864 },
+  Ca: { average: 40.078, exact: 39.962590863 },
   Sc: { average: 44.956, exact: 44.95590828 },
   Ti: { average: 47.867, exact: 47.94794198 },
   V: { average: 50.942, exact: 50.94395704 },
@@ -827,10 +846,14 @@ const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exa
   Ni: { average: 58.693, exact: 57.93534241 },
   Cu: { average: 63.546, exact: 62.92959772 },
   Zn: { average: 65.38, exact: 63.92914201 },
+  Ga: { average: 69.723, exact: 68.9255735 },
   Ge: { average: 72.63, exact: 73.921177761 },
   As: { average: 74.922, exact: 74.92159457 },
   Se: { average: 78.971, exact: 79.9165218 },
   Br: { average: 79.904, exact: 78.9183376 },
+  Kr: { average: 83.798, exact: 83.9114977282 },
+  Rb: { average: 85.468, exact: 84.9117897379 },
+  Sr: { average: 87.62, exact: 87.9056125 },
   Y: { average: 88.906, exact: 88.9058403 },
   Zr: { average: 91.224, exact: 89.9046977 },
   Nb: { average: 92.906, exact: 92.906373 },
@@ -841,10 +864,29 @@ const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exa
   Pd: { average: 106.42, exact: 105.9034804 },
   Ag: { average: 107.868, exact: 106.9050916 },
   Cd: { average: 112.414, exact: 113.90336509 },
+  In: { average: 114.818, exact: 114.903878776 },
   Sn: { average: 118.71, exact: 119.90220163 },
+  Sb: { average: 121.76, exact: 120.903812 },
   Te: { average: 127.6, exact: 129.906222748 },
   I: { average: 126.904, exact: 126.9044719 },
+  Xe: { average: 131.293, exact: 131.9041550856 },
+  Cs: { average: 132.905, exact: 132.905451961 },
+  Ba: { average: 137.327, exact: 137.905247 },
   La: { average: 138.905, exact: 138.9063563 },
+  Ce: { average: 140.116, exact: 139.9054431 },
+  Pr: { average: 140.908, exact: 140.9076576 },
+  Nd: { average: 144.242, exact: 141.907729 },
+  Pm: { average: 145, exact: 144.9127559 },
+  Sm: { average: 150.36, exact: 151.9197397 },
+  Eu: { average: 151.964, exact: 152.921238 },
+  Gd: { average: 157.25, exact: 157.9241123 },
+  Tb: { average: 158.925, exact: 158.9253547 },
+  Dy: { average: 162.5, exact: 163.9291819 },
+  Ho: { average: 164.93, exact: 164.9303288 },
+  Er: { average: 167.259, exact: 165.9302995 },
+  Tm: { average: 168.934, exact: 168.9342179 },
+  Yb: { average: 173.045, exact: 173.9388664 },
+  Lu: { average: 174.967, exact: 174.9407752 },
   Hf: { average: 178.486, exact: 179.946557 },
   Ta: { average: 180.948, exact: 180.9479958 },
   W: { average: 183.84, exact: 183.95093092 },
@@ -853,8 +895,55 @@ const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exa
   Ir: { average: 192.217, exact: 192.9629216 },
   Pt: { average: 195.084, exact: 194.9647917 },
   Au: { average: 196.967, exact: 196.96656879 },
-  Hg: { average: 200.592, exact: 201.9706434 }
+  Hg: { average: 200.592, exact: 201.9706434 },
+  Tl: { average: 204.38, exact: 204.9744278 },
+  Pb: { average: 207.2, exact: 207.9766525 },
+  Bi: { average: 208.98, exact: 208.9803991 },
+  Po: { average: 209, exact: 208.9824308 },
+  At: { average: 210, exact: 209.9871479 },
+  Rn: { average: 222, exact: 222.0175782 },
+  Fr: { average: 223, exact: 223.019736 },
+  Ra: { average: 226, exact: 226.0254103 },
+  Ac: { average: 227, exact: 227.0277523 },
+  Th: { average: 232.038, exact: 232.0380558 },
+  Pa: { average: 231.036, exact: 231.0358842 },
+  U: { average: 238.029, exact: 238.0507884 },
+  Np: { average: 237, exact: 237.0481736 },
+  Pu: { average: 244, exact: 244.0642053 },
+  Am: { average: 243, exact: 243.0613813 },
+  Cm: { average: 247, exact: 247.0703541 },
+  Bk: { average: 247, exact: 247.0703073 },
+  Cf: { average: 251, exact: 251.0795886 },
+  Es: { average: 252, exact: 252.08298 },
+  Fm: { average: 257, exact: 257.0951061 },
+  Md: { average: 258, exact: 258.0984315 },
+  No: { average: 259, exact: 259.10103 },
+  Lr: { average: 266, exact: 266.11983 },
+  Rf: { average: 267, exact: 267.12179 },
+  Db: { average: 268, exact: 268.12567 },
+  Sg: { average: 269, exact: 269.12863 },
+  Bh: { average: 270, exact: 270.13336 },
+  Hs: { average: 269, exact: 269.13375 },
+  Mt: { average: 278, exact: 278.15631 },
+  Ds: { average: 281, exact: 281.16451 },
+  Rg: { average: 282, exact: 282.16912 },
+  Cn: { average: 285, exact: 285.17712 },
+  Nh: { average: 286, exact: 286.18221 },
+  Fl: { average: 289, exact: 289.19042 },
+  Mc: { average: 290, exact: 290.19598 },
+  Lv: { average: 293, exact: 293.20449 },
+  Ts: { average: 294, exact: 294.21046 },
+  Og: { average: 294, exact: 294.21392 }
 };
+
+/** The atomic masses behind the formula's molecular weight; throws on a symbol the table lacks. */
+export function nativeElementMass(element: string): { average: number; exact: number } {
+  const mass = nativeAtomMass[element as NativeElementSymbol];
+  if (!mass) {
+    throw new Error(`No atomic mass for element symbol "${element}".`);
+  }
+  return mass;
+}
 const nativeBondOrderValue: Record<MoleculeBond["order"], number> = {
   single: 1,
   double: 2,
@@ -8750,6 +8839,12 @@ export function applyNativeAtomLabelClearTarget(
   if (!atom || !nativeAtomHasExplicitLabel(atom)) {
     return document;
   }
+  // A labelled atom with no bonds (a typed "Zn", a lone "O") has no skeleton to revert to: as a
+  // bare carbon it would draw as CH4 — the user's Zn turned into methane and a second Delete was
+  // needed to remove it. Leave it unchanged so the caller falls through to the real atom delete.
+  if (!molecule.bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)) {
+    return document;
+  }
 
   const atoms = molecule.atoms.map((candidate) =>
     candidate.id === target.atomId ? nativeAtomWithElement(candidate, "C", false) : candidate
@@ -15054,6 +15149,19 @@ export type StereoPerceiver = (
 ) => ReadonlyArray<{ isStereoCenter: boolean; descriptor: "R" | "S" | "unspecified" }>;
 
 /**
+ * The molfile the app hands its OWN CIP perceiver (OpenChemLib). Abbreviated labels ("Ph", a typed
+ * "CH3") go in as R-group pseudo-atoms, never as the export dummy "*": OpenChemLib reads "*" as a
+ * carbon, so a center bearing "Ph" and a methyl looked like two identical substituents — no
+ * stereocenter, nothing in the reference map for the flatten read-back guard to check, and a
+ * flatten that inverted that center committed silently. Each distinct label ranks apart from every
+ * element and from every other label, which is all the guard needs: it compares the drawing's
+ * reading before and after, and both reads use this same spelling.
+ */
+export function stereoPerceptionMolfile(molecule: MoleculeObject): string {
+  return moleculeToMolfileV2000(molecule, { fromDocFrame: true, abbreviations: "rgroup" });
+}
+
+/**
  * Make a freshly flattened depiction READ BACK as the same stereochemistry it started with.
  *
  * The perspective encoder proves each wedge sound against its OWN geometric model, but that model
@@ -15098,7 +15206,7 @@ export function reconcileFlattenedStereo(
   const signatureOf = (source: readonly MoleculeBond[]): string =>
     source.map((bond) => (bond.display?.bondStyle === "wedge" ? "W" : bond.display?.bondStyle === "hashed" ? "H" : "-")).join("");
   const perceiveOf = (source: readonly MoleculeBond[]) =>
-    perceive(moleculeToMolfileV2000({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }, { fromDocFrame: true }));
+    perceive(stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }));
 
   let current = cloneBonds(bonds);
   const seen = new Set<string>();
@@ -15244,10 +15352,7 @@ function relocateRepeatedStereoMarkers(
     }
     perceptionCalls += 1;
     const perceived = perceive(
-      moleculeToMolfileV2000(
-        { ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() },
-        { fromDocFrame: true }
-      )
+      stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() })
     );
     for (const [index, descriptor] of reference) {
       const result = perceived[index];
@@ -15688,7 +15793,7 @@ export function flattenSpunMolecule(
   let committedBonds = nextBonds;
   if (options.perceiveStereo) {
     const perceive = options.perceiveStereo;
-    const referenceStereo = perceive(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+    const referenceStereo = perceive(stereoPerceptionMolfile(molecule));
     const reference = new Map<number, "R" | "S">();
     molecule.atoms.forEach((_, index) => {
       const entry = referenceStereo[index];
@@ -17372,7 +17477,8 @@ export function findForeignNativeMoleculeBondTarget(
 /**
  * Absorb one molecule object into another so a bond can join them: the absorbed atoms and
  * bonds are re-minted onto fresh ids in the host's id space (every molecule starts at
- * atom_001, so ids collide), and its per-atom/per-bond style colors follow the remap.
+ * atom_001, so ids collide), and every per-atom, per-bond and per-ring style override the
+ * absorbed molecule carries follows its parts onto their new ids.
  */
 function mergeNativeMoleculeObjects(
   host: MoleculeObject,
@@ -17407,33 +17513,78 @@ function mergeNativeMoleculeObjects(
     });
   });
 
-  const remapColorKeys = (
-    hostColors: Readonly<Record<string, string>> | undefined,
-    absorbedColors: Readonly<Record<string, string>> | undefined,
-    idMap: ReadonlyMap<string, string>
-  ): Record<string, string> | undefined => {
-    const merged: Record<string, string> = { ...(hostColors ?? {}) };
-    Object.entries(absorbedColors ?? {}).forEach(([id, color]) => {
-      const mapped = idMap.get(id);
-      if (mapped) {
-        merged[mapped] = color;
-      }
-    });
-    return Object.keys(merged).length > 0 ? merged : undefined;
-  };
-  const atomLabelColors = remapColorKeys(styleColorMap(host.style.atomLabelColors), styleColorMap(absorbed.style.atomLabelColors), atomIdMap);
-  const bondColors = remapColorKeys(styleColorMap(host.style.bondColors), styleColorMap(absorbed.style.bondColors), bondIdMap);
-  const style = {
-    ...host.style,
-    ...(atomLabelColors ? { atomLabelColors } : {}),
-    ...(bondColors ? { bondColors } : {})
-  };
-
   return {
-    molecule: refreshNativeSingleBondGraph({ ...host, style }, atoms, bonds),
+    molecule: refreshNativeSingleBondGraph(
+      { ...host, style: mergeIdKeyedMoleculeStyle(host.style, absorbed.style, atomIdMap, bondIdMap) },
+      atoms,
+      bonds
+    ),
     atomIdMap,
     bondIdMap
   };
+}
+
+/**
+ * The host's style with every id-keyed override of the absorbed molecule carried across on its
+ * new ids. The colour maps used to be the only ones remapped; the other per-atom label and
+ * indicator maps and per-bond geometry and indicator maps the layout engine reads
+ * (`atomLabelFontSizes`, `bondBoldWidths`, `atomIndicatorShowAtomNumbersByAtomId`, …) were
+ * dropped by the host spread, so a bold bond or an enlarged label silently reverted to the
+ * host's defaults the moment its molecule was bonded to another. The maps are recognised by
+ * SHAPE — an object keyed by the absorbed molecule's own atom or bond ids — so a map the engine
+ * grows later is carried without a list here to keep in step. Entries for ids the absorbed
+ * molecule no longer has are dropped, as the colour remap always did; the host's own entries
+ * stay. Ring styles are keyed by the ring's bond ids and are re-keyed the same way.
+ */
+function mergeIdKeyedMoleculeStyle(
+  hostStyle: MoleculeObject["style"],
+  absorbedStyle: MoleculeObject["style"],
+  atomIdMap: ReadonlyMap<string, string>,
+  bondIdMap: ReadonlyMap<string, string>
+): MoleculeObject["style"] {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const style: Record<string, unknown> = { ...hostStyle };
+
+  Object.entries(absorbedStyle).forEach(([key, value]) => {
+    if (key === "ringStyles" || !isRecord(value)) {
+      return;
+    }
+    const keys = Object.keys(value);
+    const idMap = keys.some((id) => atomIdMap.has(id))
+      ? atomIdMap
+      : keys.some((id) => bondIdMap.has(id))
+        ? bondIdMap
+        : undefined;
+    if (!idMap) {
+      return;
+    }
+    const hostMap = hostStyle[key];
+    const merged: Record<string, unknown> = { ...(isRecord(hostMap) ? hostMap : {}) };
+    keys.forEach((id) => {
+      const mapped = idMap.get(id);
+      if (mapped) {
+        merged[mapped] = value[id];
+      }
+    });
+    if (Object.keys(merged).length > 0) {
+      style[key] = merged;
+    }
+  });
+
+  const absorbedRingStyles = moleculeRingStyleMap(absorbedStyle.ringStyles);
+  if (Object.keys(absorbedRingStyles).length > 0) {
+    const ringStyles = moleculeRingStyleMap(hostStyle.ringStyles);
+    Object.entries(absorbedRingStyles).forEach(([ringKey, ringStyle]) => {
+      const bondIds = moleculeFillCycleKeyBondIds(ringKey);
+      if (bondIds.every((bondId) => bondIdMap.has(bondId))) {
+        ringStyles[moleculeFillCycleKey(bondIds.map((bondId) => bondIdMap.get(bondId)!))] = ringStyle;
+      }
+    });
+    style.ringStyles = ringStyles;
+  }
+
+  return style;
 }
 
 /** Anchor-carrying objects re-pointed from an absorbed molecule onto its merged host. */
@@ -17507,12 +17658,19 @@ function nativeAtomWithElement(
   labelVisible: boolean,
   labelLiteral = false
 ): MoleculeAtom {
-  const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, ...baseAtom } = atom;
+  const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, warningSuppressed, ...baseAtom } = atom;
+  // A dismissed valence warning was dismissed for THIS element at this bond count. Relabelling
+  // makes a different atom with its own validity, so the dismissal does not travel: a suppressed
+  // three-bond F retyped as O must show the invalid-oxygen badge again (it used to stay silent
+  // for good — through the hover hotkeys and the Delete-to-carbon path alike). Retyping the
+  // same element changes nothing about the atom, so that keeps its dismissal.
+  const sameElement = normalizeNativeAtomElementLabel(atom.element) === normalizeNativeAtomElementLabel(element);
   return {
     ...baseAtom,
     element,
     ...(labelVisible ? { labelVisible: true } : {}),
-    ...(labelLiteral ? { labelLiteral: true } : {})
+    ...(labelLiteral ? { labelLiteral: true } : {}),
+    ...(warningSuppressed === true && sameElement ? { warningSuppressed: true } : {})
   };
 }
 
@@ -17702,20 +17860,26 @@ function canSetNativeBondOrder(
     return false;
   }
 
-  const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-  const currentOrderValue = nativeBondOrderValue[bond.order] ?? 1;
-  const nextOrderValue = nativeBondOrderValue[order] ?? 1;
-  const fromElement = nativeElementFromAtomLabel(fromAtom.element);
-  const toElement = nativeElementFromAtomLabel(toAtom.element);
-  if (!fromElement || !toElement) {
+  if (!nativeElementFromAtomLabel(fromAtom.element) || !nativeElementFromAtomLabel(toAtom.element)) {
     return false;
   }
-  const fromUsage = (valenceUsage.get(fromAtom.id) ?? 0) - currentOrderValue + nextOrderValue;
-  const toUsage = (valenceUsage.get(toAtom.id) ?? 0) - currentOrderValue + nextOrderValue;
-  const fromCharge = nativeAtomFormalChargeForValence(fromElement, fromUsage);
-  const toCharge = nativeAtomFormalChargeForValence(toElement, toUsage);
 
-  return fromCharge === 0 && toCharge === 0;
+  // Judge the change by the validator the badges use, on the bonds as they WOULD be: the order
+  // swapped, the display style kept. One rule for every endpoint, the same one the drawing is
+  // checked against: a dashed (dative) bond contributes no valence before or after, a charged N
+  // is judged at its charge, and a metal is judged by its coordination ceiling rather than a
+  // covalent valence table it is not in. The old arithmetic subtracted the raw order value from
+  // a usage map that had counted a dashed bond as 0 — so a pyridine N with a dashed bond to Zn
+  // read "3 − 1 + 2 = 4", an N⁺ — and asked the neutral-valence table about the Zn, which
+  // answered `undefined` and refused every bond touching a metal. Only a change that BREAKS an
+  // endpoint is refused; an atom already flagged stays editable.
+  const nextBonds = molecule.bonds.map((candidate) => (candidate.id === bond.id ? { ...candidate, order } : candidate));
+  const breaks = (atom: MoleculeAtom): boolean => {
+    // A dismissed badge must not license the edit: judge the bare arithmetic.
+    const { warningSuppressed: _warningSuppressed, ...bare } = atom;
+    return nativeAtomValidationState(bare, molecule.bonds).valid && !nativeAtomValidationState(bare, nextBonds).valid;
+  };
+  return !breaks(fromAtom) && !breaks(toAtom);
 }
 
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
@@ -18185,12 +18349,15 @@ function nativeSingleBondGraphMetadata(
     }
   });
 
+  // Every key is an element the label parser produced, and the table covers every element the
+  // parser knows, so a miss here is a programming error and throws — never a silent 0 that
+  // leaves the weight short by an atom the formula lists.
   const averageMass = [...elementCounts.entries()].reduce(
-    (sum, [element, count]) => sum + (nativeAtomMass[element as NativeElementSymbol]?.average ?? 0) * count,
+    (sum, [element, count]) => sum + nativeElementMass(element).average * count,
     0
   );
   const exactMass = [...elementCounts.entries()].reduce(
-    (sum, [element, count]) => sum + (nativeAtomMass[element as NativeElementSymbol]?.exact ?? 0) * count,
+    (sum, [element, count]) => sum + nativeElementMass(element).exact * count,
     0
   );
 

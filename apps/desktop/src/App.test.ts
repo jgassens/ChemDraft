@@ -2149,6 +2149,14 @@ describe("ChemDraft desktop shell", () => {
     expect(marks[0]).toMatchObject({ charge: 2 });
   });
 
+  it("perceives stereo through the perception spelling, so an abbreviation never reads as a carbon", () => {
+    // Both MainWindow perception sites (the flatten reference and the pre-spin center scan) must
+    // use the same molfile flatten's read-back uses; the plain export writer turns "Ph" into "*",
+    // which OpenChemLib reads as carbon. Covered functionally in ocl-adapter; this guards the wiring.
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget)");
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule)");
+  });
+
   it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
     // A refused increment used to read "Cannot place positive charge on hovered atom" even though
     // the mark WAS on the atom — it was the increment that was refused, past ±9 or past what the

@@ -291,4 +291,57 @@ describe("non-element atom labels", () => {
     expect(mf).toContain("M  V30 3 * ");
     expect(warnings).toHaveLength(2);
   });
+
+  // Two "CH3" labels and one "CO2H": equal labels share an R-group number, different labels get
+  // their own, so a reader that ranks atoms (CIP perception) keeps them apart from each other and
+  // from every element — where the dummy "*" reads as a carbon and collapses them all.
+  const repeated = molecule(
+    [
+      { id: "a0", element: "C", x: 0, y: 0 },
+      { id: "a1", element: "CH3", x: 1.5, y: 0 },
+      { id: "a2", element: "CO2H", x: 3, y: 0 },
+      { id: "a3", element: "CH3", x: 4.5, y: 0 }
+    ],
+    [
+      { id: "b1", from: "a0", to: "a1" },
+      { id: "b2", from: "a1", to: "a2" },
+      { id: "b3", from: "a2", to: "a3" }
+    ]
+  );
+
+  it("V2000 rgroup mode writes R# atoms with an M  RGP table numbered per distinct label", () => {
+    const warnings: string[] = [];
+    const mf = moleculeToMolfileV2000(repeated, { warnings, abbreviations: "rgroup" });
+    const lines = mf.split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const atomLines = lines.slice(countsLine + 1, countsLine + 5);
+    expect(atomLines[0]).toContain(" C  ");
+    expect(atomLines[1]).toContain(" R# ");
+    expect(atomLines[2]).toContain(" R# ");
+    expect(atomLines[3]).toContain(" R# ");
+    expect(new Set(atomLines.map((line) => line.length)).size).toBe(1);
+    expect(mf).not.toContain("*");
+    expect(lines).toContain("M  RGP  3   2   1   3   2   4   1");
+    expect(warnings).toHaveLength(3);
+    expect(warnings[0]).toContain("R1");
+    expect(warnings[1]).toContain("R2");
+    expect(warnings[2]).toContain("R1");
+  });
+
+  it("V3000 rgroup mode writes RGROUPS= on the R# atoms", () => {
+    const mf = moleculeToMolfileV3000(repeated, { abbreviations: "rgroup" });
+    expect(mf).toContain("M  V30 2 R# 1.5 0 0 0 RGROUPS=(1 1)");
+    expect(mf).toContain("M  V30 3 R# 3 0 0 0 RGROUPS=(1 2)");
+    expect(mf).toContain("M  V30 4 R# 4.5 0 0 0 RGROUPS=(1 1)");
+    expect(mf).not.toContain("*");
+  });
+
+  it("writes no RGP table when every label is an element, in either mode", () => {
+    const plain = molecule(
+      [{ id: "a0", element: "C", x: 0, y: 0 }, { id: "a1", element: "N", x: 1.5, y: 0 }],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    expect(moleculeToMolfileV2000(plain, { abbreviations: "rgroup" })).toBe(moleculeToMolfileV2000(plain));
+    expect(moleculeToMolfileV2000(plain)).not.toContain("RGP");
+  });
 });
