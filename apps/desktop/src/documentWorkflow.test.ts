@@ -183,6 +183,8 @@ import {
   nativeTemplateForToolCommand,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
+  stereoPerceptionDistinctLabelLimit,
+  flattenSpunMolecule,
   nativeElementSymbols,
   nativeElementMass,
   nativeMoleculeUnspellableLabels,
@@ -4847,6 +4849,94 @@ describe("Phase 4 document workflow", () => {
     const raisedBond = moleculeById(raised, ligand.id).bonds.find((bond) => bond.id === dative.id);
     expect(raisedBond).toMatchObject({ order: "double", display: { bondStyle: "dashed" } });
     expect(nativeMoleculeInvalidAtomStates(moleculeById(raised, ligand.id))).toEqual([]);
+  });
+
+  it("refuses a bond-order change that breaks a valid endpoint — a dismissed badge does not license it", () => {
+    // A neutral N with three covalent bonds: raising any of them to double needs an N⁺.
+    const threeBonds = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Order Refusal"), { x: 300, y: 300 })
+    );
+    const nitrogen = setNativeAtomElement(threeBonds, "atom_001", "N");
+    const molecule = selectedMolecule(nitrogen);
+    const bond = molecule.bonds.find((candidate) => candidate.id === "bond_001")!;
+    const target = {
+      objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
+      terminalAtomId: bond.toAtomId, distanceToPointer: 0
+    };
+    expect(applyNativeMoleculeBondOrderValueTarget(nitrogen, target, "double")).toBe(nitrogen);
+
+    // Dismissing the N's badge must not open the door: the check judges the bare arithmetic.
+    const dismissed = applyNativeAtomWarningSuppression(nitrogen, { objectId: molecule.id, kind: "atom", atomId: "atom_001", distanceToPointer: 0 }, true);
+    expect(selectedMolecule(dismissed).atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+    expect(applyNativeMoleculeBondOrderValueTarget(dismissed, target, "double")).toBe(dismissed);
+
+    // An endpoint that is ALREADY flagged stays editable: a typed lone "N" with one bond is
+    // hypovalent before and after, so the change breaks nothing and goes through.
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Already Flagged"), { x: 300, y: 300 });
+    const literal = setNativeAtomElement(ethane, "atom_001", "N", { literal: true });
+    const literalMolecule = selectedMolecule(literal);
+    expect(nativeMoleculeInvalidAtomStates(literalMolecule).map((state) => state.atomId)).toEqual(["atom_001"]);
+    const literalBond = literalMolecule.bonds[0]!;
+    const raised = applyNativeMoleculeBondOrderValueTarget(literal, {
+      objectId: literalMolecule.id, kind: "bond", bondId: literalBond.id, fromAtomId: literalBond.fromAtomId,
+      toAtomId: literalBond.toAtomId, terminalAtomId: literalBond.toAtomId, distanceToPointer: 0
+    }, "double");
+    expect(moleculeById(raised, literalMolecule.id).bonds[0]).toMatchObject({ order: "double" });
+  });
+
+  it("drops a dismissal when the same element is retyped under the other label rule", () => {
+    // A typed lone "N" is judged as spelled (hypovalent, flagged); the n hotkey's N fills with
+    // hydrogens. Same symbol, different rule — a dismissal made under one must not silence the other.
+    const nText = insertNativeTextObject(createPhase4Document("Literal Flip"), { x: 300, y: 300 }, "N");
+    const textObject = nText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(nText, textObject?.id ?? "");
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    const dismissed = applyNativeAtomWarningSuppression(document, target, true);
+    expect(selectedMolecule(dismissed).atoms[0]).toMatchObject({ labelLiteral: true, warningSuppressed: true });
+
+    const skeletal = setNativeAtomElement(dismissed, "atom_001", "N");
+    expect(skeletal).not.toBe(dismissed);
+    expect(selectedMolecule(skeletal).atoms[0].labelLiteral).toBeUndefined();
+    expect(selectedMolecule(skeletal).atoms[0].warningSuppressed).toBeUndefined();
+  });
+
+  it("refuses to flatten a wedged drawing with more abbreviated labels than the read-back can tell apart", () => {
+    const identity: Parameters<typeof flattenSpunMolecule>[3] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const starWith = (labelCount: number): MoleculeObject => {
+      // A wedged center whose substituents and a tail chain carry `labelCount` distinct
+      // abbreviations ("Abv1"…): nothing an element table knows.
+      const atoms: MoleculeObject["atoms"] = [
+        { id: "center", element: "C", x: 300, y: 300, formalCharge: 0 },
+        { id: "cl", element: "Cl", x: 340, y: 300, formalCharge: 0 }
+      ];
+      const bonds: MoleculeObject["bonds"] = [
+        { id: "wedge", fromAtomId: "center", toAtomId: "cl", order: "single", display: { bondStyle: "wedge" } }
+      ];
+      let previous = "center";
+      for (let index = 1; index <= labelCount; index += 1) {
+        const id = `abv${index}`;
+        atoms.push({ id, element: `Abv${index}`, x: 300 - index * 30, y: 300 + (index % 2) * 20, formalCharge: 0 });
+        bonds.push({ id: `b${index}`, fromAtomId: previous, toAtomId: id, order: "single" });
+        previous = id;
+      }
+      return benzeneRingMolecule({ id: "mol_abv", atoms, bonds, structure: "" });
+    };
+    const flattenOf = (mol: MoleculeObject) => {
+      const base = createPhase4Document("Label Limit");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: mol },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [mol.id] }
+      ]);
+      return flattenSpunMolecule(document, mol.id, new Float64Array(mol.atoms.length * 3), identity);
+    };
+
+    const seventeen = flattenOf(starWith(stereoPerceptionDistinctLabelLimit + 1));
+    expect(seventeen.status).toBe("refused");
+    expect(seventeen.refusalReasons.join()).toMatch(/17 distinct abbreviated labels/);
+    // At the limit this gate stays open (whatever the zeroed conformer does further on).
+    expect(flattenOf(starWith(stereoPerceptionDistinctLabelLimit)).refusalReasons.join()).not.toMatch(/abbreviated labels/);
   });
 
   it("carries every per-atom, per-bond and per-ring style override of an absorbed molecule", () => {

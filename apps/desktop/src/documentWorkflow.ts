@@ -5072,6 +5072,9 @@ export function createSmilesMolecule(
       : bond
   );
 
+  // Stored-structure spelling: molecule.structure is a standard export molfile (an abbreviated
+  // label as the dummy "*"), which is what RDKit, Copy As and the loaders read. CIP perception
+  // never reads this field — it spells its own molfile (stereoPerceptionMolfile, R-groups).
   const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
 
   return normalizeNativeMoleculeGeometry({
@@ -14003,6 +14006,8 @@ export function applyNativeMoleculeEngineRelayout(
   // Dashed bonds between non-metals (partial bonds, hydrogen bonds) write as plain singles here,
   // which is what a layout wants: the atoms stay adjacent. The writer's warnings are not surfaced —
   // nothing chemical leaves this function, only coordinates come back.
+  // Geometry only, so the export spelling (an abbreviated label as the dummy "*", an atom the
+  // engine can place) is the right one here; the R-group spelling is for CIP perception alone.
   const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
   const depiction = relayout(moleculeToMolfileV2000(ligand, { fromDocFrame: true }));
   if (depiction.atoms.length !== ligandAtoms.length) {
@@ -15162,6 +15167,13 @@ export function stereoPerceptionMolfile(molecule: MoleculeObject): string {
 }
 
 /**
+ * How many distinct abbreviated labels the perception spelling can keep apart: OpenChemLib ranks
+ * R1–R16, and a seventeenth R-group reads as "?" — equal to every other "?". flattenSpunMolecule
+ * refuses a wedged drawing beyond this rather than trust a read-back that cannot see it.
+ */
+export const stereoPerceptionDistinctLabelLimit = 16;
+
+/**
  * Make a freshly flattened depiction READ BACK as the same stereochemistry it started with.
  *
  * The perspective encoder proves each wedge sound against its OWN geometric model, but that model
@@ -15643,6 +15655,25 @@ export function flattenSpunMolecule(
       stereoCenters: []
     };
   }
+  // The read-back guard tells abbreviated labels apart by R-group number, and OpenChemLib ranks
+  // only sixteen of them (see stereoPerceptionDistinctLabelLimit). Past that the guard is blind
+  // to whichever centers those labels sit on, so a wedged drawing is refused here rather than
+  // flattened on a check that cannot see it.
+  const distinctAbbreviations = new Set(
+    molecule.atoms.map((atom) => atom.element).filter((label) => nativeElementFromAtomLabel(label) === undefined)
+  ).size;
+  const hasWedges = molecule.bonds.some((bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed");
+  if (hasWedges && distinctAbbreviations > stereoPerceptionDistinctLabelLimit) {
+    return {
+      document,
+      status: "refused",
+      warnings: [],
+      refusalReasons: [
+        `${distinctAbbreviations} distinct abbreviated labels; the stereo read-back can tell apart at most ${stereoPerceptionDistinctLabelLimit}, so this flatten could not be verified — spell some labels out and try again`
+      ],
+      stereoCenters: []
+    };
+  }
 
   // Frame recipe IN: document (y-down) → math (y-up), styles untouched.
   const mathMol: MoleculeObject = {
@@ -15836,6 +15867,8 @@ export function flattenSpunMolecule(
     bonds: committedBonds,
     ...geometry
   };
+  // Stored-structure spelling (dummy "*" for an abbreviated label), not the perception one —
+  // see the note where a new molecule's structure is first written.
   const structure = moleculeToMolfileV2000(stagedMolecule, { fromDocFrame: true });
 
   const patches: DocumentPatch[] = [
@@ -17659,18 +17692,21 @@ function nativeAtomWithElement(
   labelLiteral = false
 ): MoleculeAtom {
   const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, warningSuppressed, ...baseAtom } = atom;
-  // A dismissed valence warning was dismissed for THIS element at this bond count. Relabelling
+  // A dismissed valence warning was dismissed for THIS element under THIS label rule. Relabelling
   // makes a different atom with its own validity, so the dismissal does not travel: a suppressed
   // three-bond F retyped as O must show the invalid-oxygen badge again (it used to stay silent
-  // for good — through the hover hotkeys and the Delete-to-carbon path alike). Retyping the
-  // same element changes nothing about the atom, so that keeps its dismissal.
+  // for good — through the hover hotkeys and the Delete-to-carbon path alike). The same symbol
+  // under the other rule is a different atom too — a typed literal "N" is judged as spelled
+  // (a lone one is hypovalent), a hotkey N fills with hydrogens — so only a retype that keeps
+  // both the element and the rule keeps the dismissal.
   const sameElement = normalizeNativeAtomElementLabel(atom.element) === normalizeNativeAtomElementLabel(element);
+  const sameRule = (atom.labelLiteral === true) === labelLiteral;
   return {
     ...baseAtom,
     element,
     ...(labelVisible ? { labelVisible: true } : {}),
     ...(labelLiteral ? { labelLiteral: true } : {}),
-    ...(warningSuppressed === true && sameElement ? { warningSuppressed: true } : {})
+    ...(warningSuppressed === true && sameElement && sameRule ? { warningSuppressed: true } : {})
   };
 }
 
