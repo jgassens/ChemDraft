@@ -137,7 +137,10 @@ function molfileAtomSymbols(
   const rgroupByLabel = new Map<string, number>();
   const rgroups: { atomNumber: number; rgroup: number }[] = [];
   const symbols = atoms.map((atom, index) => {
-    if (MOLFILE_ATOM_SYMBOLS.has(atom.element)) {
+    // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
+    // must not pass through: OpenChemLib reads "*" as a carbon, which is exactly the misranking
+    // this mode exists to prevent. It is a group the file does not spell, like any other label.
+    if (MOLFILE_ATOM_SYMBOLS.has(atom.element) && !(options.abbreviations === "rgroup" && atom.element === "*")) {
       return atom.element;
     }
     if (options.abbreviations === "rgroup") {

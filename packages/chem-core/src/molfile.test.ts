@@ -336,6 +336,25 @@ describe("non-element atom labels", () => {
     expect(mf).not.toContain("*");
   });
 
+  it("rgroup mode also turns a literal \"*\" label into an R-group — a pasted dummy atom must not read as a carbon", () => {
+    const starred = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "*", x: 1.5, y: 0 },
+        { id: "a2", element: "Ph", x: 3, y: 0 }
+      ],
+      [
+        { id: "b1", from: "a0", to: "a1" },
+        { id: "b2", from: "a1", to: "a2" }
+      ]
+    );
+    const mf = moleculeToMolfileV2000(starred, { abbreviations: "rgroup" });
+    expect(mf).not.toContain(" *  ");
+    expect(mf.split("\n")).toContain("M  RGP  2   2   1   3   2");
+    // Default (export) mode still writes the dummy as itself.
+    expect(moleculeToMolfileV2000(starred)).toContain(" *  ");
+  });
+
   it("writes no RGP table when every label is an element, in either mode", () => {
     const plain = molecule(
       [{ id: "a0", element: "C", x: 0, y: 0 }, { id: "a1", element: "N", x: 1.5, y: 0 }],

@@ -7322,6 +7322,21 @@ export function applyChargeToolAtNativeAtom(
     if (plan.refusal) {
       return document;
     }
+    if (plan.next === 0 && plan.existing.radical) {
+      // A radical ion stacked back to neutral is a radical, not nothing: the charge is what the
+      // press removed, and the unpaired electron it did not touch stays as a bare radical dot on
+      // the same atom, where the mark was.
+      const anchorAtom = plan.existing.anchor.kind === "atom" && plan.existing.anchor.objectId && plan.existing.anchor.atomId
+        ? { objectId: plan.existing.anchor.objectId, atomId: plan.existing.anchor.atomId }
+        : { objectId: molecule.id, atomId: target.atomId };
+      return addChargeMarkAtPoint(
+        applyPatches(document, [{ op: "removeObject", objectId: plan.existing.id }], { now: phase4Timestamp }),
+        page.id,
+        { kind: "radical-dot" },
+        nativeChargeMarkCenter(plan.existing),
+        anchorAtom
+      );
+    }
     return applyPatches(
       document,
       plan.next === 0
@@ -13964,6 +13979,13 @@ export interface NativeEngineRelayoutOptions {
    * a drawing that has drifted in scale is brought back rather than frozen where it is.
    */
   targetBondLengthPx?: number;
+  /**
+   * The app's CIP perceiver. When given, the rebuilt drawing is read back and any centre that
+   * reads the wrong hand has its wedge flipped; a drawing that cannot be made to read as the
+   * original throws, so the caller commits nothing. Omitted (unit tests of pure geometry), the
+   * engine's own wedge assignment is trusted as before.
+   */
+  perceiveStereo?: StereoPerceiver;
 }
 
 export function applyNativeMoleculeEngineRelayout(
@@ -14087,7 +14109,7 @@ export function applyNativeMoleculeEngineRelayout(
         }
       : flatAtom;
   });
-  const atoms = arrangeNativeMonodentateLigands(
+  const placedAtoms = arrangeNativeMonodentateLigands(
     settleNativeMetalsInDonorPockets(
       foldNativeLigandsAroundMetals(engineAtoms, molecule.bonds, targetBondLength),
       molecule.bonds,
@@ -14097,6 +14119,28 @@ export function applyNativeMoleculeEngineRelayout(
     targetBondLength,
     molecule.atoms
   );
+  // The metals stay where the user drew them and the ligands are rebuilt around them: the whole
+  // result is translated so the free metals' centroid is back on its drawn spot. Recentring the
+  // ENGINE layout on the drawn ligand centroid (above) and then folding it moved that centroid,
+  // so a chelate walked across the page by the fold's shift on every cleanup; anchoring the
+  // metals makes a repeat reproduce the previous run exactly. A metal with only monodentate
+  // donors was never moved, so for those complexes this changes nothing.
+  const drawnFreeMetals = molecule.atoms.filter((atom) => freeMetalIds.has(atom.id));
+  const placedFreeMetals = placedAtoms.filter((atom) => freeMetalIds.has(atom.id));
+  const metalShift = drawnFreeMetals.length > 0
+    ? (() => {
+        const drawn = averagePagePoint(drawnFreeMetals);
+        const placed = averagePagePoint(placedFreeMetals);
+        return { x: drawn.x - placed.x, y: drawn.y - placed.y };
+      })()
+    : { x: 0, y: 0 };
+  const atoms = metalShift.x === 0 && metalShift.y === 0
+    ? placedAtoms
+    : placedAtoms.map((atom) => ({
+        ...atom,
+        x: roundGeometryCoordinate(atom.x + metalShift.x),
+        y: roundGeometryCoordinate(atom.y + metalShift.y)
+      }));
 
   // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint
   // atom indices (the engine's bonds were re-indexed onto the molecule's own atom order above, so
@@ -14141,11 +14185,39 @@ export function applyNativeMoleculeEngineRelayout(
   // Recompute each double bond's drawn side from the new geometry (ring doubles draw inward).
   const geometry = moleculeGeometryFromAtoms(atoms);
   const sideMolecule: MoleculeObject = { ...molecule, atoms, bonds: baseBonds, ...geometry };
-  const bonds: MoleculeBond[] = baseBonds.map((bond) =>
+  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) =>
     bond.order === "double"
       ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
       : bond
   );
+
+  // Read-back stereo guard, the same one flatten uses. The wedges above carry the parities the
+  // engine computed for ITS geometry; the fold, settle and arrange passes then moved atoms
+  // (rigid moves, but a mirrored monodentate ligand or a pivot the lock above did not foresee
+  // would invert a centre). Ask the real CIP perceiver what the finished drawing says and flip
+  // any centre that reads the wrong hand; if it cannot be made to read back, refuse the layout
+  // (the caller surfaces the error; the document is untouched) rather than commit an enantiomer.
+  let bonds = sidedBonds;
+  if (options.perceiveStereo) {
+    const perceive = options.perceiveStereo;
+    const reference = new Map<number, "R" | "S">();
+    perceive(stereoPerceptionMolfile(molecule)).forEach((entry, index) => {
+      if (entry?.isStereoCenter && (entry.descriptor === "R" || entry.descriptor === "S")) {
+        reference.set(index, entry.descriptor);
+      }
+    });
+    if (reference.size > 0) {
+      const reconciled = reconcileFlattenedStereo(molecule, atoms, sidedBonds, reference, perceive);
+      if (!reconciled.ok) {
+        throw new Error(
+          reconciled.reason === "legibility"
+            ? "Re-layout preserves stereochemistry but would draw two identical wedge/hash marks at one atom."
+            : `Re-layout would change stereochemistry at ${reconciled.unresolved.length} center(s).`
+        );
+      }
+      bonds = reconciled.bonds;
+    }
+  }
 
   const cleaned = withNativeMoleculeTransform(
     normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }),
@@ -14362,7 +14434,9 @@ function nativeDonorPocketPoint(donors: readonly PagePoint[], bondLengthPx: numb
  * a bridge of the covalent graph, moving the smaller side — and tries, for each hinge, a mirror of
  * that side across the bond (never when the side or the hinge's fixed end carries a wedge or hash,
  * which a mirror would turn into the enantiomer) and rotations of it about either end in 30°
- * steps. A move is kept when it lowers an energy made of three terms: how far each metal's donors
+ * steps (never about a drawn stereocentre, whose neighbour order is its parity, nor about an end
+ * of an acyclic double bond, where a swung arm turns E into Z — the other end of such a hinge
+ * still turns the whole side rigidly). A move is kept when it lowers an energy made of three terms: how far each metal's donors
  * sit from one bond length around the metal, overlaps between non-bonded atoms, and pinched angles
  * between an atom's covalent neighbours. Metals with covalent bonds of their own are left to the
  * engine (they are part of the skeleton, not free coordination centres); a ligand with no free
@@ -14430,6 +14504,12 @@ function foldNativeLigandsAroundMetals(
   // enantiomer, so those sides may rotate but never mirror.
   const singleCovalentPairs = new Set<string>();
   const stereoTouched = new Set<number>();
+  // The narrow end of a wedge or hash is the stereocentre it describes. Rotating an arm about
+  // that atom changes the cyclic order of its neighbours, which is the drawn parity, so no
+  // rotation may pivot there; the same goes for an end of an acyclic double bond, where a swung
+  // arm swaps sides of the bond and turns E into Z.
+  const stereoCentres = new Set<number>();
+  const covalentDoublePairs = new Set<string>();
   bonds.forEach((bond) => {
     const from = indexById.get(bond.fromAtomId);
     const to = indexById.get(bond.toAtomId);
@@ -14439,9 +14519,13 @@ function foldNativeLigandsAroundMetals(
     if (!isDashed(bond) && bond.order === "single") {
       singleCovalentPairs.add(`${Math.min(from, to)}:${Math.max(from, to)}`);
     }
+    if (!isDashed(bond) && bond.order === "double") {
+      covalentDoublePairs.add(`${Math.min(from, to)}:${Math.max(from, to)}`);
+    }
     if (bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed") {
       stereoTouched.add(from);
       stereoTouched.add(to);
+      stereoCentres.add(from);
     }
   });
   const discovery = new Array<number>(atoms.length).fill(-1);
@@ -14490,6 +14574,23 @@ function foldNativeLigandsAroundMetals(
   };
   type Hinge = { axisFrom: number; axisTo: number; moving: number[] };
   const donorIndexSet = new Set(metals.flatMap(([, donors]) => donors));
+  // Atoms no rotation may pivot on: a drawn stereocentre (the cyclic order of its neighbours is
+  // its parity), and either end of an acyclic double bond whose far end carries a substituent
+  // (an arm swung about this end changes which side of the bond it is on — E/Z). A ring double
+  // bond is locked by its ring and needs no rule. Rotation about the OTHER end of a hinge still
+  // moves the whole side rigidly, so every parity and every E/Z inside it is preserved.
+  const rotationLocked = new Set<number>(stereoCentres);
+  bridges.forEach(([left, right]) => {
+    if (!covalentDoublePairs.has(`${Math.min(left, right)}:${Math.max(left, right)}`)) {
+      return;
+    }
+    if (adjacency[right].length >= 2) {
+      rotationLocked.add(left);
+    }
+    if (adjacency[left].length >= 2) {
+      rotationLocked.add(right);
+    }
+  });
   const hinges: Hinge[] = [];
   bridges.forEach(([left, right]) => {
     if (!singleCovalentPairs.has(`${Math.min(left, right)}:${Math.max(left, right)}`)) {
@@ -14610,8 +14711,12 @@ function foldNativeLigandsAroundMetals(
     // amine's own 120° geometry places between grid points.
     for (const degrees of [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]) {
       const radians = degrees * Math.PI / 180;
-      results.push(transform((point) => rotated(point, points[hinge.axisFrom], radians)));
-      results.push(transform((point, index) => (index === hinge.axisTo ? point : rotated(point, points[hinge.axisTo], radians))));
+      if (!rotationLocked.has(hinge.axisFrom)) {
+        results.push(transform((point) => rotated(point, points[hinge.axisFrom], radians)));
+      }
+      if (!rotationLocked.has(hinge.axisTo)) {
+        results.push(transform((point, index) => (index === hinge.axisTo ? point : rotated(point, points[hinge.axisTo], radians))));
+      }
     }
     return results;
   };
@@ -14815,6 +14920,24 @@ function arrangeNativeMonodentateLigands(
   const angleOf = (from: PagePoint, to: PagePoint) => Math.atan2(to.y - from.y, to.x - from.x);
   const angularGap = (left: number, right: number) => Math.abs(wrapDegrees180((left - right) * 180 / Math.PI)) * Math.PI / 180;
   const moved = new Set<number>();
+  // Every fragment this pass will move, known up front: a fragment still waiting its turn sits
+  // where the engine's row left it, and that spot means nothing — counting it in a clearance
+  // test mirrored ligands away from phantom neighbours. Only atoms that stay put, or that have
+  // already been placed, count.
+  const componentSize = new Map<number, number>();
+  componentOf.forEach((component) => componentSize.set(component, (componentSize.get(component) ?? 0) + 1));
+  const pendingComponents = new Set<number>();
+  metalsByComponent.forEach((metalSet, component) => {
+    if (metalSet.size !== 1 || (componentSize.get(component) ?? 0) < 2) {
+      return;
+    }
+    const [metalIndex] = metalSet;
+    const donorsHere = (donorsByMetal.get(metalIndex) ?? []).filter((donorIndex) => componentOf[donorIndex] === component);
+    if (donorsHere.length === 1) {
+      pendingComponents.add(component);
+    }
+  });
+  const pending = (index: number): boolean => pendingComponents.has(componentOf[index]) && !moved.has(index);
 
   donorsByMetal.forEach((donorIndices, metalIndex) => {
     const metal = points[metalIndex];
@@ -14895,7 +15018,7 @@ function arrangeNativeMonodentateLigands(
       const fragmentSet = new Set(fragmentIndices);
       const clearance = (placed: PagePoint[]): number => placed.reduce((closest, point) =>
         Math.min(closest, points.reduce((inner, other, index) =>
-          (fragmentSet.has(index) || index === metalIndex ? inner : Math.min(inner, distance(point, other))), Number.POSITIVE_INFINITY)),
+          (fragmentSet.has(index) || index === metalIndex || pending(index) ? inner : Math.min(inner, distance(point, other))), Number.POSITIVE_INFINITY)),
         Number.POSITIVE_INFINITY);
       const donorNeighbors = adjacency[fragment.donor];
       const handedness = (donorPoint: PagePoint, first: PagePoint, second: PagePoint): number =>
@@ -15958,6 +16081,10 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
   const adjacency = nativeAdjacency(molecule.atoms, molecule.bonds);
   const bondByAtomPair = nativeBondByAtomPair(molecule.bonds);
   const nextAtomPoints = new Map<string, PagePoint>();
+  // The polygon+tree layout is built at the app's default bond length; the drawing is idealised
+  // to the molecule STYLE's bond length — the one standard the engine route also uses — so a
+  // molecule in a style with a longer or shorter bond comes out at that length, not the default.
+  const styleScale = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx / nativeBondLength;
 
   nativeComponents(molecule.atoms, adjacency).forEach((componentIds) => {
     const componentAtomSet = new Set(componentIds);
@@ -15985,8 +16112,8 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
 
     layout.forEach((point, atomId) => {
       nextAtomPoints.set(atomId, {
-        x: roundGeometryCoordinate(componentCenter.x + point.x - layoutCenter.x),
-        y: roundGeometryCoordinate(componentCenter.y + point.y - layoutCenter.y)
+        x: roundGeometryCoordinate(componentCenter.x + (point.x - layoutCenter.x) * styleScale),
+        y: roundGeometryCoordinate(componentCenter.y + (point.y - layoutCenter.y) * styleScale)
       });
     });
   });
@@ -17897,6 +18024,12 @@ function canSetNativeBondOrder(
   }
 
   if (!nativeElementFromAtomLabel(fromAtom.element) || !nativeElementFromAtomLabel(toAtom.element)) {
+    return false;
+  }
+  // The dashed style is the dative style, and dative means single: the dashed tool refuses a
+  // double or triple bond for that reason, so a dashed bond may not be raised past single
+  // either — a "dashed double" would draw as a dative bond and export as a covalent double.
+  if (bond.display?.bondStyle === "dashed" && order !== "single") {
     return false;
   }
 

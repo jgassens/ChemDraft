@@ -4971,6 +4971,11 @@ function atomLabelParts(label: string): { bodyRuns: AtomLabelRun[]; chargeRun?: 
     currentRuns.push({ text: character, script });
     return currentRuns;
   }, []);
+  // Digits BEFORE the first symbol are a mass number (a typed "13C", "2H"), and a mass number
+  // sits top-left as a superscript; only a count after a symbol ("CH3") is a subscript.
+  if (runs.length > 1 && runs[0]!.script === "subscript") {
+    runs[0] = { ...runs[0]!, script: "superscript" };
+  }
 
   return {
     bodyRuns: runs.length > 0 ? runs : [{ text: label, script: "normal" }],

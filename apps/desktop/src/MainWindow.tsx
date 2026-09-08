@@ -340,6 +340,7 @@ import {
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
+  nativeAtomHasExplicitLabel,
   applyNativeMoleculePartDeleteTarget,
   applyEditorSaveResultToSelectedMolecule,
   applyAnalysisToSelectedMolecule,
@@ -1356,7 +1357,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.23-claude";
+const CURRENT_BUILD_STAMP = "9.5.15.24-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -3188,6 +3189,14 @@ export function MainWindow({
       return;
     }
 
+    // Name what actually went: a bond-less "Zn" reaches this path with its label intact (the
+    // label-clear step leaves such an atom alone), and "Deleted carbon atom" would be a lie.
+    const deletedAtom = target.kind === "atom"
+      ? currentDocument.pages[0]?.objects
+          .find((object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule")
+          ?.atoms.find((atom) => atom.id === target.atomId)
+      : undefined;
+    const deletedAtomName = deletedAtom && nativeAtomHasExplicitLabel(deletedAtom) ? deletedAtom.element : "carbon";
     const nextDocument = applyNativeMoleculeDeleteTarget(currentDocument, target);
     if (nextDocument === currentDocument) {
       setStatus("No hovered atom or bond");
@@ -3206,7 +3215,7 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     setObjectContextMenu(undefined);
     setStatus(target.kind === "atom"
-      ? "Deleted carbon atom"
+      ? `Deleted ${deletedAtomName} atom`
       : target.terminalAtomId ? "Deleted terminal carbon" : "Deleted carbon bond");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
@@ -3588,16 +3597,21 @@ export function MainWindow({
     setStatus(`Cleaning up selected ${targetLabel}…`);
     void (async () => {
       try {
-        const { relayoutMolfile2D } = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
         const changed = commitDocumentChange((current) =>
           engineTargetIds.reduce((next, objectId) => {
             // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
             // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
+            // The perceiver is the read-back guard: the rebuilt drawing must say the same R/S it
+            // said before, or nothing commits.
             const target = findDocumentObject(next, objectId);
             const targetBondLengthPx = target?.type === "molecule"
               ? nativeDrawingStyleFromObjectStyle(target.style).bondLengthPx
               : undefined;
-            return applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D, { targetBondLengthPx });
+            return applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D, {
+              targetBondLengthPx,
+              perceiveStereo: perceiveStereoCentersFromMolfile
+            });
           }, cleanUpNativeMolecules2d(current, nativeTargetIds))
         );
         setStatus(cleanedStatus(changed));
@@ -4576,9 +4590,11 @@ export function MainWindow({
     // Engine lazy-loads (same pattern as Spin 3D): the whole re-layout is pure once the module is in.
     void (async () => {
       try {
-        const { relayoutMolfile2D } = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
         const changed = commitDocumentChange((current) =>
-          applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D)
+          applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
+            perceiveStereo: perceiveStereoCentersFromMolfile
+          })
         );
         setStatus(changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout");
       } catch (error) {

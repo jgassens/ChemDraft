@@ -1689,14 +1689,22 @@ describe("layout-engine page SVG planner", () => {
     expect(atomLabelAnchorOffset(molecule.atoms[0]!, "C", drawingStyle)).toEqual({ x: 8, y: -6 });
   });
 
-  it("keeps a leading digit run (a typed 13C) to the left of the symbol instead of dropping it", () => {
+  it("keeps a leading digit run (a typed 13C) to the left of the symbol as a mass-number superscript", () => {
     const drawingStyle = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(ChemDraftSyntheticStylePreset));
     const layout = atomLabelLayout("13C", drawingStyle);
+    // A mass number is a superscript (¹³C), not the subscript a trailing count gets (CH₃).
     expect(layout.runs.map(({ text, script }) => ({ text, script }))).toEqual([
-      { text: "13", script: "subscript" },
+      { text: "13", script: "superscript" },
       { text: "C", script: "normal" }
     ]);
     expect(layout.runs[0]!.x).toBeLessThan(layout.runs[1]!.x);
+    expect(layout.runs[0]!.y).toBeLessThan(0);
+    // A count after the symbol is still a subscript, and the leading mass number still leads.
+    expect(atomLabelLayout("13CH3", drawingStyle).runs.map(({ text, script }) => ({ text, script }))).toEqual([
+      { text: "13", script: "superscript" },
+      { text: "CH", script: "normal" },
+      { text: "3", script: "subscript" }
+    ]);
     // The box grows to the left to hold the leading run.
     expect(layout.bounds.x).toBeLessThan(atomLabelLayout("C", drawingStyle).bounds.x);
   });
