@@ -3775,6 +3775,203 @@ describe("Phase 4 document workflow", () => {
       return { document, molecule: moleculeById(document, molecule.id) };
     }
 
+    /**
+     * A dative-bridged polymer, in miniature: three 1,3,5-tris(ethynylthio)benzene dendrons, each
+     * with three arms reaching a bond and a half out, joined tip-to-tip by gold. Removing the
+     * metals leaves THREE separate fragments with nothing covalent between them — the shape the
+     * chemist drew lives entirely in where those fragments sit.
+     */
+    function goldBridgedPolymerFixture(): { document: ChemDraftDocument; molecule: MoleculeObject } {
+      const L = 28;
+      const atoms: MoleculeAtom[] = [];
+      const bonds: MoleculeBond[] = [];
+      const atomId = () => `atom_${String(atoms.length + 1).padStart(3, "0")}`;
+      const bondId = () => `bond_${String(bonds.length + 1).padStart(3, "0")}`;
+      const addAtom = (element: string, x: number, y: number): string => {
+        const id = atomId();
+        atoms.push({ id, element, x: Number(x.toFixed(3)), y: Number(y.toFixed(3)), formalCharge: 0 });
+        return id;
+      };
+      const addBond = (from: string, to: string, order: "single" | "double" | "triple", dashed = false) => {
+        bonds.push({
+          id: bondId(),
+          fromAtomId: from,
+          toAtomId: to,
+          order,
+          ...(dashed ? { display: { bondStyle: "dashed" as const } } : {})
+        });
+      };
+
+      /** One dendron: a benzene ring with three -C#C-S arms, at the given ring angles. */
+      const addDendron = (centerX: number, centerY: number, armAngles: readonly number[]): string[] => {
+        const ring = [0, 1, 2, 3, 4, 5].map((step) => {
+          const angle = (armAngles[0] + step * 60) * Math.PI / 180;
+          return addAtom("C", centerX + L * Math.cos(angle), centerY + L * Math.sin(angle));
+        });
+        ring.forEach((id, index) => addBond(id, ring[(index + 1) % 6], index % 2 === 0 ? "double" : "single"));
+        return armAngles.map((armAngle) => {
+          const angle = armAngle * Math.PI / 180;
+          const step = (multiple: number) => ({
+            x: centerX + (L + multiple * L) * Math.cos(angle),
+            y: centerY + (L + multiple * L) * Math.sin(angle)
+          });
+          const ringAtom = ring[Math.round(((armAngle - armAngles[0]) % 360 + 360) % 360 / 60) % 6];
+          const first = addAtom("C", step(1).x, step(1).y);
+          const second = addAtom("C", step(2).x, step(2).y);
+          const sulfur = addAtom("S", step(3).x, step(3).y);
+          addBond(ringAtom, first, "single");
+          addBond(first, second, "triple");
+          addBond(second, sulfur, "single");
+          return sulfur;
+        });
+      };
+
+      // Three dendrons, each arm tip 2L from the tip it faces, with a gold atom in between.
+      const armReach = 4 * L;
+      const centreGap = 2 * armReach + 2 * L;
+      const first = { x: 240, y: 260 };
+      const second = { x: first.x + centreGap, y: first.y };
+      const third = {
+        x: first.x + centreGap * Math.cos(120 * Math.PI / 180),
+        y: first.y + centreGap * Math.sin(120 * Math.PI / 180)
+      };
+      const firstArms = addDendron(first.x, first.y, [0, 120, 240]);
+      const secondArms = addDendron(second.x, second.y, [180, 300, 60]);
+      const thirdArms = addDendron(third.x, third.y, [300, 60, 180]);
+
+      const bridge = (donorA: string, donorB: string) => {
+        const a = atoms.find((atom) => atom.id === donorA)!;
+        const b = atoms.find((atom) => atom.id === donorB)!;
+        const gold = addAtom("Au", (a.x + b.x) / 2, (a.y + b.y) / 2);
+        addBond(gold, donorA, "single", true);
+        addBond(gold, donorB, "single", true);
+      };
+      bridge(firstArms[0], secondArms[0]);
+      bridge(firstArms[1], thirdArms[0]);
+
+      const xs = atoms.map((atom) => atom.x);
+      const ys = atoms.map((atom) => atom.y);
+      const molecule: MoleculeObject = {
+        id: "mol_gold_polymer",
+        type: "molecule",
+        x: Math.min(...xs),
+        y: Math.min(...ys),
+        width: Math.max(...xs) - Math.min(...xs),
+        height: Math.max(...ys) - Math.min(...ys),
+        rotation: 0,
+        style: { fillColor: "none" },
+        structureFormat: "smiles",
+        structure: "SC#Cc1cc(C#CS)cc(C#CS)c1",
+        atoms,
+        bonds,
+        superatoms: [],
+        rGroups: []
+      };
+      const base = createPhase4Document("Gold Polymer");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      return { document, molecule: moleculeById(document, molecule.id) };
+    }
+
+    it("keeps a dative-bridged polymer's dendrons where they were drawn instead of packing them together", () => {
+      // The engine is handed the ligand skeleton with the metals taken out. For a polymer that is
+      // several disconnected fragments, and the engine packs them however it likes — so recentring
+      // the whole engine layout on one drawn centroid kept the engine's packing, and the folding
+      // pass then curled every arm inward chasing each metal's two donors. Each fragment is placed
+      // on its own drawn position instead.
+      const { document, molecule } = goldBridgedPolymerFixture();
+      const dendronIds = [0, 1, 2].map((index) =>
+        molecule.atoms.slice(index * 15, index * 15 + 15).map((atom) => atom.id)
+      );
+      const centroid = (target: MoleculeObject, ids: readonly string[]) => {
+        const members = target.atoms.filter((atom) => ids.includes(atom.id));
+        return {
+          x: members.reduce((sum, atom) => sum + atom.x, 0) / members.length,
+          y: members.reduce((sum, atom) => sum + atom.y, 0) / members.length
+        };
+      };
+      const dendronGaps = (target: MoleculeObject) => [[0, 1], [0, 2], [1, 2]].map(([a, b]) => {
+        const first = centroid(target, dendronIds[a]);
+        const second = centroid(target, dendronIds[b]);
+        return Math.hypot(first.x - second.x, first.y - second.y);
+      });
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+
+      const covalent = relaidMolecule.bonds.filter((bond) => bond.display?.bondStyle !== "dashed");
+      const meanBondLength = covalent
+        .map((bond) => moleculeBondLength(relaidMolecule, bond.id))
+        .reduce((sum, value) => sum + value, 0) / covalent.length;
+
+      // Each pair of dendrons stays about as far apart as it was drawn.
+      const drawnGaps = dendronGaps(molecule);
+      const crossings = (target: MoleculeObject): number => {
+        const byId = new Map(target.atoms.map((atom) => [atom.id, atom]));
+        const side = (p: { x: number; y: number }, q: { x: number; y: number }, r: { x: number; y: number }) =>
+          (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+        let total = 0;
+        target.bonds.forEach((first, index) => {
+          target.bonds.slice(index + 1).forEach((second) => {
+            if ([first.fromAtomId, first.toAtomId].some((id) => id === second.fromAtomId || id === second.toAtomId)) {
+              return;
+            }
+            const a1 = byId.get(first.fromAtomId);
+            const a2 = byId.get(first.toAtomId);
+            const b1 = byId.get(second.fromAtomId);
+            const b2 = byId.get(second.toAtomId);
+            if (!a1 || !a2 || !b1 || !b2) {
+              return;
+            }
+            const d1 = side(b1, b2, a1);
+            const d2 = side(b1, b2, a2);
+            const d3 = side(a1, a2, b1);
+            const d4 = side(a1, a2, b2);
+            if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+              total += 1;
+            }
+          });
+        });
+        return total;
+      };
+
+      // No bond crosses another: the drawing came in clean and stays clean. Without per-fragment
+      // placement the engine's packing put two dendrons on top of each other (their centres 76 px
+      // apart instead of 280) and two bonds crossed.
+      expect(crossings(molecule)).toBe(0);
+      expect(crossings(relaidMolecule)).toBe(0);
+
+      // The two dendrons a gold atom holds by BOTH its donors keep the separation they were drawn
+      // with. (The third dendron hangs off a single donor, so the monodentate pass is free to swing
+      // it to another slot around its metal — that is its job, and it keeps the structure legible.)
+      expect(dendronGaps(relaidMolecule)[0]).toBeGreaterThan(drawnGaps[0] * 0.8);
+
+      // And nothing collides: no two unbonded atoms inside half a bond length.
+      const bonded = new Set(relaidMolecule.bonds.map((bond) => [bond.fromAtomId, bond.toAtomId].sort().join("|")));
+      relaidMolecule.atoms.forEach((atom, index) => {
+        relaidMolecule.atoms.slice(index + 1).forEach((other) => {
+          if (bonded.has([atom.id, other.id].sort().join("|"))) {
+            return;
+          }
+          expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`)
+            .toBeGreaterThan(meanBondLength * 0.5);
+        });
+      });
+
+      // Running it again changes nothing: a polymer is a fixed point like a chelate, so repeated
+      // cleanups do not walk it across the page.
+      const twice = moleculeById(
+        applyNativeMoleculeEngineRelayout(relaid, molecule.id, relayoutMolfile2D),
+        molecule.id
+      );
+      twice.atoms.forEach((atom, index) => {
+        expect(atom.x, atom.id).toBeCloseTo(relaidMolecule.atoms[index].x, 1);
+        expect(atom.y, atom.id).toBeCloseTo(relaidMolecule.atoms[index].y, 1);
+      });
+    });
+
     it("engine re-layout of a zinc coordination complex: clean ligands around a centred metal, dative bonds kept", () => {
       const { document, molecule } = zincTetrakisImidazoleFixture();
       // Four rings joined through the metal: the polygon+tree pass declines this (cleanup routes it

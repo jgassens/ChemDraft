@@ -14059,6 +14059,120 @@ export interface NativeEngineRelayoutOptions {
   perceiveStereo?: StereoPerceiver;
 }
 
+/**
+ * Put the engine's clean skeleton back on the page, one connected fragment at a time.
+ *
+ * A structure with a single fragment is recentred on where it was drawn, as before. A structure
+ * whose pieces are held together ONLY by dative bonds — a coordination polymer, a bridged dimer —
+ * reaches the engine as several separate fragments, because the metals are removed before the
+ * engine sees it. The engine then packs those fragments wherever it likes (it has no idea they
+ * are linked), and a single global recentring kept that packing: the arrangement the chemist drew
+ * was thrown away, and the folding pass below then curled every arm inward trying to bring each
+ * metal's two donors together. Fitting each fragment onto its OWN drawn position — rotation and
+ * translation only, never a reflection, so no drawn parity flips — keeps the drawing's shape while
+ * each fragment's bond lengths and angles still come from the engine.
+ */
+function placeEngineFragmentsOnDrawing(
+  ligandAtoms: readonly MoleculeAtom[],
+  ligandBonds: readonly MoleculeBond[],
+  ligandToOriginalIndex: readonly number[],
+  enginePointByIndex: ReadonlyMap<number, PagePoint>,
+  scale: number
+): Map<number, PagePoint> {
+  const placed = new Map<number, PagePoint>();
+  const enginePoints = ligandAtoms.map((_, index) => enginePointByIndex.get(ligandToOriginalIndex[index]));
+
+  const ligandIndexById = new Map(ligandAtoms.map((atom, index) => [atom.id, index]));
+  const adjacency: number[][] = ligandAtoms.map(() => []);
+  ligandBonds.forEach((bond) => {
+    const from = ligandIndexById.get(bond.fromAtomId);
+    const to = ligandIndexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    adjacency[from].push(to);
+    adjacency[to].push(from);
+  });
+
+  const fragmentOf = new Array<number>(ligandAtoms.length).fill(-1);
+  const fragments: number[][] = [];
+  ligandAtoms.forEach((_, start) => {
+    if (fragmentOf[start] !== -1) {
+      return;
+    }
+    const members: number[] = [];
+    const stack = [start];
+    fragmentOf[start] = fragments.length;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      members.push(node);
+      for (const next of adjacency[node]) {
+        if (fragmentOf[next] === -1) {
+          fragmentOf[next] = fragments.length;
+          stack.push(next);
+        }
+      }
+    }
+    fragments.push(members);
+  });
+
+  const placeFragment = (members: readonly number[]) => {
+    const points = members
+      .map((index) => ({ index, engine: enginePoints[index], drawn: ligandAtoms[index] }))
+      .filter((entry): entry is { index: number; engine: PagePoint; drawn: MoleculeAtom } => entry.engine !== undefined);
+    if (points.length === 0) {
+      return;
+    }
+    const engineCenter = averagePagePoint(points.map((entry) => entry.engine));
+    const drawnCenter = averagePagePoint(points.map((entry) => entry.drawn));
+    // Least-squares rotation about the two centroids (Kabsch in the plane): the angle whose
+    // rotation best carries the engine fragment onto the drawn one. Reflections are excluded by
+    // construction — this only ever rotates.
+    let dot = 0;
+    let cross = 0;
+    for (const entry of points) {
+      const ex = (entry.engine.x - engineCenter.x) * scale;
+      const ey = (entry.engine.y - engineCenter.y) * scale;
+      const dx = entry.drawn.x - drawnCenter.x;
+      const dy = entry.drawn.y - drawnCenter.y;
+      dot += ex * dx + ey * dy;
+      cross += ex * dy - ey * dx;
+    }
+    const angle = dot === 0 && cross === 0 ? 0 : Math.atan2(cross, dot);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    for (const entry of points) {
+      const ex = (entry.engine.x - engineCenter.x) * scale;
+      const ey = (entry.engine.y - engineCenter.y) * scale;
+      placed.set(ligandToOriginalIndex[entry.index], {
+        x: drawnCenter.x + ex * cos - ey * sin,
+        y: drawnCenter.y + ex * sin + ey * cos
+      });
+    }
+  };
+
+  if (fragments.length <= 1) {
+    // One fragment: translation only, exactly as before. Rotating a lone structure onto its drawn
+    // orientation would be a different (and much louder) change to what Clean Up does.
+    const engineCenter = averagePagePoint([...enginePointByIndex.values()]);
+    const drawnCenter = averagePagePoint(ligandAtoms);
+    ligandAtoms.forEach((_, index) => {
+      const enginePoint = enginePoints[index];
+      if (!enginePoint) {
+        return;
+      }
+      placed.set(ligandToOriginalIndex[index], {
+        x: drawnCenter.x + (enginePoint.x - engineCenter.x) * scale,
+        y: drawnCenter.y + (enginePoint.y - engineCenter.y) * scale
+      });
+    });
+    return placed;
+  }
+
+  fragments.forEach(placeFragment);
+  return placed;
+}
+
 export function applyNativeMoleculeEngineRelayout(
   document: ChemDraftDocument,
   objectId: string,
@@ -14165,18 +14279,23 @@ export function applyNativeMoleculeEngineRelayout(
   const engineBondLength = mean(engineBondLengths);
   const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
 
-  const engineCenter = averagePagePoint([...enginePointByIndex.values()]);
-  const currentCenter = averagePagePoint(ligandAtoms);
+  const placedEnginePoints = placeEngineFragmentsOnDrawing(
+    ligandAtoms,
+    ligandBonds,
+    ligandToOriginalIndex,
+    enginePointByIndex,
+    scale
+  );
 
   const engineAtoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
     const { z: _z, ...flatAtom } = atom;
-    const enginePoint = enginePointByIndex.get(index);
+    const placedPoint = placedEnginePoints.get(index);
     // A free metal keeps its drawn position for now; the placement passes below move it.
-    return enginePoint
+    return placedPoint
       ? {
           ...flatAtom,
-          x: roundGeometryCoordinate(currentCenter.x + (enginePoint.x - engineCenter.x) * scale),
-          y: roundGeometryCoordinate(currentCenter.y + (enginePoint.y - engineCenter.y) * scale)
+          x: roundGeometryCoordinate(placedPoint.x),
+          y: roundGeometryCoordinate(placedPoint.y)
         }
       : flatAtom;
   });
@@ -14550,12 +14669,6 @@ function foldNativeLigandsAroundMetals(
       donorIndicesByMetal.set(metalIndex, [...(donorIndicesByMetal.get(metalIndex) ?? []), donorIndex]);
     }
   });
-  const metals = [...donorIndicesByMetal.entries()].filter(([, donors]) => donors.length >= 2);
-  if (metals.length === 0) {
-    return [...atoms];
-  }
-  const metalIndexSet = new Set(metals.map(([metalIndex]) => metalIndex));
-
   // Covalent adjacency and its bridges (Tarjan): the hinges.
   const adjacency: number[][] = atoms.map(() => []);
   bonds.forEach((bond) => {
@@ -14570,6 +14683,39 @@ function foldNativeLigandsAroundMetals(
     adjacency[from].push(to);
     adjacency[to].push(from);
   });
+
+  // Which covalent fragment each atom belongs to. Folding closes a CHELATE: one ligand wrapping
+  // its metal, its arms swung about the hinges between the donors. A metal whose donors come from
+  // DIFFERENT fragments is a bridge in a polymer or a dimer instead — there is no covalent path
+  // between those donors to fold along, and pulling them together only drags whole fragments over
+  // each other. Such metals are left to the pocket pass, which moves the metal, not the ligands.
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  let componentCount = 0;
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const stack = [start];
+    componentOf[start] = componentCount;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const next of adjacency[node]) {
+        if (componentOf[next] === -1) {
+          componentOf[next] = componentCount;
+          stack.push(next);
+        }
+      }
+    }
+    componentCount += 1;
+  });
+
+  const metals = [...donorIndicesByMetal.entries()].filter(([, donors]) =>
+    donors.length >= 2 && new Set(donors.map((donorIndex) => componentOf[donorIndex])).size === 1
+  );
+  if (metals.length === 0) {
+    return [...atoms];
+  }
+  const metalIndexSet = new Set(metals.map(([metalIndex]) => metalIndex));
   // Only a single bond turns: a bridge that is a double bond (a salen imine, an exocyclic
   // alkene) would flip its drawn E/Z under a mirror, and a wedged side under a mirror becomes the
   // enantiomer, so those sides may rotate but never mirror.
