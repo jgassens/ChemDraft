@@ -3948,6 +3948,38 @@ describe("Phase 4 document workflow", () => {
       // it to another slot around its metal — that is its job, and it keeps the structure legible.)
       expect(dendronGaps(relaidMolecule)[0]).toBeGreaterThan(drawnGaps[0] * 0.8);
 
+      // Every dative link comes out the same length — the reported drawing had gold sitting 22 px
+      // from one pair of sulfurs and 52 px from another, at a 22 px bond length.
+      const dativeLengths = relaidMolecule.bonds
+        .filter((bond) => bond.display?.bondStyle === "dashed")
+        .map((bond) => moleculeBondLength(relaidMolecule, bond.id));
+      dativeLengths.forEach((length) => {
+        expect(length / meanBondLength).toBeGreaterThan(0.85);
+        expect(length / meanBondLength).toBeLessThan(1.15);
+      });
+
+      // And every donor is bent, not pointing its metal straight out along its own bond. A
+      // coordinated sulfur keeps two lone pairs; 180 degrees is the shape nothing has.
+      const donorAngles = relaidMolecule.bonds
+        .filter((bond) => bond.display?.bondStyle === "dashed")
+        .map((bond) => {
+          const metalId = [bond.fromAtomId, bond.toAtomId]
+            .find((id) => relaidMolecule.atoms.find((atom) => atom.id === id)?.element === "Au")!;
+          const donorId = bond.fromAtomId === metalId ? bond.toAtomId : bond.fromAtomId;
+          const donor = relaidMolecule.atoms.find((atom) => atom.id === donorId)!;
+          const metal = relaidMolecule.atoms.find((atom) => atom.id === metalId)!;
+          const neighborId = relaidMolecule.bonds
+            .filter((candidate) => candidate.display?.bondStyle !== "dashed")
+            .map((candidate) => candidate.fromAtomId === donorId ? candidate.toAtomId
+              : candidate.toAtomId === donorId ? candidate.fromAtomId : undefined)
+            .find((id): id is string => id !== undefined)!;
+          const neighbor = relaidMolecule.atoms.find((atom) => atom.id === neighborId)!;
+          const toNeighbor = Math.atan2(neighbor.y - donor.y, neighbor.x - donor.x);
+          const toMetal = Math.atan2(metal.y - donor.y, metal.x - donor.x);
+          return Math.abs(((toNeighbor - toMetal) * 180 / Math.PI + 540) % 360 - 180);
+        });
+      donorAngles.forEach((angle) => expect(angle).toBeLessThan(150));
+
       // And nothing collides: no two unbonded atoms inside half a bond length.
       const bonded = new Set(relaidMolecule.bonds.map((bond) => [bond.fromAtomId, bond.toAtomId].sort().join("|")));
       relaidMolecule.atoms.forEach((atom, index) => {
@@ -3966,10 +3998,24 @@ describe("Phase 4 document workflow", () => {
         applyNativeMoleculeEngineRelayout(relaid, molecule.id, relayoutMolfile2D),
         molecule.id
       );
-      twice.atoms.forEach((atom, index) => {
-        expect(atom.x, atom.id).toBeCloseTo(relaidMolecule.atoms[index].x, 1);
-        expect(atom.y, atom.id).toBeCloseTo(relaidMolecule.atoms[index].y, 1);
-      });
+      // A bridged structure settles on the second pass and then stops: the first pass moves the
+      // fragments into line, the second finds a few pixels left in it, and the third changes
+      // nothing at all. (A chelate is a fixed point from the first pass — see the test below.)
+      const secondRunShift = Math.max(...twice.atoms.map((atom, index) =>
+        Math.hypot(atom.x - relaidMolecule.atoms[index].x, atom.y - relaidMolecule.atoms[index].y)));
+      expect(secondRunShift).toBeLessThan(meanBondLength / 2);
+
+      const thrice = moleculeById(
+        applyNativeMoleculeEngineRelayout(
+          applyNativeMoleculeEngineRelayout(relaid, molecule.id, relayoutMolfile2D),
+          molecule.id,
+          relayoutMolfile2D
+        ),
+        molecule.id
+      );
+      const thirdRunShift = Math.max(...thrice.atoms.map((atom, index) =>
+        Math.hypot(atom.x - twice.atoms[index].x, atom.y - twice.atoms[index].y)));
+      expect(thirdRunShift).toBeLessThan(1);
     });
 
     it("engine re-layout of a zinc coordination complex: clean ligands around a centred metal, dative bonds kept", () => {

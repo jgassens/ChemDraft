@@ -14299,16 +14299,20 @@ export function applyNativeMoleculeEngineRelayout(
         }
       : flatAtom;
   });
-  const placedAtoms = arrangeNativeMonodentateLigands(
-    settleNativeMetalsInDonorPockets(
-      foldNativeLigandsAroundMetals(engineAtoms, molecule.bonds, targetBondLength),
-      molecule.bonds,
-      targetBondLength
-    ),
-    molecule.bonds,
-    targetBondLength,
-    molecule.atoms
-  );
+  // In a bridged structure — a polymer, a dimer — the ligands are not free to be slotted around a
+  // metal: each fragment is tied to two of them, and the drawing decides where it sits. The
+  // monodentate pass is for one metal holding separate ligands, and left in it fought the settling
+  // below, each undoing the other's answer on every run.
+  const bridgedStructure = nativeStructureIsMetalBridged(molecule.atoms, molecule.bonds);
+  const foldedAtoms = foldNativeLigandsAroundMetals(engineAtoms, molecule.bonds, targetBondLength);
+  const placedAtoms = bridgedStructure
+    ? relaxNativeDativeGeometry(foldedAtoms, molecule.bonds, targetBondLength)
+    : arrangeNativeMonodentateLigands(
+        settleNativeMetalsInDonorPockets(foldedAtoms, molecule.bonds, targetBondLength),
+        molecule.bonds,
+        targetBondLength,
+        molecule.atoms
+      );
   // The metals stay where the user drew them and the ligands are rebuilt around them: the whole
   // result is translated so the free metals' centroid is back on its drawn spot. Recentring the
   // ENGINE layout on the drawn ligand centroid (above) and then folding it moved that centroid,
@@ -14569,7 +14573,7 @@ function settleNativeMetalsInDonorPockets(
         : distance(current, donor) > 1e-6 ? Math.atan2(current.y - donor.y, current.x - donor.x) : 0;
       preferred = { x: donor.x + Math.cos(angle) * bondLengthPx, y: donor.y + Math.sin(angle) * bondLengthPx };
     } else {
-      preferred = nativeDonorPocketPoint(donorPoints, bondLengthPx);
+      preferred = nativeDonorPocketPoint(donorPoints, bondLengthPx, positions.get(metalId));
     }
     let chosen: PagePoint | undefined;
     if (clearanceAt(metalId, preferred) >= clear) {
@@ -14596,9 +14600,472 @@ function settleNativeMetalsInDonorPockets(
   });
 }
 
-/** The point that minimises the spread of donor distances about one bond length: a short gradient
- *  descent from the donor centroid. Where a metal belongs once its donors surround a pocket. */
-function nativeDonorPocketPoint(donors: readonly PagePoint[], bondLengthPx: number): PagePoint {
+/**
+ * The angle a two-coordinate donor makes with the metal it binds: a coordinated S, N or O keeps
+ * its lone pairs, so the metal sits off to the SIDE of the donor, not straight out in front of it.
+ * 104 degrees is water's angle and within a couple of degrees of the C-S-Au angles measured in
+ * gold(I) thiolates; the same number is close enough for the other bent donors a drawing uses.
+ */
+const nativeDonorLonePairAngleRad = 104 * Math.PI / 180;
+
+/**
+ * True when some ligand fragment binds two or more metals — the signature of a coordination
+ * polymer or a bridged dimer, as opposed to one metal holding a chelate or a handful of separate
+ * ligands. In a bridged structure the fragments' places come from the drawing, so the passes that
+ * rearrange ligands AROUND a metal have nothing to say about them.
+ */
+function nativeStructureIsMetalBridged(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): boolean {
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const covalentNeighbors: number[][] = atoms.map(() => []);
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    covalentNeighbors[from].push(to);
+    covalentNeighbors[to].push(from);
+  });
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  let componentCount = 0;
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const stack = [start];
+    componentOf[start] = componentCount;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const next of covalentNeighbors[node]) {
+        if (componentOf[next] === -1) {
+          componentOf[next] = componentCount;
+          stack.push(next);
+        }
+      }
+    }
+    componentCount += 1;
+  });
+
+  const metalsByFragment = new Map<number, Set<number>>();
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metal = indexById.get(metalId);
+      const donor = indexById.get(donorId);
+      if (metal === undefined || donor === undefined) {
+        continue;
+      }
+      if (!isNativeMetalAtom(atoms[metal]) || covalentNeighbors[metal].length > 0) {
+        continue;
+      }
+      const fragment = componentOf[donor];
+      metalsByFragment.set(fragment, new Set([...(metalsByFragment.get(fragment) ?? []), metal]));
+    }
+  });
+  return [...metalsByFragment.values()].some((metals) => metals.size > 1);
+}
+
+/**
+ * Even out the drawn geometry of the dative bonds: every metal–donor link one bond length long,
+ * every donor bent rather than pointing its metal straight along its own bond, and a metal holding
+ * two donors drawn straight through.
+ *
+ * The passes before this one place the ligands and then drop each metal into the pocket its donors
+ * leave, which is right for a chelate but says nothing about a BRIDGE. When a metal links two
+ * separate fragments, its two links come out as long as the gap the drawing happens to leave — in
+ * the reported gold polymer one gold sat 22 px from its sulfurs and another 52 px from its own, at
+ * a 22 px bond length — and nothing ever expressed what a donor wants, so a terminal donor drew its
+ * metal straight ahead at 180°, an angle no thiolate has.
+ *
+ * Nothing is bent here: each fragment may only turn and slide as a rigid piece, and each metal may
+ * move. Those few numbers (three per fragment, two per metal) are fitted by plain gradient descent
+ * on one energy — link lengths, donor angles, straight-through metals, a spring back to where the
+ * drawing had each fragment, and a push apart for atoms that would collide. Descent only ever
+ * accepts a step that lowers the energy, which is what makes the pass repeatable: run it on its own
+ * output and it is already at the bottom, so nothing moves. The spring is released as the run goes
+ * on, so early iterations keep a fragment near its drawn neighbours and the answer it settles on is
+ * the links' alone. If the result would collide worse than the drawing handed in, the pass keeps
+ * its input instead.
+ */
+function relaxNativeDativeGeometry(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const L = bondLengthPx;
+  if (!(L > 0) || atoms.length === 0) {
+    return [...atoms];
+  }
+
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const covalentNeighbors: number[][] = atoms.map(() => []);
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    covalentNeighbors[from].push(to);
+    covalentNeighbors[to].push(from);
+  });
+
+  // Free metals only: a metal with covalent bonds of its own is part of the skeleton the engine
+  // laid out, not a coordination centre this pass places.
+  const dativeLinks: Array<{ metal: number; donor: number }> = [];
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metal = indexById.get(metalId);
+      const donor = indexById.get(donorId);
+      if (metal === undefined || donor === undefined) {
+        continue;
+      }
+      if (isNativeMetalAtom(atoms[metal]) && covalentNeighbors[metal].length === 0) {
+        dativeLinks.push({ metal, donor });
+      }
+    }
+  });
+  if (dativeLinks.length === 0) {
+    return [...atoms];
+  }
+
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  const components: number[][] = [];
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const members: number[] = [];
+    const stack = [start];
+    componentOf[start] = components.length;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      members.push(node);
+      for (const next of covalentNeighbors[node]) {
+        if (componentOf[next] === -1) {
+          componentOf[next] = components.length;
+          stack.push(next);
+        }
+      }
+    }
+    components.push(members);
+  });
+  // Big assemblies are left alone. The fit below costs a few hundred thousand distance checks, and
+  // a drawing with this many separate pieces is past the point where nudging them into line helps.
+  if (components.length > 16 || atoms.length > 300) {
+    return [...atoms];
+  }
+
+  // Only BRIDGED structures are settled here — ones where some fragment binds two or more metals,
+  // which is what a polymer or a bridged dimer looks like. There the link lengths come from
+  // whatever gap the drawing left between fragments, which is the case that went wrong. A single
+  // metal holding a chelate, or a handful of separate ligands around one centre, is already
+  // answered by the folding, pocket and monodentate passes above; running this on top of them
+  // would give two answers to the same question and neither would be stable.
+  if (!nativeStructureIsMetalBridged(atoms, bonds)) {
+    return [...atoms];
+  }
+
+  const basePoints: PagePoint[] = atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  const metalIndices = [...new Set(dativeLinks.map((link) => link.metal))].sort((a, b) => a - b);
+  const metalSet = new Set(metalIndices);
+  const movableComponents = components
+    .map((members, component) => component)
+    .filter((component) => dativeLinks.some((link) => componentOf[link.donor] === component));
+  const poseOfComponent = new Map<number, number>(movableComponents.map((component, slot) => [component, slot]));
+  const centroids = movableComponents.map((component) =>
+    averagePagePoint(components[component].map((index) => basePoints[index])));
+  // A fragment's turn is carried as the arc its outermost atom travels, not as an angle, so every
+  // number the descent below works with is a distance in px. Mixing radians and pixels in one
+  // gradient makes the step size meaningless — the angles dominate the direction and every step
+  // overshoots them.
+  const turnRadii = movableComponents.map((component, slot) =>
+    Math.max(1, ...components[component].map((index) => distance(basePoints[index], centroids[slot]))));
+
+  /**
+   * The direction a donor holds its metal in, measured in its own fragment's frame so it turns
+   * with the fragment. One covalent neighbour (a thiolate S, an alkoxide O) means a bent donor: the
+   * metal sits at the lone-pair angle from that bond, on the side the drawing already has it —
+   * flipping sides would swing the metal across the page for no reason. Two or more neighbours (a
+   * pyridine N, a thioether S) point their free direction away from all of them.
+   */
+  const linkDirections = dativeLinks.map((link) => {
+    const donor = basePoints[link.donor];
+    const neighbors = covalentNeighbors[link.donor].map((index) => basePoints[index]);
+    const current = Math.atan2(basePoints[link.metal].y - donor.y, basePoints[link.metal].x - donor.x);
+    if (neighbors.length === 0) {
+      return current;
+    }
+    if (neighbors.length === 1) {
+      const toNeighbor = Math.atan2(neighbors[0].y - donor.y, neighbors[0].x - donor.x);
+      const options = [toNeighbor + nativeDonorLonePairAngleRad, toNeighbor - nativeDonorLonePairAngleRad];
+      return options.reduce((best, candidate) =>
+        Math.abs(wrapDegrees180((candidate - current) * 180 / Math.PI)) <
+        Math.abs(wrapDegrees180((best - current) * 180 / Math.PI)) ? candidate : best);
+    }
+    const sumX = neighbors.reduce((sum, point) => sum + (point.x - donor.x), 0);
+    const sumY = neighbors.reduce((sum, point) => sum + (point.y - donor.y), 0);
+    return Math.hypot(sumX, sumY) > 1e-6 ? Math.atan2(-sumY, -sumX) : current;
+  });
+
+  /**
+   * A metal holding exactly two donors is drawn straight through. Gold(I), silver(I), copper(I) and
+   * mercury(II) — the ions that turn up two-coordinate — are linear, and a two-coordinate centre
+   * reads as linear in a drawing anyway. Without this the donors are free to close up on each
+   * other: they ended 16 px apart on 22 px links in the reported polymer, a 43° bite angle.
+   */
+  const linearMetals = new Map<number, [number, number]>();
+  const donorsByMetal = new Map<number, number[]>();
+  dativeLinks.forEach((link) => {
+    donorsByMetal.set(link.metal, [...(donorsByMetal.get(link.metal) ?? []), link.donor]);
+  });
+  donorsByMetal.forEach((donors, metal) => {
+    if (donors.length === 2 && donors[0] !== donors[1]) {
+      linearMetals.set(metal, [donors[0], donors[1]]);
+    }
+  });
+
+  const bondedPairs = new Set(bonds.map((bond) => {
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    return from === undefined || to === undefined ? "" : `${Math.min(from, to)}:${Math.max(from, to)}`;
+  }));
+  // Collision candidates: atoms of different fragments that start within reach of each other.
+  // Anything further apart than this cannot be pushed together by the small moves below.
+  const collisionCandidates: Array<{ pair: [number, number]; gap: number }> = [];
+  for (let i = 0; i < atoms.length; i += 1) {
+    for (let j = i + 1; j < atoms.length; j += 1) {
+      if (componentOf[i] === componentOf[j] || bondedPairs.has(`${i}:${j}`)) {
+        continue;
+      }
+      const gap = distance(basePoints[i], basePoints[j]);
+      if (gap < 4 * L) {
+        collisionCandidates.push({ pair: [i, j], gap });
+      }
+    }
+  }
+  // Only the closest pairs are watched: two atoms four bond lengths apart cannot be pushed
+  // together by moves this small, and the list is what the fit's cost is made of.
+  const collisionPairs = collisionCandidates
+    .sort((left, right) => left.gap - right.gap)
+    .slice(0, 1200)
+    .map((candidate) => candidate.pair);
+
+  // Parameters: turn and slide per fragment (x, y, angle), a move per metal (x, y).
+  const parameters = new Array<number>(movableComponents.length * 3 + metalIndices.length * 2).fill(0);
+  const metalParameterOffset = movableComponents.length * 3;
+
+  const placedPoints = (values: readonly number[]): PagePoint[] => {
+    const points = basePoints.map((point) => ({ ...point }));
+    movableComponents.forEach((component, slot) => {
+      const tx = values[slot * 3];
+      const ty = values[slot * 3 + 1];
+      const angle = values[slot * 3 + 2] / turnRadii[slot];
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const centroid = centroids[slot];
+      for (const index of components[component]) {
+        const dx = basePoints[index].x - centroid.x;
+        const dy = basePoints[index].y - centroid.y;
+        points[index] = {
+          x: centroid.x + tx + dx * cos - dy * sin,
+          y: centroid.y + ty + dx * sin + dy * cos
+        };
+      }
+    });
+    metalIndices.forEach((metalIndex, slot) => {
+      points[metalIndex] = {
+        x: basePoints[metalIndex].x + values[metalParameterOffset + slot * 2],
+        y: basePoints[metalIndex].y + values[metalParameterOffset + slot * 2 + 1]
+      };
+    });
+    return points;
+  };
+
+  const clearance = 0.9 * L;
+  const energyOf = (values: readonly number[], anchorWeight: number): number => {
+    const points = placedPoints(values);
+    let total = 0;
+
+    // Lengths are stiff and angles are soft, the way a force field treats them: a link that cannot
+    // have both would rather bend than be squashed, and a squashed link is what reads as wrong.
+    dativeLinks.forEach((link, linkIndex) => {
+      const slot = poseOfComponent.get(componentOf[link.donor]);
+      const turn = slot === undefined ? 0 : values[slot * 3 + 2] / turnRadii[slot];
+      const donor = points[link.donor];
+      const metal = points[link.metal];
+      const span = distance(donor, metal);
+      total += 3 * ((span - L) / L) ** 2;
+      if (span > 1e-6) {
+        const actual = Math.atan2(metal.y - donor.y, metal.x - donor.x);
+        const ideal = linkDirections[linkIndex] + turn;
+        const deviation = wrapDegrees180((actual - ideal) * 180 / Math.PI) * Math.PI / 180;
+        total += 0.5 * deviation ** 2;
+      }
+    });
+
+    linearMetals.forEach(([first, second], metalIndex) => {
+      const metal = points[metalIndex];
+      const toFirst = Math.atan2(points[first].y - metal.y, points[first].x - metal.x);
+      const toSecond = Math.atan2(points[second].y - metal.y, points[second].x - metal.x);
+      const bite = Math.abs(wrapDegrees180((toFirst - toSecond) * 180 / Math.PI)) * Math.PI / 180;
+      total += 1 * (Math.PI - bite) ** 2;
+    });
+
+    if (anchorWeight > 0) {
+      movableComponents.forEach((_, slot) => {
+        const tx = values[slot * 3];
+        const ty = values[slot * 3 + 1];
+        const turn = values[slot * 3 + 2];
+        total += anchorWeight * (tx * tx + ty * ty + turn * turn) / (L * L);
+      });
+    }
+
+    for (const [first, second] of collisionPairs) {
+      const gap = distance(points[first], points[second]);
+      if (gap < clearance) {
+        total += 6 * ((clearance - gap) / L) ** 2;
+      }
+    }
+    return total;
+  };
+
+  // Gradient descent with a backtracking step: no step is taken unless it lowers the energy, which
+  // is what makes the pass repeatable — handed its own output it starts at the bottom and stays.
+  // The spring is released over the first third; the rest is a plain descent on the links alone,
+  // run until it stops making progress, so a second Clean Up finds nothing left to do.
+  //
+  // Each parameter's step is scaled by how big its own gradient has been running (the usual cure
+  // for a valley that is steep across and shallow along: undivided, the descent inches along the
+  // shallow direction and never arrives). Dividing by a positive number per parameter still points
+  // downhill, so the "never uphill" guarantee survives.
+  const budget = Math.min(4000, Math.max(600, Math.round(120000 / (parameters.length + 1))));
+  const annealUntil = Math.round(budget / 3);
+  const startingAnchorWeight = 1.5;
+  const gradientStep = 1e-3;
+  const scales = parameters.map(() => 1);
+  let step = 0.1 * L;
+  let settled = 0;
+  for (let iteration = 0; iteration < budget; iteration += 1) {
+    const anchorWeight = iteration >= annealUntil
+      ? 0
+      : startingAnchorWeight * (1 - iteration / annealUntil) ** 2;
+    const current = energyOf(parameters, anchorWeight);
+    const gradient = parameters.map((value, index) => {
+      const probe = [...parameters];
+      probe[index] = value + gradientStep;
+      return (energyOf(probe, anchorWeight) - current) / gradientStep;
+    });
+    gradient.forEach((value, index) => {
+      scales[index] = Math.max(0.9 * scales[index], Math.abs(value));
+    });
+    const direction = gradient.map((value, index) => value / Math.max(scales[index], 1e-9));
+    const magnitude = Math.hypot(...direction);
+    if (!(magnitude > 1e-12)) {
+      break;
+    }
+    let accepted = false;
+    for (let attempt = 0; attempt < 10 && !accepted; attempt += 1) {
+      const candidate = parameters.map((value, index) => value - step * direction[index] / magnitude);
+      const candidateEnergy = energyOf(candidate, anchorWeight);
+      if (candidateEnergy < current) {
+        candidate.forEach((value, index) => { parameters[index] = value; });
+        step *= 1.4;
+        accepted = true;
+        settled = current - candidateEnergy < 1e-9 ? settled + 1 : 0;
+      } else {
+        step *= 0.5;
+      }
+    }
+    if (!accepted) {
+      settled += 1;
+      step = Math.max(step, 1e-4 * L);
+    }
+    if (iteration > annealUntil && settled > 40) {
+      break;
+    }
+  }
+  const points = placedPoints(parameters);
+
+  // Fail safe: if the settled drawing collides with itself worse than the one handed in, keep the
+  // one handed in. Evening out the links is never worth atoms on top of each other.
+  const closestNonBonded = (candidate: readonly PagePoint[]): number => {
+    let closest = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < candidate.length; i += 1) {
+      for (let j = i + 1; j < candidate.length; j += 1) {
+        if (bondedPairs.has(`${i}:${j}`)) {
+          continue;
+        }
+        closest = Math.min(closest, distance(candidate[i], candidate[j]));
+      }
+    }
+    return closest;
+  };
+  const before = closestNonBonded(basePoints);
+  const after = closestNonBonded(points);
+  if (after < 0.5 * L && after < before) {
+    return [...atoms];
+  }
+
+  return atoms.map((atom, index) => ({
+    ...atom,
+    x: roundGeometryCoordinate(points[index].x),
+    y: roundGeometryCoordinate(points[index].y)
+  }));
+}
+
+/**
+ * Where a metal belongs once its donors surround a pocket: the point whose distance to each donor
+ * is as near one bond length as it can be.
+ *
+ * TWO donors are solved outright, and have to be. The descent below starts at the donors' midpoint,
+ * and for a pair that midpoint is a SADDLE — both pulls cancel along the line and symmetry cancels
+ * them across it — so the descent never left it, and every two-donor metal was drawn at the middle
+ * of its donors however close together they were. That is where the impossibly short links came
+ * from: two sulfurs 16 px apart at a 22 px bond length gave 8 px bonds. The metal belongs off the
+ * line instead, on the perpendicular through the midpoint, at the offset that puts it a full bond
+ * length from both — and only when the donors are further apart than two bond lengths is the
+ * midpoint really the best it can do. `nearPoint` picks which side of the line, keeping the metal
+ * on the side it is already on.
+ */
+function nativeDonorPocketPoint(
+  donors: readonly PagePoint[],
+  bondLengthPx: number,
+  nearPoint?: PagePoint
+): PagePoint {
+  if (donors.length === 2) {
+    const [first, second] = donors;
+    const span = distance(first, second);
+    const middle = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    if (span < 1e-6 || span >= 2 * bondLengthPx) {
+      return middle;
+    }
+    const offset = Math.sqrt(Math.max(0, bondLengthPx ** 2 - (span / 2) ** 2));
+    const normal = { x: -(second.y - first.y) / span, y: (second.x - first.x) / span };
+    const candidates = [
+      { x: middle.x + normal.x * offset, y: middle.y + normal.y * offset },
+      { x: middle.x - normal.x * offset, y: middle.y - normal.y * offset }
+    ];
+    return nearPoint && distance(candidates[1], nearPoint) < distance(candidates[0], nearPoint)
+      ? candidates[1]
+      : candidates[0];
+  }
+
   let point = averagePagePoint(donors);
   for (let iteration = 0; iteration < 80; iteration += 1) {
     let gradientX = 0;
@@ -14852,7 +15319,7 @@ function foldNativeLigandsAroundMetals(
     let total = 0;
     metals.forEach(([metalIndex, donorIndices]) => {
       const donors = donorIndices.map((index) => placed[index]);
-      const pocket = fixedMetals?.get(metalIndex) ?? nativeDonorPocketPoint(donors, L);
+      const pocket = fixedMetals?.get(metalIndex) ?? nativeDonorPocketPoint(donors, L, placed[metalIndex]);
       placed[metalIndex] = pocket;
       donors.forEach((donor) => {
         total += 3 * ((distance(pocket, donor) - L) / L) ** 2;

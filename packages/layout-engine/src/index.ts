@@ -5199,13 +5199,26 @@ function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefi
  * a lone pair to give (pyridine or amine N, ether or aqua O) keeps its hydrogens; a pyrrole-type
  * N–H (two single bonds, each neighbour carrying a multiple bond: imidazole, pyrazole, pyrrole,
  * indole) has no free pair and coordinates only deprotonated, so the label reads N, not NH.
+ *
+ * A thiol or selenol is the other deprotonating case, and a much plainer one: R-SH binding a metal
+ * is a thiolate, R-S-M. Gold(I), silver, copper, mercury, iron-sulfur clusters — the S-H proton is
+ * gone in every one, so a coordinated terminal S reads S, not SH. Oxygen is deliberately NOT in
+ * this rule: water and alcohols coordinate neutral all the time ([M(H2O)6] and friends), so an
+ * O-H donor keeps its proton.
  */
 export function dativeDeprotonationCount(
   atom: MoleculeAtom,
   bonds: readonly CoreMoleculeBond[],
   atoms: readonly MoleculeAtom[]
 ): number {
-  if (nativeElementFromAtomLabel(atom.element) !== "N" || atom.formalCharge !== 0 || atom.labelLiteral === true) {
+  const donorElement = nativeElementFromAtomLabel(atom.element);
+  if (atom.formalCharge !== 0 || atom.labelLiteral === true) {
+    return 0;
+  }
+  if (donorElement === "S" || donorElement === "Se") {
+    return terminalChalcogenolDeprotonation(atom, bonds, atoms);
+  }
+  if (donorElement !== "N") {
     return 0;
   }
   const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
@@ -5240,6 +5253,41 @@ export function dativeDeprotonationCount(
     (bond.order === "double" || bond.order === "aromatic")
   ));
   return conjugated ? 1 : 0;
+}
+
+/**
+ * A terminal thiol/selenol (exactly one covalent single bond, so one hydrogen) that donates to a
+ * metal: coordinated as the anion, so the drawn H goes. A sulfur with two covalent bonds is a
+ * thioether — it has a free pair, no proton to lose, and this returns 0 for it anyway.
+ */
+function terminalChalcogenolDeprotonation(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): number {
+  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  let covalentBonds = 0;
+  let covalentAllSingle = true;
+  let donatesToMetal = false;
+  bonds.forEach((bond) => {
+    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
+      return;
+    }
+    if (bond.display?.bondStyle === "dashed") {
+      const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
+      const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
+      // A metal is an element outside the covalent valence table (d-block, alkali, alkaline earth).
+      if (neighborElement && neighborElement !== "H" && nativeAtomValenceElectrons[neighborElement] === undefined) {
+        donatesToMetal = true;
+      }
+      return;
+    }
+    covalentBonds += 1;
+    if (bond.order !== "single") {
+      covalentAllSingle = false;
+    }
+  });
+  return donatesToMetal && covalentBonds === 1 && covalentAllSingle ? 1 : 0;
 }
 
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {

@@ -1756,6 +1756,45 @@ describe("layout-engine page SVG planner", () => {
     expect(label(amine, "n1")).toBe("NH2");
   });
 
+  it("takes the proton off a thiol that binds a metal, and leaves a thioether and an alcohol alone", () => {
+    // R–SH binding gold is a thiolate: the drawn label is S, not SH. A thioether has no proton to
+    // lose, and an alcohol keeps its own — water and alcohols coordinate metals neutral all the
+    // time, so O is deliberately outside this rule.
+    const donor = (element: string, covalentNeighbors: number, dativeTo: "Au" | "C") => {
+      const atoms = [
+        { id: "d", element, x: 130, y: 100, formalCharge: 0 },
+        { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "m", element: dativeTo, x: 160, y: 120, formalCharge: 0 },
+        ...(covalentNeighbors > 1 ? [{ id: "c2", element: "C", x: 130, y: 70, formalCharge: 0 }] : [])
+      ];
+      const bonds = [
+        { id: "b1", fromAtomId: "c1", toAtomId: "d", order: "single" as const },
+        { id: "b2", fromAtomId: "d", toAtomId: "m", order: "single" as const, display: { bondStyle: "dashed" as const } },
+        ...(covalentNeighbors > 1
+          ? [{ id: "b3", fromAtomId: "d", toAtomId: "c2", order: "single" as const }]
+          : [])
+      ];
+      return moleculeObject({ atoms, bonds, style: { atomLabelHideImplicitHydrogens: false } });
+    };
+    const label = (molecule: ReturnType<typeof moleculeObject>) =>
+      atomDisplayLabel(
+        molecule.atoms.find((atom) => atom.id === "d")!,
+        molecule.bonds,
+        nativeDrawingStyleFromObjectStyle(molecule.style),
+        molecule.atoms
+      );
+
+    expect(label(donor("S", 1, "Au"))).toBe("S");
+    // A selenol behaves the same way.
+    expect(label(donor("Se", 1, "Au"))).toBe("Se");
+    // A thioether has both bonds spoken for already: nothing to take off, and it still reads S.
+    expect(label(donor("S", 2, "Au"))).toBe("S");
+    // A dashed bond to a carbon is a partial bond, not coordination: the S–H stays.
+    expect(label(donor("S", 1, "C"))).toBe("SH");
+    // An alcohol coordinates neutral: the O–H stays.
+    expect(label(donor("O", 1, "Au"))).toBe("OH");
+  });
+
   it("draws the carbon at the end of a dashed (dative) bond as a plain stick, not a labeled CH4", () => {
     // A dashed bond contributes no covalent valence, so a carbon whose only bond is dashed has
     // valenceUsed 0 exactly like a naked atom. Only a carbon with NO bond is naked; the dashed
