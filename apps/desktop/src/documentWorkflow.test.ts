@@ -9634,6 +9634,74 @@ describe("Phase 4 document workflow", () => {
     expect(pasted.pages[0].objects.filter((object) => object.type === "graphic")).toHaveLength(2);
   });
 
+  it("copies a lassoed fragment as just that fragment, not the whole molecule", () => {
+    // A lasso/marquee fragment selection deliberately leaves `selection.objectIds` empty (it
+    // names atoms and bonds, not objects), so Copy used to see an empty selection: nothing went
+    // on the clipboard and the previous whole-molecule copy pasted again.
+    const withRing = insertNativeTemplateMolecule(
+      createPhase4Document("Fragment Clipboard"),
+      { x: 300, y: 300 },
+      "cyclohexane"
+    );
+    const ring = selectedMolecule(withRing);
+    const pageId = withRing.pages[0].id;
+    const document = selectDocumentObjects(withRing, pageId, []);
+    const halfAtomIds = ring.atoms.slice(0, 3).map((atom) => atom.id);
+
+    expect(createSelectionClipboardPayload(document)).toBeUndefined();
+
+    const payload = createSelectionClipboardPayload(document, [
+      { objectId: ring.id, atomIds: halfAtomIds, bondIds: [] }
+    ]);
+    if (!payload) {
+      throw new Error("Expected a fragment clipboard payload.");
+    }
+
+    const copiedMolecule = payload.objects[0];
+    if (copiedMolecule?.type !== "molecule") {
+      throw new Error("Expected the fragment payload to carry a molecule.");
+    }
+    expect(copiedMolecule.atoms.map((atom) => atom.id)).toEqual(halfAtomIds);
+    // Two bonds, not three: the bond back to the fourth ring atom has only one end in the
+    // fragment. Bonds ride along whenever BOTH ends were selected, so a lassoed ring stays a ring.
+    expect(copiedMolecule.bonds).toHaveLength(2);
+    expect(copiedMolecule.bonds.every((bond) =>
+      halfAtomIds.includes(bond.fromAtomId) && halfAtomIds.includes(bond.toAtomId)
+    )).toBe(true);
+
+    const pasted = pasteSelectionClipboardPayload(document, payload, { x: 480, y: 460 });
+    const molecules = pasted.pages[0].objects.filter((object): object is MoleculeObject =>
+      object.type === "molecule"
+    );
+    expect(molecules).toHaveLength(2);
+    const pastedMolecule = molecules.find((molecule) => molecule.id !== ring.id);
+    expect(pastedMolecule?.atoms).toHaveLength(3);
+    expect(pastedMolecule?.bonds).toHaveLength(2);
+  });
+
+  it("carries a selected bond's own atoms into a fragment copy", () => {
+    const withRing = insertNativeTemplateMolecule(
+      createPhase4Document("Fragment Bond Clipboard"),
+      { x: 300, y: 300 },
+      "cyclohexane"
+    );
+    const ring = selectedMolecule(withRing);
+    const document = selectDocumentObjects(withRing, withRing.pages[0].id, []);
+    const bond = ring.bonds[0]!;
+
+    const payload = createSelectionClipboardPayload(document, [
+      { objectId: ring.id, atomIds: [], bondIds: [bond.id] }
+    ]);
+    const copiedMolecule = payload?.objects[0];
+    if (copiedMolecule?.type !== "molecule") {
+      throw new Error("Expected the fragment payload to carry a molecule.");
+    }
+    expect(copiedMolecule.atoms.map((atom) => atom.id).sort()).toEqual(
+      [bond.fromAtomId, bond.toAtomId].sort()
+    );
+    expect(copiedMolecule.bonds).toHaveLength(1);
+  });
+
   it("sizes pasted text boxes to the text block instead of a fixed placeholder frame", () => {
     const document = createPhase4Document("Auto-fit Text Paste");
     const shortResult = applyClipboardPastePayload(document, {

@@ -470,6 +470,45 @@ describe("V3000 line continuations", () => {
   });
 });
 
+describe("markup flavors are never pasted as text", () => {
+  it("ignores an HTML-only clipboard instead of pasting its source", () => {
+    // WebKit publishes `public.html` for anything copied inside a web view. Reading that flavor as
+    // text pasted the page's own markup into the drawing — the "<!DOCTYPE html>" text box.
+    const detected = inspectClipboardPayload({
+      types: ["public.html"],
+      textItems: [{
+        type: "public.html",
+        text: "<!DOCTYPE html>\n<html><body><p>SH</p></body></html>"
+      }]
+    });
+
+    expect(detected.kind).toBe("empty");
+  });
+
+  it("still reads the plain-text flavor an HTML copy travels with", () => {
+    const detected = inspectClipboardPayload({
+      types: ["public.html", "public.utf8-plain-text"],
+      textItems: [
+        { type: "public.html", text: "<!DOCTYPE html>\n<html><body><p>catalyst A</p></body></html>" },
+        { type: "public.utf8-plain-text", text: "catalyst A" }
+      ]
+    });
+
+    expect(detected).toMatchObject({ kind: "plain-text", text: "catalyst A" });
+  });
+
+  it("still reads a molfile that arrives in a rich-text flavor", () => {
+    // The markup rule is a LAST-RESORT rule: structure detection runs over every flavor first, so
+    // a molfile keeps pasting as a structure whatever flavor carried it.
+    const detected = inspectClipboardPayload({
+      types: ["public.rtf"],
+      textItems: [{ type: "public.rtf", text: cyclopropaneV2000 }]
+    });
+
+    expect(detected.kind).toBe("molfile");
+  });
+});
+
 describe("molfile detection is structural, not keyword-matching", () => {
   it("does not classify ordinary prose that happens to contain V3000 or V2000", () => {
     // A bare version keyword is not evidence of a molfile. Classifying prose as one sent it to a

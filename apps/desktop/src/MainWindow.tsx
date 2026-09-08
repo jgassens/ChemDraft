@@ -12,6 +12,7 @@ import {
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
+  type RefObject,
   type KeyboardEvent as ReactKeyboardEvent
 } from "react";
 import {
@@ -342,6 +343,7 @@ import {
   applyNativeMoleculeDeleteTarget,
   nativeAtomHasExplicitLabel,
   applyNativeMoleculePartDeleteTarget,
+  applyNativeMoleculePartsDelete,
   applyEditorSaveResultToSelectedMolecule,
   applyAnalysisToSelectedMolecule,
   nativeMoleculeUnspellableLabels,
@@ -547,6 +549,7 @@ import {
   type NativeBondDisplayStyle,
   type NativeMoleculeTemplateId,
   type NativeMoleculeDeleteHit,
+  type NativeMoleculeFragmentSelection,
   type NativeDoubleBondSide,
   type NativeMoleculeDeleteTarget,
   type NativeWarningSuppressionScope,
@@ -1357,7 +1360,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.24-claude";
+const CURRENT_BUILD_STAMP = "9.5.15.25-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1903,6 +1906,8 @@ export function MainWindow({
     latestPoint: ClientPoint;
   } | undefined>();
   const [objectContextMenu, setObjectContextMenu] = useState<ObjectContextMenuState | undefined>();
+  /** Page (empty-canvas) right-click menu position; undefined when the menu is closed. */
+  const [pageContextMenu, setPageContextMenu] = useState<ClientPoint | undefined>();
   const [freeformNativeBond, setFreeformNativeBond] = useState<FreeformNativeBondPreview | undefined>();
   const [nativeDoubleBondSidePreview, setNativeDoubleBondSidePreview] = useState<NativeDoubleBondSidePreview | undefined>();
   const [graphicCornerRadiusReadout, setGraphicCornerRadiusReadout] = useState<GraphicCornerRadiusReadoutState | undefined>();
@@ -2325,8 +2330,12 @@ export function MainWindow({
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
   const quickActions = useMemo(
-    () => createQuickActions(document, selectedMolecule, { canUndo, canRedo }),
-    [canRedo, canUndo, document, selectedMolecule]
+    () => createQuickActions(document, selectedMolecule, {
+      canUndo,
+      canRedo,
+      hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
+    }),
+    [canRedo, canUndo, document, selectedMolecule, selectedNativeMoleculeParts]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
   const pageCssVars = useMemo(
@@ -5569,7 +5578,15 @@ export function MainWindow({
   }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const deleteSelectionAfterClipboardCut = useCallback(() => {
-    const nextDocument = deleteSelectedDocumentObjects(documentRef.current);
+    const currentDocument = documentRef.current;
+    let nextDocument = deleteSelectedDocumentObjects(currentDocument);
+    if (nextDocument === currentDocument) {
+      // Nothing was selected as a whole object, so this was a cut of a lassoed fragment: remove
+      // exactly the atoms and bonds that were copied.
+      for (const fragment of nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)) {
+        nextDocument = applyNativeMoleculePartsDelete(nextDocument, fragment);
+      }
+    }
     if (nextDocument !== documentRef.current) {
       commitDocumentChange(nextDocument);
       setActiveEditorObjectId(undefined);
@@ -5583,7 +5600,10 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const copySelectionToClipboard = useCallback(async (mode: "copy" | "cut") => {
-    const payload = createSelectionClipboardPayload(documentRef.current);
+    const payload = createSelectionClipboardPayload(
+      documentRef.current,
+      nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
+    );
     if (!payload) {
       setStatus(mode === "copy" ? "Select objects before copying" : "Select objects before cutting");
       return;
@@ -8603,8 +8623,16 @@ export function MainWindow({
         return false;
       }
 
-      const payload = createSelectionClipboardPayload(documentRef.current);
+      const payload = createSelectionClipboardPayload(
+        documentRef.current,
+        nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
+      );
       if (!payload) {
+        // Nothing of ours to copy. Stop the event anyway: letting it reach the WebView's own copy
+        // puts the app's page markup on the pasteboard, and the next paste read that back as text
+        // — the "<!DOCTYPE html>" text box.
+        event.preventDefault();
+        setStatus(mode === "copy" ? "Select objects before copying" : "Select objects before cutting");
         return false;
       }
 
@@ -11695,6 +11723,7 @@ export function MainWindow({
     }
 
     setObjectContextMenu(undefined);
+    setPageContextMenu(undefined);
     const point = pagePointFromPointerEvent(event);
     if (!point) {
       return;
@@ -11948,10 +11977,14 @@ export function MainWindow({
     startNativePlacementDrag
   ]);
 
+  // Right-clicking bare page is still a right-click: it opens the page menu, whose whole point is
+  // Paste. Without it the only way to paste with the mouse was the Edit menu, because the object
+  // menu (the one with Paste in it) needs an object under the pointer.
   const handlePageContextMenu = useCallback((event: ObjectMouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
+    setPageContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
 
   const handlePagePointerMove = useCallback((event: ObjectPointerEvent) => {
@@ -13001,6 +13034,8 @@ export function MainWindow({
     if (event.button !== 0) {
       return;
     }
+
+    setPageContextMenu(undefined);
 
     const point = pagePointFromPointerEvent(event);
     // Slice 1b: resolve the press by geometry, not by whichever overlapping wrapper the
@@ -14826,9 +14861,19 @@ export function MainWindow({
       return;
     }
 
+    // A right-click INSIDE a lassoed fragment keeps that fragment as the whole selection. The
+    // resolution above returns the very part object that was already selected when the hit lands
+    // inside it, and a lasso fragment holds no object ids at all — so promoting the molecule into
+    // the document selection here is what made right-click ▸ Copy copy the entire structure
+    // instead of the highlighted piece.
+    const preserveFragmentSelection =
+      currentDocument.selection.objectIds.length === 0 &&
+      nextSelectedNativePart !== undefined &&
+      selectedNativeMoleculeParts.includes(nextSelectedNativePart);
+
     event.preventDefault();
     event.stopPropagation();
-    if (!preserveMultiSelection) {
+    if (!preserveMultiSelection && !preserveFragmentSelection) {
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
     }
     setActiveEditorObjectId(undefined);
@@ -14838,8 +14883,11 @@ export function MainWindow({
     // The resolved part drives the MENU (targetKind, bondDepthContext) either way, but only a
     // single-object right-click promotes it to the persistent part selection — under a
     // preserved multi-selection the document selection stays authoritative, so Delete and other
-    // selection-wide commands keep acting on everything selected, not the hit bond.
-    setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
+    // selection-wide commands keep acting on everything selected, not the hit bond. A preserved
+    // fragment is left exactly as it was, across every molecule it covers.
+    if (!preserveFragmentSelection) {
+      setSelectedNativeMoleculePart(preserveMultiSelection ? undefined : nextSelectedNativePart);
+    }
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     const atomWarning = (() => {
@@ -14876,6 +14924,7 @@ export function MainWindow({
       }
       return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount };
     })();
+    setPageContextMenu(undefined);
     setObjectContextMenu({
       objectId,
       targetKind,
@@ -16448,6 +16497,15 @@ export function MainWindow({
               setStatus(changed ? bondDepthStatusForCommand(commandId) : "Bond depth unchanged");
               return;
             }
+            invoke(commandId);
+          }}
+        />
+      ) : null}
+      {pageContextMenu ? (
+        <PageContextMenu
+          position={pageContextMenu}
+          onInvoke={(commandId) => {
+            setPageContextMenu(undefined);
             invoke(commandId);
           }}
         />
@@ -19915,24 +19973,8 @@ export function ObjectLayerContextMenu({
   const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
   const hasMultipleBondTargets = (bondDepthContext?.targetBondRefs.length ?? 0) > 1;
 
-  // The menu opens at the pointer, but never off-screen: after mount (and whenever it reopens
-  // elsewhere) the panel is measured and pulled back inside the viewport — a right-click near the
-  // bottom edge opens the menu ABOVE the cursor instead of clipping.
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const [clampedPosition, setClampedPosition] = useState(position);
-  useLayoutEffect(() => {
-    const menuElement = menuRef.current;
-    if (!menuElement) {
-      setClampedPosition(position);
-      return;
-    }
-    const margin = 8;
-    const rect = menuElement.getBoundingClientRect();
-    setClampedPosition({
-      x: Math.max(margin, Math.min(position.x, window.innerWidth - rect.width - margin)),
-      y: Math.max(margin, Math.min(position.y, window.innerHeight - rect.height - margin))
-    });
-  }, [position]);
+  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
 
   // Copy As is a fly-out: open on hover or click, measured so it flips left of the parent when
   // the right edge would clip it and slides up when the bottom would.
@@ -20103,6 +20145,77 @@ export function ObjectLayerContextMenu({
           className="object-context-menu-item"
           data-command-id={item.commandId}
           key={item.commandId}
+          onClick={() => onInvoke(item.commandId)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A context menu opens at the pointer, but never off-screen: after mount (and whenever it reopens
+ * elsewhere) the panel is measured and pulled back inside the viewport — a right-click near the
+ * bottom edge opens the menu ABOVE the cursor instead of clipping.
+ */
+function useClampedContextMenuPosition(
+  position: ClientPoint,
+  menuRef: RefObject<HTMLDivElement | null>
+): ClientPoint {
+  const [clampedPosition, setClampedPosition] = useState(position);
+  useLayoutEffect(() => {
+    const menuElement = menuRef.current;
+    if (!menuElement) {
+      setClampedPosition(position);
+      return;
+    }
+    const margin = 8;
+    const rect = menuElement.getBoundingClientRect();
+    setClampedPosition({
+      x: Math.max(margin, Math.min(position.x, window.innerWidth - rect.width - margin)),
+      y: Math.max(margin, Math.min(position.y, window.innerHeight - rect.height - margin))
+    });
+  }, [menuRef, position]);
+  return clampedPosition;
+}
+
+const pageContextMenuItems = [
+  { commandId: "clipboard.paste", label: "Paste" },
+  { commandId: "edit.selectAll", label: "Select All" }
+] as const;
+
+/** Right-click menu for bare page: what you can still do when nothing is under the pointer. */
+function PageContextMenu({
+  position,
+  onInvoke
+}: {
+  position: ClientPoint;
+  onInvoke(commandId: string): void;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
+
+  return (
+    <div
+      className="object-context-menu"
+      role="menu"
+      ref={menuRef}
+      aria-label="Page options"
+      data-context-target-kind="page"
+      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      {pageContextMenuItems.map((item) => (
+        <button
+          type="button"
+          role="menuitem"
+          className="object-context-menu-item"
+          key={item.commandId}
+          data-command-id={item.commandId}
           onClick={() => onInvoke(item.commandId)}
         >
           {item.label}
@@ -21124,6 +21237,58 @@ export function nativeWarningSuppressionScopeForSelection(
     }
   }
   return scope;
+}
+
+/**
+ * Collapse the selected molecule parts into one fragment per molecule — the shape the clipboard
+ * and the fragment delete both take. A ring contributes its atoms and bonds; a lone selected atom
+ * or bond is a one-element fragment. Selecting parts of two molecules yields two fragments.
+ */
+export function nativeMoleculeFragmentSelections(
+  parts: readonly NativeMoleculeSelectionPart[]
+): NativeMoleculeFragmentSelection[] {
+  const byObjectId = new Map<string, { objectId: string; atomIds: string[]; bondIds: string[] }>();
+  const fragmentFor = (objectId: string) => {
+    const existing = byObjectId.get(objectId);
+    if (existing) {
+      return existing;
+    }
+    const created = { objectId, atomIds: [], bondIds: [] };
+    byObjectId.set(objectId, created);
+    return created;
+  };
+
+  for (const part of parts) {
+    const fragment = fragmentFor(part.objectId);
+    switch (part.kind) {
+      case "atom":
+        fragment.atomIds.push(part.atomId);
+        break;
+      case "bond":
+        fragment.bondIds.push(part.bondId);
+        break;
+      case "ring":
+        fragment.atomIds.push(...part.atomIds);
+        fragment.bondIds.push(...part.bondIds);
+        break;
+      case "rings":
+        for (const ring of part.rings) {
+          fragment.atomIds.push(...ring.atomIds);
+          fragment.bondIds.push(...ring.bondIds);
+        }
+        break;
+      case "parts":
+        fragment.atomIds.push(...part.atomIds);
+        fragment.bondIds.push(...part.bondIds);
+        break;
+    }
+  }
+
+  return [...byObjectId.values()].map((fragment) => ({
+    objectId: fragment.objectId,
+    atomIds: [...new Set(fragment.atomIds)],
+    bondIds: [...new Set(fragment.bondIds)]
+  }));
 }
 
 function nativeSelectionBondIds(part: NativeMoleculeSelectionPart | undefined): string[] {

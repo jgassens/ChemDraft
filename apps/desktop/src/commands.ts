@@ -41,6 +41,12 @@ import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 export interface CommandAvailability {
   canUndo?: boolean;
   canRedo?: boolean;
+  /**
+   * A lasso/marquee fragment is selected. Such a selection lives outside
+   * `document.selection.objectIds` (it names atoms and bonds, not objects), so Cut/Copy have to
+   * be told about it or the Edit menu greys out the very commands that now work on it.
+   */
+  hasMoleculeFragmentSelection?: boolean;
 }
 
 export interface ShellCommandOptions {
@@ -61,6 +67,8 @@ export function createQuickActions(
   selectedMolecule: MoleculeObject | undefined,
   availability: CommandAvailability = {}
 ): CommandSpec[] {
+  const hasClipboardSelection =
+    document.selection.objectIds.length > 0 || availability.hasMoleculeFragmentSelection === true;
   return [
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
@@ -69,8 +77,8 @@ export function createQuickActions(
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },
-    { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: document.selection.objectIds.length > 0 },
-    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: document.selection.objectIds.length > 0 },
+    { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: hasClipboardSelection },
+    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: hasClipboardSelection },
     { id: "clipboard.paste", title: "Paste", icon: "paste", shortcut: "Cmd+V", source: "core" },
     { id: "view.zoomOut", title: "Zoom Out", icon: "zoomOut", shortcut: "Cmd+-", source: "core" },
     { id: "view.zoomIn", title: "Zoom In", icon: "zoomIn", shortcut: "Cmd++", source: "core" },

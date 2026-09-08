@@ -13171,8 +13171,20 @@ export function duplicateSelectedDocumentObjects(
   return moveDocumentObjects(next, selectionIds, offset.x, offset.y);
 }
 
+/**
+ * The atoms and bonds a lasso or marquee left selected inside ONE molecule. A fragment
+ * selection is stored separately from `document.selection.objectIds` (which stays empty for it,
+ * by design in selectionPolicy), so every clipboard caller has to hand it over explicitly.
+ */
+export interface NativeMoleculeFragmentSelection {
+  objectId: string;
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+}
+
 export function createSelectionClipboardPayload(
-  document: ChemDraftDocument
+  document: ChemDraftDocument,
+  moleculeFragments: readonly NativeMoleculeFragmentSelection[] = []
 ): ChemDraftSelectionClipboardPayload | undefined {
   const page = firstPage(document);
   const selectedObjectIds = selectedTransformObjectIds(document);
@@ -13183,7 +13195,9 @@ export function createSelectionClipboardPayload(
   );
   const bounds = selectionBounds(page.objects, selectedObjectIds);
   if (objects.length === 0 || !bounds) {
-    return undefined;
+    // No whole object is selected — but a lassoed fragment is still a selection, and copying it
+    // must copy exactly that fragment rather than reporting nothing to copy.
+    return createNativeMoleculeFragmentClipboardPayload(document, moleculeFragments);
   }
 
   return {
@@ -13198,6 +13212,63 @@ export function createSelectionClipboardPayload(
     selectionIds: document.selection.objectIds.filter((objectId) =>
       selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
     ),
+    bounds
+  };
+}
+
+/**
+ * Build the clipboard payload for a lasso/marquee fragment: the selected atoms plus every bond
+ * with both ends among them, rebuilt as a standalone molecule (same shape a paste expects).
+ * Bonds ride along whether or not the region happened to cover them — a lasso around a ring
+ * copies the ring, not six loose atoms.
+ */
+function createNativeMoleculeFragmentClipboardPayload(
+  document: ChemDraftDocument,
+  fragments: readonly NativeMoleculeFragmentSelection[]
+): ChemDraftSelectionClipboardPayload | undefined {
+  if (fragments.length === 0) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const objects: MoleculeObject[] = [];
+  for (const fragment of fragments) {
+    const molecule = page.objects.find((object): object is MoleculeObject =>
+      object.id === fragment.objectId && object.type === "molecule"
+    );
+    if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+      continue;
+    }
+
+    const keptAtomIds = new Set(fragment.atomIds);
+    const selectedBondIds = new Set(fragment.bondIds);
+    for (const bond of molecule.bonds) {
+      if (selectedBondIds.has(bond.id)) {
+        keptAtomIds.add(bond.fromAtomId);
+        keptAtomIds.add(bond.toAtomId);
+      }
+    }
+
+    const atoms = molecule.atoms.filter((atom) => keptAtomIds.has(atom.id));
+    if (atoms.length === 0) {
+      continue;
+    }
+    const bonds = molecule.bonds.filter((bond) =>
+      keptAtomIds.has(bond.fromAtomId) && keptAtomIds.has(bond.toAtomId)
+    );
+    objects.push(moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds)));
+  }
+
+  const bounds = selectionBounds(objects, objects.map((object) => object.id));
+  if (objects.length === 0 || !bounds) {
+    return undefined;
+  }
+
+  return {
+    kind: "chemdraft-selection",
+    version: 1,
+    objects: structuredClone(objects) as DocumentObject[],
+    selectionIds: objects.map((object) => object.id),
     bounds
   };
 }

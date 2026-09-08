@@ -206,7 +206,9 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
-  const firstPlainText = textItems.find((item) => isTextLikeType(item.type)) ?? textItems[0];
+  const firstPlainText =
+    textItems.find((item) => isTextLikeType(item.type)) ??
+    textItems.find((item) => !isMarkupType(item.type));
   if (firstPlainText) {
     return {
       kind: "plain-text",
@@ -316,6 +318,22 @@ export function isTextLikeType(type: string): boolean {
   return textLikeTypePatterns.some((pattern) => normalized === pattern.toLowerCase()) ||
     normalized.includes("plain-text") ||
     normalized === "text";
+}
+
+/**
+ * Rich-text flavors whose payload is MARKUP, not the text a person copied: `public.html`,
+ * `public.rtf`, WebKit's web archive. Every app that publishes one also publishes a plain-text
+ * flavor, so the markup is never the best reading of a clipboard — and taking it as text pastes
+ * the source, which is how a copy inside the app's own WebView once pasted "<!DOCTYPE html>"
+ * into the drawing as a text box.
+ */
+export function isMarkupType(type: string): boolean {
+  const normalized = type.trim().toLowerCase();
+  return (
+    normalized.includes("html") ||
+    normalized.includes("rtf") ||
+    normalized.includes("webarchive")
+  );
 }
 
 export function isVectorArtworkType(type: string): boolean {
