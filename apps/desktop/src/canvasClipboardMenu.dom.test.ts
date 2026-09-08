@@ -7,6 +7,7 @@ import { MainWindow } from "./MainWindow";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
   createPhase4Document,
+  insertNativeArtGraphicObject,
   insertNativeTemplateMolecule
 } from "./documentWorkflow";
 import type { MoleculeObject } from "@chemdraft/chem-core";
@@ -72,6 +73,10 @@ describe("canvas clipboard menu and copy guard", () => {
       }));
     });
     pageElement().getBoundingClientRect = () => pageRect;
+    const canvasRegion = container.querySelector<HTMLElement>(".canvas-region");
+    if (canvasRegion) {
+      canvasRegion.getBoundingClientRect = () => pageRect;
+    }
     await act(async () => {
       await Promise.resolve();
     });
@@ -95,6 +100,26 @@ describe("canvas clipboard menu and copy guard", () => {
         clientY: point.y
       }));
     });
+  }
+
+  /** Read a rendered object's page-space geometry out of its inline style. */
+  function stylePx(
+    element: HTMLElement,
+    property: "left" | "top" | "width" | "height",
+    pageSize: { width: number; height: number }
+  ): number {
+    const style = element.getAttribute("style") ?? "";
+    const calcMatch = style.match(new RegExp(`${property}:\\s*calc\\(([-\\d.]+)px \\* var\\(--page-scale\\)\\)`));
+    if (calcMatch) {
+      return Number(calcMatch[1]);
+    }
+    const percentMatch = style.match(new RegExp(`${property}:\\s*([-\\d.]+)%`));
+    if (percentMatch) {
+      // Percentages are a share of the PAGE (in page units), not of the rendered rectangle.
+      const basis = property === "left" || property === "width" ? pageSize.width : pageSize.height;
+      return (Number(percentMatch[1]) / 100) * basis;
+    }
+    throw new Error(`Expected a ${property} in ${style}`);
   }
 
   function menuCommandIds(menu: Element | null): string[] {
@@ -250,6 +275,58 @@ describe("canvas clipboard menu and copy guard", () => {
     expect(fragmentAtomCount(
       (await dispatchCopy()).get(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)
     )).toBe(marqueeAtomCount);
+  });
+
+  it("pastes where the pointer is, not in the middle of the view", async () => {
+    const withRect = insertNativeArtGraphicObject(
+      createPhase4Document("Pointer Paste"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    await renderMainWindow(withRect);
+
+    const copied = await dispatchCopy();
+    const payloadText = copied.get(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE);
+    if (!payloadText) {
+      throw new Error("Expected the copied selection on the clipboard.");
+    }
+
+    const pointer = { x: 470, y: 330 };
+    await act(async () => {
+      const move = new MouseEvent("pointermove", {
+        bubbles: true,
+        cancelable: true,
+        clientX: pointer.x,
+        clientY: pointer.y
+      });
+      window.dispatchEvent(move);
+    });
+
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: {
+        types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE],
+        getData: (type: string) => (type === CHEMDRAFT_SELECTION_CLIPBOARD_TYPE ? payloadText : "")
+      }
+    });
+    await act(async () => {
+      window.dispatchEvent(pasteEvent);
+    });
+
+    const graphics = [...container.querySelectorAll<HTMLElement>(".graphic-object")];
+    expect(graphics).toHaveLength(2);
+    const pasted = graphics.find((element) => element.dataset.objectId !== withRect.selection.objectIds[0]);
+    if (!pasted) {
+      throw new Error("Expected a second art object after the paste.");
+    }
+    // The page is rendered at 1:1 from (0, 0) here, so a client point IS a page point.
+    const pageSize = withRect.pages[0];
+    const centre = {
+      x: stylePx(pasted, "left", pageSize) + stylePx(pasted, "width", pageSize) / 2,
+      y: stylePx(pasted, "top", pageSize) + stylePx(pasted, "height", pageSize) / 2
+    };
+    expect(centre.x).toBeCloseTo(pointer.x, 0);
+    expect(centre.y).toBeCloseTo(pointer.y, 0);
   });
 
   it("swallows a copy with nothing selected instead of letting the web view copy its own markup", async () => {

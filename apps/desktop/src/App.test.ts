@@ -1810,6 +1810,60 @@ describe("ChemDraft desktop shell", () => {
     });
   });
 
+  it("centres a paste on the pointer, and steps it only when the pointer has not moved", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Pointer Paste"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const page = document.pages[0];
+    const pointer = { x: 420, y: 360 };
+    const firstPaste = nextSelectionClipboardPastePlacement(
+      payload,
+      initialSelectionClipboardPasteState(payload, "copy"),
+      page,
+      pointer
+    );
+    expect(firstPaste.point).toMatchObject(pointer);
+
+    // Pasting again without moving the mouse must not bury the second copy exactly on the first.
+    const secondPaste = nextSelectionClipboardPastePlacement(payload, firstPaste.state, page, pointer);
+    expect(secondPaste.point).not.toMatchObject(pointer);
+
+    // Move the pointer and the paste follows it again, with no leftover offset.
+    const movedPointer = { x: 200, y: 240 };
+    const thirdPaste = nextSelectionClipboardPastePlacement(payload, secondPaste.state, page, movedPointer);
+    expect(thirdPaste.point).toMatchObject(movedPointer);
+  });
+
+  it("keeps a paste aimed at the page edge on the page", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Edge Pointer Paste"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const page = document.pages[0];
+    const paste = nextSelectionClipboardPastePlacement(
+      payload,
+      initialSelectionClipboardPasteState(payload, "copy"),
+      page,
+      { x: page.width - 1, y: page.height - 1 }
+    );
+
+    expect(paste.point.x + payload.bounds.width / 2).toBeLessThanOrEqual(page.width);
+    expect(paste.point.y + payload.bounds.height / 2).toBeLessThanOrEqual(page.height);
+  });
+
   it("keeps the first cut paste at the source point, then offsets repeated pastes", () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Cut Selection Clipboard"),

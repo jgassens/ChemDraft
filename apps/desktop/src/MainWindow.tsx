@@ -1221,6 +1221,8 @@ export interface SelectionClipboardPasteState {
   key: string;
   pasteCount: number;
   sourceAction: SelectionClipboardSourceAction;
+  /** Page point the last paste was aimed at, when it was aimed at the pointer. */
+  anchor?: ClientPoint;
 }
 // Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
 // they are parsed + validated on Apply.
@@ -1360,7 +1362,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.25-claude";
+const CURRENT_BUILD_STAMP = "9.5.15.26-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -5225,7 +5227,31 @@ export function MainWindow({
     setStatus("Atom label unchanged");
   }, [replacePresentDocument]);
 
+  /**
+   * The page point under the pointer, or undefined when the pointer has never been over the
+   * canvas this session (a paste straight from the menu bar after launch). Paste aims here, the
+   * way ChemDraw pastes at the cursor.
+   */
+  const pastePointerPagePoint = useCallback((): ClientPoint | undefined => {
+    const page = pageRef.current;
+    const clientPoint = lastCanvasPointerClientPointRef.current;
+    if (!page || !clientPoint) {
+      return undefined;
+    }
+
+    const pageRect = page.getBoundingClientRect();
+    return {
+      x: clamp((clientPoint.x - pageRect.left) / viewportRef.current.scale, 0, activePage.width),
+      y: clamp((clientPoint.y - pageRect.top) / viewportRef.current.scale, 0, activePage.height)
+    };
+  }, [activePage.height, activePage.width]);
+
   const pastePointForViewport = useCallback((): ClientPoint => {
+    const pointerPoint = pastePointerPagePoint();
+    if (pointerPoint) {
+      return pointerPoint;
+    }
+
     const canvas = canvasRegionRef.current;
     const page = pageRef.current;
     if (!canvas || !page) {
@@ -5246,7 +5272,7 @@ export function MainWindow({
       x: clamp((clientPoint.x - pageRect.left) / viewportRef.current.scale, 0, activePage.width),
       y: clamp((clientPoint.y - pageRect.top) / viewportRef.current.scale, 0, activePage.height)
     };
-  }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
+  }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width, pastePointerPagePoint]);
 
   const clearScheduledTextEditorFocus = useCallback(() => {
     textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -5553,7 +5579,8 @@ export function MainWindow({
     const placement = nextSelectionClipboardPastePlacement(
       payload,
       selectionClipboardPasteStateRef.current,
-      activePage
+      activePage,
+      pastePointerPagePoint()
     );
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
@@ -5575,7 +5602,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setStatus("Pasted ChemDraft selection");
-  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange]);
+  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointerPagePoint]);
 
   const deleteSelectionAfterClipboardCut = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -11984,6 +12011,9 @@ export function MainWindow({
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
+    // Paste from this menu lands where the menu was opened, not where the mouse drifted while
+    // reading it.
+    lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
     setPageContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
 
@@ -14925,6 +14955,7 @@ export function MainWindow({
       return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount };
     })();
     setPageContextMenu(undefined);
+    lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
     setObjectContextMenu({
       objectId,
       targetKind,
@@ -18778,14 +18809,47 @@ export function initialSelectionClipboardPasteState(
   };
 }
 
+/**
+ * Where a pasted ChemDraft selection lands. With `anchor` — the page point under the pointer —
+ * the selection is centred there, the way ChemDraw pastes at the cursor. Pasting again WITHOUT
+ * moving the pointer steps the copy aside instead of burying it exactly on top of the last one.
+ * Without an anchor (no pointer has been over the canvas yet) it falls back to the copy's own
+ * position, offset once per repeat.
+ */
 export function nextSelectionClipboardPastePlacement(
   payload: ChemDraftSelectionClipboardPayload,
   previousState: SelectionClipboardPasteState | undefined,
-  page: DocumentPage
+  page: DocumentPage,
+  anchor?: ClientPoint
 ): { point: ClientPoint; state: SelectionClipboardPasteState } {
   const key = selectionClipboardPayloadKey(payload);
-  const sourceAction = previousState?.key === key ? previousState.sourceAction : "external";
-  const previousPasteCount = previousState?.key === key ? previousState.pasteCount : 0;
+  const samePayload = previousState?.key === key;
+  const sourceAction = samePayload ? previousState.sourceAction : "external";
+  const previousPasteCount = samePayload ? previousState.pasteCount : 0;
+
+  if (anchor) {
+    const previousAnchor = samePayload ? previousState.anchor : undefined;
+    const pointerStayedPut = previousAnchor !== undefined &&
+      Math.abs(previousAnchor.x - anchor.x) < 1 &&
+      Math.abs(previousAnchor.y - anchor.y) < 1;
+    const anchoredBounds: SelectionBounds = {
+      ...payload.bounds,
+      x: anchor.x - payload.bounds.width / 2,
+      y: anchor.y - payload.bounds.height / 2,
+      centerX: anchor.x,
+      centerY: anchor.y
+    };
+    const point = clampSelectionClipboardPastePoint(
+      selectionClipboardPastePoint(anchoredBounds, page, pointerStayedPut ? previousPasteCount : 0),
+      anchoredBounds,
+      page
+    );
+    return {
+      point,
+      state: { key, sourceAction, pasteCount: previousPasteCount + 1, anchor }
+    };
+  }
+
   const offsetIndex = sourceAction === "cut" ? previousPasteCount : previousPasteCount + 1;
   return {
     point: selectionClipboardPastePoint(payload.bounds, page, offsetIndex),
