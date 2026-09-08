@@ -387,6 +387,8 @@ import {
   createNativeSavePayload,
   createPhase4Document,
   createSelectionClipboardPayload,
+  formatElementList,
+  nativeMoleculeUnmodeledMetalElements,
   applyNativeMoleculeEngineRelayout,
   cleanUpNativeMolecules2d,
   moleculeHasFusedRingSystem,
@@ -1362,7 +1364,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.28-claude";
+const CURRENT_BUILD_STAMP = "9.5.15.29-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -4041,6 +4043,20 @@ export function MainWindow({
       setStatus("Spin 3D already active: drag the molecule to rotate · Esc to cancel");
       return;
     }
+    // A coordination centre has no honest 3D answer here: MMFF refuses metals outright and UFF
+    // returns coordination geometry that is not worth having (see the note on
+    // `nativeMoleculeUnmodeledMetalElements`). Say so instead of spinning a shape that is wrong
+    // exactly where the chemistry is interesting.
+    const unmodeledMetals = nativeMoleculeUnmodeledMetalElements(molecule);
+    if (unmodeledMetals.length > 0) {
+      traceInfo("spin.unmodeled-metal", { message: unmodeledMetals.join(",") });
+      commandSpan.complete({ message: "metal rejected" });
+      setStatus(
+        `Spin 3D can't model ${formatElementList(unmodeledMetals)}: the built-in force fields have ` +
+        "no usable parameters for coordination geometry"
+      );
+      return;
+    }
 
     // Refinement mode (Fast/Balanced/Quality) for this spin — read from the ref so the
     // callback need not re-create when the setting changes. Shared by the worker path
@@ -4801,6 +4817,15 @@ export function MainWindow({
     const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
     if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
       setStatus("Interactive 3D needs an editable native molecule");
+      return;
+    }
+    // Same as Spin 3D: the sidecar optimises with UFF, whose metal geometry is not trustworthy.
+    const unmodeledMetals = nativeMoleculeUnmodeledMetalElements(object);
+    if (unmodeledMetals.length > 0) {
+      setStatus(
+        `Interactive 3D can't model ${formatElementList(unmodeledMetals)}: UFF has no usable ` +
+        "parameters for coordination geometry"
+      );
       return;
     }
 

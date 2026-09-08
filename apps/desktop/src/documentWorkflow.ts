@@ -15735,6 +15735,35 @@ function arrangeNativeMonodentateLigands(
   ));
 }
 
+/**
+ * The elements in this molecule that no force field available here can place in three dimensions:
+ * the metals. Sorted, one entry per element.
+ *
+ * MMFF94 and MMFF94s carry parameters for the organic set only and refuse a molecule holding a
+ * metal outright (RDKit reports `setup-failed`). UFF has a parameter for every element, so it runs
+ * — and returns geometry that is not worth having: on CH3-S-Au-S-CH3 through this app's own engine
+ * it reported convergence with the two gold-sulfur bonds 1.4 A and 3.7 A apart and the S-Au-S angle
+ * at 147 degrees, where the real answer is a matched pair of 2.3 A bonds at 180. Spin 3D asks
+ * before it runs and says so, rather than handing back a shape that looks authoritative.
+ */
+export function nativeMoleculeUnmodeledMetalElements(molecule: MoleculeObject): string[] {
+  const elements = new Set<string>();
+  for (const atom of molecule.atoms) {
+    if (isNativeMetalAtom(atom)) {
+      elements.add(nativeElementFromAtomLabel(atom.element) ?? atom.element);
+    }
+  }
+  return [...elements].sort();
+}
+
+/** "Au", "Zn and Au", "Fe, Zn and Au" — for a one-line message. */
+export function formatElementList(elements: readonly string[]): string {
+  if (elements.length <= 1) {
+    return elements[0] ?? "";
+  }
+  return `${elements.slice(0, -1).join(", ")} and ${elements[elements.length - 1]}`;
+}
+
 /** An element outside the covalent valence tables: the d-block, alkali and alkaline-earth metals,
  *  lanthanides — anything whose bonds are coordination rather than octet chemistry. */
 function isNativeMetalAtom(atom: MoleculeAtom): boolean {

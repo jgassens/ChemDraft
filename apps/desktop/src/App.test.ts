@@ -1734,6 +1734,26 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
   });
 
+  it("stops Spin 3D and Interactive 3D on a metal instead of returning a made-up shape", () => {
+    // MMFF has no parameters outside the organic set and refuses outright; UFF runs on anything and
+    // returns coordination geometry that is not worth having (a gold thiolate "converged" with its
+    // two Au–S bonds 1.4 and 3.7 Å long). Both commands check before they start, and the check
+    // comes BEFORE any conformer work — including reopening a model stored by an earlier build.
+    const spinStart = mainWindowSource.indexOf("stage: \"spin.command\"");
+    const spinGuard = mainWindowSource.indexOf("nativeMoleculeUnmodeledMetalElements(molecule)", spinStart);
+    const spinConformer = mainWindowSource.indexOf("Generating 3D conformer…", spinStart);
+    const spinReopen = mainWindowSource.indexOf("const memo = spin3dModelCacheRef.current.get(objectId)", spinStart);
+    expect(spinGuard).toBeGreaterThan(-1);
+    expect(spinGuard).toBeLessThan(spinReopen);
+    expect(spinGuard).toBeLessThan(spinConformer);
+
+    const interactiveStart = mainWindowSource.indexOf("const openInteractive3dWorkspace");
+    const interactiveGuard = mainWindowSource.indexOf("nativeMoleculeUnmodeledMetalElements(object)", interactiveStart);
+    const interactiveSidecar = mainWindowSource.indexOf("readEngine3dSidecarStatus()", interactiveStart);
+    expect(interactiveGuard).toBeGreaterThan(-1);
+    expect(interactiveGuard).toBeLessThan(interactiveSidecar);
+  });
+
   it("routes desktop copy and cut through the native pasteboard, not the WebKit DataTransfer", () => {
     // A DataTransfer custom flavor never leaves the webview as that flavor on macOS — WKWebView
     // serializes it into its private, origin-gated com.apple.WebKit.custom-pasteboard-data blob,

@@ -117,6 +117,8 @@ import {
   createNativeMolfileMolecule,
   createPhase4Document,
   createSelectionClipboardPayload,
+  formatElementList,
+  nativeMoleculeUnmodeledMetalElements,
   deleteSelectedDocumentObjects,
   documentObjectVisualBounds,
   distributeSelectedDocumentObjects,
@@ -3875,7 +3877,36 @@ describe("Phase 4 document workflow", () => {
       return { document, molecule: moleculeById(document, molecule.id) };
     }
 
-    it("keeps a dative-bridged polymer's dendrons where they were drawn instead of packing them together", () => {
+      it("names the metals no force field here can place in 3D", () => {
+      const { molecule } = goldBridgedPolymerFixture();
+      expect(nativeMoleculeUnmodeledMetalElements(molecule)).toEqual(["Au"]);
+
+      // An ordinary organic has nothing to flag.
+      const organic = insertNativeTemplateMolecule(
+        createPhase4Document("Organic"),
+        { x: 300, y: 300 },
+        "cyclohexane"
+      );
+      expect(nativeMoleculeUnmodeledMetalElements(selectedMolecule(organic))).toEqual([]);
+
+      // Every metal is named once, in order, however many atoms carry it.
+      const twoMetals: MoleculeObject = {
+        ...molecule,
+        atoms: [
+          ...molecule.atoms,
+          { id: "atom_zn1", element: "Zn", x: 10, y: 10, formalCharge: 0 },
+          { id: "atom_zn2", element: "Zn", x: 20, y: 10, formalCharge: 0 }
+        ]
+      };
+      expect(nativeMoleculeUnmodeledMetalElements(twoMetals)).toEqual(["Au", "Zn"]);
+
+      expect(formatElementList([])).toBe("");
+      expect(formatElementList(["Au"])).toBe("Au");
+      expect(formatElementList(["Zn", "Au"])).toBe("Zn and Au");
+      expect(formatElementList(["Fe", "Zn", "Au"])).toBe("Fe, Zn and Au");
+    });
+
+  it("keeps a dative-bridged polymer's dendrons where they were drawn instead of packing them together", () => {
       // The engine is handed the ligand skeleton with the metals taken out. For a polymer that is
       // several disconnected fragments, and the engine packs them however it likes — so recentring
       // the whole engine layout on one drawn centroid kept the engine's packing, and the folding
