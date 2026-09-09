@@ -1734,6 +1734,24 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
   });
 
+  it("has the window publish which build it is running, on load, hot update and focus", () => {
+    // The build line in the corner only answers this for whoever is looking at the screen, and the
+    // dev server answers a different question (newest source, not what the open window applied).
+    const start = mainWindowSource.indexOf("Publish which build this WINDOW is running");
+    const end = mainWindowSource.indexOf("const writeSelectionClipboardEvent", start);
+    expect(start).toBeGreaterThan(-1);
+    const effect = mainWindowSource.slice(start, end);
+    expect(effect).toContain("publish(\"load\")");
+    expect(effect).toContain("vite:afterUpdate");
+    expect(effect).toContain('window.addEventListener("focus", onFocus)');
+    // The stamp published is the one the running code holds, not a re-read of anything.
+    expect(effect).toContain("buildStamp: CURRENT_BUILD_STAMP");
+    expect(effect).toContain("bundleStamp: __BUILD_STAMP__");
+    // Both listeners are removed with the effect.
+    expect(effect).toContain('window.removeEventListener("focus", onFocus)');
+    expect(effect).toContain('hot?.off("vite:afterUpdate", onHotUpdate)');
+  });
+
   it("stops Spin 3D and Interactive 3D on a metal instead of returning a made-up shape", () => {
     // MMFF has no parameters outside the organic set and refuses outright; UFF runs on anything and
     // returns coordination geometry that is not worth having (a gold thiolate "converged" with its

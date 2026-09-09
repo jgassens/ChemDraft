@@ -658,6 +658,10 @@ import {
 } from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
+import {
+  buildRuntimeBuildStatus,
+  writeRuntimeBuildStatus
+} from "./runtimeBuildStatus";
 import { attachSpin3dTraceConsole } from "./conformerTraceConsole";
 import {
   conformerOptionsForSpin3d,
@@ -1364,7 +1368,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.29-claude";
+const CURRENT_BUILD_STAMP = "9.5.15.30-claude";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -8665,6 +8669,42 @@ export function MainWindow({
       updateObjectResizeInput(undefined);
     }
   }, [document.selection.objectIds, objectResizeInput, selectedNativeMoleculePart, updateObjectResizeInput]);
+
+  // Publish which build this WINDOW is running, so it can be asked from outside instead of read off
+  // the corner of the screen. Written on load, after every hot update, and whenever the window comes
+  // back to the front — the three moments at which the answer can have changed.
+  useEffect(() => {
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    const loadedAt = new Date();
+    let hotUpdates = 0;
+    const publish = (reason: "load" | "hot-update" | "focus") => {
+      void writeRuntimeBuildStatus(buildRuntimeBuildStatus({
+        buildStamp: CURRENT_BUILD_STAMP,
+        bundleStamp: __BUILD_STAMP__,
+        runtime: "desktop",
+        windowLabel: "main",
+        loadedAt,
+        updatedAt: new Date(),
+        hotUpdates,
+        reason
+      }));
+    };
+    publish("load");
+    const onFocus = () => publish("focus");
+    window.addEventListener("focus", onFocus);
+    const hot = import.meta.hot;
+    const onHotUpdate = () => {
+      hotUpdates += 1;
+      publish("hot-update");
+    };
+    hot?.on("vite:afterUpdate", onHotUpdate);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      hot?.off("vite:afterUpdate", onHotUpdate);
+    };
+  }, []);
 
   useEffect(() => {
     const writeSelectionClipboardEvent = (
