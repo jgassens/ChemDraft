@@ -337,6 +337,93 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("expands a CDXML abbreviation into the atoms it stands for, and re-points the bond that reached it", () => {
+    // ChemDraw writes SO3 (or Ph, or Boc) as a node carrying its own little molecule: the real
+    // atoms plus an ExternalConnectionPoint marking where it joins the drawing. Read as an ordinary
+    // node it has no Element attribute at all, so it used to import as a carbon — a real NSF figure
+    // opened with its sulfonate silently turned into a CH2.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
+<CDXML CreationProgram="Abbreviation Import Test">
+  <page id="20" BoundingBox="0 0 540 720">
+    <fragment id="1">
+      <n id="2" p="100 100"/>
+      <n id="3" p="120 100" NodeType="Fragment">
+        <fragment id="10">
+          <n id="11" p="120 100" Element="16"/>
+          <n id="12" p="130 90" Element="8"/>
+          <n id="13" p="130 110" Element="8"/>
+          <n id="14" p="140 100" Element="8" Charge="-1"/>
+          <n id="15" p="110 100" NodeType="ExternalConnectionPoint"/>
+          <b id="16" B="11" E="12" Order="2"/>
+          <b id="17" B="11" E="13" Order="2"/>
+          <b id="18" B="11" E="14"/>
+          <b id="19" B="15" E="11"/>
+        </fragment>
+        <t p="118 103"><s font="70" size="8">SO3</s></t>
+      </n>
+      <b id="4" B="2" E="3"/>
+    </fragment>
+  </page>
+</CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+    if (!molecule) {
+      throw new Error("Expected the fragment to import.");
+    }
+
+    // One carbon plus the sulfonate's four atoms: the placeholder node is gone, not counted twice.
+    expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "S", "O", "O", "O"]);
+    expect(molecule.atoms.find((atom) => atom.formalCharge === -1)?.element).toBe("O");
+
+    const byId = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+    const describe = (bondIndex: number) => {
+      const bond = molecule.bonds[bondIndex];
+      const separator = bond.order === "double" ? "=" : "-";
+      return `${byId.get(bond.fromAtomId)?.element}${separator}${byId.get(bond.toAtomId)?.element}`;
+    };
+    // The bond that pointed at the abbreviation now lands on its sulfur, and the connection
+    // point's own bond is gone with it.
+    expect(molecule.bonds.map((_, index) => describe(index)).sort())
+      .toEqual(["C-S", "S-O", "S=O", "S=O"]);
+    expect(molecule.atoms.every((atom) => atom.labelLiteral === undefined)).toBe(true);
+  });
+
+  it("keeps an abbreviation it cannot expand as its own label, and says so", () => {
+    // Two attachment points: which outer bond meets which atom is not in the file, and guessing
+    // would invent chemistry. A label a chemist can see and correct beats a carbon nobody notices.
+    const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">
+<CDXML CreationProgram="Abbreviation Import Test">
+  <page id="20" BoundingBox="0 0 540 720">
+    <fragment id="1">
+      <n id="2" p="100 100"/>
+      <n id="3" p="120 100" NodeType="Fragment">
+        <fragment id="10">
+          <n id="11" p="120 100" Element="8"/>
+          <n id="12" p="130 100" Element="8"/>
+          <n id="15" p="110 100" NodeType="ExternalConnectionPoint"/>
+          <n id="16" p="140 100" NodeType="ExternalConnectionPoint"/>
+          <b id="17" B="11" E="12"/>
+          <b id="18" B="15" E="11"/>
+          <b id="19" B="16" E="12"/>
+        </fragment>
+        <t p="118 103"><s font="70" size="8">OO</s></t>
+      </n>
+      <b id="4" B="2" E="3"/>
+    </fragment>
+  </page>
+</CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject | undefined;
+
+    expect(molecule?.atoms.map((atom) => atom.element)).toEqual(["C", "OO"]);
+    // Literal: "OO" means what it says, so no implicit hydrogens are invented for it.
+    expect(molecule?.atoms[1].labelLiteral).toBe(true);
+    expect(molecule?.bonds).toHaveLength(1);
+    const warning = opened.warnings?.find((item) => item.code === "cdxml.abbreviation_not_expanded");
+    expect(warning?.message).toContain("\"OO\"");
+    expect(warning?.message).toContain("2 points");
+  });
+
   it("imports CDXML arcs as circular native graphic arcs with radian angles", () => {
     const opened = openChemDraftPayload(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE CDXML SYSTEM "https://static.chemistry.revvitycloud.com/cdxml/CDXML.dtd">

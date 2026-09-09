@@ -1552,6 +1552,121 @@ function transposePoint(point: Point): Point {
   return { x: point.y, y: point.x };
 }
 
+/**
+ * ChemDraw stores an abbreviation — SO3, Ph, Boc — as a node that CARRIES its own little molecule:
+ * a nested `<fragment>` holding the real atoms plus one `ExternalConnectionPoint`, a pseudo-atom
+ * marking where the abbreviation attaches to the rest of the drawing. The label ("SO3") is only
+ * the text drawn in its place.
+ *
+ * Read as an ordinary node, such a node has no `Element` attribute, and the import used to fall
+ * through to carbon: the sulfonate in a real NSF figure opened as a plain CH2, sulfur, oxygens and
+ * charge silently gone. Expanding the nested fragment instead brings the actual atoms in, and the
+ * bonds that reached the abbreviation are re-pointed at the atom the connection point marks.
+ *
+ * When an abbreviation cannot be expanded — no atoms inside, or more than one attachment point,
+ * where guessing which outer bond goes where would invent chemistry — the node is kept with its
+ * label as a literal one ("SO3" reads as SO3, no implicit hydrogens) and a warning names it. A
+ * label a chemist can see and correct beats a carbon nobody notices.
+ */
+interface ExpandedCdxmlNodes {
+  atomElements: XmlElementView[];
+  bondElements: XmlElementView[];
+  /** Abbreviation node id -> the nested atom id its outer bonds should attach to. */
+  attachmentByCdxmlId: Map<string, string>;
+  /** Abbreviation node id -> the label to keep when the nested fragment could not be expanded. */
+  literalLabelByCdxmlId: Map<string, string>;
+}
+
+function expandCdxmlAbbreviationNodes(
+  atomElements: readonly XmlElementView[],
+  bondElements: readonly XmlElementView[],
+  warnings: CompatibilityConversionWarning[],
+  depth = 0
+): ExpandedCdxmlNodes {
+  const expandedAtoms: XmlElementView[] = [];
+  const expandedBonds: XmlElementView[] = [...bondElements];
+  const attachmentByCdxmlId = new Map<string, string>();
+  const literalLabelByCdxmlId = new Map<string, string>();
+
+  for (const atomElement of atomElements) {
+    const nested = childElements(atomElement, "fragment")[0];
+    const nodeId = atomElement.attributes.id ?? "";
+    if (!nested || depth > 4) {
+      expandedAtoms.push(atomElement);
+      continue;
+    }
+
+    const label = cdxmlAtomLabelText(atomElement);
+    const nestedAtoms = childElements(nested, "n");
+    const nestedBonds = childElements(nested, "b");
+    const connectionPointIds = new Set(nestedAtoms
+      .filter((nestedAtom) => nestedAtom.attributes.NodeType === "ExternalConnectionPoint")
+      .map((nestedAtom) => nestedAtom.attributes.id ?? ""));
+    const bodyAtoms = nestedAtoms.filter((nestedAtom) =>
+      nestedAtom.attributes.NodeType !== "ExternalConnectionPoint");
+    const touchesConnectionPoint = (bondElement: XmlElementView) =>
+      connectionPointIds.has(bondElement.attributes.B ?? "") ||
+      connectionPointIds.has(bondElement.attributes.E ?? "");
+    const attachment = nestedBonds
+      .filter(touchesConnectionPoint)
+      .map((bondElement) => connectionPointIds.has(bondElement.attributes.B ?? "")
+        ? bondElement.attributes.E
+        : bondElement.attributes.B)
+      .find((id): id is string => id !== undefined);
+
+    const outerBondCount = bondElements.filter((bondElement) =>
+      bondElement.attributes.B === nodeId || bondElement.attributes.E === nodeId).length;
+    const expandable = bodyAtoms.length > 0 &&
+      connectionPointIds.size <= 1 &&
+      (outerBondCount === 0 || attachment !== undefined);
+    if (!expandable) {
+      warnings.push({
+        code: "cdxml.abbreviation_not_expanded",
+        message: bodyAtoms.length === 0
+          ? `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as a label: it carries no atoms to expand.`
+          : `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as a label: it attaches at ${connectionPointIds.size} points, and which bond meets which atom cannot be read from the file.`
+      });
+      expandedAtoms.push(atomElement);
+      if (label) {
+        literalLabelByCdxmlId.set(nodeId, label);
+      }
+      continue;
+    }
+
+    // The nested fragment may itself hold an abbreviation.
+    const inner = expandCdxmlAbbreviationNodes(
+      bodyAtoms,
+      nestedBonds.filter((bondElement) => !touchesConnectionPoint(bondElement)),
+      warnings,
+      depth + 1
+    );
+    expandedAtoms.push(...inner.atomElements);
+    expandedBonds.push(...inner.bondElements);
+    inner.attachmentByCdxmlId.forEach((value, key) => attachmentByCdxmlId.set(key, value));
+    inner.literalLabelByCdxmlId.forEach((value, key) => literalLabelByCdxmlId.set(key, value));
+    if (attachment !== undefined) {
+      attachmentByCdxmlId.set(nodeId, inner.attachmentByCdxmlId.get(attachment) ?? attachment);
+    }
+  }
+
+  return {
+    atomElements: expandedAtoms,
+    bondElements: expandedBonds,
+    attachmentByCdxmlId,
+    literalLabelByCdxmlId
+  };
+}
+
+/** The text ChemDraw draws in place of a node: "SO3", "OH", "Ph". */
+function cdxmlAtomLabelText(atomElement: XmlElementView): string | undefined {
+  const labelElement = childElements(atomElement, "t")[0];
+  if (!labelElement) {
+    return undefined;
+  }
+  const text = textContent(labelElement.children).trim();
+  return text.length > 0 ? text : undefined;
+}
+
 function importFragment(
   fragment: XmlElementView,
   pageIndex: number,
@@ -1559,8 +1674,13 @@ function importFragment(
   warnings: CompatibilityConversionWarning[],
   context: ImportPageContext
 ): MoleculeObject | undefined {
-  const atomElements = childElements(fragment, "n");
-  const bondElements = childElements(fragment, "b");
+  const expansion = expandCdxmlAbbreviationNodes(
+    childElements(fragment, "n"),
+    childElements(fragment, "b"),
+    warnings
+  );
+  const atomElements = expansion.atomElements;
+  const bondElements = expansion.bondElements;
   if (atomElements.length === 0) {
     warnings.push({
       code: "cdxml.empty_fragment_skipped",
@@ -1588,14 +1708,26 @@ function importFragment(
         ...(geometry ? { geometry } : {})
       };
     }
+    const literalLabel = expansion.literalLabelByCdxmlId.get(cdxmlId);
     return {
       id: atomId,
-      element,
+      element: literalLabel ?? element,
       x: point.x,
       y: point.y,
       formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
+      // An abbreviation that could not be expanded keeps its drawn text and means exactly that:
+      // no implicit hydrogens are invented for a label like "SO3".
+      ...(literalLabel ? { labelLiteral: true } : {}),
       ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
     };
+  });
+  // A bond drawn to an abbreviation now lands on the atom its connection point marked — the sulfur
+  // of an expanded SO3, not the vanished node.
+  expansion.attachmentByCdxmlId.forEach((attachmentCdxmlId, abbreviationCdxmlId) => {
+    const atomId = atomIdByCdxmlId.get(attachmentCdxmlId);
+    if (atomId) {
+      atomIdByCdxmlId.set(abbreviationCdxmlId, atomId);
+    }
   });
   const atomByCdxmlId = new Map<string, MoleculeAtom>(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
