@@ -191,11 +191,11 @@ export const exportFormatDescriptors = [
     group: "chemistry",
     extensions: ["sdf"],
     mimeType: "chemical/x-mdl-sdfile",
-    status: "planned",
+    status: "implemented",
     targetScope: "multiRecord",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "Initial SDF export should alias the tested V2000 writer."
+    warningSummary: "Exports selected editable native molecules, or all editable native molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right)."
   },
   {
     id: "sdf-v2000",
@@ -253,10 +253,11 @@ export const exportFormatDescriptors = [
     group: "chemistry",
     extensions: ["smi", "smiles"],
     mimeType: "chemical/x-daylight-smiles",
-    status: "planned",
-    targetScope: "molecule",
+    status: "implemented",
+    targetScope: "multiRecord",
     textOrBinary: "text",
-    chemicallyMeaningful: true
+    chemicallyMeaningful: true,
+    warningSummary: "Exports selected editable native molecules, or all editable native molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right), one SMILES per line."
   },
   {
     id: "connection-table",

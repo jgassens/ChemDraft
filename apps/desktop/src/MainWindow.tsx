@@ -570,6 +570,7 @@ import {
   type DocumentDistributeMode,
   type ImportedPageFitRecommendation
 } from "./documentWorkflow";
+import { exportStructureListSdf, exportStructureListSmi } from "./structureListExport";
 import { KetcherEditorHost } from "./KetcherEditorHost";
 import { initialInteractionState, interactionReducer, type InteractionState } from "./interaction/machine";
 import { APPENDABLE_TOOLBAR_WIDGETS, TOOLBAR_WIDGET_TITLES, ToolPalette } from "./ToolPalette";
@@ -1370,7 +1371,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.32-astra";
+const CURRENT_BUILD_STAMP = "9.5.15.33-astra";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -26715,6 +26716,14 @@ async function createDialogExportResult(
     return exportPhase4Cdxml(document, {
       creationProgram: state.cdxml.creationProgram.trim() || "ChemDraft"
     });
+  }
+
+  if (state.format === "sdf") {
+    return exportStructureListSdf(document);
+  }
+
+  if (state.format === "smiles") {
+    return exportStructureListSmi(document);
   }
 
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);
