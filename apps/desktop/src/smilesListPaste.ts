@@ -1,4 +1,4 @@
-import { smilesListDecision, type SmilesListCandidate } from "@chemdraft/clipboard-adapter";
+import { smilesListDecision, smilesListTokens, type SmilesListCandidate } from "@chemdraft/clipboard-adapter";
 import { pastedStructureDepictionFromMolfile, type PastedStructureDepiction } from "./documentWorkflow";
 
 /** Depiction engines stay lazy; undefined lets the caller preserve unparseable input as text. */
@@ -60,21 +60,34 @@ export async function depictSmilesForPaste(
   }
 }
 
-export async function depictSmilesListForPaste(
+export function depictSmilesListForPaste(
+  text: string,
+  candidates: readonly SmilesListCandidate[],
+  onProgress?: (completed: number, total: number) => void
+): Promise<{ entries: { smiles: string; depiction: PastedStructureDepiction }[]; skipped: number } | undefined> | undefined {
+  // No promise or engine load for prose: the caller can insert its text synchronously.
+  if (candidates.length < 2) return undefined;
+  return depictSmilesListCandidates(text, candidates, onProgress);
+}
+
+async function depictSmilesListCandidates(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void
 ): Promise<{ entries: { smiles: string; depiction: PastedStructureDepiction }[]; skipped: number } | undefined> {
   const entries: { smiles: string; depiction: PastedStructureDepiction }[] = [];
-  const seenLines = new Set<number>();
+  const tokens = smilesListTokens(text);
+  const firstTokenColumns = new Map<number, number>();
+  for (const token of tokens) {
+    if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
+  }
   let parsedFirstTokenLines = 0;
   for (const [index, candidate] of candidates.entries()) {
     const parsed = await depictSmilesForPaste(candidate.token);
     if (parsed) {
       entries.push({ smiles: candidate.token, depiction: parsed.depiction });
-      if (!seenLines.has(candidate.line)) parsedFirstTokenLines += 1;
+      if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
     }
-    seenLines.add(candidate.line);
     if (candidates.length > 20 && (index + 1) % 10 === 0) {
       onProgress?.(index + 1, candidates.length);
       // Cached engines can finish each await in a microtask; yield so progress can paint.
@@ -82,7 +95,7 @@ export async function depictSmilesListForPaste(
     }
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
-  return smilesListDecision({ candidates: candidates.length, parsed: entries.length, lineCount, parsedFirstTokenLines })
-    ? { entries, skipped: candidates.length - entries.length }
+  return smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })
+    ? { entries, skipped: tokens.length - entries.length }
     : undefined;
 }

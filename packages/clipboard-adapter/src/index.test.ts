@@ -7,6 +7,7 @@ import {
   isVectorArtworkType,
   looksLikeInchi,
   looksLikeSmiles,
+  looksLikeSmilesStrict,
   parseMolfileGraph,
   smilesListCandidates,
   smilesListDecision
@@ -22,7 +23,8 @@ describe("SMILES list candidates", () => {
     ["CCO\tCCN;CCCl,CCBr", ["CCO", "CCN", "CCCl", "CCBr"]],
     ["1. CCO\n2. CCN", ["CCO", "CCN"]],
     ["1) CCO\n(2) CCN\n- CCCl\n* CCBr\n• CCC\n# CCCC", ["CCO", "CCN", "CCCl", "CCBr", "CCC", "CCCC"]],
-    ["CCO aspirin\nCCN caffeine", ["CCO", "aspirin", "CCN", "caffeine"]],
+    ["CCO aspirin\nCCN caffeine", ["CCO", "CCN"]],
+    ["Add the CO and CS to the flask", ["CO", "CS"]],
     ['"CCO","CCN"', ["CCO", "CCN"]],
     ["'CCO';'CCN'", ["CCO", "CCN"]],
     ['["CCO", "[NH4+]", "[Cl-]"]', ["CCO", "[NH4+]", "[Cl-]"]],
@@ -40,6 +42,30 @@ describe("SMILES list candidates", () => {
       { token: "CCCl", line: 2, column: 6 },
       { token: "CCBr", line: 3, column: 1 }
     ]);
+  });
+
+  it("rejects a 200-word English paragraph without parsing its words", () => {
+    const sentence = "The chemist measured the solvent before heating the reaction mixture and recorded every observation carefully within the laboratory notebook today.";
+    const paragraph = Array.from({ length: 10 }, () => sentence).join(" ");
+    expect(paragraph.split(/\s+/)).toHaveLength(200);
+    expect(smilesListCandidates(paragraph).length).toBeLessThan(5);
+  });
+});
+
+describe("looksLikeSmilesStrict", () => {
+  it.each([
+    "CCO", "c1ccccc1", "C[C@H](F)Cl", "ClCCBr", "[Na+].[Cl-]", "[nH]1cccc1", "O=C(O)c1ccccc1"
+  ])("accepts aromatic atoms, Cl/Br, and bracket atoms: %s", (text) => {
+    expect(looksLikeSmilesStrict(text)).toBe(true);
+  });
+
+  it.each(["the", "and", "reaction", "aspirin", "Caffeine", "hello"])("rejects English: %s", (text) => {
+    expect(looksLikeSmilesStrict(text)).toBe(false);
+    expect(looksLikeSmiles(text)).toBe(true);
+  });
+
+  it.each(["", "C", "123", "CCO CCN", "InChI=1S/CH4/h1H4", "CCO!"])("retains the loose filter's rejections: %s", (text) => {
+    expect(looksLikeSmilesStrict(text)).toBe(false);
   });
 });
 

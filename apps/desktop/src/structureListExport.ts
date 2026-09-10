@@ -57,8 +57,28 @@ function moleculeName(molecule: MoleculeObject): string | undefined {
   return molecule.structure.split(/\r\n|\r|\n/, 1)[0].replace(/\t/g, " ").trim() || undefined;
 }
 
-function moleculeSmiles(molecule: MoleculeObject, warnings: ExportWarning[]): string {
-  if (molecule.structureFormat === "smiles" && molecule.structure) return molecule.structure;
+type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
+
+async function loadStructureIdentifiers(): Promise<ComputeStructureIdentifiers | undefined> {
+  try {
+    const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
+    registerRdkitWasmLoader();
+    const { computeStructureIdentifiers } = await import("@chemdraft/rdkit-adapter/identifiers");
+    return computeStructureIdentifiers;
+  } catch {
+    // Export remains available through the native writer, with stereo loss disclosed below.
+    return undefined;
+  }
+}
+
+async function moleculeSmiles(
+  molecule: MoleculeObject,
+  index: number,
+  warnings: ExportWarning[],
+  computeStructureIdentifiers: ComputeStructureIdentifiers | undefined,
+  molfile?: string
+): Promise<string> {
+  // Both the V2000 input to RDKit and the native fallback approximate these features.
   const dativeBondCount = molecule.bonds.filter((bond) =>
     bond.order === "single" && bond.display?.bondStyle === "dashed"
   ).length;
@@ -78,16 +98,40 @@ function moleculeSmiles(molecule: MoleculeObject, warnings: ExportWarning[]): st
       objectId: molecule.id
     });
   }
+  if (computeStructureIdentifiers) {
+    try {
+      const identifiers = await computeStructureIdentifiers(
+        molfile ?? moleculeToMolfileV2000(molecule, { fromDocFrame: true })
+      );
+      if (identifiers?.smiles) return identifiers.smiles;
+    } catch {
+      // A failed engine load or parse falls back per molecule, without dropping its record.
+    }
+  }
+  if (molecule.bonds.some((bond) =>
+    bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed"
+  )) {
+    warnings.push({
+      code: "export.smiles_stereo_dropped",
+      message: `Stereochemistry could not be written to SMILES for molecule ${index + 1}; the structure engine was unavailable.`,
+      severity: "warning",
+      objectId: molecule.id
+    });
+  }
+  if (molecule.structureFormat === "smiles" && molecule.structure) return molecule.structure;
   return nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
 }
 
-export function exportStructureListSdf(
+export async function exportStructureListSdf(
   document: ChemDraftDocument,
   options: Pick<MolfileWriteOptions, "abbreviations"> = {}
-): TextExportResult {
+): Promise<TextExportResult> {
   const descriptor = getExportFormatDescriptor("sdf");
   const warnings: ExportWarning[] = [];
-  const records = structureListMolecules(document).map((molecule, index) => {
+  const molecules = structureListMolecules(document);
+  const computeStructureIdentifiers = molecules.length > 0 ? await loadStructureIdentifiers() : undefined;
+  const records: string[] = [];
+  for (const [index, molecule] of molecules.entries()) {
     const name = moleculeName(molecule);
     const writerWarnings: string[] = [];
     const molfile = moleculeToMolfileV2000(molecule, {
@@ -102,12 +146,12 @@ export function exportStructureListSdf(
       objectId: molecule.id
     })));
     const title = name ?? `ChemDraft molecule ${index + 1}`;
-    const smiles = moleculeSmiles(molecule, warnings);
-    return `${title}${molfile.slice(molfile.indexOf("\n"))}`
+    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, molfile);
+    records.push(`${title}${molfile.slice(molfile.indexOf("\n"))}`
       + `> <SMILES>\n${smiles}\n\n> <Index>\n${index + 1}\n\n`
       + (name ? `> <Name>\n${name}\n\n` : "")
-      + "$$$$\n";
-  });
+      + "$$$$\n");
+  }
   return {
     format: descriptor.id,
     kind: "text",
@@ -118,12 +162,16 @@ export function exportStructureListSdf(
   };
 }
 
-export function exportStructureListSmi(document: ChemDraftDocument): TextExportResult {
+export async function exportStructureListSmi(document: ChemDraftDocument): Promise<TextExportResult> {
   const descriptor = getExportFormatDescriptor("smiles");
   const warnings: ExportWarning[] = [];
-  const lines = structureListMolecules(document).map((molecule, index) =>
-    `${moleculeSmiles(molecule, warnings)}\t${moleculeName(molecule) ?? index + 1}\n`
-  );
+  const molecules = structureListMolecules(document);
+  const computeStructureIdentifiers = molecules.length > 0 ? await loadStructureIdentifiers() : undefined;
+  const lines: string[] = [];
+  for (const [index, molecule] of molecules.entries()) {
+    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+    lines.push(`${smiles}\t${moleculeName(molecule) ?? index + 1}\n`);
+  }
   return {
     format: descriptor.id,
     kind: "text",

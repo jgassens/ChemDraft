@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
+import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import {
   createPhase4Document,
@@ -7,6 +9,14 @@ import {
   type PastedStructureDepiction
 } from "./documentWorkflow";
 import { exportStructureListSdf, exportStructureListSmi, readingOrderMolecules } from "./structureListExport";
+
+vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
+vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+
+beforeEach(() => {
+  vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(undefined);
+  vi.mocked(registerRdkitWasmLoader).mockReset();
+});
 
 function moleculeAt(id: string, x: number, y: number, width = 100, height = 100): MoleculeObject {
   return {
@@ -98,13 +108,74 @@ describe("readingOrderMolecules", () => {
   });
 });
 
+const exportListCases = [
+  { format: "SDF", exportList: exportStructureListSdf },
+  { format: "SMI", exportList: exportStructureListSmi }
+];
+
 describe("structure list export", () => {
-  it.each([true, false])("exports six pasted grid molecules in paste order (selection: %s)", (selected) => {
+  it.each(exportListCases)("uses RDKit SMILES from the current wedged graph ($format)", async ({ exportList }) => {
+    const molecule = moleculeAt("stereo", 20, 30);
+    molecule.bonds[0].display = { bondStyle: "wedge" };
+    const other = moleculeAt("other", 220, 30);
+    const document = documentWith([other, molecule]);
+    const before = structuredClone(document);
+    vi.mocked(computeStructureIdentifiers)
+      .mockResolvedValueOnce({ smiles: "C[C@H](F)Cl" })
+      .mockResolvedValueOnce({ smiles: "F/C=C/F" });
+
+    const result = await exportList(document);
+    expect(result.contents).toContain("C[C@H](F)Cl");
+    expect(result.contents).toContain("F/C=C/F");
+    expect(result.warnings).toEqual([]);
+    expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
+    expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { fromDocFrame: true }));
+    expect(document).toEqual(before);
+  });
+
+  it.each(exportListCases)("warns only for wedge/hashed molecules when RDKit cannot supply SMILES ($format)", async ({ exportList }) => {
+    const plain = moleculeAt("plain", 0, 0);
+    const wedge = { ...moleculeAt("wedge", 200, 0), structureFormat: "unknown" as const };
+    wedge.bonds[0].display = { bondStyle: "wedge" };
+    const hashed = moleculeAt("hashed", 400, 0);
+    hashed.bonds[0].display = { bondStyle: "hashed" };
+    const document = documentWith([hashed, wedge, plain]);
+
+    for (const failure of ["missing-smiles", "unparseable", "engine-error", "loader-error"] as const) {
+      vi.mocked(registerRdkitWasmLoader).mockReset();
+      vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(
+        failure === "missing-smiles" ? {} : undefined
+      );
+      if (failure === "engine-error") {
+        vi.mocked(computeStructureIdentifiers).mockRejectedValue(new Error("WASM unavailable"));
+      } else if (failure === "loader-error") {
+        vi.mocked(registerRdkitWasmLoader).mockImplementation(() => { throw new Error("Loader unavailable"); });
+      }
+
+      const result = await exportList(document);
+      expect(result.warnings).toEqual([wedge, hashed].map((molecule, index) => ({
+        code: "export.smiles_stereo_dropped",
+        message: `Stereochemistry could not be written to SMILES for molecule ${index + 2}; the structure engine was unavailable.`,
+        severity: "warning",
+        objectId: molecule.id
+      })));
+      if (result.format === "smiles") {
+        expect(result.contents).toBe("CC\t1\nCC\t2\nCC\t3\n");
+      } else {
+        expect([...result.contents.matchAll(/> <SMILES>\n([^\n]+)/g)].map((match) => match[1])).toEqual(["CC", "CC", "CC"]);
+      }
+      if (failure === "loader-error") expect(computeStructureIdentifiers).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([true, false])("exports six pasted grid molecules in paste order (selection: %s)", async (selected) => {
     const { document, entries } = pastedGrid();
     if (!selected) document.selection.objectIds = [];
     const before = structuredClone(document);
-    const sdf = exportStructureListSdf(document, {});
-    const smi = exportStructureListSmi(document);
+    const sdf = await exportStructureListSdf(document, {});
+    const smi = await exportStructureListSmi(document);
     expect(sdf).toMatchObject({
       format: "sdf", kind: "text", extension: "sdf", mimeType: "chemical/x-mdl-sdfile", warnings: []
     });
@@ -128,17 +199,17 @@ describe("structure list export", () => {
     expect(document).toEqual(before);
   });
 
-  it("exports only selected molecules, numbered in reading order from one", () => {
+  it("exports only selected molecules, numbered in reading order from one", async () => {
     const { document, entries, objectIds } = pastedGrid();
     document.selection.objectIds = [objectIds[4], objectIds[1]];
-    expect(exportStructureListSmi(document).contents).toBe(`${entries[1].smiles}\t1\n${entries[4].smiles}\t2\n`);
-    const sdf = exportStructureListSdf(document).contents;
+    expect((await exportStructureListSmi(document)).contents).toBe(`${entries[1].smiles}\t1\n${entries[4].smiles}\t2\n`);
+    const sdf = (await exportStructureListSdf(document)).contents;
     expect(sdf.match(/^\$\$\$\$$/gm)).toHaveLength(2);
     expect([...sdf.matchAll(/> <SMILES>\n([^\n]+)/g)].map((match) => match[1])).toEqual([entries[1].smiles, entries[4].smiles]);
     expect([...sdf.matchAll(/> <Index>\n(\d+)/g)].map((match) => match[1])).toEqual(["1", "2"]);
   });
 
-  it("does not fall back to the page for selections without editable molecules", () => {
+  it("does not fall back to the page for selections without editable molecules", async () => {
     const editable = moleculeAt("editable", 0, 0);
     const opaque = { ...moleculeAt("opaque", 200, 0), atoms: [], bonds: [] };
     const document = documentWith([editable, opaque]);
@@ -149,43 +220,43 @@ describe("structure list export", () => {
     document.pages[0].objects.push(text);
     for (const objectIds of [[text.id], [opaque.id], ["missing"]]) {
       document.selection.objectIds = objectIds;
-      expect(exportStructureListSmi(document).contents).toBe("");
-      expect(exportStructureListSdf(document).contents).toBe("");
+      expect((await exportStructureListSmi(document)).contents).toBe("");
+      expect((await exportStructureListSdf(document)).contents).toBe("");
     }
     document.selection.objectIds = [];
-    expect(exportStructureListSmi(document).contents).toBe("CC\t1\n");
-    expect(exportStructureListSdf(document).contents.match(/^\$\$\$\$$/gm)).toHaveLength(1);
+    expect((await exportStructureListSmi(document)).contents).toBe("CC\t1\n");
+    expect((await exportStructureListSdf(document)).contents.match(/^\$\$\$\$$/gm)).toHaveLength(1);
   });
 
-  it("uses stored SMILES verbatim and falls back to the native graph for other formats", () => {
+  it("falls back to stored SMILES and the native graph when the engine returns no identifiers", async () => {
     const stored = { ...moleculeAt("stored", 0, 0), structure: "C(C)" };
     const native = { ...moleculeAt("native", 200, 0), structureFormat: "unknown" as const, structure: "stale" };
     native.atoms[1].element = "O";
     const document = documentWith([native, stored]);
-    expect(exportStructureListSmi(document).contents).toBe("C(C)\t1\nCO\t2\n");
-    expect([...exportStructureListSdf(document).contents.matchAll(/> <SMILES>\n([^\n]+)/g)].map((match) => match[1])).toEqual(["C(C)", "CO"]);
+    expect((await exportStructureListSmi(document)).contents).toBe("C(C)\t1\nCO\t2\n");
+    expect([...(await exportStructureListSdf(document)).contents.matchAll(/> <SMILES>\n([^\n]+)/g)].map((match) => match[1])).toEqual(["C(C)", "CO"]);
   });
 
-  it("uses a nonempty source molfile title as the name and omits names for blank titles", () => {
+  it("uses a nonempty source molfile title as the name and omits names for blank titles", async () => {
     const named = { ...moleculeAt("named", 0, 0), structureFormat: "molfile-v2000" as const };
     named.structure = `  Ethane\tstandard  ${moleculeToMolfileV2000(named)}`.replace(/\n/g, "\r\n");
     const unnamed = { ...moleculeAt("unnamed", 200, 0), structureFormat: "molfile-v2000" as const };
     unnamed.structure = ` \t ${moleculeToMolfileV2000(unnamed)}`;
     const document = documentWith([unnamed, named]);
-    expect(exportStructureListSmi(document).contents).toBe("CC\tEthane standard\nCC\t2\n");
-    const records = exportStructureListSdf(document).contents.split("$$$$\n");
+    expect((await exportStructureListSmi(document)).contents).toBe("CC\tEthane standard\nCC\t2\n");
+    const records = (await exportStructureListSdf(document)).contents.split("$$$$\n");
     expect(records[0]).toMatch(/^Ethane standard\n/);
     expect(records[0]).toContain("> <Name>\nEthane standard\n\n");
     expect(records[1]).toMatch(/^ChemDraft molecule 2\n/);
     expect(records[1]).not.toContain("> <Name>");
   });
 
-  it("preserves the V2000 writer's document-frame coordinates, charges and wedge flags", () => {
+  it("preserves the V2000 writer's document-frame coordinates, charges and wedge flags", async () => {
     const molecule = moleculeAt("stereo", 20, 30);
     molecule.atoms[1].element = "N";
     molecule.atoms[1].formalCharge = 1;
     molecule.bonds[0].display = { bondStyle: "wedge" };
-    const sdf = exportStructureListSdf(documentWith([molecule])).contents;
+    const sdf = (await exportStructureListSdf(documentWith([molecule]))).contents;
     const graph = parseMolfileGraph(sdf.slice(0, sdf.indexOf("> <SMILES>")));
     expect(graph.atoms.map((atom) => ({ x: atom.x, y: atom.y, charge: atom.formalCharge }))).toEqual([
       { x: 20, y: -30, charge: 0 }, { x: 120, y: -130, charge: 1 }
@@ -193,7 +264,7 @@ describe("structure list export", () => {
     expect(graph.bonds[0].bondStyle).toBe("wedge");
   });
 
-  it("surfaces molfile writer and native SMILES losses with the molecule id", () => {
+  it("surfaces molfile writer and native SMILES losses with the molecule id", async () => {
     const molecule = { ...moleculeAt("lossy", 0, 0), structureFormat: "unknown" as const };
     molecule.atoms[1].element = "Ph";
     molecule.bonds[0].display = { bondStyle: "dashed" };
@@ -201,30 +272,30 @@ describe("structure list export", () => {
     moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings: writerWarnings });
     expect(writerWarnings).toHaveLength(2);
     const document = documentWith([molecule]);
-    const result = exportStructureListSdf(document);
+    const result = await exportStructureListSdf(document);
     for (const message of writerWarnings) {
       expect(result.warnings).toContainEqual({
         code: "export.sdf_v2000_loss", message, severity: "warning", objectId: molecule.id
       });
     }
-    const smi = exportStructureListSmi(document);
+    const smi = await exportStructureListSmi(document);
     expect(smi.contents).toBe("C[*]\t1\n");
     expect(smi.warnings.map((warning) => warning.code)).toEqual(["export.smiles_dative_bond", "export.smiles_atom_label"]);
     expect(smi.warnings.every((warning) => warning.objectId === molecule.id)).toBe(true);
   });
 
-  it("returns an empty text result for an empty page", () => {
+  it("returns an empty text result for an empty page", async () => {
     const document = createPhase4Document("Empty");
-    expect(exportStructureListSdf(document)).toMatchObject({ contents: "", warnings: [] });
-    expect(exportStructureListSmi(document)).toMatchObject({ contents: "", warnings: [] });
+    expect(await exportStructureListSdf(document)).toMatchObject({ contents: "", warnings: [] });
+    expect(await exportStructureListSmi(document)).toMatchObject({ contents: "", warnings: [] });
   });
 
-  it("propagates V2000 size failures rather than omitting an oversized record", () => {
+  it("propagates V2000 size failures rather than omitting an oversized record", async () => {
     const molecule = moleculeAt("large", 0, 0);
     molecule.atoms = Array.from({ length: 1000 }, (_, index) => ({
       id: `a${index}`, element: "C", x: index, y: 0, formalCharge: 0
     }));
     molecule.bonds = [];
-    expect(() => exportStructureListSdf(documentWith([molecule]))).toThrow("V2000 supports at most 999 atoms");
+    await expect(exportStructureListSdf(documentWith([molecule]))).rejects.toThrow("V2000 supports at most 999 atoms");
   });
 });

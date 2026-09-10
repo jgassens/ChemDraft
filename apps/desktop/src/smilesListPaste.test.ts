@@ -75,6 +75,7 @@ describe("depictSmilesListForPaste", () => {
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN", "CCO"]);
     expect(result?.skipped).toBe(2);
+    expect(vi.mocked(generateSmiles2DMolfile).mock.calls.map(([smiles]) => smiles)).toEqual(["CCO", "CCN", "CCO"]);
   });
 
   it("accepts .smi first-token structures even with long names and blank lines", async () => {
@@ -105,6 +106,20 @@ describe("depictSmilesListForPaste", () => {
     expect(result.status).toBe("Pasted editable text");
     expect(result.document.pages[0].objects).toHaveLength(1);
     expect(result.document.pages[0].objects[0]).toMatchObject({ type: "text", text });
+  });
+
+  it.each([
+    "Please add CO carefully",
+    "The reaction mixture was stirred carefully before the solvent was removed. ".repeat(20)
+  ])("declines prose with fewer than two strict candidates synchronously, without an engine: %s", (text) => {
+    const fallback = vi.spyOn(ocl, "depictSmiles2D");
+    const candidates = smilesListCandidates(text);
+    expect(candidates.length).toBeLessThan(2);
+    // MainWindow inserts text directly on this return value, without awaiting a promise.
+    expect(depictSmilesListForPaste(text, candidates)).toBeUndefined();
+    expect(registerRdkitWasmLoader).not.toHaveBeenCalled();
+    expect(generateSmiles2DMolfile).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it("reports progress every ten candidates only for lists longer than twenty", async () => {

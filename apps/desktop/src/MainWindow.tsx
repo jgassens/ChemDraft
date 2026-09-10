@@ -160,7 +160,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
+import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
@@ -1371,7 +1371,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.33-astra";
+const CURRENT_BUILD_STAMP = "9.5.15.34-astra";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -5546,15 +5546,20 @@ export function MainWindow({
     if (detectedPayload.kind === "plain-text" || detectedPayload.kind === "smiles") {
       const candidates = smilesListCandidates(detectedPayload.text);
       const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
-      if (candidates.length === 1 && !/\s/.test(detectedPayload.text)) {
+      if (looksLikeSmiles(detectedPayload.text) && !/\s/.test(detectedPayload.text)) {
         void renderPastedSmiles(detectedPayload.text).then((rendered) => {
           if (!rendered) pasteAsText();
         });
         return;
       }
-      void depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
+      const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
         setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      }).then((parsed) => {
+      });
+      if (!pendingList) {
+        pasteAsText();
+        return;
+      }
+      void pendingList.then((parsed) => {
         if (!parsed) {
           pasteAsText();
           return;
@@ -26719,11 +26724,11 @@ async function createDialogExportResult(
   }
 
   if (state.format === "sdf") {
-    return exportStructureListSdf(document);
+    return await exportStructureListSdf(document);
   }
 
   if (state.format === "smiles") {
-    return exportStructureListSmi(document);
+    return await exportStructureListSmi(document);
   }
 
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);

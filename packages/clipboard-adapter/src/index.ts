@@ -641,6 +641,13 @@ export function looksLikeSmiles(text: string): boolean {
   return /^[A-Za-z0-9@+\-[\]()=#$%./\\:*]+$/.test(token);
 }
 
+export function looksLikeSmilesStrict(text: string): boolean {
+  // Outside bracket atoms and Cl/Br, lowercase letters can only name aromatic atoms.
+  // This makes English words free to reject without loading a chemistry engine.
+  return looksLikeSmiles(text)
+    && !/[a-z]/.test(text.replace(/\[[^\]]*\]|Cl|Br/g, "").replace(/[bcnops]/g, ""));
+}
+
 export interface SmilesListCandidate {
   token: string;
   /** One-based position in the original clipboard text, after any surrounding quote. */
@@ -648,8 +655,8 @@ export interface SmilesListCandidate {
   column: number;
 }
 
-/** Tokenize permissively; names can pass this filter and still fail the app's SMILES parser. */
-export function smilesListCandidates(text: string): SmilesListCandidate[] {
+/** Keep prose tokens for the list decision's ratio and first-token checks, without parsing them. */
+export function smilesListTokens(text: string): SmilesListCandidate[] {
   const candidates: SmilesListCandidate[] = [];
   for (const [lineIndex, line] of text.split(/\r\n|\r|\n/).entries()) {
     // Require a separator after bullets so a leading wildcard atom (*CC) stays intact.
@@ -676,6 +683,11 @@ export function smilesListCandidates(text: string): SmilesListCandidate[] {
     }
   }
   return candidates;
+}
+
+/** Only plausible atom spellings reach the app's SMILES parser. */
+export function smilesListCandidates(text: string): SmilesListCandidate[] {
+  return smilesListTokens(text).filter(({ token }) => looksLikeSmilesStrict(token));
 }
 
 export function smilesListDecision(input: {
