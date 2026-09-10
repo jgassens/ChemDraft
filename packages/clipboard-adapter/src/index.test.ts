@@ -7,8 +7,55 @@ import {
   isVectorArtworkType,
   looksLikeInchi,
   looksLikeSmiles,
-  parseMolfileGraph
+  parseMolfileGraph,
+  smilesListCandidates,
+  smilesListDecision
 } from "./index";
+
+describe("SMILES list candidates", () => {
+  it.each([
+    ["", []],
+    [" \n\t", []],
+    ["CCO", ["CCO"]],
+    ["CCO\nc1ccccc1\nCC(=O)O", ["CCO", "c1ccccc1", "CC(=O)O"]],
+    ["CCO c1ccccc1", ["CCO", "c1ccccc1"]],
+    ["CCO\tCCN;CCCl,CCBr", ["CCO", "CCN", "CCCl", "CCBr"]],
+    ["1. CCO\n2. CCN", ["CCO", "CCN"]],
+    ["1) CCO\n(2) CCN\n- CCCl\n* CCBr\n• CCC\n# CCCC", ["CCO", "CCN", "CCCl", "CCBr", "CCC", "CCCC"]],
+    ["CCO aspirin\nCCN caffeine", ["CCO", "aspirin", "CCN", "caffeine"]],
+    ['"CCO","CCN"', ["CCO", "CCN"]],
+    ["'CCO';'CCN'", ["CCO", "CCN"]],
+    ['["CCO", "[NH4+]", "[Cl-]"]', ["CCO", "[NH4+]", "[Cl-]"]],
+    ["[NH4+].[Cl-] [13CH3][C@H](O)Cl [nH]1cccc1 *CC", ["[NH4+].[Cl-]", "[13CH3][C@H](O)Cl", "[nH]1cccc1", "*CC"]],
+    ["InChI=1S/CH4/h1H4", []],
+    ["!!! 123 4. CCO", ["CCO"]]
+  ])("tokenizes %j without asserting validity", (text, tokens) => {
+    expect(smilesListCandidates(text as string).map((candidate) => candidate.token)).toEqual(tokens);
+  });
+
+  it("records one-based source positions across list markers, quotes, and line endings", () => {
+    expect(smilesListCandidates('  1. "CCO",CCN\r\n\t(2) CCCl\rCCBr')).toEqual([
+      { token: "CCO", line: 1, column: 7 },
+      { token: "CCN", line: 1, column: 12 },
+      { token: "CCCl", line: 2, column: 6 },
+      { token: "CCBr", line: 3, column: 1 }
+    ]);
+  });
+});
+
+describe("SMILES list decision", () => {
+  it.each([
+    [{ candidates: 5, parsed: 2, lineCount: 1, parsedFirstTokenLines: 0 }, false],
+    [{ candidates: 4, parsed: 2, lineCount: 2, parsedFirstTokenLines: 2 }, true],
+    [{ candidates: 3, parsed: 3, lineCount: 1, parsedFirstTokenLines: 1 }, true],
+    [{ candidates: 8, parsed: 2, lineCount: 2, parsedFirstTokenLines: 2 }, true],
+    [{ candidates: 8, parsed: 2, lineCount: 3, parsedFirstTokenLines: 2 }, false],
+    [{ candidates: 1, parsed: 1, lineCount: 1, parsedFirstTokenLines: 1 }, false],
+    [{ candidates: 0, parsed: 0, lineCount: 0, parsedFirstTokenLines: 0 }, false]
+  ])("decides from %j", (input, expected) => {
+    expect(smilesListDecision(input)).toBe(expected);
+  });
+});
 
 const cyclopropaneV2000 = [
   "ChemDraft test",

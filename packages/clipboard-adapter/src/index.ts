@@ -641,6 +641,55 @@ export function looksLikeSmiles(text: string): boolean {
   return /^[A-Za-z0-9@+\-[\]()=#$%./\\:*]+$/.test(token);
 }
 
+export interface SmilesListCandidate {
+  token: string;
+  /** One-based position in the original clipboard text, after any surrounding quote. */
+  line: number;
+  column: number;
+}
+
+/** Tokenize permissively; names can pass this filter and still fail the app's SMILES parser. */
+export function smilesListCandidates(text: string): SmilesListCandidate[] {
+  const candidates: SmilesListCandidate[] = [];
+  for (const [lineIndex, line] of text.split(/\r\n|\r|\n/).entries()) {
+    // Require a separator after bullets so a leading wildcard atom (*CC) stays intact.
+    const marker = line.match(/^\s*(?:\d+[.)]|\(\d+\)|[-*•#])(?=\s|$)\s*/)?.[0] ?? "";
+    for (const match of line.slice(marker.length).matchAll(/[^\s,;]+/g)) {
+      let token = match[0];
+      let column = marker.length + match.index + 1;
+      // Peel CSV quotes and JSON array brackets, but preserve SMILES atom brackets, e.g.
+      // [NH4+] and [13CH3]. Only unmatched brackets or brackets around quoted data are wrappers.
+      while (token.length > 0) {
+        const balance = [...token].reduce((sum, char) => sum + (char === "[" ? 1 : char === "]" ? -1 : 0), 0);
+        if (/^["']/.test(token) || (token.startsWith("[") && (balance > 0 || /^\[\s*["'\[]/.test(token)))) {
+          token = token.slice(1);
+          column += 1;
+        } else if (/["']$/.test(token) || (token.endsWith("]") && balance < 0)) {
+          token = token.slice(0, -1);
+        } else {
+          break;
+        }
+      }
+      if (looksLikeSmiles(token)) {
+        candidates.push({ token, line: lineIndex + 1, column });
+      }
+    }
+  }
+  return candidates;
+}
+
+export function smilesListDecision(input: {
+  candidates: number;
+  parsed: number;
+  lineCount: number;
+  parsedFirstTokenLines: number;
+}): boolean {
+  // "Add the CO and CS" (2 of 5 parse) stays prose. A bare space-separated list qualifies
+  // by its parse ratio; a .smi file (SMILES then name per line) can qualify by its first tokens.
+  return input.parsed >= 2 && (input.parsed / input.candidates >= 0.5
+    || (input.lineCount >= 2 && input.parsedFirstTokenLines === input.lineCount));
+}
+
 function findV2000CountsLineIndex(lines: readonly string[]): number {
   // A V2000 counts line is "aaabbb...  V2000" (atoms, bonds, then 9 more fields + tag).
   // Requiring either the explicit V2000 tag or the full 6+ field shape avoids mis-reading

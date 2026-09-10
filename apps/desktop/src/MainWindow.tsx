@@ -160,7 +160,8 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, looksLikeSmiles, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
+import { inspectClipboardPayload, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
+import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   exportFormatDescriptors,
@@ -435,7 +436,8 @@ import {
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
   insertSmilesMolecule,
-  pastedStructureDepictionFromMolfile,
+  insertSmilesMoleculeGrid,
+  insertSmilesMoleculeGridStatus,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
   nativeChargeMarkMaxMagnitude,
@@ -1368,7 +1370,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.31-claude";
+const CURRENT_BUILD_STAMP = "9.5.15.32-astra";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -5496,61 +5498,9 @@ export function MainWindow({
   // parseable SMILES, so callers can fall back to pasting it as plain text.
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<boolean> => {
     try {
-      const ocl = await import("@chemdraft/ocl-adapter");
-      let depiction: ReturnType<typeof pastedStructureDepictionFromMolfile>;
-      let stereoCount = 0;
-      try {
-        const [{ registerRdkitWasmLoader }, rdkit] = await Promise.all([
-          import("./rdkitWasmLoader"),
-          import("@chemdraft/rdkit-adapter")
-        ]);
-        registerRdkitWasmLoader();
-        const generatedMolfile = await rdkit.generateSmiles2DMolfile(smilesText);
-        depiction = pastedStructureDepictionFromMolfile(generatedMolfile);
-        stereoCount = ocl.perceiveStereoCentersFromMolfile(generatedMolfile)
-          .filter((center) => center.isStereoCenter).length;
-      } catch {
-        // RDKit is the readability-first path for fused/bridged systems. OpenChemLib remains a
-        // complete local fallback if its WASM asset cannot be loaded or cannot depict a SMILES.
-        const fallback = ocl.depictSmiles2D(smilesText);
-        try {
-          depiction = pastedStructureDepictionFromMolfile(fallback.molfile);
-          stereoCount = ocl.perceiveStereoCentersFromMolfile(fallback.molfile)
-            .filter((center) => center.isStereoCenter).length;
-        } catch {
-          // Very large layouts can overflow V2000's fixed-width coordinate columns. Preserve
-          // OCL's structured atoms/bonds directly in that case rather than rejecting a valid
-          // peptide just because its compatibility molfile cannot be reparsed.
-          depiction = {
-            atoms: fallback.atoms.map((atom) => ({
-              element: atom.element,
-              x: atom.x,
-              y: atom.y,
-              charge: atom.charge
-            })),
-            bonds: fallback.bonds.map((bond) => ({
-              from: bond.from,
-              to: bond.to,
-              // Same contract as `pastedStructureDepictionFromMolfile`: orders are carried, not
-              // flattened. Collapsing aromatic/unknown to single silently rewrites the chemistry.
-              order: bond.order,
-              wedge: bond.wedge
-            }))
-          };
-          // The status line reports stereocenters; OCL can usually still perceive its own
-          // molfile even when the fixed-column reparse above failed. Only if perception also
-          // fails do we approximate with the wedge-bond count.
-          try {
-            stereoCount = ocl.perceiveStereoCentersFromMolfile(fallback.molfile)
-              .filter((center) => center.isStereoCenter).length;
-          } catch {
-            stereoCount = fallback.bonds.filter((bond) => bond.wedge !== null).length;
-          }
-        }
-      }
-      if (depiction.atoms.length === 0) {
-        return false;
-      }
+      const parsed = await depictSmilesForPaste(smilesText);
+      if (!parsed) return false;
+      const { depiction, stereoCount } = parsed;
       const nextDocument = insertSmilesMolecule(
         documentRef.current,
         pastePointForViewport(),
@@ -5578,7 +5528,7 @@ export function MainWindow({
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
-    if (detectedPayload.kind === "smiles") {
+    if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text)) {
       void renderPastedSmiles(detectedPayload.text).then((rendered) => {
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
@@ -5592,17 +5542,35 @@ export function MainWindow({
       setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
       return;
     }
-    // Plain text that looks like a SMILES: confirm with the engine, else paste as text.
-    if (detectedPayload.kind === "plain-text" && looksLikeSmiles(detectedPayload.text)) {
-      void renderPastedSmiles(detectedPayload.text).then((rendered) => {
-        if (!rendered) {
-          applySyncClipboardPayload(detectedPayload);
+    if (detectedPayload.kind === "plain-text" || detectedPayload.kind === "smiles") {
+      const candidates = smilesListCandidates(detectedPayload.text);
+      const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
+      if (candidates.length === 1 && !/\s/.test(detectedPayload.text)) {
+        void renderPastedSmiles(detectedPayload.text).then((rendered) => {
+          if (!rendered) pasteAsText();
+        });
+        return;
+      }
+      void depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
+        setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
+      }).then((parsed) => {
+        if (!parsed) {
+          pasteAsText();
+          return;
         }
+        const result = insertSmilesMoleculeGrid(documentRef.current, pastePointForViewport(), parsed.entries);
+        commitDocumentChange(result.document);
+        resetPasteUiState();
+        setPageFitPrompt(undefined);
+        setStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped));
+      }).catch(() => {
+        pasteAsText();
+        setStatus("Clipboard SMILES list could not be placed; pasted as text");
       });
       return;
     }
     applySyncClipboardPayload(detectedPayload);
-  }, [applySyncClipboardPayload, renderPastedSmiles]);
+  }, [applySyncClipboardPayload, commitDocumentChange, pastePointForViewport, renderPastedSmiles, resetPasteUiState]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
     const placement = nextSelectionClipboardPastePlacement(

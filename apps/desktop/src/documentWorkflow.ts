@@ -5125,6 +5125,86 @@ export function insertSmilesMolecule(
   );
 }
 
+export function insertSmilesMoleculeGrid(
+  document: ChemDraftDocument,
+  origin: PagePoint,
+  entries: readonly { smiles: string; depiction: PastedStructureDepiction }[],
+  options: { gutterPx?: number } = {}
+): { document: ChemDraftDocument; objectIds: string[]; columns: number; rows: number; pageResized: boolean } {
+  if (entries.length === 0) {
+    return { document, objectIds: [], columns: 0, rows: 0, pageResized: false };
+  }
+  const gutter = options.gutterPx ?? 32;
+  if (!Number.isFinite(gutter) || gutter < 0) {
+    throw new Error("SMILES grid gutter must be a finite, non-negative number.");
+  }
+  const margin = 24;
+  const page = firstPage(document);
+  const reservedObjectIds = new Set<string>();
+  const molecules = entries.map((entry) => {
+    const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
+      ...SMILES_PASTE_SOURCE,
+      reservedObjectIds
+    });
+    reservedObjectIds.add(molecule.id);
+    return molecule;
+  });
+  const cellWidth = Math.max(...molecules.map((molecule) => molecule.width)) + gutter;
+  const cellHeight = Math.max(...molecules.map((molecule) => molecule.height)) + gutter;
+  const columns = Math.min(entries.length, Math.max(1, Math.floor((page.width - margin * 2) / cellWidth)));
+  const rows = Math.ceil(entries.length / columns);
+  const gridWidth = columns * cellWidth;
+  const gridHeight = rows * cellHeight;
+  // Origin is the grid's top-left only when the entire grid fits there within the current
+  // page's content margins. Otherwise use the top-left margin and let rows grow downward.
+  const start = origin.x >= margin && origin.y >= margin
+    && origin.x + gridWidth <= page.width - margin && origin.y + gridHeight <= page.height - margin
+    ? origin
+    : { x: margin, y: margin };
+  const requiredWidth = Math.max(page.width, start.x + gridWidth + margin);
+  const requiredHeight = Math.max(page.height, start.y + gridHeight + margin);
+  const pageResized = requiredWidth > page.width || requiredHeight > page.height;
+  let nextDocument = document;
+  if (pageResized) {
+    const unit = pageLayoutSourceUnit(page.layout);
+    const layout = createCustomPageLayout(
+      roundUpPageSize(cssPxToPageSize(requiredWidth, unit), unit),
+      roundUpPageSize(cssPxToPageSize(requiredHeight, unit), unit),
+      unit,
+      pageMarginFromLayout(page.layout)
+    );
+    nextDocument = applyPatch(document, { op: "updatePageLayout", pageId: page.id, layout }, { now: phase4Timestamp });
+  }
+  // The builder's clamp only translates, so its measured dimensions keep the normal SMILES
+  // bond length. Grow the page before placement, then translate the built objects directly:
+  // running the scaler at overflowing cell centers would clamp rows back onto one another.
+  const objects = molecules.map((molecule, index) => translatedClipboardObject(
+    molecule,
+    start.x + (index % columns) * cellWidth + (cellWidth - molecule.width) / 2 - molecule.x,
+    start.y + Math.floor(index / columns) * cellHeight + (cellHeight - molecule.height) / 2 - molecule.y
+  ));
+  const objectIds = objects.map((object) => object.id);
+  nextDocument = applyPatches(nextDocument, [
+    ...objects.map((object): DocumentPatch => ({ op: "addObject", pageId: page.id, object })),
+    { op: "setSelection", pageId: page.id, objectIds }
+  ], { now: phase4Timestamp });
+  return { document: nextDocument, objectIds, columns, rows, pageResized };
+}
+
+export function insertSmilesMoleculeGridStatus(
+  result: ReturnType<typeof insertSmilesMoleculeGrid>,
+  skipped: number
+): string {
+  let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
+  if (result.pageResized) {
+    const page = firstPage(result.document);
+    const unit = pageLayoutSourceUnit(page.layout);
+    status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
+  }
+  if (skipped > 0) status += `; ${skipped} token${skipped === 1 ? "" : "s"} skipped`;
+  return status;
+}
+
 export function insertNativeMolfileMolecule(
   document: ChemDraftDocument,
   point: PagePoint,

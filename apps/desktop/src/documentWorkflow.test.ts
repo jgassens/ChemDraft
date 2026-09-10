@@ -35,6 +35,11 @@ import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
+  createSmilesMolecule,
+  insertSmilesMoleculeGrid,
+  insertSmilesMoleculeGridStatus,
+  smilesPasteBondLengthPx,
+  type PastedStructureDepiction,
   pastedStructureDepictionFromMolfile,
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
@@ -1024,6 +1029,106 @@ const chemdrawMacClipboardRxnfile = lengthPrefixedClipboardMolfile([
   "  1  2  2  0        0",
   "M  END"
 ]);
+
+describe("SMILES molecule grid", () => {
+  function entry(atomCount: number) {
+    const depiction: PastedStructureDepiction = {
+      atoms: Array.from({ length: atomCount }, (_, index) => ({ element: "C", x: index * 1.5, y: index * 1.5, charge: 0 })),
+      bonds: Array.from({ length: atomCount - 1 }, (_, index) => ({ from: index, to: index + 1, order: "single", wedge: null }))
+    };
+    return { smiles: "C".repeat(atomCount), depiction };
+  }
+
+  function expectContainedAndSeparated(document: ChemDraftDocument) {
+    const page = document.pages[0];
+    for (const [index, molecule] of page.objects.entries()) {
+      expect(molecule.x).toBeGreaterThanOrEqual(24);
+      expect(molecule.y).toBeGreaterThanOrEqual(24);
+      expect(molecule.x + molecule.width).toBeLessThanOrEqual(page.width - 24);
+      expect(molecule.y + molecule.height).toBeLessThanOrEqual(page.height - 24);
+      for (const other of page.objects.slice(index + 1)) {
+        const overlaps = molecule.x < other.x + other.width && molecule.x + molecule.width > other.x
+          && molecule.y < other.y + other.height && molecule.y + molecule.height > other.y;
+        expect(overlaps).toBe(false);
+      }
+    }
+  }
+
+  it("centers six varied molecules in uniform row-major cells and selects all ids", () => {
+    const document = createPhase4Document("SMILES grid");
+    const entries = [11, 7, 9, 8, 10, 6].map(entry);
+    const result = insertSmilesMoleculeGrid(document, { x: 800, y: 1000 }, entries);
+    const objects = result.document.pages[0].objects;
+    expect(result).toMatchObject({ columns: 3, rows: 2, pageResized: false });
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+    expect(new Set(result.objectIds).size).toBe(6);
+    expect(objects.map((object) => object.compatibility?.unknown?.smiles)).toEqual(entries.map((item) => item.smiles));
+    expect(document.pages[0].objects).toEqual([]);
+    expect(result.document.pages[0].layout).toEqual(document.pages[0].layout);
+    const cellWidth = Math.max(...objects.map((object) => object.width)) + 32;
+    const cellHeight = Math.max(...objects.map((object) => object.height)) + 32;
+    objects.forEach((object, index) => {
+      expect(object.x + object.width / 2).toBeCloseTo(24 + (index % 3 + 0.5) * cellWidth);
+      expect(object.y + object.height / 2).toBeCloseTo(24 + (Math.floor(index / 3) + 0.5) * cellHeight);
+      if (object.type !== "molecule") throw new Error("Expected a molecule");
+      expect(object.style.bondLengthPx).toBe(smilesPasteBondLengthPx);
+      expect(Math.hypot(object.atoms[1].x - object.atoms[0].x, object.atoms[1].y - object.atoms[0].y))
+        .toBeCloseTo(smilesPasteBondLengthPx);
+    });
+    expectContainedAndSeparated(result.document);
+    expect(insertSmilesMoleculeGridStatus(result, 2)).toBe("Pasted 6 SMILES structures in a 3 × 2 grid; 2 tokens skipped");
+  });
+
+  it("grows a Letter page for thirty structures without clamping overflowing rows together", () => {
+    const document = createPhase4Document("Large grid");
+    const result = insertSmilesMoleculeGrid(document, { x: 200, y: 200 }, Array.from({ length: 30 }, () => entry(11)));
+    expect(result).toMatchObject({ columns: 3, rows: 10, pageResized: true });
+    expect(result.document.pages[0].width).toBeGreaterThanOrEqual(document.pages[0].width);
+    expect(result.document.pages[0].height).toBeGreaterThan(document.pages[0].height);
+    expect(result.document.pages[0].layout).toMatchObject({ presetId: "custom", sourceUnit: "inch" });
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+    expectContainedAndSeparated(result.document);
+    expect(insertSmilesMoleculeGridStatus(result, 1)).toMatch(/^Pasted 30 SMILES structures in a 3 × 10 grid \(page grown to Custom 8\.5 × [\d.]+ in\); 1 token skipped$/);
+  });
+
+  it("uses origin when the whole grid fits there, including for single-atom depictions", () => {
+    const result = insertSmilesMoleculeGrid(createPhase4Document("At origin"), { x: 100, y: 80 }, [entry(1), entry(2)], { gutterPx: 16 });
+    expect(result).toMatchObject({ columns: 2, rows: 1, pageResized: false });
+    const [first, second] = result.document.pages[0].objects;
+    expect(first.x).toBeCloseTo(108);
+    expect(first.y).toBeCloseTo(80 + (second.height + 16 - first.height) / 2);
+    expect(second.x - first.x).toBeCloseTo(first.width + 16);
+    expectContainedAndSeparated(result.document);
+  });
+
+  it("grows width for oversized cells, keeps the current unit and never shrinks height", () => {
+    const document = setDocumentCustomPageSize(createPhase4Document("Metric grid"), { width: 100, height: 500, unit: "mm" });
+    const result = insertSmilesMoleculeGrid(document, { x: 24, y: 24 }, [entry(40), entry(40)]);
+    expect(result).toMatchObject({ columns: 1, rows: 2, pageResized: true });
+    expect(result.document.pages[0].width).toBeGreaterThan(document.pages[0].width);
+    expect(result.document.pages[0].height).toBeGreaterThanOrEqual(document.pages[0].height);
+    expect(result.document.pages[0].layout.sourceUnit).toBe("mm");
+    expectContainedAndSeparated(result.document);
+  });
+
+  it("preserves existing objects and chemistry while reserving unique ids for the entire batch", () => {
+    const document = createPhase4Document("Existing molecule");
+    const depiction = entry(4).depiction;
+    const existing = createSmilesMolecule(document, { x: 400, y: 800 }, depiction, "CCCC");
+    const seeded = applyPatch(document, { op: "addObject", pageId: document.pages[0].id, object: existing });
+    const result = insertSmilesMoleculeGrid(seeded, { x: 24, y: 24 }, [entry(4), entry(4)]);
+    expect(result.document.pages[0].objects[0]).toEqual(existing);
+    expect(result.objectIds).not.toContain(existing.id);
+    expect(new Set(result.objectIds).size).toBe(2);
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+  });
+
+  it("leaves the document alone for an empty list", () => {
+    const document = createPhase4Document("Empty grid");
+    expect(insertSmilesMoleculeGrid(document, { x: 24, y: 24 }, []))
+      .toEqual({ document, objectIds: [], columns: 0, rows: 0, pageResized: false });
+  });
+});
 
 describe("Phase 4 document workflow", () => {
   it("creates a real blank native document and inserts an adapter-backed fallback molecule", () => {
