@@ -84,8 +84,9 @@ export interface ParsedClipboardBond {
   toAtomId: string;
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
   /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
-   *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`. */
-  bondStyle?: "wedge" | "hashed";
+   *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`.
+   *  "dashed" is not stereo: it marks a coordination (dative) bond, type 9. */
+  bondStyle?: "wedge" | "hashed" | "dashed";
 }
 
 export interface ParsedMolfileGraph {
@@ -205,7 +206,9 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
-  const firstPlainText = textItems.find((item) => isTextLikeType(item.type)) ?? textItems[0];
+  const firstPlainText =
+    textItems.find((item) => isTextLikeType(item.type)) ??
+    textItems.find((item) => !isMarkupType(item.type));
   if (firstPlainText) {
     return {
       kind: "plain-text",
@@ -317,6 +320,22 @@ export function isTextLikeType(type: string): boolean {
     normalized === "text";
 }
 
+/**
+ * Rich-text flavors whose payload is MARKUP, not the text a person copied: `public.html`,
+ * `public.rtf`, WebKit's web archive. Every app that publishes one also publishes a plain-text
+ * flavor, so the markup is never the best reading of a clipboard — and taking it as text pastes
+ * the source, which is how a copy inside the app's own WebView once pasted "<!DOCTYPE html>"
+ * into the drawing as a text box.
+ */
+export function isMarkupType(type: string): boolean {
+  const normalized = type.trim().toLowerCase();
+  return (
+    normalized.includes("html") ||
+    normalized.includes("rtf") ||
+    /web[\s-]?archive/.test(normalized)
+  );
+}
+
 export function isVectorArtworkType(type: string): boolean {
   const normalized = type.trim().toLowerCase();
   return (
@@ -398,7 +417,16 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       throw new Error(`V2000 bond ${index + 1} has invalid atom references.`);
     }
 
-    const bondStyle = bondStyleFromV2000Stereo(stereoCode);
+    // Some writers use the V3000 coordination type in V2000 bond blocks. Preserve its dative
+    // meaning exactly as the V3000 reader does, because treating it as an ordinary single bond
+    // would silently change the interaction into a covalent bond.
+    const bondStyle = orderCode === 9 ? "dashed" : bondStyleFromV2000Stereo(stereoCode);
+    if (orderCode === 9) {
+      warnings.push({
+        code: "clipboard.v2000_coordination_bond",
+        message: `V2000 bond ${index + 1} uses coordination type 9; read as a dative (dashed) single bond.`
+      });
+    }
     return {
       id: bondId(index + 1),
       fromAtomId: atomId(fromIndex),
@@ -551,7 +579,9 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
 
       const cfgMatch = line.match(/\bCFG=(\d+)/);
       const cfg = cfgMatch ? Number(cfgMatch[1]) : 0;
-      const bondStyle = cfg === 1 ? "wedge" : cfg === 3 ? "hashed" : undefined; // CFG 2 = either
+      // Type 9 is a coordination (dative) bond: it reads back as a single bond with the dashed
+      // display style, and a dative bond carries no wedge/hash stereo (CFG stays with real types).
+      const bondStyle = orderCode === 9 ? "dashed" : cfg === 1 ? "wedge" : cfg === 3 ? "hashed" : undefined; // CFG 2 = either
       bonds.push({
         id: bondId(index),
         fromAtomId: atomId(fromIndex),
@@ -609,6 +639,72 @@ export function looksLikeSmiles(text: string): boolean {
   if (looksLikeInchi(token)) return false;
   if (!/[A-Za-z]/.test(token)) return false;
   return /^[A-Za-z0-9@+\-[\]()=#$%./\\:*]+$/.test(token);
+}
+
+export function looksLikeSmilesStrict(text: string): boolean {
+  // Outside bracket atoms and Cl/Br, lowercase letters can only name aromatic atoms.
+  // This makes English words free to reject without loading a chemistry engine.
+  return looksLikeSmiles(text)
+    && !/[a-z]/.test(text.replace(/\[[^\]]*\]|Cl|Br/g, "").replace(/[bcnops]/g, ""));
+}
+
+export interface SmilesListCandidate {
+  token: string;
+  /** One-based position in the original clipboard text, after any surrounding quote. */
+  line: number;
+  column: number;
+}
+
+/** Keep prose tokens for the list decision's ratio and first-token checks, without parsing them. */
+export function smilesListTokens(text: string): SmilesListCandidate[] {
+  const candidates: SmilesListCandidate[] = [];
+  for (const [lineIndex, line] of text.split(/\r\n|\r|\n/).entries()) {
+    // Require a separator after bullets so a leading wildcard atom (*CC) stays intact.
+    const marker = line.match(/^\s*(?:\d+[.)]|\(\d+\)|[-*•#])(?=\s|$)\s*/)?.[0] ?? "";
+    const tokens = [...line.slice(marker.length).matchAll(/[^\s,;]+/g)];
+    for (const [tokenIndex, match] of tokens.entries()) {
+      let token = match[0];
+      let column = marker.length + match.index + 1;
+      // Peel CSV quotes and JSON array brackets, but preserve SMILES atom brackets, e.g.
+      // [NH4+] and [13CH3]. Only unmatched brackets or brackets around quoted data are wrappers.
+      while (token.length > 0) {
+        const balance = [...token].reduce((sum, char) => sum + (char === "[" ? 1 : char === "]" ? -1 : 0), 0);
+        if (/^["']/.test(token) || (token.startsWith("[") && (balance > 0 || /^\[\s*["'\[]/.test(token)))) {
+          token = token.slice(1);
+          column += 1;
+        } else if (/["']$/.test(token) || (token.endsWith("]") && balance < 0)) {
+          token = token.slice(0, -1);
+        } else {
+          break;
+        }
+      }
+      // A bare atom is unambiguous enough at the start of a short .smi row, but "I like CCO"
+      // is prose. Keep that exception here so single-paste detection keeps its length guard.
+      const singleAtomRow = tokenIndex === 0 && tokens.length <= 2 && /^[BCNOPSFI]$/.test(token);
+      if (looksLikeSmiles(token) || singleAtomRow) {
+        candidates.push({ token, line: lineIndex + 1, column });
+      }
+    }
+  }
+  return candidates;
+}
+
+/** Only plausible atom spellings reach the app's SMILES parser. */
+export function smilesListCandidates(text: string): SmilesListCandidate[] {
+  // Single letters only reach this list after the row-position check in smilesListTokens.
+  return smilesListTokens(text).filter(({ token }) => looksLikeSmilesStrict(token) || /^[BCNOPSFI]$/.test(token));
+}
+
+export function smilesListDecision(input: {
+  candidates: number;
+  parsed: number;
+  lineCount: number;
+  parsedFirstTokenLines: number;
+}): boolean {
+  // "Add the CO and CS" (2 of 5 parse) stays prose. A bare space-separated list qualifies
+  // by its parse ratio; a .smi file (SMILES then name per line) can qualify by its first tokens.
+  return input.parsed >= 2 && (input.parsed / input.candidates >= 0.5
+    || (input.lineCount >= 2 && input.parsedFirstTokenLines === input.lineCount));
 }
 
 function findV2000CountsLineIndex(lines: readonly string[]): number {
@@ -737,6 +833,11 @@ function bondOrderFromMolfile(code: number): ParsedClipboardBond["order"] {
   }
   if (code === 4) {
     return "aromatic";
+  }
+  // Bond type 9 is the coordination (dative) bond. The native model carries dative as the dashed
+  // display style on a single bond, not as a bond order — each format-specific caller adds the style.
+  if (code === 9) {
+    return "single";
   }
   return "unknown";
 }

@@ -624,8 +624,8 @@ function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPalet
     tooltip: {
       title: command.title ?? command.id,
       description: command.description ?? null,
-      shortcut: command.shortcut ?? command.defaultShortcut ?? null,
-      shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut ?? null
+      shortcut: command.shortcut || command.defaultShortcut || null,
+      shortcutLabel: command.shortcutLabel || command.shortcut || command.defaultShortcut || null
     },
     layout: { colSpan: 1, rowSpan: 1 },
     disabledReason: command.disabledReason,
@@ -3454,7 +3454,8 @@ function ToolbarPaletteItem({
             enabled: command.enabled !== false,
             active: command.id === activeTool,
             disabledReason: command.disabledReason,
-            shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut
+            // `||` (not `??`): an empty string is the keybinding scheme's "unbound" sentinel.
+            shortcutLabel: command.shortcutLabel || command.shortcut || command.defaultShortcut || undefined
           }))
         }
       });
@@ -3751,7 +3752,8 @@ function ToolbarPaletteItem({
         >
           {submenuCommands.map((command) => {
             const disabled = command.enabled === false;
-            const itemShortcut = command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut;
+            // `||` (not `??`): an empty string is the keybinding scheme's "unbound" sentinel.
+            const itemShortcut = command.shortcutLabel || command.shortcut || command.defaultShortcut || undefined;
             const itemText = disabled
               ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
               : command.title;

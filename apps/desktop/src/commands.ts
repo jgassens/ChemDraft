@@ -22,10 +22,10 @@ import {
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
-  nativeSingleLetterElements,
+  nativeHotkeyElements,
   selectedGroupObjectIds,
   selectedArtBooleanEligibleObjectIds,
-  type NativeSingleLetterElement
+  type NativeHotkeyElement
 } from "./documentWorkflow";
 import {
   desktopToolsetRegistry,
@@ -41,6 +41,12 @@ import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 export interface CommandAvailability {
   canUndo?: boolean;
   canRedo?: boolean;
+  /**
+   * A lasso/marquee fragment is selected. Such a selection lives outside
+   * `document.selection.objectIds` (it names atoms and bonds, not objects), so Cut/Copy have to
+   * be told about it or the Edit menu greys out the very commands that now work on it.
+   */
+  hasMoleculeFragmentSelection?: boolean;
 }
 
 export interface ShellCommandOptions {
@@ -61,6 +67,8 @@ export function createQuickActions(
   selectedMolecule: MoleculeObject | undefined,
   availability: CommandAvailability = {}
 ): CommandSpec[] {
+  const hasClipboardSelection =
+    document.selection.objectIds.length > 0 || availability.hasMoleculeFragmentSelection === true;
   return [
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
@@ -69,8 +77,8 @@ export function createQuickActions(
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },
-    { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: document.selection.objectIds.length > 0 },
-    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: document.selection.objectIds.length > 0 },
+    { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: hasClipboardSelection },
+    { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: hasClipboardSelection },
     { id: "clipboard.paste", title: "Paste", icon: "paste", shortcut: "Cmd+V", source: "core" },
     { id: "view.zoomOut", title: "Zoom Out", icon: "zoomOut", shortcut: "Cmd+-", source: "core" },
     { id: "view.zoomIn", title: "Zoom In", icon: "zoomIn", shortcut: "Cmd++", source: "core" },
@@ -184,6 +192,166 @@ export const editActions: CommandSpec[] = [
     description: "Set the hovered native bond to a triple bond"
   },
   {
+    id: "atom.attachRingToHoveredAtom.benzene",
+    title: "Attach Benzene at Hovered Atom",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Attach a benzene ring sharing the hovered atom"
+  },
+  {
+    id: "atom.attachRingToHoveredAtom.cyclohexane",
+    title: "Attach Cyclohexane at Hovered Atom",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Attach a cyclohexane ring sharing the hovered atom"
+  },
+  {
+    id: "atom.attachRingToHoveredAtom.cyclopentane",
+    title: "Attach Cyclopentane at Hovered Atom",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Attach a cyclopentane ring sharing the hovered atom"
+  },
+  {
+    id: "atom.sproutStereoBondAtHoveredAtom.wedge",
+    title: "Add Wedge Bond to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow a bold wedge (up) bond from the hovered atom"
+  },
+  {
+    id: "atom.sproutStereoBondAtHoveredAtom.hashed",
+    title: "Add Hashed Bond to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow a hashed (down) bond from the hovered atom"
+  },
+  {
+    id: "atom.sproutMethylideneAtHoveredAtom",
+    title: "Add Methylidene to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow an exocyclic C=CH2 from the hovered carbon atom"
+  },
+  {
+    id: "atom.sproutGemDimethylAtHoveredAtom",
+    title: "Add gem-Dimethyl to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow two methyl groups from the hovered atom"
+  },
+  {
+    id: "atom.addCyclicBondToHoveredAtom",
+    title: "Add Cyclic Bond to Hovered Atom",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Grow a bond that keeps turning — repeated presses trace and close a ring"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.benzene",
+    title: "Fuse Benzene at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a benzene ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclobutane",
+    title: "Fuse 4-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclobutane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclopentane",
+    title: "Fuse 5-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclopentane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclohexane",
+    title: "Fuse 6-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclohexane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cycloheptane",
+    title: "Fuse 7-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cycloheptane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.cyclooctane",
+    title: "Fuse 8-Membered Ring at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a cyclooctane ring onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.chairCyclohexaneA",
+    title: "Fuse Chair Cyclohexane at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse a chair cyclohexane onto the hovered bond"
+  },
+  {
+    id: "bond.fuseRingAtHoveredBond.chairCyclohexaneB",
+    title: "Fuse Flipped Chair Cyclohexane at Hovered Bond",
+    icon: "ring",
+    source: "core",
+    category: "edit",
+    description: "Fuse the flipped chair cyclohexane onto the hovered bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.wedge",
+    title: "Set Hovered Bond Display: Wedge",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a wedge stereo bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.hashed",
+    title: "Set Hovered Bond Display: Hashed",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a hashed stereo bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.dashed",
+    title: "Set Hovered Bond Display: Dashed",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a dashed bond"
+  },
+  {
+    id: "bond.setHoveredBondDisplay.bold",
+    title: "Set Hovered Bond Display: Bold",
+    icon: "bond",
+    source: "core",
+    category: "edit",
+    description: "Display the hovered native bond as a bold bond"
+  },
+  {
     id: "atom.addCarbonylToHoveredAtom",
     title: "Add Carbonyl to Hovered Carbon",
     icon: "bond",
@@ -228,11 +396,73 @@ export const editActions: CommandSpec[] = [
   }
 ];
 
-export function atomElementCommandId(element: NativeSingleLetterElement): string {
+/** ChemDraw's numeric drawing hotkeys over a hovered ATOM (shared by both keybinding schemes). */
+export const numericAtomDrawingHotkeys: Readonly<Record<string, string>> = {
+  "0": "atom.addCyclicBondToHoveredAtom",
+  "1": "atom.addSingleBondToHoveredAtom",
+  "2": "atom.addCarbonylToHoveredAtom",
+  "3": "atom.attachRingToHoveredAtom.benzene",
+  "4": "atom.sproutStereoBondAtHoveredAtom.wedge",
+  "5": "atom.sproutStereoBondAtHoveredAtom.hashed",
+  "6": "atom.attachRingToHoveredAtom.cyclohexane",
+  "7": "atom.attachRingToHoveredAtom.cyclopentane",
+  "8": "atom.sproutMethylideneAtHoveredAtom",
+  "9": "atom.sproutGemDimethylAtHoveredAtom"
+};
+
+/** ChemDraw's numeric drawing hotkeys over a hovered BOND (shared by both keybinding schemes). */
+export const numericBondDrawingHotkeys: Readonly<Record<string, string>> = {
+  "1": "bond.setHoveredBondOrder.single",
+  "2": "bond.setHoveredBondOrder.double",
+  "3": "bond.setHoveredBondOrder.triple",
+  "4": "bond.fuseRingAtHoveredBond.cyclobutane",
+  "5": "bond.fuseRingAtHoveredBond.cyclopentane",
+  "6": "bond.fuseRingAtHoveredBond.cyclohexane",
+  "7": "bond.fuseRingAtHoveredBond.cycloheptane",
+  "8": "bond.fuseRingAtHoveredBond.cyclooctane",
+  "9": "bond.fuseRingAtHoveredBond.chairCyclohexaneA",
+  "0": "bond.fuseRingAtHoveredBond.chairCyclohexaneB"
+};
+
+export function atomElementCommandId(element: NativeHotkeyElement): string {
   return `atom.setHoveredElement.${element}`;
 }
 
-export const atomElementActions: CommandSpec[] = nativeSingleLetterElements.map((element) => ({
+/**
+ * ChemDraw-parity nickname labels placed by hover hotkeys. Each sets the hovered atom's label
+ * VERBATIM — a superatom-style text label, not an element and not a structural expansion. The
+ * condensed ones that spell real formulas (CF3, NO2, N3, MgBr) count in the molecular formula;
+ * opaque abbreviations (Et, Ph, Boc…) contribute nothing and export to SMILES/molfile as a
+ * warned dummy atom. "Ac" is deliberately ABSENT: it normalizes to actinium, and silently
+ * turning an acetyl into a metal is the abbreviation/element collision the formula path already
+ * documents — leave `A` unmapped until that policy exists.
+ */
+export const nativeNicknameLabels = [
+  "D", "Et", "CO2Me", "CF3", "Cbz", "Me", "MgBr", "NO2", "OMe", "Ph", "Fmoc", "R", "X", "Boc", "N3", "?"
+] as const;
+export type NativeNicknameLabel = typeof nativeNicknameLabels[number];
+
+export function atomLabelCommandId(label: NativeNicknameLabel): string {
+  // The visible unknown label is punctuation, but toolbar customization persists command IDs
+  // through a schema that permits only alphanumeric tokens between separators.
+  const token = label === "?" ? "unknown" : label;
+  return `atom.setHoveredLabel.${token}`;
+}
+
+export const nicknameLabelByCommandId: ReadonlyMap<string, NativeNicknameLabel> = new Map(
+  nativeNicknameLabels.map((label) => [atomLabelCommandId(label), label])
+);
+
+export const atomNicknameLabelActions: CommandSpec[] = [...nicknameLabelByCommandId].map(([id, label]) => ({
+  id,
+  title: `Label Hovered Atom: ${label}`,
+  icon: "atom",
+  source: "core",
+  category: "edit",
+  description: `Set the hovered native atom's label to ${label}`
+}));
+
+export const atomElementActions: CommandSpec[] = nativeHotkeyElements.map((element) => ({
   id: atomElementCommandId(element),
   title: `Set Hovered Atom: ${element}`,
   icon: "atom",
@@ -1956,6 +2186,7 @@ export function allShellCommands(
     ...copyAsActions,
     ...editActions,
     ...atomElementActions,
+    ...atomNicknameLabelActions,
     ...viewActions,
     ...pageSizeActions,
     pageCustomSizeAction,

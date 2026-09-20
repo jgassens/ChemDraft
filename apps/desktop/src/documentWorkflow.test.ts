@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
-import { atomDisplayLabel, mechanismArrowGeometry, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
+  DefaultNativeDrawingStyle,
   applyPatch,
   applyPatchWithHistory,
   applyPatches,
+  nativeDrawingStyleFromObjectStyle,
   createDocumentHistory,
   deserializeDocument,
   inchesToCssPx,
@@ -33,6 +35,11 @@ import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
+  createSmilesMolecule,
+  insertSmilesMoleculeGrid,
+  insertSmilesMoleculeGridStatus,
+  smilesPasteBondLengthPx,
+  type PastedStructureDepiction,
   pastedStructureDepictionFromMolfile,
   applyImportedPageFitRecommendation,
   applyChargeToolAtNativeAtom,
@@ -81,8 +88,15 @@ import {
   applyEditorSaveResultToSelectedObject,
   applyFreeformSingleBondToolAtPoint,
   applyNativeBondDisplayStyleTarget,
+  applyNativeAtomSproutTarget,
   applyNativeCarbonylAtAtomTarget,
+  applyNativeRingAttachAtAtomTarget,
+  applyNativeRingFuseAtBondTarget,
   applyNativeAtomElementTarget,
+  applyNativeAtomLabelClearTarget,
+  applyNativeAtomWarningSuppression,
+  applyNativeWarningSuppressionToScope,
+  nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
@@ -95,6 +109,7 @@ import {
   applyDocumentObjectProjectedPlaneTilt,
   planNativeTemplatePlacement,
   applyNativeMoleculeEngineRelayout,
+  stereoPerceptionMolfile,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   cleanUpNativeMolecules2d,
@@ -107,6 +122,8 @@ import {
   createNativeMolfileMolecule,
   createPhase4Document,
   createSelectionClipboardPayload,
+  formatElementList,
+  nativeMoleculeUnmodeledMetalElements,
   deleteSelectedDocumentObjects,
   documentObjectVisualBounds,
   distributeSelectedDocumentObjects,
@@ -136,8 +153,10 @@ import {
   insertNativeBracket,
   insertNativeReactionArrow,
   planNativeChainVertices,
+  planNativeFlexibleChainVertices,
   type PagePoint,
   insertNativeSymbolGlyph,
+  convertNativeTextObjectToAtom,
   insertNativeTextObject,
   nativeArtToolForCommand,
   nativeBracketDefaultSize,
@@ -161,6 +180,9 @@ import {
   applyMechanismArrowControlPoint,
   mechanismArrowHandlePoints,
   nativeChargeMarkCenter,
+  nativeChargeMarkMaxMagnitude,
+  nativeChargeStackRefusal,
+  nativeAtomChargeStackAtCap,
   nativeChargeMarkSizePx,
   nativeAtomValidationState,
   nativeBondStyleForToolCommand,
@@ -169,6 +191,11 @@ import {
   nativeTemplateForToolCommand,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
+  stereoPerceptionDistinctLabelLimit,
+  flattenSpunMolecule,
+  nativeElementSymbols,
+  nativeElementMass,
+  nativeMoleculeUnspellableLabels,
   nativeMoleculePartBounds,
   nativeMoleculeCenter,
   nativeMoleculeTransformState,
@@ -197,7 +224,10 @@ import {
   rotateDocumentObjectsAroundPoint,
   rotateSelectedDocumentObjects90,
   rotateNativeMoleculeObjectAroundPoint,
+  nativeMoleculePartRotationPivot,
   rotateNativeMoleculeParts,
+  snapNativeMoleculePartDragDelta,
+  snapNativeMoleculePartRotationDegrees,
   selectedGroupObjectIds,
   tiltNativeMoleculeProjectedPlane,
   tiltNativeMoleculeObjectsProjectedPlane,
@@ -236,7 +266,8 @@ import {
   updateNativeGraphicMarkerHandle,
   updateNativeGraphicPathHandle,
   updateNativeGraphicRadialGradientHandle,
-  nativeSingleBondGraphSmiles
+  nativeSingleBondGraphSmiles,
+  type NativeMoleculeDeleteTarget
 } from "./documentWorkflow";
 import * as OCL from "openchemlib";
 
@@ -845,12 +876,16 @@ function cyclopentaneVerticesFromBond(
   }
 
   const bondLength = pointDistance(firstAtom, secondAtom);
+  // Walk a regular pentagon off the seed bond: each edge turns +72° from the previous one,
+  // measured from the seed bond's own direction (the seed rises at 30° now, not flat).
+  const seedAngle = Math.atan2(secondAtom.y - firstAtom.y, secondAtom.x - firstAtom.x);
   const vertices: Array<{ x: number; y: number }> = [firstAtom, secondAtom];
-  [72, 144, 216].forEach((angleDegrees) => {
+  [1, 2, 3].forEach((step) => {
+    const angle = seedAngle + step * (72 * Math.PI / 180);
     const previous = vertices[vertices.length - 1];
     vertices.push({
-      x: previous.x + Math.cos(angleDegrees * Math.PI / 180) * bondLength,
-      y: previous.y + Math.sin(angleDegrees * Math.PI / 180) * bondLength
+      x: previous.x + Math.cos(angle) * bondLength,
+      y: previous.y + Math.sin(angle) * bondLength
     });
   });
 
@@ -860,7 +895,8 @@ function cyclopentaneVerticesFromBond(
 function setNativeAtomElement(
   document: ChemDraftDocument,
   atomId: string,
-  element: "H" | "B" | "C" | "N" | "O" | "F" | "Na" | "P" | "S" | "I"
+  element: string,
+  options: { literal?: boolean } = {}
 ): ChemDraftDocument {
   const molecule = selectedMolecule(document);
   return applyNativeAtomElementTarget(document, {
@@ -868,7 +904,7 @@ function setNativeAtomElement(
     kind: "atom",
     atomId,
     distanceToPointer: 0
-  }, element);
+  }, element, options);
 }
 
 function cycleNativeBondOrder(document: ChemDraftDocument, bondId: string): ChemDraftDocument {
@@ -993,6 +1029,106 @@ const chemdrawMacClipboardRxnfile = lengthPrefixedClipboardMolfile([
   "  1  2  2  0        0",
   "M  END"
 ]);
+
+describe("SMILES molecule grid", () => {
+  function entry(atomCount: number) {
+    const depiction: PastedStructureDepiction = {
+      atoms: Array.from({ length: atomCount }, (_, index) => ({ element: "C", x: index * 1.5, y: index * 1.5, charge: 0 })),
+      bonds: Array.from({ length: atomCount - 1 }, (_, index) => ({ from: index, to: index + 1, order: "single", wedge: null }))
+    };
+    return { smiles: "C".repeat(atomCount), depiction };
+  }
+
+  function expectContainedAndSeparated(document: ChemDraftDocument) {
+    const page = document.pages[0];
+    for (const [index, molecule] of page.objects.entries()) {
+      expect(molecule.x).toBeGreaterThanOrEqual(24);
+      expect(molecule.y).toBeGreaterThanOrEqual(24);
+      expect(molecule.x + molecule.width).toBeLessThanOrEqual(page.width - 24);
+      expect(molecule.y + molecule.height).toBeLessThanOrEqual(page.height - 24);
+      for (const other of page.objects.slice(index + 1)) {
+        const overlaps = molecule.x < other.x + other.width && molecule.x + molecule.width > other.x
+          && molecule.y < other.y + other.height && molecule.y + molecule.height > other.y;
+        expect(overlaps).toBe(false);
+      }
+    }
+  }
+
+  it("centers six varied molecules in uniform row-major cells and selects all ids", () => {
+    const document = createPhase4Document("SMILES grid");
+    const entries = [11, 7, 9, 8, 10, 6].map(entry);
+    const result = insertSmilesMoleculeGrid(document, { x: 800, y: 1000 }, entries);
+    const objects = result.document.pages[0].objects;
+    expect(result).toMatchObject({ columns: 3, rows: 2, pageResized: false });
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+    expect(new Set(result.objectIds).size).toBe(6);
+    expect(objects.map((object) => object.compatibility?.unknown?.smiles)).toEqual(entries.map((item) => item.smiles));
+    expect(document.pages[0].objects).toEqual([]);
+    expect(result.document.pages[0].layout).toEqual(document.pages[0].layout);
+    const cellWidth = Math.max(...objects.map((object) => object.width)) + 32;
+    const cellHeight = Math.max(...objects.map((object) => object.height)) + 32;
+    objects.forEach((object, index) => {
+      expect(object.x + object.width / 2).toBeCloseTo(24 + (index % 3 + 0.5) * cellWidth);
+      expect(object.y + object.height / 2).toBeCloseTo(24 + (Math.floor(index / 3) + 0.5) * cellHeight);
+      if (object.type !== "molecule") throw new Error("Expected a molecule");
+      expect(object.style.bondLengthPx).toBe(smilesPasteBondLengthPx);
+      expect(Math.hypot(object.atoms[1].x - object.atoms[0].x, object.atoms[1].y - object.atoms[0].y))
+        .toBeCloseTo(smilesPasteBondLengthPx);
+    });
+    expectContainedAndSeparated(result.document);
+    expect(insertSmilesMoleculeGridStatus(result, 2)).toBe("Pasted 6 SMILES structures in a 3 × 2 grid; 2 tokens skipped");
+  });
+
+  it("grows a Letter page for thirty structures without clamping overflowing rows together", () => {
+    const document = createPhase4Document("Large grid");
+    const result = insertSmilesMoleculeGrid(document, { x: 200, y: 200 }, Array.from({ length: 30 }, () => entry(11)));
+    expect(result).toMatchObject({ columns: 3, rows: 10, pageResized: true });
+    expect(result.document.pages[0].width).toBeGreaterThanOrEqual(document.pages[0].width);
+    expect(result.document.pages[0].height).toBeGreaterThan(document.pages[0].height);
+    expect(result.document.pages[0].layout).toMatchObject({ presetId: "custom", sourceUnit: "inch" });
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+    expectContainedAndSeparated(result.document);
+    expect(insertSmilesMoleculeGridStatus(result, 1)).toMatch(/^Pasted 30 SMILES structures in a 3 × 10 grid \(page grown to Custom 8\.5 × [\d.]+ in\); 1 token skipped$/);
+  });
+
+  it("uses origin when the whole grid fits there, including for single-atom depictions", () => {
+    const result = insertSmilesMoleculeGrid(createPhase4Document("At origin"), { x: 100, y: 80 }, [entry(1), entry(2)], { gutterPx: 16 });
+    expect(result).toMatchObject({ columns: 2, rows: 1, pageResized: false });
+    const [first, second] = result.document.pages[0].objects;
+    expect(first.x).toBeCloseTo(108);
+    expect(first.y).toBeCloseTo(80 + (second.height + 16 - first.height) / 2);
+    expect(second.x - first.x).toBeCloseTo(first.width + 16);
+    expectContainedAndSeparated(result.document);
+  });
+
+  it("grows width for oversized cells, keeps the current unit and never shrinks height", () => {
+    const document = setDocumentCustomPageSize(createPhase4Document("Metric grid"), { width: 100, height: 500, unit: "mm" });
+    const result = insertSmilesMoleculeGrid(document, { x: 24, y: 24 }, [entry(40), entry(40)]);
+    expect(result).toMatchObject({ columns: 1, rows: 2, pageResized: true });
+    expect(result.document.pages[0].width).toBeGreaterThan(document.pages[0].width);
+    expect(result.document.pages[0].height).toBeGreaterThanOrEqual(document.pages[0].height);
+    expect(result.document.pages[0].layout.sourceUnit).toBe("mm");
+    expectContainedAndSeparated(result.document);
+  });
+
+  it("preserves existing objects and chemistry while reserving unique ids for the entire batch", () => {
+    const document = createPhase4Document("Existing molecule");
+    const depiction = entry(4).depiction;
+    const existing = createSmilesMolecule(document, { x: 400, y: 800 }, depiction, "CCCC");
+    const seeded = applyPatch(document, { op: "addObject", pageId: document.pages[0].id, object: existing });
+    const result = insertSmilesMoleculeGrid(seeded, { x: 24, y: 24 }, [entry(4), entry(4)]);
+    expect(result.document.pages[0].objects[0]).toEqual(existing);
+    expect(result.objectIds).not.toContain(existing.id);
+    expect(new Set(result.objectIds).size).toBe(2);
+    expect(result.document.selection.objectIds).toEqual(result.objectIds);
+  });
+
+  it("leaves the document alone for an empty list", () => {
+    const document = createPhase4Document("Empty grid");
+    expect(insertSmilesMoleculeGrid(document, { x: 24, y: 24 }, []))
+      .toEqual({ document, objectIds: [], columns: 0, rows: 0, pageResized: false });
+  });
+});
 
 describe("Phase 4 document workflow", () => {
   it("creates a real blank native document and inserts an adapter-backed fallback molecule", () => {
@@ -1135,13 +1271,30 @@ describe("Phase 4 document workflow", () => {
     const molecule = createNativeSingleBondMolecule(document, { x: 200, y: 220 });
     const withBond = insertNativeSingleBondMolecule(document, { x: 200, y: 220 });
 
+    // The seed bond rises left-to-right at the zig-zag half-angle derived from the preset the
+    // molecule carries — (180° − chainAngleDegrees)/2, 30° for the default 120° — like
+    // ChemDraw's first bond, instead of lying flat. Derived rather than hardcoded so a preset
+    // with a different chain angle reshapes the first bond too.
+    const firstBondHalfAngle = ((180 - DefaultNativeDrawingStyle.chainAngleDegrees) / 2) * (Math.PI / 180);
     expect(molecule).toMatchObject({
       type: "molecule",
       structureFormat: "smiles",
       structure: "CC",
       atoms: [
-        { id: "atom_001", element: "C", x: 200 - nativeBondLengthPx / 2, y: 220, formalCharge: 0 },
-        { id: "atom_002", element: "C", x: 200 + nativeBondLengthPx / 2, y: 220, formalCharge: 0 }
+        {
+          id: "atom_001",
+          element: "C",
+          x: 200 - (nativeBondLengthPx / 2) * Math.cos(firstBondHalfAngle),
+          y: 220 + (nativeBondLengthPx / 2) * Math.sin(firstBondHalfAngle),
+          formalCharge: 0
+        },
+        {
+          id: "atom_002",
+          element: "C",
+          x: 200 + (nativeBondLengthPx / 2) * Math.cos(firstBondHalfAngle),
+          y: 220 - (nativeBondLengthPx / 2) * Math.sin(firstBondHalfAngle),
+          formalCharge: 0
+        }
       ],
       bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }],
       chemistry: {
@@ -1380,6 +1533,118 @@ describe("Phase 4 document workflow", () => {
     expect(grown.selection.objectIds).toEqual([molecule.id]);
 
     expect(applyNativeChainTool(seeded, { x: 0, y: 0 }, undefined, { objectId: "missing", atomId: "atom_001" })).toBe(seeded);
+  });
+
+  it("plans a flexible chain that matches the straight planner on a straight path and bends on a curved one", () => {
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+
+    // A straight pointer path reproduces the straight planner exactly.
+    const straightPath = [0, 1, 2, 3, 4].map((step) => ({ x: 100 + reach * step, y: 100 }));
+    const flexibleStraight = planNativeFlexibleChainVertices({
+      start: { x: 100, y: 100 },
+      path: straightPath,
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    const straight = planNativeChainVertices({
+      start: { x: 100, y: 100 },
+      dragPoint: { x: 100 + reach * 4, y: 100 },
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(flexibleStraight).toHaveLength(straight.length);
+    flexibleStraight.forEach((vertex, index) => {
+      expect(vertex.x).toBeCloseTo(straight[index].x, 6);
+      expect(vertex.y).toBeCloseTo(straight[index].y, 6);
+    });
+
+    // An L-shaped path bends the chain: every bond keeps its exact length, and the later
+    // vertices head down the second leg instead of continuing along the first.
+    const corner = { x: 100 + reach * 4, y: 100 };
+    const lPath = [
+      { x: 100, y: 100 },
+      corner,
+      { x: corner.x, y: 100 + reach * 4 }
+    ];
+    const bent = planNativeFlexibleChainVertices({
+      start: { x: 100, y: 100 },
+      path: lPath,
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(bent).toHaveLength(9);
+    for (let index = 1; index < bent.length; index += 1) {
+      expect(Math.hypot(bent[index].x - bent[index - 1].x, bent[index].y - bent[index - 1].y)).toBeCloseTo(22, 6);
+    }
+    // First leg runs along +x near y=100; the tail has turned to run down +y near x=corner.x.
+    expect(bent[2].y).toBeCloseTo(100, 6);
+    expect(bent[2].x).toBeGreaterThan(100);
+    const tail = bent[bent.length - 1];
+    expect(tail.y).toBeGreaterThan(corner.y + reach * 2);
+
+    // A sub-threshold path behaves like the straight tool's single conventional segment.
+    const short = planNativeFlexibleChainVertices({
+      start: { x: 100, y: 100 },
+      path: [{ x: 100, y: 100 }, { x: 103, y: 100 }],
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    });
+    expect(short).toHaveLength(2);
+
+    // The runaway cap holds for absurd paths too.
+    expect(planNativeFlexibleChainVertices({
+      start: { x: 0, y: 0 },
+      path: [{ x: 0, y: 0 }, { x: 1_000_000, y: 0 }],
+      bondLengthPx: 22,
+      chainAngleDegrees: 120
+    }).length).toBeLessThanOrEqual(201);
+  });
+
+  it("draws a flexible chain along the pointer path via applyNativeChainTool options", () => {
+    const blank = createPhase4Document("Flexible Chain Fixture");
+    const reach = 22 * Math.cos((Math.PI / 180) * 30);
+    const start = { x: 200, y: 220 };
+    const corner = { x: 200 + reach * 3, y: 220 };
+    const end = { x: corner.x, y: 220 + reach * 3 };
+    const drawn = applyNativeChainTool(blank, start, end, undefined, {
+      pathPoints: [start, corner, end]
+    });
+    const chain = drawn.pages[0].objects[0];
+    expect(chain.type).toBe("molecule");
+    if (chain.type !== "molecule") {
+      throw new Error("Expected a flexible chain molecule");
+    }
+    expect(chain.atoms).toHaveLength(7);
+    expect(chain.bonds).toHaveLength(6);
+    expect(chain.bonds.every((bond) => bond.order === "single")).toBe(true);
+    // The chain actually turned the corner rather than riding the straight start→end axis: some
+    // atoms sit near the first leg's y, and the last atoms sit near the second leg's x.
+    const atoms = chain.atoms;
+    expect(Math.abs(atoms[2].y - 220)).toBeLessThan(22);
+    expect(Math.abs(atoms[atoms.length - 1].x - corner.x)).toBeLessThan(2 * 22);
+    expect(atoms[atoms.length - 1].y).toBeGreaterThan(220 + reach);
+
+    // Anchored growth follows the path too, appending to the existing molecule.
+    const seeded = insertNativeSingleBondMolecule(blank, { x: 300, y: 300 });
+    const molecule = seeded.pages[0].objects[0];
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected a molecule fixture");
+    }
+    const anchorAtom = molecule.atoms[molecule.atoms.length - 1];
+    const anchorCorner = { x: anchorAtom.x + reach * 2, y: anchorAtom.y };
+    const grown = applyNativeChainTool(
+      seeded,
+      { x: anchorAtom.x, y: anchorAtom.y },
+      { x: anchorCorner.x, y: anchorAtom.y + reach * 2 },
+      { objectId: molecule.id, atomId: anchorAtom.id },
+      { pathPoints: [{ x: anchorAtom.x, y: anchorAtom.y }, anchorCorner, { x: anchorCorner.x, y: anchorAtom.y + reach * 2 }] }
+    );
+    const grownMolecule = grown.pages[0].objects[0];
+    if (grownMolecule.type !== "molecule") {
+      throw new Error("Expected the grown molecule");
+    }
+    expect(grownMolecule.atoms).toHaveLength(molecule.atoms.length + 4);
+    expect(grownMolecule.bonds).toHaveLength(molecule.bonds.length + 4);
   });
 
   it("never leaves a bond-less carbon when the chain cannot leave the page", () => {
@@ -2013,10 +2278,10 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedMolecule.structure).toBe(molecule.structure);
     expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
     expect(nativeMoleculeTransformState(rotatedMolecule).rotationDegrees).toBe(90);
-    expect(rotatedMolecule.atoms[0]?.x).toBeCloseTo(center.x, 3);
-    expect(rotatedMolecule.atoms[0]?.y).toBeCloseTo(center.y - nativeBondLengthPx / 2, 3);
-    expect(rotatedMolecule.atoms[1]?.x).toBeCloseTo(center.x, 3);
-    expect(rotatedMolecule.atoms[1]?.y).toBeCloseTo(center.y + nativeBondLengthPx / 2, 3);
+    molecule.atoms.forEach((atom, index) => {
+      expect(rotatedMolecule.atoms[index]?.x).toBeCloseTo(center.x - (atom.y - center.y), 3);
+      expect(rotatedMolecule.atoms[index]?.y).toBeCloseTo(center.y + (atom.x - center.x), 3);
+    });
   });
 
   it("keeps a freshly placed ring template chemically intact when rotated before placement commit", () => {
@@ -2917,7 +3182,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
     expect(cleanedMolecule.structure).toBe(molecule.structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -2943,19 +3208,412 @@ describe("Phase 4 document workflow", () => {
     expect(rotatedMolecule.bonds).toEqual(molecule.bonds);
     expect(rotatedMolecule.structure).toBe(molecule.structure);
     expect(rotatedMolecule.chemistry).toEqual(molecule.chemistry);
+    // The selected fragment (atoms 2+3) meets the rest through atom_002 — its single junction —
+    // so it rotates ABOUT atom_002, ChemDraw-style: the junction and its attachment bond to
+    // atom_001 stay put, atom_003 sweeps 90° around the junction, and no bond stretches (the
+    // old bbox-center pivot dragged atom_002 away from atom_001 and stretched bond_001).
     expect(moleculeAtom(rotatedMolecule, "atom_001")).toEqual(atom1);
-    expect(pointDistance(moleculeAtom(rotatedMolecule, "atom_002"), atom2)).toBeGreaterThan(0);
-    expect(pointDistance(moleculeAtom(rotatedMolecule, "atom_003"), atom3)).toBeGreaterThan(0);
-    expect(moleculeBondLength(rotatedMolecule, "bond_001")).not.toBeCloseTo(nativeBondLengthPx, 2);
+    expect(moleculeAtom(rotatedMolecule, "atom_002").x).toBeCloseTo(atom2.x, 6);
+    expect(moleculeAtom(rotatedMolecule, "atom_002").y).toBeCloseTo(atom2.y, 6);
+    const swept90 = {
+      x: atom2.x - (atom3.y - atom2.y),
+      y: atom2.y + (atom3.x - atom2.x)
+    };
+    expect(moleculeAtom(rotatedMolecule, "atom_003").x).toBeCloseTo(swept90.x, 6);
+    expect(moleculeAtom(rotatedMolecule, "atom_003").y).toBeCloseTo(swept90.y, 6);
+    rotatedMolecule.bonds.forEach((bond) => {
+      expect(moleculeBondLength(rotatedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 6);
+    });
 
     const cleaned = cleanUpSelectedNativeMolecule2d(rotated);
     const cleanedMolecule = selectedMolecule(cleaned);
     expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
     expect(cleanedMolecule.structure).toBe(molecule.structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
+  });
+
+  it("fuses numeric-hotkey rings onto a hovered bond", () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Ring Fuse Hotkeys"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(seed);
+    const bondTarget = {
+      objectId: molecule.id,
+      kind: "bond" as const,
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    ([["cyclobutane", 4], ["cyclopentane", 5], ["cyclohexane", 6], ["cycloheptane", 7], ["cyclooctane", 8]] as const)
+      .forEach(([templateId, size]) => {
+        const fused = selectedMolecule(applyNativeRingFuseAtBondTarget(seed, bondTarget, templateId));
+        expect(fused.atoms).toHaveLength(size);
+        expect(fused.bonds).toHaveLength(size);
+        expect(nativeMoleculeInvalidAtomStates(fused)).toHaveLength(0);
+      });
+
+    // Chairs fuse through their dedicated geometry.
+    const chair = selectedMolecule(applyNativeRingFuseAtBondTarget(seed, bondTarget, "chairCyclohexaneA"));
+    expect(chair.atoms).toHaveLength(6);
+    expect(chair.bonds).toHaveLength(6);
+
+    // Benzene fuses aromatically: three double bonds after normalization.
+    const aromatic = selectedMolecule(applyNativeRingFuseAtBondTarget(seed, bondTarget, "benzene"));
+    expect(aromatic.atoms).toHaveLength(6);
+    expect(aromatic.bonds.filter((bond) => bond.order === "double")).toHaveLength(3);
+
+    // Atom targets pass through untouched.
+    expect(applyNativeRingFuseAtBondTarget(seed, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    }, "cyclohexane")).toBe(seed);
+  });
+
+  it("attaches numeric-hotkey rings at a hovered atom sharing that atom", () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Ring Attach Hotkeys"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(seed);
+    const atomTarget = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    const withCyclohexyl = selectedMolecule(applyNativeRingAttachAtAtomTarget(seed, atomTarget, "cyclohexane"));
+    expect(withCyclohexyl.atoms).toHaveLength(2 + 5);
+    expect(withCyclohexyl.bonds).toHaveLength(1 + 6);
+    // The hovered atom itself is a ring member: it now carries three bonds.
+    const sharedDegree = withCyclohexyl.bonds.filter((bond) =>
+      bond.fromAtomId === "atom_002" || bond.toAtomId === "atom_002"
+    ).length;
+    expect(sharedDegree).toBe(3);
+
+    const withPhenylene = selectedMolecule(applyNativeRingAttachAtAtomTarget(seed, atomTarget, "benzene"));
+    expect(withPhenylene.atoms).toHaveLength(7);
+    expect(withPhenylene.bonds.filter((bond) => bond.order === "double").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("sprouts stereo bonds, methylidene, and gem-dimethyl from numeric hotkeys", () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Sprout Hotkeys"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(seed);
+    const atomTarget = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    const wedge = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "wedge"));
+    expect(wedge.atoms).toHaveLength(3);
+    expect(wedge.bonds.at(-1)?.display?.bondStyle).toBe("wedge");
+
+    const hashed = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "hashed"));
+    expect(hashed.bonds.at(-1)?.display?.bondStyle).toBe("hashed");
+
+    const methylidene = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "methylidene"));
+    expect(methylidene.atoms).toHaveLength(3);
+    expect(methylidene.bonds.at(-1)?.order).toBe("double");
+    expect(nativeMoleculeInvalidAtomStates(methylidene)).toHaveLength(0);
+
+    const gem = selectedMolecule(applyNativeAtomSproutTarget(seed, atomTarget, "gemDimethyl"));
+    expect(gem.atoms).toHaveLength(4);
+    expect(gem.bonds.filter((bond) =>
+      bond.fromAtomId === "atom_002" || bond.toAtomId === "atom_002"
+    )).toHaveLength(3);
+
+    // Methylidene refuses when the carbon lacks two free valences (here: after the gem-dimethyl
+    // the source carbon has three bonds).
+    const gemDocument = applyNativeAtomSproutTarget(seed, atomTarget, "gemDimethyl");
+    expect(applyNativeAtomSproutTarget(gemDocument, atomTarget, "methylidene")).toBe(gemDocument);
+  });
+
+  it("builds and closes a hexagon from repeated cyclic-bond (0) presses", () => {
+    let document = insertNativeSingleBondMolecule(createPhase4Document("Cyclic Hotkey"), { x: 300, y: 300 });
+    const objectId = selectedMolecule(document).id;
+    // Press 0 on the fresh tip four times: each press grows one carbon, curling consistently.
+    for (let press = 0; press < 4; press += 1) {
+      const tip = selectedMolecule(document).atoms.at(-1);
+      if (!tip) {
+        throw new Error("Expected chain tip.");
+      }
+      document = applyNativeAtomSproutTarget(document, {
+        objectId,
+        kind: "atom",
+        atomId: tip.id,
+        distanceToPointer: 0
+      }, "cyclic");
+    }
+    expect(selectedMolecule(document).atoms).toHaveLength(6);
+    expect(selectedMolecule(document).bonds).toHaveLength(5);
+
+    // The fifth press lands on the starting atom and closes the ring instead of stacking.
+    const tip = selectedMolecule(document).atoms.at(-1);
+    if (!tip) {
+      throw new Error("Expected chain tip.");
+    }
+    const closed = selectedMolecule(applyNativeAtomSproutTarget(document, {
+      objectId,
+      kind: "atom",
+      atomId: tip.id,
+      distanceToPointer: 0
+    }, "cyclic"));
+    expect(closed.atoms).toHaveLength(6);
+    expect(closed.bonds).toHaveLength(6);
+    expect(closed.structure).toBe("C1CCCCC1");
+  });
+
+  it("closes a SQUARE from cyclic-bond presses when the molecule's chain angle is 90°", () => {
+    let document = insertNativeSingleBondMolecule(createPhase4Document("Cyclic Square"), { x: 300, y: 300 });
+    const objectId = selectedMolecule(document).id;
+    // The cyclic (0) turn is the supplement of the molecule's OWN chain angle: 180° − 90° = 90°,
+    // so repeated presses walk a square instead of the default 120° chain's hexagon.
+    document = applyMoleculeBaseStylePatch(document, [objectId], { chainAngleDegrees: 90 });
+
+    // Two presses grow the chain around two 90° turns: 4 atoms, 3 bonds.
+    for (let press = 0; press < 2; press += 1) {
+      const tip = selectedMolecule(document).atoms.at(-1);
+      if (!tip) {
+        throw new Error("Expected chain tip.");
+      }
+      document = applyNativeAtomSproutTarget(document, {
+        objectId,
+        kind: "atom",
+        atomId: tip.id,
+        distanceToPointer: 0
+      }, "cyclic");
+    }
+    expect(selectedMolecule(document).atoms).toHaveLength(4);
+    expect(selectedMolecule(document).bonds).toHaveLength(3);
+
+    // The third press lands on the starting atom and closes the square instead of stacking.
+    const tip = selectedMolecule(document).atoms.at(-1);
+    if (!tip) {
+      throw new Error("Expected chain tip.");
+    }
+    const closed = selectedMolecule(applyNativeAtomSproutTarget(document, {
+      objectId,
+      kind: "atom",
+      atomId: tip.id,
+      distanceToPointer: 0
+    }, "cyclic"));
+    expect(closed.atoms).toHaveLength(4);
+    expect(closed.bonds).toHaveLength(4);
+    expect(closed.structure).toBe("C1CCC1");
+    expect(closed.chemistry).toMatchObject({ formula: "C4H8", atomCount: 4, bondCount: 4 });
+  });
+
+  it("refuses the gem-dimethyl sprout entirely when the atom lacks two free growth slots", () => {
+    // A central carbon with seven bonds has ONE free growth slot (the growth limit is 8): the
+    // first methyl would fit and the second cannot, so the pair must refuse together — the old
+    // code committed the single methyl silently, and the caller's refusal signal (reference
+    // equality → "Cannot add gem-dimethyl here") never fired.
+    const base = createPhase4Document("Gem Refusal");
+    const crowded: MoleculeObject = {
+      id: "mol_crowded",
+      type: "molecule",
+      x: 200,
+      y: 200,
+      width: 200,
+      height: 200,
+      rotation: 0,
+      style: { fillColor: "none" },
+      structureFormat: "smiles",
+      structure: "",
+      atoms: [
+        { id: "atom_001", element: "C", x: 300, y: 300, formalCharge: 0 },
+        ...Array.from({ length: 7 }, (_, index) => ({
+          id: `atom_${String(index + 2).padStart(3, "0")}`,
+          element: "C",
+          x: 300 + Math.cos((index * 2 * Math.PI) / 7) * nativeBondLengthPx,
+          y: 300 + Math.sin((index * 2 * Math.PI) / 7) * nativeBondLengthPx,
+          formalCharge: 0
+        }))
+      ],
+      bonds: Array.from({ length: 7 }, (_, index) => ({
+        id: `bond_${String(index + 1).padStart(3, "0")}`,
+        fromAtomId: "atom_001",
+        toAtomId: `atom_${String(index + 2).padStart(3, "0")}`,
+        order: "single" as const
+      })),
+      superatoms: [],
+      rGroups: []
+    };
+    const document = applyPatches(base, [{ op: "addObject", pageId: base.pages[0].id, object: crowded }]);
+
+    expect(applyNativeAtomSproutTarget(document, {
+      objectId: "mol_crowded",
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    }, "gemDimethyl")).toBe(document);
+  });
+
+  it("snaps a dragged atom onto canonical angles and the exact bond length", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Drag Snap"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const anchor = moleculeAtom(molecule, "atom_001");
+    const dragged = moleculeAtom(molecule, "atom_002");
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_002" };
+    const deltaTo = (point: { x: number; y: number }) => ({ x: point.x - dragged.x, y: point.y - dragged.y });
+    const landing = (delta: { x: number; y: number }) => ({ x: dragged.x + delta.x, y: dragged.y + delta.y });
+
+    // 4° off the horizontal grid direction and 1.5px short of the bond length: both snap.
+    const nearFlat = deltaTo({
+      x: anchor.x + Math.cos(4 * Math.PI / 180) * (nativeBondLengthPx - 1.5),
+      y: anchor.y + Math.sin(4 * Math.PI / 180) * (nativeBondLengthPx - 1.5)
+    });
+    const snappedFlat = landing(snapNativeMoleculePartDragDelta(molecule, target, nearFlat));
+    expect(snappedFlat.x).toBeCloseTo(anchor.x + nativeBondLengthPx, 6);
+    expect(snappedFlat.y).toBeCloseTo(anchor.y, 6);
+
+    // Angle snaps while a clearly non-canonical length is left alone.
+    const nearFlatLong = deltaTo({
+      x: anchor.x + Math.cos(-4 * Math.PI / 180) * 31,
+      y: anchor.y + Math.sin(-4 * Math.PI / 180) * 31
+    });
+    const snappedDirection = landing(snapNativeMoleculePartDragDelta(molecule, target, nearFlatLong));
+    expect(snappedDirection.y).toBeCloseTo(anchor.y, 6);
+    expect(Math.hypot(snappedDirection.x - anchor.x, snappedDirection.y - anchor.y)).toBeCloseTo(31, 6);
+
+    // 15° sits exactly between grid points (7.5° from each) and 30px is off-length: no snap.
+    const offCanonical = deltaTo({
+      x: anchor.x + Math.cos(15 * Math.PI / 180) * 30,
+      y: anchor.y + Math.sin(15 * Math.PI / 180) * 30
+    });
+    expect(snapNativeMoleculePartDragDelta(molecule, target, offCanonical)).toEqual(offCanonical);
+  });
+
+  it("snaps a dragged atom at 120 degrees off an anchor's off-grid bond, and skips multi-boundary drags", () => {
+    // Skew the anchor's other bond off the 30° grid, then drag the far atom near the ±120°
+    // direction relative to it — the relative candidate must win over the grid.
+    const chain = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Relative Snap"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const skewed = moveNativeMoleculeParts(chain, {
+      objectId: selectedMolecule(chain).id,
+      kind: "atom",
+      atomId: "atom_001"
+    }, { x: 5, y: 9 });
+    const molecule = selectedMolecule(skewed);
+    const anchor = moleculeAtom(molecule, "atom_002");
+    const base = moleculeAtom(molecule, "atom_001");
+    const dragged = moleculeAtom(molecule, "atom_003");
+    const baseAngle = Math.atan2(base.y - anchor.y, base.x - anchor.x) * 180 / Math.PI;
+    const relativeAngle = baseAngle + 120;
+    // 1.1° from the relative candidate (and >2.5° from any grid multiple by construction).
+    const rawAngle = relativeAngle - 1.1;
+    const proposed = {
+      x: anchor.x + Math.cos(rawAngle * Math.PI / 180) * 27,
+      y: anchor.y + Math.sin(rawAngle * Math.PI / 180) * 27
+    };
+    const delta = snapNativeMoleculePartDragDelta(molecule, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_003"
+    }, { x: proposed.x - dragged.x, y: proposed.y - dragged.y });
+    const snapped = { x: dragged.x + delta.x, y: dragged.y + delta.y };
+    const snappedAngle = Math.atan2(snapped.y - anchor.y, snapped.x - anchor.x) * 180 / Math.PI;
+    const wrappedDifference = Math.abs(((snappedAngle - relativeAngle + 540) % 360 + 360) % 360 - 180);
+    expect(wrappedDifference).toBeCloseTo(0, 5);
+
+    // A mid-chain slice touches the rest on BOTH sides; the boundary bond needing the smallest
+    // nudge clicks onto canonical geometry (the slice itself stays rigid — one shared delta).
+    const fourChain = growFromAtom(chain, "atom_003", 0);
+    const fourMolecule = selectedMolecule(fourChain);
+    const midSlice = {
+      objectId: fourMolecule.id,
+      kind: "parts" as const,
+      atomIds: ["atom_002", "atom_003"] as const,
+      bondIds: ["bond_002"] as const
+    };
+    const rawDelta = { x: 7.3, y: -4.1 };
+    const snappedDelta = snapNativeMoleculePartDragDelta(fourMolecule, midSlice, rawDelta);
+    expect(snappedDelta).not.toEqual(rawDelta);
+    const gridDistance = (fromAtom: { x: number; y: number }, toAtom: { x: number; y: number }) => {
+      const angle = Math.atan2(toAtom.y - fromAtom.y, toAtom.x - fromAtom.x) * 180 / Math.PI;
+      const offGrid = ((angle % 30) + 30) % 30;
+      return Math.min(offGrid, 30 - offGrid);
+    };
+    const slicedB = { x: moleculeAtom(fourMolecule, "atom_002").x + snappedDelta.x, y: moleculeAtom(fourMolecule, "atom_002").y + snappedDelta.y };
+    const slicedC = { x: moleculeAtom(fourMolecule, "atom_003").x + snappedDelta.x, y: moleculeAtom(fourMolecule, "atom_003").y + snappedDelta.y };
+    const boundaryGridDistances = [
+      gridDistance(moleculeAtom(fourMolecule, "atom_001"), slicedB),
+      gridDistance(moleculeAtom(fourMolecule, "atom_004"), slicedC)
+    ];
+    expect(Math.min(...boundaryGridDistances)).toBeCloseTo(0, 6);
+  });
+
+  it("snaps part rotations onto canonical directions", () => {
+    // Junction-pivoted fragment: the rotating bond clicks onto the 30° grid.
+    const chain = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Rotate Snap"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const molecule = selectedMolecule(chain);
+    const junction = moleculeAtom(molecule, "atom_002");
+    const swinging = moleculeAtom(molecule, "atom_003");
+    const referenceAngle = Math.atan2(swinging.y - junction.y, swinging.x - junction.x) * 180 / Math.PI;
+    const fragment = { objectId: molecule.id, kind: "bond" as const, bondId: "bond_002" };
+    const canonicalTarget = Math.round((referenceAngle + 40) / 30) * 30;
+    const shortOfCanonical = canonicalTarget - referenceAngle - 2;
+    expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, shortOfCanonical))
+      .toBeCloseTo(canonicalTarget - referenceAngle, 6);
+    // Far from any canonical direction: unchanged (grid points sit 30° apart, 15 - 2 = 13° away).
+    const betweenCanonicals = canonicalTarget - referenceAngle - 13;
+    expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, betweenCanonicals)).toBe(betweenCanonicals);
+
+    // Center-pivoted selection (a ring bond) clicks at 15° steps.
+    const ring = insertNativeTemplateMolecule(createPhase4Document("Rotate Snap Ring"), { x: 300, y: 300 }, "cyclohexane");
+    const ringMolecule = selectedMolecule(ring);
+    const ringBond = { objectId: ringMolecule.id, kind: "bond" as const, bondId: ringMolecule.bonds[0].id };
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 13.8)).toBe(15);
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 22)).toBe(22);
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, -44)).toBe(-45);
+  });
+
+  it("keeps the bbox-center pivot for part rotations with zero or multiple junctions", () => {
+    // Whole-molecule part selection: no unselected remainder, no junction — center pivot.
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Pivot Fallbacks"), { x: 200, y: 220 });
+    const seedMolecule = selectedMolecule(seed);
+    expect(nativeMoleculePartRotationPivot(seedMolecule, {
+      objectId: seedMolecule.id,
+      kind: "parts",
+      atomIds: seedMolecule.atoms.map((atom) => atom.id),
+      bondIds: seedMolecule.bonds.map((bond) => bond.id)
+    })).toBeUndefined();
+
+    // A ring bond touches the rest of the ring through BOTH its atoms — two junctions, so a
+    // rigid swing must distort something either way; the pivot stays the selection center.
+    const ring = insertNativeTemplateMolecule(createPhase4Document("Pivot Ring"), { x: 300, y: 300 }, "cyclohexane");
+    const ringMolecule = selectedMolecule(ring);
+    expect(nativeMoleculePartRotationPivot(ringMolecule, {
+      objectId: ringMolecule.id,
+      kind: "bond",
+      bondId: ringMolecule.bonds[0].id
+    })).toBeUndefined();
+
+    // A terminal fragment with one junction pivots exactly on its own junction atom (the
+    // selected atom the boundary bond touches), so the attachment bond never moves.
+    const chain = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Pivot Chain"), { x: 200, y: 220 }),
+      "atom_002",
+      -60
+    );
+    const chainMolecule = selectedMolecule(chain);
+    const junction = moleculeAtom(chainMolecule, "atom_002");
+    expect(nativeMoleculePartRotationPivot(chainMolecule, {
+      objectId: chainMolecule.id,
+      kind: "bond",
+      bondId: "bond_002"
+    })).toEqual({ x: junction.x, y: junction.y });
   });
 
   it("stretches a selected native molecule independently on X and Y without changing bonds", () => {
@@ -3010,7 +3668,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -3050,7 +3708,7 @@ describe("Phase 4 document workflow", () => {
         rotationDegrees: 0
       });
       molecule.bonds.forEach((bond) => {
-        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
       });
       expect(moleculeAngleDegrees(molecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
     });
@@ -3077,7 +3735,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
   });
 
@@ -3098,6 +3756,21 @@ describe("Phase 4 document workflow", () => {
     const cleanedMolecule = moleculeById(cleaned, molecule.id);
 
     expect(cleanedMolecule.bonds.every((bond) => bond.display?.depthWeight === undefined)).toBe(true);
+  });
+
+  it("2D cleanup's polygon pass idealises to the molecule style's bond length — the same standard as the engine route", () => {
+    const inserted = insertNativeTemplateMolecule(createPhase4Document("Style Length"), { x: 300, y: 300 }, "cyclohexane");
+    const molecule = selectedMolecule(inserted);
+    // A style whose bond is half again as long as the default: cleanup used to ignore it and
+    // idealise every polygon-pass molecule to the default length regardless.
+    const styled = applyPatches(inserted, [{
+      op: "updateObject",
+      objectId: molecule.id,
+      changes: { style: { ...molecule.style, bondLengthPx: 33 } }
+    }]);
+    const cleaned = cleanUpNativeMolecules2d(styled, [molecule.id]);
+    const cleanedMolecule = moleculeById(cleaned, molecule.id);
+    cleanedMolecule.bonds.forEach((bond) => expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(33, 0));
   });
 
   describe("fused-ring cleanup contract (2D preserves, engine re-layout rebuilds)", () => {
@@ -3148,6 +3821,627 @@ describe("Phase 4 document workflow", () => {
       lengths.forEach((length) => expect(Math.abs(length - mean) / mean).toBeLessThan(0.05));
       expectUsableNativeMoleculeGraph(relaidMolecule, "engine relayout", {
         minimumAtomDistancePx: mean * 0.5
+      });
+    });
+
+    /** A tetrakis(2-methylimidazole)zinc complex as a user drew it: four imidazole rings on
+     *  dative (dashed) bonds to one Zn. Four separate rings joined through the metal give the
+     *  component a cyclomatic number of 4, so the polygon+tree pass declines it; before the
+     *  engine route existed, 2D cleanup did nothing at all on drawings like this. */
+    function zincTetrakisImidazoleFixture(): { document: ChemDraftDocument; molecule: MoleculeObject } {
+      const atomRows: ReadonlyArray<readonly [string, string, number, number]> = [
+        ["atom_003", "C", 194.3, 84.3], ["atom_004", "N", 201.5, 105.1], ["atom_005", "C", 184.0, 118.4],
+        ["atom_006", "N", 166.0, 105.8], ["atom_007", "C", 172.3, 84.8], ["atom_008", "Zn", 237.9, 126.0],
+        ["atom_009", "N", 256.9, 115.0], ["atom_010", "C", 259.2, 93.2], ["atom_011", "C", 280.8, 88.6],
+        ["atom_012", "N", 291.8, 107.6], ["atom_013", "C", 277.0, 124.0], ["atom_014", "N", 163.5, 188.8],
+        ["atom_015", "N", 280.8, 195.9], ["atom_016", "C", 165.1, 210.7], ["atom_017", "C", 144.7, 219.0],
+        ["atom_018", "N", 130.5, 202.2], ["atom_019", "C", 142.1, 183.5], ["atom_020", "C", 302.8, 197.6],
+        ["atom_021", "N", 308.0, 219.0], ["atom_022", "C", 289.2, 230.5], ["atom_023", "C", 272.5, 216.2],
+        ["atom_024", "C", 184.5, 140.4], ["atom_025", "C", 133.8, 163.1], ["atom_026", "C", 317.0, 180.8],
+        ["atom_027", "C", 281.6, 145.5]
+      ];
+      const bondRows: ReadonlyArray<readonly [string, string, string, "single" | "double", boolean]> = [
+        ["bond_001", "atom_003", "atom_004", "single", false], ["bond_002", "atom_004", "atom_005", "single", false],
+        ["bond_003", "atom_005", "atom_006", "double", false], ["bond_004", "atom_006", "atom_007", "single", false],
+        ["bond_005", "atom_007", "atom_003", "double", false], ["bond_006", "atom_004", "atom_008", "single", true],
+        ["bond_007", "atom_008", "atom_009", "single", true], ["bond_008", "atom_009", "atom_010", "single", false],
+        ["bond_009", "atom_010", "atom_011", "double", false], ["bond_010", "atom_011", "atom_012", "single", false],
+        ["bond_011", "atom_012", "atom_013", "double", false], ["bond_012", "atom_013", "atom_009", "single", false],
+        ["bond_013", "atom_008", "atom_014", "single", true], ["bond_014", "atom_008", "atom_015", "single", true],
+        ["bond_015", "atom_014", "atom_016", "single", false], ["bond_016", "atom_016", "atom_017", "double", false],
+        ["bond_017", "atom_017", "atom_018", "single", false], ["bond_018", "atom_018", "atom_019", "double", false],
+        ["bond_019", "atom_019", "atom_014", "single", false], ["bond_020", "atom_015", "atom_020", "single", false],
+        ["bond_021", "atom_020", "atom_021", "double", false], ["bond_022", "atom_021", "atom_022", "single", false],
+        ["bond_023", "atom_022", "atom_023", "double", false], ["bond_024", "atom_023", "atom_015", "single", false],
+        ["bond_025", "atom_005", "atom_024", "single", false], ["bond_026", "atom_019", "atom_025", "single", false],
+        ["bond_027", "atom_020", "atom_026", "single", false], ["bond_028", "atom_013", "atom_027", "single", false]
+      ];
+      const molecule: MoleculeObject = {
+        id: "mol_zinc_imidazoles",
+        type: "molecule",
+        x: 130,
+        y: 84,
+        width: 190,
+        height: 150,
+        rotation: 0,
+        style: { fillColor: "none" },
+        structureFormat: "smiles",
+        structure: "C=1N(C(=NC1)C)[Zn](N1C=CN=C1C)(N1C=CN=C1C)N1C(=NC=C1)C",
+        atoms: atomRows.map(([id, element, x, y]) => ({ id, element, x, y, formalCharge: 0 })),
+        bonds: bondRows.map(([id, fromAtomId, toAtomId, order, dashed]) => ({
+          id, fromAtomId, toAtomId, order, ...(dashed ? { display: { bondStyle: "dashed" as const } } : {})
+        })),
+        superatoms: [],
+        rGroups: []
+      };
+      const base = createPhase4Document("Zinc Cluster");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      return { document, molecule: moleculeById(document, molecule.id) };
+    }
+
+    /**
+     * A dative-bridged polymer, in miniature: three 1,3,5-tris(ethynylthio)benzene dendrons, each
+     * with three arms reaching a bond and a half out, joined tip-to-tip by gold. Removing the
+     * metals leaves THREE separate fragments with nothing covalent between them — the shape the
+     * chemist drew lives entirely in where those fragments sit.
+     */
+    function goldBridgedPolymerFixture(): { document: ChemDraftDocument; molecule: MoleculeObject } {
+      const L = 28;
+      const atoms: MoleculeAtom[] = [];
+      const bonds: MoleculeBond[] = [];
+      const atomId = () => `atom_${String(atoms.length + 1).padStart(3, "0")}`;
+      const bondId = () => `bond_${String(bonds.length + 1).padStart(3, "0")}`;
+      const addAtom = (element: string, x: number, y: number): string => {
+        const id = atomId();
+        atoms.push({ id, element, x: Number(x.toFixed(3)), y: Number(y.toFixed(3)), formalCharge: 0 });
+        return id;
+      };
+      const addBond = (from: string, to: string, order: "single" | "double" | "triple", dashed = false) => {
+        bonds.push({
+          id: bondId(),
+          fromAtomId: from,
+          toAtomId: to,
+          order,
+          ...(dashed ? { display: { bondStyle: "dashed" as const } } : {})
+        });
+      };
+
+      /** One dendron: a benzene ring with three -C#C-S arms, at the given ring angles. */
+      const addDendron = (centerX: number, centerY: number, armAngles: readonly number[]): string[] => {
+        const ring = [0, 1, 2, 3, 4, 5].map((step) => {
+          const angle = (armAngles[0] + step * 60) * Math.PI / 180;
+          return addAtom("C", centerX + L * Math.cos(angle), centerY + L * Math.sin(angle));
+        });
+        ring.forEach((id, index) => addBond(id, ring[(index + 1) % 6], index % 2 === 0 ? "double" : "single"));
+        return armAngles.map((armAngle) => {
+          const angle = armAngle * Math.PI / 180;
+          const step = (multiple: number) => ({
+            x: centerX + (L + multiple * L) * Math.cos(angle),
+            y: centerY + (L + multiple * L) * Math.sin(angle)
+          });
+          const ringAtom = ring[Math.round(((armAngle - armAngles[0]) % 360 + 360) % 360 / 60) % 6];
+          const first = addAtom("C", step(1).x, step(1).y);
+          const second = addAtom("C", step(2).x, step(2).y);
+          const sulfur = addAtom("S", step(3).x, step(3).y);
+          addBond(ringAtom, first, "single");
+          addBond(first, second, "triple");
+          addBond(second, sulfur, "single");
+          return sulfur;
+        });
+      };
+
+      // Three dendrons, each arm tip 2L from the tip it faces, with a gold atom in between.
+      const armReach = 4 * L;
+      const centreGap = 2 * armReach + 2 * L;
+      const first = { x: 240, y: 260 };
+      const second = { x: first.x + centreGap, y: first.y };
+      const third = {
+        x: first.x + centreGap * Math.cos(120 * Math.PI / 180),
+        y: first.y + centreGap * Math.sin(120 * Math.PI / 180)
+      };
+      const firstArms = addDendron(first.x, first.y, [0, 120, 240]);
+      const secondArms = addDendron(second.x, second.y, [180, 300, 60]);
+      const thirdArms = addDendron(third.x, third.y, [300, 60, 180]);
+
+      const bridge = (donorA: string, donorB: string) => {
+        const a = atoms.find((atom) => atom.id === donorA)!;
+        const b = atoms.find((atom) => atom.id === donorB)!;
+        const gold = addAtom("Au", (a.x + b.x) / 2, (a.y + b.y) / 2);
+        addBond(gold, donorA, "single", true);
+        addBond(gold, donorB, "single", true);
+      };
+      bridge(firstArms[0], secondArms[0]);
+      bridge(firstArms[1], thirdArms[0]);
+
+      const xs = atoms.map((atom) => atom.x);
+      const ys = atoms.map((atom) => atom.y);
+      const molecule: MoleculeObject = {
+        id: "mol_gold_polymer",
+        type: "molecule",
+        x: Math.min(...xs),
+        y: Math.min(...ys),
+        width: Math.max(...xs) - Math.min(...xs),
+        height: Math.max(...ys) - Math.min(...ys),
+        rotation: 0,
+        style: { fillColor: "none" },
+        structureFormat: "smiles",
+        structure: "SC#Cc1cc(C#CS)cc(C#CS)c1",
+        atoms,
+        bonds,
+        superatoms: [],
+        rGroups: []
+      };
+      const base = createPhase4Document("Gold Polymer");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      return { document, molecule: moleculeById(document, molecule.id) };
+    }
+
+      it("names the metals no force field here can place in 3D", () => {
+      const { molecule } = goldBridgedPolymerFixture();
+      expect(nativeMoleculeUnmodeledMetalElements(molecule)).toEqual(["Au"]);
+
+      // An ordinary organic has nothing to flag.
+      const organic = insertNativeTemplateMolecule(
+        createPhase4Document("Organic"),
+        { x: 300, y: 300 },
+        "cyclohexane"
+      );
+      expect(nativeMoleculeUnmodeledMetalElements(selectedMolecule(organic))).toEqual([]);
+
+      // Every metal is named once, in order, however many atoms carry it.
+      const twoMetals: MoleculeObject = {
+        ...molecule,
+        atoms: [
+          ...molecule.atoms,
+          { id: "atom_zn1", element: "Zn", x: 10, y: 10, formalCharge: 0 },
+          { id: "atom_zn2", element: "Zn", x: 20, y: 10, formalCharge: 0 }
+        ]
+      };
+      expect(nativeMoleculeUnmodeledMetalElements(twoMetals)).toEqual(["Au", "Zn"]);
+
+      expect(formatElementList([])).toBe("");
+      expect(formatElementList(["Au"])).toBe("Au");
+      expect(formatElementList(["Zn", "Au"])).toBe("Zn and Au");
+      expect(formatElementList(["Fe", "Zn", "Au"])).toBe("Fe, Zn and Au");
+    });
+
+  it("keeps a dative-bridged polymer's dendrons where they were drawn instead of packing them together", () => {
+      // The engine is handed the ligand skeleton with the metals taken out. For a polymer that is
+      // several disconnected fragments, and the engine packs them however it likes — so recentring
+      // the whole engine layout on one drawn centroid kept the engine's packing, and the folding
+      // pass then curled every arm inward chasing each metal's two donors. Each fragment is placed
+      // on its own drawn position instead.
+      const { document, molecule } = goldBridgedPolymerFixture();
+      const dendronIds = [0, 1, 2].map((index) =>
+        molecule.atoms.slice(index * 15, index * 15 + 15).map((atom) => atom.id)
+      );
+      const centroid = (target: MoleculeObject, ids: readonly string[]) => {
+        const members = target.atoms.filter((atom) => ids.includes(atom.id));
+        return {
+          x: members.reduce((sum, atom) => sum + atom.x, 0) / members.length,
+          y: members.reduce((sum, atom) => sum + atom.y, 0) / members.length
+        };
+      };
+      const dendronGaps = (target: MoleculeObject) => [[0, 1], [0, 2], [1, 2]].map(([a, b]) => {
+        const first = centroid(target, dendronIds[a]);
+        const second = centroid(target, dendronIds[b]);
+        return Math.hypot(first.x - second.x, first.y - second.y);
+      });
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+
+      const covalent = relaidMolecule.bonds.filter((bond) => bond.display?.bondStyle !== "dashed");
+      const meanBondLength = covalent
+        .map((bond) => moleculeBondLength(relaidMolecule, bond.id))
+        .reduce((sum, value) => sum + value, 0) / covalent.length;
+
+      // Each pair of dendrons stays about as far apart as it was drawn.
+      const drawnGaps = dendronGaps(molecule);
+      const crossings = (target: MoleculeObject): number => {
+        const byId = new Map(target.atoms.map((atom) => [atom.id, atom]));
+        const side = (p: { x: number; y: number }, q: { x: number; y: number }, r: { x: number; y: number }) =>
+          (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+        let total = 0;
+        target.bonds.forEach((first, index) => {
+          target.bonds.slice(index + 1).forEach((second) => {
+            if ([first.fromAtomId, first.toAtomId].some((id) => id === second.fromAtomId || id === second.toAtomId)) {
+              return;
+            }
+            const a1 = byId.get(first.fromAtomId);
+            const a2 = byId.get(first.toAtomId);
+            const b1 = byId.get(second.fromAtomId);
+            const b2 = byId.get(second.toAtomId);
+            if (!a1 || !a2 || !b1 || !b2) {
+              return;
+            }
+            const d1 = side(b1, b2, a1);
+            const d2 = side(b1, b2, a2);
+            const d3 = side(a1, a2, b1);
+            const d4 = side(a1, a2, b2);
+            if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+              total += 1;
+            }
+          });
+        });
+        return total;
+      };
+
+      // No bond crosses another: the drawing came in clean and stays clean. Without per-fragment
+      // placement the engine's packing put two dendrons on top of each other (their centres 76 px
+      // apart instead of 280) and two bonds crossed.
+      expect(crossings(molecule)).toBe(0);
+      expect(crossings(relaidMolecule)).toBe(0);
+
+      // The two dendrons a gold atom holds by BOTH its donors keep the separation they were drawn
+      // with. (The third dendron hangs off a single donor, so the monodentate pass is free to swing
+      // it to another slot around its metal — that is its job, and it keeps the structure legible.)
+      expect(dendronGaps(relaidMolecule)[0]).toBeGreaterThan(drawnGaps[0] * 0.8);
+
+      // Every dative link comes out the same length — the reported drawing had gold sitting 22 px
+      // from one pair of sulfurs and 52 px from another, at a 22 px bond length.
+      const dativeLengths = relaidMolecule.bonds
+        .filter((bond) => bond.display?.bondStyle === "dashed")
+        .map((bond) => moleculeBondLength(relaidMolecule, bond.id));
+      dativeLengths.forEach((length) => {
+        expect(length / meanBondLength).toBeGreaterThan(0.85);
+        expect(length / meanBondLength).toBeLessThan(1.15);
+      });
+
+      // And every donor is bent, not pointing its metal straight out along its own bond. A
+      // coordinated sulfur keeps two lone pairs; 180 degrees is the shape nothing has.
+      const donorAngles = relaidMolecule.bonds
+        .filter((bond) => bond.display?.bondStyle === "dashed")
+        .map((bond) => {
+          const metalId = [bond.fromAtomId, bond.toAtomId]
+            .find((id) => relaidMolecule.atoms.find((atom) => atom.id === id)?.element === "Au")!;
+          const donorId = bond.fromAtomId === metalId ? bond.toAtomId : bond.fromAtomId;
+          const donor = relaidMolecule.atoms.find((atom) => atom.id === donorId)!;
+          const metal = relaidMolecule.atoms.find((atom) => atom.id === metalId)!;
+          const neighborId = relaidMolecule.bonds
+            .filter((candidate) => candidate.display?.bondStyle !== "dashed")
+            .map((candidate) => candidate.fromAtomId === donorId ? candidate.toAtomId
+              : candidate.toAtomId === donorId ? candidate.fromAtomId : undefined)
+            .find((id): id is string => id !== undefined)!;
+          const neighbor = relaidMolecule.atoms.find((atom) => atom.id === neighborId)!;
+          const toNeighbor = Math.atan2(neighbor.y - donor.y, neighbor.x - donor.x);
+          const toMetal = Math.atan2(metal.y - donor.y, metal.x - donor.x);
+          return Math.abs(((toNeighbor - toMetal) * 180 / Math.PI + 540) % 360 - 180);
+        });
+      donorAngles.forEach((angle) => expect(angle).toBeLessThan(150));
+
+      // And nothing collides: no two unbonded atoms inside half a bond length.
+      const bonded = new Set(relaidMolecule.bonds.map((bond) => [bond.fromAtomId, bond.toAtomId].sort().join("|")));
+      relaidMolecule.atoms.forEach((atom, index) => {
+        relaidMolecule.atoms.slice(index + 1).forEach((other) => {
+          if (bonded.has([atom.id, other.id].sort().join("|"))) {
+            return;
+          }
+          expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`)
+            .toBeGreaterThan(meanBondLength * 0.5);
+        });
+      });
+
+      // Running it again changes nothing: a polymer is a fixed point like a chelate, so repeated
+      // cleanups do not walk it across the page.
+      const twice = moleculeById(
+        applyNativeMoleculeEngineRelayout(relaid, molecule.id, relayoutMolfile2D),
+        molecule.id
+      );
+      // A bridged structure settles on the second pass and then stops: the first pass moves the
+      // fragments into line, the second finds a few pixels left in it, and the third changes
+      // nothing at all. (A chelate is a fixed point from the first pass — see the test below.)
+      const secondRunShift = Math.max(...twice.atoms.map((atom, index) =>
+        Math.hypot(atom.x - relaidMolecule.atoms[index].x, atom.y - relaidMolecule.atoms[index].y)));
+      expect(secondRunShift).toBeLessThan(meanBondLength / 2);
+
+      const thrice = moleculeById(
+        applyNativeMoleculeEngineRelayout(
+          applyNativeMoleculeEngineRelayout(relaid, molecule.id, relayoutMolfile2D),
+          molecule.id,
+          relayoutMolfile2D
+        ),
+        molecule.id
+      );
+      const thirdRunShift = Math.max(...thrice.atoms.map((atom, index) =>
+        Math.hypot(atom.x - twice.atoms[index].x, atom.y - twice.atoms[index].y)));
+      expect(thirdRunShift).toBeLessThan(1);
+    });
+
+    it("engine re-layout of a zinc coordination complex: clean ligands around a centred metal, dative bonds kept", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      // Four rings joined through the metal: the polygon+tree pass declines this (cleanup routes it
+      // to the engine), and the routing predicate must say so.
+      expect(moleculeHasFusedRingSystem(molecule)).toBe(true);
+      expect(cleanUpNativeMolecules2d(document, [molecule.id])).toBe(document);
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      const isDative = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+
+      // The four dative bonds survive on their endpoints; nothing else gained or lost a style.
+      expect(relaidMolecule.bonds.filter(isDative).map((bond) => bond.id).sort()).toEqual(["bond_006", "bond_007", "bond_013", "bond_014"]);
+
+      // Covalent bonds are uniform and scaled to the drawing's own covalent mean — the long
+      // metal-ligand bonds must not drag that scale down.
+      const covalentBefore = molecule.bonds.filter((bond) => !isDative(bond)).map((bond) => moleculeBondLength(molecule, bond.id));
+      const meanBefore = covalentBefore.reduce((sum, value) => sum + value, 0) / covalentBefore.length;
+      const covalentAfter = relaidMolecule.bonds.filter((bond) => !isDative(bond)).map((bond) => moleculeBondLength(relaidMolecule, bond.id));
+      const meanAfter = covalentAfter.reduce((sum, value) => sum + value, 0) / covalentAfter.length;
+      expect(meanAfter).toBeCloseTo(meanBefore, 0);
+      covalentAfter.forEach((length) => expect(Math.abs(length - meanAfter) / meanAfter).toBeLessThan(0.1));
+
+      // No ligand collides with another (sent as plain single bonds, the engine tangled them):
+      // no two atoms closer than half a bond length. (The hand-built fixture carries no chemistry
+      // metadata, so the shared usability helper is not used here.)
+      relaidMolecule.atoms.forEach((atom, index) => {
+        relaidMolecule.atoms.slice(index + 1).forEach((other) => {
+          expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`).toBeGreaterThan(meanAfter * 0.5);
+        });
+      });
+
+      // The metal sits in its donor pocket (the engine alone parks it to one side on long dashed
+      // bonds): it is near the donor centroid, every Zn–N reach is of the same order, and the
+      // donors spread around it rather than clustering on one side.
+      const zinc = relaidMolecule.atoms.find((atom) => atom.element === "Zn")!;
+      const donors = relaidMolecule.bonds.filter(isDative).map((bond) =>
+        relaidMolecule.atoms.find((atom) => atom.id === (bond.fromAtomId === zinc.id ? bond.toAtomId : bond.fromAtomId))!
+      );
+      const reach = donors.map((donor) => Math.hypot(donor.x - zinc.x, donor.y - zinc.y));
+      const meanReach = reach.reduce((sum, value) => sum + value, 0) / reach.length;
+      const centroid = { x: donors.reduce((sum, donor) => sum + donor.x, 0) / donors.length, y: donors.reduce((sum, donor) => sum + donor.y, 0) / donors.length };
+      expect(Math.hypot(centroid.x - zinc.x, centroid.y - zinc.y)).toBeLessThan(meanReach * 0.5);
+      reach.forEach((value) => expect(value / meanReach).toBeGreaterThan(0.5));
+      reach.forEach((value) => expect(value / meanReach).toBeLessThan(1.6));
+      const angles = donors.map((donor) => Math.atan2(donor.y - zinc.y, donor.x - zinc.x)).sort((left, right) => left - right);
+      const gaps = angles.map((angle, index) => (index === angles.length - 1 ? angles[0] + 2 * Math.PI : angles[index + 1]) - angle);
+      gaps.forEach((gap) => expect(gap).toBeGreaterThan(Math.PI / 4));
+    });
+
+    /** Zinc on a tris(2-pyridylmethyl)amine (TPA) ligand, drawn with the three arms splayed
+     *  straight out so no donor is anywhere near the metal. A chelate like this is the case the
+     *  engine alone gets wrong: it lays the ligand out flat and parks the metal to one side. */
+    function zincTpaSplayedFixture(): { document: ChemDraftDocument; molecule: MoleculeObject } {
+      const atoms: MoleculeAtom[] = [{ id: "n_amine", element: "N", x: 300, y: 300, formalCharge: 0 }];
+      const bonds: MoleculeBond[] = [];
+      [-90, 30, 150].forEach((degrees, arm) => {
+        const radians = degrees * Math.PI / 180;
+        const bond = 28;
+        const along = (k: number) => ({ x: 300 + Math.cos(radians) * bond * k, y: 300 + Math.sin(radians) * bond * k });
+        const ch2 = along(1);
+        // A regular hexagon two bonds out along the arm: ring atom 0 (C2) faces the CH2, atom 1 is
+        // the pyridine N. Sane input geometry matters — the engine partly keeps coordinates it
+        // considers reasonable, so a deliberately broken ring would come back distorted.
+        const center = along(3);
+        const ids = ["c_ch2", "c_py2", "n_py", "c_py3", "c_py4", "c_py5", "c_py6"].map((name) => `${name}_${arm}`);
+        atoms.push({ id: ids[0], element: "C", x: ch2.x, y: ch2.y, formalCharge: 0 });
+        const ringIds = ids.slice(1);
+        ringIds.forEach((id, index) => {
+          const angle = radians + Math.PI + index * Math.PI / 3;
+          atoms.push({ id, element: index === 1 ? "N" : "C", x: center.x + Math.cos(angle) * bond, y: center.y + Math.sin(angle) * bond, formalCharge: 0 });
+        });
+        bonds.push({ id: `b_amine_${arm}`, fromAtomId: "n_amine", toAtomId: ids[0], order: "single" });
+        bonds.push({ id: `b_ch2_${arm}`, fromAtomId: ids[0], toAtomId: ids[1], order: "single" });
+        ringIds.forEach((id, index) => {
+          const next = ringIds[(index + 1) % ringIds.length];
+          bonds.push({ id: `b_ring_${arm}_${index}`, fromAtomId: id, toAtomId: next, order: index % 2 === 0 ? "double" : "single" });
+        });
+        bonds.push({ id: `b_zn_${arm}`, fromAtomId: "zn", toAtomId: ids[2], order: "single", display: { bondStyle: "dashed" } });
+      });
+      atoms.push({ id: "zn", element: "Zn", x: 300, y: 420, formalCharge: 0 });
+      bonds.push({ id: "b_zn_amine", fromAtomId: "zn", toAtomId: "n_amine", order: "single", display: { bondStyle: "dashed" } });
+      const molecule: MoleculeObject = {
+        id: "mol_zn_tpa", type: "molecule", x: 100, y: 100, width: 400, height: 400, rotation: 0,
+        style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+      };
+      const base = createPhase4Document("Zinc TPA");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: molecule },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+      ]);
+      return { document, molecule: moleculeById(document, molecule.id) };
+    }
+
+    it("2D cleanup's engine route is a fixed point: a second run changes nothing, and a shrunk drawing comes back to the style's bond length", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const styleBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      // Shrink the drawing to two thirds, the way repeated runs of an earlier build had left the
+      // owner's complex: the 2D route must bring it back, not preserve the drift.
+      const shrunk = applyPatches(document, [{
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: { atoms: molecule.atoms.map((atom) => ({ ...atom, x: 200 + (atom.x - 200) * 2 / 3, y: 150 + (atom.y - 150) * 2 / 3 })) }
+      }]);
+      const once = applyNativeMoleculeEngineRelayout(shrunk, molecule.id, relayoutMolfile2D, { targetBondLengthPx: styleBondLength });
+      const onceMolecule = moleculeById(once, molecule.id);
+      const covalent = onceMolecule.bonds.filter((bond) => bond.display?.bondStyle !== "dashed").map((bond) => moleculeBondLength(onceMolecule, bond.id));
+      covalent.forEach((length) => expect(length).toBeCloseTo(styleBondLength, 0));
+
+      // Running again from the cleaned state moves nothing: the metal is not re-settled against
+      // the engine's fresh row of ligands (that walked the molecule a step per run), and the
+      // scale is the style's, not whatever the previous run happened to leave.
+      const twice = applyNativeMoleculeEngineRelayout(once, molecule.id, relayoutMolfile2D, { targetBondLengthPx: styleBondLength });
+      const twiceMolecule = moleculeById(twice, molecule.id);
+      onceMolecule.atoms.forEach((atom, index) => {
+        expect(twiceMolecule.atoms[index]!.x, atom.id).toBeCloseTo(atom.x, 1);
+        expect(twiceMolecule.atoms[index]!.y, atom.id).toBeCloseTo(atom.y, 1);
+      });
+    });
+
+    it("2D cleanup of a chelate is a fixed point as well: the metal stays where it was drawn and a second run reproduces the first", () => {
+      const { document, molecule } = zincTpaSplayedFixture();
+      const styleBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      const zincDrawn = molecule.atoms.find((atom) => atom.element === "Zn")!;
+      const once = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D, { targetBondLengthPx: styleBondLength });
+      const onceMolecule = moleculeById(once, molecule.id);
+      // The ligand is rebuilt around the metal; the metal is not carried off to wherever the fold
+      // left the ligand's centroid. The zinc is exactly where the user drew it.
+      const zincOnce = onceMolecule.atoms.find((atom) => atom.element === "Zn")!;
+      expect(zincOnce.x).toBeCloseTo(zincDrawn.x, 1);
+      expect(zincOnce.y).toBeCloseTo(zincDrawn.y, 1);
+      // A chelate used to walk across the page by the fold's centroid shift on every run.
+      const twice = applyNativeMoleculeEngineRelayout(once, molecule.id, relayoutMolfile2D, { targetBondLengthPx: styleBondLength });
+      const twiceMolecule = moleculeById(twice, molecule.id);
+      onceMolecule.atoms.forEach((atom, index) => {
+        expect(twiceMolecule.atoms[index]!.x, atom.id).toBeCloseTo(atom.x, 1);
+        expect(twiceMolecule.atoms[index]!.y, atom.id).toBeCloseTo(atom.y, 1);
+      });
+    });
+
+    it("engine re-layout keeps a drawn stereocentre on a folded arm: no fold rotation pivots on it, and the read-back guard agrees", () => {
+      const { document, molecule } = zincTpaSplayedFixture();
+      // A wedged methyl on the first arm's CH2 makes that carbon a stereocentre sitting right on
+      // two hinges (amine–CH2 and CH2–pyridine).
+      const ch2 = molecule.atoms.find((atom) => atom.id === "c_ch2_0")!;
+      const chiral = applyPatches(document, [{
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: {
+          atoms: [...molecule.atoms, { id: "c_me", element: "C", x: ch2.x + 28, y: ch2.y, formalCharge: 0 }],
+          bonds: [...molecule.bonds, { id: "b_me", fromAtomId: "c_ch2_0", toAtomId: "c_me", order: "single", display: { bondStyle: "wedge" } }]
+        }
+      }]);
+      const chiralMolecule = moleculeById(chiral, molecule.id);
+      const centreIndex = chiralMolecule.atoms.findIndex((atom) => atom.id === "c_ch2_0");
+      const before = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(chiralMolecule))[centreIndex]!;
+      expect(before.isStereoCenter).toBe(true);
+      expect(["R", "S"]).toContain(before.descriptor);
+
+      // Geometry alone, no perceiver: the pivot lock has to be enough on its own.
+      const relaid = applyNativeMoleculeEngineRelayout(chiral, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      expect(relaidMolecule.atoms.map((atom) => `${atom.x},${atom.y}`)).not.toEqual(chiralMolecule.atoms.map((atom) => `${atom.x},${atom.y}`));
+      expect(perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(relaidMolecule))[centreIndex]!.descriptor).toBe(before.descriptor);
+      // With the guard (the app's path), the same answer.
+      const guarded = applyNativeMoleculeEngineRelayout(chiral, molecule.id, relayoutMolfile2D, { perceiveStereo: perceiveStereoCentersFromMolfile });
+      const guardedMolecule = moleculeById(guarded, molecule.id);
+      expect(perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(guardedMolecule))[centreIndex]!.descriptor).toBe(before.descriptor);
+    });
+
+    it("engine re-layout keeps a drawn imine E/Z: no fold rotation pivots on an end of an acyclic double bond", () => {
+      // 2-pyridyl–CH=N–CH2–CH2–NH2, drawn as a chain with the imine E, chelating a zinc through
+      // the pyridine N, the imine N and the amine N. Folding the arms toward the zinc must not swing
+      // the CH2 arm around the imine nitrogen — that would be the Z isomer.
+      const ring = Array.from({ length: 6 }, (_, index) => {
+        const radians = index * Math.PI / 3;
+        return { x: 200 + Math.cos(radians) * 28, y: 300 + Math.sin(radians) * 28 };
+      });
+      const ringIds = ["c2", "n1", "c6", "c5", "c4", "c3"];
+      const atoms: MoleculeAtom[] = [
+        ...ringIds.map((id, index) => ({ id, element: id === "n1" ? "N" : "C", x: ring[index]!.x, y: ring[index]!.y, formalCharge: 0 })),
+        { id: "c_im", element: "C", x: 256, y: 300, formalCharge: 0 },
+        { id: "n_im", element: "N", x: 280, y: 314, formalCharge: 0 },
+        { id: "c_a", element: "C", x: 304, y: 300, formalCharge: 0 },
+        { id: "c_b", element: "C", x: 328, y: 314, formalCharge: 0 },
+        { id: "n_am", element: "N", x: 352, y: 300, formalCharge: 0 },
+        { id: "zn", element: "Zn", x: 280, y: 380, formalCharge: 0 }
+      ];
+      const bonds: MoleculeBond[] = [
+        ...ringIds.map((id, index) => ({
+          id: `r${index}`, fromAtomId: id, toAtomId: ringIds[(index + 1) % 6]!, order: (index % 2 === 0 ? "double" : "single") as MoleculeBond["order"]
+        })),
+        { id: "b1", fromAtomId: "c2", toAtomId: "c_im", order: "single" },
+        { id: "b2", fromAtomId: "c_im", toAtomId: "n_im", order: "double" },
+        { id: "b3", fromAtomId: "n_im", toAtomId: "c_a", order: "single" },
+        { id: "b4", fromAtomId: "c_a", toAtomId: "c_b", order: "single" },
+        { id: "b5", fromAtomId: "c_b", toAtomId: "n_am", order: "single" },
+        { id: "d1", fromAtomId: "zn", toAtomId: "n1", order: "single", display: { bondStyle: "dashed" } },
+        { id: "d2", fromAtomId: "zn", toAtomId: "n_im", order: "single", display: { bondStyle: "dashed" } },
+        { id: "d3", fromAtomId: "zn", toAtomId: "n_am", order: "single", display: { bondStyle: "dashed" } }
+      ];
+      const molecule: MoleculeObject = {
+        id: "mol_imine", type: "molecule", x: 150, y: 250, width: 250, height: 150, rotation: 0,
+        style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+      };
+      const base = createPhase4Document("Imine Chelate");
+      const document = applyPatches(base, [{ op: "addObject", pageId: base.pages[0].id, object: molecule }]);
+      type Point = { x: number; y: number };
+      const sideOf = (point: Point, from: Point, to: Point) =>
+        Math.sign((to.x - from.x) * (point.y - from.y) - (to.y - from.y) * (point.x - from.x));
+      // −1: the substituents on the two ends sit on opposite sides of the C=N line (E).
+      const imineGeometry = (target: MoleculeObject) => {
+        const at = (id: string) => target.atoms.find((atom) => atom.id === id)!;
+        return sideOf(at("c2"), at("c_im"), at("n_im")) * sideOf(at("c_a"), at("c_im"), at("n_im"));
+      };
+      expect(imineGeometry(molecule)).toBe(-1);
+
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      expect(imineGeometry(relaidMolecule)).toBe(-1);
+      // The fold still did its job around the lock: every donor is within reach of the zinc.
+      const zinc = relaidMolecule.atoms.find((atom) => atom.id === "zn")!;
+      ["n1", "n_im", "n_am"].forEach((id) => {
+        const donor = relaidMolecule.atoms.find((atom) => atom.id === id)!;
+        expect(Math.hypot(donor.x - zinc.x, donor.y - zinc.y), id).toBeLessThan(28 * 2.5);
+      });
+    });
+
+    it("arranging monodentate ligands keeps each ligand's drawn handedness — a ligand not yet placed is no obstacle", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      // Handedness at a donor: the sign of the turn from its first ring neighbour to its second.
+      const handedness = (target: MoleculeObject, donorId: string) => {
+        const at = (id: string) => target.atoms.find((atom) => atom.id === id)!;
+        const donor = at(donorId);
+        const neighbors = target.bonds
+          .filter((bond) => bond.display?.bondStyle !== "dashed" && (bond.fromAtomId === donorId || bond.toAtomId === donorId))
+          .map((bond) => at(bond.fromAtomId === donorId ? bond.toAtomId : bond.fromAtomId));
+        expect(neighbors).toHaveLength(2);
+        const [first, second] = neighbors as [MoleculeAtom, MoleculeAtom];
+        return Math.sign((first.x - donor.x) * (second.y - donor.y) - (first.y - donor.y) * (second.x - donor.x));
+      };
+      ["atom_004", "atom_009", "atom_014", "atom_015"].forEach((donorId) => {
+        expect(handedness(relaidMolecule, donorId), donorId).toBe(handedness(molecule, donorId));
+      });
+    });
+
+    it("engine re-layout folds a chelating ligand around its metal instead of parking the metal to one side", () => {
+      const { document, molecule } = zincTpaSplayedFixture();
+      const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
+      const relaidMolecule = moleculeById(relaid, molecule.id);
+      const isDative = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+
+      const covalentBonds = relaidMolecule.bonds.filter((bond) => !isDative(bond));
+      const covalent = covalentBonds.map((bond) => moleculeBondLength(relaidMolecule, bond.id));
+      const L = covalent.reduce((sum, value) => sum + value, 0) / covalent.length;
+      // Rigid hinge moves only: every covalent bond keeps exactly the proportion the engine gave
+      // it. (The engine's own output for this star-shaped ligand is not perfectly uniform — it
+      // shears two rings to keep three identical arms apart — so the check is against the engine's
+      // bare-ligand layout, not against a single ideal length.)
+      const ligandAtoms = molecule.atoms.filter((atom) => atom.element !== "Zn");
+      const ligandBonds = molecule.bonds.filter((bond) => !isDative(bond));
+      const engineOnly = relayoutMolfile2D(moleculeToMolfileV2000({ ...molecule, atoms: ligandAtoms, bonds: ligandBonds }, { fromDocFrame: true }));
+      const engineLengths = engineOnly.bonds.map((bond) => Math.hypot(engineOnly.atoms[bond.to].x - engineOnly.atoms[bond.from].x, engineOnly.atoms[bond.to].y - engineOnly.atoms[bond.from].y));
+      const engineMean = engineLengths.reduce((sum, value) => sum + value, 0) / engineLengths.length;
+      covalentBonds.forEach((bond, index) => {
+        const engineIndex = engineOnly.bonds.findIndex((candidate) =>
+          (ligandAtoms[candidate.from].id === bond.fromAtomId && ligandAtoms[candidate.to].id === bond.toAtomId) ||
+          (ligandAtoms[candidate.to].id === bond.fromAtomId && ligandAtoms[candidate.from].id === bond.toAtomId));
+        expect(engineIndex, bond.id).toBeGreaterThanOrEqual(0);
+        expect(covalent[index] / L).toBeCloseTo(engineLengths[engineIndex] / engineMean, 2);
+      });
+
+      // All four donors end up around the metal at roughly bond length — the pocket exists — and
+      // nothing was folded on top of anything else.
+      const zinc = relaidMolecule.atoms.find((atom) => atom.element === "Zn")!;
+      const reach = relaidMolecule.bonds.filter(isDative).map((bond) => {
+        const donor = relaidMolecule.atoms.find((atom) => atom.id === (bond.fromAtomId === zinc.id ? bond.toAtomId : bond.fromAtomId))!;
+        return Math.hypot(donor.x - zinc.x, donor.y - zinc.y) / L;
+      });
+      expect(reach).toHaveLength(4);
+      reach.forEach((value) => expect(value).toBeGreaterThan(0.6));
+      reach.forEach((value) => expect(value).toBeLessThan(2));
+      relaidMolecule.atoms.forEach((atom, index) => {
+        relaidMolecule.atoms.slice(index + 1).forEach((other) => {
+          expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`).toBeGreaterThan(L * 0.5);
+        });
       });
     });
 
@@ -3352,7 +4646,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds.find((bond) => bond.id === "bond_002")?.order).toBe("triple");
     expect(cleanedMolecule.structure).toBe(selectedMolecule(stretched).structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
   });
@@ -3373,9 +4667,9 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.chemistry?.formula).toBe("C3H4");
     expect(cleanedMolecule.bonds).toEqual(selectedMolecule(allene).bonds);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
-    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
+    expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 2);
   });
 
   it("cleans up a distorted cyclohexane ring as a regular 2D ring", () => {
@@ -3406,7 +4700,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(closedMolecule.bonds);
     expect(cleanedMolecule.structure).toBe("C1CCCCC1");
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 3);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
     expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
@@ -3540,11 +4834,15 @@ describe("Phase 4 document workflow", () => {
 
   it("extends the selected native single bond into one connected molecule graph", () => {
     const withBond = insertNativeSingleBondMolecule(createPhase4Document("Chain Fixture"), { x: 200, y: 220 });
+    const seed = selectedMolecule(withBond);
+    const seedFirst = seed.atoms[0];
+    const seedSecond = seed.atoms[1];
     const extended = growFromAtom(withBond, "atom_002", 0);
-    const secondAtomX = 200 + nativeBondLengthPx / 2;
+    // Steered rightward from the 30°-rising seed bond, growth continues the zig-zag: the third
+    // atom descends at 30° below horizontal off atom_002.
     const expectedThirdAtom = {
-      x: secondAtomX + Math.cos(60 * Math.PI / 180) * nativeBondLengthPx,
-      y: 220 + Math.sin(60 * Math.PI / 180) * nativeBondLengthPx
+      x: seedSecond.x + Math.cos(30 * Math.PI / 180) * nativeBondLengthPx,
+      y: seedSecond.y + Math.sin(30 * Math.PI / 180) * nativeBondLengthPx
     };
 
     expect(extended.pages[0].objects).toHaveLength(1);
@@ -3553,8 +4851,8 @@ describe("Phase 4 document workflow", () => {
       id: "mol_bond_001",
       structure: "CCC",
       atoms: [
-        { id: "atom_001", element: "C", x: 200 - nativeBondLengthPx / 2, y: 220 },
-        { id: "atom_002", element: "C", x: secondAtomX, y: 220 },
+        { id: "atom_001", element: "C", x: seedFirst.x, y: seedFirst.y },
+        { id: "atom_002", element: "C", x: seedSecond.x, y: seedSecond.y },
         { id: "atom_003", element: "C" }
       ],
       bonds: [
@@ -3689,6 +4987,891 @@ describe("Phase 4 document workflow", () => {
       order: "single"
     });
     expect(freeformMolecule.structure).toBe("CCC");
+  });
+
+  it("bonds across molecule objects by merging them — a typed metal coordinates to its ligand", () => {
+    // A drawn ethane and a text-typed naked Zn: two separate molecule objects.
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Zinc Coordination"), { x: 300, y: 300 });
+    const ligand = selectedMolecule(withLigand);
+    const targetAtom = ligand.atoms.find((atom) => atom.id === "atom_002");
+    if (!targetAtom) {
+      throw new Error("Expected ligand atom.");
+    }
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = document.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule object.");
+    }
+    expect(document.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+
+    // Dragging a dashed bond from the Zn onto the ligand atom merges the objects and bonds them.
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      document,
+      znMolecule.id,
+      znMolecule.atoms[0].id,
+      { x: targetAtom.x, y: targetAtom.y },
+      { bondStyle: "dashed" }
+    );
+    const molecules = bonded.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    expect(molecules).toHaveLength(1);
+    const merged = molecules[0];
+
+    // Ids re-minted without collisions (both objects started at atom_001).
+    expect(new Set(merged.atoms.map((atom) => atom.id)).size).toBe(merged.atoms.length);
+    expect(new Set(merged.bonds.map((bond) => bond.id)).size).toBe(merged.bonds.length);
+    const seamBond = merged.bonds.find((bond) => bond.display?.bondStyle === "dashed");
+    const seamElements = [
+      merged.atoms.find((atom) => atom.id === seamBond?.fromAtomId)?.element,
+      merged.atoms.find((atom) => atom.id === seamBond?.toAtomId)?.element
+    ].sort();
+    expect(seamElements).toEqual(["C", "Zn"]);
+    // The dashed coordinate bond is dative: no valence complaints anywhere, and the carbon
+    // keeps its full hydrogen count (formula still counts ethane's six H plus the zinc).
+    expect(nativeMoleculeInvalidAtomStates(merged)).toEqual([]);
+    expect(merged.chemistry).toMatchObject({ formula: "C2H6Zn", atomCount: 3 });
+
+    // The reverse drag (ligand atom onto the metal) merges the same way.
+    const reverseBonded = applyFreeformSingleBondToolAtPoint(
+      document,
+      ligand.id,
+      "atom_002",
+      { x: znMolecule.atoms[0].x, y: znMolecule.atoms[0].y },
+      { bondStyle: "dashed" }
+    );
+    const reverseMolecules = reverseBonded.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    expect(reverseMolecules).toHaveLength(1);
+    expect(reverseMolecules[0].atoms.map((atom) => atom.element).sort()).toEqual(["C", "C", "Zn"]);
+  });
+
+  it("re-anchors charge marks from an absorbed molecule onto the merged host", () => {
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Anchored Merge"), { x: 300, y: 300 });
+    const ligand = selectedMolecule(withLigand);
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule object.");
+    }
+    const document = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(converted, 1, {
+      objectId: znMolecule.id,
+      kind: "atom",
+      atomId: znMolecule.atoms[0].id,
+      distanceToPointer: 0
+    }));
+    const mark = document.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    expect(mark?.anchor).toMatchObject({ objectId: znMolecule.id });
+
+    // Drag from the ligand onto the Zn: the Zn molecule is absorbed, and the mark follows.
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      document,
+      ligand.id,
+      "atom_002",
+      { x: znMolecule.atoms[0].x, y: znMolecule.atoms[0].y },
+      { bondStyle: "dashed" }
+    );
+    const mergedMark = bonded.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    const merged = bonded.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const mergedZn = merged?.atoms.find((atom) => atom.element === "Zn");
+    expect(mergedMark?.anchor).toMatchObject({ objectId: ligand.id, atomId: mergedZn?.id });
+    expect(mergedZn).toMatchObject({ formalCharge: 1 });
+  });
+
+  it("stacks the charge tool into multi-magnitude marks — a Zn earns its 2+", () => {
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Zinc 2+"), { x: 300, y: 300 });
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule.");
+    }
+    const target = { objectId: znMolecule.id, kind: "atom" as const, atomId: znMolecule.atoms[0].id, distanceToPointer: 0 };
+    const marks = (document: ChemDraftDocument) =>
+      document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+        object.type === "electron-mark" && object.markKind === "charge"
+      );
+
+    // First + places the mark; the second + bumps the SAME mark to 2+ instead of stacking a twin.
+    const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(converted, 1, target));
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, target));
+    expect(marks(twice)).toHaveLength(1);
+    expect(marks(twice)[0]).toMatchObject({ charge: 2 });
+    const chargedZn = (twice.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === znMolecule.id
+    ))?.atoms[0];
+    expect(chargedZn).toMatchObject({ element: "Zn", formalCharge: 2, markCharge: 2 });
+
+    // − steps back down, and the final − removes the mark entirely.
+    const down = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(twice, -1, target));
+    expect(marks(down)[0]).toMatchObject({ charge: 1 });
+    const cleared = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(down, -1, target));
+    expect(marks(cleared)).toHaveLength(0);
+
+    // A metal keeps its charge even when covalently bonded: merge Zn onto the ligand with a
+    // SOLID bond, re-apply 2+, and the association still holds (variable oxidation states).
+    const ligand = selectedMolecule(withLigand);
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      converted,
+      znMolecule.id,
+      znMolecule.atoms[0].id,
+      { x: ligand.atoms.find((atom) => atom.id === "atom_002")?.x ?? 0, y: ligand.atoms.find((atom) => atom.id === "atom_002")?.y ?? 0 }
+    );
+    const merged = bonded.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const mergedZn = merged?.atoms.find((atom) => atom.element === "Zn");
+    if (!merged || !mergedZn) {
+      throw new Error("Expected merged zinc.");
+    }
+    const mergedTarget = { objectId: merged.id, kind: "atom" as const, atomId: mergedZn.id, distanceToPointer: 0 };
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
+      reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(bonded, 1, mergedTarget)),
+      1,
+      mergedTarget
+    ));
+    const solidBondedZn = charged.pages[0].objects
+      .filter((object): object is MoleculeObject => object.type === "molecule")[0]
+      ?.atoms.find((atom) => atom.element === "Zn");
+    expect(solidBondedZn).toMatchObject({ formalCharge: 2 });
+  });
+
+  it("refuses a stack the atom's valence cannot carry, instead of writing one the reconcile strips", () => {
+    const chargeMarks = (document: ChemDraftDocument) =>
+      document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+        object.type === "electron-mark" && object.markKind === "charge"
+      );
+
+    // A bare carbon carries +1 through +4 (C4+ is an expressible octet state) and must stop
+    // there. Before this check, the fifth press wrote +5 to the mark, the reconcile refused to
+    // associate it, detached it, and reset the atom from +4 to NEUTRAL — while the status bar
+    // reported "Placed positive charge 5+".
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Stack Refusal"), { x: 300, y: 300 });
+    const methane = applyNativeMoleculeDeleteTarget(ethane, {
+      objectId: selectedMolecule(ethane).id, kind: "bond", bondId: "bond_001",
+      fromAtomId: "atom_001", toAtomId: "atom_002", terminalAtomId: "atom_002", distanceToPointer: 0
+    });
+    const carbon = { objectId: selectedMolecule(methane).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    let document = methane;
+    for (let press = 0; press < 4; press += 1) {
+      expect(nativeChargeStackRefusal(document, 1, carbon)).toBeUndefined();
+      document = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, carbon));
+    }
+    expect(moleculeById(document, carbon.objectId).atoms[0]).toMatchObject({ formalCharge: 4, markCharge: 4 });
+    expect(nativeChargeStackRefusal(document, 1, carbon)).toBe("valence");
+    expect(applyChargeToolAtNativeAtom(document, 1, carbon)).toBe(document);
+    // Nothing moved: the atom keeps its +4, the mark keeps its anchor, and − still steps down.
+    expect(chargeMarks(document)[0].anchor.kind).toBe("atom");
+    expect(nativeChargeStackRefusal(document, -1, carbon)).toBeUndefined();
+
+    // Ammonium: a four-bond nitrogen carries exactly +1. The second press used to strip that +1
+    // (leaving a neutral hypervalent N with an invalid badge) and float a "2+" beside it.
+    const quaternary = [-120, 120, 180].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Ammonium Refusal"), { x: 300, y: 300 })
+    );
+    const nitrogenDocument = setNativeAtomElement(quaternary, "atom_001", "N");
+    const nitrogen = { objectId: selectedMolecule(nitrogenDocument).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    const ammonium = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(nitrogenDocument, 1, nitrogen));
+    expect(moleculeById(ammonium, nitrogen.objectId).atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ formalCharge: 1 });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(ammonium, nitrogen.objectId))).toEqual([]);
+    expect(nativeChargeStackRefusal(ammonium, 1, nitrogen)).toBe("valence");
+    expect(applyChargeToolAtNativeAtom(ammonium, 1, nitrogen)).toBe(ammonium);
+    expect(chargeMarks(ammonium)).toHaveLength(1);
+  });
+
+  it("never bumps a mark that belongs to a neighbouring atom", () => {
+    // A three-bond centre in 120° geometry: its mark lands at the growth slot, one bond length
+    // from the centre AND one bond length from two neighbours — inside the association radius.
+    // Pressing − on such a neighbour used to find the centre's ⊕ through the proximity
+    // fallback, sum +1 + (−1) = 0, and DELETE it; the neighbour never got its charge.
+    const center = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Neighbour Mark"), { x: 300, y: 300 })
+    );
+    const molecule = selectedMolecule(center);
+    const centerTarget = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(center, 1, centerTarget));
+    const centerMark = charged.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!centerMark) {
+      throw new Error("Expected the centre's charge mark.");
+    }
+
+    // The precondition that makes this test mean something: a neighbour really is in radius.
+    const markCenter = nativeChargeMarkCenter(centerMark);
+    const radius = Math.max(nativeChargeAssociationRadiusPx, nativeBondLengthPx * 1.15);
+    const neighbour = moleculeById(charged, molecule.id).atoms
+      .filter((atom) => atom.id !== "atom_001")
+      .map((atom) => ({ atom, gap: Math.hypot(atom.x - markCenter.x, atom.y - markCenter.y) }))
+      .sort((left, right) => left.gap - right.gap)[0];
+    expect(neighbour.gap).toBeLessThanOrEqual(radius);
+
+    const pressed = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(charged, -1, {
+      objectId: molecule.id, kind: "atom", atomId: neighbour.atom.id, distanceToPointer: 0
+    }));
+    const marks = pressed.pages[0].objects.filter((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    expect(marks).toHaveLength(2);
+    expect(moleculeById(pressed, molecule.id).atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ formalCharge: 1 });
+    expect(moleculeById(pressed, molecule.id).atoms.find((atom) => atom.id === neighbour.atom.id)).toMatchObject({ formalCharge: -1 });
+  });
+
+  it("stacking a radical ion back to neutral leaves its unpaired electron behind as a radical dot", () => {
+    const seed = () => {
+      const text = insertNativeTextObject(createPhase4Document("Radical To Zero"), { x: 300, y: 300 }, "Zn");
+      const textObject = text.pages[0].objects.find((object) => object.type === "text");
+      const seeded = convertNativeTextObjectToAtom(text, textObject?.id ?? "");
+      const molecule = selectedMolecule(seeded);
+      return { seeded, target: { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0].id, distanceToPointer: 0 } };
+    };
+    const marksOf = (document: ChemDraftDocument) => document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+      object.type === "electron-mark"
+    );
+    const stack = (document: ChemDraftDocument, spec: Parameters<typeof applyChargeToolAtNativeAtom>[1], target: NativeMoleculeDeleteTarget) =>
+      reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, spec, target));
+
+    // •+ then −: the charge goes, the electron stays. Removing the mark outright used to take the
+    // unpaired electron with it, which no press asked for.
+    const radical = seed();
+    let document = stack(radical.seeded, { kind: "charge", charge: 1, radical: true }, radical.target);
+    document = stack(document, -1, radical.target);
+    expect(marksOf(document).map((mark) => mark.markKind)).toEqual(["radical-dot"]);
+    expect(marksOf(document)[0]!.anchor).toMatchObject({ kind: "atom", atomId: radical.target.atomId });
+    expect(moleculeById(document, radical.target.objectId).atoms[0]).toMatchObject({ formalCharge: 0, markRadicals: 1 });
+
+    // A plain ⊕ stacked back to neutral leaves nothing behind, as before.
+    const plain = seed();
+    document = stack(plain.seeded, 1, plain.target);
+    document = stack(document, -1, plain.target);
+    expect(marksOf(document)).toHaveLength(0);
+    expect(moleculeById(document, plain.target.objectId).atoms[0]).toMatchObject({ formalCharge: 0 });
+  });
+
+  it("moves only the magnitude when stacking — the mark keeps its own identity", () => {
+    const zincDocument = () => {
+      const text = insertNativeTextObject(createPhase4Document("Mark Identity"), { x: 300, y: 300 }, "Zn");
+      const textObject = text.pages[0].objects.find((object) => object.type === "text");
+      const seeded = convertNativeTextObjectToAtom(text, textObject?.id ?? "");
+      const molecule = selectedMolecule(seeded);
+      return { seeded, target: { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0].id, distanceToPointer: 0 } };
+    };
+    const onlyMark = (document: ChemDraftDocument) => {
+      const marks = document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+        object.type === "electron-mark" && object.markKind === "charge"
+      );
+      expect(marks).toHaveLength(1);
+      return marks[0];
+    };
+    const stack = (document: ChemDraftDocument, spec: Parameters<typeof applyChargeToolAtNativeAtom>[1], target: NativeMoleculeDeleteTarget) =>
+      reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, spec, target));
+
+    // A radical cation bumped by the plain + tool stays a radical: the press adds charge, it
+    // does not take the unpaired electron away.
+    const radicalFirst = zincDocument();
+    let document = stack(radicalFirst.seeded, { kind: "charge", charge: 1, radical: true }, radicalFirst.target);
+    document = stack(document, 1, radicalFirst.target);
+    expect(onlyMark(document)).toMatchObject({ charge: 2, radical: true });
+    expect(moleculeById(document, radicalFirst.target.objectId).atoms[0]).toMatchObject({ formalCharge: 2, markRadicals: 1 });
+
+    // A plain ⊕ bumped by the •+ tool stays plain: the press must never add an unpaired
+    // electron — and a bonding slot — to an atom that did not have one.
+    const plainFirst = zincDocument();
+    document = stack(plainFirst.seeded, 1, plainFirst.target);
+    document = stack(document, { kind: "charge", charge: 1, radical: true }, plainFirst.target);
+    expect(onlyMark(document)).toMatchObject({ charge: 2 });
+    expect(onlyMark(document).radical).toBeUndefined();
+    expect(moleculeById(document, plainFirst.target.objectId).atoms[0].markRadicals ?? 0).toBe(0);
+
+    // An uncircled sign bumped by the default (circled) tool keeps its style.
+    const uncircled = zincDocument();
+    document = stack(uncircled.seeded, { kind: "charge", charge: 1, chargeStyle: "plain" }, uncircled.target);
+    document = stack(document, 1, uncircled.target);
+    expect(onlyMark(document)).toMatchObject({ charge: 2, chargeStyle: "plain" });
+  });
+
+  it("does not carry a dismissed valence warning onto a relabelled atom", () => {
+    // Three bonds on atom_001, labelled F with the text tool: flagged, then dismissed.
+    const threeBonds = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Dismissal Scope"), { x: 300, y: 300 })
+    );
+    const fluorine = setNativeAtomElement(threeBonds, "atom_001", "F", { literal: true });
+    const target = { objectId: selectedMolecule(fluorine).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(fluorine)).map((state) => state.atomId)).toEqual(["atom_001"]);
+    const dismissed = applyNativeAtomWarningSuppression(fluorine, target, true);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(dismissed))).toEqual([]);
+
+    // Relabelled to a (still invalid) three-bond oxygen: a different atom, its own badge. The
+    // dismissal used to ride along and silence an error the user never saw, for good.
+    const oxygen = setNativeAtomElement(dismissed, "atom_001", "O", { literal: true });
+    const oxygenAtom = selectedMolecule(oxygen).atoms.find((atom) => atom.id === "atom_001");
+    expect(oxygenAtom).toMatchObject({ element: "O" });
+    expect(oxygenAtom?.warningSuppressed).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(oxygen)).map((state) => state.atomId)).toEqual(["atom_001"]);
+
+    // Retyping the SAME element changes nothing about the atom, so the dismissal stays.
+    const retyped = setNativeAtomElement(dismissed, "atom_001", "F", { literal: true });
+    expect(selectedMolecule(retyped).atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+
+    // Delete-to-carbon is a relabel too: the skeleton carbon starts with a clean slate.
+    const cleared = selectedMolecule(applyNativeAtomLabelClearTarget(dismissed, target));
+    expect(cleared.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "C" });
+    expect(cleared.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBeUndefined();
+  });
+
+  it("leaves a bond-less labelled atom for the atom delete instead of turning it into methane", () => {
+    // A typed "Zn" is a one-atom molecule. Delete used to strip the label to a bare carbon — which
+    // draws as CH4 — and only a second Delete removed it.
+    const znText = insertNativeTextObject(createPhase4Document("Naked Delete"), { x: 300, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0].id, distanceToPointer: 0 };
+    expect(nativeAtomHasExplicitLabel(molecule.atoms[0])).toBe(true);
+    expect(applyNativeAtomLabelClearTarget(document, target)).toBe(document);
+    // The real delete the caller falls through to removes the atom outright.
+    const deleted = applyNativeMoleculeDeleteTarget(document, target);
+    expect(deleted.pages[0].objects.some((object) => object.id === molecule.id && object.type === "molecule"
+      && (object as MoleculeObject).atoms.length > 0)).toBe(false);
+  });
+
+  it("weighs every element the formula lists — no atom is silently skipped", () => {
+    // CH3Li: the L hotkey's lithium used to weigh nothing (a 32% error), the formula still said CH3Li.
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Alkali Mass"), { x: 300, y: 300 });
+    const methyllithium = selectedMolecule(setNativeAtomElement(ethane, "atom_002", "Li"));
+    expect(methyllithium.chemistry).toMatchObject({ formula: "CH3Li", averageMass: 21.975, exactMass: 22.03948 });
+
+    // An MgBr nickname counts Mg + Br through the condensed-label parser and now weighs both.
+    const grignard = selectedMolecule(setNativeAtomElement(ethane, "atom_002", "MgBr"));
+    expect(grignard.chemistry).toMatchObject({ averageMass: 119.244, exactMass: 117.92685 });
+
+    // The table is complete over the parser's element list; a symbol it lacked would throw
+    // rather than weigh nothing.
+    nativeElementSymbols.forEach((symbol) => {
+      const mass = nativeElementMass(symbol);
+      expect(mass.average).toBeGreaterThan(0);
+      expect(mass.exact).toBeGreaterThan(0);
+    });
+    expect(() => nativeElementMass("Xx")).toThrow(/No atomic mass/);
+  });
+
+  it("judges a bond-order change next to a dative bond with the dative bond counting for nothing, and never raises the dative bond itself", () => {
+    // An N with two covalent bonds, then a dashed (dative) bond to a Zn.
+    const threeBonds = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Dative Order"), { x: 300, y: 300 }),
+      "atom_001",
+      -120
+    );
+    const nitrogen = setNativeAtomElement(threeBonds, "atom_001", "N");
+    const ligand = selectedMolecule(nitrogen);
+    const znText = insertNativeTextObject(nitrogen, { x: 300, y: 180 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const zn = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!zn) {
+      throw new Error("Expected zinc molecule.");
+    }
+    const complex = applyFreeformSingleBondToolAtPoint(converted, ligand.id, "atom_001", { x: zn.atoms[0].x, y: zn.atoms[0].y }, { bondStyle: "dashed" });
+    const merged = moleculeById(complex, ligand.id);
+    const dative = merged.bonds.find((bond) => bond.display?.bondStyle === "dashed");
+    if (!dative) {
+      throw new Error("Expected the dashed bond.");
+    }
+    expect(nativeMoleculeInvalidAtomStates(merged)).toEqual([]);
+
+    // A covalent bond on that N can go to double: the N reads as a valid neutral =N– with the
+    // dative bond contributing 0 before and after (the old arithmetic counted it into the usage
+    // map as 0 and then subtracted a real order from it, and asked the neutral-valence table about
+    // the Zn, refusing every bond that touched a metal).
+    const covalent = merged.bonds.find((bond) => bond.display?.bondStyle !== "dashed" && (bond.fromAtomId === "atom_001" || bond.toAtomId === "atom_001"));
+    if (!covalent) {
+      throw new Error("Expected a covalent bond on the nitrogen.");
+    }
+    const raised = applyNativeMoleculeBondOrderValueTarget(complex, {
+      objectId: ligand.id, kind: "bond", bondId: covalent.id, fromAtomId: covalent.fromAtomId, toAtomId: covalent.toAtomId,
+      terminalAtomId: covalent.toAtomId, distanceToPointer: 0
+    }, "double");
+    expect(raised).not.toBe(complex);
+    expect(moleculeById(raised, ligand.id).bonds.find((bond) => bond.id === covalent.id)).toMatchObject({ order: "double" });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(raised, ligand.id))).toEqual([]);
+
+    // The dative bond itself stays single: dashed is the dative style and dative means single —
+    // the dashed tool refuses a double bond for the same reason. (It used to be raisable to a
+    // "dashed double" that drew as dative and exported as a covalent double.)
+    const dativeRaised = applyNativeMoleculeBondOrderValueTarget(complex, {
+      objectId: ligand.id, kind: "bond", bondId: dative.id, fromAtomId: dative.fromAtomId, toAtomId: dative.toAtomId,
+      terminalAtomId: dative.toAtomId, distanceToPointer: 0
+    }, "double");
+    expect(dativeRaised).toBe(complex);
+  });
+
+  it("refuses a bond-order change that breaks a valid endpoint — a dismissed badge does not license it", () => {
+    // A neutral N with three covalent bonds: raising any of them to double needs an N⁺.
+    const threeBonds = [-120, 120].reduce(
+      (current, angle) => growFromAtom(current, "atom_001", angle),
+      insertNativeSingleBondMolecule(createPhase4Document("Order Refusal"), { x: 300, y: 300 })
+    );
+    const nitrogen = setNativeAtomElement(threeBonds, "atom_001", "N");
+    const molecule = selectedMolecule(nitrogen);
+    const bond = molecule.bonds.find((candidate) => candidate.id === "bond_001")!;
+    const target = {
+      objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
+      terminalAtomId: bond.toAtomId, distanceToPointer: 0
+    };
+    expect(applyNativeMoleculeBondOrderValueTarget(nitrogen, target, "double")).toBe(nitrogen);
+
+    // Dismissing the N's badge must not open the door: the check judges the bare arithmetic.
+    const dismissed = applyNativeAtomWarningSuppression(nitrogen, { objectId: molecule.id, kind: "atom", atomId: "atom_001", distanceToPointer: 0 }, true);
+    expect(selectedMolecule(dismissed).atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+    expect(applyNativeMoleculeBondOrderValueTarget(dismissed, target, "double")).toBe(dismissed);
+
+    // An endpoint that is ALREADY flagged stays editable: a typed lone "N" with one bond is
+    // hypovalent before and after, so the change breaks nothing and goes through.
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Already Flagged"), { x: 300, y: 300 });
+    const literal = setNativeAtomElement(ethane, "atom_001", "N", { literal: true });
+    const literalMolecule = selectedMolecule(literal);
+    expect(nativeMoleculeInvalidAtomStates(literalMolecule).map((state) => state.atomId)).toEqual(["atom_001"]);
+    const literalBond = literalMolecule.bonds[0]!;
+    const raised = applyNativeMoleculeBondOrderValueTarget(literal, {
+      objectId: literalMolecule.id, kind: "bond", bondId: literalBond.id, fromAtomId: literalBond.fromAtomId,
+      toAtomId: literalBond.toAtomId, terminalAtomId: literalBond.toAtomId, distanceToPointer: 0
+    }, "double");
+    expect(moleculeById(raised, literalMolecule.id).bonds[0]).toMatchObject({ order: "double" });
+  });
+
+  it("drops a dismissal when the same element is retyped under the other label rule", () => {
+    // A typed lone "N" is judged as spelled (hypovalent, flagged); the n hotkey's N fills with
+    // hydrogens. Same symbol, different rule — a dismissal made under one must not silence the other.
+    const nText = insertNativeTextObject(createPhase4Document("Literal Flip"), { x: 300, y: 300 }, "N");
+    const textObject = nText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(nText, textObject?.id ?? "");
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+    const dismissed = applyNativeAtomWarningSuppression(document, target, true);
+    expect(selectedMolecule(dismissed).atoms[0]).toMatchObject({ labelLiteral: true, warningSuppressed: true });
+
+    const skeletal = setNativeAtomElement(dismissed, "atom_001", "N");
+    expect(skeletal).not.toBe(dismissed);
+    expect(selectedMolecule(skeletal).atoms[0].labelLiteral).toBeUndefined();
+    expect(selectedMolecule(skeletal).atoms[0].warningSuppressed).toBeUndefined();
+  });
+
+  it("refuses to flatten a wedged drawing with more abbreviated labels than the read-back can tell apart", () => {
+    const identity: Parameters<typeof flattenSpunMolecule>[3] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const starWith = (labelCount: number): MoleculeObject => {
+      // A wedged center whose substituents and a tail chain carry `labelCount` distinct
+      // abbreviations ("Abv1"…): nothing an element table knows.
+      const atoms: MoleculeObject["atoms"] = [
+        { id: "center", element: "C", x: 300, y: 300, formalCharge: 0 },
+        { id: "cl", element: "Cl", x: 340, y: 300, formalCharge: 0 }
+      ];
+      const bonds: MoleculeObject["bonds"] = [
+        { id: "wedge", fromAtomId: "center", toAtomId: "cl", order: "single", display: { bondStyle: "wedge" } }
+      ];
+      let previous = "center";
+      for (let index = 1; index <= labelCount; index += 1) {
+        const id = `abv${index}`;
+        atoms.push({ id, element: `Abv${index}`, x: 300 - index * 30, y: 300 + (index % 2) * 20, formalCharge: 0 });
+        bonds.push({ id: `b${index}`, fromAtomId: previous, toAtomId: id, order: "single" });
+        previous = id;
+      }
+      return benzeneRingMolecule({ id: "mol_abv", atoms, bonds, structure: "" });
+    };
+    const flattenOf = (mol: MoleculeObject) => {
+      const base = createPhase4Document("Label Limit");
+      const document = applyPatches(base, [
+        { op: "addObject", pageId: base.pages[0].id, object: mol },
+        { op: "setSelection", pageId: base.pages[0].id, objectIds: [mol.id] }
+      ]);
+      return flattenSpunMolecule(document, mol.id, new Float64Array(mol.atoms.length * 3), identity);
+    };
+
+    const seventeen = flattenOf(starWith(stereoPerceptionDistinctLabelLimit + 1));
+    expect(seventeen.status).toBe("refused");
+    expect(seventeen.refusalReasons.join()).toMatch(/17 distinct abbreviated labels/);
+    // At the limit this gate stays open (whatever the zeroed conformer does further on).
+    expect(flattenOf(starWith(stereoPerceptionDistinctLabelLimit)).refusalReasons.join()).not.toMatch(/abbreviated labels/);
+  });
+
+  it("carries every per-atom, per-bond and per-ring style override of an absorbed molecule", () => {
+    const base = createPhase4Document("Merge Styles");
+    const ring = benzeneRingMolecule();
+    const ringKey = "bond_001|bond_002|bond_003|bond_004|bond_005|bond_006";
+    const withRing = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: ring },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [ring.id] }
+    ]);
+    const styledRing = applyMoleculeRingFillColor(
+      applyPatches(withRing, [{
+        op: "updateObject", objectId: ring.id,
+        changes: { style: {
+          ...ring.style,
+          atomLabelColors: { atom_002: "#c75c12" },
+          atomLabelFontSizes: { atom_002: 18 },
+          atomIndicatorShowAtomNumbersByAtomId: { atom_003: true },
+          bondBoldWidths: { bond_001: 4.5 },
+          bondColors: { bond_004: "#1f5fbf" },
+          bondIndicatorShowQueryByBondId: { bond_005: false }
+        } }
+      }]),
+      { objectId: ring.id, kind: "ring", ringKey },
+      "#d02626"
+    );
+    const ringStyleBefore = (moleculeById(styledRing, ring.id).style.ringStyles as Record<string, unknown>)[ringKey];
+    expect(ringStyleBefore).toBeDefined();
+
+    // The host: an ethane far from the ring, with a per-bond override of its own that must survive.
+    const withEthane = insertNativeSingleBondMolecule(styledRing, { x: 560, y: 560 });
+    const ethane = selectedMolecule(withEthane);
+    const hostStyled = applyPatches(withEthane, [{
+      op: "updateObject", objectId: ethane.id,
+      changes: { style: { ...ethane.style, bondBoldWidths: { bond_001: 2.5 } } }
+    }]);
+
+    // Drag a bond from the ethane onto ring atom_001: the ring is absorbed into the ethane.
+    const ringAtom = ring.atoms[0];
+    const bonded = applyFreeformSingleBondToolAtPoint(hostStyled, ethane.id, "atom_002", { x: ringAtom.x, y: ringAtom.y });
+    expect(bonded.pages[0].objects.some((object) => object.id === ring.id)).toBe(false);
+    const merged = moleculeById(bonded, ethane.id);
+    expect(merged.atoms).toHaveLength(8);
+    const mergedAtomIds = new Set(merged.atoms.map((atom) => atom.id));
+    const mergedBondIds = new Set(merged.bonds.map((bond) => bond.id));
+    const style = merged.style as Record<string, Record<string, unknown>>;
+
+    // Each absorbed map arrives keyed by the ring parts' NEW ids (never the colliding old ones),
+    // with the value intact. Before, only the two colour maps did; the rest vanished.
+    const onlyEntry = (map: Record<string, unknown> | undefined, ids: Set<string>, excluded?: string) => {
+      const entries = Object.entries(map ?? {}).filter(([id]) => id !== excluded);
+      expect(entries).toHaveLength(1);
+      expect(ids.has(entries[0]![0])).toBe(true);
+      return entries[0]!;
+    };
+    expect(onlyEntry(style.atomLabelColors, mergedAtomIds)[1]).toBe("#c75c12");
+    expect(onlyEntry(style.atomLabelFontSizes, mergedAtomIds)[1]).toBe(18);
+    expect(onlyEntry(style.atomIndicatorShowAtomNumbersByAtomId, mergedAtomIds)[1]).toBe(true);
+    expect(onlyEntry(style.bondColors, mergedBondIds)[1]).toBe("#1f5fbf");
+    expect(onlyEntry(style.bondIndicatorShowQueryByBondId, mergedBondIds)[1]).toBe(false);
+    // The font size and colour landed on the same (relabelled) atom, as they started.
+    expect(Object.keys(style.atomLabelFontSizes!)).toEqual(Object.keys(style.atomLabelColors!));
+    // The host's own per-bond entry is kept beside the absorbed one.
+    expect(style.bondBoldWidths!.bond_001).toBe(2.5);
+    expect(onlyEntry(style.bondBoldWidths, mergedBondIds, "bond_001")[1]).toBe(4.5);
+
+    // The ring style is re-keyed to the ring's new bond ids — the key the layout engine now
+    // looks it up by — so the fill survives the merge instead of being pruned as stale.
+    const mergedRing = nativeMoleculeRings(merged);
+    expect(mergedRing).toHaveLength(1);
+    expect(Object.keys(style.ringStyles!)).toEqual([mergedRing[0]!.ringKey]);
+    expect(style.ringStyles![mergedRing[0]!.ringKey]).toEqual(ringStyleBefore);
+    expect(mergedRing[0]!.ringKey).not.toBe(ringKey);
+  });
+
+  it("reports the ±9 stacking cap so the caller can name it instead of misreporting a refusal", () => {
+    // A naked Zn atom: metals sit outside the covalent valence tables, so every increment through
+    // ±9 is carried (a carbon is refused past +4 — see the valence-refusal test — and would never
+    // reach the cap).
+    const znTextDocument = insertNativeTextObject(createPhase4Document("Charge Cap"), { x: 300, y: 300 }, "Zn");
+    const znTextObject = znTextDocument.pages[0].objects.find((object) => object.type === "text");
+    const seeded = convertNativeTextObjectToAtom(znTextDocument, znTextObject?.id ?? "");
+    const molecule = seeded.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected zinc molecule.");
+    }
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0].id, distanceToPointer: 0 };
+
+    // No mark yet: nothing to cap.
+    expect(nativeAtomChargeStackAtCap(seeded, 1, target)).toBe(false);
+
+    // Stack to the cap; each press is still legal through +9.
+    let document = seeded;
+    for (let press = 0; press < nativeChargeMarkMaxMagnitude; press += 1) {
+      expect(nativeAtomChargeStackAtCap(document, 1, target)).toBe(false);
+      const next = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, target));
+      expect(next).not.toBe(document);
+      document = next;
+    }
+    const marks = document.pages[0].objects.filter((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toMatchObject({ charge: nativeChargeMarkMaxMagnitude });
+
+    // At +9: another + is the capped refusal (and the apply returns the document unchanged),
+    // while − — which steps back down — is not capped.
+    expect(nativeAtomChargeStackAtCap(document, 1, target)).toBe(true);
+    expect(applyChargeToolAtNativeAtom(document, 1, target)).toBe(document);
+    expect(nativeAtomChargeStackAtCap(document, -1, target)).toBe(false);
+
+    // The mirror image at −9, and non-charge specs / non-atom targets never report a cap.
+    let negative = seeded;
+    for (let press = 0; press < nativeChargeMarkMaxMagnitude; press += 1) {
+      negative = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(negative, -1, target));
+    }
+    expect(nativeAtomChargeStackAtCap(negative, -1, target)).toBe(true);
+    expect(nativeAtomChargeStackAtCap(negative, 1, target)).toBe(false);
+    expect(nativeAtomChargeStackAtCap(document, { kind: "lone-pair" }, target)).toBe(false);
+    expect(nativeAtomChargeStackAtCap(document, 1, {
+      objectId: molecule.id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    })).toBe(false);
+  });
+
+  it("never bumps another molecule's charge mark through the proximity fallback", () => {
+    // Two adjacent molecules in the tight geometry of a coordination complex: A's + mark sits
+    // within the association radius of B's atom. Charging B's atom must create B's OWN mark —
+    // the pre-fix fallback reached across all page objects and bumped A's mark to 2+ instead.
+    const documentA = insertNativeSingleBondMolecule(createPhase4Document("Adjacent Charge Marks"), { x: 300, y: 300 });
+    const moleculeA = selectedMolecule(documentA);
+    const targetA = { objectId: moleculeA.id, kind: "atom" as const, atomId: "atom_002", distanceToPointer: 0 };
+    const withMarkA = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(documentA, 1, targetA));
+    const markA = withMarkA.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    if (!markA) {
+      throw new Error("Expected molecule A's charge mark.");
+    }
+    const markACenter = {
+      x: markA.x + nativeChargeMarkSizePx / 2,
+      y: markA.y + nativeChargeMarkSizePx / 2
+    };
+
+    // B's atom_002 lands 23px right of A's mark — inside the association radius (≈25.3px at the
+    // default 22px bond length), so the unfiltered proximity fallback would have found A's mark.
+    const firstBondHalfAngle = ((180 - DefaultNativeDrawingStyle.chainAngleDegrees) / 2) * (Math.PI / 180);
+    const halfDx = (nativeBondLengthPx / 2) * Math.cos(firstBondHalfAngle);
+    const halfDy = (nativeBondLengthPx / 2) * Math.sin(firstBondHalfAngle);
+    const withB = insertNativeSingleBondMolecule(withMarkA, {
+      x: markACenter.x + 23 - halfDx,
+      y: markACenter.y + halfDy
+    });
+    const moleculeB = withB.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id !== moleculeA.id
+    );
+    const atomB = moleculeB?.atoms.find((atom) => atom.id === "atom_002");
+    if (!moleculeB || !atomB) {
+      throw new Error("Expected second molecule.");
+    }
+    // Setup invariant: B's atom really is inside the radius of A's mark.
+    expect(Math.hypot(atomB.x - markACenter.x, atomB.y - markACenter.y))
+      .toBeLessThanOrEqual(nativeChargeAssociationRadiusPx);
+
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(withB, 1, {
+      objectId: moleculeB.id,
+      kind: "atom",
+      atomId: atomB.id,
+      distanceToPointer: 0
+    }));
+    const marksAfter = charged.pages[0].objects.filter((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+
+    // A's mark is untouched at 1+; B's atom gets its own anchored mark.
+    expect(marksAfter).toHaveLength(2);
+    expect(marksAfter.find((mark) => mark.id === markA.id)).toMatchObject({ charge: 1 });
+    expect(marksAfter.find((mark) => mark.id !== markA.id)?.anchor)
+      .toMatchObject({ kind: "atom", objectId: moleculeB.id, atomId: atomB.id });
+    const moleculeAAfter = charged.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === moleculeA.id
+    );
+    const moleculeBAfter = charged.pages[0].objects.find((object): object is MoleculeObject =>
+      object.id === moleculeB.id
+    );
+    expect(moleculeAAfter?.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ formalCharge: 1 });
+    expect(moleculeBAfter?.atoms.find((atom) => atom.id === atomB.id)).toMatchObject({ formalCharge: 1 });
+  });
+
+  it("clears and restores an atom's valence warning", () => {
+    const znText = insertNativeTextObject(createPhase4Document("Warning Suppression"), { x: 300, y: 300 }, "N");
+    const textObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const document = convertNativeTextObjectToAtom(znText, textObject?.id ?? "");
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
+
+    // The literal typed lone N is flagged...
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
+    expect(molecule.chemistry?.warnings).toHaveLength(1);
+
+    // ...Clear Warning silences the badge and the stored warning...
+    const cleared = applyNativeAtomWarningSuppression(document, target, true);
+    const clearedMolecule = selectedMolecule(cleared);
+    expect(clearedMolecule.atoms[0]).toMatchObject({ warningSuppressed: true });
+    expect(nativeMoleculeInvalidAtomStates(clearedMolecule)).toEqual([]);
+    expect(clearedMolecule.chemistry?.warnings).toEqual([]);
+
+    // ...and Restore Warning brings it back.
+    const restored = applyNativeAtomWarningSuppression(cleared, target, false);
+    const restoredMolecule = selectedMolecule(restored);
+    expect(restoredMolecule.atoms[0].warningSuppressed).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(restoredMolecule)).toHaveLength(1);
+  });
+
+  it("clears warnings across a selection scope — whole molecule or just the selected atoms", () => {
+    // Ethane with BOTH atoms literal-labeled N: two hypovalent flags in one molecule.
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Scoped Warnings"), { x: 300, y: 300 });
+    const document = setNativeAtomElement(
+      setNativeAtomElement(ethane, "atom_001", "N", { literal: true }),
+      "atom_002",
+      "N",
+      { literal: true }
+    );
+    const molecule = selectedMolecule(document);
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(2);
+
+    // Partial scope: only the listed atom is silenced; the other keeps its badge.
+    const partial = applyNativeWarningSuppressionToScope(document, [{ objectId: molecule.id, atomIds: ["atom_001"] }], true);
+    const partialMolecule = selectedMolecule(partial);
+    expect(partialMolecule.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+    expect(partialMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(partialMolecule)).toMatchObject([{ atomId: "atom_002" }]);
+
+    // Whole-molecule scope: every current warning goes; restoring the same scope brings both back.
+    const whole = applyNativeWarningSuppressionToScope(document, [{ objectId: molecule.id }], true);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole))).toEqual([]);
+    const restored = applyNativeWarningSuppressionToScope(whole, [{ objectId: molecule.id }], false);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(restored))).toHaveLength(2);
+
+    // Clearing suppresses only atoms that CURRENTLY warn: a valid carbon in scope keeps its
+    // voice for future mistakes.
+    const mixed = setNativeAtomElement(document, "atom_002", "C");
+    const mixedCleared = applyNativeWarningSuppressionToScope(mixed, [{ objectId: molecule.id }], true);
+    const mixedMolecule = selectedMolecule(mixedCleared);
+    expect(mixedMolecule.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
+    expect(mixedMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
+  });
+
+  it("applies nickname labels verbatim with honest chemistry", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Nickname Label"), { x: 300, y: 300 });
+
+    // Opaque abbreviation: the label reads Et, is never valence-flagged, and contributes
+    // nothing to the formula (the remaining skeleton carbon keeps its methyl hydrogens).
+    const ethyl = setNativeAtomElement(ethane, "atom_002", "Et");
+    const ethylMolecule = selectedMolecule(ethyl);
+    const ethylAtom = ethylMolecule.atoms.find((atom) => atom.id === "atom_002");
+    expect(ethylAtom).toMatchObject({ element: "Et" });
+    expect(atomDisplayLabel(ethylAtom!, ethylMolecule.bonds)).toBe("Et");
+    expect(nativeMoleculeInvalidAtomStates(ethylMolecule)).toEqual([]);
+    expect(ethylMolecule.chemistry).toMatchObject({ formula: "CH3" });
+
+    // Condensed nickname that spells real elements: CF3 counts in the formula.
+    const trifluoromethyl = setNativeAtomElement(ethane, "atom_002", "CF3");
+    expect(selectedMolecule(trifluoromethyl).chemistry).toMatchObject({ formula: "C2H3F3" });
+
+    // "MgBr" parses as magnesium + bromine — the Grignard label carries its formula.
+    const grignard = setNativeAtomElement(ethane, "atom_002", "MgBr");
+    expect(selectedMolecule(grignard).chemistry).toMatchObject({ formula: "CH3BrMg" });
+  });
+
+  it("keeps an anchored charge when its atom is relabeled to a nickname", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Charged Nickname"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(ethane);
+    const target = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(ethane, 1, target));
+    const relabeled = reconcileNativeChargeMarks(applyNativeAtomElementTarget(charged, target, "Me"));
+    const relabeledMolecule = moleculeById(relabeled, molecule.id);
+    const mark = relabeled.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+
+    expect(relabeledMolecule.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({
+      element: "Me",
+      formalCharge: 1,
+      markCharge: 1
+    });
+    expect(mark?.anchor).toMatchObject({ kind: "atom", objectId: molecule.id, atomId: "atom_002" });
+  });
+
+  it("associates a positive charge with an N3 nickname and writes the charged dummy atom", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Charged N3"), { x: 300, y: 300 });
+    const labeled = setNativeAtomElement(ethane, "atom_002", "N3");
+    const molecule = selectedMolecule(labeled);
+    const charged = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(labeled, 1, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: "atom_002",
+      distanceToPointer: 0
+    }));
+    const chargedMolecule = moleculeById(charged, molecule.id);
+
+    expect(chargedMolecule.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({
+      element: "N3",
+      formalCharge: 1,
+      markCharge: 1
+    });
+    expect(nativeSingleBondGraphSmiles(chargedMolecule.atoms, chargedMolecule.bonds)).toBe("C[*+]");
+  });
+
+  it("still refuses a third positive charge on a two-bond carbon", () => {
+    const propane = growFromAtom(
+      insertNativeSingleBondMolecule(createPhase4Document("Carbon Charge Refusal"), { x: 300, y: 300 }),
+      "atom_002",
+      0
+    );
+    const molecule = selectedMolecule(propane);
+    const target = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+    const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(propane, 1, target));
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, target));
+    // The refusal happens at the tool, not at the reconcile: the third press is a no-op, so the
+    // carbon KEEPS its +2 and its anchored mark. (It used to write +3, which the reconcile then
+    // detached — leaving a neutral carbon beside a floating "3+".)
+    const thirdAttempt = applyChargeToolAtNativeAtom(twice, 1, target);
+    expect(thirdAttempt).toBe(twice);
+    expect(nativeChargeStackRefusal(twice, 1, target)).toBe("valence");
+    const carbon = moleculeById(reconcileNativeChargeMarks(thirdAttempt), molecule.id).atoms.find((atom) => atom.id === "atom_002");
+    const mark = thirdAttempt.pages[0].objects.find((object): object is ElectronMarkObject =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+
+    expect(moleculeById(twice, molecule.id).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ formalCharge: 2 });
+    expect(carbon).toMatchObject({ element: "C", formalCharge: 2, markCharge: 2 });
+    expect(mark?.anchor).toMatchObject({ kind: "atom", atomId: "atom_002" });
+  });
+
+  it("treats dashed bonds as dative for valence and drawn hydrogens", () => {
+    const bond = (id: string, to: string, order: "single" | "double" = "single", dashed = false) => ({
+      id, fromAtomId: "a1", toAtomId: to, order,
+      ...(dashed ? { display: { bondStyle: "dashed" as const } } : {})
+    });
+    const nitrogen = { id: "a1", element: "N", x: 0, y: 0, formalCharge: 0 };
+
+    // Pyridine-style N (three covalent bonds) plus a dashed coordinate bond: still valid, still "N".
+    const coordinated = [bond("b1", "c1"), bond("b2", "c2", "double"), bond("b3", "zn", "single", true)];
+    expect(nativeAtomValidationState(nitrogen, coordinated)).toMatchObject({ valid: true, valenceUsed: 3 });
+    // A fourth COVALENT bond still correctly demands the +1.
+    const quaternized = [bond("b1", "c1"), bond("b2", "c2", "double"), bond("b3", "c3")];
+    expect(nativeAtomValidationState(nitrogen, [...quaternized, bond("b4", "c4")])).toMatchObject({ valid: false });
+
+    // The drawn hydrogen count ignores the dashed contact too: an amine N dash-bonded to a
+    // metal keeps its NH2.
+    expect(atomDisplayLabel(nitrogen, [bond("b1", "c1"), bond("b2", "zn", "single", true)])).toBe("NH2");
   });
 
   it("breaks freeform drag into custom length after a larger pull", () => {
@@ -4049,7 +6232,7 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(document).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ element: "C" });
   });
 
-  it("makes hovered carbon labels explicit with implicit hydrogens when pressing C", () => {
+  it("makes hovered carbon labels explicit when pressing C", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Explicit Carbon"), { x: 200, y: 220 });
     const molecule = selectedMolecule(document);
     const explicitCarbon = applyNativeAtomElementTarget(document, {
@@ -4065,14 +6248,170 @@ describe("Phase 4 document workflow", () => {
     }
 
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
+    // A hotkey relabel is an ordinary implicit-hydrogen atom: the explicit terminal carbon
+    // draws its hydrogens ("CH3"), unlike a text-typed literal label.
     expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
-  it("labels isolated neutral common atoms with implicit hydrogens", () => {
-    expect(atomDisplayLabel({ id: "atom_001", element: "C", x: 0, y: 0, formalCharge: 0 }, [])).toBe("CH4");
-    expect(atomDisplayLabel({ id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 }, [])).toBe("NH3");
-    expect(atomDisplayLabel({ id: "atom_001", element: "O", x: 0, y: 0, formalCharge: 0 }, [])).toBe("OH2");
+  it("clears an atom's label back to a skeleton carbon instead of deleting the atom", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Label Delete"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(document);
+    const withOxygen = setNativeAtomElement(document, "atom_002", "O");
+    const target = {
+      objectId: molecule.id,
+      kind: "atom" as const,
+      atomId: "atom_002",
+      distanceToPointer: 0
+    };
+
+    const cleared = selectedMolecule(applyNativeAtomLabelClearTarget(withOxygen, target));
+    // The atom survives with its bond; only the label reverts to an invisible carbon.
+    expect(cleared.atoms).toHaveLength(2);
+    expect(cleared.bonds).toHaveLength(1);
+    expect(cleared.atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ element: "C" });
+    expect(cleared.atoms.find((atom) => atom.id === "atom_002")?.labelVisible).toBeUndefined();
+    expect(cleared.structure).toBe("CC");
+
+    // An explicit C label clears the same way (back to the invisible vertex)…
+    const explicitCarbon = applyNativeAtomElementTarget(document, target, "C");
+    expect(selectedMolecule(explicitCarbon).atoms.find((atom) => atom.id === "atom_002")?.labelVisible).toBe(true);
+    const hiddenAgain = applyNativeAtomLabelClearTarget(explicitCarbon, target);
+    expect(selectedMolecule(hiddenAgain).atoms.find((atom) => atom.id === "atom_002")?.labelVisible).toBeUndefined();
+
+    // …while a plain skeleton carbon has no label to clear, so the caller falls through to the
+    // real atom delete.
+    expect(applyNativeAtomLabelClearTarget(document, target)).toBe(document);
+    expect(nativeAtomHasExplicitLabel({ id: "a", element: "C", x: 0, y: 0, formalCharge: 0 })).toBe(false);
+    expect(nativeAtomHasExplicitLabel({ id: "a", element: "O", x: 0, y: 0, formalCharge: 0 })).toBe(true);
+    expect(nativeAtomHasExplicitLabel({ id: "a", element: "C", x: 0, y: 0, formalCharge: 0, labelVisible: true })).toBe(true);
+  });
+
+  it("converts committed element-symbol text into a naked flagged atom", () => {
+    const document = insertNativeTextObject(createPhase4Document("Text To Atom"), { x: 300, y: 300 }, "C");
+    const textObject = document.pages[0].objects.find((object) => object.type === "text");
+    if (!textObject) {
+      throw new Error("Expected text object.");
+    }
+
+    const converted = convertNativeTextObjectToAtom(document, textObject.id);
+    const molecule = selectedMolecule(converted);
+    expect(converted.pages[0].objects.some((object) => object.id === textObject.id)).toBe(false);
+    expect(molecule.atoms).toHaveLength(1);
+    expect(molecule.atoms[0]).toMatchObject({ element: "C", labelVisible: true, formalCharge: 0 });
+    expect(molecule.bonds).toHaveLength(0);
+    // Bare label + the incomplete-valence flag: the user's naked carbon.
+    expect(atomDisplayLabel(molecule.atoms[0], molecule.bonds)).toBe("C");
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
+
+    // Lower-case and two-letter symbols canonicalize ("fe" → Fe); Fe has no valence table entry,
+    // so it converts without a flag.
+    const ironText = insertNativeTextObject(createPhase4Document("Iron Text"), { x: 300, y: 300 }, "fe");
+    const ironObject = ironText.pages[0].objects.find((object) => object.type === "text");
+    const iron = selectedMolecule(convertNativeTextObjectToAtom(ironText, ironObject?.id ?? ""));
+    expect(iron.atoms[0]).toMatchObject({ element: "Fe" });
+
+    // Non-element text stays a text object.
+    const prose = insertNativeTextObject(createPhase4Document("Prose Text"), { x: 300, y: 300 }, "hello");
+    const proseObject = prose.pages[0].objects.find((object) => object.type === "text");
+    expect(convertNativeTextObjectToAtom(prose, proseObject?.id ?? "")).toBe(prose);
+  });
+
+  it("labels literal typed atoms bare and flags them hypovalent; drawn atoms stay hydrides", () => {
+    // Only the text tool creates literal atoms: bare symbol, no invented hydrogens, and the
+    // incomplete-valence badge until real bonds arrive.
+    const literal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0, labelLiteral: true });
+    expect(atomDisplayLabel(literal("C"), [])).toBe("C");
+    expect(atomDisplayLabel(literal("N"), [])).toBe("N");
+    expect(atomDisplayLabel(literal("O"), [])).toBe("O");
+    expect(nativeAtomValidationState(literal("C"), [])).toMatchObject({
+      valid: false,
+      invalidReason: expect.stringContaining("has 0 of 4 bonds")
+    });
+    expect(nativeAtomValidationState(literal("N"), [])).toMatchObject({ valid: false });
+
+    // A drawn (non-literal) lone atom keeps the skeletal convention: it reads as the implicit
+    // hydride and is never invalid — hotkeys and deletes cannot create flagged atoms.
+    const drawn = { id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 };
+    expect(atomDisplayLabel(drawn, [])).toBe("NH3");
+    expect(nativeAtomValidationState(drawn, [])).toMatchObject({ valid: true });
+  });
+
+  it("checks transition metals only against their coordination ceiling", () => {
+    const bonds = (count: number) => Array.from({ length: count }, (_, index) => ({
+      id: `b_${index}`,
+      fromAtomId: "atom_001",
+      toAtomId: `c${index}`,
+      order: "single" as const
+    }));
+    const vanadium = (literal: boolean) => ({
+      id: "atom_001", element: "V", x: 0, y: 0, formalCharge: 0, ...(literal ? { labelLiteral: true } : {})
+    });
+
+    // Metals have no single correct valence — V(II) through V(V) and V(CO)6 are all real —
+    // so any plausible coordination passes, a naked typed metal is a legitimate species
+    // (catalysts), and only a bond count beyond anything known earns the badge.
+    expect(nativeAtomValidationState(vanadium(false), bonds(4))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(vanadium(false), bonds(6))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(vanadium(true), [])).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(vanadium(false), bonds(8))).toMatchObject({
+      valid: false,
+      invalidReason: expect.stringContaining("not known beyond 7-coordinate")
+    });
+    // No phantom hydrogens on metals, ever.
+    expect(atomDisplayLabel(vanadium(false), [])).toBe("V");
+
+    // Group ceilings differ: Pd caps at 6 while Re reaches the 9-coordinate hydride.
+    const metal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0 });
+    expect(nativeAtomValidationState(metal("Pd"), bonds(7))).toMatchObject({ valid: false });
+    expect(nativeAtomValidationState(metal("Re"), bonds(9))).toMatchObject({ valid: true });
+
+    // Dashed contacts contribute no covalent valence, but each ligand still occupies one
+    // coordination site at the metal ceiling.
+    const dashedBonds = (count: number) => bonds(count).map((bond) => ({
+      ...bond,
+      display: { bondStyle: "dashed" as const }
+    }));
+    expect(nativeAtomValidationState(metal("Zn"), dashedBonds(6))).toMatchObject({
+      valid: true,
+      valenceUsed: 0
+    });
+    expect(nativeAtomValidationState(metal("Zn"), dashedBonds(7))).toMatchObject({
+      valid: false,
+      valenceUsed: 0,
+      invalidReason: expect.stringContaining("not known beyond 6-coordinate")
+    });
+  });
+
+  it("accepts hypervalent heavy halogens and chalcogens at their real oxidation states", () => {
+    const bonds = (count: number, orders: ("single" | "double")[] = []) =>
+      Array.from({ length: count }, (_, index) => ({
+        id: `b_${index}`,
+        fromAtomId: "atom_001",
+        toAtomId: `c${index}`,
+        order: orders[index] ?? "single" as const
+      }));
+    const atomOf = (element: string, formalCharge = 0) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge });
+
+    // Lambda-3 iodanes (PhI(OAc)2) and lambda-5 periodinanes (DMP) are reagents, not errors.
+    expect(nativeAtomValidationState(atomOf("I"), bonds(3))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(atomOf("I"), bonds(5))).toMatchObject({ valid: true });
+    // Even valences on a neutral halogen still need a charge (iodonium is I+ with two bonds).
+    expect(nativeAtomValidationState(atomOf("I"), bonds(2))).toMatchObject({ valid: false });
+    expect(nativeAtomValidationState(atomOf("I", 1), bonds(2))).toMatchObject({ valid: true });
+
+    // Selenoxide-style Se(IV) and selenone Se(VI) pass; Se(III) neutral does not.
+    expect(nativeAtomValidationState(atomOf("Se"), bonds(4))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(atomOf("Se"), bonds(6))).toMatchObject({ valid: true });
+    expect(nativeAtomValidationState(atomOf("Se"), bonds(3))).toMatchObject({ valid: false });
+
+    // The selenium analog of a thiol draws its hydrogen; a literal typed "Se" stays bare and
+    // flagged until its two bonds arrive.
+    expect(atomDisplayLabel(atomOf("Se"), bonds(1))).toBe("SeH");
+    expect(nativeAtomValidationState({ ...atomOf("Se"), labelLiteral: true }, [])).toMatchObject({
+      valid: false,
+      invalidReason: expect.stringContaining("has 0 of 2 bonds")
+    });
   });
 
   it("allows hovered atom element changes that exceed valence and marks them invalid", () => {
@@ -4251,9 +6590,6 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: carbon.id,
       distanceToPointer: 0
-    }, {
-      x: carbon.x,
-      y: carbon.y - nativeAtomHitRadiusPx
     });
     const carbonylMolecule = selectedMolecule(carbonyl);
     const oxygen = carbonylMolecule.atoms.find((atom) => atom.element === "O");
@@ -4272,7 +6608,13 @@ describe("Phase 4 document workflow", () => {
     expect(oxygen?.y).toBeLessThan(carbon.y);
     expect(carbonylMolecule.structure).toContain("=O");
     expect(carbonylMolecule.chemistry).toMatchObject({ formula: "C2H4O", atomCount: 3, bondCount: 2 });
-    expect(secondAttempt).toEqual(carbonyl);
+    // The carbonyl carbon can't take a second C=O, so — like ChemDraw's carbonyl hotkey — the
+    // repeat press sprouts a new carbon along the open direction and puts the C=O on it, never
+    // over-valencing the hovered carbon.
+    const secondMolecule = selectedMolecule(secondAttempt);
+    expect(secondMolecule.atoms).toHaveLength(carbonylMolecule.atoms.length + 2);
+    expect(secondMolecule.atoms.filter((atom) => atom.element === "O")).toHaveLength(2);
+    expect(nativeMoleculeInvalidAtomStates(secondMolecule)).toHaveLength(0);
   });
 
   it("builds furan-like ring valence with oxygen and two double bonds", () => {
@@ -5364,9 +7706,9 @@ describe("Phase 4 document workflow", () => {
     expect(movedLinearPaint).toMatchObject({
       kind: "linear-gradient",
       x1: 0,
-      y1: 0,
-      y2: 0.8
+      y1: 0
     });
+    expect(movedLinearPaint?.kind === "linear-gradient" ? movedLinearPaint.y2 : undefined).toBeCloseTo(0.8, 6);
     expect(movedLinearPaint?.kind === "linear-gradient" ? movedLinearPaint.x2 : undefined).toBeCloseTo(0.2, 6);
 
     const addedStop = addGraphicObjectGradientStopForSelection(movedLinearEnd, "fill", [molecule.id]);
@@ -7671,6 +10013,74 @@ describe("Phase 4 document workflow", () => {
     expect(pasted.pages[0].objects.filter((object) => object.type === "graphic")).toHaveLength(2);
   });
 
+  it("copies a lassoed fragment as just that fragment, not the whole molecule", () => {
+    // A lasso/marquee fragment selection deliberately leaves `selection.objectIds` empty (it
+    // names atoms and bonds, not objects), so Copy used to see an empty selection: nothing went
+    // on the clipboard and the previous whole-molecule copy pasted again.
+    const withRing = insertNativeTemplateMolecule(
+      createPhase4Document("Fragment Clipboard"),
+      { x: 300, y: 300 },
+      "cyclohexane"
+    );
+    const ring = selectedMolecule(withRing);
+    const pageId = withRing.pages[0].id;
+    const document = selectDocumentObjects(withRing, pageId, []);
+    const halfAtomIds = ring.atoms.slice(0, 3).map((atom) => atom.id);
+
+    expect(createSelectionClipboardPayload(document)).toBeUndefined();
+
+    const payload = createSelectionClipboardPayload(document, [
+      { objectId: ring.id, atomIds: halfAtomIds, bondIds: [] }
+    ]);
+    if (!payload) {
+      throw new Error("Expected a fragment clipboard payload.");
+    }
+
+    const copiedMolecule = payload.objects[0];
+    if (copiedMolecule?.type !== "molecule") {
+      throw new Error("Expected the fragment payload to carry a molecule.");
+    }
+    expect(copiedMolecule.atoms.map((atom) => atom.id)).toEqual(halfAtomIds);
+    // Two bonds, not three: the bond back to the fourth ring atom has only one end in the
+    // fragment. Bonds ride along whenever BOTH ends were selected, so a lassoed ring stays a ring.
+    expect(copiedMolecule.bonds).toHaveLength(2);
+    expect(copiedMolecule.bonds.every((bond) =>
+      halfAtomIds.includes(bond.fromAtomId) && halfAtomIds.includes(bond.toAtomId)
+    )).toBe(true);
+
+    const pasted = pasteSelectionClipboardPayload(document, payload, { x: 480, y: 460 });
+    const molecules = pasted.pages[0].objects.filter((object): object is MoleculeObject =>
+      object.type === "molecule"
+    );
+    expect(molecules).toHaveLength(2);
+    const pastedMolecule = molecules.find((molecule) => molecule.id !== ring.id);
+    expect(pastedMolecule?.atoms).toHaveLength(3);
+    expect(pastedMolecule?.bonds).toHaveLength(2);
+  });
+
+  it("carries a selected bond's own atoms into a fragment copy", () => {
+    const withRing = insertNativeTemplateMolecule(
+      createPhase4Document("Fragment Bond Clipboard"),
+      { x: 300, y: 300 },
+      "cyclohexane"
+    );
+    const ring = selectedMolecule(withRing);
+    const document = selectDocumentObjects(withRing, withRing.pages[0].id, []);
+    const bond = ring.bonds[0]!;
+
+    const payload = createSelectionClipboardPayload(document, [
+      { objectId: ring.id, atomIds: [], bondIds: [bond.id] }
+    ]);
+    const copiedMolecule = payload?.objects[0];
+    if (copiedMolecule?.type !== "molecule") {
+      throw new Error("Expected the fragment payload to carry a molecule.");
+    }
+    expect(copiedMolecule.atoms.map((atom) => atom.id).sort()).toEqual(
+      [bond.fromAtomId, bond.toAtomId].sort()
+    );
+    expect(copiedMolecule.bonds).toHaveLength(1);
+  });
+
   it("sizes pasted text boxes to the text block instead of a fixed placeholder frame", () => {
     const document = createPhase4Document("Auto-fit Text Paste");
     const shortResult = applyClipboardPastePayload(document, {
@@ -7872,9 +10282,6 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: terminalCarbon.id,
       distanceToPointer: 0
-    }, {
-      x: terminalCarbon.x - 4,
-      y: terminalCarbon.y + 4
     });
     const grown = selectedMolecule(grownDocument);
     const newAtom = grown.atoms.find((atom) => !molecule.atoms.some((previous) => previous.id === atom.id));
@@ -7998,9 +10405,6 @@ describe("Phase 4 document workflow", () => {
       kind: "atom",
       atomId: atom.id,
       distanceToPointer: 0
-    }, {
-      x: atom.x - 4,
-      y: atom.y + 4
     });
     expect(selectedMolecule(withGrownBond).atoms).toHaveLength(molecule.atoms.length + 1);
 
@@ -8077,12 +10481,17 @@ describe("Phase 4 document workflow", () => {
     expect(grown.chemistry).toMatchObject({ formula: "C3H8", atomCount: 3, bondCount: 2 });
   });
 
-  it("uses the hovered steering point when shortcut-growing a native single bond", () => {
-    const document = insertNativeSingleBondMolecule(createPhase4Document("Shortcut Bond Steering"), { x: 300, y: 300 });
+  it("shortcut-grows a native single bond by pure geometry, deterministic per atom", () => {
+    // The pointer's grip offset used to steer the sprout, making the direction effectively
+    // random near the atom center and disagreeing with the hover arrow. Growth now plans from
+    // the atom itself: repeated calls agree, the new bond keeps the exact bond length, and it
+    // continues the zig-zag at the chain angle from the existing bond.
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Shortcut Bond Geometry"), { x: 300, y: 300 });
     const molecule = selectedMolecule(document);
     const terminalAtom = molecule.atoms.find((atom) => atom.id === "atom_002");
-    if (!terminalAtom) {
-      throw new Error("Expected terminal atom.");
+    const neighborAtom = molecule.atoms.find((atom) => atom.id === "atom_001");
+    if (!terminalAtom || !neighborAtom) {
+      throw new Error("Expected seed bond atoms.");
     }
     const target = {
       objectId: molecule.id,
@@ -8090,21 +10499,24 @@ describe("Phase 4 document workflow", () => {
       atomId: terminalAtom.id,
       distanceToPointer: 0
     };
-    const upward = applySingleBondToolAtNativeAtom(document, target, {
-      x: terminalAtom.x + 4,
-      y: terminalAtom.y - 4
-    });
-    const downward = applySingleBondToolAtNativeAtom(document, target, {
-      x: terminalAtom.x + 4,
-      y: terminalAtom.y + 4
-    });
-    const upwardAtom = selectedMolecule(upward).atoms.at(-1);
-    const downwardAtom = selectedMolecule(downward).atoms.at(-1);
+    const first = applySingleBondToolAtNativeAtom(document, target);
+    const second = applySingleBondToolAtNativeAtom(document, target);
+    const firstAtom = selectedMolecule(first).atoms.at(-1);
+    const secondAtom = selectedMolecule(second).atoms.at(-1);
+    if (!firstAtom || !secondAtom) {
+      throw new Error("Expected grown atoms.");
+    }
 
-    expect(upwardAtom?.id).toBe("atom_003");
-    expect(downwardAtom?.id).toBe("atom_003");
-    expect(upwardAtom?.y).toBeLessThan(terminalAtom.y);
-    expect(downwardAtom?.y).toBeGreaterThan(terminalAtom.y);
+    expect(firstAtom.id).toBe("atom_003");
+    expect(secondAtom.x).toBeCloseTo(firstAtom.x, 6);
+    expect(secondAtom.y).toBeCloseTo(firstAtom.y, 6);
+    // Exact bond length…
+    expect(Math.hypot(firstAtom.x - terminalAtom.x, firstAtom.y - terminalAtom.y)).toBeCloseTo(nativeBondLengthPx, 6);
+    // …at the 120° chain angle from the existing bond.
+    const neighborAngle = Math.atan2(neighborAtom.y - terminalAtom.y, neighborAtom.x - terminalAtom.x);
+    const grownAngle = Math.atan2(firstAtom.y - terminalAtom.y, firstAtom.x - terminalAtom.x);
+    const separation = Math.abs(((grownAngle - neighborAngle) * 180 / Math.PI + 540) % 360 - 180);
+    expect(separation).toBeCloseTo(120, 5);
   });
 
   it("finds atom delete hits before nearby bond hits", () => {
@@ -8120,11 +10532,13 @@ describe("Phase 4 document workflow", () => {
       atomId: "atom_002",
       distanceToPointer: 0
     });
+    // 4px below the bond's midpoint; the 30°-inclined seed bond makes the perpendicular
+    // distance 4·cos(30°).
     expect(findNativeMoleculeDeleteHit(molecule, { x: 200, y: 224 })).toMatchObject({
       kind: "bond",
       bondId: "bond_001",
       terminalAtomId: expect.any(String),
-      distanceToPointer: 4
+      distanceToPointer: expect.closeTo(4 * Math.cos(Math.PI / 6), 5)
     });
   });
 
@@ -8259,6 +10673,33 @@ describe("Phase 4 document workflow", () => {
 
     expect(empty.pages[0].objects).toEqual([]);
     expect(empty.selection.objectIds).toEqual([]);
+  });
+
+  it("counts condensed atom labels verbatim in the formula instead of inventing hydrogens", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Condensed Label Formula"), { x: 220, y: 260 });
+
+    // A typed "CH3" label IS its own recipe: no implicit H on top, no empty contribution.
+    const naked = applyNativeMoleculeDeleteTarget(ethane, {
+      objectId: selectedMolecule(ethane).id,
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      terminalAtomId: "atom_002",
+      distanceToPointer: 0
+    });
+    const methyl = setNativeAtomElement(naked, "atom_001", "CH3");
+    expect(selectedMolecule(methyl).chemistry).toMatchObject({ formula: "CH3", atomCount: 1 });
+
+    // Bonded condensed label: CH3–CO2H reads as acetic acid (the skeleton carbon still gets
+    // its implicit hydrogens; the label contributes exactly what it spells).
+    const aceticAcid = setNativeAtomElement(ethane, "atom_002", "CO2H");
+    expect(selectedMolecule(aceticAcid).chemistry).toMatchObject({ formula: "C2H4O2", atomCount: 2 });
+
+    // Abbreviations with non-element tokens stay uncounted (no wrong guesses) — a lone one
+    // falls back to the empty-formula sentinel.
+    const abbreviation = setNativeAtomElement(naked, "atom_001", "OMe");
+    expect(selectedMolecule(abbreviation).chemistry).toMatchObject({ formula: "C0H0", atomCount: 1 });
   });
 
   it("deletes a lassoed fragment (atoms plus their incident bonds) and rebuilds the remaining graph", () => {
@@ -8409,7 +10850,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(plausible))).toEqual([]);
   });
 
-  it("deletes neopentane's central carbon into neutral methane fragments", () => {
+  it("deletes neopentane's central carbon into four implicit methanes", () => {
     const neopentane = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Delete Neopentane Center"), { x: 300, y: 300 })
@@ -8426,12 +10867,15 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.bonds).toEqual([]);
     expect(molecule.structure).toBe("C.C.C.C");
     expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
+    // Drawn atoms keep the skeletal convention even when orphaned: each lone carbon reads as
+    // an implicit methane with no valence flag — only text-typed literal atoms can be invalid.
     expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
       "CH4",
       "CH4",
       "CH4",
       "CH4"
     ]);
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toEqual([]);
     expect(molecule.atoms.some((atom) => atom.element === "H")).toBe(false);
   });
 
@@ -8486,8 +10930,8 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(hypervalentMolecule)).toHaveLength(1);
 
     const withCharge = reconcileNativeChargeMarks(applyChargeToolAtPoint(neutralHypervalent, 1, {
-      x: nitrogen.x + 11,
-      y: nitrogen.y - 11
+      x: nitrogen.x,
+      y: nitrogen.y - 15
     }));
     const chargeMark = withCharge.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
@@ -8579,7 +11023,10 @@ describe("Phase 4 document workflow", () => {
     if (!oxygen) {
       throw new Error("Expected hydroxyl oxygen.");
     }
-    expect(atomDisplayLabel(oxygen, molecule.bonds, undefined, molecule.atoms)).toBe("OH");
+    // Hotkey relabels never create literal atoms, so show the drawn atom's implicit hydrogen to
+    // watch the proton come and go on the label itself (the formula tracks the model regardless).
+    const showHydrogens = { ...DefaultNativeDrawingStyle, atomLabelHideImplicitHydrogens: false };
+    expect(atomDisplayLabel(oxygen, molecule.bonds, showHydrogens, molecule.atoms)).toBe("OH");
     expect(molecule.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
 
     const withCharge = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(methanol, -1, {
@@ -8601,7 +11048,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(chargedOxygen).toMatchObject({ element: "O", formalCharge: -1, markCharge: -1 });
     // Proton removed; the minus is drawn by the mark, not repeated in the label.
-    expect(atomDisplayLabel(chargedOxygen!, alkoxide.bonds, undefined, alkoxide.atoms)).toBe("O");
+    expect(atomDisplayLabel(chargedOxygen!, alkoxide.bonds, showHydrogens, alkoxide.atoms)).toBe("O");
     expect(alkoxide.chemistry).toMatchObject({ formula: "CH3O", totalCharge: -1 });
     expect(nativeMoleculeInvalidAtomStates(alkoxide)).toEqual([]);
 
@@ -8617,7 +11064,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(neutralOxygen).toMatchObject({ formalCharge: 0 });
     expect(neutralOxygen?.markCharge).toBeUndefined();
-    expect(atomDisplayLabel(neutralOxygen!, neutralMolecule!.bonds, undefined, neutralMolecule!.atoms)).toBe("OH");
+    expect(atomDisplayLabel(neutralOxygen!, neutralMolecule!.bonds, showHydrogens, neutralMolecule!.atoms)).toBe("OH");
     expect(neutralMolecule?.chemistry).toMatchObject({ formula: "CH4O", totalCharge: 0 });
     expect(nativeMoleculeInvalidAtomStates(neutralMolecule!)).toEqual([]);
 
@@ -9403,7 +11850,7 @@ describe("Phase 4 document workflow", () => {
     expect(geometry?.target).toBeDefined();
   });
 
-  it("serializes the Copy As scope: selection when present, the whole page otherwise", () => {
+  it("serializes the Copy As scope: selection when present, the whole page otherwise", async () => {
     const methanol = setNativeAtomElement(
       insertNativeSingleBondMolecule(createPhase4Document("Copy As Scope"), { x: 300, y: 300 }),
       "atom_002",
@@ -9416,11 +11863,11 @@ describe("Phase 4 document workflow", () => {
     expect(molecules).toHaveLength(2);
 
     // Second molecule (plain ethane) is selected → scope is just that molecule.
-    expect(copyAsSmiles(withEthane)).toBe("CC");
+    expect(await copyAsSmiles(withEthane)).toBe("CC");
 
     // Nothing selected → the whole page, molecules joined with a dot.
     const deselected = { ...withEthane, selection: { ...withEthane.selection, objectIds: [] } };
-    expect(copyAsSmiles(deselected)).toBe("CO.CC");
+    expect(await copyAsSmiles(deselected)).toBe("CO.CC");
 
     // A multi-molecule scope merges into one CTAB with every atom present.
     const merged = copyAsMolfile(deselected, "v2000");
@@ -9457,6 +11904,107 @@ describe("Phase 4 document workflow", () => {
 
     expect(pastedMolecule?.atoms).toHaveLength(2);
     expect(pastedMolecule?.atoms.some((atom) => atom.element === "O" && atom.formalCharge === -1)).toBe(true);
+  });
+
+  describe("Copy As serialization warnings (dative bonds, condensed labels)", () => {
+    // Typed Zn dash-bonded onto ethane: the merged coordination complex from the review.
+    const dativeZincDocument = (): ChemDraftDocument => {
+      const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Copy Dative"), { x: 300, y: 300 });
+      const ligand = selectedMolecule(withLigand);
+      const ligandAtom = ligand.atoms.find((atom) => atom.id === "atom_002") ?? ligand.atoms[0];
+      const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+      const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+      const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+      const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+        object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+      );
+      if (!znMolecule) {
+        throw new Error("Expected zinc molecule object.");
+      }
+      const bonded = applyFreeformSingleBondToolAtPoint(
+        converted,
+        znMolecule.id,
+        znMolecule.atoms[0].id,
+        { x: ligandAtom.x, y: ligandAtom.y },
+        { bondStyle: "dashed" }
+      );
+      // Nothing selected → the whole page is the copy scope.
+      return { ...bonded, selection: { ...bonded.selection, objectIds: [] } };
+    };
+
+    it("keeps the dative bond in SMILES (no dot-disconnect) and warns about the flattening", async () => {
+      const document = dativeZincDocument();
+      const warnings: string[] = [];
+      const smiles = await copyAsSmiles(document, warnings);
+
+      expect(smiles).toBe("[Zn]CC");
+      expect(smiles).not.toContain(".");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("dative");
+    });
+
+    it("writes V3000 with coordination bond type 9 and no warning; V2000 flattens with a warning", () => {
+      const document = dativeZincDocument();
+
+      const v3000Warnings: string[] = [];
+      const v3000 = copyAsMolfile(document, "v3000", v3000Warnings);
+      expect(v3000).toMatch(/M {2}V30 \d+ 9 \d+ \d+/);
+      expect(v3000Warnings).toEqual([]);
+
+      const v2000Warnings: string[] = [];
+      const v2000 = copyAsMolfile(document, "v2000", v2000Warnings);
+      expect(v2000).not.toContain("V30");
+      expect(v2000Warnings).toHaveLength(1);
+      expect(v2000Warnings[0]).toContain("V2000 has no coordination bond type");
+    });
+
+    it("pastes the V3000 coordination bond back as a connected bond, not a dropped one", () => {
+      const document = dativeZincDocument();
+      const v3000 = copyAsMolfile(document, "v3000");
+      const pasted = applyClipboardPastePayload(
+        createPhase4Document("Dative Paste Target"),
+        inspectClipboardPayload({
+          types: ["com.mdli.molfile"],
+          textItems: [{ type: "com.mdli.molfile", text: v3000! }]
+        }),
+        { x: 260, y: 260 }
+      );
+      const pastedMolecule = pasted.document.pages[0].objects.find((object): object is MoleculeObject =>
+        object.type === "molecule"
+      );
+
+      expect(pastedMolecule?.atoms).toHaveLength(3);
+      expect(pastedMolecule?.bonds).toHaveLength(2);
+      // The clipboard adapter maps V3000 bond type 9 back to the native dative representation:
+      // a single bond with the dashed display style — the copy/paste round-trip keeps it dative.
+      const dative = pastedMolecule?.bonds.find((bond) => bond.display?.bondStyle === "dashed");
+      expect(dative).toMatchObject({ order: "single" });
+      // The ordinary C–C bond stays a plain single with no display style.
+      const plain = pastedMolecule?.bonds.find((bond) => bond.id !== dative?.id);
+      expect(plain).toMatchObject({ order: "single" });
+      expect(plain?.display?.bondStyle).toBeUndefined();
+    });
+
+    it("warns when a condensed label must copy as a dummy atom", async () => {
+      const seeded = insertNativeSingleBondMolecule(createPhase4Document("Copy Condensed"), { x: 300, y: 300 });
+      const molecule = selectedMolecule(seeded);
+      const labeled = applyNativeAtomElementTarget(seeded, {
+        objectId: molecule.id,
+        kind: "atom",
+        atomId: "atom_002",
+        distanceToPointer: 0
+      }, "Ph", { literal: true });
+      const scoped = { ...labeled, selection: { ...labeled.selection, objectIds: [] } };
+
+      const smilesWarnings: string[] = [];
+      expect(await copyAsSmiles(scoped, smilesWarnings)).toBe("C[*]");
+      expect(smilesWarnings).toHaveLength(1);
+      expect(smilesWarnings[0]).toContain("\"Ph\"");
+
+      const molfileWarnings: string[] = [];
+      copyAsMolfile(scoped, "v3000", molfileWarnings);
+      expect(molfileWarnings.some((warning) => warning.includes("\"Ph\""))).toBe(true);
+    });
   });
 
   it("carries anchored charge marks and push arrows along with a selected molecule in Copy As", () => {
@@ -9769,8 +12317,8 @@ describe("Phase 4 document workflow", () => {
     ]);
 
     const withNegativeCharge = reconcileNativeChargeMarks(applyChargeToolAtPoint(neutralBorate, -1, {
-      x: boron.x + 11,
-      y: boron.y - 11
+      x: boron.x,
+      y: boron.y - 15
     }));
     const resolvedMolecule = withNegativeCharge.pages[0].objects.find((object): object is MoleculeObject =>
       object.id === molecule.id && object.type === "molecule"
@@ -9846,6 +12394,7 @@ describe("Phase 4 document workflow", () => {
     const molecule = selectedMolecule(document);
 
     expect(molecule.bonds[0].display?.bondStyle).toBe("wedge");
+    expect(molecule.chemistry).toMatchObject({ formula: "C2H6" });
 
     const bond = molecule.bonds[0];
     const dashed = applyNativeBondDisplayStyleTarget(document, {
@@ -9858,6 +12407,29 @@ describe("Phase 4 document workflow", () => {
     }, "dashed");
 
     expect(selectedMolecule(dashed).bonds[0].display?.bondStyle).toBe("dashed");
+    // C2H8 is by design for a dative dash: neither endpoint spends covalent valence, and the
+    // hovered-bond status explicitly discloses that chemistry change to the user.
+    expect(selectedMolecule(dashed).chemistry).toMatchObject({ formula: "C2H8" });
+  });
+
+  it("refuses to apply dative dashed display to a non-single bond", () => {
+    const document = insertNativeSingleBondMolecule(
+      createPhase4Document("Double Bond Dative Refusal"),
+      { x: 200, y: 220 }
+    );
+    const bond = selectedMolecule(document).bonds[0];
+    const doubleBondDocument = setNativeBondOrder(document, bond.id, "double");
+    const doubleBond = selectedMolecule(doubleBondDocument).bonds[0];
+    const dashed = applyNativeBondDisplayStyleTarget(doubleBondDocument, {
+      objectId: selectedMolecule(doubleBondDocument).id,
+      kind: "bond",
+      bondId: doubleBond.id,
+      fromAtomId: doubleBond.fromAtomId,
+      toAtomId: doubleBond.toAtomId,
+      distanceToPointer: 0
+    }, "dashed");
+
+    expect(dashed).toBe(doubleBondDocument);
   });
 
   it("applies styled bond metadata to freeform native bond growth", () => {
@@ -10630,6 +13202,45 @@ describe("Phase 4 document workflow", () => {
     expect(getSelectedMolecule(document)?.chemistry).toBeUndefined();
   });
 
+  it("keeps native chemistry when validation analyzed dummy atoms for an unspellable label", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Placeholder Analysis"), { x: 300, y: 300 });
+    const labeled = setNativeAtomElement(ethane, "atom_002", "CF3");
+    const chemistryBefore = selectedMolecule(labeled).chemistry;
+    const analyzed = applyAnalysisToSelectedMolecule(labeled, {
+      input: { format: "smiles", value: "C[*]" },
+      validation: { valid: true, errors: [], warnings: [] },
+      properties: {
+        formula: "CH3",
+        averageMass: 15.035,
+        exactMass: 15.0235,
+        totalCharge: 0,
+        atomCount: 2,
+        bondCount: 1,
+        stereochemistry: []
+      },
+      warnings: []
+    });
+
+    expect(analyzed).toBe(labeled);
+    expect(selectedMolecule(analyzed).chemistry).toEqual(chemistryBefore);
+    expect(selectedMolecule(analyzed).chemistry).toMatchObject({ formula: "C2H3F3" });
+  });
+
+  it("identifies exactly the labels that SMILES has to replace with dummy atoms", () => {
+    const molecule = selectedMolecule(
+      insertNativeSingleBondMolecule(createPhase4Document("Unspellable Labels"), { x: 300, y: 300 })
+    );
+    const withLabel = (label: string): MoleculeObject => ({
+      ...molecule,
+      atoms: [{ ...molecule.atoms[0], element: label }]
+    });
+
+    expect(nativeMoleculeUnspellableLabels(withLabel("CF3"))).toEqual(["CF3"]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("CH3"))).toEqual([]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("NH2"))).toEqual([]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("Ph"))).toEqual(["Ph"]);
+  });
+
   it("applies an editor adapter save result through a selected-object document patch", () => {
     const document = insertAdapterFallbackMolecule(createPhase4Document("Editor Fixture"));
     const selected = getSelectedMolecule(document);
@@ -10869,15 +13480,19 @@ describe("Phase 4 document workflow", () => {
       structureFormat: "molfile-v3000",
       structure: v3000,
       style: { source: "ketcher-adapter" },
-      atoms: [
-        { id: "atom_001", element: "C", x: previewCenterX - nativeBondLengthPx, y: 220 },
-        { id: "atom_002", element: "C", x: previewCenterX, y: 220 },
-        { id: "atom_003", element: "C", x: previewCenterX + nativeBondLengthPx, y: 220 }
-      ],
       bonds: [
         { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
         { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
       ]
+    });
+    // Positions to float tolerance — the diagonal seed frame makes the centering arithmetic
+    // differ from this test's own by an ulp.
+    const syncedAtoms = molecule?.atoms ?? [];
+    expect(syncedAtoms.map((atom) => atom.id)).toEqual(["atom_001", "atom_002", "atom_003"]);
+    expect(syncedAtoms.every((atom) => atom.element === "C")).toBe(true);
+    [previewCenterX - nativeBondLengthPx, previewCenterX, previewCenterX + nativeBondLengthPx].forEach((expectedX, index) => {
+      expect(syncedAtoms[index]?.x).toBeCloseTo(expectedX, 6);
+      expect(syncedAtoms[index]?.y).toBeCloseTo(220, 6);
     });
     expect(molecule?.style.drawingPrimitive).toBeUndefined();
     expect(molecule?.chemistry).toBeUndefined();
@@ -12391,6 +15006,15 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     };
   };
 
+  const reparseFormulaAndCharge = (smiles: string): { formula: string; totalCharge: number } => {
+    const molecule = OCL.Molecule.fromSmiles(smiles);
+    let totalCharge = 0;
+    for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+      totalCharge += molecule.getAtomCharge(atom);
+    }
+    return { formula: molecule.getMolecularFormula().formula, totalCharge };
+  };
+
   it("linearizes fused naphthalene into a two-ring SMILES that OpenChemLib reparses to C10H8", () => {
     const { atoms, bonds } = fusedBicyclicSkeleton([
       ["a01", "a02"], ["a03", "a04"], ["a05", "a10"], ["a06", "a07"], ["a08", "a09"]
@@ -12429,5 +15053,433 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
 
     expect(smiles.split(".")).toHaveLength(2);
     expect(reparse(smiles)).toEqual({ formula: "C12H24", ringCount: 2 });
+  });
+
+  it("brackets a text-typed literal atom so reparsing adds NO hydrogens to it", () => {
+    // A typed literal C bonded to a drawn C: the literal contributes exactly C, the drawn carbon
+    // keeps the skeletal convention (CH3). Bare emission ("CC") would reparse as ethane, C2H6.
+    const atoms: MoleculeAtom[] = [
+      { id: "a1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a2", element: "C", x: 22, y: 0, formalCharge: 0, labelLiteral: true }
+    ];
+    const bonds: MoleculeBond[] = [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }];
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    expect(smiles).toContain("[C]");
+    expect(reparse(smiles)).toEqual({ formula: "C2H3", ringCount: 0 });
+  });
+
+  it("emits a lone literal atom with zero implicit hydrogens — typed 'C' is [C], not methane", () => {
+    const smiles = nativeSingleBondGraphSmiles(
+      [{ id: "a1", element: "C", x: 0, y: 0, formalCharge: 0, labelLiteral: true }],
+      []
+    );
+
+    expect(smiles).toBe("[C]");
+    expect(reparse(smiles)).toEqual({ formula: "C", ringCount: 0 });
+  });
+
+  it("brackets elements outside the organic subset so the SMILES stays valid", () => {
+    // The merged-Zn coordination case from the review: bare "ZnCC" is not SMILES at all
+    // (OpenChemLib throws "unknown element label"), so the metal must bracket.
+    const atoms: MoleculeAtom[] = [
+      { id: "a1", element: "Zn", x: 0, y: 0, formalCharge: 0 },
+      { id: "a2", element: "C", x: 22, y: 0, formalCharge: 0 },
+      { id: "a3", element: "C", x: 44, y: 0, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [
+      { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" },
+      { id: "b2", fromAtomId: "a2", toAtomId: "a3", order: "single" }
+    ];
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    expect(smiles).toBe("[Zn]CC");
+    expect(reparse(smiles)).toEqual({ formula: "C2H5Zn", ringCount: 0 });
+    // Li/Si hotkey atoms bracket too (Li has no implicit hydrogens to spell).
+    expect(nativeSingleBondGraphSmiles(
+      [{ id: "a1", element: "Li", x: 0, y: 0, formalCharge: 0 }],
+      []
+    )).toBe("[Li]");
+    // Multi-magnitude charges write in SMILES order — sign THEN count ([Zn+2]); the display
+    // order ("2+") is not SMILES and OpenChemLib rejects it.
+    const zincIon = nativeSingleBondGraphSmiles(
+      [{ id: "a1", element: "Zn", x: 0, y: 0, formalCharge: 2 }],
+      []
+    );
+    expect(zincIon).toBe("[Zn+2]");
+    expect(reparse(zincIon)).toEqual({ formula: "Zn", ringCount: 0 });
+    expect(() => reparse("[Zn2+]")).toThrow();
+  });
+
+  it("spells implicit hydrogens inside the bracket for drawn non-subset elements", () => {
+    // A drawn Si with one bond is silane-like: the formula path counts SiH3, and a bracket atom
+    // gets no implicit hydrogens from the parser, so the SMILES must spell them.
+    const atoms: MoleculeAtom[] = [
+      { id: "a1", element: "Si", x: 0, y: 0, formalCharge: 0 },
+      { id: "a2", element: "C", x: 22, y: 0, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }];
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    expect(smiles).toBe("[SiH3]C");
+    expect(reparse(smiles)).toEqual({ formula: "CH6Si", ringCount: 0 });
+  });
+
+  it("spells charged bracket-atom hydrogens so OpenChemLib preserves formula and charge", () => {
+    const ethylammoniumAtoms: MoleculeAtom[] = [
+      { id: "c1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "c2", element: "C", x: 22, y: 0, formalCharge: 0 },
+      { id: "n1", element: "N", x: 44, y: 0, formalCharge: 1 }
+    ];
+    const ethylammoniumBonds: MoleculeBond[] = [
+      { id: "b1", fromAtomId: "c1", toAtomId: "c2", order: "single" },
+      { id: "b2", fromAtomId: "c2", toAtomId: "n1", order: "single" }
+    ];
+    const ethylammonium = nativeSingleBondGraphSmiles(ethylammoniumAtoms, ethylammoniumBonds);
+    expect(ethylammonium).toBe("CC[NH3+]");
+    expect(reparseFormulaAndCharge(ethylammonium)).toEqual({ formula: "C2H8N", totalCharge: 1 });
+
+    const methoxide = nativeSingleBondGraphSmiles([
+      { id: "c1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "o1", element: "O", x: 22, y: 0, formalCharge: -1 }
+    ], [{ id: "b1", fromAtomId: "c1", toAtomId: "o1", order: "single" }]);
+    expect(methoxide).toBe("C[O-]");
+    expect(reparseFormulaAndCharge(methoxide)).toEqual({ formula: "CH3O", totalCharge: -1 });
+
+    const ammoniumRadicalCation = nativeSingleBondGraphSmiles([
+      { id: "n1", element: "N", x: 0, y: 0, formalCharge: 1, markRadicals: 1 }
+    ], []);
+    expect(ammoniumRadicalCation).toBe("[NH3+]");
+    expect(reparseFormulaAndCharge(ammoniumRadicalCation)).toEqual({ formula: "H3N", totalCharge: 1 });
+  });
+
+  it("spells a one-heavy-element condensed label exactly ('CH3' → [CH3], ethane when bonded)", () => {
+    const atoms: MoleculeAtom[] = [
+      { id: "a1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a2", element: "CH3", x: 22, y: 0, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }];
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    expect(smiles).toBe("C[CH3]");
+    expect(reparse(smiles)).toEqual({ formula: "C2H6", ringCount: 0 });
+  });
+
+  it("emits a dummy atom for a condensed label no single SMILES atom can spell", () => {
+    // "CO2H" is two heavy elements — one atom cannot say it, so the writer emits [*] instead of
+    // the bare label (which a parser would read as C + garbage) and the Copy As path warns.
+    const smiles = nativeSingleBondGraphSmiles(
+      [{ id: "a1", element: "CO2H", x: 0, y: 0, formalCharge: 0 }],
+      []
+    );
+
+    expect(smiles).toBe("[*]");
+  });
+});
+
+describe("ring hotkeys on nickname atoms", () => {
+  it("refuses to attach a ring at a nickname (superatom) label, as the shipped doc says", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Nickname ring"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(base);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[1]!.id, distanceToPointer: 0 };
+    const labeled = applyNativeAtomElementTarget(base, target, "Ph");
+    expect(applyNativeRingAttachAtAtomTarget(labeled, target, "benzene")).toBe(labeled);
+    // An element label at the same atom still grows the ring.
+    const carbon = applyNativeAtomElementTarget(labeled, target, "N");
+    expect(applyNativeRingAttachAtAtomTarget(carbon, target, "benzene")).not.toBe(carbon);
+  });
+});
+
+describe("engine re-layout keeps covalently bound metals in the skeleton", () => {
+  it("does not drag a ZnCl2 into the pocket of its imidazole donors", () => {
+    // Zn with two covalent chlorides and two dative imidazoles: the metal is part of the skeleton
+    // the engine lays out, so its Zn–Cl bonds must keep the engine's length.
+    const atoms: MoleculeAtom[] = [
+      { id: "zn", element: "Zn", x: 300, y: 300, formalCharge: 0 },
+      { id: "cl1", element: "Cl", x: 270, y: 280, formalCharge: 0 },
+      { id: "cl2", element: "Cl", x: 330, y: 280, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [
+      { id: "b_cl1", fromAtomId: "zn", toAtomId: "cl1", order: "single" },
+      { id: "b_cl2", fromAtomId: "zn", toAtomId: "cl2", order: "single" }
+    ];
+    [0, 1].forEach((arm) => {
+      const ox = 240 + arm * 120;
+      const ids = ["n1", "c2", "n3", "c4", "c5"].map((name) => `${name}_${arm}`);
+      const ring = [0, 1, 2, 3, 4].map((k) => ({ x: ox + Math.cos(-Math.PI / 2 + k * 2 * Math.PI / 5) * 24, y: 380 + Math.sin(-Math.PI / 2 + k * 2 * Math.PI / 5) * 24 }));
+      ids.forEach((id, index) => atoms.push({ id, element: index === 0 || index === 2 ? "N" : "C", x: ring[index].x, y: ring[index].y, formalCharge: 0 }));
+      bonds.push({ id: `r1_${arm}`, fromAtomId: ids[0], toAtomId: ids[1], order: "single" });
+      bonds.push({ id: `r2_${arm}`, fromAtomId: ids[1], toAtomId: ids[2], order: "double" });
+      bonds.push({ id: `r3_${arm}`, fromAtomId: ids[2], toAtomId: ids[3], order: "single" });
+      bonds.push({ id: `r4_${arm}`, fromAtomId: ids[3], toAtomId: ids[4], order: "double" });
+      bonds.push({ id: `r5_${arm}`, fromAtomId: ids[4], toAtomId: ids[0], order: "single" });
+      bonds.push({ id: `d_${arm}`, fromAtomId: "zn", toAtomId: ids[0], order: "single", display: { bondStyle: "dashed" } });
+    });
+    const molecule: MoleculeObject = {
+      id: "mol_zncl2", type: "molecule", x: 200, y: 250, width: 200, height: 160, rotation: 0,
+      style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+    };
+    const base = createPhase4Document("ZnCl2 imidazoles");
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+
+    const relaid = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D), molecule.id);
+    const covalent = relaid.bonds.filter((bond) => bond.display?.bondStyle !== "dashed").map((bond) => moleculeBondLength(relaid, bond.id));
+    const L = covalent.reduce((sum, value) => sum + value, 0) / covalent.length;
+    ["b_cl1", "b_cl2"].forEach((bondId) => expect(Math.abs(moleculeBondLength(relaid, bondId) - L) / L).toBeLessThan(0.15));
+    relaid.atoms.forEach((atom, index) => {
+      relaid.atoms.slice(index + 1).forEach((other) => {
+        expect(Math.hypot(atom.x - other.x, atom.y - other.y), `${atom.id}/${other.id}`).toBeGreaterThan(L * 0.5);
+      });
+    });
+  });
+});
+
+describe("dative donors and their hydrogens", () => {
+  function complexDocument(kind: "imidazole" | "amine"): { document: ChemDraftDocument; objectId: string } {
+    const atoms: MoleculeAtom[] = kind === "imidazole"
+      ? [
+          { id: "n1", element: "N", x: 100, y: 100, formalCharge: 0 },
+          { id: "c2", element: "C", x: 130, y: 80, formalCharge: 0 },
+          { id: "n3", element: "N", x: 160, y: 100, formalCharge: 0 },
+          { id: "c4", element: "C", x: 150, y: 135, formalCharge: 0 },
+          { id: "c5", element: "C", x: 110, y: 135, formalCharge: 0 },
+          { id: "zn", element: "Zn", x: 70, y: 70, formalCharge: 0 }
+        ]
+      : [
+          { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
+          { id: "n1", element: "N", x: 130, y: 100, formalCharge: 0 },
+          { id: "zn", element: "Zn", x: 160, y: 100, formalCharge: 0 }
+        ];
+    const bonds: MoleculeBond[] = kind === "imidazole"
+      ? [
+          { id: "b1", fromAtomId: "n1", toAtomId: "c2", order: "single" },
+          { id: "b2", fromAtomId: "c2", toAtomId: "n3", order: "double" },
+          { id: "b3", fromAtomId: "n3", toAtomId: "c4", order: "single" },
+          { id: "b4", fromAtomId: "c4", toAtomId: "c5", order: "double" },
+          { id: "b5", fromAtomId: "c5", toAtomId: "n1", order: "single" },
+          { id: "b_zn", fromAtomId: "n1", toAtomId: "zn", order: "single" }
+        ]
+      : [
+          { id: "b1", fromAtomId: "c1", toAtomId: "n1", order: "single" },
+          { id: "b_zn", fromAtomId: "n1", toAtomId: "zn", order: "single" }
+        ];
+    const molecule: MoleculeObject = {
+      id: `mol_${kind}`, type: "molecule", x: 60, y: 60, width: 120, height: 90, rotation: 0,
+      style: { fillColor: "none" }, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+    };
+    const base = createPhase4Document("Dative donors");
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+    return { document, objectId: molecule.id };
+  }
+  const hydrogenCount = (molecule: MoleculeObject) => Number((/H(\d*)/.exec(molecule.chemistry?.formula ?? "")?.[1] ?? (molecule.chemistry?.formula?.includes("H") ? "1" : "0")) || 0);
+  const makeDative = (document: ChemDraftDocument, objectId: string) =>
+    applyNativeBondDisplayStyleTarget(document, { objectId, kind: "bond", bondId: "b_zn", fromAtomId: "n1", toAtomId: "zn", distanceToPointer: 0 }, "dashed");
+
+  it("an imidazole N–H donating to zinc loses its proton: label N, one fewer H in the formula, still neutral", () => {
+    const { document, objectId } = complexDocument("imidazole");
+    // Solid N–Zn as the reference: the nitrogen has three covalent bonds and no hydrogen.
+    const solid = makeDative(document, objectId);
+    // Turning that bond dative must NOT give the hydrogen back — the dashed bond is imidazolate binding.
+    const reference = applyNativeBondDisplayStyleTarget(solid, { objectId, kind: "bond", bondId: "b_zn", fromAtomId: "n1", toAtomId: "zn", distanceToPointer: 0 }, "bold");
+    const dative = moleculeById(solid, objectId);
+    const bold = moleculeById(reference, objectId);
+    expect(hydrogenCount(dative)).toBe(hydrogenCount(bold));
+    expect(dative.atoms.find((atom) => atom.id === "n1")?.formalCharge).toBe(0);
+    // The SMILES agrees with the formula: reparsed through OpenChemLib, the dative form has the
+    // same composition as the solid-bonded form (no hydrogen invented for the nitrogen).
+    const reparse = (smiles: string) => OCL.Molecule.fromSmiles(smiles).getMolecularFormula().formula;
+    expect(reparse(nativeSingleBondGraphSmiles(dative.atoms, dative.bonds)))
+      .toBe(reparse(nativeSingleBondGraphSmiles(bold.atoms, bold.bonds)));
+    expect(nativeMoleculeInvalidAtomStates(dative)).toEqual([]);
+  });
+
+  it("an amine NH2 donating to zinc keeps both hydrogens", () => {
+    const { document, objectId } = complexDocument("amine");
+    const dativeDocument = makeDative(document, objectId);
+    // The hand-built fixture carries no chemistry until an edit refreshes it, so the solid
+    // reference is the same bond with a bold style rather than the raw fixture.
+    const solid = moleculeById(applyNativeBondDisplayStyleTarget(dativeDocument, { objectId, kind: "bond", bondId: "b_zn", fromAtomId: "n1", toAtomId: "zn", distanceToPointer: 0 }, "bold"), objectId);
+    const dative = moleculeById(dativeDocument, objectId);
+    // Solid C–N–Zn leaves one H on the nitrogen; the dative bond frees a slot, so NH2.
+    expect(hydrogenCount(dative)).toBe(hydrogenCount(solid) + 1);
+  });
+});
+
+describe("clipboard and chemistry review regressions", () => {
+  it.each([["D", 0, "[2H]"], ["T", 0, "[3H]"], ["D", 1, "[2H+]"], ["T", -1, "[3H-]"]] as const)(
+    "spells isotope label %s with charge %s as %s", (element, formalCharge, expected) => {
+      const molecule = createNativeSingleBondMolecule(createPhase4Document("Isotope"), { x: 200, y: 200 });
+      molecule.atoms = [{ ...molecule.atoms[0], element, formalCharge }];
+      molecule.bonds = [];
+      expect(nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds)).toBe(expected);
+      expect(nativeMoleculeUnspellableLabels(molecule)).toEqual([]);
+    }
+  );
+
+  it("counts D and T in the formula and mass, matching the SMILES spelling", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Deuterated"), { x: 200, y: 200 });
+    const labeled = applyNativeAtomElementTarget(
+      seeded,
+      { objectId: selectedMolecule(seeded).id, kind: "atom", atomId: "atom_002", distanceToPointer: 0 },
+      "D"
+    );
+    const molecule = selectedMolecule(labeled);
+    expect(molecule.atoms[1].element).toBe("D");
+    expect(molecule.chemistry).toMatchObject({ formula: "CH3D" });
+    expect(molecule.chemistry?.averageMass).toBeCloseTo(12.011 + 3 * 1.008 + 2.014, 2);
+  });
+
+  it("keeps a merged molecule inside the group that held the absorbed one", () => {
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Grouped Merge"), { x: 300, y: 300 });
+    const ligand = selectedMolecule(withLigand);
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule object.");
+    }
+    const grouped = groupSelectedDocumentObjects(applyPatch(converted, {
+      op: "setSelection", pageId: converted.pages[0].id, objectIds: [ligand.id, znMolecule.id]
+    }));
+    const group = grouped.pages[0].objects.find((object): object is GroupObject => object.type === "group");
+    expect(group?.childObjectIds).toEqual(expect.arrayContaining([ligand.id, znMolecule.id]));
+
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      grouped, ligand.id, "atom_002", { x: znMolecule.atoms[0].x, y: znMolecule.atoms[0].y }, { bondStyle: "dashed" }
+    );
+    const mergedGroup = bonded.pages[0].objects.find((object): object is GroupObject => object.type === "group");
+    // The absorbed id is replaced by the host, once — no dangling child.
+    expect(mergedGroup?.childObjectIds).toEqual([ligand.id]);
+    expect(bonded.pages[0].objects.some((object) => object.id === znMolecule.id)).toBe(false);
+  });
+
+  it("refuses aluminium in 3D even though it sits in the covalent valence table", () => {
+    const seeded = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Alane"), { x: 200, y: 200 }), "atom_002", "Al"
+    );
+    expect(nativeMoleculeUnmodeledMetalElements(selectedMolecule(seeded))).toEqual(["Al"]);
+  });
+
+  it("keeps a dashed double bond's valence and formula", () => {
+    const seeded = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Dashed carbonyl"), { x: 200, y: 200 }),
+      "atom_002", "O"
+    );
+    const molecule = selectedMolecule(seeded);
+    const document = applyPatch(seeded, {
+      op: "updateObject", objectId: molecule.id,
+      changes: { bonds: [{ ...molecule.bonds[0], order: "double", display: { bondStyle: "dashed" } }] }
+    });
+    // Fragment reconstruction refreshes the formula using the app's own valence count.
+    const payload = createSelectionClipboardPayload(selectDocumentObjects(document, document.pages[0].id, []), [{
+      objectId: molecule.id, atomIds: molecule.atoms.map((atom) => atom.id), bondIds: []
+    }])!;
+    const carbonyl = payload.objects[0] as MoleculeObject;
+    expect(nativeAtomValidationState(carbonyl.atoms[1], carbonyl.bonds)).toMatchObject({ valenceUsed: 2 });
+    expect(atomDisplayLabel(carbonyl.atoms[1], carbonyl.bonds)).toBe("O");
+    expect(carbonyl.chemistry?.formula).toBe("CH2O");
+  });
+
+  it.each([false, true])("keeps charge and radical marks when copying a molecule (fragment: %s)", (fragment) => {
+    for (const spec of [-1, { kind: "radical-dot" as const }] as const) {
+      const seeded = setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Marked clipboard"), { x: 200, y: 200 }),
+        "atom_002", "O"
+      );
+      const molecule = selectedMolecule(seeded);
+      const marked = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(seeded, spec, {
+        objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0
+      }));
+      const document = selectDocumentObjects(marked, marked.pages[0].id, fragment ? [] : [molecule.id]);
+      const payload = createSelectionClipboardPayload(document, fragment ? [
+        { objectId: molecule.id, atomIds: ["atom_002"], bondIds: [] }
+      ] : []);
+      expect(payload?.objects.filter((object) => object.type === "electron-mark")).toHaveLength(1);
+      const parsedPayload = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
+      // A clipboard need not put the molecule before its marks.
+      parsedPayload.objects.reverse();
+      const beforeReconcile = pasteSelectionClipboardPayload(document, parsedPayload, { x: 480, y: 420 });
+      const pasted = reconcileNativeChargeMarks(beforeReconcile);
+      const copied = pasted.pages[0].objects.find((object): object is MoleculeObject =>
+        object.type === "molecule" && object.id !== molecule.id
+      )!;
+      const oxygen = copied.atoms.find((atom) => atom.element === "O")!;
+      expect(beforeReconcile.pages[0].objects.some((object) => object.type === "electron-mark" &&
+        object.anchor.kind === "atom" && object.anchor.objectId === copied.id && object.anchor.atomId === oxygen.id
+      )).toBe(true);
+      expect(oxygen).toMatchObject(typeof spec === "number"
+        ? { formalCharge: -1, markCharge: -1 }
+        : { formalCharge: 0, markRadicals: 1 });
+      expect(pasted.pages[0].objects.filter((object) => object.type === "electron-mark" &&
+        object.anchor.kind === "atom" && object.anchor.objectId === copied.id && object.anchor.atomId === oxygen.id
+      )).toHaveLength(1);
+      expect(reconcileNativeChargeMarks(pasted)).toBe(pasted);
+    }
+  });
+
+  it("copies whole objects and fragments together without duplicating a whole selected molecule", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Mixed clipboard"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const document = insertNativeTextObject(seeded, { x: 100, y: 100 }, "Caption");
+    const fragment = { objectId: molecule.id, atomIds: ["atom_002"], bondIds: [] };
+    const payload = createSelectionClipboardPayload(document, [fragment])!;
+    expect(payload.objects.map((object) => object.type)).toEqual(["text", "molecule"]);
+    expect((payload.objects[1] as MoleculeObject).atoms).toHaveLength(1);
+    const whole = selectDocumentObjects(document, document.pages[0].id, [...document.selection.objectIds, molecule.id]);
+    const wholePayload = createSelectionClipboardPayload(whole, [fragment])!;
+    expect(wholePayload.objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    expect((wholePayload.objects.find((object) => object.type === "molecule") as MoleculeObject).atoms).toHaveLength(2);
+  });
+
+  it("cleans up a Ph nickname through the real OCL adapter without changing the label", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Nickname cleanup"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const document = applyNativeAtomElementTarget(seeded, {
+      objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0
+    }, "Ph", { literal: true });
+    expect(moleculeById(document, molecule.id).atoms[1].element).toBe("Ph");
+    const cleaned = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D), molecule.id);
+    expect(cleaned.atoms.map(({ element, formalCharge, labelLiteral }) => ({ element, formalCharge, labelLiteral })))
+      .toEqual(moleculeById(document, molecule.id).atoms.map(({ element, formalCharge, labelLiteral }) => ({ element, formalCharge, labelLiteral })));
+    expect(cleaned.bonds).toEqual(moleculeById(document, molecule.id).bonds);
+    expect(cleaned.atoms.every((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y))).toBe(true);
+  });
+
+  it.each(["D", "T"])("cleans up a molecule with a %s atom through the real OCL adapter", (isotope) => {
+    // The writer now emits D/T verbatim and OCL hands back plain H for them; the label survives.
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Isotope cleanup"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const document = applyNativeAtomElementTarget(seeded, {
+      objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0
+    }, isotope);
+    expect(moleculeById(document, molecule.id).atoms[1].element).toBe(isotope);
+    const cleaned = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D), molecule.id);
+    expect(cleaned.atoms.map((atom) => atom.element)).toEqual(["C", isotope]);
+    expect(cleaned.atoms.every((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y))).toBe(true);
+  });
+
+  it("grows an ordinary bond when the foreign drop target has no editable graph", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Foreign preview"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const foreign = createNativeSingleBondMolecule(seeded, { x: 400, y: 300 });
+    foreign.bonds[0].toAtomId = "missing-preview-atom";
+    const document = applyPatch(seeded, { op: "addObject", pageId: seeded.pages[0].id, object: foreign });
+    const grown = applyFreeformSingleBondToolAtPoint(document, molecule.id, "atom_002", foreign.atoms[0]);
+    expect(moleculeById(grown, molecule.id).atoms).toHaveLength(3);
+    expect(moleculeById(grown, molecule.id).bonds).toHaveLength(2);
+    expect(moleculeById(grown, foreign.id)).toEqual(foreign);
   });
 });

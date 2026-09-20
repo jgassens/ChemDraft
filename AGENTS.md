@@ -1320,6 +1320,23 @@ handle must not move the shaft); "Set as Default Arrow Style" captured from a da
 tooltips on a palette dragged to a second monitor; and toolbars restored after being left off-screen
 or on a since-detached display.
 
+Keybinding and molecule-editing surfaces added since: the Chain tools flyout (Chain / Flexible
+Chain) opened cold and warm, with a flexible-chain drag that turns corners both free and
+atom-anchored while a straight drag still reproduces the straight planner exactly; the numeric
+hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and bonds, wedge/hash
+sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), with tool keys
+following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
+while ChemDraft's `e` arms the eraser; charge stacking
+by hotkey and by the charge tool up to ±9 and back down to mark removal; the Clear/Restore
+Warnings context menu under whole-molecule and partial selections; element-symbol text converting
+to a naked atom on every edit-ending gesture (Escape, click-away, tool switch), and Delete
+stripping a labeled atom back to skeleton carbon before the second press deletes it; a bond
+dragged onto another molecule object's atom merging the two objects into one; magnetic
+canonical-geometry snap during atom drags, partial-selection drags, and fragment rotations — a
+release outside the capture window must land exactly at the pointer; junction-pivot rotation
+holding the junction and attachment bond fixed; and switching the keybinding scheme live with the
+main window, detached palettes, and the native menu accelerators all following.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

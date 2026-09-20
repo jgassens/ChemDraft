@@ -321,6 +321,19 @@ export const MoleculeAtomSchema = z
      */
     markRadicals: z.number().int().nonnegative().optional(),
     labelVisible: z.boolean().optional(),
+    /**
+     * The label was typed with the text tool and means exactly what it says: no implicit
+     * hydrogens are drawn or counted for this atom, and its valence is checked literally
+     * (a lone typed "N" is a flagged hypovalent N, not NH3). Atoms drawn or relabeled via
+     * hotkeys stay implicit-hydrogen atoms and never set this.
+     */
+    labelLiteral: z.boolean().optional(),
+    /**
+     * The user dismissed this atom's valence warning from the context menu: the checker still
+     * runs but reports the atom valid, so no badge renders and no warning is stored. Restore
+     * from the same menu.
+     */
+    warningSuppressed: z.boolean().optional(),
     labelOffset: PointSchema.optional()
   })
   .strict();

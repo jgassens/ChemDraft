@@ -21,7 +21,8 @@ ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a 
 | `Custom_Bond_Hashed.png` | `tool.hashedBond` | Draw a hashed wedge bond | Active |
 | `Custom_Bond_Dashed.png` | `tool.dashedBond` | Draw a dashed bond | Active |
 | `Custom_Bond_Bold.png` | `tool.boldBond` | Draw a bold bond | Active |
-| `Custom_Draw_Line.png` | `tool.chain` | Press-drag an alkane zig-zag chain | Active |
+| `Custom_Draw_Line.png` | `tool.chain` | Press-drag an alkane zig-zag chain along the straight drag axis; carries the Chain tools flyout (long-press / Alt+ArrowDown) | Active |
+| — (original `chainFlexible` glyph in `icons.tsx`; no custom asset) | `tool.chainFlexible` | Press-drag a chain whose zig-zag bends to follow the pointer path | Active; in the `tool.chain` flyout in both palette sections |
 | `Custom_Cyclopentane.png` | `tool.cyclopentane` | Insert cyclopentane template | Active |
 | `Custom_Cyclohexane.png` | `tool.cyclohexane` | Insert cyclohexane template | Active |
 | `Custom_Benzene.png` | `tool.benzene` | Insert benzene template | Active |

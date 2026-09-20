@@ -95,9 +95,15 @@ describe("hitTestDocument (geometric source of truth)", () => {
     const { document, molecule } = singleBondMolecule();
     const [a0, a1] = molecule.atoms;
     const midpoint = { x: (a0.x + a1.x) / 2, y: (a0.y + a1.y) / 2 };
-    const offset = 2; // perpendicular to the horizontal bond, inside the 4px bond radius
+    // Probe truly perpendicular to the (30°-inclined) bond, inside the 4px bond radius.
+    const bondAngle = Math.atan2(a1.y - a0.y, a1.x - a0.x);
+    const offset = 2;
+    const probe = {
+      x: midpoint.x + Math.cos(bondAngle + Math.PI / 2) * offset,
+      y: midpoint.y + Math.sin(bondAngle + Math.PI / 2) * offset
+    };
 
-    const hit = hitTestDocument(document, { x: midpoint.x, y: midpoint.y + offset });
+    const hit = hitTestDocument(document, probe);
     expect(hit?.kind).toBe("bond");
     // The old DOM-hinted bond path hard-coded distanceToPointer: 0, which corrupted the
     // cross-object sort. It must now be the true perpendicular distance.

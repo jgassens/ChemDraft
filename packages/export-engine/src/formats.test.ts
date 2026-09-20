@@ -83,7 +83,7 @@ describe("export format registry", () => {
     } satisfies Partial<ExportFormatDescriptor>);
   });
 
-  it("marks only formats with real export-engine implementations as implemented", () => {
+  it("marks only formats with real export implementations as implemented", () => {
     expect(listImplementedExportFormats().map((descriptor) => descriptor.id)).toEqual([
       "svg",
       "pdf",
@@ -92,6 +92,8 @@ describe("export format registry", () => {
       "bmp",
       "gif",
       "tiff",
+      "sdf",
+      "smiles",
       "cdxml"
     ]);
     expect(isExportFormatImplemented("svg")).toBe(true);
@@ -101,9 +103,11 @@ describe("export format registry", () => {
     expect(isExportFormatImplemented("bmp")).toBe(true);
     expect(isExportFormatImplemented("gif")).toBe(true);
     expect(isExportFormatImplemented("tiff")).toBe(true);
+    expect(isExportFormatImplemented("sdf")).toBe(true);
+    expect(isExportFormatImplemented("smiles")).toBe(true);
     expect(isExportFormatImplemented("cdxml")).toBe(true);
     expect(exportFormatDescriptors.filter((descriptor) => descriptor.status !== "implemented").length).toBe(
-      wishlistFormatIds.length - 8
+      wishlistFormatIds.length - 10
     );
   });
 

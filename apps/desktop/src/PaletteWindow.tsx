@@ -13,6 +13,8 @@ import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
+import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
@@ -41,6 +43,7 @@ import {
   prewarmToolsetPopoverWindow,
   listenForPalettePointer,
   listenForPalettePointerLeave,
+  listenForKeybindingSettings,
   listenForToolsetActiveTool,
   listenForToolsetCommandSpecs,
   listenForToolsetCustomizeMode,
@@ -140,6 +143,22 @@ export function PaletteWindow({
   );
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
+  const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForKeybindingSettings((next) => setKeybindingScheme(next.scheme)).then((listener) => {
+      if (disposed) {
+        listener();
+        return;
+      }
+      unlisten = listener;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
   const latestLayoutStateRef = useRef<unknown>(undefined);
   // Plugin toolset definitions arrive over IPC (they aren't in the static manifest this webview ships
   // with). Held in a ref so every registry rebuild — layout, command-spec, or definitions — folds in
@@ -181,7 +200,12 @@ export function PaletteWindow({
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
   // The main window owns live command metadata/availability and publishes snapshots to detached
   // palettes. The state initializer above is only a first-paint fallback before that handshake.
-  const allCommands = commandSpecs;
+  // Snapshots arrive already remapped for the active keybinding scheme; re-applying here covers the
+  // first-paint fallback and live scheme flips (the transform is idempotent by command id).
+  const allCommands = useMemo(
+    () => applyKeybindingSchemeToCommands(commandSpecs, keybindingScheme),
+    [commandSpecs, keybindingScheme]
+  );
   // Same rule as the main window's in-place gallery: transitional stubs are not draggable onto
   // toolbars. The declared stub set is used rather than the snapshot's enabled state.
   const galleryCommands = useMemo(() => {

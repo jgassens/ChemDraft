@@ -114,6 +114,9 @@ export function createEngine3dSessionInputFromMolecule(
   }));
 
   return {
+    // Geometry spelling for the 3D engine: an abbreviated label goes as the dummy "*" it can
+    // place. CIP perception spells its own molfile (stereoPerceptionMolfile, R-groups) and never
+    // reads this one.
     molfile: moleculeToMolfileV2000(molecule, { fromDocFrame: true }),
     format: "molfile-v2000",
     atomIdByMolfileIndex,

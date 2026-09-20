@@ -22,12 +22,18 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { applyPatches, type ChemDraftDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
-import { depictSmiles2D, ensureOclResources, oclConformerGenerator, type Depiction2D } from "@chemdraft/ocl-adapter";
+import { applyPatches, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
+import {
+  depictSmiles2D,
+  ensureOclResources,
+  oclConformerGenerator,
+  perceiveStereoCentersFromMolfile,
+  type Depiction2D
+} from "@chemdraft/ocl-adapter";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import * as OCL from "openchemlib";
 
-import { createPhase4Document, flattenSpunMolecule } from "./documentWorkflow";
+import { createPhase4Document, flattenSpunMolecule, stereoPerceptionMolfile } from "./documentWorkflow";
 
 const IDENTITY: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 // View rotated 30° about Y (row-major; depth = row 2 · point). Used for the second
@@ -136,6 +142,34 @@ describe("Phase 6 — flatten → molfile → OCL round-trip", () => {
     let doubles = 0;
     for (let b = 0; b < parsed.getAllBonds(); b += 1) if (parsed.getBondOrder(b) === 2) doubles += 1;
     expect(doubles).toBe(mol.bonds.filter((bond) => bond.order === "double").length);
+  });
+});
+
+describe("Phase 6 — an abbreviated label on a stereocenter", () => {
+  it("keeps the center through a guarded flatten, because perception sees an R-group and not a carbon", async () => {
+    const { mol: fluoro, coords3d, embedStatus } = await conformerFromSmiles("C[C@H](F)Cl", "mol_abv");
+    expect(embedStatus).toBe("ok");
+    // Relabel the F as "Ph": same atom count and geometry, so the conformer still fits the drawing.
+    const mol: MoleculeObject = {
+      ...fluoro,
+      atoms: fluoro.atoms.map((atom) => (atom.element === "F" ? { ...atom, element: "Ph" } : atom))
+    };
+
+    // The export spelling shows the old blind spot: written as "*", the Ph reads as a carbon, the
+    // center holds two methyl-like substituents, and there is no descriptor to preserve.
+    const dummyRead = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(mol, { fromDocFrame: true }));
+    expect(dummyRead.every((atom) => atom.descriptor === "unspecified")).toBe(true);
+    const reference = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(mol));
+    const centerIndex = reference.findIndex((atom) => atom.descriptor !== "unspecified");
+    expect(centerIndex).toBeGreaterThanOrEqual(0);
+
+    // With the real perceiver injected, the flatten must reproduce that reading — and does.
+    const outcome = flattenSpunMolecule(documentWith(mol), "mol_abv", coords3d, TILTED_Y_30, {
+      perceiveStereo: perceiveStereoCentersFromMolfile
+    });
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+    const readBack = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(moleculeOf(outcome.document, "mol_abv")));
+    expect(readBack[centerIndex]?.descriptor).toBe(reference[centerIndex]!.descriptor);
   });
 });
 

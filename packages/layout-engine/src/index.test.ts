@@ -6,6 +6,7 @@ import {
   stylePresetToObjectStyle,
   type DocumentObject,
   type DocumentPage,
+  type ElectronMarkObject,
   type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
@@ -13,10 +14,12 @@ import {
   atomDisplayLabel,
   atomDegrees,
   atomLabelAnchorOffset,
+  atomLabelLayout,
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  dativeDeprotonationCount,
   doubleBondSecondaryFlushEnds,
   findNearestAtomAtPoint,
   findNearestBondHit,
@@ -63,13 +66,15 @@ describe("layout-engine molecule growth planning", () => {
       clickPoint: { x: 300, y: 220 }
     });
 
+    // The click sits on the axis, so the two ±120° candidates tie — and ties break UPWARD
+    // (page y grows downward), matching ChemDraw's rising sprouts.
     expect(plan?.sourceAtomId).toBe("atom_002");
     expect(plan?.terminalAtomId).toBe("atom_002");
     expect(plan?.neighborAtomIds).toEqual(["atom_001"]);
     expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
     expect(plan?.direction.x).toBeCloseTo(0.5, 3);
-    expect(plan?.direction.y).toBeCloseTo(0.866, 3);
+    expect(plan?.direction.y).toBeCloseTo(-0.866, 3);
   });
 
   it("uses the click side to choose between the two 120-degree candidates", () => {
@@ -143,9 +148,11 @@ describe("layout-engine molecule growth planning", () => {
       clickPoint: { x: 210, y: 220 }
     });
 
+    // Inward along the axis, both ±120° candidates align equally with the click — the tie
+    // breaks upward.
     expect(plan?.terminalAtomId).toBe("atom_002");
     expect(plan?.newAtomPoint.x).toBeCloseTo(280, 3);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
   });
 
   it("offers ring closure when the selected 120-degree endpoint lands on an existing atom", () => {
@@ -342,7 +349,7 @@ describe("layout-engine molecule growth planning", () => {
     });
 
     expect(plan?.newAtomPoint.x).toBe(816);
-    expect(plan?.newAtomPoint.y).toBeCloseTo(289.282, 3);
+    expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
   });
 
   it("plans free-angle growth at the default bond length before custom-length breakaway", () => {
@@ -1123,6 +1130,124 @@ describe("layout-engine page SVG planner", () => {
     `);
   });
 
+  const chargeMarkObject = (
+    id: string,
+    charge: number,
+    overrides: Partial<ElectronMarkObject> = {}
+  ): ElectronMarkObject => ({
+    id,
+    type: "electron-mark",
+    x: 320,
+    y: 160,
+    width: 18,
+    height: 18,
+    rotation: 0,
+    style: {},
+    markKind: "charge",
+    anchor: { kind: "point", point: { x: 329, y: 169 } },
+    charge,
+    ...overrides
+  });
+
+  const plannedChargeMark = (id: string, charge: number, overrides: Partial<ElectronMarkObject> = {}) =>
+    planPageSvgRender(pageWithObjects([chargeMarkObject(id, charge, overrides)])).fragments
+      .filter((fragment) => fragment.attrs["data-object-id"] === id);
+
+  const fragmentsByTag = (fragments: PageSvgElementFragment[], tag: string) =>
+    fragments.filter((fragment) => fragment.tag === tag);
+
+  const numeralText = (numeral: PageSvgElementFragment | undefined) =>
+    numeral?.children.map((child) => (child.kind === "text" ? child.text : "")).join("");
+
+  it("renders a multi-magnitude charge mark as a circled numeral glyph", () => {
+    // planPageSvgRender flattens the object wrapper, so each of the mark's primitives lands in
+    // the top-level stream carrying the object's data-* attributes.
+    const fragments = plannedChargeMark("charge_double", 2);
+
+    // The reported charge is sign × magnitude, and the glyph keeps the circled default style.
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-mark-kind": "charge",
+      "data-charge": 2,
+      "data-charge-style": "circled"
+    });
+
+    const ring = fragmentsByTag(fragments, "circle");
+    const numeral = fragmentsByTag(fragments, "text");
+    expect(ring).toHaveLength(1);
+    expect(numeral).toHaveLength(1);
+    // Multi-magnitude marks use the larger 0.42·min radius so the ring clears the numeral.
+    expect(ring[0]?.attrs.r).toBe(18 * 0.42);
+    // Vector bars can't carry the count, so the mark is bold centered text — no bar lines.
+    expect(numeral[0]?.attrs).toMatchObject({
+      x: 329,
+      y: 169,
+      "text-anchor": "middle",
+      "dominant-baseline": "central",
+      "font-size": 18 * 0.42 * 1.35,
+      "font-weight": 700
+    });
+    expect(numeralText(numeral[0])).toBe("2+");
+    expect(fragmentsByTag(fragments, "line")).toHaveLength(0);
+  });
+
+  it("renders a negative multi-magnitude charge mark with the minus numeral", () => {
+    const fragments = plannedChargeMark("charge_triple_minus", -3);
+
+    expect(fragments[0]?.attrs["data-charge"]).toBe(-3);
+    const numeral = fragmentsByTag(fragments, "text");
+    expect(numeral).toHaveLength(1);
+    expect(numeralText(numeral[0])).toBe("3−");
+    expect(fragmentsByTag(fragments, "line")).toHaveLength(0);
+  });
+
+  it("keeps ±1 charge marks as circled vector bars with no numeral", () => {
+    for (const charge of [1, -1]) {
+      const fragments = plannedChargeMark(`charge_${charge > 0 ? "plus" : "minus"}`, charge);
+
+      expect(fragments[0]?.attrs["data-charge"]).toBe(charge);
+      expect(fragmentsByTag(fragments, "text")).toHaveLength(0);
+      // The ring plus the − bar, and a second vertical bar for +.
+      expect(fragmentsByTag(fragments, "circle")).toHaveLength(1);
+      expect(fragmentsByTag(fragments, "line")).toHaveLength(charge > 0 ? 2 : 1);
+    }
+  });
+
+  it("places the radical dot clear of a multi-magnitude numeral glyph", () => {
+    const fragments = plannedChargeMark("charge_radical_double", 2, { radical: true });
+
+    // A radical mark is uncircled: no ring, and the fragments advertise the radical form.
+    expect(fragments[0]?.attrs).toMatchObject({
+      "data-charge": 2,
+      "data-charge-style": "plain",
+      "data-charge-radical": "true"
+    });
+    expect(fragments.some((fragment) => fragment.key.startsWith("charge-circle-"))).toBe(false);
+
+    const numeral = fragmentsByTag(fragments, "text");
+    expect(numeral).toHaveLength(1);
+    expect(numeralText(numeral[0])).toBe("2+");
+
+    const dot = fragments.find((fragment) => fragment.key.startsWith("charge-radical-"));
+    expect(dot?.attrs.cy).toBe(169);
+    expect(dot?.attrs.r).toBe(2.1);
+    // The dot offset derives from the numeral's half-extent (font-size × two bold glyphs) plus
+    // the dot radius and clearance — not the circled-mark 0.75·radius — so it clears the glyph
+    // edge instead of landing on it.
+    const fontSize = Number(numeral[0]?.attrs["font-size"]);
+    const dotCx = Number(dot?.attrs.cx);
+    expect(dotCx).toBeCloseTo(329 - (fontSize * 0.6 + 3.1), 6);
+    expect(dotCx + 2.1).toBeLessThanOrEqual(329 - fontSize * 0.6);
+  });
+
+  it("keeps the radical dot at the tuned 0.75·radius offset for a ±1 mark", () => {
+    const fragments = plannedChargeMark("charge_radical_single", 1, { radical: true });
+
+    expect(fragments[0]?.attrs["data-charge-style"]).toBe("plain");
+    expect(fragments[0]?.attrs["data-charge-radical"]).toBe("true");
+    const dot = fragments.find((fragment) => fragment.key.startsWith("charge-radical-"));
+    expect(Number(dot?.attrs.cx)).toBeCloseTo(329 - 18 * 0.32 * 0.75, 6);
+  });
+
   it("plans atom-label visibility, implicit hydrogens, colors, and transparent backgrounds", () => {
     const molecule = moleculeObject({
       id: "mol_atom_labels",
@@ -1166,6 +1291,245 @@ describe("layout-engine page SVG planner", () => {
       fill: "#c75c12",
       "font-style": "italic"
     });
+  });
+
+  it("preserves established trailing-subscript and leading-hydrogen label geometry", () => {
+    const drawingStyle = {
+      ...ChemDraftSyntheticStylePreset.drawing,
+      atomLabelPlacement: "above" as const
+    };
+    const atom = { id: "atom_label_baseline", element: "N", x: 120, y: 160, formalCharge: 0 };
+
+    expect(Object.fromEntries(
+      ["NH2", "CH3", "OH", "OH-", "NH3+", "H2N"].map((label) => {
+        const layout = atomLabelLayout(label, drawingStyle);
+        return [label, {
+          layout,
+          anchor: atomLabelAnchorOffset(atom, label, drawingStyle, layout)
+        }];
+      })
+    )).toMatchInlineSnapshot(`
+      {
+        "CH3": {
+          "anchor": {
+            "x": 0,
+            "y": -16.658,
+          },
+          "layout": {
+            "bounds": {
+              "height": 22.816000000000003,
+              "width": 28.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "CH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "3",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+            ],
+          },
+        },
+        "H2N": {
+          "anchor": {
+            "x": 0,
+            "y": -16.658,
+          },
+          "layout": {
+            "bounds": {
+              "height": 22.816000000000003,
+              "width": 28.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "HN",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "2",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+            ],
+          },
+        },
+        "NH2": {
+          "anchor": {
+            "x": 0,
+            "y": -16.658,
+          },
+          "layout": {
+            "bounds": {
+              "height": 22.816000000000003,
+              "width": 28.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "NH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "2",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+            ],
+          },
+        },
+        "NH3+": {
+          "anchor": {
+            "x": 0,
+            "y": -19.64,
+          },
+          "layout": {
+            "bounds": {
+              "height": 28.78,
+              "width": 35.650000000000006,
+              "x": -11.3,
+              "y": -16.064,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "NH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "subscript",
+                "text": "3",
+                "textAnchor": "start",
+                "x": 9.9,
+                "y": 5.1000000000000005,
+              },
+              {
+                "script": "superscript",
+                "text": "+",
+                "textAnchor": "start",
+                "x": 15.75,
+                "y": -7.199999999999999,
+              },
+            ],
+          },
+        },
+        "OH": {
+          "anchor": {
+            "x": 0,
+            "y": -15.350000000000001,
+          },
+          "layout": {
+            "bounds": {
+              "height": 20.200000000000003,
+              "width": 22.6,
+              "x": -11.3,
+              "y": -10.100000000000001,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "OH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+            ],
+          },
+        },
+        "OH-": {
+          "anchor": {
+            "x": 0,
+            "y": -18.332,
+          },
+          "layout": {
+            "bounds": {
+              "height": 26.164,
+              "width": 30.400000000000002,
+              "x": -11.3,
+              "y": -16.064,
+            },
+            "runs": [
+              {
+                "script": "normal",
+                "text": "OH",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
+              },
+              {
+                "script": "superscript",
+                "text": "-",
+                "textAnchor": "start",
+                "x": 10.5,
+                "y": -7.199999999999999,
+              },
+            ],
+          },
+        },
+      }
+    `);
+  });
+
+  it.each(["CO2Me", "CO2H"])("lays out every body run in order for %s", (label) => {
+    const layout = atomLabelLayout(label, ChemDraftSyntheticStylePreset.drawing);
+
+    expect(layout.runs.map(({ text, script }) => ({ text, script }))).toEqual([
+      { text: "CO", script: "normal" },
+      { text: "2", script: "subscript" },
+      { text: label.slice(3), script: "normal" }
+    ]);
+    expect(layout.runs[2]!.x).toBeGreaterThan(layout.runs[1]!.x);
+  });
+
+  it("emits an interior-digit nickname label in source order in the page render plan", () => {
+    const molecule = moleculeObject({
+      id: "mol_interior_digit_label",
+      structure: "COC",
+      atoms: [
+        {
+          id: "atom_nickname",
+          element: "CO2Me",
+          x: 140,
+          y: 180,
+          formalCharge: 0,
+          labelLiteral: true
+        }
+      ],
+      bonds: []
+    });
+
+    const renderedCharacters = planPageSvgRender(pageWithObjects([molecule])).fragments
+      .flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs.class === "native-atom-label-run")
+      .flatMap((fragment) => fragment.children)
+      .filter((fragment) => fragment.kind === "text")
+      .flatMap((fragment) => Array.from(fragment.text));
+
+    expect(renderedCharacters).toEqual(["C", "O", "2", "M", "e"]);
   });
 
   it("places an alcohol hydrogen away from its right-hand bond and anchors the oxygen at the atom", () => {
@@ -1324,6 +1688,189 @@ describe("layout-engine page SVG planner", () => {
     expect(atomDisplayLabel(molecule.atoms[2]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("O");
     expect(atomDisplayLabel(molecule.atoms[3]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("H");
     expect(atomLabelAnchorOffset(molecule.atoms[0]!, "C", drawingStyle)).toEqual({ x: 8, y: -6 });
+  });
+
+  it("keeps a leading digit run (a typed 13C) to the left of the symbol as a mass-number superscript", () => {
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(ChemDraftSyntheticStylePreset));
+    const layout = atomLabelLayout("13C", drawingStyle);
+    // A mass number is a superscript (¹³C), not the subscript a trailing count gets (CH₃).
+    expect(layout.runs.map(({ text, script }) => ({ text, script }))).toEqual([
+      { text: "13", script: "superscript" },
+      { text: "C", script: "normal" }
+    ]);
+    expect(layout.runs[0]!.x).toBeLessThan(layout.runs[1]!.x);
+    expect(layout.runs[0]!.y).toBeLessThan(0);
+    // A count after the symbol is still a subscript, and the leading mass number still leads.
+    expect(atomLabelLayout("13CH3", drawingStyle).runs.map(({ text, script }) => ({ text, script }))).toEqual([
+      { text: "13", script: "superscript" },
+      { text: "CH", script: "normal" },
+      { text: "3", script: "subscript" }
+    ]);
+    // The box grows to the left to hold the leading run.
+    expect(layout.bounds.x).toBeLessThan(atomLabelLayout("C", drawingStyle).bounds.x);
+  });
+
+  it("counts a dashed double bond's full valence in the atom label", () => {
+    const carbonyl = moleculeObject({
+      atoms: [
+        { id: "c", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "o", element: "O", x: 30, y: 0, formalCharge: 0 }
+      ],
+      bonds: [{ id: "b", fromAtomId: "c", toAtomId: "o", order: "double", display: { bondStyle: "dashed" } }],
+      style: { atomLabelHideImplicitHydrogens: false }
+    });
+    expect(atomDisplayLabel(carbonyl.atoms[1], carbonyl.bonds, nativeDrawingStyleFromObjectStyle(carbonyl.style), carbonyl.atoms)).toBe("O");
+  });
+
+  it("does not deprotonate a chalcogen donor for a dashed double bond to a metal", () => {
+    const graph = moleculeObject({
+      atoms: [
+        { id: "s", element: "S", x: 0, y: 0, formalCharge: 0 },
+        { id: "c", element: "C", x: -30, y: 0, formalCharge: 0 },
+        { id: "zn", element: "Zn", x: 30, y: 0, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "cs", fromAtomId: "c", toAtomId: "s", order: "single" },
+        { id: "sz", fromAtomId: "s", toAtomId: "zn", order: "double", display: { bondStyle: "dashed" } }
+      ]
+    });
+    expect(dativeDeprotonationCount(graph.atoms[0], graph.bonds, graph.atoms)).toBe(0);
+  });
+
+  it("takes the proton off a pyrrole-type N–H that donates a dative bond to a metal, and only that one", () => {
+    // Imidazole: N1 is pyrrole-type (two single ring bonds, each neighbour in a double bond), N3
+    // is pyridine-type. A dashed bond from N1 to zinc means imidazolate coordination — no free pair
+    // to donate — so the label reads N; a dashed bond from an amine NH2 or to a non-metal costs nothing.
+    const imidazole = (dativeTo: "Zn" | "C") => moleculeObject({
+      atoms: [
+        { id: "n1", element: "N", x: 100, y: 100, formalCharge: 0 },
+        { id: "c2", element: "C", x: 130, y: 80, formalCharge: 0 },
+        { id: "n3", element: "N", x: 160, y: 100, formalCharge: 0 },
+        { id: "c4", element: "C", x: 150, y: 135, formalCharge: 0 },
+        { id: "c5", element: "C", x: 110, y: 135, formalCharge: 0 },
+        { id: "m", element: dativeTo, x: 70, y: 70, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "n1", toAtomId: "c2", order: "single" },
+        { id: "b2", fromAtomId: "c2", toAtomId: "n3", order: "double" },
+        { id: "b3", fromAtomId: "n3", toAtomId: "c4", order: "single" },
+        { id: "b4", fromAtomId: "c4", toAtomId: "c5", order: "double" },
+        { id: "b5", fromAtomId: "c5", toAtomId: "n1", order: "single" },
+        { id: "b6", fromAtomId: "n1", toAtomId: "m", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelHideImplicitHydrogens: false }
+    });
+    const label = (molecule: ReturnType<typeof moleculeObject>, atomId: string) =>
+      atomDisplayLabel(molecule.atoms.find((atom) => atom.id === atomId)!, molecule.bonds, nativeDrawingStyleFromObjectStyle(molecule.style), molecule.atoms);
+
+    const toZinc = imidazole("Zn");
+    expect(label(toZinc, "n1")).toBe("N");
+    expect(label(toZinc, "n3")).toBe("N");
+    const dashedDouble = imidazole("Zn");
+    dashedDouble.bonds[5].order = "double";
+    expect(dativeDeprotonationCount(dashedDouble.atoms[0], dashedDouble.bonds, dashedDouble.atoms)).toBe(0);
+    // A dashed display on a neighbouring double bond still supplies conjugation.
+    const dashedConjugation = imidazole("Zn");
+    dashedConjugation.bonds[1].display = { bondStyle: "dashed" };
+    expect(dativeDeprotonationCount(dashedConjugation.atoms[0], dashedConjugation.bonds, dashedConjugation.atoms)).toBe(1);
+    // A dashed bond to a carbon is a partial bond, not a coordination: the N–H stays.
+    expect(label(imidazole("C"), "n1")).toBe("NH");
+
+    const amine = moleculeObject({
+      atoms: [
+        { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "n1", element: "N", x: 130, y: 100, formalCharge: 0 },
+        { id: "zn", element: "Zn", x: 160, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "c1", toAtomId: "n1", order: "single" },
+        { id: "b2", fromAtomId: "n1", toAtomId: "zn", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelHideImplicitHydrogens: false }
+    });
+    expect(label(amine, "n1")).toBe("NH2");
+  });
+
+  it("takes the proton off a thiol that binds a metal, and leaves a thioether and an alcohol alone", () => {
+    // R–SH binding gold is a thiolate: the drawn label is S, not SH. A thioether has no proton to
+    // lose, and an alcohol keeps its own — water and alcohols coordinate metals neutral all the
+    // time, so O is deliberately outside this rule.
+    const donor = (element: string, covalentNeighbors: number, dativeTo: string) => {
+      const atoms = [
+        { id: "d", element, x: 130, y: 100, formalCharge: 0 },
+        { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "m", element: dativeTo, x: 160, y: 120, formalCharge: 0 },
+        ...(covalentNeighbors > 1 ? [{ id: "c2", element: "C", x: 130, y: 70, formalCharge: 0 }] : [])
+      ];
+      const bonds = [
+        { id: "b1", fromAtomId: "c1", toAtomId: "d", order: "single" as const },
+        { id: "b2", fromAtomId: "d", toAtomId: "m", order: "single" as const, display: { bondStyle: "dashed" as const } },
+        ...(covalentNeighbors > 1
+          ? [{ id: "b3", fromAtomId: "d", toAtomId: "c2", order: "single" as const }]
+          : [])
+      ];
+      return moleculeObject({ atoms, bonds, style: { atomLabelHideImplicitHydrogens: false } });
+    };
+    const label = (molecule: ReturnType<typeof moleculeObject>) =>
+      atomDisplayLabel(
+        molecule.atoms.find((atom) => atom.id === "d")!,
+        molecule.bonds,
+        nativeDrawingStyleFromObjectStyle(molecule.style),
+        molecule.atoms
+      );
+
+    expect(label(donor("S", 1, "Au"))).toBe("S");
+    // Post-transition metals use the same classification as molfile coordination export.
+    expect(label(donor("S", 1, "Al"))).toBe("S");
+    expect(label(donor("S", 1, "Sb"))).toBe("SH");
+    // A selenol behaves the same way.
+    expect(label(donor("Se", 1, "Au"))).toBe("Se");
+    // A thioether has both bonds spoken for already: nothing to take off, and it still reads S.
+    expect(label(donor("S", 2, "Au"))).toBe("S");
+    // A dashed bond to a carbon is a partial bond, not coordination: the S–H stays.
+    expect(label(donor("S", 1, "C"))).toBe("SH");
+    // An alcohol coordinates neutral: the O–H stays.
+    expect(label(donor("O", 1, "Au"))).toBe("OH");
+  });
+
+  it("draws the carbon at the end of a dashed (dative) bond as a plain stick, not a labeled CH4", () => {
+    // A dashed bond contributes no covalent valence, so a carbon whose only bond is dashed has
+    // valenceUsed 0 exactly like a naked atom. Only a carbon with NO bond is naked; the dashed
+    // bond's carbon is a skeleton vertex and must render unlabeled like any other stick end.
+    const molecule = moleculeObject({
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 160, y: 160, formalCharge: 0 },
+        { id: "atom_003", element: "C", x: 240, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelShowTerminalCarbons: false, atomLabelHideImplicitHydrogens: false }
+    });
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+
+    expect(atomDisplayLabel(molecule.atoms[0]!, molecule.bonds, drawingStyle, molecule.atoms)).toBeUndefined();
+    expect(atomDisplayLabel(molecule.atoms[1]!, molecule.bonds, drawingStyle, molecule.atoms)).toBeUndefined();
+    // A genuinely naked carbon (no bond at all) still shows its symbol.
+    expect(atomDisplayLabel(molecule.atoms[2]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("CH4");
+  });
+
+  it("labels a dative-only carbon as C, not CH4, under the terminal-carbon style", () => {
+    // The terminal-carbon style shows the label; the hydrogen count must not pretend a carbon
+    // whose only bond is a coordination bond has four spare valences.
+    const molecule = moleculeObject({
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "Fe", x: 160, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelShowTerminalCarbons: true, atomLabelHideImplicitHydrogens: false }
+    });
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+    expect(atomDisplayLabel(molecule.atoms[0]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("C");
   });
 
   it("resolves native drawing styles per object", () => {
@@ -2510,6 +3057,8 @@ describe("layout-engine page SVG planner", () => {
       bonds: [
         { id: "bond_hash", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "hashed" } }
       ],
+      // The preset already draws implicit hydrogens, so the oxygen label reads "OH" — wide
+      // enough to trim a hash off the bond, which is the behavior under test.
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
         bondLengthPx: 28
@@ -3685,10 +4234,20 @@ describe("implicit hydrogens and formal charge", () => {
     id: `b_${id}`, fromAtomId: "a1", toAtomId: id, order: "single" as const
   });
 
+  it("renders literal (text-typed) atoms exactly as labeled — no auto-drawn hydrogens", () => {
+    // labelLiteral is the per-atom mark the text tool leaves: the label means what it says,
+    // whatever the document style does for drawn atoms.
+    const literal = (element: string, formalCharge: number) => ({ ...atom(element, formalCharge), labelLiteral: true });
+    expect(atomDisplayLabel(literal("O", 0), [bondTo("c1")])).toBe("O");
+    expect(atomDisplayLabel(literal("N", 0), [])).toBe("N");
+    expect(atomDisplayLabel(literal("C", 0), [])).toBe("C");
+    expect(atomDisplayLabel(literal("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("N+");
+  });
+
   it("counts implicit hydrogens against the CHARGED valence, not the neutral one", () => {
-    // A charge changes how many bonds an atom wants, so counting against the neutral valence
-    // invented hydrogens that are not there: an alkoxide drew as "OH-" and a trisubstituted
-    // carbocation as "CH+". Both are different molecules from the ones the user drew.
+    // The drawn hydrogen count must follow the charge: counting against the neutral valence
+    // invented hydrogens that are not there (an alkoxide drew as "OH-", a trisubstituted
+    // carbocation as "CH+").
 
     // Alkoxide: one bond, no hydrogen.
     expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")])).toBe("O-");
@@ -3708,14 +4267,10 @@ describe("implicit hydrogens and formal charge", () => {
 
     // A halide anion takes no bonds and no hydrogen.
     expect(atomDisplayLabel(atom("Cl", -1), [])).toBe("Cl-");
-    // Neutral HCl keeps its hydrogen.
+    // Naked drawn atoms follow the same fill: lone neutral chlorine reads as the hydride pair.
     expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("ClH");
-  });
-
-  it("still labels neutral atoms exactly as before", () => {
-    expect(atomDisplayLabel(atom("O", 0), [])).toBe("OH2");
-    expect(atomDisplayLabel(atom("N", 0), [])).toBe("NH3");
     expect(atomDisplayLabel(atom("C", 0), [])).toBe("CH4");
-    expect(atomDisplayLabel(atom("S", 0), [bondTo("c1")])).toBe("SH");
+    // Charged naked atoms are deliberate ions and keep the charged-valence fill.
+    expect(atomDisplayLabel(atom("O", 1), [])).toBe("OH3+");
   });
 });

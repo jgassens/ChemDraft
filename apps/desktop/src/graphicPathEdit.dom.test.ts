@@ -2061,6 +2061,52 @@ describe("graphic path direct editing interactions", () => {
     expect(committed.structure).not.toBe(structureBefore);
   });
 
+  it("draws a flexible chain that bends along the pointer path", async () => {
+    // The flexible variant accumulates the pointer path across the drag: an L-shaped drag must
+    // produce a chain that turns the corner, where the straight tool would ride the single
+    // press→release axis. The far end landing near the second leg is the proof of the bend.
+    await renderMainWindow(createPhase4Document("Flexible Chain Drag"), {
+      initialActiveToolCommandId: "tool.chainFlexible"
+    });
+
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 150, y: 150 }, 61);
+    });
+    for (let step = 1; step <= 6; step += 1) {
+      await act(async () => {
+        dispatchPointer(pageElement(), "pointermove", { x: 150 + step * 25, y: 150 }, 61);
+      });
+    }
+    for (let step = 1; step <= 6; step += 1) {
+      await act(async () => {
+        dispatchPointer(pageElement(), "pointermove", { x: 300, y: 150 + step * 25 }, 61);
+      });
+    }
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: 300, y: 300 }, 61);
+    });
+
+    const bridge = window.__CHEMDRAFT_AGENT__;
+    if (!bridge) {
+      throw new Error("Expected agent bridge.");
+    }
+    const chain = bridge.snapshot().document.pages[0].objects.find((object) => object.type === "molecule");
+    if (!chain || chain.type !== "molecule") {
+      throw new Error("Expected the flexible chain molecule.");
+    }
+
+    expect(chain.atoms.length).toBeGreaterThanOrEqual(10);
+    expect(chain.bonds.length).toBe(chain.atoms.length - 1);
+    // Early atoms ride the first (horizontal) leg...
+    const third = chain.atoms[2];
+    expect(Math.abs(third.y - 150)).toBeLessThan(25);
+    // ...and the tail turned the corner down the second leg instead of continuing along the
+    // straight press→release diagonal (which would put it far left of x≈300).
+    const tail = chain.atoms[chain.atoms.length - 1];
+    expect(Math.abs(tail.x - 300)).toBeLessThan(30);
+    expect(tail.y).toBeGreaterThan(220);
+  });
+
   it("deletes the hovered arrow on Delete while the arrow tool is active", async () => {
     // Two arrows, with the SECOND left selected: Delete must take the one under the pointer, not the
     // selected one, or this passes on the ordinary delete-selection path without exercising hover.

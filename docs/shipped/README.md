@@ -17,6 +17,10 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 **Slices with their own file:**
 
+- [ChemDraw-compatible keybinding scheme](chemdraw-keybinding-scheme.md) — a Preferences toggle that
+  remaps tools, hover hotkeys, and menu chords to match ChemDraw's defaults for migrating users;
+  documents the mapping rules, what is covered, and what is deliberately unmapped.
+
 - [Analyzers: property and prediction suite](analyzers-property-prediction-suite.md) — the Molecular
   Inspector, isotope envelopes, OPSIN and OpenClatura plugin work, Joback estimates, and the pKa
   system. Kept separate because its later sections document how the pKa method behaves today: what it
@@ -28,6 +32,186 @@ the superseding entry says so — read the newest entry that touches a subsystem
   resolver with atom→bond→ring precedence, uniform additive behavior across click/marquee/lasso, and
   cross-molecule part storage. All phases landed; kept separate because its design section still
   documents how selection works today.
+
+---
+
+## ChemDraw-parity drawing interactions (2026-08-31; extended 2026-09-20)
+
+Implemented and tested on `claude/chemdraw-keybindings`, integrated with its later clipboard,
+interchange, and cleanup slices. The keybinding scheme that rides with them has its own doc,
+[chemdraw-keybinding-scheme.md](chemdraw-keybinding-scheme.md). Unless noted, the code lives in
+`apps/desktop/src/documentWorkflow.ts` with coverage in `documentWorkflow.test.ts` and
+`App.test.ts`.
+
+### Literal atom labels, typed naked atoms, Delete-strips-label
+
+Committing a text box that holds exactly an element symbol ("C", "fe", "Br"…) converts it into a
+real one-atom molecule at that spot — hover hotkeys, bonding, and valence checking all apply, and
+lower-case symbols canonicalize (`convertNativeTextObjectToAtom`). Conversion runs on every way
+an edit ends (Escape, click-away, tool switch), not just Escape, and is idempotent so overlapping
+end paths no-op. Literalness is a per-atom `labelLiteral` mark set by text conversion and by the
+atom-label editor: the label draws exactly as typed, contributes no implicit hydrogens to the formula,
+and is
+valence-checked literally — a lone typed "N" is a flagged hypovalent atom until three real bonds
+arrive, while a naked typed "OH2" is complete water (condensed literal labels spelling one heavy
+element are checked with their own hydrogens; multi-heavy labels and abbreviations stay
+unchecked superatoms and contribute nothing rather than a wrong guess). Element hotkeys produce
+ordinary skeletal atoms — implicit hydrogens drawn and counted — and pressing a hotkey over a
+literal atom clears the mark. The label editor commits with `literal: true`, so its element labels
+keep the same explicit-hydrogen contract as text conversion. While the label editor is
+open the molecule overlay strips the edited atom's rendered label so the draft never
+double-draws. Delete/Backspace over a labeled atom strips the label first — reverting to a plain
+skeleton carbon with bonds and position intact, hover preserved so the second press lands without
+re-aiming — and deletes the atom on the second press (`applyNativeAtomLabelClearTarget`);
+unlabeled carbons and multi-part fragment deletes behave exactly as before.
+
+Compatibility: a document containing `labelLiteral` atoms fails to open in older builds — the
+atom schema is `.strict()` and the error names the unrecognized key.
+
+### Dative dashed bonds, cross-molecule merging, valence/coordination tables
+
+A dragged bond dropped on another molecule object's atom merges that object into the source
+molecule and bonds across the seam (`findForeignNativeMoleculeBondTarget`,
+`mergeNativeMoleculeObjects`) — the absorbed atoms and bonds are re-minted onto fresh ids (every
+molecule starts at `atom_001`, so ids collide), per-atom/per-bond style colors follow the remap,
+and anchored electron marks and mechanism/reaction arrows are re-pointed at the host. Dashed
+single bonds now depict dative/partial interactions — coordinate bonds, hydrogen bonds — and occupy no
+covalent valence slot on either atom (`nativeBondValenceContribution`): pyridine's N keeps three
+bonds and no badge while dash-bonded to a zinc, and a fourth *covalent* bond on neutral N still
+demands its +1. Valence checking grew coordination ceilings for the whole d-block
+(`nativeMetalMaxCoordination`): variable oxidation states make hypovalence unjudgeable, so metals
+are never flagged naked or hypovalent — only a bond count beyond the element's highest known
+coordination number earns the badge (V past 7, Pd past 6, Re allowed its 9-coordinate hydride) —
+and all thirty metals carry standard atomic weights so metal-containing formulas get real masses.
+Main-group coverage extended to Al, Ge, As, Se, Sn, Te with the neutral-plus-hypervalent model,
+and the heavy halogens' ceiling rose to 7 so lambda-3/-5 iodanes (Dess–Martin, PhI(OAc)2) stop
+reading as drawing errors. Dashed display is accepted only on single bonds; the serializers write a
+dashed non-single bond with its real order plus a warning. A pyrrole-type N–H (imidazole, pyrazole,
+pyrrole, indole) that carries a dative bond to a metal is drawn deprotonated — the label reads N,
+the formula loses that hydrogen, the atom stays neutral — because such a nitrogen has no free pair
+to donate and coordinates only as its conjugate base; pyridine and amine donors keep their hydrogens.
+
+Compatibility: documents drawn before this branch reinterpret existing dashed bonds as dative on
+open — labels on atoms with dashed contacts may gain implicit hydrogens immediately, and the
+stored formula keeps its pre-branch value until the first edit re-derives it
+(`refreshNativeSingleBondGraph` re-computes the chemistry metadata on every edit).
+
+### Stacking charge marks, Clear/Restore Warnings
+
+The charge tool and the `+`/`−` hover hotkeys **stack** on the atom's existing charge mark
+instead of piling up overlapping marks: + on ⊕ gives a single 2+ mark, − steps back down, and the
+mark is removed at zero — capped at |9| (`nativeChargeMarkMaxMagnitude`). Multi-magnitude marks
+render real "2+"/"3−" glyphs in the circled and plain styles and reconcile like any mark.
+Elements outside the covalent valence tables (transition metals, alkali/alkaline-earth) now
+associate any charge — the octet math cannot refuse a solid-bonded Zn its 2+. Right-clicking an
+atom wearing the valence badge offers Clear Warning: a per-atom `warningSuppressed` flag that
+silences the badge and the stored warning until the same menu's Restore Warning brings it back.
+The scope follows the selection (`applyNativeWarningSuppressionToScope`): whole-molecule
+selections clear every warning in each selected molecule, while a partial selection — an atom, a
+bond (its endpoints), a ring, a lassoed fragment — clears only the selected parts' atoms. The
+menu item pluralizes with the live count, flips to Restore Warnings when everything in scope is
+already dismissed, and clearing suppresses only atoms that *currently* warn, so a valid atom
+keeps its voice for future mistakes.
+
+Compatibility: charge marks with magnitude >1 open in older builds but silently degrade to ±1 on
+load (the old renderer drew only ±1 glyphs and the old reconciliation recognized nothing else).
+A document containing `warningSuppressed` atoms fails to open in older builds (strict schema, as
+above).
+
+### Magnetic canonical-geometry snap, junction-pivot rotation
+
+Dragging an atom — or any partial selection — snaps magnetically to canonical geometry: when a
+boundary bond comes within 6° of a canonical direction (the 30° drawing grid, or 120° off the
+stationary anchor's other bonds) it clicks onto the exact angle, and within 3 px of the style's
+bond length it clicks to the exact length; both snaps engage independently and apply every
+preview frame, so the pull is felt during the drag and releases cleanly outside the capture
+windows (`snapNativeMoleculePartDragDelta`; every bond crossing the selection boundary is a
+candidate, so mid-chain slices snap too, while whole-molecule selections still move freely).
+Rotations click as well: junction-pivoted fragments snap when the rotating bond reaches a
+canonical direction (3° window), center-pivoted selections at 15° steps, and the on-screen degree
+readout shows the snapped angle the drag will commit
+(`snapNativeMoleculePartRotationDegrees`). A selection that meets the unselected remainder
+through exactly one of its own atoms rotates **about that junction atom** — the junction and the
+attachment bond stay put while the substituents swing — and only a selection with no single
+junction rotates about its center (`nativeMoleculePartRotationPivot`, `rotateNativeMoleculeParts`;
+the rotate and 3D-tilt drags measure the pointer angle about the same pivot so the handle feel
+matches what commits).
+
+### Flexible chain tool, chain flyout
+
+The chain button carries the standard variant flyout (corner indicator, long-press /
+Alt+ArrowDown) with two items in both palette sections: Chain (zig-zag along the straight
+press→drag axis) and Flexible Chain (`tool.chainFlexible`), whose zig-zag snakes along the
+pointer path so the chain bends wherever the drag turns. `planNativeFlexibleChainVertices`
+resamples the pointer path into stations every reach-per-segment of arc length and steps each
+bond ±half the zig-zag angle about the local tangent — every bond keeps its exact length, a
+straight drag reproduces the straight planner exactly, and the same page-edge stop and
+200-segment cap apply. The placement drag accumulates the thinned pointer path so preview and
+commit plan identical vertices, free and atom-anchored alike.
+
+### First-bond 30° orientation, ring reorientation
+
+Hotkey sprouts follow geometry and the growth arrow, ChemDraw-style: candidates are open-space
+bisectors and ±chain-angle directions with ties breaking upward (matching ChemDraw's rising
+sprouts); a bare atom's first bond and the empty-canvas seed bond default to 30° above horizontal
+instead of lying flat; and the hexagon templates (cyclohexane, benzene) stamp vertex-up — the
+journals' orientation — so fresh-ring sprouts head vertically and diagonally. When a bond tool's
+growth arrow is on screen, the hotkeys commit exactly what it shows (steered candidate, guided
+ring closure included), and carbonyl on an atom that can't carry =O (aromatic carbon, existing
+carbonyl) sprouts a new carbon along the open direction and puts the C=O on it — ChemDraw's
+aldehyde behavior — instead of refusing.
+
+### Fragment copy and mixed selections
+
+A lasso or marquee copies its selected atoms and every bond whose ends are kept, as a standalone
+molecule. Whole objects and fragments share one payload, with a whole-selected molecule taking
+precedence over its fragment. Anchored charge, radical, and lone-pair marks travel with their atoms;
+paste remaps their molecule anchors, and Cut removes the same objects and parts that were copied.
+
+### Paste at the pointer and the bare-canvas Paste menu
+
+Selection paste centres the copied bounds at the pointer's page position, with repeated pastes
+offset through the existing placement state. A right-click on empty canvas offers Paste, and a
+right-click over a selected fragment preserves that fragment instead of promoting its whole molecule.
+An empty Copy is swallowed so the web view cannot put the app's own markup on the clipboard.
+
+### SMILES-list grid paste
+
+Lists of SMILES are parsed into editable molecules and laid out in a row-major grid, with progress
+for longer lists and skipped-token counts in the result. Prose stays text; one SMILES with surrounding
+whitespace follows the single-structure path. Oversized grids expand the page rather than pile
+structures against its edge (`smilesListPaste.ts` and `insertSmilesMoleculeGrid`).
+
+### SDF and .smi structure-list export
+
+Selected molecules, or the page when nothing is selected, export in reading order through
+`structureListExport.ts`. SDF carries one V2000 record per molecule with SMILES and index fields;
+.smi carries one SMILES/name-or-index row. Copy As SMILES shares the lazy RDKit identifier path,
+preserving stereo from the drawing. Native fallback warns for wedge/hash and substituted double-bond
+stereo; writer losses, including dummy replacements for condensed labels, reach the export warnings.
+Literal element valences and D/T isotope spelling follow the package writers.
+
+### CDXML abbreviation expansion
+
+Nested abbreviation fragments expand into their carried atoms when the body and attachment can be
+resolved without guessing. Unsupported, charged, or over-deep abbreviations stay literal labels
+with warnings; numeric text runs survive so SO3 cannot silently turn into SO
+(`packages/cdx-compat`).
+
+### Dative cleanup passes
+
+2D Cleanup lays out the covalent ligands before placing free coordination metals in their donor
+pockets. Chelate and bridging passes adjust placement, donor angles, and metal–donor distances
+while preserving the ligand graphs; stereo checks still guard the result. Nickname placeholders
+are compared against the writer's actual symbols, so an engine returning C for Ph's dummy atom
+does not abort geometry-only cleanup or replace the document's Ph label.
+
+### Running-build reporter
+
+`pnpm running-build` (`scripts/running-build.mjs`, with `--json` for raw records) reads each
+desktop app's `runtime-build.json`. Windows report on load, hot update, and return to the foreground,
+so the report identifies what a window actually loaded, including the worktree/build and record age,
+rather than assuming the newest source has reached every open window.
 
 ---
 

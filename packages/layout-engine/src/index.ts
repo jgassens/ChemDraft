@@ -1,5 +1,7 @@
 import {
   DefaultNativeDrawingStyle,
+  isDativeBond,
+  isMetalSymbol,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   type BondRef,
@@ -565,7 +567,19 @@ function extensionDirection(input: ExtensionDirectionInput): LayoutPoint {
       direction: directionFromAngle(angle),
       score: scoreDirectionCandidate(angle, input, clickDirection)
     }))
-    .sort((left, right) => right.score - left.score || left.angle - right.angle);
+    .sort((left, right) => {
+      const scoreDifference = right.score - left.score;
+      if (Math.abs(scoreDifference) > 1e-9) {
+        return scoreDifference;
+      }
+      // Exact ties (the symmetric ± chain-angle pair on an unsteered atom) break UPWARD —
+      // page y grows downward, so the smaller y-component wins — matching how ChemDraw's
+      // hotkey sprouts rise by default rather than droop.
+      if (Math.abs(left.direction.y - right.direction.y) > 1e-9) {
+        return left.direction.y - right.direction.y;
+      }
+      return left.angle - right.angle;
+    });
 
   return scored[0]?.direction ?? clickDirection ?? { x: 1, y: 0 };
 }
@@ -577,7 +591,11 @@ function directionCandidates(
   targetBondAngleDegrees: number
 ): number[] {
   if (neighbors.length === 0) {
-    return [clickDirection ? angleFromDirection(clickDirection) : 0];
+    // A bare atom's first bond sprouts up-and-to-the-right at the zig-zag half-angle
+    // (30° above horizontal for the default 120° chain angle) — matching ChemDraw's first
+    // bond, instead of a flat horizontal stick.
+    const firstBondAngle = -(Math.PI - degreesToRadians(targetBondAngleDegrees)) / 2;
+    return [clickDirection ? angleFromDirection(clickDirection) : firstBondAngle];
   }
 
   const targetAngle = degreesToRadians(targetBondAngleDegrees);
@@ -2001,8 +2019,17 @@ function moleculeRingPathD(
   ].join(" ");
 }
 
-function moleculeFillCycleKey(bondIds: readonly string[]): string {
+/**
+ * The key a ring's style is stored under in `molecule.style.ringStyles`: the ring's bond ids,
+ * sorted and "|"-joined. Exported with its inverse so a molecule merge can re-key an absorbed
+ * ring's style onto the bond ids it receives in the host.
+ */
+export function moleculeFillCycleKey(bondIds: readonly string[]): string {
   return [...bondIds].sort().join("|");
+}
+
+export function moleculeFillCycleKeyBondIds(ringKey: string): string[] {
+  return ringKey.split("|");
 }
 
 function moleculeFillCycleSortKey(cycle: MoleculeFillRingCycle): string {
@@ -3065,15 +3092,20 @@ export function textObjectSpansForRendering(object: TextObject): TextSpan[] {
 }
 
 /**
- * Charge and electron symbols, drawn as vectors so the circled forms stay crisp at any zoom.
- * The default charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant —
- * and a `radical` charge carries the unpaired-electron dot beside the sign (•+ / •−).
+ * Single charge and electron symbols use vector strokes so their circled forms stay crisp at any
+ * zoom, while multi-magnitude marks use a text glyph such as "2+" or "3−". The default single
+ * charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant — and a `radical`
+ * charge carries the unpaired-electron dot beside the sign (•+ / •−).
  */
 function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
-  const charge = object.charge === -1 ? -1 : 1;
+  const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
+    ? object.charge
+    : 1;
+  const sign = rawCharge < 0 ? -1 : 1;
+  const magnitude = Math.min(9, Math.abs(rawCharge));
   const centerX = object.x + object.width / 2;
   const centerY = object.y + object.height / 2;
-  const radius = Math.min(object.width, object.height) * 0.32;
+  const radius = Math.min(object.width, object.height) * (magnitude > 1 ? 0.42 : 0.32);
   const barHalf = radius * 0.55;
   const strokeWidth = 1.5;
   const circled = object.chargeStyle !== "plain" && object.radical !== true;
@@ -3090,31 +3122,50 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }));
   }
 
-  const signHalf = circled ? barHalf : radius * 0.85;
-  const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
-  children.push(elementFragment("line", `charge-bar-${object.id}`, {
-    x1: signX - signHalf,
-    y1: centerY,
-    x2: signX + signHalf,
-    y2: centerY,
-    stroke: "#111111",
-    "stroke-width": strokeWidth,
-    "stroke-linecap": "round"
-  }));
-  if (charge > 0) {
-    children.push(elementFragment("line", `charge-bar-vertical-${object.id}`, {
-      x1: signX,
-      y1: centerY - signHalf,
-      x2: signX,
-      y2: centerY + signHalf,
+  if (magnitude > 1) {
+    // Multi-magnitude marks read as text ("2+", "3−") — vector bars can't carry the numeral.
+    children.push(elementFragment("text", `charge-count-${object.id}`, {
+      x: centerX,
+      y: centerY,
+      "text-anchor": "middle",
+      "dominant-baseline": "central",
+      "font-family": "Arial, Helvetica, sans-serif",
+      "font-size": radius * 1.35,
+      "font-weight": 700,
+      fill: "#111111"
+    }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
+  } else {
+    const signHalf = circled ? barHalf : radius * 0.85;
+    const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    children.push(elementFragment("line", `charge-bar-${object.id}`, {
+      x1: signX - signHalf,
+      y1: centerY,
+      x2: signX + signHalf,
+      y2: centerY,
       stroke: "#111111",
       "stroke-width": strokeWidth,
       "stroke-linecap": "round"
     }));
+    if (sign > 0) {
+      children.push(elementFragment("line", `charge-bar-vertical-${object.id}`, {
+        x1: signX,
+        y1: centerY - signHalf,
+        x2: signX,
+        y2: centerY + signHalf,
+        stroke: "#111111",
+        "stroke-width": strokeWidth,
+        "stroke-linecap": "round"
+      }));
+    }
   }
   if (object.radical === true) {
+    // The dot rides left of the glyph it modifies. The 0.75·radius offset was tuned against the
+    // circled ± ring; the multi-magnitude numeral glyph ("2+") is wider than that ring, so its
+    // offset derives from the text's half-extent (two bold glyphs at the 1.35·radius font size)
+    // plus the dot radius and a unit of clearance — otherwise the dot lands on the numeral's edge.
+    const radicalDotOffset = magnitude > 1 ? radius * 1.35 * 0.6 + 3.1 : radius * 0.75;
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
-      cx: centerX - radius * 0.75,
+      cx: centerX - radicalDotOffset,
       cy: centerY,
       r: 2.1,
       fill: "#111111"
@@ -3123,7 +3174,7 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     "data-mark-kind": "charge",
-    "data-charge": charge,
+    "data-charge": sign * magnitude,
     "data-charge-style": circled ? "circled" : "plain",
     ...(object.radical === true ? { "data-charge-radical": "true" } : {}),
     transform: rotationTransform(object)
@@ -4718,31 +4769,64 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
       drawingStyle
     );
   }
-  const baseText = bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label;
-  const suffixRuns = bodyRuns.filter((run) => run.script !== "normal");
-  const baseWidth = atomLabelRunWidth({ text: baseText, script: "normal" }, drawingStyle);
+  // A leading hydrogen count retains its established grouped-base geometry because that label
+  // family has a separate placement contract from ordinary left-to-right body runs.
+  const preservesLeadingHydrogenGeometry = /^H\d+[A-Z][a-z]?$/.test(splitAtomLabelCharge(label).body);
+  const baseRun = preservesLeadingHydrogenGeometry
+    ? {
+        text: bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label,
+        script: "normal" as const
+      }
+    : bodyRuns.find((run) => run.script === "normal") ?? { text: label, script: "normal" as const };
+  const followingRuns = preservesLeadingHydrogenGeometry
+    ? bodyRuns.filter((run) => run.script !== "normal")
+    : bodyRuns.slice(bodyRuns.indexOf(baseRun) + 1);
+  // Runs before the first normal run (a typed "13C" or "2H") go to the LEFT of the base, in
+  // order; they used to be dropped outright.
+  const leadingRuns = preservesLeadingHydrogenGeometry ? [] : bodyRuns.slice(0, bodyRuns.indexOf(baseRun));
+  const baseWidth = atomLabelRunWidth(baseRun, drawingStyle);
   const baseHalfWidth = baseWidth / 2;
   const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
   const runs: AtomLabelLayoutRun[] = [
     {
-      text: baseText,
-      script: "normal",
+      ...baseRun,
       x: 0,
       y: 0,
       textAnchor: "middle"
     }
   ];
+  let left = -baseHalfWidth;
   let right = baseHalfWidth;
   let top = -baseHalfHeight;
   let bottom = baseHalfHeight;
   let cursor = baseHalfWidth + drawingStyle.atomLabelFontSizePx * 0.04;
+  const scriptY = (script: AtomLabelScript): number => script === "subscript"
+    ? drawingStyle.atomLabelFontSizePx * 0.34
+    : script === "superscript"
+      ? -drawingStyle.atomLabelFontSizePx * 0.42
+      : 0;
 
-  for (const run of suffixRuns) {
+  let leadingCursor = -baseHalfWidth - drawingStyle.atomLabelFontSizePx * 0.04;
+  for (const run of [...leadingRuns].reverse()) {
     const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
     const width = atomLabelRunWidth(run, drawingStyle);
-    const y = run.script === "subscript"
-      ? drawingStyle.atomLabelFontSizePx * 0.34
-      : -drawingStyle.atomLabelFontSizePx * 0.42;
+    const y = scriptY(run.script);
+    runs.unshift({
+      ...run,
+      x: leadingCursor,
+      y,
+      textAnchor: "end"
+    });
+    left = Math.min(left, leadingCursor - width);
+    top = Math.min(top, y - fontSize * 0.52);
+    bottom = Math.max(bottom, y + fontSize * 0.52);
+    leadingCursor -= width + drawingStyle.atomLabelFontSizePx * 0.03;
+  }
+
+  for (const run of followingRuns) {
+    const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+    const width = atomLabelRunWidth(run, drawingStyle);
+    const y = scriptY(run.script);
     runs.push({
       ...run,
       x: cursor,
@@ -4779,9 +4863,9 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
       : 0;
   return {
     bounds: {
-      x: -baseHalfWidth + horizontalShift - padding,
+      x: left + horizontalShift - padding,
       y: top - padding,
-      width: right + baseHalfWidth + padding * 2,
+      width: right - left + padding * 2,
       height: bottom - top + padding * 2
     },
     runs: horizontalShift === 0
@@ -4889,6 +4973,11 @@ function atomLabelParts(label: string): { bodyRuns: AtomLabelRun[]; chargeRun?: 
     currentRuns.push({ text: character, script });
     return currentRuns;
   }, []);
+  // Digits BEFORE the first symbol are a mass number (a typed "13C", "2H"), and a mass number
+  // sits top-left as a superscript; only a count after a symbol ("CH3") is a subscript.
+  if (runs.length > 1 && runs[0]!.script === "subscript") {
+    runs[0] = { ...runs[0]!, script: "superscript" };
+  }
 
   return {
     bodyRuns: runs.length > 0 ? runs : [{ text: label, script: "normal" }],
@@ -4958,19 +5047,32 @@ export function atomDisplayLabel(
   }
   const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
   const formalCharge = atom.formalCharge;
-  // Each unpaired electron from an associated radical mark occupies a bonding slot.
-  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens
+  // A literal label (typed with the text tool) means exactly what it says — no auto-drawn
+  // hydrogen count ever. Everything else follows the classic skeletal convention: the
+  // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
+  // unpaired electron from an associated radical mark occupies a bonding slot, and a dative
+  // bond from a pyrrole-type N–H costs that proton (see `dativeDeprotonationCount`).
+  const incidentBonds = bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  // A carbon whose only bonds are dative (a CO ligand's C drawn as a bare atom) cannot carry
+  // four hydrogens as well: under the terminal-carbon style it reads "C", never "CH4".
+  const dativeOnlyCarbon = element === "C" && incidentBonds.length > 0 && incidentBonds.every(isDativeBond);
+  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens || atom.labelLiteral === true || dativeOnlyCarbon
     ? ""
     : implicitHydrogenLabel(Math.max(
         0,
         nativeAtomValenceForCharge(element, formalCharge) - valenceUsed - (atom.markRadicals ?? 0)
+          - dativeDeprotonationCount(atom, bonds, atoms)
       ));
 
   if (element === "C" && formalCharge === 0) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
+    // "Naked" means no bond at all, not zero covalent valence: a dashed (dative) bond
+    // contributes no valence, so testing valenceUsed here labeled the carbon at the end of
+    // every dashed bond as CH4 instead of drawing a plain stick.
+    const bonded = incidentBonds.length > 0;
     const shouldShowCarbon =
       atom.labelVisible === true ||
-      valenceUsed === 0 ||
+      !bonded ||
       (atom.labelVisible !== false && drawingStyle.atomLabelShowTerminalCarbons && terminalCarbon);
     if (!shouldShowCarbon) {
       return undefined;
@@ -5012,11 +5114,17 @@ const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> =
   N: 5,
   O: 6,
   F: 7,
+  Al: 3,
   Si: 4,
   P: 5,
   S: 6,
   Cl: 7,
+  Ge: 4,
+  As: 5,
+  Se: 6,
   Br: 7,
+  Sn: 4,
+  Te: 6,
   I: 7
 };
 
@@ -5091,10 +5199,107 @@ function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefi
   return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate as NativeElementSymbol : undefined;
 }
 
+/**
+ * Hydrogens a dative (dashed) bond costs its donor. The formula in documentWorkflow imports this
+ * same function, so label and formula cannot drift apart. A donor with
+ * a lone pair to give (pyridine or amine N, ether or aqua O) keeps its hydrogens; a pyrrole-type
+ * N–H (two single bonds, each neighbour carrying a multiple bond: imidazole, pyrazole, pyrrole,
+ * indole) has no free pair and coordinates only deprotonated, so the label reads N, not NH.
+ *
+ * A thiol or selenol is the other deprotonating case, and a much plainer one: R-SH binding a metal
+ * is a thiolate, R-S-M. Gold(I), silver, copper, mercury, iron-sulfur clusters — the S-H proton is
+ * gone in every one, so a coordinated terminal S reads S, not SH. Oxygen is deliberately NOT in
+ * this rule: water and alcohols coordinate neutral all the time ([M(H2O)6] and friends), so an
+ * O-H donor keeps its proton.
+ */
+export function dativeDeprotonationCount(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): number {
+  const donorElement = nativeElementFromAtomLabel(atom.element);
+  if (atom.formalCharge !== 0 || atom.labelLiteral === true) {
+    return 0;
+  }
+  if (donorElement === "S" || donorElement === "Se") {
+    return terminalChalcogenolDeprotonation(atom, bonds, atoms);
+  }
+  if (donorElement !== "N") {
+    return 0;
+  }
+  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const covalentNeighborIds: string[] = [];
+  let donatesToMetal = false;
+  let covalentAllSingle = true;
+  bonds.forEach((bond) => {
+    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
+      return;
+    }
+    const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
+    if (isDativeBond(bond)) {
+      const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
+      if (neighborElement && isMetalSymbol(neighborElement)) {
+        donatesToMetal = true;
+      }
+      return;
+    }
+    covalentNeighborIds.push(neighborId);
+    if (bond.order !== "single") {
+      covalentAllSingle = false;
+    }
+  });
+  if (!donatesToMetal || covalentNeighborIds.length !== 2 || !covalentAllSingle) {
+    return 0;
+  }
+  const conjugated = covalentNeighborIds.every((neighborId) => bonds.some((bond) =>
+    (bond.fromAtomId === neighborId || bond.toAtomId === neighborId) &&
+    bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id &&
+    !isDativeBond(bond) &&
+    (bond.order === "double" || bond.order === "aromatic")
+  ));
+  return conjugated ? 1 : 0;
+}
+
+/**
+ * A terminal thiol/selenol (exactly one covalent single bond, so one hydrogen) that donates to a
+ * metal: coordinated as the anion, so the drawn H goes. A sulfur with two covalent bonds is a
+ * thioether — it has a free pair, no proton to lose, and this returns 0 for it anyway.
+ */
+function terminalChalcogenolDeprotonation(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): number {
+  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  let covalentBonds = 0;
+  let covalentAllSingle = true;
+  let donatesToMetal = false;
+  bonds.forEach((bond) => {
+    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
+      return;
+    }
+    if (isDativeBond(bond)) {
+      const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
+      const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
+      if (neighborElement && isMetalSymbol(neighborElement)) {
+        donatesToMetal = true;
+      }
+      return;
+    }
+    covalentBonds += 1;
+    if (bond.order !== "single") {
+      covalentAllSingle = false;
+    }
+  });
+  return donatesToMetal && covalentBonds === 1 && covalentAllSingle ? 1 : 0;
+}
+
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {
   return bonds.reduce((sum, bond) => (
     bond.fromAtomId === atomId || bond.toAtomId === atomId
-      ? sum + (nativeBondOrderValue[bond.order] ?? 1)
+      // A dashed single is dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
+      // drawn hydrogen count ignores it — same rule as the valence checker's.
+      ? sum + (isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1)
       : sum
   ), 0);
 }

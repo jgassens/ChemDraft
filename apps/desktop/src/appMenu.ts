@@ -94,6 +94,8 @@ export interface AppMenuContext {
    * for the pure core menu, so the native-sync test's base model is unaffected.
    */
   pluginMenuItems?: readonly PluginAppMenuItem[];
+  /** Active keybinding scheme; the ChemDraw scheme relabels the accelerators that differ. */
+  keybindingScheme?: "chemdraft" | "chemdraw";
 }
 
 /** Prefix of the dynamic toolset-toggle command ids (see toolset-registry `createToolsetToggleCommandId`). */
@@ -194,6 +196,7 @@ function buildPageSetupSubmenu(): AppMenuSubmenu {
  */
 export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
   separatorSeq = 0;
+  const chemDrawScheme = context.keybindingScheme === "chemdraw";
 
   const toolbarsSubmenu: AppMenuSubmenu = {
     kind: "submenu",
@@ -216,7 +219,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         separator(),
         buildPageSetupSubmenu(),
         separator(),
-        command("export.open", "Export…", { accelerator: "Shift+Cmd+E" })
+        command("export.open", "Export…", { accelerator: chemDrawScheme ? "Ctrl+Cmd+E" : "Shift+Cmd+E" })
       ]
     },
     {
@@ -255,9 +258,12 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       items: [
         command("view.togglePreferences", "Preferences…", { accelerator: "Cmd+," }),
         separator(),
-        command("view.toggleRulers", "Show Rulers", { accelerator: "Cmd+R", checked: context.rulersVisible }),
+        command("view.toggleRulers", "Show Rulers", {
+          accelerator: chemDrawScheme ? "Cmd+;" : "Cmd+R",
+          checked: context.rulersVisible
+        }),
         command("view.toggleCrosshairs", "Show Crosshairs", {
-          accelerator: "Shift+Cmd+R",
+          accelerator: chemDrawScheme ? "Alt+Cmd+X" : "Shift+Cmd+R",
           checked: context.crosshairsVisible
         }),
         separator(),

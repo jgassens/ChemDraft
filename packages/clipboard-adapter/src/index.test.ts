@@ -4,11 +4,100 @@ import {
   extractRxnMolfileBlocks,
   inspectClipboardPayload,
   isCdxType,
+  isMarkupType,
   isVectorArtworkType,
   looksLikeInchi,
   looksLikeSmiles,
-  parseMolfileGraph
+  looksLikeSmilesStrict,
+  parseMolfileGraph,
+  smilesListCandidates,
+  smilesListTokens,
+  smilesListDecision
 } from "./index";
+
+describe("SMILES list candidates", () => {
+  it.each([
+    ["", []],
+    [" \n\t", []],
+    ["CCO", ["CCO"]],
+    ["CCO\nCCN\nO", ["CCO", "CCN", "O"]],
+    ["O water\nCCO ethanol", ["O", "CCO"]],
+    ["I like CCO and CCN", ["CCO", "CCN"]],
+    ["CCO O\nO water solvent\nwater O", ["CCO"]],
+    ["CCO\nc1ccccc1\nCC(=O)O", ["CCO", "c1ccccc1", "CC(=O)O"]],
+    ["CCO c1ccccc1", ["CCO", "c1ccccc1"]],
+    ["CCO\tCCN;CCCl,CCBr", ["CCO", "CCN", "CCCl", "CCBr"]],
+    ["1. CCO\n2. CCN", ["CCO", "CCN"]],
+    ["1) CCO\n(2) CCN\n- CCCl\n* CCBr\n• CCC\n# CCCC", ["CCO", "CCN", "CCCl", "CCBr", "CCC", "CCCC"]],
+    ["CCO aspirin\nCCN caffeine", ["CCO", "CCN"]],
+    ["Add the CO and CS to the flask", ["CO", "CS"]],
+    ['"CCO","CCN"', ["CCO", "CCN"]],
+    ["'CCO';'CCN'", ["CCO", "CCN"]],
+    ['["CCO", "[NH4+]", "[Cl-]"]', ["CCO", "[NH4+]", "[Cl-]"]],
+    ["[NH4+].[Cl-] [13CH3][C@H](O)Cl [nH]1cccc1 *CC", ["[NH4+].[Cl-]", "[13CH3][C@H](O)Cl", "[nH]1cccc1", "*CC"]],
+    ["InChI=1S/CH4/h1H4", []],
+    ["!!! 123 4. CCO", ["CCO"]]
+  ])("tokenizes %j without asserting validity", (text, tokens) => {
+    expect(smilesListCandidates(text as string).map((candidate) => candidate.token)).toEqual(tokens);
+  });
+
+  it("records one-based source positions across list markers, quotes, and line endings", () => {
+    expect(smilesListCandidates('  1. "CCO",CCN\r\n\t(2) CCCl\rCCBr')).toEqual([
+      { token: "CCO", line: 1, column: 7 },
+      { token: "CCN", line: 1, column: 12 },
+      { token: "CCCl", line: 2, column: 6 },
+      { token: "CCBr", line: 3, column: 1 }
+    ]);
+  });
+
+  it("counts single-atom rows in the list decision's tokens, without widening the single-paste filter", () => {
+    expect(smilesListTokens("CCO\nCCN\nO").map(({ token }) => token)).toEqual(["CCO", "CCN", "O"]);
+    expect(smilesListTokens("O water\nCCO ethanol").map(({ token }) => token)).toEqual(["O", "water", "CCO", "ethanol"]);
+    expect(smilesListTokens("I like CCO and CCN").map(({ token }) => token)).toEqual(["like", "CCO", "and", "CCN"]);
+    for (const token of ["B", "C", "N", "O", "P", "S", "F", "I"]) {
+      expect(smilesListCandidates(token)).toEqual([{ token, line: 1, column: 1 }]);
+      expect(looksLikeSmiles(token)).toBe(false);
+    }
+  });
+
+  it("rejects a 200-word English paragraph without parsing its words", () => {
+    const sentence = "The chemist measured the solvent before heating the reaction mixture and recorded every observation carefully within the laboratory notebook today.";
+    const paragraph = Array.from({ length: 10 }, () => sentence).join(" ");
+    expect(paragraph.split(/\s+/)).toHaveLength(200);
+    expect(smilesListCandidates(paragraph).length).toBeLessThan(5);
+  });
+});
+
+describe("looksLikeSmilesStrict", () => {
+  it.each([
+    "CCO", "c1ccccc1", "C[C@H](F)Cl", "ClCCBr", "[Na+].[Cl-]", "[nH]1cccc1", "O=C(O)c1ccccc1"
+  ])("accepts aromatic atoms, Cl/Br, and bracket atoms: %s", (text) => {
+    expect(looksLikeSmilesStrict(text)).toBe(true);
+  });
+
+  it.each(["the", "and", "reaction", "aspirin", "Caffeine", "hello"])("rejects English: %s", (text) => {
+    expect(looksLikeSmilesStrict(text)).toBe(false);
+    expect(looksLikeSmiles(text)).toBe(true);
+  });
+
+  it.each(["", "C", "123", "CCO CCN", "InChI=1S/CH4/h1H4", "CCO!"])("retains the loose filter's rejections: %s", (text) => {
+    expect(looksLikeSmilesStrict(text)).toBe(false);
+  });
+});
+
+describe("SMILES list decision", () => {
+  it.each([
+    [{ candidates: 5, parsed: 2, lineCount: 1, parsedFirstTokenLines: 0 }, false],
+    [{ candidates: 4, parsed: 2, lineCount: 2, parsedFirstTokenLines: 2 }, true],
+    [{ candidates: 3, parsed: 3, lineCount: 1, parsedFirstTokenLines: 1 }, true],
+    [{ candidates: 8, parsed: 2, lineCount: 2, parsedFirstTokenLines: 2 }, true],
+    [{ candidates: 8, parsed: 2, lineCount: 3, parsedFirstTokenLines: 2 }, false],
+    [{ candidates: 1, parsed: 1, lineCount: 1, parsedFirstTokenLines: 1 }, false],
+    [{ candidates: 0, parsed: 0, lineCount: 0, parsedFirstTokenLines: 0 }, false]
+  ])("decides from %j", (input, expected) => {
+    expect(smilesListDecision(input)).toBe(expected);
+  });
+});
 
 const cyclopropaneV2000 = [
   "ChemDraft test",
@@ -119,6 +208,58 @@ describe("clipboard-adapter", () => {
     expect(graph.bonds[2].bondStyle).toBeUndefined();
   });
 
+  it("parses a nonstandard V2000 coordination type 9 as a dashed single bond and warns", () => {
+    const dativeV2000 = [
+      "ChemDraft dative",
+      "  ChemDraft",
+      "",
+      "  2  1  0  0  0  0            999 V2000",
+      "    0.0000    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.5000    0.0000    0.0000 Zn  0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  9  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(dativeV2000);
+
+    expect(graph.bonds).toEqual([
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", bondStyle: "dashed" }
+    ]);
+    expect(graph.warnings).toEqual([
+      {
+        code: "clipboard.v2000_coordination_bond",
+        message: "V2000 bond 1 uses coordination type 9; read as a dative (dashed) single bond."
+      }
+    ]);
+  });
+
+  it("keeps ordinary and query V2000 bond order codes unchanged", () => {
+    const orderCodesV2000 = [
+      "ChemDraft bond orders",
+      "  ChemDraft",
+      "",
+      "  6  5  0  0  0  0            999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    2.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    3.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    4.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    5.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  0  0  0  0",
+      "  2  3  2  0  0  0  0",
+      "  3  4  3  0  0  0  0",
+      "  4  5  4  0  0  0  0",
+      "  5  6  8  0  0  0  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(orderCodesV2000);
+
+    expect(graph.bonds.map((bond) => bond.order)).toEqual(["single", "double", "triple", "aromatic", "unknown"]);
+    expect(graph.bonds.every((bond) => bond.bondStyle === undefined)).toBe(true);
+    expect(graph.warnings).toEqual([]);
+  });
+
   it("treats atom-block charges as zero once any M CHG line is present (V2000 spec)", () => {
     // Atom 1 carries a legacy atom-block charge (code 3 = +1); atom 2 is named in M CHG.
     // Per spec the presence of any M CHG line voids ALL atom-block charges, so atom 1 must
@@ -172,6 +313,37 @@ describe("clipboard-adapter", () => {
     expect(graph.atoms[1]).toMatchObject({ id: "atom_002", element: "C", formalCharge: -1 });
     expect(graph.bonds).toEqual([
       { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "double" }
+    ]);
+  });
+
+  it("parses a V3000 coordination bond (type 9) as a dashed single bond", () => {
+    // ChemDraft's own V3000 writer emits dative bonds as type 9; reading one back must restore
+    // the native representation (single order + dashed display style), not an "unknown" order.
+    const dativeV3000 = [
+      "ChemDraft V3000",
+      "  ChemDraft",
+      "",
+      "  0  0  0  0  0  0            999 V3000",
+      "M  V30 BEGIN CTAB",
+      "M  V30 COUNTS 3 2 0 0 0",
+      "M  V30 BEGIN ATOM",
+      "M  V30 1 Zn 0.0000 0.0000 0.0000 0",
+      "M  V30 2 C 1.5000 0.0000 0.0000 0",
+      "M  V30 3 C 2.2500 -1.2990 0.0000 0",
+      "M  V30 END ATOM",
+      "M  V30 BEGIN BOND",
+      "M  V30 1 9 1 2",
+      "M  V30 2 1 2 3",
+      "M  V30 END BOND",
+      "M  V30 END CTAB",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(dativeV3000);
+
+    expect(graph.bonds).toEqual([
+      { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", bondStyle: "dashed" },
+      { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
     ]);
   });
 
@@ -306,6 +478,13 @@ describe("clipboard-adapter", () => {
     });
   });
 
+  it("treats every spelling of the web-archive flavor as markup", () => {
+    expect(isMarkupType("com.apple.webarchive")).toBe(true);
+    expect(isMarkupType("Apple Web Archive pasteboard type")).toBe(true);
+    expect(isMarkupType("web-archive")).toBe(true);
+    expect(isMarkupType("chemical/x-mdl-molfile")).toBe(false);
+  });
+
   it("reports vector-only pasteboards instead of pretending they are chemistry", () => {
     expect(isVectorArtworkType("public.pdf")).toBe(true);
 
@@ -384,6 +563,45 @@ describe("V3000 line continuations", () => {
     expect(parsed.atoms).toHaveLength(2);
     expect(parsed.atoms[1]).toMatchObject({ element: "C", formalCharge: -1 });
     expect(parsed.bonds).toHaveLength(1);
+  });
+});
+
+describe("markup flavors are never pasted as text", () => {
+  it("ignores an HTML-only clipboard instead of pasting its source", () => {
+    // WebKit publishes `public.html` for anything copied inside a web view. Reading that flavor as
+    // text pasted the page's own markup into the drawing — the "<!DOCTYPE html>" text box.
+    const detected = inspectClipboardPayload({
+      types: ["public.html"],
+      textItems: [{
+        type: "public.html",
+        text: "<!DOCTYPE html>\n<html><body><p>SH</p></body></html>"
+      }]
+    });
+
+    expect(detected.kind).toBe("empty");
+  });
+
+  it("still reads the plain-text flavor an HTML copy travels with", () => {
+    const detected = inspectClipboardPayload({
+      types: ["public.html", "public.utf8-plain-text"],
+      textItems: [
+        { type: "public.html", text: "<!DOCTYPE html>\n<html><body><p>catalyst A</p></body></html>" },
+        { type: "public.utf8-plain-text", text: "catalyst A" }
+      ]
+    });
+
+    expect(detected).toMatchObject({ kind: "plain-text", text: "catalyst A" });
+  });
+
+  it("still reads a molfile that arrives in a rich-text flavor", () => {
+    // The markup rule is a LAST-RESORT rule: structure detection runs over every flavor first, so
+    // a molfile keeps pasting as a structure whatever flavor carried it.
+    const detected = inspectClipboardPayload({
+      types: ["public.rtf"],
+      textItems: [{ type: "public.rtf", text: cyclopropaneV2000 }]
+    });
+
+    expect(detected.kind).toBe("molfile");
   });
 });
 

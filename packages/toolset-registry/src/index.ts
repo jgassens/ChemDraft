@@ -5,6 +5,11 @@ const CommandIdSchema = NonEmptyStringSchema.regex(
   /^[A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*$/,
   "Command IDs must be non-empty identifiers without whitespace."
 );
+
+export function isValidToolsetCommandId(id: string): boolean {
+  return CommandIdSchema.safeParse(id).success;
+}
+
 const IconDataUriSchema = z
   .string()
   .regex(/^data:image\/(png|svg\+xml);base64,/, "Toolset icons must be base64 png or svg+xml data URIs.")

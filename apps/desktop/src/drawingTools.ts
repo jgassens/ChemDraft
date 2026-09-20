@@ -71,6 +71,7 @@ export const coreDrawingToolDefinitions = [
     kind: "selection",
     category: "selection",
     icon: "select",
+    defaultShortcut: "E",
     usageHint: usageHint("click or drag over objects", "drag marquee deletes touched", "Esc exits")
   },
   {
@@ -122,6 +123,14 @@ export const coreDrawingToolDefinitions = [
     icon: "chain",
     defaultShortcut: "C",
     usageHint: usageHint("press and drag on canvas or atom", "drag length sets the carbon count", "Esc exits")
+  },
+  {
+    commandId: "tool.chainFlexible",
+    title: "Flexible Chain Tool",
+    kind: "bond",
+    category: "structure",
+    icon: "chainFlexible",
+    usageHint: usageHint("press and drag on canvas or atom", "the chain bends to follow the pointer path", "Esc exits")
   },
   {
     commandId: "tool.atom",

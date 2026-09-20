@@ -43,6 +43,8 @@ import {
   DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION,
   pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
+  isDativeBond,
+  isMetalSymbol,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
   PageSizePresets,
@@ -102,6 +104,7 @@ import {
   exportDocumentToCdxml as exportDocumentToCdxmlText,
   exportDocumentToSvg,
   type BinaryExportResult,
+  type ExportWarning,
   type CdxmlTextExportOptions,
   type PdfExportOptions,
   type SvgExportOptions,
@@ -111,6 +114,8 @@ import {
 import {
   findNearestAtomAtPoint,
   findNearestBondHit,
+  moleculeFillCycleKey,
+  moleculeFillCycleKeyBondIds,
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
@@ -121,6 +126,7 @@ import {
   mechanismArrowGeometry,
   resolvePageAnchorPoint,
   ringInteriorDoubleBondSides,
+  dativeDeprotonationCount,
   type LayoutPoint
 } from "@chemdraft/layout-engine";
 import {
@@ -238,8 +244,12 @@ export interface NativeFreeformBondGrowthPreview extends NativeBondGrowthPreview
 export type NativeBondDisplayStyle = NonNullable<NonNullable<MoleculeBond["display"]>["bondStyle"]>;
 export type NativeBondToolStyle = "solid" | NativeBondDisplayStyle;
 export type NativeMoleculeTemplateId =
+  | "cyclopropane"
+  | "cyclobutane"
   | "cyclopentane"
   | "cyclohexane"
+  | "cycloheptane"
+  | "cyclooctane"
   | "benzene"
   | "chairCyclohexaneA"
   | "chairCyclohexaneB";
@@ -691,6 +701,8 @@ export const smilesPasteBondLengthPx = 28;
 export const nativeAtomHitRadiusPx = 8;
 export const nativeChargeMarkSizePx = 18;
 export const nativeChargeAssociationRadiusPx = nativeBondLengthPx * 1.15;
+/** Stacking the charge tool tops out here — beyond ±9 is a typo, not chemistry. */
+export const nativeChargeMarkMaxMagnitude = 9;
 
 const nativeBondLength = nativeBondLengthPx;
 const nativeCarbonSingleBondLengthAngstrom = 1.56;
@@ -720,6 +732,11 @@ export const nativeElementSymbols = [
 export type NativeElementSymbol = typeof nativeElementSymbols[number];
 export const nativeSingleLetterElements = ["H", "B", "C", "N", "O", "F", "P", "S", "I"] as const;
 export type NativeSingleLetterElement = typeof nativeSingleLetterElements[number];
+/** Elements reachable by keyboard hotkey. The single letters type themselves in the ChemDraft
+ *  scheme; the two-letter symbols are reachable through the ChemDraw-compatible scheme's hover
+ *  hotkeys (b→Br, C/l→Cl, L→Li, S→Si) and through command-bound toolbar buttons. */
+export const nativeHotkeyElements = [...nativeSingleLetterElements, "Cl", "Br", "Li", "Si"] as const;
+export type NativeHotkeyElement = typeof nativeHotkeyElements[number];
 
 export interface NativeAtomValidationState {
   atomId: string;
@@ -740,11 +757,17 @@ const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   N: 3,
   O: 2,
   F: 1,
+  Al: 3,
   Si: 4,
   P: 3,
   S: 2,
   Cl: 1,
+  Ge: 4,
+  As: 3,
+  Se: 2,
   Br: 1,
+  Sn: 4,
+  Te: 2,
   I: 1
 };
 const nativeAtomMaxValence: Partial<Record<NativeElementSymbol, number>> = {
@@ -754,27 +777,179 @@ const nativeAtomMaxValence: Partial<Record<NativeElementSymbol, number>> = {
   N: 4,
   O: 3,
   F: 1,
+  Al: 4,
   Si: 4,
   P: 5,
   S: 6,
-  Cl: 1,
-  Br: 1,
-  I: 1
+  // The heavy halogens reach the hypervalent I(III)/I(V)/I(VII) family — periodinanes and
+  // PhI(OAc)2 are everyday reagents, not drawing errors.
+  Cl: 7,
+  Ge: 4,
+  As: 5,
+  Se: 6,
+  Br: 7,
+  Sn: 4,
+  Te: 6,
+  I: 7
 };
-const nativeAtomMass: Partial<Record<NativeElementSymbol, { average: number; exact: number }>> = {
+/**
+ * Sanity ceilings for the d-block: roughly the highest coordination number each metal reaches in
+ * isolable complexes — generous on purpose, and not a hard literature record (La is listed at
+ * 10, yet [La(NO3)6]3- is 12-coordinate). Transition metals have VARIABLE oxidation states and
+ * dative/eta bonding, so no single "correct" valence exists to check a drawing against — V(II)
+ * through V(V) are all real, V(CO)6 has six bonds at oxidation state zero, and a bare metal atom
+ * is a legitimate species (catalysts). The only honest complaint is a bond count beyond anything
+ * plausible, so metals flag hypervalence past this ceiling and are never flagged hypovalent or
+ * naked. In practice the growth tools cap every atom at `nativeAtomInvalidGrowthLimit` (8), so
+ * ceilings above 8 (Tc/Re/W at 9, La at 10) are unreachable by drawing and act as documentation
+ * of intent for imported structures.
+ */
+const nativeMetalMaxCoordination: Partial<Record<NativeElementSymbol, number>> = {
+  Sc: 7, Ti: 8, V: 7, Cr: 7, Mn: 7, Fe: 7, Co: 7, Ni: 7, Cu: 6, Zn: 6,
+  Y: 9, Zr: 8, Nb: 8, Mo: 8, Tc: 9, Ru: 8, Rh: 7, Pd: 6, Ag: 6, Cd: 7,
+  La: 10, Hf: 8, Ta: 8, W: 9, Re: 9, Os: 9, Ir: 8, Pt: 6, Au: 6, Hg: 6
+};
+// Standard atomic weights; exact = the most abundant isotope's mass.
+/**
+ * Standard atomic weight (IUPAC abridged) and the exact mass of the most abundant isotope, for
+ * EVERY element the label parser can produce — the type is a complete `Record`, so adding a
+ * symbol to `nativeElementSymbols` without a mass here fails to compile. It used to be a partial
+ * table with a `?? 0` fallback, and the formula would list an atom (CH3Li, an MgBr label) whose
+ * mass the molecular weight silently omitted. Elements with no stable isotope carry the mass
+ * number and exact mass of their longest-lived isotope, the usual convention for a weight.
+ */
+const nativeAtomMass: Record<NativeElementSymbol, { average: number; exact: number }> = {
   H: { average: 1.008, exact: 1.00782503223 },
+  He: { average: 4.0026, exact: 4.00260325413 },
+  Li: { average: 6.94, exact: 7.0160034366 },
+  Be: { average: 9.0122, exact: 9.012183065 },
   B: { average: 10.81, exact: 11.00930536 },
   C: { average: 12.011, exact: 12 },
   N: { average: 14.007, exact: 14.00307400443 },
   O: { average: 15.999, exact: 15.99491461957 },
   F: { average: 18.998, exact: 18.99840316273 },
+  Ne: { average: 20.18, exact: 19.9924401762 },
+  Na: { average: 22.99, exact: 22.989769282 },
+  Mg: { average: 24.305, exact: 23.985041697 },
+  Al: { average: 26.982, exact: 26.98153853 },
   Si: { average: 28.085, exact: 27.97692653465 },
   P: { average: 30.974, exact: 30.97376199842 },
   S: { average: 32.06, exact: 31.9720711744 },
   Cl: { average: 35.45, exact: 34.968852682 },
+  Ar: { average: 39.948, exact: 39.9623831237 },
+  K: { average: 39.098, exact: 38.9637064864 },
+  Ca: { average: 40.078, exact: 39.962590863 },
+  Sc: { average: 44.956, exact: 44.95590828 },
+  Ti: { average: 47.867, exact: 47.94794198 },
+  V: { average: 50.942, exact: 50.94395704 },
+  Cr: { average: 51.996, exact: 51.94050623 },
+  Mn: { average: 54.938, exact: 54.93804391 },
+  Fe: { average: 55.845, exact: 55.93493633 },
+  Co: { average: 58.933, exact: 58.93319429 },
+  Ni: { average: 58.693, exact: 57.93534241 },
+  Cu: { average: 63.546, exact: 62.92959772 },
+  Zn: { average: 65.38, exact: 63.92914201 },
+  Ga: { average: 69.723, exact: 68.9255735 },
+  Ge: { average: 72.63, exact: 73.921177761 },
+  As: { average: 74.922, exact: 74.92159457 },
+  Se: { average: 78.971, exact: 79.9165218 },
   Br: { average: 79.904, exact: 78.9183376 },
-  I: { average: 126.904, exact: 126.9044719 }
+  Kr: { average: 83.798, exact: 83.9114977282 },
+  Rb: { average: 85.468, exact: 84.9117897379 },
+  Sr: { average: 87.62, exact: 87.9056125 },
+  Y: { average: 88.906, exact: 88.9058403 },
+  Zr: { average: 91.224, exact: 89.9046977 },
+  Nb: { average: 92.906, exact: 92.906373 },
+  Mo: { average: 95.95, exact: 97.90540482 },
+  Tc: { average: 98, exact: 97.9072124 },
+  Ru: { average: 101.07, exact: 101.9043441 },
+  Rh: { average: 102.906, exact: 102.905498 },
+  Pd: { average: 106.42, exact: 105.9034804 },
+  Ag: { average: 107.868, exact: 106.9050916 },
+  Cd: { average: 112.414, exact: 113.90336509 },
+  In: { average: 114.818, exact: 114.903878776 },
+  Sn: { average: 118.71, exact: 119.90220163 },
+  Sb: { average: 121.76, exact: 120.903812 },
+  Te: { average: 127.6, exact: 129.906222748 },
+  I: { average: 126.904, exact: 126.9044719 },
+  Xe: { average: 131.293, exact: 131.9041550856 },
+  Cs: { average: 132.905, exact: 132.905451961 },
+  Ba: { average: 137.327, exact: 137.905247 },
+  La: { average: 138.905, exact: 138.9063563 },
+  Ce: { average: 140.116, exact: 139.9054431 },
+  Pr: { average: 140.908, exact: 140.9076576 },
+  Nd: { average: 144.242, exact: 141.907729 },
+  Pm: { average: 145, exact: 144.9127559 },
+  Sm: { average: 150.36, exact: 151.9197397 },
+  Eu: { average: 151.964, exact: 152.921238 },
+  Gd: { average: 157.25, exact: 157.9241123 },
+  Tb: { average: 158.925, exact: 158.9253547 },
+  Dy: { average: 162.5, exact: 163.9291819 },
+  Ho: { average: 164.93, exact: 164.9303288 },
+  Er: { average: 167.259, exact: 165.9302995 },
+  Tm: { average: 168.934, exact: 168.9342179 },
+  Yb: { average: 173.045, exact: 173.9388664 },
+  Lu: { average: 174.967, exact: 174.9407752 },
+  Hf: { average: 178.486, exact: 179.946557 },
+  Ta: { average: 180.948, exact: 180.9479958 },
+  W: { average: 183.84, exact: 183.95093092 },
+  Re: { average: 186.207, exact: 186.9557501 },
+  Os: { average: 190.23, exact: 191.961477 },
+  Ir: { average: 192.217, exact: 192.9629216 },
+  Pt: { average: 195.084, exact: 194.9647917 },
+  Au: { average: 196.967, exact: 196.96656879 },
+  Hg: { average: 200.592, exact: 201.9706434 },
+  Tl: { average: 204.38, exact: 204.9744278 },
+  Pb: { average: 207.2, exact: 207.9766525 },
+  Bi: { average: 208.98, exact: 208.9803991 },
+  Po: { average: 209, exact: 208.9824308 },
+  At: { average: 210, exact: 209.9871479 },
+  Rn: { average: 222, exact: 222.0175782 },
+  Fr: { average: 223, exact: 223.019736 },
+  Ra: { average: 226, exact: 226.0254103 },
+  Ac: { average: 227, exact: 227.0277523 },
+  Th: { average: 232.038, exact: 232.0380558 },
+  Pa: { average: 231.036, exact: 231.0358842 },
+  U: { average: 238.029, exact: 238.0507884 },
+  Np: { average: 237, exact: 237.0481736 },
+  Pu: { average: 244, exact: 244.0642053 },
+  Am: { average: 243, exact: 243.0613813 },
+  Cm: { average: 247, exact: 247.0703541 },
+  Bk: { average: 247, exact: 247.0703073 },
+  Cf: { average: 251, exact: 251.0795886 },
+  Es: { average: 252, exact: 252.08298 },
+  Fm: { average: 257, exact: 257.0951061 },
+  Md: { average: 258, exact: 258.0984315 },
+  No: { average: 259, exact: 259.10103 },
+  Lr: { average: 266, exact: 266.11983 },
+  Rf: { average: 267, exact: 267.12179 },
+  Db: { average: 268, exact: 268.12567 },
+  Sg: { average: 269, exact: 269.12863 },
+  Bh: { average: 270, exact: 270.13336 },
+  Hs: { average: 269, exact: 269.13375 },
+  Mt: { average: 278, exact: 278.15631 },
+  Ds: { average: 281, exact: 281.16451 },
+  Rg: { average: 282, exact: 282.16912 },
+  Cn: { average: 285, exact: 285.17712 },
+  Nh: { average: 286, exact: 286.18221 },
+  Fl: { average: 289, exact: 289.19042 },
+  Mc: { average: 290, exact: 290.19598 },
+  Lv: { average: 293, exact: 293.20449 },
+  Ts: { average: 294, exact: 294.21046 },
+  Og: { average: 294, exact: 294.21392 }
 };
+
+/** The atomic masses behind the formula's molecular weight; throws on a symbol the table lacks. */
+export function nativeElementMass(element: string): { average: number; exact: number } {
+  // Heavy hydrogen is a label, not an element in the table, but it has a definite mass.
+  if (element === "D") return { average: 2.014102, exact: 2.014102 };
+  if (element === "T") return { average: 3.016049, exact: 3.016049 };
+  const mass = nativeAtomMass[element as NativeElementSymbol];
+  if (!mass) {
+    throw new Error(`No atomic mass for element symbol "${element}".`);
+  }
+  return mass;
+}
 const nativeBondOrderValue: Record<MoleculeBond["order"], number> = {
   single: 1,
   double: 2,
@@ -788,6 +963,13 @@ export function nativeElementFromKeyboardKey(key: string): NativeSingleLetterEle
   return nativeSingleLetterElementSet.has(normalized)
     ? normalized as NativeSingleLetterElement
     : undefined;
+}
+
+const nativeHotkeyElementSet = new Set<string>(nativeHotkeyElements);
+
+/** Parse an exact element symbol (case-sensitive, e.g. "Cl") from the hotkey element set. */
+export function nativeHotkeyElementFromSymbol(value: string): NativeHotkeyElement | undefined {
+  return nativeHotkeyElementSet.has(value) ? value as NativeHotkeyElement : undefined;
 }
 
 export function normalizeNativeAtomElementLabel(value: string): string {
@@ -814,8 +996,37 @@ export function nativeAtomValidationState(
   // Unpaired electrons from associated radical marks occupy bonding slots like bonds do.
   const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds) + (atom.markRadicals ?? 0);
 
+  // The user dismissed this atom's warning from the context menu — report it valid so no
+  // badge renders and no warning is stored, whatever the arithmetic says.
+  if (atom.warningSuppressed === true) {
+    return {
+      atomId: atom.id,
+      element: element ?? (atom.element.trim() || "(blank)"),
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: true
+    };
+  }
+
   if (!element) {
     const symbol = atom.element.trim() || "(blank)";
+    // A literal condensed label spelling one heavy element plus hydrogens ("NH2", "OH2",
+    // "CH3") is checkable: its own hydrogens count toward the valence, so a naked typed
+    // "OH2" is complete water while a naked neutral "CH3" is a flagged methyl fragment.
+    // Multi-heavy labels ("CO2H") and abbreviations ("OMe") are superatoms — not checked.
+    if (atom.labelLiteral === true) {
+      const spelled = nativeSingleHeavyElementLabelValence(symbol);
+      if (spelled && !nativeLiteralAtomValenceComplete(spelled.element, valenceUsed + spelled.hydrogens, effectiveFormalCharge)) {
+        return {
+          atomId: atom.id,
+          element: symbol,
+          valenceUsed,
+          formalCharge: effectiveFormalCharge,
+          valid: false,
+          invalidReason: `${symbol} atom ${atom.id} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`
+        };
+      }
+    }
     return {
       atomId: atom.id,
       element: symbol,
@@ -826,6 +1037,25 @@ export function nativeAtomValidationState(
   }
 
   if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    // Transition metals: variable oxidation states make hypovalence unjudgeable (a bare Pd is
+    // a catalyst, not an error), but a bond count beyond the element's highest known
+    // coordination number is a drawing mistake worth the badge.
+    const metalCeiling = nativeMetalMaxCoordination[element];
+    // Coordination counts ligand attachments, including dashed dative contacts, rather than
+    // covalent valence; radical slots still occupy one site just as they do in valence checking.
+    const coordinationUsed = bonds.reduce((count, bond) => (
+      bond.fromAtomId === atom.id || bond.toAtomId === atom.id ? count + 1 : count
+    ), atom.markRadicals ?? 0);
+    if (metalCeiling !== undefined && coordinationUsed > metalCeiling) {
+      return {
+        atomId: atom.id,
+        element,
+        valenceUsed,
+        formalCharge: effectiveFormalCharge,
+        valid: false,
+        invalidReason: `${element} atom ${atom.id} has ${coordinationUsed} bonds; ${element} is not known beyond ${metalCeiling}-coordinate.`
+      };
+    }
     return {
       atomId: atom.id,
       element,
@@ -858,6 +1088,22 @@ export function nativeAtomValidationState(
       invalidReason: expectedFormalCharge === undefined
         ? `${element} atom ${atom.id} has charge ${effectiveFormalCharge}, unsupported for valence ${valenceUsed}.`
         : `${element} atom ${atom.id} has charge ${effectiveFormalCharge}, expected ${expectedFormalCharge} for valence ${valenceUsed}.`
+    };
+  }
+
+  // A literal label (typed with the text tool) has no implicit hydrogens to fill the
+  // remainder, so its drawn bonds (plus radicals) must land on a complete valence state by
+  // themselves — a lone typed "N" is a flagged hypovalent atom until three bonds arrive.
+  // This is the ONLY path that can produce a hypovalent atom: drawn atoms and hotkey
+  // relabels keep the skeletal implicit-hydrogen convention and never trip it.
+  if (atom.labelLiteral === true && !nativeLiteralAtomValenceComplete(element, valenceUsed, effectiveFormalCharge)) {
+    return {
+      atomId: atom.id,
+      element,
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: false,
+      invalidReason: `${element} atom ${atom.id} has ${valenceUsed} of ${nativeAtomValenceForCharge(element, effectiveFormalCharge)} bonds.`
     };
   }
 
@@ -951,22 +1197,32 @@ export function createNativeSingleBondMolecule(
   options: NativeBondToolOptions = {}
 ): MoleculeObject {
   const page = firstPage(document);
+  const objectStyle = stylePresetToObjectStyle(ChemDraftSyntheticStylePreset);
+  // The first bond lands at the zig-zag half-angle — (180° − chainAngleDegrees)/2, 30° above
+  // horizontal for the default 120° chain angle — rising left-to-right, ChemDraw's first-bond
+  // orientation, rather than flat. The angle comes from the same preset style the new molecule
+  // carries, so a custom chain angle reshapes the first bond too (layout-engine's growth planner
+  // derives the same half-angle from its targetBondAngleDegrees).
+  const chainAngleDegrees = nativeDrawingStyleFromObjectStyle(objectStyle).chainAngleDegrees;
+  const firstBondHalfAngleRadians = degreesToRadians((180 - clamp(chainAngleDegrees, 1, 179)) / 2);
+  const halfDx = (nativeBondLength / 2) * Math.cos(firstBondHalfAngleRadians);
+  const halfDy = (nativeBondLength / 2) * Math.sin(firstBondHalfAngleRadians);
   const center = {
-    x: clamp(point.x, nativeBondLength / 2, page.width - nativeBondLength / 2),
-    y: clamp(point.y, 0, page.height)
+    x: clamp(point.x, halfDx, page.width - halfDx),
+    y: clamp(point.y, halfDy, page.height - halfDy)
   };
   const leftAtom = {
     id: "atom_001",
     element: "C",
-    x: center.x - nativeBondLength / 2,
-    y: center.y,
+    x: center.x - halfDx,
+    y: center.y + halfDy,
     formalCharge: 0
   } satisfies MoleculeAtom;
   const rightAtom = {
     id: "atom_002",
     element: "C",
-    x: center.x + nativeBondLength / 2,
-    y: center.y,
+    x: center.x + halfDx,
+    y: center.y - halfDy,
     formalCharge: 0
   } satisfies MoleculeAtom;
   const atoms = [leftAtom, rightAtom];
@@ -989,7 +1245,7 @@ export function createNativeSingleBondMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...objectStyle,
       source: "chemdraft-native-drawing",
       drawingPrimitive: "single-bond"
     },
@@ -1042,6 +1298,13 @@ export interface NativeChainToolOptions {
    * this flag and derives once, so what lands in the document is always fully derived.
    */
   preview?: boolean;
+  /**
+   * Flexible-chain variant: the full pointer path of the drag (press point first). When present
+   * with at least two points, the zig-zag snakes along this path instead of riding the single
+   * straight press→pointer axis. The same path must be passed on preview and commit so both plan
+   * identical vertices.
+   */
+  pathPoints?: readonly PagePoint[];
 }
 
 /** Backstop for a drag with no page bounds; a full-page chain is far shorter than this. */
@@ -1101,10 +1364,140 @@ export function planNativeChainVertices(input: {
   return vertices;
 }
 
+/** Flexible-chain vertex plan: the zig-zag axis follows the pointer *path* instead of one straight
+ *  press→pointer vector, so the chain bends wherever the drag turns. The path is resampled into
+ *  axis stations every `reachPerSegment` of arc length; each bond keeps its exact length and steps
+ *  ±half the zig-zag angle about the local path tangent, so a straight drag reproduces
+ *  `planNativeChainVertices` exactly and a curved drag snakes with the pointer. */
+export function planNativeFlexibleChainVertices(input: {
+  start: PagePoint;
+  /** Pointer path from the press point to the current pointer, in page coordinates. */
+  path: readonly PagePoint[];
+  bondLengthPx: number;
+  chainAngleDegrees: number;
+  /** When given, the walk stops rather than stepping off the page. */
+  pageBounds?: { width: number; height: number };
+}): PagePoint[] {
+  const segmentLength = Math.max(8, input.bondLengthPx);
+  const halfRadians = degreesToRadians((180 - clamp(input.chainAngleDegrees, 1, 179)) / 2);
+  const reachPerSegment = segmentLength * Math.cos(halfRadians);
+
+  // Collapse pointer jitter: drop consecutive path points closer than a page pixel.
+  const path: PagePoint[] = [];
+  for (const point of input.path) {
+    const last = path[path.length - 1];
+    if (!last || Math.hypot(point.x - last.x, point.y - last.y) >= 1) {
+      path.push(point);
+    }
+  }
+
+  const arcLengths = [0];
+  for (let index = 1; index < path.length; index += 1) {
+    arcLengths.push(arcLengths[index - 1] + Math.hypot(path[index].x - path[index - 1].x, path[index].y - path[index - 1].y));
+  }
+  const totalLength = arcLengths[arcLengths.length - 1] ?? 0;
+
+  // Degenerate or sub-threshold drags behave exactly like the straight tool: one conventional
+  // segment aimed at the pointer.
+  if (path.length < 2 || totalLength < reachPerSegment * 0.75) {
+    return planNativeChainVertices({
+      start: input.start,
+      dragPoint: path.length >= 2 ? path[path.length - 1] : undefined,
+      bondLengthPx: input.bondLengthPx,
+      chainAngleDegrees: input.chainAngleDegrees,
+      pageBounds: input.pageBounds
+    });
+  }
+
+  const segmentCount = Math.min(maxNativeChainSegments, Math.max(1, Math.round(totalLength / reachPerSegment)));
+  const pointAtArcLength = (target: number): PagePoint => {
+    const s = clamp(target, 0, totalLength);
+    let index = 1;
+    while (index < arcLengths.length - 1 && arcLengths[index] < s) {
+      index += 1;
+    }
+    const spanStart = arcLengths[index - 1];
+    const spanLength = arcLengths[index] - spanStart;
+    const t = spanLength < 1e-9 ? 0 : (s - spanStart) / spanLength;
+    return {
+      x: path[index - 1].x + (path[index].x - path[index - 1].x) * t,
+      y: path[index - 1].y + (path[index].y - path[index - 1].y) * t
+    };
+  };
+
+  // Local axis direction per chain segment: the chord between neighboring arc-length stations.
+  // Stations past the path's end collapse onto its endpoint, so trailing segments (the rounding
+  // remainder) reuse the final tangent.
+  const stations: PagePoint[] = [];
+  for (let index = 0; index <= segmentCount; index += 1) {
+    stations.push(pointAtArcLength(index * reachPerSegment));
+  }
+  const tangentAngles: number[] = [];
+  for (let index = 0; index < segmentCount; index += 1) {
+    const dx = stations[index + 1].x - stations[index].x;
+    const dy = stations[index + 1].y - stations[index].y;
+    tangentAngles.push(
+      Math.hypot(dx, dy) < 1e-9
+        ? tangentAngles[index - 1] ?? 0
+        : Math.atan2(dy, dx)
+    );
+  }
+
+  const bounds = input.pageBounds;
+  const inBounds = (point: PagePoint): boolean =>
+    !bounds || (point.x >= 0 && point.y >= 0 && point.x <= bounds.width && point.y <= bounds.height);
+  const step = (from: PagePoint, angle: number): PagePoint => ({
+    x: from.x + Math.cos(angle) * segmentLength,
+    y: from.y + Math.sin(angle) * segmentLength
+  });
+
+  // Same edge-aware first-step side choice as the straight planner.
+  let phase = -1;
+  if (!inBounds(step(input.start, tangentAngles[0] - halfRadians)) && inBounds(step(input.start, tangentAngles[0] + halfRadians))) {
+    phase = 1;
+  }
+
+  const vertices: PagePoint[] = [{ x: input.start.x, y: input.start.y }];
+  for (let index = 1; index <= segmentCount; index += 1) {
+    const previous = vertices[index - 1];
+    const next = step(previous, tangentAngles[index - 1] + (index % 2 === 1 ? phase : -phase) * halfRadians);
+    if (!inBounds(next)) {
+      break;
+    }
+    vertices.push(next);
+  }
+  return vertices;
+}
+
+/** Route a chain plan through the straight or flexible planner depending on whether the gesture
+ *  carried a pointer path. The straight planner's inputs pass through unchanged. */
+function planChainVerticesForOptions(
+  input: {
+    start: PagePoint;
+    dragPoint?: PagePoint;
+    bondLengthPx: number;
+    chainAngleDegrees: number;
+    pageBounds?: { width: number; height: number };
+  },
+  options: NativeChainToolOptions
+): PagePoint[] {
+  if (options.pathPoints && options.pathPoints.length >= 2) {
+    return planNativeFlexibleChainVertices({
+      start: input.start,
+      path: options.pathPoints,
+      bondLengthPx: input.bondLengthPx,
+      chainAngleDegrees: input.chainAngleDegrees,
+      pageBounds: input.pageBounds
+    });
+  }
+  return planNativeChainVertices(input);
+}
+
 /** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
  *  appends carbons to that molecule using the molecule's own bond length and chain angle;
- *  otherwise it seeds a new native molecule from the synthetic preset. Pure — the caller previews
- *  with replacePresentDocument and commits once. */
+ *  otherwise it seeds a new native molecule from the synthetic preset. With `options.pathPoints`
+ *  (the flexible variant) the zig-zag follows the pointer path instead of a straight axis. Pure —
+ *  the caller previews with replacePresentDocument and commits once. */
 export function applyNativeChainTool(
   document: ChemDraftDocument,
   startPoint: PagePoint,
@@ -1124,13 +1517,13 @@ export function applyNativeChainTool(
     }
 
     const style = nativeDrawingStyleFromObjectStyle(molecule.style);
-    const vertices = planNativeChainVertices({
+    const vertices = planChainVerticesForOptions({
       start: { x: sourceAtom.x, y: sourceAtom.y },
       dragPoint,
       bondLengthPx: style.bondLengthPx,
       chainAngleDegrees: style.chainAngleDegrees,
       pageBounds: { width: page.width, height: page.height }
-    });
+    }, options);
 
     const current = appendNativeCarbonVertices(molecule, sourceAtom.id, vertices.slice(1), options.preview);
     if (!current) {
@@ -1152,13 +1545,13 @@ export function applyNativeChainTool(
     x: clamp(startPoint.x, 0, page.width),
     y: clamp(startPoint.y, 0, page.height)
   };
-  const vertices = planNativeChainVertices({
+  const vertices = planChainVerticesForOptions({
     start,
     dragPoint,
     bondLengthPx: presetStyle.bondLengthPx,
     chainAngleDegrees: presetStyle.chainAngleDegrees,
     pageBounds: { width: page.width, height: page.height }
-  });
+  }, options);
   if (vertices.length < 2) {
     // Every direction out of the press point left the page. A single vertex is not a chain — it is a
     // bond-less carbon the user never asked for, and one they would have to hunt down to delete.
@@ -2733,18 +3126,27 @@ function nativeTemplateGeometry(
   center: PagePoint,
   templateId: NativeMoleculeTemplateId
 ): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } {
-  if (templateId === "cyclopentane") {
-    const atoms = regularNativeRingAtoms(center, 5, -Math.PI / 2);
+  if (
+    templateId === "cyclopropane" ||
+    templateId === "cyclobutane" ||
+    templateId === "cyclopentane" ||
+    templateId === "cycloheptane" ||
+    templateId === "cyclooctane"
+  ) {
+    const atoms = regularNativeRingAtoms(center, nativeTemplateRingSize(templateId), -Math.PI / 2);
     return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
   }
 
   if (templateId === "cyclohexane") {
-    const atoms = regularNativeRingAtoms(center, 6, 0);
+    // Vertex at the top (flat left/right sides) — the orientation ChemDraw stamps and the one
+    // journals draw, so hotkey sprouts from the top/bottom vertices head vertically and the
+    // side-vertex sprouts head out diagonally.
+    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2);
     return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
   }
 
   if (templateId === "benzene") {
-    const atoms = regularNativeRingAtoms(center, 6, 0);
+    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2);
     return {
       atoms,
       bonds: nativeRingBonds(atoms, (index, fromAtom, toAtom) => {
@@ -3370,7 +3772,20 @@ function nativeChairTemplateCrowding(
 }
 
 function nativeTemplateRingSize(templateId: NativeMoleculeTemplateId): number {
-  return templateId === "cyclopentane" ? 5 : 6;
+  switch (templateId) {
+    case "cyclopropane":
+      return 3;
+    case "cyclobutane":
+      return 4;
+    case "cyclopentane":
+      return 5;
+    case "cycloheptane":
+      return 7;
+    case "cyclooctane":
+      return 8;
+    default:
+      return 6;
+  }
 }
 
 function nativeTemplateRingBondDisplay(
@@ -4016,6 +4431,84 @@ export function insertNativeTextObject(
   );
 }
 
+/**
+ * When a committed text box holds exactly an element symbol ("C", "fe", "Br"…), turn it into a
+ * real naked atom: a one-atom molecule at the text's position, participating in hover hotkeys,
+ * bonding, and valence checking. A bare neutral atom of a covalent-table element shows the
+ * invalid badge until it gains bonds; elements outside the covalent valence tables (all d-block
+ * metals, the noble gases) have no single correct valence to violate, so they convert unflagged
+ * by design. Any other text stays a text object.
+ */
+export function convertNativeTextObjectToAtom(
+  document: ChemDraftDocument,
+  objectId: string
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const object = page.objects.find((candidate): candidate is TextObject =>
+    candidate.id === objectId && candidate.type === "text"
+  );
+  if (!object) {
+    return document;
+  }
+
+  const raw = object.text.trim();
+  const normalized = normalizeNativeAtomElementLabel(raw);
+  if (raw.length === 0 || nativeElementFromAtomLabel(normalized) === undefined) {
+    return document;
+  }
+
+  const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+  const atom: MoleculeAtom = {
+    id: "atom_001",
+    element: normalized,
+    x: center.x,
+    y: center.y,
+    formalCharge: 0,
+    // A typed label is literal: no implicit hydrogens, and the valence badge stays until the
+    // atom's bonds actually satisfy it.
+    labelLiteral: true,
+    // Bare carbons render invisible by default; a typed naked atom must show its symbol.
+    ...(normalized === "C" ? { labelVisible: true } : {})
+  };
+  const geometry = moleculeGeometryFromAtoms([atom]);
+  const molecule = normalizeNativeMoleculeGeometry({
+    id: nextObjectId(document, "mol_atom"),
+    type: "molecule",
+    x: geometry.x,
+    y: geometry.y,
+    width: geometry.width,
+    height: geometry.height,
+    rotation: 0,
+    transform: defaultNativeMoleculeTransform,
+    style: {
+      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      source: "chemdraft-native-drawing"
+    },
+    compatibility: {
+      sourceFormat: "chemdraft-native",
+      warnings: [],
+      unknown: {}
+    },
+    structureFormat: "smiles",
+    structure: nativeSingleBondGraphSmiles([atom], []),
+    chemistry: nativeSingleBondGraphMetadata([atom], []),
+    atoms: [atom],
+    bonds: [],
+    superatoms: [],
+    rGroups: []
+  });
+
+  return applyPatches(
+    document,
+    [
+      { op: "removeObject", objectId },
+      { op: "addObject", pageId: page.id, object: molecule },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
 const bracketKindByToolCommandId: ReadonlyMap<string, BracketObject["bracketKind"]> = new Map([
   ["tool.bracket", "curly"],
   ["tool.squareBracket", "square"]
@@ -4455,7 +4948,9 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
         // explicitly refuses this same collapse citing AGENTS.md section 5.7. Flattening an
         // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
         order: bond.order,
-        wedge: bond.bondStyle ?? null
+        // Dative (dashed) bonds parse with a display style, not a wedge — they fall to null here
+        // and keep their style through the structural insert path.
+        wedge: bond.bondStyle === "wedge" || bond.bondStyle === "hashed" ? bond.bondStyle : null
       }];
     })
   };
@@ -4583,6 +5078,9 @@ export function createSmilesMolecule(
       : bond
   );
 
+  // Stored-structure spelling: molecule.structure is a standard export molfile (an abbreviated
+  // label as the dummy "*"), which is what RDKit, Copy As and the loaders read. CIP perception
+  // never reads this field — it spells its own molfile (stereoPerceptionMolfile, R-groups).
   const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
 
   return normalizeNativeMoleculeGeometry({
@@ -4631,6 +5129,86 @@ export function insertSmilesMolecule(
     ],
     { now: phase4Timestamp }
   );
+}
+
+export function insertSmilesMoleculeGrid(
+  document: ChemDraftDocument,
+  origin: PagePoint,
+  entries: readonly { smiles: string; depiction: PastedStructureDepiction }[],
+  options: { gutterPx?: number } = {}
+): { document: ChemDraftDocument; objectIds: string[]; columns: number; rows: number; pageResized: boolean } {
+  if (entries.length === 0) {
+    return { document, objectIds: [], columns: 0, rows: 0, pageResized: false };
+  }
+  const gutter = options.gutterPx ?? 32;
+  if (!Number.isFinite(gutter) || gutter < 0) {
+    throw new Error("SMILES grid gutter must be a finite, non-negative number.");
+  }
+  const margin = 24;
+  const page = firstPage(document);
+  const reservedObjectIds = new Set<string>();
+  const molecules = entries.map((entry) => {
+    const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
+      ...SMILES_PASTE_SOURCE,
+      reservedObjectIds
+    });
+    reservedObjectIds.add(molecule.id);
+    return molecule;
+  });
+  const cellWidth = Math.max(...molecules.map((molecule) => molecule.width)) + gutter;
+  const cellHeight = Math.max(...molecules.map((molecule) => molecule.height)) + gutter;
+  const columns = Math.min(entries.length, Math.max(1, Math.floor((page.width - margin * 2) / cellWidth)));
+  const rows = Math.ceil(entries.length / columns);
+  const gridWidth = columns * cellWidth;
+  const gridHeight = rows * cellHeight;
+  // Origin is the grid's top-left only when the entire grid fits there within the current
+  // page's content margins. Otherwise use the top-left margin and let rows grow downward.
+  const start = origin.x >= margin && origin.y >= margin
+    && origin.x + gridWidth <= page.width - margin && origin.y + gridHeight <= page.height - margin
+    ? origin
+    : { x: margin, y: margin };
+  const requiredWidth = Math.max(page.width, start.x + gridWidth + margin);
+  const requiredHeight = Math.max(page.height, start.y + gridHeight + margin);
+  const pageResized = requiredWidth > page.width || requiredHeight > page.height;
+  let nextDocument = document;
+  if (pageResized) {
+    const unit = pageLayoutSourceUnit(page.layout);
+    const layout = createCustomPageLayout(
+      roundUpPageSize(cssPxToPageSize(requiredWidth, unit), unit),
+      roundUpPageSize(cssPxToPageSize(requiredHeight, unit), unit),
+      unit,
+      pageMarginFromLayout(page.layout)
+    );
+    nextDocument = applyPatch(document, { op: "updatePageLayout", pageId: page.id, layout }, { now: phase4Timestamp });
+  }
+  // The builder's clamp only translates, so its measured dimensions keep the normal SMILES
+  // bond length. Grow the page before placement, then translate the built objects directly:
+  // running the scaler at overflowing cell centers would clamp rows back onto one another.
+  const objects = molecules.map((molecule, index) => translatedClipboardObject(
+    molecule,
+    start.x + (index % columns) * cellWidth + (cellWidth - molecule.width) / 2 - molecule.x,
+    start.y + Math.floor(index / columns) * cellHeight + (cellHeight - molecule.height) / 2 - molecule.y
+  ));
+  const objectIds = objects.map((object) => object.id);
+  nextDocument = applyPatches(nextDocument, [
+    ...objects.map((object): DocumentPatch => ({ op: "addObject", pageId: page.id, object })),
+    { op: "setSelection", pageId: page.id, objectIds }
+  ], { now: phase4Timestamp });
+  return { document: nextDocument, objectIds, columns, rows, pageResized };
+}
+
+export function insertSmilesMoleculeGridStatus(
+  result: ReturnType<typeof insertSmilesMoleculeGrid>,
+  skipped: number
+): string {
+  let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
+  if (result.pageResized) {
+    const page = firstPage(result.document);
+    const unit = pageLayoutSourceUnit(page.layout);
+    status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
+  }
+  if (skipped > 0) status += `; ${skipped} token${skipped === 1 ? "" : "s"} skipped`;
+  return status;
 }
 
 export function insertNativeMolfileMolecule(
@@ -6682,6 +7260,31 @@ export function applyFreeformSingleBondToolAtPoint(
     return document;
   }
 
+  // A drop on another molecule object's atom joins the two: merge that object into this one
+  // (re-minting its ids) and bond across the seam — how a typed metal atom coordinates to a
+  // drawn ligand.
+  const foreign = findForeignNativeMoleculeBondTarget(page, molecule.id, point);
+  if (foreign) {
+    const merged = mergeNativeMoleculeObjects(molecule, foreign.molecule);
+    const mergedTargetAtomId = merged?.atomIdMap.get(foreign.atomId);
+    const connected = merged && mergedTargetAtomId
+      ? connectNativeCarbonAtoms(merged.molecule, sourceAtomId, mergedTargetAtomId, options)
+      : undefined;
+    if (!merged || !connected) {
+      return document;
+    }
+    return applyPatches(
+      document,
+      [
+        { op: "updateObject", objectId: molecule.id, changes: connected },
+        ...remapAnchorsAfterMoleculeMerge(page, foreign.molecule.id, molecule.id, merged.atomIdMap, merged.bondIdMap),
+        { op: "removeObject", objectId: foreign.molecule.id },
+        { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+      ],
+      { now: phase4Timestamp }
+    );
+  }
+
   const preview = previewNativeMoleculeFreeformBondGrowth(
     molecule,
     sourceAtomId,
@@ -6726,6 +7329,11 @@ export function applyNativeBondDisplayStyleTarget(
 
   const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
   if (!bond || bond.display?.bondStyle === bondStyle) {
+    return document;
+  }
+  // Dashed bonds are dative chemistry rather than decoration, and the interchange writers cannot
+  // represent a double or higher-order coordination bond without silently changing its meaning.
+  if (bondStyle === "dashed" && !isDativeBond({ ...bond, display: { ...bond.display, bondStyle } })) {
     return document;
   }
 
@@ -6791,13 +7399,181 @@ export function applyChargeToolAtNativeAtom(
     return document;
   }
 
+  // Charges STACK: applying the tool to an atom that already carries a charge mark bumps that
+  // mark (+ on ⊕ gives 2+, − on 2+ gives + again, − on ⊕ removes the mark) instead of piling
+  // up overlapping ±1 marks. That is how a Zn earns its 2+.
+  const normalized = normalizeElectronMarkSpec(spec);
+  const plan = nativeChargeStackPlan(page, molecule, target.atomId, normalized);
+  if (plan) {
+    if (plan.refusal) {
+      return document;
+    }
+    if (plan.next === 0 && plan.existing.radical) {
+      // A radical ion stacked back to neutral is a radical, not nothing: the charge is what the
+      // press removed, and the unpaired electron it did not touch stays as a bare radical dot on
+      // the same atom, where the mark was.
+      const anchorAtom = plan.existing.anchor.kind === "atom" && plan.existing.anchor.objectId && plan.existing.anchor.atomId
+        ? { objectId: plan.existing.anchor.objectId, atomId: plan.existing.anchor.atomId }
+        : { objectId: molecule.id, atomId: target.atomId };
+      return addChargeMarkAtPoint(
+        applyPatches(document, [{ op: "removeObject", objectId: plan.existing.id }], { now: phase4Timestamp }),
+        page.id,
+        { kind: "radical-dot" },
+        nativeChargeMarkCenter(plan.existing),
+        anchorAtom
+      );
+    }
+    return applyPatches(
+      document,
+      plan.next === 0
+        ? [{ op: "removeObject", objectId: plan.existing.id }]
+        : [
+            // Only the magnitude moves. The mark keeps its own identity — a radical ion stays a
+            // radical ion, a plain sign stays plain — because a tool variant describes the mark
+            // it would PLACE, not a rewrite of one already on the atom. Nothing here can add an
+            // unpaired electron to an atom that did not have one.
+            { op: "updateObject", objectId: plan.existing.id, changes: { charge: plan.next } },
+            { op: "setSelection", pageId: page.id, objectIds: [plan.existing.id] }
+          ],
+      { now: phase4Timestamp }
+    );
+  }
+
   const point = nativeChargePlacementPointForAtom(molecule, target.atomId, page.objects, page.width, page.height);
   return point
-    ? addChargeMarkAtPoint(document, page.id, normalizeElectronMarkSpec(spec), point, {
+    ? addChargeMarkAtPoint(document, page.id, normalized, point, {
         objectId: molecule.id,
         atomId: target.atomId
       })
     : document;
+}
+
+/**
+ * Why a press on an atom that already carries a charge mark was refused — the increment, not
+ * the mark: "cap" is the ±9 limit (`nativeChargeMarkMaxMagnitude`), "valence" is a total the
+ * element cannot carry at its current bond usage. Lets the caller name the reason instead of
+ * reporting that no mark could be placed.
+ */
+export type NativeChargeStackRefusal = "cap" | "valence";
+
+/**
+ * What a charge-tool press does to the mark an atom already carries, and whether it is refused.
+ * One computation feeds both the apply and the status line, so the reason MainWindow names is
+ * always the reason the apply actually refused for.
+ */
+function nativeChargeStackPlan(
+  page: DocumentPage,
+  molecule: MoleculeObject,
+  atomId: string,
+  spec: NativeElectronMarkSpec
+): { existing: ElectronMarkObject; next: number; refusal?: NativeChargeStackRefusal } | undefined {
+  if (spec.kind !== "charge") {
+    return undefined;
+  }
+  const existing = nativeAssociatedChargeMarkForAtom(page, molecule, atomId);
+  if (!existing) {
+    return undefined;
+  }
+  const current = nativeChargeValue(existing.charge) ?? 0;
+  const next = current + spec.charge;
+  if (Math.abs(next) > nativeChargeMarkMaxMagnitude) {
+    return { existing, next, refusal: "cap" };
+  }
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (next !== 0 && atom) {
+    // An atom-anchored mark is already reconciled into formalCharge, so the press moves the
+    // atom by the delta. An object-anchored one found by proximity is not yet counted, so the
+    // atom would end up carrying its intrinsic charge plus the whole mark.
+    const candidate = existing.anchor.kind === "atom"
+      ? atom.formalCharge + spec.charge
+      : atom.formalCharge - (atom.markCharge ?? 0) + next;
+    if (!nativeAtomCanCarryCharge(molecule, atom, candidate)) {
+      return { existing, next, refusal: "valence" };
+    }
+  }
+  return { existing, next };
+}
+
+/**
+ * Whether the atom's element admits this total formal charge at its current bond usage — the
+ * same test the mark reconciliation applies. Checked BEFORE a stack is written, so the charge
+ * tool never bumps a mark to a magnitude the very next commit would strip back off the atom
+ * (five presses on a carbon used to reset it from +4 to neutral while reporting "Placed 5+").
+ * Superatom labels stay permissive, exactly as they are in the reconciliation.
+ */
+function nativeAtomCanCarryCharge(molecule: MoleculeObject, atom: MoleculeAtom, charge: number): boolean {
+  const element = nativeElementFromAtomLabel(atom.element);
+  if (!element) {
+    return true;
+  }
+  const usage = nativeAtomBondOrderUsage(atom.id, molecule.bonds) + (atom.markRadicals ?? 0);
+  return nativeAtomChargeSupportsValence(element, usage, charge);
+}
+
+export function nativeChargeStackRefusal(
+  document: ChemDraftDocument,
+  spec: NativeElectronMarkSpec | NativeChargeValue,
+  target: NativeMoleculeDeleteTarget
+): NativeChargeStackRefusal | undefined {
+  if (target.kind !== "atom") {
+    return undefined;
+  }
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule" && isEditableNativeMoleculeGraph(object)
+  );
+  if (!molecule) {
+    return undefined;
+  }
+  return nativeChargeStackPlan(page, molecule, target.atomId, normalizeElectronMarkSpec(spec))?.refusal;
+}
+
+export function nativeAtomChargeStackAtCap(
+  document: ChemDraftDocument,
+  spec: NativeElectronMarkSpec | NativeChargeValue,
+  target: NativeMoleculeDeleteTarget
+): boolean {
+  return nativeChargeStackRefusal(document, spec, target) === "cap";
+}
+
+/**
+ * The charge mark currently charging this atom: an anchor match wins, else the nearest
+ * OBJECT-anchored mark of THIS molecule within the same association radius the reconciliation
+ * uses. The fallback must not reach across molecule objects: in a tight coordination complex a
+ * mark hovering over molecule A's metal can sit within a bond length of molecule B's ligand
+ * atom, and counting it would bump A's mark when the user charges B's atom. Nor may it reach
+ * another atom's mark inside this molecule: reconciliation re-anchors every associated mark on
+ * its atom, so an atom-anchored mark is that atom's charge, and a neighbour sits one bond length
+ * away — inside this radius. Atom-anchored marks are therefore matched by anchor only; a
+ * still-floating point mark belongs to no molecule and is left for a fresh mark, not a bump.
+ */
+function nativeAssociatedChargeMarkForAtom(
+  page: DocumentPage,
+  molecule: MoleculeObject,
+  atomId: string
+): ElectronMarkObject | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return undefined;
+  }
+  const marks = page.objects.filter((object): object is ElectronMarkObject =>
+    object.type === "electron-mark" && object.markKind === "charge"
+  );
+  const anchored = marks.find((mark) =>
+    mark.anchor.kind === "atom" && mark.anchor.objectId === molecule.id && mark.anchor.atomId === atomId
+  );
+  if (anchored) {
+    return anchored;
+  }
+  const radius = Math.max(
+    nativeChargeAssociationRadiusPx,
+    nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 1.15
+  );
+  return marks
+    .filter((mark) => mark.anchor.kind === "object" && mark.anchor.objectId === molecule.id)
+    .map((mark) => ({ mark, distance: distance(nativeChargeMarkCenter(mark), atom) }))
+    .filter((entry) => entry.distance <= radius)
+    .sort((left, right) => left.distance - right.distance)[0]?.mark;
 }
 
 export function nativeChargePlacementPointForAtom(
@@ -6867,10 +7643,38 @@ export function nativeChargePlacementPointForAtom(
     ?.point;
 }
 
+/** The growth the on-canvas arrow is showing: where the new atom lands, or which existing atom
+ *  the guided growth would connect to. Hotkeys pass this so the committed bond is exactly the
+ *  previewed one. */
+export interface NativeBondGrowthPlan {
+  newAtomPoint: PagePoint;
+  targetAtomId?: string;
+  /** Unit vector of the previewed growth direction. */
+  direction: PagePoint;
+}
+
+/** Pure-geometry growth plan for an explicit atom (no pointer steering): what the hotkeys use
+ *  when no growth arrow is on screen. */
+function nativeBondGrowthPlanForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  pageWidth: number,
+  pageHeight: number
+): NativeBondGrowthPlan | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return undefined;
+  }
+  const preview = previewNativeMoleculeBondGrowth(molecule, atom, pageWidth, pageHeight);
+  return preview && preview.atomId === atomId
+    ? { newAtomPoint: preview.newAtomPoint, targetAtomId: preview.targetAtomId, direction: preview.direction }
+    : undefined;
+}
+
 export function applySingleBondToolAtNativeAtom(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  steeringPoint?: PagePoint
+  plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -6889,14 +7693,19 @@ export function applySingleBondToolAtNativeAtom(
     return document;
   }
 
-  const preview = previewNativeMoleculeBondGrowth(molecule, steeringPoint ?? atom, page.width, page.height);
-  if (!preview) {
+  // When the on-canvas growth arrow is showing for this atom, commit exactly what it previews
+  // (the hotkey must never contradict the arrow). Without an arrow, plan from the atom's own
+  // position: the sprout comes off the atom the user sees highlighted (a pointer a few pixels
+  // off used to pick a different atom, or nothing), and with no pointer offset the planner
+  // picks the pure geometric direction — ChemDraw's hotkey behavior.
+  const planned = plan ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
+  if (!planned) {
     return document;
   }
 
-  const extended = preview.targetAtomId
-    ? connectNativeCarbonAtoms(molecule, preview.atomId, preview.targetAtomId)
-    : extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint);
+  const extended = planned.targetAtomId
+    ? connectNativeCarbonAtoms(molecule, target.atomId, planned.targetAtomId)
+    : extendNativeCarbonGraph(molecule, target.atomId, planned.newAtomPoint);
   if (!extended) {
     return document;
   }
@@ -6914,7 +7723,7 @@ export function applySingleBondToolAtNativeAtom(
 export function applyNativeCarbonylAtAtomTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  steeringPoint?: PagePoint
+  plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -6928,7 +7737,7 @@ export function applyNativeCarbonylAtAtomTarget(
     return document;
   }
 
-  const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, steeringPoint);
+  const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, plan);
   if (!nextMolecule) {
     return document;
   }
@@ -6941,6 +7750,275 @@ export function applyNativeCarbonylAtAtomTarget(
     ],
     { now: phase4Timestamp }
   );
+}
+
+/** ChemDraw-style numeric sprout hotkeys: what pressing 4/5/8/9/0 over an atom builds. */
+export type NativeAtomSproutKind = "wedge" | "hashed" | "methylidene" | "gemDimethyl" | "cyclic";
+
+function nativeMoleculeForPartTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): { page: ChemDraftDocument["pages"][number]; molecule: MoleculeObject } | undefined {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  return molecule && isEditableNativeMoleculeGraph(molecule) ? { page, molecule } : undefined;
+}
+
+function nativeMoleculePatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  next: MoleculeObject | undefined
+): ChemDraftDocument {
+  if (!next) {
+    return document;
+  }
+  return applyPatches(
+    document,
+    [
+      { op: "updateObject", objectId: molecule.id, changes: next },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+    ],
+    { now: phase4Timestamp }
+  );
+}
+
+/**
+ * Numeric atom sprout hotkeys (ChemDraw parity): 4/5 grow a wedge/hashed stereo methyl along the
+ * growth-arrow direction, 8 grows =CH2, 9 grows a gem-dimethyl pair (all-or-nothing: an atom
+ * without room for BOTH methyls refuses, since a lone partial methyl would commit silently),
+ * and 0 grows a bond in "cyclic mode" — each press turns the same way as the previous chain
+ * vertex by the supplement of the molecule's chain angle, so repeated presses trace a ring and
+ * close it onto the starting atom.
+ */
+export function applyNativeAtomSproutTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  kind: NativeAtomSproutKind,
+  plan?: NativeBondGrowthPlan
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (!located) {
+    return document;
+  }
+  const { page, molecule } = located;
+  const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
+  if (!sourceAtom) {
+    return document;
+  }
+
+  const growthPlan = (plan && !plan.targetAtomId ? plan : undefined)
+    ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
+
+  if (kind === "wedge" || kind === "hashed") {
+    if (!growthPlan || growthPlan.targetAtomId) {
+      return document;
+    }
+    const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint, {
+      bondStyle: kind === "wedge" ? "wedge" : "hashed"
+    });
+    return nativeMoleculePatched(document, page, molecule, grown);
+  }
+
+  if (kind === "methylidene") {
+    // The sprouted C=C consumes two valences on the source atom, like the carbonyl.
+    const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
+    const nextValence = (valenceUsage.get(target.atomId) ?? 0) + nativeBondOrderValue.double;
+    if (
+      nativeElementFromAtomLabel(sourceAtom.element) !== "C" ||
+      sourceAtom.formalCharge !== 0 ||
+      nativeAtomFormalChargeForValence("C", nextValence) !== 0 ||
+      !growthPlan || growthPlan.targetAtomId
+    ) {
+      return document;
+    }
+    const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
+    if (!grown) {
+      return document;
+    }
+    const newAtom = grown.atoms[grown.atoms.length - 1];
+    const bonds = grown.bonds.map((bond) =>
+      (bond.fromAtomId === target.atomId && bond.toAtomId === newAtom.id) ||
+      (bond.fromAtomId === newAtom.id && bond.toAtomId === target.atomId)
+        ? nativeBondWithOrderAndDisplay(grown, bond, "double")
+        : bond
+    );
+    return nativeMoleculePatched(document, page, molecule, refreshNativeSingleBondGraph(grown, grown.atoms, bonds));
+  }
+
+  if (kind === "gemDimethyl") {
+    // All-or-nothing: the hotkey promises a PAIR of methyls, and the only signal the caller can
+    // surface is the reference-equality refusal ("Cannot add gem-dimethyl here") — committing one
+    // methyl when the second cannot be planned would read as success. So an atom without two free
+    // growth slots refuses up front, and a failed second plan refuses the whole sprout.
+    const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
+    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0) < 2) {
+      return document;
+    }
+    if (!growthPlan || growthPlan.targetAtomId) {
+      return document;
+    }
+    const first = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
+    if (!first) {
+      return document;
+    }
+    const secondPlan = nativeBondGrowthPlanForAtom(first, target.atomId, page.width, page.height);
+    const second = secondPlan && !secondPlan.targetAtomId
+      ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
+      : undefined;
+    return nativeMoleculePatched(document, page, molecule, second);
+  }
+
+  // Cyclic mode ("0"): continue the chain, turning the same way the chain last turned by the
+  // supplement of the molecule's own chain angle (180° − chainAngleDegrees, so 60° for the
+  // default 120°), so successive presses walk a regular polygon with that interior angle; when
+  // the next vertex lands on an existing atom, close the ring instead of stacking a duplicate.
+  const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+  const bondLengthPx = drawingStyle.bondLengthPx;
+  const chainTurnDegrees = 180 - clamp(drawingStyle.chainAngleDegrees, 1, 179);
+  const neighbors = molecule.bonds
+    .map((bond) => bond.fromAtomId === target.atomId
+      ? bond.toAtomId
+      : bond.toAtomId === target.atomId ? bond.fromAtomId : undefined)
+    .filter((atomId): atomId is string => atomId !== undefined)
+    .map((atomId) => molecule.atoms.find((atom) => atom.id === atomId))
+    .filter((atom): atom is MoleculeAtom => atom !== undefined);
+
+  let outgoingDegrees: number | undefined;
+  if (neighbors.length === 1) {
+    const neighbor = neighbors[0];
+    const incomingDegrees = Math.atan2(sourceAtom.y - neighbor.y, sourceAtom.x - neighbor.x) * 180 / Math.PI;
+    const grandNeighbor = molecule.bonds
+      .map((bond) => bond.fromAtomId === neighbor.id
+        ? bond.toAtomId
+        : bond.toAtomId === neighbor.id ? bond.fromAtomId : undefined)
+      .filter((atomId): atomId is string => atomId !== undefined && atomId !== target.atomId)
+      .map((atomId) => molecule.atoms.find((atom) => atom.id === atomId))
+      .find((atom): atom is MoleculeAtom => atom !== undefined);
+    if (grandNeighbor) {
+      const previousDegrees = Math.atan2(neighbor.y - grandNeighbor.y, neighbor.x - grandNeighbor.x) * 180 / Math.PI;
+      const previousTurn = ((incomingDegrees - previousDegrees + 540) % 360 + 360) % 360 - 180;
+      const turnSign = Math.abs(previousTurn) < 1e-3 ? -1 : Math.sign(previousTurn);
+      outgoingDegrees = incomingDegrees + turnSign * chainTurnDegrees;
+    } else {
+      // First cyclic press off a lone bond: start the curl upward.
+      const upward = incomingDegrees - chainTurnDegrees;
+      const downward = incomingDegrees + chainTurnDegrees;
+      outgoingDegrees = Math.sin(upward * Math.PI / 180) <= Math.sin(downward * Math.PI / 180) ? upward : downward;
+    }
+  }
+
+  if (outgoingDegrees === undefined) {
+    if (!growthPlan) {
+      return document;
+    }
+    const grown = growthPlan.targetAtomId
+      ? connectNativeCarbonAtoms(molecule, target.atomId, growthPlan.targetAtomId)
+      : extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
+    return nativeMoleculePatched(document, page, molecule, grown);
+  }
+
+  const nextPoint = {
+    x: clamp(sourceAtom.x + Math.cos(outgoingDegrees * Math.PI / 180) * bondLengthPx, 0, page.width),
+    y: clamp(sourceAtom.y + Math.sin(outgoingDegrees * Math.PI / 180) * bondLengthPx, 0, page.height)
+  };
+  const closure = molecule.atoms.find((atom) =>
+    atom.id !== target.atomId &&
+    Math.hypot(atom.x - nextPoint.x, atom.y - nextPoint.y) <= bondLengthPx * 0.3 &&
+    !nativeBondExistsBetween(molecule, target.atomId, atom.id) &&
+    canConnectNativeAtoms(molecule, target.atomId, atom.id)
+  );
+  const grown = closure
+    ? connectNativeCarbonAtoms(molecule, target.atomId, closure.id)
+    : extendNativeCarbonGraph(molecule, target.atomId, nextPoint);
+  return nativeMoleculePatched(document, page, molecule, grown);
+}
+
+/** Attach a ring template at the hovered atom (the atom becomes a shared ring vertex), oriented
+ *  along the growth arrow's direction — pressing 3/6/7 over an atom, ChemDraw-style. */
+export function applyNativeRingAttachAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId,
+  plan?: NativeBondGrowthPlan
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (!located) {
+    return document;
+  }
+  const { page, molecule } = located;
+  const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
+  if (!sourceAtom) {
+    return document;
+  }
+  // A nickname or condensed label (Ph, OMe, CO2Me) is a superatom with no known free valence:
+  // the bond tool and the sprout hotkeys already refuse it, and a ring fused onto "Ph" would be
+  // chemistry nobody drew. Refuse here too, so the shipped doc's "relabel it to an element
+  // first" is the whole story.
+  if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
+    return document;
+  }
+  const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
+    ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
+    ?? { x: 0, y: -1 };
+  const orientationPoint = {
+    x: sourceAtom.x + direction.x * nativeBondLength,
+    y: sourceAtom.y + direction.y * nativeBondLength
+  };
+  const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
+  return nativeMoleculePatched(document, page, molecule, attached);
+}
+
+/** Fuse a ring template onto the hovered bond, bulging away from the molecule's body — pressing
+ *  4–8 (ring sizes) or 9/0 (chairs) over a bond, ChemDraw-style. */
+export function applyNativeRingFuseAtBondTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId
+): ChemDraftDocument {
+  if (target.kind !== "bond") {
+    return document;
+  }
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (!located) {
+    return document;
+  }
+  const { page, molecule } = located;
+  const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
+  const fromAtom = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
+  const toAtom = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
+  if (!bond || !fromAtom || !toAtom) {
+    return document;
+  }
+
+  const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
+  const centroid = molecule.atoms.reduce(
+    (sum, atom) => ({ x: sum.x + atom.x / molecule.atoms.length, y: sum.y + atom.y / molecule.atoms.length }),
+    { x: 0, y: 0 }
+  );
+  const away = { x: midpoint.x - centroid.x, y: midpoint.y - centroid.y };
+  const awayLength = Math.hypot(away.x, away.y);
+  // Prefer the side of the bond facing away from the molecule's body; a perfectly symmetric
+  // bond (fresh two-atom molecule) falls back to the bond's normal.
+  const normal = { x: -(toAtom.y - fromAtom.y), y: toAtom.x - fromAtom.x };
+  const normalLength = Math.hypot(normal.x, normal.y) || 1;
+  const outward = awayLength > 1e-3
+    ? { x: away.x / awayLength, y: away.y / awayLength }
+    : { x: normal.x / normalLength, y: normal.y / normalLength };
+  const orientationPoint = {
+    x: midpoint.x + outward.x * nativeBondLength,
+    y: midpoint.y + outward.y * nativeBondLength
+  };
+  const fused = fuseNativeTemplateRingToBond(molecule, target.bondId, orientationPoint, templateId);
+  return nativeMoleculePatched(document, page, molecule, fused);
 }
 
 function addChargeMarkAtPoint(
@@ -7076,7 +8154,10 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
 
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
-      return false;
+      // Nicknames and condensed labels are superatoms outside the element valence tables. They
+      // still own nearby charge/radical marks; only the distance can be judged without inventing
+      // valence rules for labels such as Me, N3, or Ph.
+      return true;
     }
 
     if (contribution.charge === 0 && contribution.radicals === 0) {
@@ -7730,10 +8811,162 @@ export function applyNativeDoubleBondSideTarget(
   );
 }
 
+/** Whether the atom carries an explicit label a chemist would see as deletable: a heteroatom or
+ *  arbitrary text label, or a carbon with its symbol explicitly shown. Plain skeleton carbons
+ *  (invisible C vertices) have no label to delete. */
+export function nativeAtomHasExplicitLabel(atom: MoleculeAtom): boolean {
+  return normalizeNativeAtomElementLabel(atom.element) !== "C" || atom.labelVisible === true;
+}
+
+/**
+ * Delete an atom's LABEL, not the atom: revert it to a plain skeleton carbon (invisible C
+ * vertex), keeping its bonds and position. Pressing Delete over a labeled atom routes here
+ * first — matching how chemists think of erasing an "O" or "CH3" back to the carbon skeleton —
+ * and a second Delete then removes the atom itself.
+ */
+/** One molecule's share of a Clear/Restore Warnings action: all atoms, or just the listed ones. */
+export type NativeWarningSuppressionScope = { objectId: string; atomIds?: readonly string[] };
+
+/**
+ * Dismiss (or restore) valence warnings across a selection scope. Each entry covers one
+ * molecule — the whole molecule when `atomIds` is omitted (whole-object selection), or only
+ * the listed atoms (partial selection). Clearing suppresses only atoms that CURRENTLY warn,
+ * so a valid atom keeps its voice for future mistakes; restoring lifts any suppression in
+ * scope.
+ */
+export function applyNativeWarningSuppressionToScope(
+  document: ChemDraftDocument,
+  scope: readonly NativeWarningSuppressionScope[],
+  suppressed: boolean
+): ChemDraftDocument {
+  return scope.reduce((current, entry) => {
+    const page = firstPage(current);
+    const molecule = page.objects.find((object): object is MoleculeObject =>
+      object.id === entry.objectId && object.type === "molecule"
+    );
+    if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+      return current;
+    }
+
+    const invalidAtomIds = new Set(nativeMoleculeInvalidAtomStates(molecule).map((state) => state.atomId));
+    const inScope = (atom: MoleculeAtom) => entry.atomIds === undefined || entry.atomIds.includes(atom.id);
+    let changed = false;
+    const atoms = molecule.atoms.map((atom) => {
+      if (!inScope(atom)) {
+        return atom;
+      }
+      if (suppressed) {
+        if (atom.warningSuppressed !== true && invalidAtomIds.has(atom.id)) {
+          changed = true;
+          return { ...atom, warningSuppressed: true };
+        }
+        return atom;
+      }
+      if (atom.warningSuppressed === true) {
+        changed = true;
+        const { warningSuppressed: _warningSuppressed, ...rest } = atom;
+        return rest;
+      }
+      return atom;
+    });
+    if (!changed) {
+      return current;
+    }
+
+    return applyPatch(
+      current,
+      { op: "updateObject", objectId: molecule.id, changes: refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds) },
+      { now: phase4Timestamp }
+    );
+  }, document);
+}
+
+/**
+ * Dismiss (or restore) one atom's valence warning from the context menu. Suppression is a
+ * per-atom mark: the checker reports the atom valid, so the badge disappears and no warning
+ * is stored, until the user restores it.
+ */
+export function applyNativeAtomWarningSuppression(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  suppressed: boolean
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+  const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
+  if (!atom || (atom.warningSuppressed === true) === suppressed) {
+    return document;
+  }
+
+  const atoms = molecule.atoms.map((candidate) => {
+    if (candidate.id !== target.atomId) {
+      return candidate;
+    }
+    const { warningSuppressed: _warningSuppressed, ...rest } = candidate;
+    return suppressed ? { ...rest, warningSuppressed: true } : rest;
+  });
+  const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
+export function applyNativeAtomLabelClearTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): ChemDraftDocument {
+  if (target.kind !== "atom") {
+    return document;
+  }
+
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+    return document;
+  }
+
+  const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
+  if (!atom || !nativeAtomHasExplicitLabel(atom)) {
+    return document;
+  }
+  // A labelled atom with no bonds (a typed "Zn", a lone "O") has no skeleton to revert to: as a
+  // bare carbon it would draw as CH4 — the user's Zn turned into methane and a second Delete was
+  // needed to remove it. Leave it unchanged so the caller falls through to the real atom delete.
+  if (!molecule.bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)) {
+    return document;
+  }
+
+  const atoms = molecule.atoms.map((candidate) =>
+    candidate.id === target.atomId ? nativeAtomWithElement(candidate, "C", false) : candidate
+  );
+  const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
+
+  return applyPatch(
+    document,
+    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { now: phase4Timestamp }
+  );
+}
+
 export function applyNativeAtomElementTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  element: string
+  element: string,
+  options: { literal?: boolean } = {}
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -7750,16 +8983,24 @@ export function applyNativeAtomElementTarget(
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
   const normalizedElement = normalizeNativeAtomElementLabel(element);
   const labelVisible = normalizedElement === "C";
+  // Only the text tool passes literal: a typed label means exactly what it says. A hotkey
+  // relabel omits it and thereby CLEARS the flag — pressing an element key over any atom
+  // always yields the ordinary implicit-hydrogen atom.
+  const literal = options.literal === true;
   if (!atom || normalizedElement.length === 0) {
     return document;
   }
 
-  if (atom.element === normalizedElement && (atom.labelVisible === true) === labelVisible) {
+  if (
+    atom.element === normalizedElement &&
+    (atom.labelVisible === true) === labelVisible &&
+    (atom.labelLiteral === true) === literal
+  ) {
     return document;
   }
 
   const atoms = molecule.atoms.map((candidate) =>
-    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible) : candidate
+    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal) : candidate
   );
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
 
@@ -10317,6 +11558,230 @@ function transformGraphicFreehandPoints(
   });
 }
 
+/** The selected atom through which a partial selection meets the unselected remainder, when
+ *  there is exactly one such atom. Undefined for whole-molecule selections, detached islands,
+ *  and selections attached at several junctions. */
+function nativeMoleculePartJunctionAtomId(
+  molecule: MoleculeObject,
+  targetAtomIds: ReadonlySet<string>
+): string | undefined {
+  if (targetAtomIds.size === 0 || targetAtomIds.size === molecule.atoms.length) {
+    return undefined;
+  }
+
+  const junctionAtomIds = new Set<string>();
+  molecule.bonds.forEach((bond) => {
+    const fromSelected = targetAtomIds.has(bond.fromAtomId);
+    const toSelected = targetAtomIds.has(bond.toAtomId);
+    if (fromSelected !== toSelected) {
+      junctionAtomIds.add(fromSelected ? bond.fromAtomId : bond.toAtomId);
+    }
+  });
+  return junctionAtomIds.size === 1 ? [...junctionAtomIds][0] : undefined;
+}
+
+/**
+ * Pivot for rotating a partial selection, matching ChemDraw's behavior (verified against its
+ * fragment rotation): a fragment that meets the unselected remainder through exactly one of its
+ * own atoms rotates about THAT junction atom — the junction and its attachment bond to the rest
+ * stay put while the substituents swing around it. A selection with no junction (whole molecule,
+ * detached island) or several junctions ("no terminal atoms" — a mid-chain slice, a ring bond)
+ * returns undefined and rotates about the selection box's center as before.
+ */
+export function nativeMoleculePartRotationPivot(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget
+): PagePoint | undefined {
+  const junctionId = nativeMoleculePartJunctionAtomId(molecule, nativeMoleculePartAtomIds(molecule, target));
+  if (!junctionId) {
+    return undefined;
+  }
+  const junction = molecule.atoms.find((atom) => atom.id === junctionId);
+  return junction ? { x: junction.x, y: junction.y } : undefined;
+}
+
+/** How close a drag must get before the canonical-geometry magnet engages. */
+export const nativeDragSnapAngleToleranceDegrees = 6;
+export const nativeDragSnapLengthTolerancePx = 3;
+export const nativeRotationSnapToleranceDegrees = 3;
+
+/** Canonical drawing directions repeat every 30° (the 120° zig-zag lives on this grid). */
+const canonicalAngleGridDegrees = 30;
+
+function wrapDegrees180(value: number): number {
+  return ((value + 180) % 360 + 360) % 360 - 180;
+}
+
+/** Nearest canonical direction to `rawDegrees`: the 30° grid, plus ±120° off each supplied base
+ *  direction (an anchor atom's other bonds, which may sit off-grid). Undefined when nothing is
+ *  within `toleranceDegrees`. */
+function nearestCanonicalAngleDegrees(
+  rawDegrees: number,
+  relativeBaseDegrees: readonly number[],
+  toleranceDegrees: number
+): number | undefined {
+  let best: number | undefined;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  const consider = (candidate: number) => {
+    const delta = Math.abs(wrapDegrees180(rawDegrees - candidate));
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = candidate;
+    }
+  };
+  consider(Math.round(rawDegrees / canonicalAngleGridDegrees) * canonicalAngleGridDegrees);
+  relativeBaseDegrees.forEach((base) => {
+    consider(base + 120);
+    consider(base - 120);
+  });
+  return best !== undefined && bestDelta <= toleranceDegrees ? best : undefined;
+}
+
+/**
+ * Magnetic snap for dragging any partial selection: every bond crossing the selection boundary
+ * (dragged atom ↔ stationary neighbor) is a snap candidate. When a boundary bond comes close to
+ * canonical geometry — a direction on the 30° grid or at 120° off its anchor's other stationary
+ * bonds, or the style's exact bond length — the whole selection's delta is adjusted so that bond
+ * lands exactly there; when several boundary bonds could snap (a mid-chain slice touches the rest
+ * on both sides), the one needing the smallest nudge wins. Whole-molecule selections have no
+ * boundary and pass through unchanged.
+ */
+export function snapNativeMoleculePartDragDelta(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget,
+  delta: PagePoint
+): PagePoint {
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  if (targetAtomIds.size === 0) {
+    return delta;
+  }
+
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const boundaryPairs: Array<{ selectedId: string; neighborId: string }> = [];
+  molecule.bonds.forEach((bond) => {
+    const fromSelected = targetAtomIds.has(bond.fromAtomId);
+    const toSelected = targetAtomIds.has(bond.toAtomId);
+    if (fromSelected !== toSelected) {
+      boundaryPairs.push(fromSelected
+        ? { selectedId: bond.fromAtomId, neighborId: bond.toAtomId }
+        : { selectedId: bond.toAtomId, neighborId: bond.fromAtomId });
+    }
+  });
+  if (boundaryPairs.length === 0) {
+    return delta;
+  }
+
+  const bondLengthPx = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  let best: { delta: PagePoint; adjustment: number } | undefined;
+
+  boundaryPairs.forEach((pair) => {
+    const draggedAtom = atomById.get(pair.selectedId);
+    const anchor = atomById.get(pair.neighborId);
+    if (!draggedAtom || !anchor) {
+      return;
+    }
+    const proposed = { x: draggedAtom.x + delta.x, y: draggedAtom.y + delta.y };
+    const run = { x: proposed.x - anchor.x, y: proposed.y - anchor.y };
+    const runLength = Math.hypot(run.x, run.y);
+    if (runLength < 1e-6) {
+      return;
+    }
+
+    // Canonical bases relative to this anchor: its other bonds that stay put during the drag.
+    const stationaryBaseAngles = molecule.bonds.flatMap((bond) => {
+      const otherId = bond.fromAtomId === anchor.id
+        ? bond.toAtomId
+        : bond.toAtomId === anchor.id ? bond.fromAtomId : undefined;
+      if (!otherId || otherId === draggedAtom.id || targetAtomIds.has(otherId)) {
+        return [];
+      }
+      const other = atomById.get(otherId);
+      return other ? [Math.atan2(other.y - anchor.y, other.x - anchor.x) * 180 / Math.PI] : [];
+    });
+
+    const rawAngleDegrees = Math.atan2(run.y, run.x) * 180 / Math.PI;
+    const snappedAngleDegrees = nearestCanonicalAngleDegrees(
+      rawAngleDegrees,
+      stationaryBaseAngles,
+      nativeDragSnapAngleToleranceDegrees
+    );
+    const snappedLength = Math.abs(runLength - bondLengthPx) <= nativeDragSnapLengthTolerancePx
+      ? bondLengthPx
+      : undefined;
+    if (snappedAngleDegrees === undefined && snappedLength === undefined) {
+      return;
+    }
+
+    const angleRadians = (snappedAngleDegrees ?? rawAngleDegrees) * Math.PI / 180;
+    const length = snappedLength ?? runLength;
+    const snappedPoint = {
+      x: anchor.x + Math.cos(angleRadians) * length,
+      y: anchor.y + Math.sin(angleRadians) * length
+    };
+    const candidate = {
+      x: delta.x + snappedPoint.x - proposed.x,
+      y: delta.y + snappedPoint.y - proposed.y
+    };
+    const adjustment = Math.hypot(candidate.x - delta.x, candidate.y - delta.y);
+    if (!best || adjustment < best.adjustment) {
+      best = { delta: candidate, adjustment };
+    }
+  });
+
+  return best?.delta ?? delta;
+}
+
+/**
+ * Magnetic snap for rotating a partial selection. A junction-pivoted fragment clicks into place
+ * when its first rotating bond off the junction reaches a canonical direction (the 30° grid, or
+ * 120° off the junction's stationary bonds); a center-pivoted selection clicks at 15° steps.
+ */
+export function snapNativeMoleculePartRotationDegrees(
+  molecule: MoleculeObject,
+  target: NativeMoleculePartMoveTarget,
+  angleDegrees: number
+): number {
+  const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
+  const junctionId = nativeMoleculePartJunctionAtomId(molecule, targetAtomIds);
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const junction = junctionId ? atomById.get(junctionId) : undefined;
+
+  if (!junction) {
+    const stepped = Math.round(angleDegrees / 15) * 15;
+    return Math.abs(wrapDegrees180(angleDegrees - stepped)) <= nativeRotationSnapToleranceDegrees
+      ? stepped
+      : angleDegrees;
+  }
+
+  let referenceAngle: number | undefined;
+  const stationaryBaseAngles: number[] = [];
+  molecule.bonds.forEach((bond) => {
+    const otherId = bond.fromAtomId === junction.id
+      ? bond.toAtomId
+      : bond.toAtomId === junction.id ? bond.fromAtomId : undefined;
+    if (!otherId) {
+      return;
+    }
+    const other = atomById.get(otherId);
+    if (!other) {
+      return;
+    }
+    const angle = Math.atan2(other.y - junction.y, other.x - junction.x) * 180 / Math.PI;
+    if (targetAtomIds.has(otherId)) {
+      referenceAngle = referenceAngle ?? angle;
+    } else {
+      stationaryBaseAngles.push(angle);
+    }
+  });
+  if (referenceAngle === undefined) {
+    return angleDegrees;
+  }
+
+  const rotatedAngle = referenceAngle + angleDegrees;
+  const snapped = nearestCanonicalAngleDegrees(rotatedAngle, stationaryBaseAngles, nativeRotationSnapToleranceDegrees);
+  return snapped === undefined ? angleDegrees : angleDegrees + wrapDegrees180(snapped - rotatedAngle);
+}
+
 export function rotateNativeMoleculeParts(
   document: ChemDraftDocument,
   target: NativeMoleculePartMoveTarget,
@@ -10336,7 +11801,7 @@ export function rotateNativeMoleculeParts(
     return document;
   }
 
-  const center = objectCenter(bounds);
+  const center = nativeMoleculePartRotationPivot(molecule, target) ?? objectCenter(bounds);
   const angleRadians = angleDegrees * Math.PI / 180;
   const rotated = refreshNativeCyclicDoubleBondSides(normalizeNativeMoleculeGeometry({
     ...molecule,
@@ -11792,8 +13257,20 @@ export function duplicateSelectedDocumentObjects(
   return moveDocumentObjects(next, selectionIds, offset.x, offset.y);
 }
 
+/**
+ * The atoms and bonds a lasso or marquee left selected inside ONE molecule. A fragment
+ * selection is stored separately from `document.selection.objectIds` (which stays empty for it,
+ * by design in selectionPolicy), so every clipboard caller has to hand it over explicitly.
+ */
+export interface NativeMoleculeFragmentSelection {
+  objectId: string;
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+}
+
 export function createSelectionClipboardPayload(
-  document: ChemDraftDocument
+  document: ChemDraftDocument,
+  moleculeFragments: readonly NativeMoleculeFragmentSelection[] = []
 ): ChemDraftSelectionClipboardPayload | undefined {
   const page = firstPage(document);
   const selectedObjectIds = selectedTransformObjectIds(document);
@@ -11802,7 +13279,85 @@ export function createSelectionClipboardPayload(
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
     object.type === "group" && document.selection.objectIds.includes(object.id)
   );
-  const bounds = selectionBounds(page.objects, selectedObjectIds);
+  const fragmentPayload = createNativeMoleculeFragmentClipboardPayload(
+    document,
+    moleculeFragments.filter((fragment) => !selectedIdSet.has(fragment.objectId))
+  );
+  const carriedMarks = objects.flatMap((object) => object.type === "molecule"
+    ? anchoredElectronMarksForTransform(page.objects, object.id, new Set(object.atoms.map((atom) => atom.id)))
+    : []);
+  const copiedObjects = [...new Map([
+    ...objects,
+    ...selectedGroups.filter((group) => group.childObjectIds.some((childId) => selectedIdSet.has(childId))),
+    ...carriedMarks,
+    ...(fragmentPayload?.objects ?? [])
+  ].map((object) => [object.id, object])).values()];
+  const bounds = selectionBounds(copiedObjects, copiedObjects.map((object) => object.id));
+  if (copiedObjects.length === 0 || !bounds) {
+    return undefined;
+  }
+
+  return {
+    kind: "chemdraft-selection",
+    version: 1,
+    objects: structuredClone(copiedObjects) as DocumentObject[],
+    selectionIds: [
+      ...document.selection.objectIds.filter((objectId) =>
+        selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
+      ),
+      ...(fragmentPayload?.selectionIds ?? [])
+    ],
+    bounds
+  };
+}
+
+/**
+ * Build the clipboard payload for a lasso/marquee fragment: the selected atoms plus every bond
+ * with both ends among them, rebuilt as a standalone molecule (same shape a paste expects).
+ * Bonds ride along whether or not the region happened to cover them — a lasso around a ring
+ * copies the ring, not six loose atoms.
+ */
+function createNativeMoleculeFragmentClipboardPayload(
+  document: ChemDraftDocument,
+  fragments: readonly NativeMoleculeFragmentSelection[]
+): ChemDraftSelectionClipboardPayload | undefined {
+  if (fragments.length === 0) {
+    return undefined;
+  }
+
+  const page = firstPage(document);
+  const objects: DocumentObject[] = [];
+  for (const fragment of fragments) {
+    const molecule = page.objects.find((object): object is MoleculeObject =>
+      object.id === fragment.objectId && object.type === "molecule"
+    );
+    if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
+      continue;
+    }
+
+    const keptAtomIds = new Set(fragment.atomIds);
+    const selectedBondIds = new Set(fragment.bondIds);
+    for (const bond of molecule.bonds) {
+      if (selectedBondIds.has(bond.id)) {
+        keptAtomIds.add(bond.fromAtomId);
+        keptAtomIds.add(bond.toAtomId);
+      }
+    }
+
+    const atoms = molecule.atoms.filter((atom) => keptAtomIds.has(atom.id));
+    if (atoms.length === 0) {
+      continue;
+    }
+    const bonds = molecule.bonds.filter((bond) =>
+      keptAtomIds.has(bond.fromAtomId) && keptAtomIds.has(bond.toAtomId)
+    );
+    objects.push(
+      moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds)),
+      ...anchoredElectronMarksForTransform(page.objects, molecule.id, keptAtomIds)
+    );
+  }
+
+  const bounds = selectionBounds(objects, objects.map((object) => object.id));
   if (objects.length === 0 || !bounds) {
     return undefined;
   }
@@ -11810,15 +13365,8 @@ export function createSelectionClipboardPayload(
   return {
     kind: "chemdraft-selection",
     version: 1,
-    objects: structuredClone([
-      ...objects,
-      ...selectedGroups.filter((group) =>
-        group.childObjectIds.some((childId) => selectedIdSet.has(childId))
-      )
-    ]) as DocumentObject[],
-    selectionIds: document.selection.objectIds.filter((objectId) =>
-      selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
-    ),
+    objects: structuredClone(objects) as DocumentObject[],
+    selectionIds: objects.filter((object) => object.type === "molecule").map((object) => object.id),
     bounds
   };
 }
@@ -11924,6 +13472,26 @@ export function pasteSelectionClipboardPayload(
     );
   }
 
+  // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
+  // Restore anchors only after every child is present, even if the mark preceded its molecule.
+  for (const object of sourceChildren) {
+    if (object.type !== "electron-mark" || object.anchor.kind !== "atom") {
+      continue;
+    }
+    const moleculeId = object.anchor.objectId && idBySourceId.get(object.anchor.objectId);
+    const molecule = firstPage(next).objects.find((candidate): candidate is MoleculeObject =>
+      candidate.id === moleculeId && candidate.type === "molecule"
+    );
+    if (!molecule || !molecule.atoms.some((atom) => atom.id === object.anchor.atomId)) {
+      continue;
+    }
+    next = applyPatch(next, {
+      op: "updateObject",
+      objectId: idBySourceId.get(object.id)!,
+      changes: { anchor: { ...object.anchor, objectId: molecule.id } }
+    }, { now: phase4Timestamp });
+  }
+
   for (const group of sourceGroups) {
     const childObjectIds = group.childObjectIds
       .filter((childId) => sourceChildIds.has(childId))
@@ -12010,7 +13578,7 @@ function translatedClipboardObject(
     };
   }
 
-  if (object.type === "electron-mark" && object.markKind === "charge") {
+  if (object.type === "electron-mark") {
     return {
       ...object,
       x: nextX,
@@ -12564,7 +14132,7 @@ export function cleanUpNativeMolecules2d(
 
 /** True when any connected component of the molecule carries MORE than one ring (fused, bridged,
  *  spiro, or multiple rings joined by a chain) — the shapes the polygon+tree 2D cleanup cannot lay
- *  out and therefore leaves as drawn. MainWindow uses this to point the user at 3D Cleanup. */
+ *  out and therefore leaves as drawn. MainWindow routes these to the engine re-layout instead. */
 export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
   const adjacency = nativeAdjacency(molecule.atoms, molecule.bonds);
   return nativeComponents(molecule.atoms, adjacency).some((componentIds) => {
@@ -12577,7 +14145,10 @@ export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
 }
 
 /**
- * Rebuild a native molecule's 2D geometry from an engine re-layout (the "3D Cleanup" command).
+ * Rebuild a native molecule's 2D geometry from an engine re-layout (the "3D Cleanup" command, and
+ * what 2D Cleanup uses for multi-ring and coordination structures). Free metals — atoms outside the
+ * covalent valence tables with dative bonds and no covalent ones — are left out of the engine's
+ * molfile and placed afterwards by folding, settling and arranging their ligands (see below).
  * `relayout` receives the molecule as a V2000 molfile (atoms/bonds in model order) and returns a
  * depiction whose indices align 1:1 with that order — the OCL adapter's `relayoutMolfile2D`.
  * The fresh engine-frame coordinates (y-UP) map back into the document frame by negating y,
@@ -12588,40 +14159,230 @@ export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
  * are recomputed/cleared for the new layout. Throws when the depiction cannot be trusted to map
  * back (atom count/element mismatch) — the caller surfaces that as a status, nothing commits.
  */
+export interface NativeEngineRelayoutOptions {
+  /**
+   * Bond length the rebuilt geometry is scaled to. Omitted (the 3D Cleanup command), the
+   * drawing's own mean covalent bond length is kept, so a deliberately large or small drawing
+   * stays that size. 2D Cleanup passes the molecule style's bond length instead, the same
+   * standard the polygon+tree pass idealises to — so repeated cleanups converge on one size and
+   * a drawing that has drifted in scale is brought back rather than frozen where it is.
+   */
+  targetBondLengthPx?: number;
+  /**
+   * The app's CIP perceiver. When given, the rebuilt drawing is read back and any centre that
+   * reads the wrong hand has its wedge flipped; a drawing that cannot be made to read as the
+   * original throws, so the caller commits nothing. Omitted (unit tests of pure geometry), the
+   * engine's own wedge assignment is trusted as before.
+   */
+  perceiveStereo?: StereoPerceiver;
+}
+
+/**
+ * Put the engine's clean skeleton back on the page, one connected fragment at a time.
+ *
+ * A structure with a single fragment is recentred on where it was drawn, as before. A structure
+ * whose pieces are held together ONLY by dative bonds — a coordination polymer, a bridged dimer —
+ * reaches the engine as several separate fragments, because the metals are removed before the
+ * engine sees it. The engine then packs those fragments wherever it likes (it has no idea they
+ * are linked), and a single global recentring kept that packing: the arrangement the chemist drew
+ * was thrown away, and the folding pass below then curled every arm inward trying to bring each
+ * metal's two donors together. Fitting each fragment onto its OWN drawn position — rotation and
+ * translation only, never a reflection, so no drawn parity flips — keeps the drawing's shape while
+ * each fragment's bond lengths and angles still come from the engine.
+ */
+function placeEngineFragmentsOnDrawing(
+  ligandAtoms: readonly MoleculeAtom[],
+  ligandBonds: readonly MoleculeBond[],
+  ligandToOriginalIndex: readonly number[],
+  enginePointByIndex: ReadonlyMap<number, PagePoint>,
+  scale: number
+): Map<number, PagePoint> {
+  const placed = new Map<number, PagePoint>();
+  const enginePoints = ligandAtoms.map((_, index) => enginePointByIndex.get(ligandToOriginalIndex[index]));
+
+  const ligandIndexById = new Map(ligandAtoms.map((atom, index) => [atom.id, index]));
+  const adjacency: number[][] = ligandAtoms.map(() => []);
+  ligandBonds.forEach((bond) => {
+    const from = ligandIndexById.get(bond.fromAtomId);
+    const to = ligandIndexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    adjacency[from].push(to);
+    adjacency[to].push(from);
+  });
+
+  const fragmentOf = new Array<number>(ligandAtoms.length).fill(-1);
+  const fragments: number[][] = [];
+  ligandAtoms.forEach((_, start) => {
+    if (fragmentOf[start] !== -1) {
+      return;
+    }
+    const members: number[] = [];
+    const stack = [start];
+    fragmentOf[start] = fragments.length;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      members.push(node);
+      for (const next of adjacency[node]) {
+        if (fragmentOf[next] === -1) {
+          fragmentOf[next] = fragments.length;
+          stack.push(next);
+        }
+      }
+    }
+    fragments.push(members);
+  });
+
+  const placeFragment = (members: readonly number[]) => {
+    const points = members
+      .map((index) => ({ index, engine: enginePoints[index], drawn: ligandAtoms[index] }))
+      .filter((entry): entry is { index: number; engine: PagePoint; drawn: MoleculeAtom } => entry.engine !== undefined);
+    if (points.length === 0) {
+      return;
+    }
+    const engineCenter = averagePagePoint(points.map((entry) => entry.engine));
+    const drawnCenter = averagePagePoint(points.map((entry) => entry.drawn));
+    // Least-squares rotation about the two centroids (Kabsch in the plane): the angle whose
+    // rotation best carries the engine fragment onto the drawn one. Reflections are excluded by
+    // construction — this only ever rotates.
+    let dot = 0;
+    let cross = 0;
+    for (const entry of points) {
+      const ex = (entry.engine.x - engineCenter.x) * scale;
+      const ey = (entry.engine.y - engineCenter.y) * scale;
+      const dx = entry.drawn.x - drawnCenter.x;
+      const dy = entry.drawn.y - drawnCenter.y;
+      dot += ex * dx + ey * dy;
+      cross += ex * dy - ey * dx;
+    }
+    const angle = dot === 0 && cross === 0 ? 0 : Math.atan2(cross, dot);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    for (const entry of points) {
+      const ex = (entry.engine.x - engineCenter.x) * scale;
+      const ey = (entry.engine.y - engineCenter.y) * scale;
+      placed.set(ligandToOriginalIndex[entry.index], {
+        x: drawnCenter.x + ex * cos - ey * sin,
+        y: drawnCenter.y + ex * sin + ey * cos
+      });
+    }
+  };
+
+  if (fragments.length <= 1) {
+    // One fragment: translation only, exactly as before. Rotating a lone structure onto its drawn
+    // orientation would be a different (and much louder) change to what Clean Up does.
+    const engineCenter = averagePagePoint([...enginePointByIndex.values()]);
+    const drawnCenter = averagePagePoint(ligandAtoms);
+    ligandAtoms.forEach((_, index) => {
+      const enginePoint = enginePoints[index];
+      if (!enginePoint) {
+        return;
+      }
+      placed.set(ligandToOriginalIndex[index], {
+        x: drawnCenter.x + (enginePoint.x - engineCenter.x) * scale,
+        y: drawnCenter.y + (enginePoint.y - engineCenter.y) * scale
+      });
+    });
+    return placed;
+  }
+
+  fragments.forEach(placeFragment);
+  return placed;
+}
+
 export function applyNativeMoleculeEngineRelayout(
   document: ChemDraftDocument,
   objectId: string,
-  relayout: (molfile: string) => PastedStructureDepiction
+  relayout: (molfile: string) => PastedStructureDepiction,
+  options: NativeEngineRelayoutOptions = {}
 ): ChemDraftDocument {
   const molecule = findMoleculeObject(document, objectId);
   if (!molecule || !isEditableNativeMoleculeGraph(molecule) || molecule.atoms.length === 0) {
     return document;
   }
 
-  const depiction = relayout(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
-  if (depiction.atoms.length !== molecule.atoms.length) {
+  // Free metals — coordination centres that carry only dative bonds — are placed by this function,
+  // not by the engine. Given the metal, OpenChemLib either treats every chelate as a literal fused
+  // ring and tangles the ligands, or (as a metal-ligand bond) bends the ligand rings while it fits
+  // the metal in. Given the bare ligand it lays out a clean, uniform organic skeleton; the metals
+  // are then folded into their chelate pockets and monodentate ligands arranged around them below.
+  const dashedBondsById = molecule.bonds.filter((bond) => bond.display?.bondStyle === "dashed");
+  const covalentDegreeById = new Map<string, number>();
+  molecule.bonds.forEach((bond) => {
+    if (bond.display?.bondStyle === "dashed") {
+      return;
+    }
+    covalentDegreeById.set(bond.fromAtomId, (covalentDegreeById.get(bond.fromAtomId) ?? 0) + 1);
+    covalentDegreeById.set(bond.toAtomId, (covalentDegreeById.get(bond.toAtomId) ?? 0) + 1);
+  });
+  const freeMetalIds = new Set(molecule.atoms
+    .filter((atom) =>
+      isNativeMetalAtom(atom) &&
+      (covalentDegreeById.get(atom.id) ?? 0) === 0 &&
+      dashedBondsById.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id))
+    .map((atom) => atom.id));
+  const ligandAtoms = molecule.atoms.filter((atom) => !freeMetalIds.has(atom.id));
+  const ligandBonds = molecule.bonds.filter((bond) => !freeMetalIds.has(bond.fromAtomId) && !freeMetalIds.has(bond.toAtomId));
+  if (ligandAtoms.length === 0) {
+    return document;
+  }
+  const ligandToOriginalIndex = ligandAtoms.map((atom) => molecule.atoms.indexOf(atom));
+  // Dashed bonds between non-metals (partial bonds, hydrogen bonds) write as plain singles here,
+  // which is what a layout wants: the atoms stay adjacent. The writer's warnings are not surfaced —
+  // nothing chemical leaves this function, only coordinates come back.
+  // Geometry only, so the export spelling (an abbreviated label as the dummy "*", an atom the
+  // engine can place) is the right one here; the R-group spelling is for CIP perception alone.
+  const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
+  const molfile = moleculeToMolfileV2000(ligand, { fromDocFrame: true });
+  const emittedAtoms = parseMolfileGraph(molfile).atoms;
+  const depiction = relayout(molfile);
+  if (depiction.atoms.length !== ligandAtoms.length) {
     throw new Error(
-      `Engine re-layout returned ${depiction.atoms.length} atoms for a ${molecule.atoms.length}-atom structure.`
+      `Engine re-layout returned ${depiction.atoms.length} atoms for a ${ligandAtoms.length}-atom structure.`
     );
   }
   depiction.atoms.forEach((atom, index) => {
-    const expected = molecule.atoms[index].element;
-    if (atom.element.toUpperCase() !== expected.toUpperCase()) {
+    // A nickname was emitted as a dummy atom, which OCL hands back as C; a D or T label is
+    // written verbatim and comes back as plain H. Only coordinates return to the document, so
+    // the original label stays intact either way.
+    const expected = emittedAtoms[index].element;
+    const returned = atom.element.toUpperCase();
+    const substituted = expected === "*" || ((expected === "D" || expected === "T") && returned === "H");
+    if (!substituted && returned !== expected.toUpperCase()) {
       throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
     }
   });
+  // Engine bonds re-indexed onto the molecule's own atom order.
+  const engineBonds = depiction.bonds.map((bond) => ({
+    ...bond,
+    from: ligandToOriginalIndex[bond.from],
+    to: ligandToOriginalIndex[bond.to]
+  }));
 
   // Engine frame is y-UP; the document draws y-DOWN (the coordinate-frame contract: negate y, never
   // swap wedges).
-  const enginePoints = depiction.atoms.map((atom) => ({ x: atom.x, y: -atom.y }));
-  const engineBondLengths = depiction.bonds
+  const enginePointByIndex = new Map<number, PagePoint>();
+  depiction.atoms.forEach((atom, index) => {
+    enginePointByIndex.set(ligandToOriginalIndex[index], { x: atom.x, y: -atom.y });
+  });
+  // The scale is matched on COVALENT bonds: a dashed bond drawn between non-metals is not a
+  // structural length, and the metals' bonds are not in the engine's picture at all. A molecule
+  // with nothing but dashed bonds falls back to all of them.
+  const indexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
+  const dativePairKeys = new Set(dashedBondsById
+    .map((bond) => atomPairKey(`${indexById.get(bond.fromAtomId)}`, `${indexById.get(bond.toAtomId)}`)));
+  const preferCovalent = ligandBonds.some((bond) => bond.display?.bondStyle !== "dashed");
+  const engineBondLengths = engineBonds
+    .filter((bond) => !preferCovalent || !dativePairKeys.has(atomPairKey(`${bond.from}`, `${bond.to}`)))
     .map((bond) => {
-      const from = enginePoints[bond.from];
-      const to = enginePoints[bond.to];
+      const from = enginePointByIndex.get(bond.from);
+      const to = enginePointByIndex.get(bond.to);
       return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
     })
     .filter((length) => length > 0.001);
-  const currentBondLengths = molecule.bonds
+  const currentBondLengths = ligandBonds
+    .filter((bond) => !preferCovalent || bond.display?.bondStyle !== "dashed")
     .map((bond) => {
       const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
       const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
@@ -12634,29 +14395,78 @@ export function applyNativeMoleculeEngineRelayout(
   // Repeated resize operations and malformed imports can leave a graph with nonzero but sub-pixel
   // bonds. Preserving that "scale" makes the clean depiction effectively disappear after rounding.
   // Clamp only collapsed drawings to the same conservative minimum accepted by freeform drawing;
-  // normal small/large user scales remain unchanged.
-  const targetBondLength = Math.max(currentBondLength, freeformMinimumBondLength);
+  // normal small/large user scales remain unchanged. A ligand-less drawing (bare metals joined by
+  // dashed bonds) has no engine bonds to measure; the drawing's own mean stands in.
+  const targetBondLength = Math.max(
+    options.targetBondLengthPx !== undefined && options.targetBondLengthPx > 0 ? options.targetBondLengthPx : currentBondLength,
+    freeformMinimumBondLength
+  );
   const engineBondLength = mean(engineBondLengths);
   const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
 
-  const engineCenter = averagePagePoint(enginePoints);
-  const currentCenter = averagePagePoint(molecule.atoms);
+  const placedEnginePoints = placeEngineFragmentsOnDrawing(
+    ligandAtoms,
+    ligandBonds,
+    ligandToOriginalIndex,
+    enginePointByIndex,
+    scale
+  );
 
-  const atoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
+  const engineAtoms: MoleculeAtom[] = molecule.atoms.map((atom, index) => {
     const { z: _z, ...flatAtom } = atom;
-    return {
-      ...flatAtom,
-      x: roundGeometryCoordinate(currentCenter.x + (enginePoints[index].x - engineCenter.x) * scale),
-      y: roundGeometryCoordinate(currentCenter.y + (enginePoints[index].y - engineCenter.y) * scale)
-    };
+    const placedPoint = placedEnginePoints.get(index);
+    // A free metal keeps its drawn position for now; the placement passes below move it.
+    return placedPoint
+      ? {
+          ...flatAtom,
+          x: roundGeometryCoordinate(placedPoint.x),
+          y: roundGeometryCoordinate(placedPoint.y)
+        }
+      : flatAtom;
   });
+  // In a bridged structure — a polymer, a dimer — the ligands are not free to be slotted around a
+  // metal: each fragment is tied to two of them, and the drawing decides where it sits. The
+  // monodentate pass is for one metal holding separate ligands, and left in it fought the settling
+  // below, each undoing the other's answer on every run.
+  const bridgedStructure = nativeStructureIsMetalBridged(molecule.atoms, molecule.bonds);
+  const foldedAtoms = foldNativeLigandsAroundMetals(engineAtoms, molecule.bonds, targetBondLength);
+  const placedAtoms = bridgedStructure
+    ? relaxNativeDativeGeometry(foldedAtoms, molecule.bonds, targetBondLength)
+    : arrangeNativeMonodentateLigands(
+        settleNativeMetalsInDonorPockets(foldedAtoms, molecule.bonds, targetBondLength),
+        molecule.bonds,
+        targetBondLength,
+        molecule.atoms
+      );
+  // The metals stay where the user drew them and the ligands are rebuilt around them: the whole
+  // result is translated so the free metals' centroid is back on its drawn spot. Recentring the
+  // ENGINE layout on the drawn ligand centroid (above) and then folding it moved that centroid,
+  // so a chelate walked across the page by the fold's shift on every cleanup; anchoring the
+  // metals makes a repeat reproduce the previous run exactly. A metal with only monodentate
+  // donors was never moved, so for those complexes this changes nothing.
+  const drawnFreeMetals = molecule.atoms.filter((atom) => freeMetalIds.has(atom.id));
+  const placedFreeMetals = placedAtoms.filter((atom) => freeMetalIds.has(atom.id));
+  const metalShift = drawnFreeMetals.length > 0
+    ? (() => {
+        const drawn = averagePagePoint(drawnFreeMetals);
+        const placed = averagePagePoint(placedFreeMetals);
+        return { x: drawn.x - placed.x, y: drawn.y - placed.y };
+      })()
+    : { x: 0, y: 0 };
+  const atoms = metalShift.x === 0 && metalShift.y === 0
+    ? placedAtoms
+    : placedAtoms.map((atom) => ({
+        ...atom,
+        x: roundGeometryCoordinate(atom.x + metalShift.x),
+        y: roundGeometryCoordinate(atom.y + metalShift.y)
+      }));
 
   // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint
-  // atom indices (bond order in the emitted molfile matches molecule.bonds minus dangling entries,
-  // so pair keys are the robust join).
+  // atom indices (the engine's bonds were re-indexed onto the molecule's own atom order above, so
+  // pair keys are the robust join).
   const atomIndexById = new Map(molecule.atoms.map((atom, index) => [atom.id, index]));
   const engineBondByPair = new Map(
-    depiction.bonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
+    engineBonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
   );
   const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
     const fromIndex = atomIndexById.get(bond.fromAtomId);
@@ -12694,11 +14504,39 @@ export function applyNativeMoleculeEngineRelayout(
   // Recompute each double bond's drawn side from the new geometry (ring doubles draw inward).
   const geometry = moleculeGeometryFromAtoms(atoms);
   const sideMolecule: MoleculeObject = { ...molecule, atoms, bonds: baseBonds, ...geometry };
-  const bonds: MoleculeBond[] = baseBonds.map((bond) =>
+  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) =>
     bond.order === "double"
       ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
       : bond
   );
+
+  // Read-back stereo guard, the same one flatten uses. The wedges above carry the parities the
+  // engine computed for ITS geometry; the fold, settle and arrange passes then moved atoms
+  // (rigid moves, but a mirrored monodentate ligand or a pivot the lock above did not foresee
+  // would invert a centre). Ask the real CIP perceiver what the finished drawing says and flip
+  // any centre that reads the wrong hand; if it cannot be made to read back, refuse the layout
+  // (the caller surfaces the error; the document is untouched) rather than commit an enantiomer.
+  let bonds = sidedBonds;
+  if (options.perceiveStereo) {
+    const perceive = options.perceiveStereo;
+    const reference = new Map<number, "R" | "S">();
+    perceive(stereoPerceptionMolfile(molecule)).forEach((entry, index) => {
+      if (entry?.isStereoCenter && (entry.descriptor === "R" || entry.descriptor === "S")) {
+        reference.set(index, entry.descriptor);
+      }
+    });
+    if (reference.size > 0) {
+      const reconciled = reconcileFlattenedStereo(molecule, atoms, sidedBonds, reference, perceive);
+      if (!reconciled.ok) {
+        throw new Error(
+          reconciled.reason === "legibility"
+            ? "Re-layout preserves stereochemistry but would draw two identical wedge/hash marks at one atom."
+            : `Re-layout would change stereochemistry at ${reconciled.unresolved.length} center(s).`
+        );
+      }
+      bonds = reconciled.bonds;
+    }
+  }
 
   const cleaned = withNativeMoleculeTransform(
     normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }),
@@ -12723,6 +14561,1341 @@ export function applyNativeMoleculeEngineRelayout(
   return applyPatches(document, [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }], {
     now: phase4Timestamp
   });
+}
+
+/**
+ * Place each free metal after the fold. A metal with two or more dative donors goes to the pocket
+ * they form — the point that minimises the spread of its donor distances about one bond length —
+ * if that point is clear of every other atom; otherwise the clearest candidate on rings around the
+ * donor centroid that reaches its donors best; otherwise the engine position if that is clear;
+ * otherwise the candidate with the most room. A metal with one dative donor sits one bond length
+ * from that donor along the donor's open direction. Metals are settled one after another and each
+ * sees the ones already placed, so two metals whose pockets coincide cannot be stacked on one
+ * point. Metals with covalent bonds of their own are part of the skeleton the engine laid out and
+ * are never moved — dragging a ZnCl2 into an imidazole pocket would stretch its Zn–Cl bonds.
+ */
+function settleNativeMetalsInDonorPockets(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const covalentNeighborsById = new Map<string, MoleculeAtom[]>();
+  bonds.forEach((bond) => {
+    if (bond.display?.bondStyle === "dashed") {
+      return;
+    }
+    const from = atomById.get(bond.fromAtomId);
+    const to = atomById.get(bond.toAtomId);
+    if (from && to) {
+      covalentNeighborsById.set(from.id, [...(covalentNeighborsById.get(from.id) ?? []), to]);
+      covalentNeighborsById.set(to.id, [...(covalentNeighborsById.get(to.id) ?? []), from]);
+    }
+  });
+  const donorsByMetalId = new Map<string, MoleculeAtom[]>();
+  bonds.forEach((bond) => {
+    if (bond.display?.bondStyle !== "dashed") {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metal = atomById.get(metalId);
+      const donor = atomById.get(donorId);
+      if (!metal || !donor || !isNativeMetalAtom(metal) || (covalentNeighborsById.get(metalId)?.length ?? 0) > 0) {
+        continue;
+      }
+      donorsByMetalId.set(metalId, [...(donorsByMetalId.get(metalId) ?? []), donor]);
+    }
+  });
+  if (donorsByMetalId.size === 0 || !(bondLengthPx > 0)) {
+    return [...atoms];
+  }
+  // Only donors that stay put may pull a metal. A donor on a fragment that reaches this metal
+  // through exactly one dative bond and no other metal is a monodentate ligand, and
+  // `arrangeNativeMonodentateLigands` moves that fragment to the metal afterwards; letting it
+  // pull the metal first meant every cleanup re-settled the metal against the engine's fresh
+  // row of ligands and walked the whole molecule a step across the page each time. A metal whose
+  // donors are all monodentate keeps the position it has.
+  const componentOfId = new Map<string, number>();
+  let componentCount = 0;
+  atoms.forEach((start) => {
+    if (componentOfId.has(start.id)) {
+      return;
+    }
+    const stack = [start.id];
+    componentOfId.set(start.id, componentCount);
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      (covalentNeighborsById.get(id) ?? []).forEach((neighbor) => {
+        if (!componentOfId.has(neighbor.id)) {
+          componentOfId.set(neighbor.id, componentCount);
+          stack.push(neighbor.id);
+        }
+      });
+    }
+    componentCount += 1;
+  });
+  const metalsByComponent = new Map<number, Set<string>>();
+  donorsByMetalId.forEach((donors, metalId) => donors.forEach((donor) => {
+    const component = componentOfId.get(donor.id)!;
+    metalsByComponent.set(component, new Set([...(metalsByComponent.get(component) ?? []), metalId]));
+  }));
+  const anchoringDonorsByMetalId = new Map<string, MoleculeAtom[]>();
+  donorsByMetalId.forEach((donors, metalId) => {
+    const perComponent = new Map<number, number>();
+    donors.forEach((donor) => {
+      const component = componentOfId.get(donor.id)!;
+      perComponent.set(component, (perComponent.get(component) ?? 0) + 1);
+    });
+    anchoringDonorsByMetalId.set(metalId, donors.filter((donor) => {
+      const component = componentOfId.get(donor.id)!;
+      return (perComponent.get(component) ?? 0) >= 2 || (metalsByComponent.get(component)?.size ?? 0) > 1;
+    }));
+  });
+
+  const positions = new Map<string, PagePoint>(atoms.map((atom) => [atom.id, { x: atom.x, y: atom.y }]));
+  const clearanceAt = (metalId: string, point: PagePoint) => {
+    let closest = Number.POSITIVE_INFINITY;
+    positions.forEach((position, id) => {
+      if (id !== metalId) {
+        closest = Math.min(closest, distance(position, point));
+      }
+    });
+    return closest;
+  };
+  const ringCandidates = (center: PagePoint): PagePoint[] => {
+    const candidates: PagePoint[] = [];
+    [1, 1.5, 2, 2.5].forEach((radiusFactor) => {
+      for (let step = 0; step < 12; step += 1) {
+        const angle = step * Math.PI / 6;
+        candidates.push({
+          x: center.x + Math.cos(angle) * bondLengthPx * radiusFactor,
+          y: center.y + Math.sin(angle) * bondLengthPx * radiusFactor
+        });
+      }
+    });
+    return candidates;
+  };
+
+  [...anchoringDonorsByMetalId.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([metalId, donors]) => {
+    if (donors.length === 0) {
+      return;
+    }
+    const donorPoints = donors.map((donor) => positions.get(donor.id)!);
+    const reachError = (point: PagePoint) =>
+      donorPoints.reduce((sum, donor) => sum + (distance(point, donor) - bondLengthPx) ** 2, 0);
+    const clear = bondLengthPx * 0.7;
+    let preferred: PagePoint;
+    if (donors.length === 1) {
+      // One donor: sit a bond length out along the donor's open direction — away from its
+      // covalent neighbours, or, for a bare donor, along the line from the metal's current spot.
+      const donor = donorPoints[0];
+      const neighbors = (covalentNeighborsById.get(donors[0].id) ?? []).map((atom) => positions.get(atom.id)!);
+      const sumX = neighbors.reduce((sum, point) => sum + (point.x - donor.x), 0);
+      const sumY = neighbors.reduce((sum, point) => sum + (point.y - donor.y), 0);
+      const current = positions.get(metalId)!;
+      const angle = neighbors.length > 0 && Math.hypot(sumX, sumY) > 1e-6
+        ? Math.atan2(-sumY, -sumX)
+        : distance(current, donor) > 1e-6 ? Math.atan2(current.y - donor.y, current.x - donor.x) : 0;
+      preferred = { x: donor.x + Math.cos(angle) * bondLengthPx, y: donor.y + Math.sin(angle) * bondLengthPx };
+    } else {
+      preferred = nativeDonorPocketPoint(donorPoints, bondLengthPx, positions.get(metalId));
+    }
+    let chosen: PagePoint | undefined;
+    if (clearanceAt(metalId, preferred) >= clear) {
+      chosen = preferred;
+    } else {
+      const candidates = ringCandidates(averagePagePoint(donorPoints));
+      const clearOnes = candidates.filter((candidate) => clearanceAt(metalId, candidate) >= clear);
+      if (clearOnes.length > 0) {
+        chosen = clearOnes.reduce((best, candidate) => (reachError(candidate) < reachError(best) ? candidate : best));
+      } else if (clearanceAt(metalId, positions.get(metalId)!) < clear) {
+        chosen = candidates.reduce((best, candidate) => (clearanceAt(metalId, candidate) > clearanceAt(metalId, best) ? candidate : best));
+      }
+    }
+    if (chosen) {
+      positions.set(metalId, chosen);
+    }
+  });
+
+  return atoms.map((atom) => {
+    const point = donorsByMetalId.has(atom.id) ? positions.get(atom.id) : undefined;
+    return point && (point.x !== atom.x || point.y !== atom.y)
+      ? { ...atom, x: roundGeometryCoordinate(point.x), y: roundGeometryCoordinate(point.y) }
+      : atom;
+  });
+}
+
+/**
+ * The angle a two-coordinate donor makes with the metal it binds: a coordinated S, N or O keeps
+ * its lone pairs, so the metal sits off to the SIDE of the donor, not straight out in front of it.
+ * 104 degrees is water's angle and within a couple of degrees of the C-S-Au angles measured in
+ * gold(I) thiolates; the same number is close enough for the other bent donors a drawing uses.
+ */
+const nativeDonorLonePairAngleRad = 104 * Math.PI / 180;
+
+/**
+ * True when some ligand fragment binds two or more metals — the signature of a coordination
+ * polymer or a bridged dimer, as opposed to one metal holding a chelate or a handful of separate
+ * ligands. In a bridged structure the fragments' places come from the drawing, so the passes that
+ * rearrange ligands AROUND a metal have nothing to say about them.
+ */
+function nativeStructureIsMetalBridged(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): boolean {
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const covalentNeighbors: number[][] = atoms.map(() => []);
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    covalentNeighbors[from].push(to);
+    covalentNeighbors[to].push(from);
+  });
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  let componentCount = 0;
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const stack = [start];
+    componentOf[start] = componentCount;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const next of covalentNeighbors[node]) {
+        if (componentOf[next] === -1) {
+          componentOf[next] = componentCount;
+          stack.push(next);
+        }
+      }
+    }
+    componentCount += 1;
+  });
+
+  const metalsByFragment = new Map<number, Set<number>>();
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metal = indexById.get(metalId);
+      const donor = indexById.get(donorId);
+      if (metal === undefined || donor === undefined) {
+        continue;
+      }
+      if (!isNativeMetalAtom(atoms[metal]) || covalentNeighbors[metal].length > 0) {
+        continue;
+      }
+      const fragment = componentOf[donor];
+      metalsByFragment.set(fragment, new Set([...(metalsByFragment.get(fragment) ?? []), metal]));
+    }
+  });
+  return [...metalsByFragment.values()].some((metals) => metals.size > 1);
+}
+
+/**
+ * Even out the drawn geometry of the dative bonds: every metal–donor link one bond length long,
+ * every donor bent rather than pointing its metal straight along its own bond, and a metal holding
+ * two donors drawn straight through.
+ *
+ * The passes before this one place the ligands and then drop each metal into the pocket its donors
+ * leave, which is right for a chelate but says nothing about a BRIDGE. When a metal links two
+ * separate fragments, its two links come out as long as the gap the drawing happens to leave — in
+ * the reported gold polymer one gold sat 22 px from its sulfurs and another 52 px from its own, at
+ * a 22 px bond length — and nothing ever expressed what a donor wants, so a terminal donor drew its
+ * metal straight ahead at 180°, an angle no thiolate has.
+ *
+ * Nothing is bent here: each fragment may only turn and slide as a rigid piece, and each metal may
+ * move. Those few numbers (three per fragment, two per metal) are fitted by plain gradient descent
+ * on one energy — link lengths, donor angles, straight-through metals, a spring back to where the
+ * drawing had each fragment, and a push apart for atoms that would collide. Descent only ever
+ * accepts a step that lowers the energy, which is what makes the pass repeatable: run it on its own
+ * output and it is already at the bottom, so nothing moves. The spring is released as the run goes
+ * on, so early iterations keep a fragment near its drawn neighbours and the answer it settles on is
+ * the links' alone. If the result would collide worse than the drawing handed in, the pass keeps
+ * its input instead.
+ */
+function relaxNativeDativeGeometry(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const L = bondLengthPx;
+  if (!(L > 0) || atoms.length === 0) {
+    return [...atoms];
+  }
+
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const covalentNeighbors: number[][] = atoms.map(() => []);
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    covalentNeighbors[from].push(to);
+    covalentNeighbors[to].push(from);
+  });
+
+  // Free metals only: a metal with covalent bonds of its own is part of the skeleton the engine
+  // laid out, not a coordination centre this pass places.
+  const dativeLinks: Array<{ metal: number; donor: number }> = [];
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metal = indexById.get(metalId);
+      const donor = indexById.get(donorId);
+      if (metal === undefined || donor === undefined) {
+        continue;
+      }
+      if (isNativeMetalAtom(atoms[metal]) && covalentNeighbors[metal].length === 0) {
+        dativeLinks.push({ metal, donor });
+      }
+    }
+  });
+  if (dativeLinks.length === 0) {
+    return [...atoms];
+  }
+
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  const components: number[][] = [];
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const members: number[] = [];
+    const stack = [start];
+    componentOf[start] = components.length;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      members.push(node);
+      for (const next of covalentNeighbors[node]) {
+        if (componentOf[next] === -1) {
+          componentOf[next] = components.length;
+          stack.push(next);
+        }
+      }
+    }
+    components.push(members);
+  });
+  // Big assemblies are left alone. The fit below costs a few hundred thousand distance checks, and
+  // a drawing with this many separate pieces is past the point where nudging them into line helps.
+  if (components.length > 16 || atoms.length > 300) {
+    return [...atoms];
+  }
+
+  // Only BRIDGED structures are settled here — ones where some fragment binds two or more metals,
+  // which is what a polymer or a bridged dimer looks like. There the link lengths come from
+  // whatever gap the drawing left between fragments, which is the case that went wrong. A single
+  // metal holding a chelate, or a handful of separate ligands around one centre, is already
+  // answered by the folding, pocket and monodentate passes above; running this on top of them
+  // would give two answers to the same question and neither would be stable.
+  if (!nativeStructureIsMetalBridged(atoms, bonds)) {
+    return [...atoms];
+  }
+
+  const basePoints: PagePoint[] = atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  const metalIndices = [...new Set(dativeLinks.map((link) => link.metal))].sort((a, b) => a - b);
+  const metalSet = new Set(metalIndices);
+  const movableComponents = components
+    .map((members, component) => component)
+    .filter((component) => dativeLinks.some((link) => componentOf[link.donor] === component));
+  const poseOfComponent = new Map<number, number>(movableComponents.map((component, slot) => [component, slot]));
+  const centroids = movableComponents.map((component) =>
+    averagePagePoint(components[component].map((index) => basePoints[index])));
+  // A fragment's turn is carried as the arc its outermost atom travels, not as an angle, so every
+  // number the descent below works with is a distance in px. Mixing radians and pixels in one
+  // gradient makes the step size meaningless — the angles dominate the direction and every step
+  // overshoots them.
+  const turnRadii = movableComponents.map((component, slot) =>
+    Math.max(1, ...components[component].map((index) => distance(basePoints[index], centroids[slot]))));
+
+  /**
+   * The direction a donor holds its metal in, measured in its own fragment's frame so it turns
+   * with the fragment. One covalent neighbour (a thiolate S, an alkoxide O) means a bent donor: the
+   * metal sits at the lone-pair angle from that bond, on the side the drawing already has it —
+   * flipping sides would swing the metal across the page for no reason. Two or more neighbours (a
+   * pyridine N, a thioether S) point their free direction away from all of them.
+   */
+  const linkDirections = dativeLinks.map((link) => {
+    const donor = basePoints[link.donor];
+    const neighbors = covalentNeighbors[link.donor].map((index) => basePoints[index]);
+    const current = Math.atan2(basePoints[link.metal].y - donor.y, basePoints[link.metal].x - donor.x);
+    if (neighbors.length === 0) {
+      return current;
+    }
+    if (neighbors.length === 1) {
+      const toNeighbor = Math.atan2(neighbors[0].y - donor.y, neighbors[0].x - donor.x);
+      const options = [toNeighbor + nativeDonorLonePairAngleRad, toNeighbor - nativeDonorLonePairAngleRad];
+      return options.reduce((best, candidate) =>
+        Math.abs(wrapDegrees180((candidate - current) * 180 / Math.PI)) <
+        Math.abs(wrapDegrees180((best - current) * 180 / Math.PI)) ? candidate : best);
+    }
+    const sumX = neighbors.reduce((sum, point) => sum + (point.x - donor.x), 0);
+    const sumY = neighbors.reduce((sum, point) => sum + (point.y - donor.y), 0);
+    return Math.hypot(sumX, sumY) > 1e-6 ? Math.atan2(-sumY, -sumX) : current;
+  });
+
+  /**
+   * A metal holding exactly two donors is drawn straight through. Gold(I), silver(I), copper(I) and
+   * mercury(II) — the ions that turn up two-coordinate — are linear, and a two-coordinate centre
+   * reads as linear in a drawing anyway. Without this the donors are free to close up on each
+   * other: they ended 16 px apart on 22 px links in the reported polymer, a 43° bite angle.
+   */
+  const linearMetals = new Map<number, [number, number]>();
+  const donorsByMetal = new Map<number, number[]>();
+  dativeLinks.forEach((link) => {
+    donorsByMetal.set(link.metal, [...(donorsByMetal.get(link.metal) ?? []), link.donor]);
+  });
+  donorsByMetal.forEach((donors, metal) => {
+    if (donors.length === 2 && donors[0] !== donors[1]) {
+      linearMetals.set(metal, [donors[0], donors[1]]);
+    }
+  });
+
+  const bondedPairs = new Set(bonds.map((bond) => {
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    return from === undefined || to === undefined ? "" : `${Math.min(from, to)}:${Math.max(from, to)}`;
+  }));
+  // Collision candidates: atoms of different fragments that start within reach of each other.
+  // Anything further apart than this cannot be pushed together by the small moves below.
+  const collisionCandidates: Array<{ pair: [number, number]; gap: number }> = [];
+  for (let i = 0; i < atoms.length; i += 1) {
+    for (let j = i + 1; j < atoms.length; j += 1) {
+      if (componentOf[i] === componentOf[j] || bondedPairs.has(`${i}:${j}`)) {
+        continue;
+      }
+      const gap = distance(basePoints[i], basePoints[j]);
+      if (gap < 4 * L) {
+        collisionCandidates.push({ pair: [i, j], gap });
+      }
+    }
+  }
+  // Only the closest pairs are watched: two atoms four bond lengths apart cannot be pushed
+  // together by moves this small, and the list is what the fit's cost is made of.
+  const collisionPairs = collisionCandidates
+    .sort((left, right) => left.gap - right.gap)
+    .slice(0, 1200)
+    .map((candidate) => candidate.pair);
+
+  // Parameters: turn and slide per fragment (x, y, angle), a move per metal (x, y).
+  const parameters = new Array<number>(movableComponents.length * 3 + metalIndices.length * 2).fill(0);
+  const metalParameterOffset = movableComponents.length * 3;
+
+  const placedPoints = (values: readonly number[]): PagePoint[] => {
+    const points = basePoints.map((point) => ({ ...point }));
+    movableComponents.forEach((component, slot) => {
+      const tx = values[slot * 3];
+      const ty = values[slot * 3 + 1];
+      const angle = values[slot * 3 + 2] / turnRadii[slot];
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const centroid = centroids[slot];
+      for (const index of components[component]) {
+        const dx = basePoints[index].x - centroid.x;
+        const dy = basePoints[index].y - centroid.y;
+        points[index] = {
+          x: centroid.x + tx + dx * cos - dy * sin,
+          y: centroid.y + ty + dx * sin + dy * cos
+        };
+      }
+    });
+    metalIndices.forEach((metalIndex, slot) => {
+      points[metalIndex] = {
+        x: basePoints[metalIndex].x + values[metalParameterOffset + slot * 2],
+        y: basePoints[metalIndex].y + values[metalParameterOffset + slot * 2 + 1]
+      };
+    });
+    return points;
+  };
+
+  const clearance = 0.9 * L;
+  const energyOf = (values: readonly number[], anchorWeight: number): number => {
+    const points = placedPoints(values);
+    let total = 0;
+
+    // Lengths are stiff and angles are soft, the way a force field treats them: a link that cannot
+    // have both would rather bend than be squashed, and a squashed link is what reads as wrong.
+    dativeLinks.forEach((link, linkIndex) => {
+      const slot = poseOfComponent.get(componentOf[link.donor]);
+      const turn = slot === undefined ? 0 : values[slot * 3 + 2] / turnRadii[slot];
+      const donor = points[link.donor];
+      const metal = points[link.metal];
+      const span = distance(donor, metal);
+      total += 3 * ((span - L) / L) ** 2;
+      if (span > 1e-6) {
+        const actual = Math.atan2(metal.y - donor.y, metal.x - donor.x);
+        const ideal = linkDirections[linkIndex] + turn;
+        const deviation = wrapDegrees180((actual - ideal) * 180 / Math.PI) * Math.PI / 180;
+        total += 0.5 * deviation ** 2;
+      }
+    });
+
+    linearMetals.forEach(([first, second], metalIndex) => {
+      const metal = points[metalIndex];
+      const toFirst = Math.atan2(points[first].y - metal.y, points[first].x - metal.x);
+      const toSecond = Math.atan2(points[second].y - metal.y, points[second].x - metal.x);
+      const bite = Math.abs(wrapDegrees180((toFirst - toSecond) * 180 / Math.PI)) * Math.PI / 180;
+      total += 1 * (Math.PI - bite) ** 2;
+    });
+
+    if (anchorWeight > 0) {
+      movableComponents.forEach((_, slot) => {
+        const tx = values[slot * 3];
+        const ty = values[slot * 3 + 1];
+        const turn = values[slot * 3 + 2];
+        total += anchorWeight * (tx * tx + ty * ty + turn * turn) / (L * L);
+      });
+    }
+
+    for (const [first, second] of collisionPairs) {
+      const gap = distance(points[first], points[second]);
+      if (gap < clearance) {
+        total += 6 * ((clearance - gap) / L) ** 2;
+      }
+    }
+    return total;
+  };
+
+  // Gradient descent with a backtracking step: no step is taken unless it lowers the energy, which
+  // is what makes the pass repeatable — handed its own output it starts at the bottom and stays.
+  // The spring is released over the first third; the rest is a plain descent on the links alone,
+  // run until it stops making progress, so a second Clean Up finds nothing left to do.
+  //
+  // Each parameter's step is scaled by how big its own gradient has been running (the usual cure
+  // for a valley that is steep across and shallow along: undivided, the descent inches along the
+  // shallow direction and never arrives). Dividing by a positive number per parameter still points
+  // downhill, so the "never uphill" guarantee survives.
+  const budget = Math.min(4000, Math.max(600, Math.round(120000 / (parameters.length + 1))));
+  const annealUntil = Math.round(budget / 3);
+  const startingAnchorWeight = 1.5;
+  const gradientStep = 1e-3;
+  const scales = parameters.map(() => 1);
+  let step = 0.1 * L;
+  let settled = 0;
+  for (let iteration = 0; iteration < budget; iteration += 1) {
+    const anchorWeight = iteration >= annealUntil
+      ? 0
+      : startingAnchorWeight * (1 - iteration / annealUntil) ** 2;
+    const current = energyOf(parameters, anchorWeight);
+    const gradient = parameters.map((value, index) => {
+      const probe = [...parameters];
+      probe[index] = value + gradientStep;
+      return (energyOf(probe, anchorWeight) - current) / gradientStep;
+    });
+    gradient.forEach((value, index) => {
+      scales[index] = Math.max(0.9 * scales[index], Math.abs(value));
+    });
+    const direction = gradient.map((value, index) => value / Math.max(scales[index], 1e-9));
+    const magnitude = Math.hypot(...direction);
+    if (!(magnitude > 1e-12)) {
+      break;
+    }
+    let accepted = false;
+    for (let attempt = 0; attempt < 10 && !accepted; attempt += 1) {
+      const candidate = parameters.map((value, index) => value - step * direction[index] / magnitude);
+      const candidateEnergy = energyOf(candidate, anchorWeight);
+      if (candidateEnergy < current) {
+        candidate.forEach((value, index) => { parameters[index] = value; });
+        step *= 1.4;
+        accepted = true;
+        settled = current - candidateEnergy < 1e-9 ? settled + 1 : 0;
+      } else {
+        step *= 0.5;
+      }
+    }
+    if (!accepted) {
+      settled += 1;
+      step = Math.max(step, 1e-4 * L);
+    }
+    if (iteration > annealUntil && settled > 40) {
+      break;
+    }
+  }
+  const points = placedPoints(parameters);
+
+  // Fail safe: if the settled drawing collides with itself worse than the one handed in, keep the
+  // one handed in. Evening out the links is never worth atoms on top of each other.
+  const closestNonBonded = (candidate: readonly PagePoint[]): number => {
+    let closest = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < candidate.length; i += 1) {
+      for (let j = i + 1; j < candidate.length; j += 1) {
+        if (bondedPairs.has(`${i}:${j}`)) {
+          continue;
+        }
+        closest = Math.min(closest, distance(candidate[i], candidate[j]));
+      }
+    }
+    return closest;
+  };
+  const before = closestNonBonded(basePoints);
+  const after = closestNonBonded(points);
+  if (after < 0.5 * L && after < before) {
+    return [...atoms];
+  }
+
+  return atoms.map((atom, index) => ({
+    ...atom,
+    x: roundGeometryCoordinate(points[index].x),
+    y: roundGeometryCoordinate(points[index].y)
+  }));
+}
+
+/**
+ * Where a metal belongs once its donors surround a pocket: the point whose distance to each donor
+ * is as near one bond length as it can be.
+ *
+ * TWO donors are solved outright, and have to be. The descent below starts at the donors' midpoint,
+ * and for a pair that midpoint is a SADDLE — both pulls cancel along the line and symmetry cancels
+ * them across it — so the descent never left it, and every two-donor metal was drawn at the middle
+ * of its donors however close together they were. That is where the impossibly short links came
+ * from: two sulfurs 16 px apart at a 22 px bond length gave 8 px bonds. The metal belongs off the
+ * line instead, on the perpendicular through the midpoint, at the offset that puts it a full bond
+ * length from both — and only when the donors are further apart than two bond lengths is the
+ * midpoint really the best it can do. `nearPoint` picks which side of the line, keeping the metal
+ * on the side it is already on.
+ */
+function nativeDonorPocketPoint(
+  donors: readonly PagePoint[],
+  bondLengthPx: number,
+  nearPoint?: PagePoint
+): PagePoint {
+  if (donors.length === 2) {
+    const [first, second] = donors;
+    const span = distance(first, second);
+    const middle = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    if (span < 1e-6 || span >= 2 * bondLengthPx) {
+      return middle;
+    }
+    const offset = Math.sqrt(Math.max(0, bondLengthPx ** 2 - (span / 2) ** 2));
+    const normal = { x: -(second.y - first.y) / span, y: (second.x - first.x) / span };
+    const candidates = [
+      { x: middle.x + normal.x * offset, y: middle.y + normal.y * offset },
+      { x: middle.x - normal.x * offset, y: middle.y - normal.y * offset }
+    ];
+    return nearPoint && distance(candidates[1], nearPoint) < distance(candidates[0], nearPoint)
+      ? candidates[1]
+      : candidates[0];
+  }
+
+  let point = averagePagePoint(donors);
+  for (let iteration = 0; iteration < 80; iteration += 1) {
+    let gradientX = 0;
+    let gradientY = 0;
+    donors.forEach((donor) => {
+      const dx = point.x - donor.x;
+      const dy = point.y - donor.y;
+      const radius = Math.hypot(dx, dy) || 1e-6;
+      const factor = 2 * (radius - bondLengthPx) / radius;
+      gradientX += factor * dx;
+      gradientY += factor * dy;
+    });
+    point = { x: point.x - 0.1 * gradientX, y: point.y - 0.1 * gradientY };
+  }
+  return point;
+}
+
+/**
+ * Fold a coordination complex's ligand arms around their metals. The engine lays the ligand out as
+ * an organic molecule with the metal-ligand bonds ignored, so a chelating ligand's donors point
+ * wherever its arms happen to fall and the metal ends up parked to one side on long dashed bonds.
+ * This pass treats every acyclic covalent SINGLE bond whose far side carries a donor as a hinge —
+ * a bridge of the covalent graph, moving the smaller side — and tries, for each hinge, a mirror of
+ * that side across the bond (never when the side or the hinge's fixed end carries a wedge or hash,
+ * which a mirror would turn into the enantiomer) and rotations of it about either end in 30°
+ * steps (never about a drawn stereocentre, whose neighbour order is its parity, nor about an end
+ * of an acyclic double bond, where a swung arm turns E into Z — the other end of such a hinge
+ * still turns the whole side rigidly). A move is kept when it lowers an energy made of three terms: how far each metal's donors
+ * sit from one bond length around the metal, overlaps between non-bonded atoms, and pinched angles
+ * between an atom's covalent neighbours. Metals with covalent bonds of their own are left to the
+ * engine (they are part of the skeleton, not free coordination centres); a ligand with no free
+ * metal, or with more than 80 hinges, is returned untouched. Bond lengths and ring shapes are
+ * preserved exactly because every move is rigid. `settleNativeMetalsInDonorPockets` then places
+ * the metals. Cost: each move is O(moved atoms × atoms); a 100-atom complex with 30 hinges runs
+ * well under a second.
+ */
+function foldNativeLigandsAroundMetals(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number
+): MoleculeAtom[] {
+  const L = bondLengthPx;
+  if (!(L > 0) || atoms.length < 3) {
+    return [...atoms];
+  }
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const covalentDegree = new Map<string, number>();
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    covalentDegree.set(bond.fromAtomId, (covalentDegree.get(bond.fromAtomId) ?? 0) + 1);
+    covalentDegree.set(bond.toAtomId, (covalentDegree.get(bond.toAtomId) ?? 0) + 1);
+  });
+  const donorIndicesByMetal = new Map<number, number[]>();
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metalIndex = indexById.get(metalId);
+      const donorIndex = indexById.get(donorId);
+      const metal = metalIndex === undefined ? undefined : atoms[metalIndex];
+      if (metalIndex === undefined || donorIndex === undefined || !metal || !isNativeMetalAtom(metal) || (covalentDegree.get(metalId) ?? 0) > 0) {
+        continue;
+      }
+      donorIndicesByMetal.set(metalIndex, [...(donorIndicesByMetal.get(metalIndex) ?? []), donorIndex]);
+    }
+  });
+  // Covalent adjacency and its bridges (Tarjan): the hinges.
+  const adjacency: number[][] = atoms.map(() => []);
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    adjacency[from].push(to);
+    adjacency[to].push(from);
+  });
+
+  // Which covalent fragment each atom belongs to. Folding closes a CHELATE: one ligand wrapping
+  // its metal, its arms swung about the hinges between the donors. A metal whose donors come from
+  // DIFFERENT fragments is a bridge in a polymer or a dimer instead — there is no covalent path
+  // between those donors to fold along, and pulling them together only drags whole fragments over
+  // each other. Such metals are left to the pocket pass, which moves the metal, not the ligands.
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  let componentCount = 0;
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const stack = [start];
+    componentOf[start] = componentCount;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const next of adjacency[node]) {
+        if (componentOf[next] === -1) {
+          componentOf[next] = componentCount;
+          stack.push(next);
+        }
+      }
+    }
+    componentCount += 1;
+  });
+
+  const metals = [...donorIndicesByMetal.entries()].filter(([, donors]) =>
+    donors.length >= 2 && new Set(donors.map((donorIndex) => componentOf[donorIndex])).size === 1
+  );
+  if (metals.length === 0) {
+    return [...atoms];
+  }
+  const metalIndexSet = new Set(metals.map(([metalIndex]) => metalIndex));
+  // Only a single bond turns: a bridge that is a double bond (a salen imine, an exocyclic
+  // alkene) would flip its drawn E/Z under a mirror, and a wedged side under a mirror becomes the
+  // enantiomer, so those sides may rotate but never mirror.
+  const singleCovalentPairs = new Set<string>();
+  const stereoTouched = new Set<number>();
+  // The narrow end of a wedge or hash is the stereocentre it describes. Rotating an arm about
+  // that atom changes the cyclic order of its neighbours, which is the drawn parity, so no
+  // rotation may pivot there; the same goes for an end of an acyclic double bond, where a swung
+  // arm swaps sides of the bond and turns E into Z.
+  const stereoCentres = new Set<number>();
+  const covalentDoublePairs = new Set<string>();
+  bonds.forEach((bond) => {
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined) {
+      return;
+    }
+    if (!isDashed(bond) && bond.order === "single") {
+      singleCovalentPairs.add(`${Math.min(from, to)}:${Math.max(from, to)}`);
+    }
+    if (!isDashed(bond) && bond.order === "double") {
+      covalentDoublePairs.add(`${Math.min(from, to)}:${Math.max(from, to)}`);
+    }
+    if (bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed") {
+      stereoTouched.add(from);
+      stereoTouched.add(to);
+      stereoCentres.add(from);
+    }
+  });
+  const discovery = new Array<number>(atoms.length).fill(-1);
+  const low = new Array<number>(atoms.length).fill(0);
+  const bridges: Array<[number, number]> = [];
+  let clock = 0;
+  const visit = (node: number, parent: number) => {
+    discovery[node] = clock;
+    low[node] = clock;
+    clock += 1;
+    for (const next of adjacency[node]) {
+      if (next === parent) {
+        continue;
+      }
+      if (discovery[next] === -1) {
+        visit(next, node);
+        low[node] = Math.min(low[node], low[next]);
+        if (low[next] > discovery[node]) {
+          bridges.push([node, next]);
+        }
+      } else {
+        low[node] = Math.min(low[node], discovery[next]);
+      }
+    }
+  };
+  atoms.forEach((_, index) => {
+    if (discovery[index] === -1) {
+      visit(index, -1);
+    }
+  });
+
+  const sideOf = (start: number, blockedFrom: number, blockedTo: number): number[] => {
+    const seen = new Set<number>([start]);
+    const stack = [start];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const next of adjacency[node]) {
+        if ((node === blockedFrom && next === blockedTo) || (node === blockedTo && next === blockedFrom) || seen.has(next)) {
+          continue;
+        }
+        seen.add(next);
+        stack.push(next);
+      }
+    }
+    return [...seen];
+  };
+  type Hinge = { axisFrom: number; axisTo: number; moving: number[] };
+  const donorIndexSet = new Set(metals.flatMap(([, donors]) => donors));
+  // Atoms no rotation may pivot on: a drawn stereocentre (the cyclic order of its neighbours is
+  // its parity), and either end of an acyclic double bond whose far end carries a substituent
+  // (an arm swung about this end changes which side of the bond it is on — E/Z). A ring double
+  // bond is locked by its ring and needs no rule. Rotation about the OTHER end of a hinge still
+  // moves the whole side rigidly, so every parity and every E/Z inside it is preserved.
+  const rotationLocked = new Set<number>(stereoCentres);
+  bridges.forEach(([left, right]) => {
+    if (!covalentDoublePairs.has(`${Math.min(left, right)}:${Math.max(left, right)}`)) {
+      return;
+    }
+    if (adjacency[right].length >= 2) {
+      rotationLocked.add(left);
+    }
+    if (adjacency[left].length >= 2) {
+      rotationLocked.add(right);
+    }
+  });
+  const hinges: Hinge[] = [];
+  bridges.forEach(([left, right]) => {
+    if (!singleCovalentPairs.has(`${Math.min(left, right)}:${Math.max(left, right)}`)) {
+      return;
+    }
+    const leftSide = sideOf(left, left, right);
+    const rightSide = sideOf(right, left, right);
+    // Move the smaller side; a lone terminal atom has nothing to fold, and a side with no donor
+    // on it (an alkyl tail, a substituent) has no reason to leave the engine's clean placement.
+    const [axisFrom, axisTo, moving] = leftSide.length <= rightSide.length
+      ? [right, left, leftSide]
+      : [left, right, rightSide];
+    if (moving.length >= 2 && moving.some((index) => donorIndexSet.has(index))) {
+      hinges.push({ axisFrom, axisTo, moving });
+    }
+  });
+  if (hinges.length === 0 || hinges.length > 80) {
+    return [...atoms];
+  }
+
+  const bondedPairs = new Set<string>();
+  bonds.forEach((bond) => {
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from !== undefined && to !== undefined) {
+      bondedPairs.add(`${Math.min(from, to)}:${Math.max(from, to)}`);
+    }
+  });
+  const minimumNeighborAngle = Math.PI * 50 / 180;
+
+  // `scope`, when given, restricts the overlap and angle terms to the atoms a move can change
+  // (the moving side, the hinge's fixed end, and the metals) — the terms left out are identical
+  // before and after the move, so comparing two evaluations with the same scope compares the
+  // full energy. That keeps a move O(moved × atoms) rather than O(atoms²).
+  const energy = (
+    points: PagePoint[],
+    hardReject: boolean,
+    fixedMetals?: ReadonlyMap<number, PagePoint>,
+    scope?: ReadonlySet<number>
+  ): number => {
+    const placed = points.map((point) => ({ ...point }));
+    let total = 0;
+    metals.forEach(([metalIndex, donorIndices]) => {
+      const donors = donorIndices.map((index) => placed[index]);
+      const pocket = fixedMetals?.get(metalIndex) ?? nativeDonorPocketPoint(donors, L, placed[metalIndex]);
+      placed[metalIndex] = pocket;
+      donors.forEach((donor) => {
+        total += 3 * ((distance(pocket, donor) - L) / L) ** 2;
+      });
+    });
+    const firstIndices = scope ? [...scope] : placed.map((_, index) => index);
+    for (const i of firstIndices) {
+      for (let j = 0; j < placed.length; j += 1) {
+        if (j === i || (scope ? scope.has(j) && j < i : j < i) || bondedPairs.has(`${Math.min(i, j)}:${Math.max(i, j)}`)) {
+          continue;
+        }
+        const gap = distance(placed[i], placed[j]);
+        // Two atoms on top of each other is never an acceptable final answer, but the fold has
+        // to pass through clashes on the way into a pocket, so the hard rejection inside half a
+        // bond length applies only to the final pass; earlier passes see a steep finite penalty.
+        if (hardReject && gap < 0.5 * L) {
+          return Number.POSITIVE_INFINITY;
+        }
+        if (gap < 0.9 * L) {
+          total += 20 * ((0.9 * L - gap) / L) ** 2;
+        }
+      }
+    }
+    adjacency.forEach((neighbors, index) => {
+      if (scope && !scope.has(index) && !neighbors.some((neighbor) => scope.has(neighbor))) {
+        return;
+      }
+      for (let a = 0; a < neighbors.length; a += 1) {
+        for (let b = a + 1; b < neighbors.length; b += 1) {
+          const center = placed[index];
+          const first = placed[neighbors[a]];
+          const second = placed[neighbors[b]];
+          const angle = Math.abs(wrapDegrees180(
+            (Math.atan2(first.y - center.y, first.x - center.x) - Math.atan2(second.y - center.y, second.x - center.x)) * 180 / Math.PI
+          )) * Math.PI / 180;
+          if (angle < minimumNeighborAngle) {
+            total += 2 * ((minimumNeighborAngle - angle) / minimumNeighborAngle) ** 2;
+          }
+        }
+      }
+    });
+    return total;
+  };
+
+  const rotated = (point: PagePoint, pivot: PagePoint, radians: number): PagePoint => {
+    const dx = point.x - pivot.x;
+    const dy = point.y - pivot.y;
+    return { x: pivot.x + dx * Math.cos(radians) - dy * Math.sin(radians), y: pivot.y + dx * Math.sin(radians) + dy * Math.cos(radians) };
+  };
+  const mirrored = (point: PagePoint, axisFrom: PagePoint, axisTo: PagePoint): PagePoint => {
+    const ax = axisTo.x - axisFrom.x;
+    const ay = axisTo.y - axisFrom.y;
+    const length = Math.hypot(ax, ay) || 1e-6;
+    const ux = ax / length;
+    const uy = ay / length;
+    const dx = point.x - axisFrom.x;
+    const dy = point.y - axisFrom.y;
+    const along = dx * ux + dy * uy;
+    const px = axisFrom.x + along * ux;
+    const py = axisFrom.y + along * uy;
+    return { x: 2 * px - point.x, y: 2 * py - point.y };
+  };
+  const candidates = (points: PagePoint[], hinge: Hinge): PagePoint[][] => {
+    const movingSet = new Set(hinge.moving);
+    const results: PagePoint[][] = [];
+    const transform = (apply: (point: PagePoint, index: number) => PagePoint) =>
+      points.map((point, index) => (movingSet.has(index) ? apply(point, index) : point));
+    const carriesStereo = stereoTouched.has(hinge.axisFrom) || hinge.moving.some((index) => stereoTouched.has(index));
+    if (!carriesStereo) {
+      results.push(transform((point) => mirrored(point, points[hinge.axisFrom], points[hinge.axisTo])));
+    }
+    // 30° steps: the 60° grid alone cannot bring a pyridine nitrogen onto a pocket that the
+    // amine's own 120° geometry places between grid points.
+    for (const degrees of [30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]) {
+      const radians = degrees * Math.PI / 180;
+      if (!rotationLocked.has(hinge.axisFrom)) {
+        results.push(transform((point) => rotated(point, points[hinge.axisFrom], radians)));
+      }
+      if (!rotationLocked.has(hinge.axisTo)) {
+        results.push(transform((point, index) => (index === hinge.axisTo ? point : rotated(point, points[hinge.axisTo], radians))));
+      }
+    }
+    return results;
+  };
+
+  // Folding a chelate is a coupled problem: where an arm should go depends on where the metal
+  // sits, and where the metal sits depends on the arms. Decouple it by alternating. First put
+  // each metal beside the donor it has on the rigid core (the atoms no hinge moves — a bridging
+  // phenoxide, an amine on the backbone), one bond length out along that donor's open bisector,
+  // spreading several metals on one donor apart. With the metals held fixed, fold every hinge
+  // greedily toward those targets; then re-settle each metal into the pocket its donors now form
+  // and fold again. Three cycles are plenty; the last pass applies the hard clash rule.
+  const metalIndices = metals.map(([metalIndex]) => metalIndex);
+  const greedyFold = (start: PagePoint[], fixedMetals: ReadonlyMap<number, PagePoint> | undefined, hardReject: boolean): PagePoint[] => {
+    let points = start;
+    for (let round = 0; round < 8; round += 1) {
+      let improved = false;
+      for (const hinge of hinges) {
+        const scope = new Set<number>([...hinge.moving, hinge.axisFrom, ...metalIndices]);
+        const base = energy(points, hardReject, fixedMetals, scope);
+        let bestCandidate: PagePoint[] | undefined;
+        let bestCandidateEnergy = base;
+        for (const candidate of candidates(points, hinge)) {
+          const candidateEnergy = energy(candidate, hardReject, fixedMetals, scope);
+          if (candidateEnergy < bestCandidateEnergy - 1e-6) {
+            bestCandidateEnergy = candidateEnergy;
+            bestCandidate = candidate;
+          }
+        }
+        if (bestCandidate) {
+          points = bestCandidate;
+          improved = true;
+        }
+      }
+      if (!improved) {
+        break;
+      }
+    }
+    return points;
+  };
+
+  const movable = new Set(hinges.flatMap((hinge) => hinge.moving));
+  // The direction a metal should sit from its anchor donor: the donor's open bisector when it has
+  // one, otherwise (a symmetric tertiary amine has none) the direction with the most room.
+  const openDirection = (index: number, points: PagePoint[]): number => {
+    const neighbors = adjacency[index];
+    const center = points[index];
+    const sumX = neighbors.reduce((sum, neighbor) => sum + (points[neighbor].x - center.x), 0);
+    const sumY = neighbors.reduce((sum, neighbor) => sum + (points[neighbor].y - center.y), 0);
+    if (neighbors.length > 0 && Math.hypot(sumX, sumY) > 0.3 * L) {
+      return Math.atan2(-sumY, -sumX);
+    }
+    let bestAngle = 0;
+    let bestClearance = -1;
+    for (let step = 0; step < 12; step += 1) {
+      const angle = step * Math.PI / 6;
+      const probe = { x: center.x + Math.cos(angle) * L, y: center.y + Math.sin(angle) * L };
+      const clearance = points.reduce((closest, point, other) =>
+        (other === index || metalIndexSet.has(other) ? closest : Math.min(closest, distance(point, probe))), Number.POSITIVE_INFINITY);
+      if (clearance > bestClearance) {
+        bestClearance = clearance;
+        bestAngle = angle;
+      }
+    }
+    return bestAngle;
+  };
+  const initialMetals = (points: PagePoint[]): Map<number, PagePoint> => {
+    const placement = new Map<number, PagePoint>();
+    const metalsByCoreDonor = new Map<number, number[]>();
+    metals.forEach(([metalIndex, donorIndices]) => {
+      const coreDonors = donorIndices.filter((index) => !movable.has(index));
+      if (coreDonors.length === 0) {
+        placement.set(metalIndex, nativeDonorPocketPoint(donorIndices.map((index) => points[index]), L));
+        return;
+      }
+      const anchor = coreDonors[0];
+      metalsByCoreDonor.set(anchor, [...(metalsByCoreDonor.get(anchor) ?? []), metalIndex]);
+    });
+    metalsByCoreDonor.forEach((metalIndices, anchor) => {
+      const bisector = openDirection(anchor, points);
+      const spread = Math.PI * 70 / 180;
+      metalIndices.forEach((metalIndex, position) => {
+        const angle = bisector + (position - (metalIndices.length - 1) / 2) * spread;
+        placement.set(metalIndex, { x: points[anchor].x + Math.cos(angle) * L, y: points[anchor].y + Math.sin(angle) * L });
+      });
+    });
+    return placement;
+  };
+
+  const enginePoints: PagePoint[] = atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  let points = enginePoints;
+  let fixedMetals = initialMetals(points);
+  for (let cycle = 0; cycle < 3; cycle += 1) {
+    points = greedyFold(points, fixedMetals, false);
+    const resettled = new Map<number, PagePoint>();
+    metals.forEach(([metalIndex, donorIndices]) => {
+      resettled.set(metalIndex, nativeDonorPocketPoint(donorIndices.map((index) => points[index]), L));
+    });
+    fixedMetals = resettled;
+  }
+  const polished = greedyFold(points, undefined, true);
+  points = Number.isFinite(energy(polished, true)) ? polished : enginePoints;
+
+  return atoms.map((atom, index) => (
+    metalIndexSet.has(index)
+      ? atom
+      : { ...atom, x: roundGeometryCoordinate(points[index].x), y: roundGeometryCoordinate(points[index].y) }
+  ));
+}
+
+/**
+ * Arrange monodentate ligands around their metal. The engine lays out a ligand that is its own
+ * covalent fragment (an imidazole, a pyridine, a phosphine) wherever it lays out disconnected
+ * fragments — in a row — so after the metal has been settled, every fragment that reaches the
+ * metal through exactly one dative bond and no other metal is moved as a rigid body: its donor
+ * atom lands one bond length from the metal on an evenly spaced slot chosen nearest the direction
+ * the drawing already had it in, and the fragment is turned so its body points away from the
+ * metal. Chelating fragments (two or more donors to the metal) were folded and settled already
+ * and stay put; their donor directions are kept clear of the slots. Bridging fragments (a donor
+ * bond to a second metal) stay put too.
+ */
+function arrangeNativeMonodentateLigands(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  bondLengthPx: number,
+  /** The atoms as drawn before the engine ran: slot choice follows where the DRAWING had each
+   *  ligand, not where the engine's row happens to put it, so a second cleanup reproduces the
+   *  first exactly instead of shuffling ligands between slots. */
+  drawnAtoms: readonly MoleculeAtom[] = atoms
+): MoleculeAtom[] {
+  const L = bondLengthPx;
+  if (!(L > 0)) {
+    return [...atoms];
+  }
+  const indexById = new Map(atoms.map((atom, index) => [atom.id, index]));
+  const isDashed = (bond: MoleculeBond) => bond.display?.bondStyle === "dashed";
+  const adjacency: number[][] = atoms.map(() => []);
+  const covalentDegree = new Map<number, number>();
+  bonds.forEach((bond) => {
+    if (isDashed(bond)) {
+      return;
+    }
+    const from = indexById.get(bond.fromAtomId);
+    const to = indexById.get(bond.toAtomId);
+    if (from === undefined || to === undefined || from === to) {
+      return;
+    }
+    adjacency[from].push(to);
+    adjacency[to].push(from);
+    covalentDegree.set(from, (covalentDegree.get(from) ?? 0) + 1);
+    covalentDegree.set(to, (covalentDegree.get(to) ?? 0) + 1);
+  });
+  const componentOf = new Array<number>(atoms.length).fill(-1);
+  let componentCount = 0;
+  atoms.forEach((_, start) => {
+    if (componentOf[start] !== -1) {
+      return;
+    }
+    const stack = [start];
+    componentOf[start] = componentCount;
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      adjacency[node].forEach((next) => {
+        if (componentOf[next] === -1) {
+          componentOf[next] = componentCount;
+          stack.push(next);
+        }
+      });
+    }
+    componentCount += 1;
+  });
+
+  // Dative edges: metal index -> donor indices, and per fragment which metals it reaches.
+  const donorsByMetal = new Map<number, number[]>();
+  const metalsByComponent = new Map<number, Set<number>>();
+  bonds.forEach((bond) => {
+    if (!isDashed(bond)) {
+      return;
+    }
+    for (const [metalId, donorId] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const metalIndex = indexById.get(metalId);
+      const donorIndex = indexById.get(donorId);
+      if (metalIndex === undefined || donorIndex === undefined) {
+        continue;
+      }
+      const metal = atoms[metalIndex];
+      if (!isNativeMetalAtom(metal) || (covalentDegree.get(metalIndex) ?? 0) > 0) {
+        continue;
+      }
+      donorsByMetal.set(metalIndex, [...(donorsByMetal.get(metalIndex) ?? []), donorIndex]);
+      const component = componentOf[donorIndex];
+      metalsByComponent.set(component, new Set([...(metalsByComponent.get(component) ?? []), metalIndex]));
+    }
+  });
+  if (donorsByMetal.size === 0) {
+    return [...atoms];
+  }
+
+  const points: PagePoint[] = atoms.map((atom) => ({ x: atom.x, y: atom.y }));
+  const drawnById = new Map(drawnAtoms.map((atom) => [atom.id, atom]));
+  const drawnPoint = (index: number): PagePoint => drawnById.get(atoms[index].id) ?? points[index];
+  const angleOf = (from: PagePoint, to: PagePoint) => Math.atan2(to.y - from.y, to.x - from.x);
+  const angularGap = (left: number, right: number) => Math.abs(wrapDegrees180((left - right) * 180 / Math.PI)) * Math.PI / 180;
+  const moved = new Set<number>();
+  // Every fragment this pass will move, known up front: a fragment still waiting its turn sits
+  // where the engine's row left it, and that spot means nothing — counting it in a clearance
+  // test mirrored ligands away from phantom neighbours. Only atoms that stay put, or that have
+  // already been placed, count.
+  const componentSize = new Map<number, number>();
+  componentOf.forEach((component) => componentSize.set(component, (componentSize.get(component) ?? 0) + 1));
+  const pendingComponents = new Set<number>();
+  metalsByComponent.forEach((metalSet, component) => {
+    if (metalSet.size !== 1 || (componentSize.get(component) ?? 0) < 2) {
+      return;
+    }
+    const [metalIndex] = metalSet;
+    const donorsHere = (donorsByMetal.get(metalIndex) ?? []).filter((donorIndex) => componentOf[donorIndex] === component);
+    if (donorsHere.length === 1) {
+      pendingComponents.add(component);
+    }
+  });
+  const pending = (index: number): boolean => pendingComponents.has(componentOf[index]) && !moved.has(index);
+
+  donorsByMetal.forEach((donorIndices, metalIndex) => {
+    const metal = points[metalIndex];
+    const donorsByComponent = new Map<number, number[]>();
+    donorIndices.forEach((donorIndex) => {
+      const component = componentOf[donorIndex];
+      donorsByComponent.set(component, [...(donorsByComponent.get(component) ?? []), donorIndex]);
+    });
+    const fixedDirections: number[] = [];
+    const monodentate: Array<{ component: number; donor: number; direction: number }> = [];
+    donorsByComponent.forEach((componentDonors, component) => {
+      const bridging = (metalsByComponent.get(component)?.size ?? 0) > 1;
+      const componentAtoms = atoms.map((_, index) => index).filter((index) => componentOf[index] === component);
+      if (componentDonors.length === 1 && !bridging && componentAtoms.length >= 2 && !componentAtoms.some((index) => moved.has(index))) {
+        monodentate.push({ component, donor: componentDonors[0], direction: angleOf(drawnPoint(metalIndex), drawnPoint(componentDonors[0])) });
+      } else {
+        componentDonors.forEach((donorIndex) => fixedDirections.push(angleOf(metal, points[donorIndex])));
+      }
+    });
+    if (monodentate.length === 0) {
+      return;
+    }
+
+    // Slots: evenly spaced when every donor is monodentate; otherwise the 30° grid with the
+    // sectors around chelate donors removed. Each fragment takes the free slot nearest to where
+    // the drawing already had it.
+    let slots: number[];
+    if (fixedDirections.length === 0) {
+      const count = monodentate.length;
+      const origin = monodentate[0].direction;
+      slots = Array.from({ length: count }, (_, index) => origin + index * 2 * Math.PI / count);
+    } else {
+      slots = Array.from({ length: 12 }, (_, index) => index * Math.PI / 6)
+        .filter((slot) => fixedDirections.every((fixed) => angularGap(slot, fixed) >= Math.PI * 50 / 180));
+    }
+    monodentate.forEach((fragment) => {
+      if (slots.length === 0) {
+        return;
+      }
+      const slot = slots.reduce((best, candidate) => (angularGap(candidate, fragment.direction) < angularGap(best, fragment.direction) ? candidate : best));
+      slots = slots.filter((candidate) => angularGap(candidate, slot) > Math.PI / 6 + 1e-9);
+
+      const donor = points[fragment.donor];
+      const neighbors = adjacency[fragment.donor].map((index) => points[index]);
+      // The fragment body should point away from the metal: its donor's neighbours, on average,
+      // lie along the slot direction.
+      const bodyDirection = neighbors.length > 0
+        ? Math.atan2(
+            neighbors.reduce((sum, point) => sum + (point.y - donor.y), 0),
+            neighbors.reduce((sum, point) => sum + (point.x - donor.x), 0)
+          )
+        : slot;
+      const rotation = slot - bodyDirection;
+      const target = { x: metal.x + Math.cos(slot) * L, y: metal.y + Math.sin(slot) * L };
+      const fragmentIndices = atoms.map((_, index) => index).filter((index) => componentOf[index] === fragment.component);
+      const placeFragment = (mirror: boolean): PagePoint[] => fragmentIndices.map((index) => {
+        const point = points[index];
+        const dx = point.x - donor.x;
+        const dy = point.y - donor.y;
+        const local = { x: dx * Math.cos(rotation) - dy * Math.sin(rotation), y: dx * Math.sin(rotation) + dy * Math.cos(rotation) };
+        if (mirror) {
+          // Reflect across the metal→donor axis (the slot direction) so the fragment's
+          // substituents swing to the other side.
+          const ux = Math.cos(slot);
+          const uy = Math.sin(slot);
+          const along = local.x * ux + local.y * uy;
+          local.x = 2 * along * ux - local.x;
+          local.y = 2 * along * uy - local.y;
+        }
+        return { x: target.x + local.x, y: target.y + local.y };
+      });
+      // A 2-substituted ligand can put its substituent on either side of the metal–donor line.
+      // The engine hands the fragment back in whichever handedness it likes, and not the same
+      // one every time, so the choice follows the DRAWING: keep the handedness the drawing had
+      // (the previous cleanup's, on a repeat, which is what makes a repeat reproduce it), and
+      // mirror only when that side collides with something already placed and the other side
+      // does not.
+      const fragmentSet = new Set(fragmentIndices);
+      const clearance = (placed: PagePoint[]): number => placed.reduce((closest, point) =>
+        Math.min(closest, points.reduce((inner, other, index) =>
+          (fragmentSet.has(index) || index === metalIndex || pending(index) ? inner : Math.min(inner, distance(point, other))), Number.POSITIVE_INFINITY)),
+        Number.POSITIVE_INFINITY);
+      const donorNeighbors = adjacency[fragment.donor];
+      const handedness = (donorPoint: PagePoint, first: PagePoint, second: PagePoint): number =>
+        Math.sign((first.x - donorPoint.x) * (second.y - donorPoint.y) - (first.y - donorPoint.y) * (second.x - donorPoint.x));
+      const positionOf = (index: number) => fragmentIndices.indexOf(index);
+      const handednessOf = (placed: PagePoint[]): number => donorNeighbors.length >= 2
+        ? handedness(placed[positionOf(fragment.donor)], placed[positionOf(donorNeighbors[0])], placed[positionOf(donorNeighbors[1])])
+        : 0;
+      const drawnHandedness = donorNeighbors.length >= 2
+        ? handedness(drawnPoint(fragment.donor), drawnPoint(donorNeighbors[0]), drawnPoint(donorNeighbors[1]))
+        : 0;
+      const straight = placeFragment(false);
+      const mirrored = placeFragment(true);
+      const preferred = drawnHandedness !== 0 && handednessOf(mirrored) === drawnHandedness ? mirrored : straight;
+      const alternative = preferred === straight ? mirrored : straight;
+      const chosen = clearance(preferred) < 0.5 * L && clearance(alternative) > clearance(preferred) + 1e-6
+        ? alternative
+        : preferred;
+      fragmentIndices.forEach((index, position) => {
+        points[index] = chosen[position];
+        moved.add(index);
+      });
+    });
+  });
+
+  return atoms.map((atom, index) => (
+    moved.has(index)
+      ? { ...atom, x: roundGeometryCoordinate(points[index].x), y: roundGeometryCoordinate(points[index].y) }
+      : atom
+  ));
+}
+
+/**
+ * The elements in this molecule that no force field available here can place in three dimensions:
+ * the metals. Sorted, one entry per element.
+ *
+ * MMFF94 and MMFF94s carry parameters for the organic set only and refuse a molecule holding a
+ * metal outright (RDKit reports `setup-failed`). UFF has a parameter for every element, so it runs
+ * — and returns geometry that is not worth having: on CH3-S-Au-S-CH3 through this app's own engine
+ * it reported convergence with the two gold-sulfur bonds 1.4 A and 3.7 A apart and the S-Au-S angle
+ * at 147 degrees, where the real answer is a matched pair of 2.3 A bonds at 180. Spin 3D asks
+ * before it runs and says so, rather than handing back a shape that looks authoritative.
+ */
+export function nativeMoleculeUnmodeledMetalElements(molecule: MoleculeObject): string[] {
+  const elements = new Set<string>();
+  for (const atom of molecule.atoms) {
+    if (isNativeMetalAtom(atom)) {
+      elements.add(nativeElementFromAtomLabel(atom.element) ?? atom.element);
+    }
+  }
+  return [...elements].sort();
+}
+
+/** "Au", "Zn and Au", "Fe, Zn and Au" — for a one-line message. */
+export function formatElementList(elements: readonly string[]): string {
+  if (elements.length <= 1) {
+    return elements[0] ?? "";
+  }
+  return `${elements.slice(0, -1).join(", ")} and ${elements[elements.length - 1]}`;
+}
+
+/** An element outside the covalent valence tables: the d-block, alkali and alkaline-earth metals,
+ *  lanthanides — anything whose bonds are coordination rather than octet chemistry. */
+function isNativeMetalAtom(atom: MoleculeAtom): boolean {
+  const element = nativeElementFromAtomLabel(atom.element);
+  // Outside the covalent valence table, or a metal that happens to sit inside it (Al, Sn): the
+  // same set chem-core uses for coordination bonds, so the 3D refusal and the dative rules agree.
+  return element !== undefined && element !== "H" && (nativeAtomValence[element] === undefined || isMetalSymbol(element));
 }
 
 // ── 3D spin → flatten commit (Phase 5) ──────────────────────────────────────
@@ -12944,6 +16117,26 @@ export type StereoPerceiver = (
 ) => ReadonlyArray<{ isStereoCenter: boolean; descriptor: "R" | "S" | "unspecified" }>;
 
 /**
+ * The molfile the app hands its OWN CIP perceiver (OpenChemLib). Abbreviated labels ("Ph", a typed
+ * "CH3") go in as R-group pseudo-atoms, never as the export dummy "*": OpenChemLib reads "*" as a
+ * carbon, so a center bearing "Ph" and a methyl looked like two identical substituents — no
+ * stereocenter, nothing in the reference map for the flatten read-back guard to check, and a
+ * flatten that inverted that center committed silently. Each distinct label ranks apart from every
+ * element and from every other label, which is all the guard needs: it compares the drawing's
+ * reading before and after, and both reads use this same spelling.
+ */
+export function stereoPerceptionMolfile(molecule: MoleculeObject): string {
+  return moleculeToMolfileV2000(molecule, { fromDocFrame: true, abbreviations: "rgroup" });
+}
+
+/**
+ * How many distinct abbreviated labels the perception spelling can keep apart: OpenChemLib ranks
+ * R1–R16, and a seventeenth R-group reads as "?" — equal to every other "?". flattenSpunMolecule
+ * refuses a wedged drawing beyond this rather than trust a read-back that cannot see it.
+ */
+export const stereoPerceptionDistinctLabelLimit = 16;
+
+/**
  * Make a freshly flattened depiction READ BACK as the same stereochemistry it started with.
  *
  * The perspective encoder proves each wedge sound against its OWN geometric model, but that model
@@ -12988,7 +16181,7 @@ export function reconcileFlattenedStereo(
   const signatureOf = (source: readonly MoleculeBond[]): string =>
     source.map((bond) => (bond.display?.bondStyle === "wedge" ? "W" : bond.display?.bondStyle === "hashed" ? "H" : "-")).join("");
   const perceiveOf = (source: readonly MoleculeBond[]) =>
-    perceive(moleculeToMolfileV2000({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }, { fromDocFrame: true }));
+    perceive(stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }));
 
   let current = cloneBonds(bonds);
   const seen = new Set<string>();
@@ -13134,10 +16327,7 @@ function relocateRepeatedStereoMarkers(
     }
     perceptionCalls += 1;
     const perceived = perceive(
-      moleculeToMolfileV2000(
-        { ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() },
-        { fromDocFrame: true }
-      )
+      stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() })
     );
     for (const [index, descriptor] of reference) {
       const result = perceived[index];
@@ -13428,6 +16618,25 @@ export function flattenSpunMolecule(
       stereoCenters: []
     };
   }
+  // The read-back guard tells abbreviated labels apart by R-group number, and OpenChemLib ranks
+  // only sixteen of them (see stereoPerceptionDistinctLabelLimit). Past that the guard is blind
+  // to whichever centers those labels sit on, so a wedged drawing is refused here rather than
+  // flattened on a check that cannot see it.
+  const distinctAbbreviations = new Set(
+    molecule.atoms.map((atom) => atom.element).filter((label) => nativeElementFromAtomLabel(label) === undefined)
+  ).size;
+  const hasWedges = molecule.bonds.some((bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed");
+  if (hasWedges && distinctAbbreviations > stereoPerceptionDistinctLabelLimit) {
+    return {
+      document,
+      status: "refused",
+      warnings: [],
+      refusalReasons: [
+        `${distinctAbbreviations} distinct abbreviated labels; the stereo read-back can tell apart at most ${stereoPerceptionDistinctLabelLimit}, so this flatten could not be verified — spell some labels out and try again`
+      ],
+      stereoCenters: []
+    };
+  }
 
   // Frame recipe IN: document (y-down) → math (y-up), styles untouched.
   const mathMol: MoleculeObject = {
@@ -13578,7 +16787,7 @@ export function flattenSpunMolecule(
   let committedBonds = nextBonds;
   if (options.perceiveStereo) {
     const perceive = options.perceiveStereo;
-    const referenceStereo = perceive(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+    const referenceStereo = perceive(stereoPerceptionMolfile(molecule));
     const reference = new Map<number, "R" | "S">();
     molecule.atoms.forEach((_, index) => {
       const entry = referenceStereo[index];
@@ -13621,6 +16830,8 @@ export function flattenSpunMolecule(
     bonds: committedBonds,
     ...geometry
   };
+  // Stored-structure spelling (dummy "*" for an abbreviated label), not the perception one —
+  // see the note where a new molecule's structure is first written.
   const structure = moleculeToMolfileV2000(stagedMolecule, { fromDocFrame: true });
 
   const patches: DocumentPatch[] = [
@@ -13710,6 +16921,10 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
   const adjacency = nativeAdjacency(molecule.atoms, molecule.bonds);
   const bondByAtomPair = nativeBondByAtomPair(molecule.bonds);
   const nextAtomPoints = new Map<string, PagePoint>();
+  // The polygon+tree layout is built at the app's default bond length; the drawing is idealised
+  // to the molecule STYLE's bond length — the one standard the engine route also uses — so a
+  // molecule in a style with a longer or shorter bond comes out at that length, not the default.
+  const styleScale = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx / nativeBondLength;
 
   nativeComponents(molecule.atoms, adjacency).forEach((componentIds) => {
     const componentAtomSet = new Set(componentIds);
@@ -13737,8 +16952,8 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
 
     layout.forEach((point, atomId) => {
       nextAtomPoints.set(atomId, {
-        x: roundGeometryCoordinate(componentCenter.x + point.x - layoutCenter.x),
-        y: roundGeometryCoordinate(componentCenter.y + point.y - layoutCenter.y)
+        x: roundGeometryCoordinate(componentCenter.x + (point.x - layoutCenter.x) * styleScale),
+        y: roundGeometryCoordinate(componentCenter.y + (point.y - layoutCenter.y) * styleScale)
       });
     });
   });
@@ -14227,6 +17442,12 @@ export function applyAnalysisToSelectedMolecule(
   if (!selectedMolecule) {
     throw new Error("Cannot apply chemistry analysis: no molecule is selected.");
   }
+  if (nativeMoleculeUnspellableLabels(selectedMolecule).length > 0) {
+    // The native drawing remains authoritative when its SMILES contains dummy atoms. Applying an
+    // engine result for [*] would silently replace the formula of labels such as CF3 or Ph with
+    // properties of the placeholder graph.
+    return document;
+  }
 
   return applyPatch(
     document,
@@ -14584,28 +17805,55 @@ export function copyAsMergedMolecule(
   return { ...molecules[0], atoms, bonds };
 }
 
-export function copyAsSmiles(document: ChemDraftDocument): string | undefined {
-  const parts = copyAsScopeMolecules(document)
-    .map((molecule) =>
-      molecule.structureFormat === "smiles" && molecule.structure
-        ? molecule.structure
-        : nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds)
+/** Labels whose native atoms have to become dummy `[*]` atoms in SMILES. */
+export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): string[] {
+  return [...new Set(molecule.atoms
+    .filter((atom) =>
+      atom.element !== "D" && atom.element !== "T" &&
+      nativeElementFromAtomLabel(atom.element) === undefined &&
+      nativeSingleHeavyElementLabelValence(atom.element) === undefined
     )
-    .filter((smiles) => smiles.length > 0);
+    .map((atom) => atom.element))];
+}
+
+/**
+ * Copy and structure-list export share the same lazy engine route and warned native fallback.
+ * Keep this import on demand: copying a drawing must not load RDKit at application startup.
+ */
+export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
+  const molecules = copyAsScopeMolecules(document);
+  if (molecules.length === 0) {
+    return undefined;
+  }
+  const { loadStructureIdentifiers, moleculeSmiles } = await import("./moleculeSmiles");
+  const computeStructureIdentifiers = await loadStructureIdentifiers();
+  const warnings: ExportWarning[] = [];
+  const parts: string[] = [];
+  for (const [index, molecule] of molecules.entries()) {
+    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+    if (smiles.length > 0) parts.push(smiles);
+  }
+  warningsOut?.push(...warnings.map((warning) => warning.message));
   return parts.length > 0 ? parts.join(".") : undefined;
 }
 
+/**
+ * The copy scope as one merged molfile. `warningsOut` receives the writer's lossy-emission notes
+ * (V2000 flattens dative bonds to single; non-element labels write as dummy atoms) — V3000 keeps
+ * dative bonds as coordination type 9 and stays silent about them.
+ */
 export function copyAsMolfile(
   document: ChemDraftDocument,
-  flavor: "v2000" | "v3000"
+  flavor: "v2000" | "v3000",
+  warningsOut?: string[]
 ): string | undefined {
   const merged = copyAsMergedMolecule(copyAsScopeMolecules(document));
   if (!merged) {
     return undefined;
   }
   return flavor === "v2000"
-    ? moleculeToMolfileV2000(merged, { fromDocFrame: true })
-    : moleculeToMolfileV3000(merged, { fromDocFrame: true });
+    ? moleculeToMolfileV2000(merged, { fromDocFrame: true, warnings: warningsOut })
+    : moleculeToMolfileV3000(merged, { fromDocFrame: true, warnings: warningsOut });
 }
 
 const copyAsPagePaddingPx = 16;
@@ -15062,12 +18310,53 @@ function addNativeCarbonylToAtom(
   sourceAtomId: string,
   pageWidth: number,
   pageHeight: number,
-  steeringPoint?: PagePoint
+  plan?: NativeBondGrowthPlan
+): MoleculeObject | undefined {
+  const direct = addCarbonylOxygenToAtom(molecule, sourceAtomId, pageWidth, pageHeight, plan?.direction);
+  if (direct) {
+    return direct;
+  }
+
+  // The hovered atom can't carry the C=O itself (an aromatic ring carbon, a heteroatom, a
+  // charged atom…). ChemDraw's carbonyl hotkey then sprouts a NEW carbon along the atom's best
+  // open direction and puts the C=O on that carbon — the aldehyde substituent — with the oxygen
+  // along the new carbon's own open bisector. Mirror that instead of refusing. When the growth
+  // arrow is showing, the new carbon lands exactly where the arrow points.
+  const planned = (plan && !plan.targetAtomId ? plan : undefined)
+    ?? nativeBondGrowthPlanForAtom(molecule, sourceAtomId, pageWidth, pageHeight);
+  if (!planned || planned.targetAtomId) {
+    return undefined;
+  }
+  const grown = extendNativeCarbonGraph(molecule, sourceAtomId, planned.newAtomPoint);
+  if (!grown) {
+    return undefined;
+  }
+  const previousIds = new Set(molecule.atoms.map((atom) => atom.id));
+  const sprouted = grown.atoms.find((atom) => !previousIds.has(atom.id));
+  return sprouted
+    ? addCarbonylOxygenToAtom(grown, sprouted.id, pageWidth, pageHeight)
+    : undefined;
+}
+
+/** Attach a double-bonded oxygen directly to the given carbon, along the carbon's largest open
+ *  angle (matching where the bond-growth arrow points). Returns undefined when the atom is not a
+ *  neutral carbon with two free valences. */
+function addCarbonylOxygenToAtom(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  pageWidth: number,
+  pageHeight: number,
+  direction?: PagePoint
 ): MoleculeObject | undefined {
   const sourceAtom = molecule.atoms.find((atom) => atom.id === sourceAtomId);
   if (!sourceAtom || nativeElementFromAtomLabel(sourceAtom.element) !== "C") {
     return undefined;
   }
+  // Without an explicit (arrow) direction, place the oxygen where the bond-growth planner would
+  // grow — the ± chain-angle candidates, ties rising — so the C=O sits at 120° off an existing
+  // bond exactly like a hotkey-sprouted single bond (and like ChemDraw), not flat-opposite.
+  const plannedDirection = direction
+    ?? nativeBondGrowthPlanForAtom(molecule, sourceAtomId, pageWidth, pageHeight)?.direction;
 
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const nextCarbonValence = (valenceUsage.get(sourceAtomId) ?? 0) + nativeBondOrderValue.double;
@@ -15082,7 +18371,7 @@ function addNativeCarbonylToAtom(
     y: 0,
     formalCharge: 0
   };
-  const oxygenPoint = carbonylOxygenPointForAtom(molecule, sourceAtomId, pageWidth, pageHeight, steeringPoint);
+  const oxygenPoint = carbonylOxygenPointForAtom(molecule, sourceAtomId, pageWidth, pageHeight, plannedDirection);
   const newAtom = {
     ...oxygenAtom,
     x: oxygenPoint.x,
@@ -15107,16 +18396,19 @@ function carbonylOxygenPointForAtom(
   atomId: string,
   pageWidth: number,
   pageHeight: number,
-  steeringPoint?: PagePoint
+  direction?: PagePoint
 ): PagePoint {
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
     return { x: nativeBondLength, y: 0 };
   }
 
-  const steeredDistance = steeringPoint ? distance(atom, steeringPoint) : 0;
-  const angle = steeredDistance > 0.01
-    ? Math.atan2((steeringPoint?.y ?? atom.y) - atom.y, (steeringPoint?.x ?? atom.x) - atom.x)
+  // With a growth arrow on screen the oxygen goes exactly where the arrow points; otherwise it
+  // bisects the atom's largest open angle — pure geometry, like ChemDraw's hotkey. The pointer's
+  // few-pixel offset from the atom center is grip noise, not aim, and steering by it used to
+  // shove the C=O into whatever the cursor happened to overlap (often the ring).
+  const angle = direction
+    ? Math.atan2(direction.y, direction.x)
     : largestOpenAngle(neighborAnglesForAtom(molecule, atomId)) ?? -Math.PI / 2;
   const point = {
     x: atom.x + Math.cos(angle) * nativeBondLength,
@@ -15142,6 +18434,199 @@ function neighborAnglesForAtom(molecule: MoleculeObject, atomId: string): number
     ))
     .filter((candidate): candidate is MoleculeAtom => candidate !== undefined)
     .map((neighbor) => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+}
+
+/**
+ * The atom another molecule object offers as a bond endpoint at `point` — how a dragged bond
+ * reaches across objects (a typed "Zn" is its own one-atom molecule until a bond joins it to
+ * the ligand). Nearest hit wins across every other molecule on the page whose hit atom still has
+ * a free growth slot and an editable graph. A preview that cannot be merged must leave the
+ * ordinary bond-growth path available.
+ */
+export function findForeignNativeMoleculeBondTarget(
+  page: DocumentPage,
+  excludeObjectId: string,
+  point: PagePoint
+): { molecule: MoleculeObject; atomId: string; atomPoint: PagePoint } | undefined {
+  const hits = page.objects
+    .filter((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id !== excludeObjectId && isEditableNativeMoleculeGraph(object)
+    )
+    .map((molecule) => ({ molecule, hit: findNativeMoleculeAtomHit(molecule, point) }))
+    .filter((entry): entry is { molecule: MoleculeObject; hit: NonNullable<ReturnType<typeof findNativeMoleculeAtomHit>> } =>
+      entry.hit !== undefined && entry.hit.availableBonds > 0
+    )
+    .sort((left, right) => left.hit.distance - right.hit.distance || left.molecule.id.localeCompare(right.molecule.id));
+  const target = hits[0];
+  if (!target) {
+    return undefined;
+  }
+  const atom = target.molecule.atoms.find((candidate) => candidate.id === target.hit.atomId);
+  return atom ? { molecule: target.molecule, atomId: target.hit.atomId, atomPoint: { x: atom.x, y: atom.y } } : undefined;
+}
+
+/**
+ * Absorb one molecule object into another so a bond can join them: the absorbed atoms and
+ * bonds are re-minted onto fresh ids in the host's id space (every molecule starts at
+ * atom_001, so ids collide), and every per-atom, per-bond and per-ring style override the
+ * absorbed molecule carries follows its parts onto their new ids.
+ */
+function mergeNativeMoleculeObjects(
+  host: MoleculeObject,
+  absorbed: MoleculeObject
+): { molecule: MoleculeObject; atomIdMap: ReadonlyMap<string, string>; bondIdMap: ReadonlyMap<string, string> } | undefined {
+  if (!isEditableNativeMoleculeGraph(host) || !isEditableNativeMoleculeGraph(absorbed)) {
+    return undefined;
+  }
+
+  const atomIdMap = new Map<string, string>();
+  const usedAtomIds = host.atoms.map((atom) => atom.id);
+  const atoms = [...host.atoms];
+  absorbed.atoms.forEach((atom) => {
+    const id = nextIndexedId("atom", usedAtomIds);
+    usedAtomIds.push(id);
+    atomIdMap.set(atom.id, id);
+    atoms.push({ ...atom, id });
+  });
+
+  const bondIdMap = new Map<string, string>();
+  const usedBondIds = host.bonds.map((bond) => bond.id);
+  const bonds = [...host.bonds];
+  absorbed.bonds.forEach((bond) => {
+    const id = nextIndexedId("bond", usedBondIds);
+    usedBondIds.push(id);
+    bondIdMap.set(bond.id, id);
+    bonds.push({
+      ...bond,
+      id,
+      fromAtomId: atomIdMap.get(bond.fromAtomId) ?? bond.fromAtomId,
+      toAtomId: atomIdMap.get(bond.toAtomId) ?? bond.toAtomId
+    });
+  });
+
+  return {
+    molecule: refreshNativeSingleBondGraph(
+      { ...host, style: mergeIdKeyedMoleculeStyle(host.style, absorbed.style, atomIdMap, bondIdMap) },
+      atoms,
+      bonds
+    ),
+    atomIdMap,
+    bondIdMap
+  };
+}
+
+/**
+ * The host's style with every id-keyed override of the absorbed molecule carried across on its
+ * new ids. The colour maps used to be the only ones remapped; the other per-atom label and
+ * indicator maps and per-bond geometry and indicator maps the layout engine reads
+ * (`atomLabelFontSizes`, `bondBoldWidths`, `atomIndicatorShowAtomNumbersByAtomId`, …) were
+ * dropped by the host spread, so a bold bond or an enlarged label silently reverted to the
+ * host's defaults the moment its molecule was bonded to another. The maps are recognised by
+ * SHAPE — an object keyed by the absorbed molecule's own atom or bond ids — so a map the engine
+ * grows later is carried without a list here to keep in step. Entries for ids the absorbed
+ * molecule no longer has are dropped, as the colour remap always did; the host's own entries
+ * stay. Ring styles are keyed by the ring's bond ids and are re-keyed the same way.
+ */
+function mergeIdKeyedMoleculeStyle(
+  hostStyle: MoleculeObject["style"],
+  absorbedStyle: MoleculeObject["style"],
+  atomIdMap: ReadonlyMap<string, string>,
+  bondIdMap: ReadonlyMap<string, string>
+): MoleculeObject["style"] {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const style: Record<string, unknown> = { ...hostStyle };
+
+  Object.entries(absorbedStyle).forEach(([key, value]) => {
+    if (key === "ringStyles" || !isRecord(value)) {
+      return;
+    }
+    const keys = Object.keys(value);
+    const idMap = keys.some((id) => atomIdMap.has(id))
+      ? atomIdMap
+      : keys.some((id) => bondIdMap.has(id))
+        ? bondIdMap
+        : undefined;
+    if (!idMap) {
+      return;
+    }
+    const hostMap = hostStyle[key];
+    const merged: Record<string, unknown> = { ...(isRecord(hostMap) ? hostMap : {}) };
+    keys.forEach((id) => {
+      const mapped = idMap.get(id);
+      if (mapped) {
+        merged[mapped] = value[id];
+      }
+    });
+    if (Object.keys(merged).length > 0) {
+      style[key] = merged;
+    }
+  });
+
+  const absorbedRingStyles = moleculeRingStyleMap(absorbedStyle.ringStyles);
+  if (Object.keys(absorbedRingStyles).length > 0) {
+    const ringStyles = moleculeRingStyleMap(hostStyle.ringStyles);
+    Object.entries(absorbedRingStyles).forEach(([ringKey, ringStyle]) => {
+      const bondIds = moleculeFillCycleKeyBondIds(ringKey);
+      if (bondIds.every((bondId) => bondIdMap.has(bondId))) {
+        ringStyles[moleculeFillCycleKey(bondIds.map((bondId) => bondIdMap.get(bondId)!))] = ringStyle;
+      }
+    });
+    style.ringStyles = ringStyles;
+  }
+
+  return style;
+}
+
+/** Anchor-carrying objects re-pointed from an absorbed molecule onto its merged host. */
+function remapAnchorsAfterMoleculeMerge(
+  page: DocumentPage,
+  absorbedObjectId: string,
+  hostObjectId: string,
+  atomIdMap: ReadonlyMap<string, string>,
+  bondIdMap: ReadonlyMap<string, string>
+): DocumentPatch[] {
+  const remapAnchor = (anchor: Anchor): Anchor => (
+    anchor.objectId === absorbedObjectId
+      ? {
+          ...anchor,
+          objectId: hostObjectId,
+          ...(anchor.atomId ? { atomId: atomIdMap.get(anchor.atomId) ?? anchor.atomId } : {}),
+          ...(anchor.bondId ? { bondId: bondIdMap.get(anchor.bondId) ?? anchor.bondId } : {})
+        }
+      : anchor
+  );
+
+  return page.objects.flatMap((object): DocumentPatch[] => {
+    if (object.type === "electron-mark" && object.anchor.objectId === absorbedObjectId) {
+      return [{ op: "updateObject", objectId: object.id, changes: { anchor: remapAnchor(object.anchor) } }];
+    }
+    if (object.type === "mechanism-arrow" && (object.source.objectId === absorbedObjectId || object.target.objectId === absorbedObjectId)) {
+      return [{
+        op: "updateObject",
+        objectId: object.id,
+        changes: { source: remapAnchor(object.source), target: remapAnchor(object.target) }
+      }];
+    }
+    if (object.type === "reaction-arrow" && (object.start.objectId === absorbedObjectId || object.end.objectId === absorbedObjectId)) {
+      return [{
+        op: "updateObject",
+        objectId: object.id,
+        changes: { start: remapAnchor(object.start), end: remapAnchor(object.end) }
+      }];
+    }
+    // Organisation follows the atoms too: a group or bracket that held the absorbed molecule
+    // now holds the host (once), instead of keeping a dangling id that removeObject never prunes.
+    if (object.type === "group" && object.childObjectIds.includes(absorbedObjectId)) {
+      const childObjectIds = [...new Set(object.childObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
+      return [{ op: "updateObject", objectId: object.id, changes: { childObjectIds } }];
+    }
+    if (object.type === "bracket" && object.containedObjectIds.includes(absorbedObjectId)) {
+      const containedObjectIds = [...new Set(object.containedObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
+      return [{ op: "updateObject", objectId: object.id, changes: { containedObjectIds } }];
+    }
+    return [];
+  });
 }
 
 function connectNativeCarbonAtoms(
@@ -15171,12 +18656,26 @@ function connectNativeCarbonAtoms(
 function nativeAtomWithElement(
   atom: MoleculeAtom,
   element: string,
-  labelVisible: boolean
+  labelVisible: boolean,
+  labelLiteral = false
 ): MoleculeAtom {
-  const { labelVisible: _labelVisible, ...baseAtom } = atom;
-  return labelVisible
-    ? { ...baseAtom, element, labelVisible: true }
-    : { ...baseAtom, element };
+  const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, warningSuppressed, ...baseAtom } = atom;
+  // A dismissed valence warning was dismissed for THIS element under THIS label rule. Relabelling
+  // makes a different atom with its own validity, so the dismissal does not travel: a suppressed
+  // three-bond F retyped as O must show the invalid-oxygen badge again (it used to stay silent
+  // for good — through the hover hotkeys and the Delete-to-carbon path alike). The same symbol
+  // under the other rule is a different atom too — a typed literal "N" is judged as spelled
+  // (a lone one is hypovalent), a hotkey N fills with hydrogens — so only a retype that keeps
+  // both the element and the rule keeps the dismissal.
+  const sameElement = normalizeNativeAtomElementLabel(atom.element) === normalizeNativeAtomElementLabel(element);
+  const sameRule = (atom.labelLiteral === true) === labelLiteral;
+  return {
+    ...baseAtom,
+    element,
+    ...(labelVisible ? { labelVisible: true } : {}),
+    ...(labelLiteral ? { labelLiteral: true } : {}),
+    ...(warningSuppressed === true && sameElement && sameRule ? { warningSuppressed: true } : {})
+  };
 }
 
 function isNativeBondOrderValue(order: MoleculeBond["order"]): order is NativeBondOrderValue {
@@ -15365,20 +18864,32 @@ function canSetNativeBondOrder(
     return false;
   }
 
-  const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-  const currentOrderValue = nativeBondOrderValue[bond.order] ?? 1;
-  const nextOrderValue = nativeBondOrderValue[order] ?? 1;
-  const fromElement = nativeElementFromAtomLabel(fromAtom.element);
-  const toElement = nativeElementFromAtomLabel(toAtom.element);
-  if (!fromElement || !toElement) {
+  if (!nativeElementFromAtomLabel(fromAtom.element) || !nativeElementFromAtomLabel(toAtom.element)) {
     return false;
   }
-  const fromUsage = (valenceUsage.get(fromAtom.id) ?? 0) - currentOrderValue + nextOrderValue;
-  const toUsage = (valenceUsage.get(toAtom.id) ?? 0) - currentOrderValue + nextOrderValue;
-  const fromCharge = nativeAtomFormalChargeForValence(fromElement, fromUsage);
-  const toCharge = nativeAtomFormalChargeForValence(toElement, toUsage);
+  // The dashed style is the dative style, and dative means single: the dashed tool refuses a
+  // double or triple bond for that reason, so a dashed bond may not be raised past single
+  // either — a "dashed double" would draw as a dative bond and export as a covalent double.
+  if (bond.display?.bondStyle === "dashed" && !isDativeBond({ ...bond, order })) {
+    return false;
+  }
 
-  return fromCharge === 0 && toCharge === 0;
+  // Judge the change by the validator the badges use, on the bonds as they WOULD be: the order
+  // swapped, the display style kept. One rule for every endpoint, the same one the drawing is
+  // checked against: a dashed (dative) bond contributes no valence before or after, a charged N
+  // is judged at its charge, and a metal is judged by its coordination ceiling rather than a
+  // covalent valence table it is not in. The old arithmetic subtracted the raw order value from
+  // a usage map that had counted a dashed bond as 0 — so a pyridine N with a dashed bond to Zn
+  // read "3 − 1 + 2 = 4", an N⁺ — and asked the neutral-valence table about the Zn, which
+  // answered `undefined` and refused every bond touching a metal. Only a change that BREAKS an
+  // endpoint is refused; an atom already flagged stays editable.
+  const nextBonds = molecule.bonds.map((candidate) => (candidate.id === bond.id ? { ...candidate, order } : candidate));
+  const breaks = (atom: MoleculeAtom): boolean => {
+    // A dismissed badge must not license the edit: judge the bare arithmetic.
+    const { warningSuppressed: _warningSuppressed, ...bare } = atom;
+    return nativeAtomValidationState(bare, molecule.bonds).valid && !nativeAtomValidationState(bare, nextBonds).valid;
+  };
+  return !breaks(fromAtom) && !breaks(toAtom);
 }
 
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
@@ -15544,7 +19055,7 @@ function parseV3000MoleculeGraph(
   previous: MoleculeObject
 ): Pick<MoleculeObject, "atoms" | "bonds"> | undefined {
   const rawAtoms: Array<{ sourceId: string; element: string; x: number; y: number; formalCharge: number }> = [];
-  const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"] }> = [];
+  const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; dative: boolean }> = [];
   let section: "atom" | "bond" | undefined;
 
   for (const rawLine of molfile.split(/\r?\n/)) {
@@ -15593,7 +19104,9 @@ function parseV3000MoleculeGraph(
       sourceId,
       fromSourceId,
       toSourceId,
-      order: bondOrderFromV3000(rawOrder)
+      order: bondOrderFromV3000(rawOrder),
+      // V3000 bond type 9 is the coordination (dative) bond — restore the dashed display style.
+      dative: rawOrder === "9"
     });
   }
 
@@ -15631,7 +19144,8 @@ function parseV3000MoleculeGraph(
       id: previous.bonds[index]?.id ?? nextOrdinalId("bond", index),
       fromAtomId,
       toAtomId,
-      order: bond.order
+      order: bond.order,
+      ...(bond.dative ? { display: { bondStyle: "dashed" as const } } : {})
     } satisfies MoleculeBond];
   });
 
@@ -15705,6 +19219,11 @@ function bondOrderFromV3000(value: string): MoleculeBond["order"] {
   if (value === "4") {
     return "aromatic";
   }
+  // Type 9 is the V3000 coordination (dative) bond. The native model carries dative as the
+  // dashed display style on a single bond, not as a bond order — the caller adds the style.
+  if (value === "9") {
+    return "single";
+  }
 
   return "unknown";
 }
@@ -15772,6 +19291,38 @@ function moleculeGeometryFromAtoms(atoms: readonly MoleculeAtom[]): Pick<Molecul
   };
 }
 
+/**
+ * Parse an arbitrary atom label as a condensed formula of known elements ("CH3" → C1 H3,
+ * "CO2H" → C1 O2 H1). Undefined when any token is not a plain element symbol ("OMe", "Ph",
+ * "R1") — those abbreviations contribute nothing rather than a wrong count.
+ *
+ * Honest limitation: a label that DOES tokenize into element symbols is counted as those
+ * elements, so abbreviations that collide with element symbols are miscounted — "OAc" reads as
+ * O + Ac (actinium), "Ts" as tennessine, "Pr" as praseodymium, "Am"/"No" likewise. That affects
+ * only the formula/mass bookkeeping here; valence never consults this parse
+ * (`nativeSingleHeavyElementLabelValence` applies its own stricter check).
+ */
+function parseCondensedLabelFormula(label: string): Map<string, number> | undefined {
+  const trimmed = label.trim();
+  if (!/^(?:[A-Z][a-z]?\d*)+$/.test(trimmed)) {
+    return undefined;
+  }
+
+  const counts = new Map<string, number>();
+  for (const token of trimmed.matchAll(/([A-Z][a-z]?)(\d*)/g)) {
+    if (!token[1]) {
+      continue;
+    }
+    const element = nativeElementFromAtomLabel(token[1]);
+    if (!element) {
+      return undefined;
+    }
+    counts.set(element, (counts.get(element) ?? 0) + (token[2] ? Number(token[2]) : 1));
+  }
+
+  return counts.size > 0 ? counts : undefined;
+}
+
 function nativeSingleBondGraphMetadata(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
@@ -15783,29 +19334,46 @@ function nativeSingleBondGraphMetadata(
   const warnings = nativeInvalidAtomWarnings(atoms, bonds);
 
   atoms.forEach((atom) => {
+    if (atom.element === "D" || atom.element === "T") {
+      // Heavy hydrogen keeps its own symbol in the formula (CH3D) and its own mass, matching
+      // the [2H]/[3H] the SMILES writer spells for the same atom.
+      elementCounts.set(atom.element, (elementCounts.get(atom.element) ?? 0) + 1);
+      return;
+    }
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
+      // A condensed label is its own recipe — count exactly what it spells, no implicit H.
+      parseCondensedLabelFormula(atom.element)?.forEach((count, labelElement) => {
+        elementCounts.set(labelElement, (elementCounts.get(labelElement) ?? 0) + count);
+      });
       return;
     }
     elementCounts.set(element, (elementCounts.get(element) ?? 0) + 1);
 
-    if (element !== "H") {
-      const implicitHydrogens = nativeImplicitHydrogenCount(
+    // A literal label (typed with the text tool) contributes exactly what it says — the
+    // formula must not invent hydrogens for it: a lone typed "C" is C, not CH4. Drawn atoms
+    // keep the skeletal convention and count their implicit hydrogens.
+    const valenceUsed = valenceUsage.get(atom.id) ?? 0;
+    if (element !== "H" && atom.labelLiteral !== true) {
+      const implicitHydrogens = Math.max(0, nativeImplicitHydrogenCount(
         element,
-        valenceUsage.get(atom.id) ?? 0,
+        valenceUsed,
         atom.formalCharge,
         atom.markRadicals ?? 0
-      );
+      ) - dativeDeprotonationCount(atom, bonds, atoms));
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
 
+  // Every key is an element the label parser produced, and the table covers every element the
+  // parser knows, so a miss here is a programming error and throws — never a silent 0 that
+  // leaves the weight short by an atom the formula lists.
   const averageMass = [...elementCounts.entries()].reduce(
-    (sum, [element, count]) => sum + (nativeAtomMass[element as NativeElementSymbol]?.average ?? 0) * count,
+    (sum, [element, count]) => sum + nativeElementMass(element).average * count,
     0
   );
   const exactMass = [...elementCounts.entries()].reduce(
-    (sum, [element, count]) => sum + (nativeAtomMass[element as NativeElementSymbol]?.exact ?? 0) * count,
+    (sum, [element, count]) => sum + nativeElementMass(element).exact * count,
     0
   );
 
@@ -15843,11 +19411,11 @@ export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bond
   if (atoms.length === 0) {
     return "";
   }
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const smilesByAtomId = nativeAtomSmilesById(atoms, bonds);
   const adjacency = nativeAdjacency(atoms, bonds);
   const bondByAtomPair = nativeBondByAtomPair(bonds);
   const components = nativeComponents(atoms, adjacency);
-  const singleCycleSmiles = renderSingleCycleWithBranchesSmiles(atoms, bonds, components, adjacency, atomById, bondByAtomPair);
+  const singleCycleSmiles = renderSingleCycleWithBranchesSmiles(atoms, bonds, components, adjacency, smilesByAtomId, bondByAtomPair);
   if (singleCycleSmiles) {
     return singleCycleSmiles;
   }
@@ -15857,17 +19425,17 @@ export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bond
     // ring — goes through the general DFS spanning-tree writer. The former fallback here
     // concatenated bare atom symbols, which SMILES reads as a bonded chain, silently turning
     // every multi-ring molecule into an acyclic one (10-carbon naphthalene → "CCCCCCCCCC").
-    return nativeGeneralGraphSmiles(components, adjacency, atomById, bondByAtomPair);
+    return nativeGeneralGraphSmiles(components, adjacency, smilesByAtomId, bondByAtomPair);
   }
 
   return components.map((componentIds) => {
     if (componentIds.length === 1) {
-      return nativeAtomSmiles(atomById.get(componentIds[0]));
+      return smilesByAtomId.get(componentIds[0]) ?? "C";
     }
 
     const componentAtoms = atoms.filter((atom) => componentIds.includes(atom.id));
     const mainPath = longestNativePath(componentAtoms, adjacency);
-    return renderNativePath(mainPath, adjacency, atomById, bondByAtomPair);
+    return renderNativePath(mainPath, adjacency, smilesByAtomId, bondByAtomPair);
   }).join(".");
 }
 
@@ -15875,28 +19443,29 @@ export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bond
  * General SMILES writer for arbitrary connected graphs. It builds a depth-first spanning tree
  * and turns each non-tree ("back") edge into a ring-closure digit, so it linearizes any ring
  * system — fused, bridged, or spiro — that the single-cycle renderer above cannot. Bond orders
- * come from `bondOrderSymbol` and atom labels/charges from `nativeAtomSmiles`; it is a pure
- * graph→string function with no OpenChemLib dependency, keeping OCL worker-only.
+ * come from `bondOrderSymbol` and atom tokens from the precomputed `smilesByAtomId` map (see
+ * `nativeAtomSmilesById`); it is a pure graph→string function with no OpenChemLib dependency,
+ * keeping OCL worker-only.
  */
 function nativeGeneralGraphSmiles(
   components: readonly (readonly string[])[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   return components
-    .map((componentIds) => renderConnectedGraphSmiles(componentIds, adjacency, atomById, bondByAtomPair))
+    .map((componentIds) => renderConnectedGraphSmiles(componentIds, adjacency, smilesByAtomId, bondByAtomPair))
     .join(".");
 }
 
 function renderConnectedGraphSmiles(
   componentIds: readonly string[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   if (componentIds.length <= 1) {
-    return nativeAtomSmiles(atomById.get(componentIds[0]));
+    return smilesByAtomId.get(componentIds[0]) ?? "C";
   }
 
   const rootAtomId = [...componentIds].sort()[0];
@@ -15970,7 +19539,7 @@ function renderConnectedGraphSmiles(
     const branches = renderedChildren.slice(0, -1).map((child) => `(${child})`).join("");
     const continuation = renderedChildren.length > 0 ? renderedChildren[renderedChildren.length - 1] : "";
 
-    return `${nativeAtomSmiles(atomById.get(atomId))}${ringClosures}${branches}${continuation}`;
+    return `${smilesByAtomId.get(atomId) ?? "C"}${ringClosures}${branches}${continuation}`;
   };
 
   return emitAtom(rootAtomId);
@@ -15985,7 +19554,7 @@ function renderSingleCycleWithBranchesSmiles(
   bonds: readonly MoleculeBond[],
   components: readonly (readonly string[])[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string | undefined {
   if (components.length !== 1 || atoms.length < 3 || bonds.length !== atoms.length) {
@@ -16031,7 +19600,7 @@ function renderSingleCycleWithBranchesSmiles(
   }
 
   return cyclePath.map((atomId, index) => {
-    const symbol = nativeAtomSmiles(atomById.get(atomId));
+    const symbol = smilesByAtomId.get(atomId) ?? "C";
     const previousAtomId = cyclePath[index - 1];
     const bondPrefix = previousAtomId ? bondOrderSymbol(bondByAtomPair.get(atomPairKey(previousAtomId, atomId))?.order) : "";
     const ringClosure = index === 0 || index === cyclePath.length - 1 ? "1" : "";
@@ -16041,7 +19610,7 @@ function renderSingleCycleWithBranchesSmiles(
       .sort((left, right) =>
         subtreeSize(right, atomId, adjacency) - subtreeSize(left, atomId, adjacency) || left.localeCompare(right)
       )
-      .map((branchId) => `(${renderNativeBranch(branchId, atomId, adjacency, atomById, bondByAtomPair)})`)
+      .map((branchId) => `(${renderNativeBranch(branchId, atomId, adjacency, smilesByAtomId, bondByAtomPair)})`)
       .join("");
     return `${bondPrefix}${symbol}${ringClosure}${branches}`;
   }).join("");
@@ -16294,7 +19863,7 @@ function pathBetweenAtoms(
 function renderNativePath(
   path: readonly string[],
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   return path.map((atomId, index) => {
@@ -16306,8 +19875,8 @@ function renderNativePath(
       .sort((left, right) =>
         subtreeSize(right, atomId, adjacency) - subtreeSize(left, atomId, adjacency) || left.localeCompare(right)
       );
-    return `${bondPrefix}${nativeAtomSmiles(atomById.get(atomId))}${branches.map((branchId) =>
-      `(${renderNativeBranch(branchId, atomId, adjacency, atomById, bondByAtomPair)})`
+    return `${bondPrefix}${smilesByAtomId.get(atomId) ?? "C"}${branches.map((branchId) =>
+      `(${renderNativeBranch(branchId, atomId, adjacency, smilesByAtomId, bondByAtomPair)})`
     ).join("")}`;
   }).join("");
 }
@@ -16316,7 +19885,7 @@ function renderNativeBranch(
   atomId: string,
   parentAtomId: string,
   adjacency: ReadonlyMap<string, readonly string[]>,
-  atomById: ReadonlyMap<string, MoleculeAtom>,
+  smilesByAtomId: ReadonlyMap<string, string>,
   bondByAtomPair: ReadonlyMap<string, MoleculeBond>
 ): string {
   const bondPrefix = bondOrderSymbol(bondByAtomPair.get(atomPairKey(parentAtomId, atomId))?.order);
@@ -16325,8 +19894,8 @@ function renderNativeBranch(
     .sort((left, right) =>
       subtreeSize(right, atomId, adjacency) - subtreeSize(left, atomId, adjacency) || left.localeCompare(right)
     );
-  return `${bondPrefix}${nativeAtomSmiles(atomById.get(atomId))}${branches.map((branchId) =>
-    `(${renderNativeBranch(branchId, atomId, adjacency, atomById, bondByAtomPair)})`
+  return `${bondPrefix}${smilesByAtomId.get(atomId) ?? "C"}${branches.map((branchId) =>
+    `(${renderNativeBranch(branchId, atomId, adjacency, smilesByAtomId, bondByAtomPair)})`
   ).join("")}`;
 }
 
@@ -16341,16 +19910,119 @@ function bondOrderSymbol(order: MoleculeBond["order"] | undefined): string {
   return "";
 }
 
-function nativeAtomSmiles(atom: MoleculeAtom | undefined): string {
+/**
+ * The SMILES "organic subset" — the only elements that may appear UNBRACKETED. Anything else
+ * (Zn, Li, Si, …) written bare is either invalid SMILES or, worse, valid-but-wrong: a literal
+ * typed "C" emitted bare reparses as methane, a typed "N" as ammonia.
+ */
+const smilesOrganicSubset = new Set(["B", "C", "N", "O", "P", "S", "F", "Cl", "Br", "I"]);
+
+/**
+ * One atom's SMILES token. Neutral organic-subset drawn atoms stay bare (ethanol stays "CCO");
+ * everything that bare emission would misrepresent is bracketed:
+ * - charged atoms: `[NH3+]`, `[Zn+2]` (brackets already carry the charge; parsers add no implicit H);
+ * - literal (text-typed) atoms: `[C]`, `[N]` — a bracket atom gets NO implicit hydrogens, which is
+ *   exactly the literal contract: the label means what it says (verified against OpenChemLib:
+ *   `[C]` reparses to C, bare `C` to CH4);
+ * - hydrogen: `[H]`;
+ * - non-subset elements: `[Zn]`, `[Li]`, `[SiH2]` — bracketed, with the skeletal implicit
+ *   hydrogens SPELLED (bracket atoms get none from the parser), so a drawn silane carbon analog
+ *   keeps its hydrogens. The count is the same derivation the formula and the drawn label use.
+ *
+ * `implicitHydrogens` matters for every non-literal element atom written in brackets;
+ * `nativeAtomSmilesById` computes it.
+ */
+/**
+ * A bracket atom's charge in SMILES order — sign then magnitude (`[Zn+2]`). The DISPLAY
+ * convention is the reverse ("2+", `atomChargeLabelSuffix`); writing that into SMILES makes
+ * the string invalid, and the mistake only became reachable when charge marks learned to
+ * stack past ±1.
+ */
+function smilesChargeSuffix(charge: number): string {
+  if (charge === 0) {
+    return "";
+  }
+  const sign = charge > 0 ? "+" : "-";
+  const magnitude = Math.abs(charge);
+  return magnitude === 1 ? sign : `${sign}${magnitude}`;
+}
+
+function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0): string {
   if (!atom) {
     return "C";
   }
 
-  if (atom.formalCharge !== 0) {
-    return `[${atom.element}${atomChargeLabelSuffix(atom.formalCharge)}]`;
+  if (atom.element === "D" || atom.element === "T") {
+    return `[${atom.element === "D" ? 2 : 3}H${smilesChargeSuffix(atom.formalCharge)}]`;
   }
 
-  return atom.element === "H" ? "[H]" : atom.element;
+  const element = nativeElementFromAtomLabel(atom.element);
+  if (!element) {
+    // Condensed labels store the whole group in the atom's element string ("CH3", "CO2H", "Ph").
+    // A single SMILES atom can spell only labels that reduce to ONE heavy element plus its
+    // hydrogens ("CH3" → "[CH3]", "NH2" → "[NH2]") — exactly what the label says. Anything else
+    // (multi-heavy "CO2H", abbreviations like "Ph") has no single-atom spelling: emit a dummy
+    // atom so the SMILES stays parseable, and let the Copy As path warn that the label exported
+    // as [*] rather than silently writing "CH3" (which a SMILES parser reads as C + garbage).
+    const spelled = nativeSingleHeavyElementLabelValence(atom.element);
+    if (!spelled) {
+      return `[*${smilesChargeSuffix(atom.formalCharge)}]`;
+    }
+    const hydrogens = spelled.hydrogens > 0 ? `H${spelled.hydrogens === 1 ? "" : spelled.hydrogens}` : "";
+    return `[${spelled.element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
+  }
+
+  if (atom.formalCharge !== 0) {
+    const hydrogens = implicitHydrogens > 0 ? `H${implicitHydrogens === 1 ? "" : implicitHydrogens}` : "";
+    return `[${element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
+  }
+
+  if (element === "H") {
+    return "[H]";
+  }
+
+  if (atom.labelLiteral === true) {
+    return `[${element}]`;
+  }
+
+  if (!smilesOrganicSubset.has(element)) {
+    const hydrogens = implicitHydrogens > 0 ? `H${implicitHydrogens === 1 ? "" : implicitHydrogens}` : "";
+    return `[${element}${hydrogens}]`;
+  }
+
+  return element;
+}
+
+/**
+ * Per-atom SMILES tokens for the graph writers above, precomputed in one pass: the bracketed
+ * charged/non-subset form must spell the atom's implicit hydrogens, and that count depends on the
+ * whole bond set (`atomBondOrderUsageMap`), not on the atom alone.
+ */
+function nativeAtomSmilesById(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): Map<string, string> {
+  const valenceUsage = atomBondOrderUsageMap(atoms, bonds);
+  return new Map(atoms.map((atom) => {
+    const element = nativeElementFromAtomLabel(atom.element);
+    const needsSpelledHydrogens = element !== undefined &&
+      element !== "H" &&
+      atom.labelLiteral !== true &&
+      (atom.formalCharge !== 0 || !smilesOrganicSubset.has(element));
+    // The dative-deprotonation rule (a pyrrole-type N–H donating to a metal) never reaches
+    // this spelling: it applies only to a neutral nitrogen, which is organic-subset and written
+    // bare, and the dative bond itself is written as a single bond, so a parser already gives
+    // that nitrogen no hydrogen.
+    const implicitHydrogens = needsSpelledHydrogens
+      ? nativeImplicitHydrogenCount(
+          element,
+          valenceUsage.get(atom.id) ?? 0,
+          atom.formalCharge,
+          atom.markRadicals ?? 0
+        )
+      : 0;
+    return [atom.id, nativeAtomSmiles(atom, implicitHydrogens)] as const;
+  }));
 }
 
 function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
@@ -16369,12 +20041,11 @@ function atomChargeLabelSuffix(charge: number): string {
   return magnitude === 1 ? sign : `${magnitude}${sign}`;
 }
 
-function nativeChargeValue(charge: number | undefined): NativeChargeValue | undefined {
-  if (charge === 1 || charge === -1) {
-    return charge;
-  }
-
-  return undefined;
+/** A drawable mark charge: any nonzero integer up to |9| — 2+ zincs, 3- phosphates. */
+function nativeChargeValue(charge: number | undefined): number | undefined {
+  return typeof charge === "number" && Number.isInteger(charge) && charge !== 0 && Math.abs(charge) <= nativeChargeMarkMaxMagnitude
+    ? charge
+    : undefined;
 }
 
 /**
@@ -16408,6 +20079,13 @@ function nativeAtomChargeSupportsValence(
   valenceUsed: number,
   formalCharge: number
 ): boolean {
+  // Elements outside the covalent valence tables (transition metals, alkali/alkaline-earth)
+  // have variable oxidation states the octet math cannot bound: any charge mark associates —
+  // a solid-bonded Zn still takes its 2+.
+  if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    return true;
+  }
+
   const maxValence = nativeAtomMaxValence[element];
   if (maxValence !== undefined && valenceUsed > maxValence) {
     return false;
@@ -16436,6 +20114,53 @@ function nativeAtomSuggestedChargeForValence(
   return candidate ?? nativeAtomFormalChargeForValence(element, valenceUsed);
 }
 
+/**
+ * Whether a bond count is a COMPLETE H-free valence state for this element/charge — the test
+ * literal (text-typed) atoms must pass, since nothing fills their remainder with implicit
+ * hydrogens. Complete means the octet-derived count for the charge, or any bond count whose
+ * canonical charge for that count matches (`nativeAtomFormalChargeForValence`): the neutral
+ * hypervalent states the octet arithmetic cannot express (P(V), As(V), the S/Se/Te (IV)/(VI)
+ * family, halogen (III)/(V)/(VII)) and charged states like ammonium. That list is illustrative,
+ * not exhaustive.
+ */
+function nativeLiteralAtomValenceComplete(
+  element: NativeElementSymbol,
+  valenceUsed: number,
+  formalCharge: number
+): boolean {
+  if (valenceUsed === nativeAtomValenceForCharge(element, formalCharge)) {
+    return true;
+  }
+  return valenceUsed > (nativeAtomValence[element] ?? 0) &&
+    nativeAtomFormalChargeForValence(element, valenceUsed) === formalCharge;
+}
+
+/**
+ * Read a condensed label as ONE heavy element plus its spelled hydrogens ("NH2" → N + 2,
+ * "OH" → O + 1). Undefined for anything else — multiple heavy atoms, abbreviations, pure-H
+ * labels — which stay unchecked superatoms.
+ */
+function nativeSingleHeavyElementLabelValence(
+  label: string
+): { element: NativeElementSymbol; hydrogens: number } | undefined {
+  const counts = parseCondensedLabelFormula(label);
+  if (!counts) {
+    return undefined;
+  }
+
+  const heavyElements = [...counts.keys()].filter((element) => element !== "H");
+  const heavy = heavyElements[0];
+  if (heavyElements.length !== 1 || counts.get(heavy) !== 1) {
+    return undefined;
+  }
+  const element = heavy as NativeElementSymbol;
+  if (nativeAtomValence[element] === undefined || nativeAtomMaxValence[element] === undefined) {
+    return undefined;
+  }
+
+  return { element, hydrogens: counts.get("H") ?? 0 };
+}
+
 function nativeAtomFormalChargeForValence(
   element: NativeElementSymbol,
   valenceUsed: number
@@ -16454,7 +20179,7 @@ function nativeAtomFormalChargeForValence(
     return 0;
   }
 
-  if (element === "B" && valenceUsed === 4) {
+  if ((element === "B" || element === "Al") && valenceUsed === 4) {
     return -1;
   }
 
@@ -16462,15 +20187,21 @@ function nativeAtomFormalChargeForValence(
     return 1;
   }
 
-  if (element === "P" && valenceUsed === 4) {
+  if ((element === "P" || element === "As") && valenceUsed === 4) {
     return 1;
   }
 
-  if (element === "P" && valenceUsed === 5) {
+  // Neutral hypervalent states: P(V)/As(V), the S/Se/Te (IV) and (VI) families, and the heavy
+  // halogens' (III)/(V)/(VII) — lambda-3/-5 iodanes up through periodate.
+  if ((element === "P" || element === "As") && valenceUsed === 5) {
     return 0;
   }
 
-  if (element === "S" && (valenceUsed === 4 || valenceUsed === 6)) {
+  if ((element === "S" || element === "Se" || element === "Te") && (valenceUsed === 4 || valenceUsed === 6)) {
+    return 0;
+  }
+
+  if ((element === "Cl" || element === "Br" || element === "I") && (valenceUsed === 3 || valenceUsed === 5 || valenceUsed === 7)) {
     return 0;
   }
 
@@ -16514,13 +20245,22 @@ function atomDegreeMap(
   return degrees;
 }
 
+/**
+ * A dashed single bond depicts a dative or partial interaction — a coordinate bond to a metal, a
+ * hydrogen bond, a forming/breaking bond — and occupies no covalent valence slot on either
+ * atom: pyridine's N keeps its three bonds and no badge while dash-bonded to a zinc.
+ */
+function nativeBondValenceContribution(bond: MoleculeBond): number {
+  return isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1;
+}
+
 function atomBondOrderUsageMap(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): ReadonlyMap<string, number> {
   const usage = new Map(atoms.map((atom) => [atom.id, 0]));
   bonds.forEach((bond) => {
-    const value = nativeBondOrderValue[bond.order] ?? 1;
+    const value = nativeBondValenceContribution(bond);
     usage.set(bond.fromAtomId, (usage.get(bond.fromAtomId) ?? 0) + value);
     usage.set(bond.toAtomId, (usage.get(bond.toAtomId) ?? 0) + value);
   });
@@ -16531,7 +20271,7 @@ function atomBondOrderUsageMap(
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly MoleculeBond[]): number {
   return bonds.reduce((sum, bond) => (
     bond.fromAtomId === atomId || bond.toAtomId === atomId
-      ? sum + (nativeBondOrderValue[bond.order] ?? 1)
+      ? sum + nativeBondValenceContribution(bond)
       : sum
   ), 0);
 }

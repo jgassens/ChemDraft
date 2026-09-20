@@ -19,6 +19,7 @@ fn main() {
             "toggle_toolset_window",
             "list_toolset_window_states",
             "set_menu_checked",
+            "set_keybinding_scheme",
             "plugin_storage_read",
             "plugin_storage_write",
             "open_plugin_panel_window",

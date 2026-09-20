@@ -10,6 +10,7 @@ import {
   createDocumentHistory,
   ChemDraftSyntheticStylePreset,
   stylePresetToObjectStyle,
+  type ChemDraftDocument,
   type DocumentObject,
   type GraphicObject,
   type MoleculeObject
@@ -22,13 +23,16 @@ import {
   nativeMoleculeRings
 } from "@chemdraft/layout-engine";
 import { inchRulerUnit } from "@chemdraft/viewport-engine";
+import { isValidToolsetCommandId } from "@chemdraft/toolset-registry";
 import {
   allShellCommands,
   atomElementActions,
+  atomNicknameLabelActions,
   createLayerActions,
   createQuickActions,
   editActions,
   normalizeHexColor,
+  nicknameLabelByCommandId,
   objectColorForCommand,
   objectCustomColorCommandId,
   objectGradientDeleteStopCommandId,
@@ -57,12 +61,14 @@ import {
 } from "./commands";
 import {
   applyAnalysisToSelectedMolecule,
+  applyChargeToolAtNativeAtom,
   applyObjectColorToDocumentObjects,
   applyDocumentObjectProjectedPlaneTilt,
   applyFreeformSingleBondToolAtPoint,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectOpacityToSelection,
   applyNativeAtomElementTarget,
+  applyNativeWarningSuppressionToScope,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
@@ -80,8 +86,10 @@ import {
   nativeBondLengthPx,
   nativeFreehandStrokeDocument,
   nativeGraphicPathEditPoints,
+  nativeMoleculeInvalidAtomStates,
   nativePolylinePathDocument,
   openNativeDocument,
+  reconcileNativeChargeMarks,
   reorderSelectedDocumentObject,
   selectDocumentObjectWithinGroup,
   selectDocumentObjects,
@@ -101,6 +109,7 @@ import {
   activeNativeTargetShortcutCommand,
   cumulativeObjectResizeScale,
   cumulativeRotationReadoutDegrees,
+  electronMarkSpecStatusNoun,
   hoveredNativeTargetShortcutCommand,
   objectResizeReadoutPercent,
   objectResizeInputDraftPercent,
@@ -115,6 +124,8 @@ import {
   nativeMoleculeCanvasHoverTarget,
   nativeMoleculeObjectAtPoint,
   nativeMoleculeSelectionHasVisibleTargets,
+  nativeWarningSuppressionScopeForSelection,
+  nativePlaceholderAtomStatus,
   nativePathDirname,
   nativePathJoin,
   nativePathWithBasename,
@@ -169,6 +180,7 @@ import type { DesktopToolsetRegistry } from "./toolsets";
 import { ToolPalette, cmykToRgbColor, hexToRgbColor, rgbToCmykColor, rgbToHexColor } from "./ToolPalette";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import {
   DEFAULT_TOOLSET_ID,
   PALETTE_COMMAND_CANCEL_EVENT,
@@ -1265,15 +1277,12 @@ describe("ChemDraft desktop shell", () => {
       throw new Error("Expected native molecule fixture.");
     }
     const atomXs = molecule.atoms.map((atom) => atom.x);
-    const atomY = molecule.atoms[0]?.y;
-    if (atomY === undefined) {
-      throw new Error("Expected native molecule atom fixture.");
-    }
+    const atomYs = molecule.atoms.map((atom) => atom.y);
     const selection = selectionInSelectionPolygon(document.pages[0].objects, [
-      { x: Math.min(...atomXs) - 1, y: atomY - 4 },
-      { x: Math.max(...atomXs) + 1, y: atomY - 4 },
-      { x: Math.max(...atomXs) + 1, y: atomY + 4 },
-      { x: Math.min(...atomXs) - 1, y: atomY + 4 }
+      { x: Math.min(...atomXs) - 1, y: Math.min(...atomYs) - 4 },
+      { x: Math.max(...atomXs) + 1, y: Math.min(...atomYs) - 4 },
+      { x: Math.max(...atomXs) + 1, y: Math.max(...atomYs) + 4 },
+      { x: Math.min(...atomXs) - 1, y: Math.max(...atomYs) + 4 }
     ]);
 
     expect(selection.objectIds).toEqual([molecule.id]);
@@ -1424,6 +1433,20 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("Validate Selected Structure");
   });
 
+  it("keeps every toolbar-eligible app command id schema-valid", () => {
+    const commands = [
+      ...allShellCommands(createPhase4Document()),
+      ...getToolsetCommandSpecs()
+    ];
+
+    commands.forEach((command) => {
+      expect(
+        isValidToolsetCommandId(command.id),
+        `${command.id} must satisfy the toolset command-id schema`
+      ).toBe(true);
+    });
+  });
+
   it("inserts native art objects with selectable color and projected-plane tilt style", () => {
     const document = createPhase4Document("Native Art");
     const created = createNativeArtGraphicObject(document, { x: 140, y: 160 }, "tool.art.rectGloss");
@@ -1532,6 +1555,10 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('displayName: "The pasted structure"');
   });
 
+  it("passes the pressed key to the global shortcut guard", () => {
+    expect(mainWindowSource).toContain("shouldIgnoreShortcutTarget(event.target, event.key)");
+  });
+
   it("builds keyboard shortcuts from command definitions", () => {
     const registry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), "macos");
 
@@ -1543,6 +1570,7 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "m" })).toBe("tool.bond");
     expect(registry.resolve({ key: "b" })).toBeUndefined();
     expect(registry.resolve({ key: "t" })).toBe("tool.text");
+    expect(registry.resolve({ key: "e" })).toBe("tool.eraser");
     expect(registry.resolve({ key: "1" })).toBe("atom.addSingleBondToHoveredAtom");
     expect(registry.resolve({ key: "2" })).toBe("bond.setHoveredBondOrder.double");
     expect(registry.resolve({ key: "3" })).toBe("bond.setHoveredBondOrder.triple");
@@ -1597,6 +1625,109 @@ describe("ChemDraft desktop shell", () => {
     expect(groupedRegistry.conflicts()).toEqual([]);
   });
 
+  it("builds ChemDraw-compatible shortcuts when the chemdraw scheme is active", () => {
+    const commands = applyKeybindingSchemeToCommands(allShellCommands(createPhase4Document()), "chemdraw");
+    const registry = createDesktopShortcutRegistry(commands, "macos");
+
+    // ChemDraw generic tool hotkeys.
+    expect(registry.resolve({ key: " " })).toBe("tool.select");
+    expect(registry.resolve({ key: "x" })).toBe("tool.bond");
+    expect(registry.resolve({ key: "X", shiftKey: true })).toBe("tool.chain");
+    expect(registry.resolve({ key: "j" })).toBe("tool.benzene");
+    expect(registry.resolve({ key: "t" })).toBe("tool.text");
+    expect(registry.resolve({ key: "T", shiftKey: true })).toBe("tool.bracket");
+    // E belongs to ChemDraw's arrow tool; ChemDraft's E-for-eraser is released here.
+    expect(registry.resolve({ key: "e" })).toBe("tool.reactionArrow");
+
+    // ChemDraft-only defaults are released so ChemDraw hover hotkeys can own the keys.
+    expect(registry.resolve({ key: "v" })).toBeUndefined();
+    expect(registry.resolve({ key: "l" })).toBeUndefined();
+    expect(registry.resolve({ key: "m" })).toBeUndefined();
+    expect(registry.resolve({ key: "r" })).toBeUndefined();
+    expect(registry.resolve({ key: "c" })).toBeUndefined();
+    expect(registry.resolve({ key: "+" })).toBeUndefined();
+    expect(registry.resolve({ key: "-" })).toBeUndefined();
+    expect(registry.resolve({ key: "k" })).toBeUndefined();
+
+    // Menu chords that differ between the schemes.
+    expect(registry.resolve({ key: "e", metaKey: true, ctrlKey: true })).toBe("export.open");
+    expect(registry.resolve({ key: "e", metaKey: true, shiftKey: true })).toBeUndefined();
+    expect(registry.resolve({ key: ">", metaKey: true, shiftKey: true })).toBe("view.zoomIn");
+    expect(registry.resolve({ key: "<", metaKey: true, shiftKey: true })).toBe("view.zoomOut");
+    expect(registry.resolve({ key: ";", metaKey: true })).toBe("view.toggleRulers");
+    expect(registry.resolve({ key: "r", metaKey: true })).toBeUndefined();
+    expect(registry.resolve({ key: "x", metaKey: true, altKey: true })).toBe("view.toggleCrosshairs");
+
+    // Chords the schemes share stay put.
+    expect(registry.resolve({ key: "a", metaKey: true })).toBe("edit.selectAll");
+    expect(registry.resolve({ key: "k", metaKey: true, shiftKey: true })).toBe(structureCleanupCommandId);
+    expect(registry.resolve({ key: "d", metaKey: true })).toBe("clipboard.copyAs.cdxml");
+
+    expect(registry.conflicts()).toEqual([]);
+
+    const detachedPaletteRegistry = createDesktopShortcutRegistry(commands, {
+      platform: "macos",
+      includeDisabled: true
+    });
+    expect(detachedPaletteRegistry.conflicts()).toEqual([]);
+
+    // ChemDraw's Object menu order chords (front/back on the unshifted chords).
+    let layoutDocument = insertNativeArtGraphicObject(createPhase4Document("Layout Shortcuts"), { x: 120, y: 120 }, "tool.art.rect");
+    layoutDocument = insertNativeArtGraphicObject(layoutDocument, { x: 240, y: 160 }, "tool.art.circle");
+    const layoutPage = layoutDocument.pages[0];
+    const selectedLayoutDocument = selectDocumentObjects(
+      layoutDocument,
+      layoutPage.id,
+      layoutPage.objects.map((object) => object.id)
+    );
+    const layoutRegistry = createDesktopShortcutRegistry(
+      applyKeybindingSchemeToCommands(allShellCommands(selectedLayoutDocument), "chemdraw"),
+      "macos"
+    );
+    expect(layoutRegistry.resolve({ key: "[", metaKey: true })).toBe("layout.bringToFront");
+    expect(layoutRegistry.resolve({ key: "]", metaKey: true })).toBe("layout.sendToBack");
+    expect(layoutRegistry.resolve({ key: "[", metaKey: true, shiftKey: true })).toBeUndefined();
+    expect(layoutRegistry.resolve({ key: "]", metaKey: true, shiftKey: true })).toBeUndefined();
+    expect(layoutRegistry.resolve({ key: "h", metaKey: true, shiftKey: true })).toBe("layout.flipHorizontal");
+    expect(layoutRegistry.resolve({ key: "v", metaKey: true, shiftKey: true })).toBe("layout.flipVertical");
+    expect(layoutRegistry.conflicts()).toEqual([]);
+  });
+
+  it("shows the ChemDraw-scheme shortcuts in palette tooltips, not the manifest's ChemDraft keys", () => {
+    // The regression: functional bindings were remapped but tooltips still read the manifest's
+    // static shortcut text (V/M/C/L…), because the transformed spec's cleared fields lost the
+    // `override ?? base` merges against the manifest-derived base.
+    const commands = applyKeybindingSchemeToCommands(allShellCommands(createPhase4Document()), "chemdraw");
+    const overrides = new Map(commands.map((command) => [command.id, command] as const));
+    const items = getToolsetItemGroups("core.main", desktopToolsetRegistry, overrides).flat();
+    const tooltipFor = (id: string) => items.find((item) => item.id === id)?.tooltip;
+
+    expect(tooltipFor("tool.select")?.shortcutLabel).toBe("Space");
+    expect(tooltipFor("tool.bond")?.shortcutLabel).toBe("X");
+    expect(tooltipFor("tool.chain")?.shortcutLabel).toBe("⇧X");
+    expect(tooltipFor("tool.text")?.shortcutLabel).toBe("T");
+    // Unbound keys show no shortcut at all — not the stale ChemDraft key.
+    expect(tooltipFor("tool.lasso")?.shortcut).toBeNull();
+    expect(tooltipFor("tool.lasso")?.shortcutLabel).toBeNull();
+    expect(tooltipFor("tool.cyclopentane")?.shortcut).toBeNull();
+
+    // The default scheme still shows the ChemDraft keys.
+    const chemdraftItems = getToolsetItemGroups(
+      "core.main",
+      desktopToolsetRegistry,
+      new Map(allShellCommands(createPhase4Document()).map((command) => [command.id, command] as const))
+    ).flat();
+    const chemdraftTooltip = (id: string) => chemdraftItems.find((item) => item.id === id)?.tooltip;
+    expect(chemdraftTooltip("tool.select")?.shortcutLabel).toBe("V");
+    expect(chemdraftTooltip("tool.chain")?.shortcutLabel).toBe("C");
+    expect(chemdraftTooltip("tool.lasso")?.shortcutLabel).toBe("L");
+  });
+
+  it("keeps the chemdraft scheme byte-identical through the scheme transform", () => {
+    const commands = allShellCommands(createPhase4Document());
+    expect(applyKeybindingSchemeToCommands(commands, "chemdraft")).toEqual(commands);
+  });
+
   it("lets system clipboard events own copy cut and paste shortcuts", () => {
     expect(shouldLetSystemClipboardHandleCommand("clipboard.copy")).toBe(true);
     expect(shouldLetSystemClipboardHandleCommand("clipboard.cut")).toBe(true);
@@ -1605,6 +1736,44 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('window.addEventListener("copy", handleCopy)');
     expect(mainWindowSource).toContain('window.addEventListener("cut", handleCut)');
     expect(mainWindowSource).toContain("writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload))");
+  });
+
+  it("has the window publish which build it is running, on load, hot update and focus", () => {
+    // The build line in the corner only answers this for whoever is looking at the screen, and the
+    // dev server answers a different question (newest source, not what the open window applied).
+    const start = mainWindowSource.indexOf("Publish which build this WINDOW is running");
+    const end = mainWindowSource.indexOf("const writeSelectionClipboardEvent", start);
+    expect(start).toBeGreaterThan(-1);
+    const effect = mainWindowSource.slice(start, end);
+    expect(effect).toContain("publish(\"load\")");
+    expect(effect).toContain("vite:afterUpdate");
+    expect(effect).toContain('window.addEventListener("focus", onFocus)');
+    // The stamp published is the one the running code holds, not a re-read of anything.
+    expect(effect).toContain("buildStamp: CURRENT_BUILD_STAMP");
+    expect(effect).toContain("bundleStamp: __BUILD_STAMP__");
+    // Both listeners are removed with the effect.
+    expect(effect).toContain('window.removeEventListener("focus", onFocus)');
+    expect(effect).toContain('hot?.off("vite:afterUpdate", onHotUpdate)');
+  });
+
+  it("stops Spin 3D and Interactive 3D on a metal instead of returning a made-up shape", () => {
+    // MMFF has no parameters outside the organic set and refuses outright; UFF runs on anything and
+    // returns coordination geometry that is not worth having (a gold thiolate "converged" with its
+    // two Au–S bonds 1.4 and 3.7 Å long). Both commands check before they start, and the check
+    // comes BEFORE any conformer work — including reopening a model stored by an earlier build.
+    const spinStart = mainWindowSource.indexOf("stage: \"spin.command\"");
+    const spinGuard = mainWindowSource.indexOf("nativeMoleculeUnmodeledMetalElements(molecule)", spinStart);
+    const spinConformer = mainWindowSource.indexOf("Generating 3D conformer…", spinStart);
+    const spinReopen = mainWindowSource.indexOf("const memo = spin3dModelCacheRef.current.get(objectId)", spinStart);
+    expect(spinGuard).toBeGreaterThan(-1);
+    expect(spinGuard).toBeLessThan(spinReopen);
+    expect(spinGuard).toBeLessThan(spinConformer);
+
+    const interactiveStart = mainWindowSource.indexOf("const openInteractive3dWorkspace");
+    const interactiveGuard = mainWindowSource.indexOf("nativeMoleculeUnmodeledMetalElements(object)", interactiveStart);
+    const interactiveSidecar = mainWindowSource.indexOf("readEngine3dSidecarStatus()", interactiveStart);
+    expect(interactiveGuard).toBeGreaterThan(-1);
+    expect(interactiveGuard).toBeLessThan(interactiveSidecar);
   });
 
   it("routes desktop copy and cut through the native pasteboard, not the WebKit DataTransfer", () => {
@@ -1681,6 +1850,60 @@ describe("ChemDraft desktop shell", () => {
       x: payload.bounds.centerX + 48,
       y: payload.bounds.centerY + 48
     });
+  });
+
+  it("centres a paste on the pointer, and steps it only when the pointer has not moved", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Pointer Paste"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const page = document.pages[0];
+    const pointer = { x: 420, y: 360 };
+    const firstPaste = nextSelectionClipboardPastePlacement(
+      payload,
+      initialSelectionClipboardPasteState(payload, "copy"),
+      page,
+      pointer
+    );
+    expect(firstPaste.point).toMatchObject(pointer);
+
+    // Pasting again without moving the mouse must not bury the second copy exactly on the first.
+    const secondPaste = nextSelectionClipboardPastePlacement(payload, firstPaste.state, page, pointer);
+    expect(secondPaste.point).not.toMatchObject(pointer);
+
+    // Move the pointer and the paste follows it again, with no leftover offset.
+    const movedPointer = { x: 200, y: 240 };
+    const thirdPaste = nextSelectionClipboardPastePlacement(payload, secondPaste.state, page, movedPointer);
+    expect(thirdPaste.point).toMatchObject(movedPointer);
+  });
+
+  it("keeps a paste aimed at the page edge on the page", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Edge Pointer Paste"),
+      { x: 120, y: 140 },
+      "tool.art.rect"
+    );
+    const payload = createSelectionClipboardPayload(document);
+    if (!payload) {
+      throw new Error("Expected selected object clipboard payload.");
+    }
+
+    const page = document.pages[0];
+    const paste = nextSelectionClipboardPastePlacement(
+      payload,
+      initialSelectionClipboardPasteState(payload, "copy"),
+      page,
+      { x: page.width - 1, y: page.height - 1 }
+    );
+
+    expect(paste.point.x + payload.bounds.width / 2).toBeLessThanOrEqual(page.width);
+    expect(paste.point.y + payload.bounds.height / 2).toBeLessThanOrEqual(page.height);
   });
 
   it("keeps the first cut paste at the source point, then offsets repeated pastes", () => {
@@ -1773,9 +1996,38 @@ describe("ChemDraft desktop shell", () => {
       "atom.setHoveredElement.F",
       "atom.setHoveredElement.P",
       "atom.setHoveredElement.S",
-      "atom.setHoveredElement.I"
+      "atom.setHoveredElement.I",
+      "atom.setHoveredElement.Cl",
+      "atom.setHoveredElement.Br",
+      "atom.setHoveredElement.Li",
+      "atom.setHoveredElement.Si"
     ]);
     expect(atomElementActions.every((command) => command.shortcut === undefined)).toBe(true);
+  });
+
+  it("keeps nickname command ids stable while encoding the unknown label safely", () => {
+    expect(atomNicknameLabelActions.map((command) => command.id)).toEqual([
+      "atom.setHoveredLabel.D",
+      "atom.setHoveredLabel.Et",
+      "atom.setHoveredLabel.CO2Me",
+      "atom.setHoveredLabel.CF3",
+      "atom.setHoveredLabel.Cbz",
+      "atom.setHoveredLabel.Me",
+      "atom.setHoveredLabel.MgBr",
+      "atom.setHoveredLabel.NO2",
+      "atom.setHoveredLabel.OMe",
+      "atom.setHoveredLabel.Ph",
+      "atom.setHoveredLabel.Fmoc",
+      "atom.setHoveredLabel.R",
+      "atom.setHoveredLabel.X",
+      "atom.setHoveredLabel.Boc",
+      "atom.setHoveredLabel.N3",
+      "atom.setHoveredLabel.unknown"
+    ]);
+    expect(atomNicknameLabelActions.at(-1)).toMatchObject({
+      title: "Label Hovered Atom: ?",
+      description: "Set the hovered native atom's label to ?"
+    });
   });
 
   it("defines command-backed hovered atom growth and charge actions", () => {
@@ -1817,6 +2069,21 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "c")).toBe("atom.setHoveredElement.C");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "t")).toBeUndefined();
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "c")).toBeUndefined();
+    // ChemDraw's numeric drawing hotkeys work in both schemes.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "2")).toBe("atom.addCarbonylToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "3")).toBe("atom.attachRingToHoveredAtom.benzene");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "4")).toBe("atom.sproutStereoBondAtHoveredAtom.wedge");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "5")).toBe("atom.sproutStereoBondAtHoveredAtom.hashed");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "6")).toBe("atom.attachRingToHoveredAtom.cyclohexane");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "7")).toBe("atom.attachRingToHoveredAtom.cyclopentane");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "8")).toBe("atom.sproutMethylideneAtHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "9")).toBe("atom.sproutGemDimethylAtHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "0")).toBe("atom.addCyclicBondToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "4")).toBe("bond.fuseRingAtHoveredBond.cyclobutane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "6")).toBe("bond.fuseRingAtHoveredBond.cyclohexane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "8")).toBe("bond.fuseRingAtHoveredBond.cyclooctane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "9")).toBe("bond.fuseRingAtHoveredBond.chairCyclohexaneA");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "0")).toBe("bond.fuseRingAtHoveredBond.chairCyclohexaneB");
 
     const document = insertNativeSingleBondMolecule(createPhase4Document("Selected Bond Shortcut"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
@@ -1828,6 +2095,205 @@ describe("ChemDraft desktop shell", () => {
       kind: "bond",
       bondId: "bond_001"
     }, undefined, "1")).toBe("bond.setHoveredBondOrder.single");
+  });
+
+  it("resolves ChemDraw hover hotkeys case-sensitively under the chemdraw scheme", () => {
+    const atomTarget = {
+      objectId: "mol_001",
+      kind: "atom",
+      atomId: "atom_001",
+      distanceToPointer: 0
+    } as const;
+    const bondTarget = {
+      objectId: "mol_001",
+      kind: "bond",
+      bondId: "bond_001",
+      fromAtomId: "atom_001",
+      toAtomId: "atom_002",
+      distanceToPointer: 0
+    } as const;
+
+    // Atom hotkeys: elements are case-sensitive (b→Br vs B→boron, c→C vs C→Cl).
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "c", "chemdraw")).toBe("atom.setHoveredElement.C");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "C", "chemdraw")).toBe("atom.setHoveredElement.Cl");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "l", "chemdraw")).toBe("atom.setHoveredElement.Cl");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "b", "chemdraw")).toBe("atom.setHoveredElement.Br");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "B", "chemdraw")).toBe("atom.setHoveredElement.B");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "L", "chemdraw")).toBe("atom.setHoveredElement.Li");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "S", "chemdraw")).toBe("atom.setHoveredElement.Si");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "w", "chemdraw")).toBe("atom.setHoveredElement.N");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "q", "chemdraw")).toBe("atom.setHoveredElement.O");
+    // Carbonyl sits on "2" over an atom; "k" (ChemDraw: sulfonyl, unsupported) does nothing.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "1", "chemdraw")).toBe("atom.addSingleBondToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "2", "chemdraw")).toBe("atom.addCarbonylToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "k", "chemdraw")).toBeUndefined();
+    // The numeric sprout row and its "a" aliases.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "3", "chemdraw")).toBe("atom.attachRingToHoveredAtom.benzene");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "a", "chemdraw")).toBe("atom.attachRingToHoveredAtom.benzene");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "6", "chemdraw")).toBe("atom.attachRingToHoveredAtom.cyclohexane");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "0", "chemdraw")).toBe("atom.addCyclicBondToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "5", "chemdraw")).toBe("bond.fuseRingAtHoveredBond.cyclopentane");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "a", "chemdraw")).toBe("bond.fuseRingAtHoveredBond.benzene");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "0", "chemdraw")).toBe("bond.fuseRingAtHoveredBond.chairCyclohexaneB");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "+", "chemdraw")).toBe("atom.addPositiveChargeToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "-", "chemdraw")).toBe("atom.addNegativeChargeToHoveredAtom");
+
+    // Bond hotkeys: orders plus display styles.
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "1", "chemdraw")).toBe("bond.setHoveredBondOrder.single");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "2", "chemdraw")).toBe("bond.setHoveredBondOrder.double");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "3", "chemdraw")).toBe("bond.setHoveredBondOrder.triple");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "w", "chemdraw")).toBe("bond.setHoveredBondDisplay.wedge");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "h", "chemdraw")).toBe("bond.setHoveredBondDisplay.hashed");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "H", "chemdraw")).toBe("bond.setHoveredBondDisplay.hashed");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "b", "chemdraw")).toBe("bond.setHoveredBondDisplay.bold");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "d", "chemdraw")).toBe("bond.setHoveredBondDisplay.dashed");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "c", "chemdraw")).toBeUndefined();
+    // MainWindow's canvas hover path has no jsdom layout harness, so pin both user-facing outcomes
+    // through the same source-wiring assertions used by the other hover-hotkey status tests.
+    expect(mainWindowSource).toContain('setStatus("Dashed (dative) display needs a single bond")');
+    expect(mainWindowSource).toContain('"Set hovered bond to dashed (dative): no covalent valence on either atom"');
+
+    // Nickname labels: verbatim text labels on the hovered atom, case-sensitive like the
+    // element keys. `e` over an atom is Et — the arrow tool only gets `e` with nothing hovered.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "e", "chemdraw")).toBe("atom.setHoveredLabel.Et");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "E", "chemdraw")).toBe("atom.setHoveredLabel.CO2Me");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "m", "chemdraw")).toBe("atom.setHoveredLabel.Me");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "O", "chemdraw")).toBe("atom.setHoveredLabel.OMe");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "P", "chemdraw")).toBe("atom.setHoveredLabel.Ph");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "y", "chemdraw")).toBe("atom.setHoveredLabel.Boc");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "x", "chemdraw")).toBe("atom.setHoveredLabel.X");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "Z", "chemdraw")).toBe("atom.setHoveredLabel.N3");
+    const unknownLabelCommandId = hoveredNativeTargetShortcutCommand(atomTarget, "!", "chemdraw");
+    expect(unknownLabelCommandId).toBe("atom.setHoveredLabel.unknown");
+
+    // The registered handler consumes the reverse lookup instead of treating the schema-safe
+    // command token as label text, so the atom still receives the visible question mark.
+    expect(mainWindowSource).toContain("const label = nicknameLabelByCommandId.get(action.id);");
+    expect(mainWindowSource).toContain("setHoveredNativeAtomLabel(label);");
+    const unknownLabel = unknownLabelCommandId
+      ? nicknameLabelByCommandId.get(unknownLabelCommandId)
+      : undefined;
+    expect(unknownLabel).toBe("?");
+    const seeded = insertNativeSingleBondMolecule(
+      createPhase4Document("Unknown Nickname Shortcut"),
+      { x: 200, y: 220 }
+    );
+    const seededMolecule = seeded.pages[0].objects.find(
+      (object): object is MoleculeObject => object.type === "molecule"
+    );
+    if (!seededMolecule || !unknownLabel) {
+      throw new Error("Expected a native molecule and unknown nickname mapping.");
+    }
+    const labeled = applyNativeAtomElementTarget(seeded, {
+      objectId: seededMolecule.id,
+      kind: "atom",
+      atomId: seededMolecule.atoms[0].id,
+      distanceToPointer: 0
+    }, unknownLabel);
+    const labeledMolecule = labeled.pages[0].objects.find(
+      (object): object is MoleculeObject => object.id === seededMolecule.id && object.type === "molecule"
+    );
+    expect(labeledMolecule?.atoms[0].element).toBe("?");
+    // A→Ac stays unmapped: "Ac" normalizes to actinium (the abbreviation/element collision).
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "A", "chemdraw")).toBeUndefined();
+    // Nicknames are atom-only; over a bond, `e` falls through (to the arrow tool binding).
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "e", "chemdraw")).toBeUndefined();
+    // The default ChemDraft scheme keeps `e` free for the eraser, hovering or not.
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "e")).toBeUndefined();
+
+    // No hovered target → hover hotkeys stay inert (matches ChemDraw's hotspot requirement).
+    expect(hoveredNativeTargetShortcutCommand(undefined, "c", "chemdraw")).toBeUndefined();
+    expect(chemDrawHoveredTargetHotkeyCommand("atom", "toString")).toBeUndefined();
+  });
+
+  it("keeps the hovered atom live across charge-hotkey commits, so repeated presses stack", () => {
+    // Regression: the charge-hotkey commit used to CLEAR the hover target, and hover was only
+    // re-derived on the next pointermove — so a second "+" over a stationary, unselected atom
+    // announced "No hovered atom for positive charge" while the pointer was visibly on the atom.
+    // The commit now re-derives the hover from the last canvas pointer position through the same
+    // derivation pointermove uses (mainWindowSource assertion), and this exercises that exact
+    // chain: derive hover → commit → re-derive on the committed document → press again.
+    // (A full MainWindow hover simulation is impractical here — jsdom has no layout, and the
+    // hover path is driven by window pointermove listeners over the rendered page.)
+    expect(mainWindowSource).toContain("rederiveNativeCanvasHoverRef.current(nextDocument)");
+
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Charge Hotkey Stacking"), { x: 300, y: 300 });
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!molecule) {
+      throw new Error("Expected molecule fixture.");
+    }
+    const atom = molecule.atoms[0];
+    const hoverAtAtom = (source: ChemDraftDocument) =>
+      nativeMoleculeCanvasHoverTarget(source, { x: atom.x, y: atom.y });
+
+    const firstTarget = hoverAtAtom(document);
+    expect(firstTarget).toMatchObject({ objectId: molecule.id, kind: "atom", atomId: atom.id });
+
+    const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, firstTarget!));
+
+    // The re-derived hover on the committed document must resolve the SAME atom: the charge mark
+    // placed beside it is not a molecule object and never shadows it.
+    const secondTarget = hoverAtAtom(once);
+    expect(secondTarget).toMatchObject({ objectId: molecule.id, kind: "atom", atomId: atom.id });
+
+    // …so the second press stacks onto the same mark instead of dying on a cleared hover.
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, secondTarget!));
+    const marks = twice.pages[0].objects.filter((object) =>
+      object.type === "electron-mark" && object.markKind === "charge"
+    );
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toMatchObject({ charge: 2 });
+  });
+
+  it("perceives stereo through the perception spelling, so an abbreviation never reads as a carbon", () => {
+    // Both MainWindow perception sites (the flatten reference and the pre-spin center scan) must
+    // use the same molfile flatten's read-back uses; the plain export writer turns "Ph" into "*",
+    // which OpenChemLib reads as carbon. Covered functionally in ocl-adapter; this guards the wiring.
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget)");
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule)");
+  });
+
+  it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
+    // A refused increment used to read "Cannot place positive charge on hovered atom" even though
+    // the mark WAS on the atom — it was the increment that was refused, past ±9 or past what the
+    // element can carry. The query itself is covered in documentWorkflow.test.ts; this guards the
+    // MainWindow wiring of both messages.
+    expect(mainWindowSource).toContain("nativeChargeStackRefusal(currentDocument, markSpec, target)");
+    expect(mainWindowSource).toContain("Charge is already at the ±");
+    expect(mainWindowSource).toContain("cannot carry ${noun} at its current valence");
+  });
+
+  it("names the stacked magnitude in the charge status noun", () => {
+    // The spec carries only the ±1 increment; given the mark's stacked total, the status names
+    // it ("Placed positive charge 2+ on hovered atom"), matching the numeral the mark draws.
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1 })).toBe("positive charge");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: -1 })).toBe("negative charge");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1 }, 2)).toBe("positive charge 2+");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: -1 }, -3)).toBe("negative charge 3-");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1, radical: true }, 2)).toBe("radical cation 2+");
+    expect(electronMarkSpecStatusNoun({ kind: "charge", charge: 1, chargeStyle: "plain" })).toBe("positive charge");
+    expect(electronMarkSpecStatusNoun({ kind: "radical-dot" })).toBe("radical electron");
+    expect(electronMarkSpecStatusNoun({ kind: "lone-pair" })).toBe("lone pair");
+  });
+
+  it("routes copy-as SMILES/MOL fidelity warnings to the status bar", () => {
+    // The copy writers collect lossy-conversion notes into an optional out-channel; the MainWindow
+    // call sites pass it and the confirmation carries the warnings, so a dative bond flattened by
+    // SMILES/V2000 (or a label copied as a dummy atom) is never a silent success.
+    expect(mainWindowSource).toContain("await copyAsSmiles(current, warnings)");
+    expect(mainWindowSource).toContain('copyAsMolfile(current, "v3000", warnings)');
+    expect(mainWindowSource).toContain('copyAsMolfile(current, "v2000", warnings)');
+    expect(mainWindowSource).toContain("`Copied ${label} to clipboard${warningSuffix}`");
+  });
+
+  it("reports placeholder validation without claiming dummy-atom properties replaced the drawing", () => {
+    expect(nativePlaceholderAtomStatus([])).toBeUndefined();
+    expect(nativePlaceholderAtomStatus(["CF3"])).toBe(
+      '1 placeholder atom ([*] for "CF3"); formula and properties kept from the drawing'
+    );
+    expect(mainWindowSource).toContain("nativeMoleculeUnspellableLabels(molecule)");
+    expect(mainWindowSource).toContain("`Validated with ${placeholderNote}`");
+    expect(mainWindowSource).toContain("`${formatAnalysisRunStatus(run)}${placeholderNote ? `; ${placeholderNote}` : \"\"}`");
   });
 
   it("defines minimal command-backed page-size and orientation controls", () => {
@@ -4374,12 +4840,24 @@ describe("ChemDraft desktop shell", () => {
   it("renders bonded non-carbon atom labels from native molecule state", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Oxygen Render"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects[0];
-    const updated = applyNativeAtomElementTarget(document, {
+    if (molecule.type !== "molecule") {
+      throw new Error("Expected molecule fixture.");
+    }
+    const oxygen = applyNativeAtomElementTarget(document, {
       objectId: molecule.id,
       kind: "atom",
       atomId: "atom_002",
       distanceToPointer: 0
     }, "O");
+    // Drawn atoms show their implicit hydrogens by default (`atomLabelHideImplicitHydrogens`
+    // is false in the default style; literalness is per-atom via `labelLiteral`, and the
+    // hotkey relabel above clears it). Pin the style on the object so the multi-run "OH"
+    // label path stays exercised.
+    const updated = applyPatch(oxygen, {
+      op: "updateObject",
+      objectId: molecule.id,
+      changes: { style: { ...molecule.style, atomLabelHideImplicitHydrogens: false } }
+    });
     const markup = renderToStaticMarkup(
       createElement(MainWindow, {
         initialDocument: updated,
@@ -4620,6 +5098,54 @@ describe("ChemDraft desktop shell", () => {
     expect(unresolvedMarkup).toContain('data-invalid-atom-id="atom_n"');
   });
 
+  it("labels multi-magnitude charge marks with their real charge for assistive tech", () => {
+    // The overlay used to clamp any charge to ±1, so a mark drawn as "2+" carried
+    // data-charge="1" and announced "Positive charge". It now reports sign × magnitude, matching
+    // the layout-engine charge fragment that draws the numeral.
+    const dication = {
+      id: "charge_double",
+      type: "electron-mark",
+      x: 260,
+      y: 180,
+      width: 18,
+      height: 18,
+      rotation: 0,
+      style: { source: "test-charge" },
+      markKind: "charge",
+      anchor: { kind: "point", point: { x: 269, y: 189 } },
+      charge: 2
+    } satisfies DocumentObject;
+    const trianion = {
+      ...dication,
+      id: "charge_triple_minus",
+      anchor: { kind: "point", point: { x: 320, y: 189 } },
+      x: 311,
+      charge: -3
+    } satisfies DocumentObject;
+    const document = applyPatches(
+      createPhase4Document("Charge Mark Labels"),
+      [
+        { op: "addObject", pageId: "page_001", object: dication },
+        { op: "addObject", pageId: "page_001", object: trianion }
+      ],
+      { now: "2026-05-29T00:00:00.000Z" }
+    );
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+
+    expect(markup).toContain('data-charge="2"');
+    expect(markup).toContain('aria-label="Positive charge 2+"');
+    expect(markup).toContain('data-charge="-3"');
+    expect(markup).toContain('aria-label="Negative charge 3-"');
+    // A ±1 mark keeps the plain label (no numeral, matching the drawn glyph).
+    expect(markup).not.toContain('aria-label="Positive charge 1+"');
+  });
+
   it("stress-renders charged and hydrogen-count atom labels without recentering the element glyph", () => {
     const labelStressMolecule = {
       id: "mol_label_stress",
@@ -4634,7 +5160,7 @@ describe("ChemDraft desktop shell", () => {
         source: "chemdraft-native-drawing"
       },
       structureFormat: "smiles",
-      structure: "[B-]([C])([C])([C])[C].[N+]([C])([C])([C])[C].[O+]([C])([C])[C].C.O",
+      structure: "[B-]([C])([C])([C])[C].[N+]([C])([C])([C])[C].[O+]([C])([C])[C].[CH3-].[OH3+]",
       atoms: [
         { id: "atom_b", element: "B", x: 180, y: 180, formalCharge: -1 },
         { id: "atom_b1", element: "C", x: 130, y: 180, formalCharge: 0 },
@@ -4650,8 +5176,10 @@ describe("ChemDraft desktop shell", () => {
         { id: "atom_o1", element: "C", x: 430, y: 180, formalCharge: 0 },
         { id: "atom_o2", element: "C", x: 485, y: 135, formalCharge: 0 },
         { id: "atom_o3", element: "C", x: 500, y: 220, formalCharge: 0 },
-        { id: "atom_ch4", element: "C", x: 230, y: 300, formalCharge: 0 },
-        { id: "atom_oh2", element: "O", x: 360, y: 300, formalCharge: 0 }
+        // Arbitrary typed labels (not element symbols): they render literally with the
+        // charge affix appended, covering the subscript-digit run without implicit H.
+        { id: "atom_ch4", element: "CH3", x: 230, y: 300, formalCharge: -1 },
+        { id: "atom_oh2", element: "OH3", x: 360, y: 300, formalCharge: 1 }
       ],
       bonds: [
         { id: "bond_b1", fromAtomId: "atom_b", toAtomId: "atom_b1", order: "single" },
@@ -4692,16 +5220,16 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
-    for (const label of ["B-", "N+", "O+", "CH4", "OH2"]) {
+    for (const label of ["B-", "N+", "O+", "CH3-", "OH3+"]) {
       expect(markup).toContain(`data-atom-label="${label}"`);
     }
-    expect(markup.match(/data-atom-label-run="charge"/g) ?? []).toHaveLength(3);
+    expect(markup.match(/data-atom-label-run="charge"/g) ?? []).toHaveLength(5);
     expect(markup.match(/data-atom-label-run="subscript"/g) ?? []).toHaveLength(2);
     expect(markup.match(/text-anchor="middle">[BNO]<\/text>/g) ?? []).toHaveLength(3);
     expect(markup).not.toContain("native-atom-invalid-marker");
   });
 
-  it("renders disconnected methane labels after deleting a central native carbon", () => {
+  it("renders implicit methane labels after deleting a central native carbon", () => {
     const growFromAtom = (document: ReturnType<typeof insertNativeSingleBondMolecule>, atomId: string, angleDegrees: number) => {
       const molecule = document.pages[0].objects[0];
       if (molecule.type !== "molecule") {
@@ -4740,8 +5268,10 @@ describe("ChemDraft desktop shell", () => {
       })
     );
 
+    // Orphaned DRAWN carbons keep the skeletal convention: four implicit methanes, no
+    // valence badges — only text-typed literal atoms can be invalid.
     expect(markup.match(/data-atom-label="CH4"/g) ?? []).toHaveLength(4);
-    expect(markup.match(/data-atom-label-run="subscript"[^>]*>4<\/text>/g) ?? []).toHaveLength(4);
+    expect(markup).not.toContain("native-atom-invalid-marker");
     expect(markup).toContain('data-structure="C.C.C.C"');
     expect(markup).toContain("Molecule C4H16");
     expect(markup).not.toContain("native-bond-line");
@@ -5137,9 +5667,29 @@ describe("ChemDraft desktop shell", () => {
     expect(primaryLineMarkup).not.toBe("");
     expect(secondaryLineMarkup).not.toBe("");
     expect(svgLineLength(primaryLineMarkup)).toBeGreaterThan(svgLineLength(secondaryLineMarkup));
-    expect(svgLineNumberAttribute(primaryLineMarkup, "x1")).toBeLessThan(svgLineNumberAttribute(secondaryLineMarkup, "x1"));
-    expect(svgLineNumberAttribute(primaryLineMarkup, "x2")).toBeGreaterThan(svgLineNumberAttribute(secondaryLineMarkup, "x2"));
-    expect(Math.abs(svgLineNumberAttribute(primaryLineMarkup, "y1") - svgLineNumberAttribute(secondaryLineMarkup, "y1"))).toBeGreaterThan(0);
+    // Orientation-agnostic (the seed bond rises at 30° now): project the segment endpoints onto
+    // the bond axis — the centerline primary must extend past the short secondary at both ends —
+    // and the secondary must sit off-axis while the primary rides it.
+    const carbonAtom = molecule.atoms.find((atom) => atom.id === "atom_001");
+    const oxygenAtom = molecule.atoms.find((atom) => atom.id === "atom_002");
+    if (!carbonAtom || !oxygenAtom) {
+      throw new Error("Expected carbonyl atoms.");
+    }
+    const axisLength = Math.hypot(oxygenAtom.x - carbonAtom.x, oxygenAtom.y - carbonAtom.y);
+    const axis = { x: (oxygenAtom.x - carbonAtom.x) / axisLength, y: (oxygenAtom.y - carbonAtom.y) / axisLength };
+    const along = (line: string, point: "1" | "2") =>
+      (svgLineNumberAttribute(line, `x${point}`) - carbonAtom.x) * axis.x +
+      (svgLineNumberAttribute(line, `y${point}`) - carbonAtom.y) * axis.y;
+    const across = (line: string, point: "1" | "2") =>
+      Math.abs(
+        (svgLineNumberAttribute(line, `x${point}`) - carbonAtom.x) * -axis.y +
+        (svgLineNumberAttribute(line, `y${point}`) - carbonAtom.y) * axis.x
+      );
+    const primarySpan = [along(primaryLineMarkup, "1"), along(primaryLineMarkup, "2")].sort((a, b) => a - b);
+    const secondarySpan = [along(secondaryLineMarkup, "1"), along(secondaryLineMarkup, "2")].sort((a, b) => a - b);
+    expect(primarySpan[0]).toBeLessThan(secondarySpan[0]);
+    expect(primarySpan[1]).toBeGreaterThan(secondarySpan[1]);
+    expect(across(secondaryLineMarkup, "1")).toBeGreaterThan(across(primaryLineMarkup, "1"));
   });
 
   it("renders document object order as explicit visual layers for molecule over-under crossings", () => {
@@ -5222,6 +5772,157 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("Move Object Backward");
     expect(markup).toContain('data-command-id="layout.sendToBack"');
     expect(markup).toContain("Move Object to Back");
+  });
+
+  it("offers Clear Warning / Restore Warning on flagged atoms in the context menu", () => {
+    const warningMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_warn",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "atom",
+        atomWarning: {
+          scope: [{ objectId: "mol_warn", atomIds: ["atom_001"] }],
+          suppressed: false,
+          count: 1
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(warningMarkup).toContain('data-command-id="atom.toggleWarningSuppression"');
+    expect(warningMarkup).toContain("Clear Warning");
+    expect(warningMarkup).not.toContain("Restore Warning");
+
+    const suppressedMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_warn",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "atom",
+        atomWarning: {
+          scope: [{ objectId: "mol_warn", atomIds: ["atom_001"] }],
+          suppressed: true,
+          count: 1
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(suppressedMarkup).toContain("Restore Warning");
+
+    // Multi-warning scopes pluralize.
+    const pluralMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_warn",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "object",
+        atomWarning: {
+          scope: [{ objectId: "mol_warn" }],
+          suppressed: false,
+          count: 3
+        },
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(pluralMarkup).toContain("Clear Warnings");
+
+    // No warning context, no item.
+    const plainMarkup = renderToStaticMarkup(
+      createElement(ObjectLayerContextMenu, {
+        objectId: "mol_plain",
+        objectIndex: 0,
+        objectCount: 1,
+        targetKind: "atom",
+        position: { x: 20, y: 30 },
+        onInvoke: () => undefined
+      })
+    );
+    expect(plainMarkup).not.toContain("atom.toggleWarningSuppression");
+  });
+
+  it("scopes warning suppression to selected atoms across multiple molecules", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Cross-molecule Warning Scope"), { x: 200, y: 220 });
+    let document = insertNativeSingleBondMolecule(first, { x: 320, y: 220 });
+    const molecules = document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    if (molecules.length !== 2) {
+      throw new Error("Expected two native molecule fixtures.");
+    }
+
+    for (const molecule of molecules) {
+      for (const atom of molecule.atoms) {
+        document = applyNativeAtomElementTarget(document, {
+          objectId: molecule.id,
+          kind: "atom",
+          atomId: atom.id,
+          distanceToPointer: 0
+        }, "N", { literal: true });
+      }
+    }
+    document = selectDocumentObjects(document, document.pages[0].id, molecules.map((molecule) => molecule.id));
+
+    const selectedAtomIds = molecules.map((molecule) => molecule.atoms[0].id);
+    const scope = nativeWarningSuppressionScopeForSelection(
+      document,
+      molecules.map((molecule, index) => ({
+        objectId: molecule.id,
+        kind: "atom" as const,
+        atomId: selectedAtomIds[index]
+      })),
+      molecules[1].id,
+      "atom",
+      true
+    );
+    expect(scope).toEqual(molecules.map((molecule, index) => ({
+      objectId: molecule.id,
+      atomIds: [selectedAtomIds[index]]
+    })));
+
+    const cleared = applyNativeWarningSuppressionToScope(document, scope, true);
+    for (const [index, molecule] of molecules.entries()) {
+      const clearedMolecule = cleared.pages[0].objects.find((object): object is MoleculeObject =>
+        object.id === molecule.id && object.type === "molecule"
+      );
+      expect(clearedMolecule?.atoms.find((atom) => atom.id === selectedAtomIds[index])?.warningSuppressed).toBe(true);
+      expect(clearedMolecule?.atoms.find((atom) => atom.id === molecule.atoms[1].id)?.warningSuppressed).toBeUndefined();
+      expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule).map((state) => state.atomId) : [])
+        .toEqual([molecule.atoms[1].id]);
+    }
+  });
+
+  it("keeps whole-molecule warning scope for a whole-object multi-selection", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Whole-molecule Warning Scope"), { x: 200, y: 220 });
+    const document = insertNativeSingleBondMolecule(first, { x: 320, y: 220 });
+    const molecules = document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const selectedDocument = selectDocumentObjects(
+      document,
+      document.pages[0].id,
+      molecules.map((molecule) => molecule.id)
+    );
+
+    expect(nativeWarningSuppressionScopeForSelection(
+      selectedDocument,
+      [],
+      molecules[1].id,
+      "atom",
+      true
+    )).toEqual(molecules.map((molecule) => ({ objectId: molecule.id })));
+  });
+
+  it("keeps a single partial warning scope limited to that molecule's selected atom", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Single Warning Scope"), { x: 200, y: 220 });
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const atomId = molecule.atoms[0].id;
+
+    expect(nativeWarningSuppressionScopeForSelection(
+      document,
+      [{ objectId: molecule.id, kind: "atom", atomId }],
+      molecule.id,
+      "atom",
+      false
+    )).toEqual([{ objectId: molecule.id, atomIds: [atomId] }]);
   });
 
   it("renders bond depth controls in the object context menu", () => {

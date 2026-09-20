@@ -81,6 +81,21 @@ describe("pluginFacingStructure", () => {
     expect(facing.structure).toContain(" 10 11  0  0");
   });
 
+  it("hands an abbreviated label to the plugin as an R-group, never as a dummy carbon", () => {
+    const anisole = {
+      id: "m", type: "molecule", structureFormat: "smiles", structure: "",
+      atoms: [
+        { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a1", element: "OMe", x: 1, y: 0, formalCharge: 0 }
+      ],
+      bonds: [{ id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" }]
+    } as unknown as Parameters<typeof pluginFacingStructure>[0];
+    const facing = pluginFacingStructure(anisole);
+    expect(facing.structure).toContain(" R# ");
+    expect(facing.structure).toContain("M  RGP  1   2   1");
+    expect(facing.structure).not.toContain(" *  ");
+  });
+
   it("passes through the existing structure when there is no atom graph (e.g. a SMILES import)", () => {
     expect(pluginFacingStructure({ structureFormat: "smiles", structure: "c1ccccc1", atoms: [] } as never)).toEqual({
       structureFormat: "smiles",

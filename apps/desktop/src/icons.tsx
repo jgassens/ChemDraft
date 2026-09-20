@@ -7,6 +7,7 @@ export type IconName =
   | "bracket"
   | "charge"
   | "chain"
+  | "chainFlexible"
   | "copy"
   | "export"
   | "grid"
@@ -94,6 +95,15 @@ export function Icon({ name, ...props }: IconProps) {
           <path d="m4 14 4-4 4 4 4-4 4 4" />
           <circle cx="4" cy="14" r="1" fill="currentColor" stroke="none" />
           <circle cx="20" cy="14" r="1" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "chainFlexible":
+      return (
+        <svg {...common}>
+          {/* A zig-zag whose axis bends: the chain-tool glyph curving up and to the right. */}
+          <path d="m4 18 4-3 4 2 3-3-1-4 3-3" />
+          <circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" />
+          <circle cx="17" cy="7" r="1" fill="currentColor" stroke="none" />
         </svg>
       );
     case "copy":

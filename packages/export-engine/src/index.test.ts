@@ -349,17 +349,19 @@ describe("exportDocumentToSvg", () => {
   });
 
   it("exports condensed atom labels with numeric subscripts", () => {
-    const methaneMolecule = {
+    // Labels are literal, so the subscript run comes from a typed condensed label ("CH3" as the
+    // atom's own label text), not from auto-drawn implicit hydrogens.
+    const methylLabelMolecule = {
       ...moleculeObject(),
       style: {
         ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
         source: "chemdraft-native-drawing"
       },
       structure: "C",
-      atoms: [{ id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 }],
+      atoms: [{ id: "atom_001", element: "CH3", x: 120, y: 160, formalCharge: 0 }],
       bonds: [],
       chemistry: {
-        formula: "CH4",
+        formula: "CH3",
         atomCount: 1,
         bondCount: 0,
         totalCharge: 0,
@@ -369,20 +371,20 @@ describe("exportDocumentToSvg", () => {
       }
     } satisfies MoleculeObject;
     const document = applyPatch(
-      createEmptyDocument({ title: "Methane Export", now: timestamp }),
-      { op: "addObject", pageId: "page_001", object: methaneMolecule },
+      createEmptyDocument({ title: "Methyl Label Export", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: methylLabelMolecule },
       { now: timestamp }
     );
 
     const result = exportDocumentToSvg(document);
 
-    expect(result.contents).toContain('data-atom-label="CH4"');
+    expect(result.contents).toContain('data-atom-label="CH3"');
     expect(result.contents).toContain('data-atom-label-run="normal"');
     expect(result.contents).toContain(">CH</text>");
     expect(result.contents).toContain('data-atom-label-run="subscript"');
     expect(result.contents).toContain('font-size="10.8"');
-    expect(result.contents).toContain(">4</text>");
-    expect(result.contents).not.toContain(">CH4</text>");
+    expect(result.contents).toContain(">3</text>");
+    expect(result.contents).not.toContain(">CH3</text>");
   });
 
   it("exports explicit quaternary ammonium as a compact charge affix", () => {
