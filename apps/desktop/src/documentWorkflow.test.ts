@@ -15055,6 +15055,34 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     expect(reparse(smiles)).toEqual({ formula: "C12H24", ringCount: 2 });
   });
 
+  it("keeps the ring-closure bond order on a single-ring Kekulé benzene", () => {
+    // Six carbons, alternating single/double, with the 6→1 closure bond being the double one.
+    // The single-cycle fast path used to write a bare "1" for the closure, dropping its "=",
+    // so drawn benzene came out as cyclohexa-1,3-diene "C1C=CC=CC1" (C6H8, two double bonds).
+    const atomIds = ["b1", "b2", "b3", "b4", "b5", "b6"];
+    const atoms: MoleculeAtom[] = atomIds.map((id, index) => ({
+      id,
+      element: "C",
+      x: index * 10,
+      y: 0,
+      formalCharge: 0
+    }));
+    const bonds: MoleculeBond[] = [
+      { id: "bb1", fromAtomId: "b1", toAtomId: "b2", order: "single" },
+      { id: "bb2", fromAtomId: "b2", toAtomId: "b3", order: "double" },
+      { id: "bb3", fromAtomId: "b3", toAtomId: "b4", order: "single" },
+      { id: "bb4", fromAtomId: "b4", toAtomId: "b5", order: "double" },
+      { id: "bb5", fromAtomId: "b5", toAtomId: "b6", order: "single" },
+      { id: "bb6", fromAtomId: "b6", toAtomId: "b1", order: "double" }
+    ];
+
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+
+    expect(smiles).not.toBe("C1C=CC=CC1");
+    expect(smiles.match(/=/g)).toHaveLength(3);
+    expect(reparse(smiles)).toEqual({ formula: "C6H6", ringCount: 1 });
+  });
+
   it("brackets a text-typed literal atom so reparsing adds NO hydrogens to it", () => {
     // A typed literal C bonded to a drawn C: the literal contributes exactly C, the drawn carbon
     // keeps the skeletal convention (CH3). Bare emission ("CC") would reparse as ethane, C2H6.
