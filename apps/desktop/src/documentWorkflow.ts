@@ -44,6 +44,7 @@ import {
   pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
   isDativeBond,
+  isMetalSymbol,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
   PageSizePresets,
@@ -940,6 +941,9 @@ const nativeAtomMass: Record<NativeElementSymbol, { average: number; exact: numb
 
 /** The atomic masses behind the formula's molecular weight; throws on a symbol the table lacks. */
 export function nativeElementMass(element: string): { average: number; exact: number } {
+  // Heavy hydrogen is a label, not an element in the table, but it has a definite mass.
+  if (element === "D") return { average: 2.014102, exact: 2.014102 };
+  if (element === "T") return { average: 3.016049, exact: 3.016049 };
   const mass = nativeAtomMass[element as NativeElementSymbol];
   if (!mass) {
     throw new Error(`No atomic mass for element symbol "${element}".`);
@@ -15886,7 +15890,9 @@ export function formatElementList(elements: readonly string[]): string {
  *  lanthanides — anything whose bonds are coordination rather than octet chemistry. */
 function isNativeMetalAtom(atom: MoleculeAtom): boolean {
   const element = nativeElementFromAtomLabel(atom.element);
-  return element !== undefined && element !== "H" && nativeAtomValence[element] === undefined;
+  // Outside the covalent valence table, or a metal that happens to sit inside it (Al, Sn): the
+  // same set chem-core uses for coordination bonds, so the 3D refusal and the dative rules agree.
+  return element !== undefined && element !== "H" && (nativeAtomValence[element] === undefined || isMetalSymbol(element));
 }
 
 // ── 3D spin → flatten commit (Phase 5) ──────────────────────────────────────
@@ -18606,6 +18612,16 @@ function remapAnchorsAfterMoleculeMerge(
         changes: { start: remapAnchor(object.start), end: remapAnchor(object.end) }
       }];
     }
+    // Organisation follows the atoms too: a group or bracket that held the absorbed molecule
+    // now holds the host (once), instead of keeping a dangling id that removeObject never prunes.
+    if (object.type === "group" && object.childObjectIds.includes(absorbedObjectId)) {
+      const childObjectIds = [...new Set(object.childObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
+      return [{ op: "updateObject", objectId: object.id, changes: { childObjectIds } }];
+    }
+    if (object.type === "bracket" && object.containedObjectIds.includes(absorbedObjectId)) {
+      const containedObjectIds = [...new Set(object.containedObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
+      return [{ op: "updateObject", objectId: object.id, changes: { containedObjectIds } }];
+    }
     return [];
   });
 }
@@ -19315,6 +19331,12 @@ function nativeSingleBondGraphMetadata(
   const warnings = nativeInvalidAtomWarnings(atoms, bonds);
 
   atoms.forEach((atom) => {
+    if (atom.element === "D" || atom.element === "T") {
+      // Heavy hydrogen keeps its own symbol in the formula (CH3D) and its own mass, matching
+      // the [2H]/[3H] the SMILES writer spells for the same atom.
+      elementCounts.set(atom.element, (elementCounts.get(atom.element) ?? 0) + 1);
+      return;
+    }
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
       // A condensed label is its own recipe — count exactly what it spells, no implicit H.

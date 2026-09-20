@@ -15326,6 +15326,53 @@ describe("clipboard and chemistry review regressions", () => {
     }
   );
 
+  it("counts D and T in the formula and mass, matching the SMILES spelling", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Deuterated"), { x: 200, y: 200 });
+    const labeled = applyNativeAtomElementTarget(
+      seeded,
+      { objectId: selectedMolecule(seeded).id, kind: "atom", atomId: "atom_002", distanceToPointer: 0 },
+      "D"
+    );
+    const molecule = selectedMolecule(labeled);
+    expect(molecule.atoms[1].element).toBe("D");
+    expect(molecule.chemistry).toMatchObject({ formula: "CH3D" });
+    expect(molecule.chemistry?.averageMass).toBeCloseTo(12.011 + 3 * 1.008 + 2.014, 2);
+  });
+
+  it("keeps a merged molecule inside the group that held the absorbed one", () => {
+    const withLigand = insertNativeSingleBondMolecule(createPhase4Document("Grouped Merge"), { x: 300, y: 300 });
+    const ligand = selectedMolecule(withLigand);
+    const znText = insertNativeTextObject(withLigand, { x: 460, y: 300 }, "Zn");
+    const znTextObject = znText.pages[0].objects.find((object) => object.type === "text");
+    const converted = convertNativeTextObjectToAtom(znText, znTextObject?.id ?? "");
+    const znMolecule = converted.pages[0].objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.atoms.some((atom) => atom.element === "Zn")
+    );
+    if (!znMolecule) {
+      throw new Error("Expected zinc molecule object.");
+    }
+    const grouped = groupSelectedDocumentObjects(applyPatch(converted, {
+      op: "setSelection", pageId: converted.pages[0].id, objectIds: [ligand.id, znMolecule.id]
+    }));
+    const group = grouped.pages[0].objects.find((object): object is GroupObject => object.type === "group");
+    expect(group?.childObjectIds).toEqual(expect.arrayContaining([ligand.id, znMolecule.id]));
+
+    const bonded = applyFreeformSingleBondToolAtPoint(
+      grouped, ligand.id, "atom_002", { x: znMolecule.atoms[0].x, y: znMolecule.atoms[0].y }, { bondStyle: "dashed" }
+    );
+    const mergedGroup = bonded.pages[0].objects.find((object): object is GroupObject => object.type === "group");
+    // The absorbed id is replaced by the host, once — no dangling child.
+    expect(mergedGroup?.childObjectIds).toEqual([ligand.id]);
+    expect(bonded.pages[0].objects.some((object) => object.id === znMolecule.id)).toBe(false);
+  });
+
+  it("refuses aluminium in 3D even though it sits in the covalent valence table", () => {
+    const seeded = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Alane"), { x: 200, y: 200 }), "atom_002", "Al"
+    );
+    expect(nativeMoleculeUnmodeledMetalElements(selectedMolecule(seeded))).toEqual(["Al"]);
+  });
+
   it("keeps a dashed double bond's valence and formula", () => {
     const seeded = setNativeAtomElement(
       insertNativeSingleBondMolecule(createPhase4Document("Dashed carbonyl"), { x: 200, y: 200 }),

@@ -332,7 +332,7 @@ export function isMarkupType(type: string): boolean {
   return (
     normalized.includes("html") ||
     normalized.includes("rtf") ||
-    normalized.includes("webarchive")
+    /web[\s-]?archive/.test(normalized)
   );
 }
 

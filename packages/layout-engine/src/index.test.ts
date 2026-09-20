@@ -1856,6 +1856,23 @@ describe("layout-engine page SVG planner", () => {
     expect(atomDisplayLabel(molecule.atoms[2]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("CH4");
   });
 
+  it("labels a dative-only carbon as C, not CH4, under the terminal-carbon style", () => {
+    // The terminal-carbon style shows the label; the hydrogen count must not pretend a carbon
+    // whose only bond is a coordination bond has four spare valences.
+    const molecule = moleculeObject({
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_002", element: "Fe", x: 160, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single", display: { bondStyle: "dashed" } }
+      ],
+      style: { atomLabelShowTerminalCarbons: true, atomLabelHideImplicitHydrogens: false }
+    });
+    const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+    expect(atomDisplayLabel(molecule.atoms[0]!, molecule.bonds, drawingStyle, molecule.atoms)).toBe("C");
+  });
+
   it("resolves native drawing styles per object", () => {
     const page = pageWithObjects([
       moleculeObject({

@@ -5052,7 +5052,11 @@ export function atomDisplayLabel(
   // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
   // unpaired electron from an associated radical mark occupies a bonding slot, and a dative
   // bond from a pyrrole-type N–H costs that proton (see `dativeDeprotonationCount`).
-  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens || atom.labelLiteral === true
+  const incidentBonds = bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  // A carbon whose only bonds are dative (a CO ligand's C drawn as a bare atom) cannot carry
+  // four hydrogens as well: under the terminal-carbon style it reads "C", never "CH4".
+  const dativeOnlyCarbon = element === "C" && incidentBonds.length > 0 && incidentBonds.every(isDativeBond);
+  const implicitHydrogens = drawingStyle.atomLabelHideImplicitHydrogens || atom.labelLiteral === true || dativeOnlyCarbon
     ? ""
     : implicitHydrogenLabel(Math.max(
         0,
@@ -5065,7 +5069,7 @@ export function atomDisplayLabel(
     // "Naked" means no bond at all, not zero covalent valence: a dashed (dative) bond
     // contributes no valence, so testing valenceUsed here labeled the carbon at the end of
     // every dashed bond as CH4 instead of drawing a plain stick.
-    const bonded = bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+    const bonded = incidentBonds.length > 0;
     const shouldShowCarbon =
       atom.labelVisible === true ||
       !bonded ||

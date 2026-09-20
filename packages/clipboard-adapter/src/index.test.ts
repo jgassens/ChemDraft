@@ -4,6 +4,7 @@ import {
   extractRxnMolfileBlocks,
   inspectClipboardPayload,
   isCdxType,
+  isMarkupType,
   isVectorArtworkType,
   looksLikeInchi,
   looksLikeSmiles,
@@ -475,6 +476,13 @@ describe("clipboard-adapter", () => {
       kind: "cdx",
       warnings: [{ code: "clipboard.cdx_not_implemented" }]
     });
+  });
+
+  it("treats every spelling of the web-archive flavor as markup", () => {
+    expect(isMarkupType("com.apple.webarchive")).toBe(true);
+    expect(isMarkupType("Apple Web Archive pasteboard type")).toBe(true);
+    expect(isMarkupType("web-archive")).toBe(true);
+    expect(isMarkupType("chemical/x-mdl-molfile")).toBe(false);
   });
 
   it("reports vector-only pasteboards instead of pretending they are chemistry", () => {

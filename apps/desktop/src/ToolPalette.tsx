@@ -624,8 +624,8 @@ function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPalet
     tooltip: {
       title: command.title ?? command.id,
       description: command.description ?? null,
-      shortcut: command.shortcut ?? command.defaultShortcut ?? null,
-      shortcutLabel: command.shortcutLabel ?? command.shortcut ?? command.defaultShortcut ?? null
+      shortcut: command.shortcut || command.defaultShortcut || null,
+      shortcutLabel: command.shortcutLabel || command.shortcut || command.defaultShortcut || null
     },
     layout: { colSpan: 1, rowSpan: 1 },
     disabledReason: command.disabledReason,
