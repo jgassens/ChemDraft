@@ -1555,6 +1555,10 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('displayName: "The pasted structure"');
   });
 
+  it("passes the pressed key to the global shortcut guard", () => {
+    expect(mainWindowSource).toContain("shouldIgnoreShortcutTarget(event.target, event.key)");
+  });
+
   it("builds keyboard shortcuts from command definitions", () => {
     const registry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), "macos");
 
@@ -2276,7 +2280,7 @@ describe("ChemDraft desktop shell", () => {
     // The copy writers collect lossy-conversion notes into an optional out-channel; the MainWindow
     // call sites pass it and the confirmation carries the warnings, so a dative bond flattened by
     // SMILES/V2000 (or a label copied as a dummy atom) is never a silent success.
-    expect(mainWindowSource).toContain("copyAsSmiles(current, warnings)");
+    expect(mainWindowSource).toContain("await copyAsSmiles(current, warnings)");
     expect(mainWindowSource).toContain('copyAsMolfile(current, "v3000", warnings)');
     expect(mainWindowSource).toContain('copyAsMolfile(current, "v2000", warnings)');
     expect(mainWindowSource).toContain("`Copied ${label} to clipboard${warningSuffix}`");

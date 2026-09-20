@@ -1325,7 +1325,8 @@ Chain) opened cold and warm, with a flexible-chain drag that turns corners both 
 atom-anchored while a straight drag still reproduces the straight planner exactly; the numeric
 hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and bonds, wedge/hash
 sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), with tool keys
-staying global — `e` over an atom arms the arrow tool rather than relabeling it; charge stacking
+following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
+while ChemDraft's `e` arms the eraser; charge stacking
 by hotkey and by the charge tool up to ±9 and back down to mark removal; the Clear/Restore
 Warnings context menu under whole-molecule and partial selections; element-symbol text converting
 to a naked atom on every edit-ending gesture (Escape, click-away, tool switch), and Delete

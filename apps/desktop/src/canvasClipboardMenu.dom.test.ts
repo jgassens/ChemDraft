@@ -2,15 +2,23 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
   createPhase4Document,
   insertNativeArtGraphicObject,
-  insertNativeTemplateMolecule
+  insertNativeTemplateMolecule,
+  insertNativeTextObject
 } from "./documentWorkflow";
+import { depictSmilesForPaste } from "./smilesListPaste";
+import { saveKeybindingSettings } from "./keybindingSettings";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+
+vi.mock("./smilesListPaste", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./smilesListPaste")>(),
+  depictSmilesForPaste: vi.fn()
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -38,6 +46,8 @@ describe("canvas clipboard menu and copy guard", () => {
   let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
+    vi.mocked(depictSmilesForPaste).mockReset();
+    saveKeybindingSettings({ scheme: "chemdraft" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     HTMLElement.prototype.setPointerCapture = () => {};
@@ -54,6 +64,7 @@ describe("canvas clipboard menu and copy guard", () => {
       root.unmount();
     });
     container.remove();
+    saveKeybindingSettings({ scheme: "chemdraft" });
     if (originalResizeObserver) {
       globalThis.ResizeObserver = originalResizeObserver;
     } else {
@@ -61,15 +72,15 @@ describe("canvas clipboard menu and copy guard", () => {
     }
   });
 
-  async function renderMainWindow(initialDocument = createPhase4Document("Clipboard Menu")) {
+  async function renderMainWindow(initialDocument = createPhase4Document("Clipboard Menu"), showPalette = false) {
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: "tool.select",
         initialCrosshairsVisible: false,
         initialDocument,
-        initialPaletteMode: "hidden",
+        initialPaletteMode: showPalette ? "floating" : "hidden",
         initialRulersVisible: false,
-        nativePalette: true
+        nativePalette: !showPalette
       }));
     });
     pageElement().getBoundingClientRect = () => pageRect;
@@ -126,6 +137,79 @@ describe("canvas clipboard menu and copy guard", () => {
     return [...(menu?.querySelectorAll<HTMLElement>("[data-command-id]") ?? [])]
       .map((item) => item.dataset.commandId ?? "");
   }
+
+  it.each(["CCO\n", " CCO "])("pastes surrounding-whitespace SMILES %j as one structure", async (text) => {
+    vi.mocked(depictSmilesForPaste).mockResolvedValue({
+      depiction: {
+        atoms: ["C", "C", "O"].map((element, index) => ({ element, x: index * 1.5, y: 0, charge: 0 })),
+        bonds: [{ from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "single", wedge: null }]
+      },
+      stereoCount: 0
+    });
+    await renderMainWindow();
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { types: ["text/plain"], getData: (type: string) => type === "text/plain" ? text : "" }
+    });
+    await act(async () => { window.dispatchEvent(event); });
+    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("CCO");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+  });
+
+  it("copies and cuts both a caption and a marquee fragment in the same selection", async () => {
+    const withRing = insertNativeTemplateMolecule(createPhase4Document("Mixed cut"), { x: 300, y: 300 }, "cyclohexane");
+    const ringId = withRing.selection.objectIds[0];
+    const withText = insertNativeTextObject(withRing, { x: 250, y: 250 }, "Hi");
+    const textId = withText.selection.objectIds[0];
+    await renderMainWindow(withText);
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerdown", { x: 245, y: 245 });
+      dispatchPointer(pageElement(), "pointermove", { x: 280, y: 290 });
+      dispatchPointer(pageElement(), "pointermove", { x: 295, y: 330 });
+      dispatchPointer(pageElement(), "pointerup", { x: 295, y: 330 });
+    });
+    const copied = JSON.parse((await dispatchCopy()).get(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)!);
+    expect(copied.objects.map((object: { type: string }) => object.type).sort()).toEqual(["molecule", "text"]);
+    const fragment = copied.objects.find((object: { type: string }) => object.type === "molecule") as MoleculeObject;
+    expect(fragment.atoms.length).toBeGreaterThan(0);
+    expect(fragment.atoms.length).toBeLessThan(6);
+    const cut = JSON.parse((await dispatchCopy("cut")).get(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)!);
+    expect(cut).toEqual(copied);
+    expect(container.querySelector('[data-object-id="' + textId + '"]')).toBeNull();
+    const remaining = container.querySelector('[data-object-id="' + ringId + '"]')!;
+    expect(remaining).not.toBeNull();
+    expect(Number(remaining.getAttribute("data-atom-count"))).toBe(6 - fragment.atoms.length);
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-object-id="' + textId + '"]')).not.toBeNull();
+    expect(container.querySelector('[data-object-id="' + ringId + '"]')?.getAttribute("data-atom-count")).toBe("6");
+  });
+
+  it("lets a focused toolbar button pass command chords and clipboard events while owning Space", async () => {
+    saveKeybindingSettings({ scheme: "chemdraw" });
+    const withRing = insertNativeTemplateMolecule(createPhase4Document("Focused clipboard"), { x: 300, y: 300 }, "cyclohexane");
+    await renderMainWindow(withRing, true);
+    // An actual toolbar button in the same window; the global guard must use the event key.
+    const button = container.querySelector<HTMLButtonElement>('button[data-command-id="tool.bond"]')!;
+    expect(button).not.toBeNull();
+    button.focus();
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe("tool.text");
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe("tool.bond");
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe("tool.select");
+    expect((await dispatchCopy("copy", button)).has(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)).toBe(true);
+  });
 
   it("offers Paste when the canvas is right-clicked with nothing under the pointer", async () => {
     // Right-clicking bare page used to open no menu at all, which left the mouse with no way to
@@ -188,14 +272,14 @@ describe("canvas clipboard menu and copy guard", () => {
   }
 
   /** Dispatch a copy the way the web view does, and hand back what landed on the clipboard. */
-  async function dispatchCopy(): Promise<Map<string, string>> {
+  async function dispatchCopy(mode: "copy" | "cut" = "copy", target: EventTarget = window): Promise<Map<string, string>> {
     const written = new Map<string, string>();
-    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    const copyEvent = new Event(mode, { bubbles: true, cancelable: true });
     Object.defineProperty(copyEvent, "clipboardData", {
       value: { setData: (type: string, text: string) => written.set(type, text) }
     });
     await act(async () => {
-      window.dispatchEvent(copyEvent);
+      target.dispatchEvent(copyEvent);
     });
     return written;
   }

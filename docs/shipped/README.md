@@ -35,10 +35,10 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
-## ChemDraw-parity drawing interactions (2026-08-31) — on branch `claude/chemdraw-keybindings`
+## ChemDraw-parity drawing interactions (2026-08-31; extended 2026-09-20)
 
-Status: implemented and unit-tested on the branch; not yet merged to `main`. Six slices, each
-landed as its own commit; the keybinding scheme that rides with them has its own doc,
+Implemented and tested on `claude/chemdraw-keybindings`, integrated with its later clipboard,
+interchange, and cleanup slices. The keybinding scheme that rides with them has its own doc,
 [chemdraw-keybinding-scheme.md](chemdraw-keybinding-scheme.md). Unless noted, the code lives in
 `apps/desktop/src/documentWorkflow.ts` with coverage in `documentWorkflow.test.ts` and
 `App.test.ts`.
@@ -49,14 +49,16 @@ Committing a text box that holds exactly an element symbol ("C", "fe", "Br"…) 
 real one-atom molecule at that spot — hover hotkeys, bonding, and valence checking all apply, and
 lower-case symbols canonicalize (`convertNativeTextObjectToAtom`). Conversion runs on every way
 an edit ends (Escape, click-away, tool switch), not just Escape, and is idempotent so overlapping
-end paths no-op. Literalness is a per-atom `labelLiteral` mark set **only** by the text tool: the
-label draws exactly as typed, contributes no implicit hydrogens to the formula, and is
+end paths no-op. Literalness is a per-atom `labelLiteral` mark set by text conversion and by the
+atom-label editor: the label draws exactly as typed, contributes no implicit hydrogens to the formula,
+and is
 valence-checked literally — a lone typed "N" is a flagged hypovalent atom until three real bonds
 arrive, while a naked typed "OH2" is complete water (condensed literal labels spelling one heavy
 element are checked with their own hydrogens; multi-heavy labels and abbreviations stay
-unchecked superatoms and contribute nothing rather than a wrong guess). Element hotkeys and the
-label editor produce ordinary skeletal atoms — implicit hydrogens drawn and counted, never
-flagged — and pressing a hotkey over a literal atom clears the mark. While the label editor is
+unchecked superatoms and contribute nothing rather than a wrong guess). Element hotkeys produce
+ordinary skeletal atoms — implicit hydrogens drawn and counted — and pressing a hotkey over a
+literal atom clears the mark. The label editor commits with `literal: true`, so its element labels
+keep the same explicit-hydrogen contract as text conversion. While the label editor is
 open the molecule overlay strips the edited atom's rendered label so the draft never
 double-draws. Delete/Backspace over a labeled atom strips the label first — reverting to a plain
 skeleton carbon with bonds and position intact, hover preserved so the second press lands without
@@ -73,7 +75,7 @@ molecule and bonds across the seam (`findForeignNativeMoleculeBondTarget`,
 `mergeNativeMoleculeObjects`) — the absorbed atoms and bonds are re-minted onto fresh ids (every
 molecule starts at `atom_001`, so ids collide), per-atom/per-bond style colors follow the remap,
 and anchored electron marks and mechanism/reaction arrows are re-pointed at the host. Dashed
-bonds now depict dative/partial interactions — coordinate bonds, hydrogen bonds — and occupy no
+single bonds now depict dative/partial interactions — coordinate bonds, hydrogen bonds — and occupy no
 covalent valence slot on either atom (`nativeBondValenceContribution`): pyridine's N keeps three
 bonds and no badge while dash-bonded to a zinc, and a fourth *covalent* bond on neutral N still
 demands its +1. Valence checking grew coordination ceilings for the whole d-block
@@ -158,6 +160,58 @@ growth arrow is on screen, the hotkeys commit exactly what it shows (steered can
 ring closure included), and carbonyl on an atom that can't carry =O (aromatic carbon, existing
 carbonyl) sprouts a new carbon along the open direction and puts the C=O on it — ChemDraw's
 aldehyde behavior — instead of refusing.
+
+### Fragment copy and mixed selections
+
+A lasso or marquee copies its selected atoms and every bond whose ends are kept, as a standalone
+molecule. Whole objects and fragments share one payload, with a whole-selected molecule taking
+precedence over its fragment. Anchored charge, radical, and lone-pair marks travel with their atoms;
+paste remaps their molecule anchors, and Cut removes the same objects and parts that were copied.
+
+### Paste at the pointer and the bare-canvas Paste menu
+
+Selection paste centres the copied bounds at the pointer's page position, with repeated pastes
+offset through the existing placement state. A right-click on empty canvas offers Paste, and a
+right-click over a selected fragment preserves that fragment instead of promoting its whole molecule.
+An empty Copy is swallowed so the web view cannot put the app's own markup on the clipboard.
+
+### SMILES-list grid paste
+
+Lists of SMILES are parsed into editable molecules and laid out in a row-major grid, with progress
+for longer lists and skipped-token counts in the result. Prose stays text; one SMILES with surrounding
+whitespace follows the single-structure path. Oversized grids expand the page rather than pile
+structures against its edge (`smilesListPaste.ts` and `insertSmilesMoleculeGrid`).
+
+### SDF and .smi structure-list export
+
+Selected molecules, or the page when nothing is selected, export in reading order through
+`structureListExport.ts`. SDF carries one V2000 record per molecule with SMILES and index fields;
+.smi carries one SMILES/name-or-index row. Copy As SMILES shares the lazy RDKit identifier path,
+preserving stereo from the drawing. Native fallback warns for wedge/hash and substituted double-bond
+stereo; writer losses, including dummy replacements for condensed labels, reach the export warnings.
+Literal element valences and D/T isotope spelling follow the package writers.
+
+### CDXML abbreviation expansion
+
+Nested abbreviation fragments expand into their carried atoms when the body and attachment can be
+resolved without guessing. Unsupported, charged, or over-deep abbreviations stay literal labels
+with warnings; numeric text runs survive so SO3 cannot silently turn into SO
+(`packages/cdx-compat`).
+
+### Dative cleanup passes
+
+2D Cleanup lays out the covalent ligands before placing free coordination metals in their donor
+pockets. Chelate and bridging passes adjust placement, donor angles, and metal–donor distances
+while preserving the ligand graphs; stereo checks still guard the result. Nickname placeholders
+are compared against the writer's actual symbols, so an engine returning C for Ph's dummy atom
+does not abort geometry-only cleanup or replace the document's Ph label.
+
+### Running-build reporter
+
+`pnpm running-build` (`scripts/running-build.mjs`, with `--json` for raw records) reads each
+desktop app's `runtime-build.json`. Windows report on load, hot update, and return to the foreground,
+so the report identifies what a window actually loaded, including the worktree/build and record age,
+rather than assuming the newest source has reached every open window.
 
 ---
 

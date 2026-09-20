@@ -5,11 +5,8 @@ import {
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
 import { getExportFormatDescriptor, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
-import {
-  copyAsScopeMolecules,
-  nativeMoleculeUnspellableLabels,
-  nativeSingleBondGraphSmiles
-} from "./documentWorkflow";
+import { copyAsScopeMolecules } from "./documentWorkflow";
+import { loadStructureIdentifiers, moleculeSmiles } from "./moleculeSmiles";
 
 /**
  * Read rows top to bottom, then their members left to right. Anchor each band at its
@@ -55,71 +52,6 @@ function moleculeName(molecule: MoleculeObject): string | undefined {
     return undefined;
   }
   return molecule.structure.split(/\r\n|\r|\n/, 1)[0].replace(/\t/g, " ").trim() || undefined;
-}
-
-type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
-
-async function loadStructureIdentifiers(): Promise<ComputeStructureIdentifiers | undefined> {
-  try {
-    const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
-    registerRdkitWasmLoader();
-    const { computeStructureIdentifiers } = await import("@chemdraft/rdkit-adapter/identifiers");
-    return computeStructureIdentifiers;
-  } catch {
-    // Export remains available through the native writer, with stereo loss disclosed below.
-    return undefined;
-  }
-}
-
-async function moleculeSmiles(
-  molecule: MoleculeObject,
-  index: number,
-  warnings: ExportWarning[],
-  computeStructureIdentifiers: ComputeStructureIdentifiers | undefined,
-  molfile?: string
-): Promise<string> {
-  // Both the V2000 input to RDKit and the native fallback approximate these features.
-  const dativeBondCount = molecule.bonds.filter((bond) =>
-    bond.order === "single" && bond.display?.bondStyle === "dashed"
-  ).length;
-  if (dativeBondCount > 0) {
-    warnings.push({
-      code: "export.smiles_dative_bond",
-      message: `SMILES has no dative/coordination bond: ${dativeBondCount} dashed bond(s) written as plain single.`,
-      severity: "warning",
-      objectId: molecule.id
-    });
-  }
-  for (const label of nativeMoleculeUnspellableLabels(molecule)) {
-    warnings.push({
-      code: "export.smiles_atom_label",
-      message: `Atom label "${label}" cannot be spelled as a single SMILES atom; written as a dummy atom [*].`,
-      severity: "warning",
-      objectId: molecule.id
-    });
-  }
-  if (computeStructureIdentifiers) {
-    try {
-      const identifiers = await computeStructureIdentifiers(
-        molfile ?? moleculeToMolfileV2000(molecule, { fromDocFrame: true })
-      );
-      if (identifiers?.smiles) return identifiers.smiles;
-    } catch {
-      // A failed engine load or parse falls back per molecule, without dropping its record.
-    }
-  }
-  if (molecule.bonds.some((bond) =>
-    bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed"
-  )) {
-    warnings.push({
-      code: "export.smiles_stereo_dropped",
-      message: `Stereochemistry could not be written to SMILES for molecule ${index + 1}; the structure engine was unavailable.`,
-      severity: "warning",
-      objectId: molecule.id
-    });
-  }
-  if (molecule.structureFormat === "smiles" && molecule.structure) return molecule.structure;
-  return nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
 }
 
 export async function exportStructureListSdf(

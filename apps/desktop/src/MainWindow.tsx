@@ -1371,7 +1371,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.5.15.34-astra";
+const CURRENT_BUILD_STAMP = "9.20.10.00-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -5529,8 +5529,8 @@ export function MainWindow({
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
-    if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text)) {
-      void renderPastedSmiles(detectedPayload.text).then((rendered) => {
+    if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
+      void renderPastedSmiles(detectedPayload.text.trim()).then((rendered) => {
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
           setStatus("Clipboard SMILES could not be parsed; pasted as text");
@@ -5546,8 +5546,9 @@ export function MainWindow({
     if (detectedPayload.kind === "plain-text" || detectedPayload.kind === "smiles") {
       const candidates = smilesListCandidates(detectedPayload.text);
       const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
-      if (looksLikeSmiles(detectedPayload.text) && !/\s/.test(detectedPayload.text)) {
-        void renderPastedSmiles(detectedPayload.text).then((rendered) => {
+      const trimmedText = detectedPayload.text.trim();
+      if (looksLikeSmiles(trimmedText) && !/\s/.test(trimmedText)) {
+        void renderPastedSmiles(trimmedText).then((rendered) => {
           if (!rendered) pasteAsText();
         });
         return;
@@ -5607,14 +5608,25 @@ export function MainWindow({
     setStatus("Pasted ChemDraft selection");
   }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointerPagePoint]);
 
-  const deleteSelectionAfterClipboardCut = useCallback(() => {
+  const deleteSelectionAfterClipboardCut = useCallback((
+    payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
+    wholeObjectIds: readonly string[]
+  ) => {
     const currentDocument = documentRef.current;
-    let nextDocument = deleteSelectedDocumentObjects(currentDocument);
-    if (nextDocument === currentDocument) {
-      // Nothing was selected as a whole object, so this was a cut of a lassoed fragment: remove
-      // exactly the atoms and bonds that were copied.
-      for (const fragment of nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)) {
-        nextDocument = applyNativeMoleculePartsDelete(nextDocument, fragment);
+    // Use the selection that produced the successful clipboard write. It may include both
+    // whole objects and fragments, and the user may have changed selection while it was writing.
+    const carriedMarkIds = payload.objects.filter((object) => object.type === "electron-mark").map((object) => object.id);
+    let nextDocument = deleteSelectedDocumentObjects({
+      ...currentDocument,
+      selection: { ...currentDocument.selection, objectIds: [...wholeObjectIds, ...carriedMarkIds] }
+    });
+    for (const object of payload.objects) {
+      if (object.type === "molecule") {
+        nextDocument = applyNativeMoleculePartsDelete(nextDocument, {
+          objectId: object.id,
+          atomIds: object.atoms.map((atom) => atom.id),
+          bondIds: object.bonds.map((bond) => bond.id)
+        });
       }
     }
     if (nextDocument !== documentRef.current) {
@@ -5630,6 +5642,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const copySelectionToClipboard = useCallback(async (mode: "copy" | "cut") => {
+    const wholeObjectIds = [...documentRef.current.selection.objectIds];
     const payload = createSelectionClipboardPayload(
       documentRef.current,
       nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
@@ -5649,7 +5662,7 @@ export function MainWindow({
     selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
 
     if (mode === "cut") {
-      deleteSelectionAfterClipboardCut();
+      deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
       setStatus("Cut ChemDraft selection");
       return;
     }
@@ -5674,7 +5687,7 @@ export function MainWindow({
     switch (commandId) {
       case "clipboard.copyAs.smiles": {
         const warnings: string[] = [];
-        await writeText(copyAsSmiles(current, warnings), "SMILES", warnings);
+        await writeText(await copyAsSmiles(current, warnings), "SMILES", warnings);
         return;
       }
       case "clipboard.copyAs.mol": {
@@ -8685,10 +8698,11 @@ export function MainWindow({
       event: ClipboardEvent,
       mode: "copy" | "cut"
     ): boolean => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target)) {
+      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target, mode === "copy" ? "c" : "x")) {
         return false;
       }
 
+      const wholeObjectIds = [...documentRef.current.selection.objectIds];
       const payload = createSelectionClipboardPayload(
         documentRef.current,
         nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
@@ -8728,7 +8742,7 @@ export function MainWindow({
       selectionClipboardPayloadRef.current = payload;
       selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
       if (mode === "cut") {
-        deleteSelectionAfterClipboardCut();
+        deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
         setStatus("Cut ChemDraft selection");
         return true;
       }
@@ -8746,7 +8760,7 @@ export function MainWindow({
     };
 
     const handlePaste = (event: ClipboardEvent) => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target)) {
+      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target, "v")) {
         return;
       }
 
@@ -9168,7 +9182,7 @@ export function MainWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (shouldIgnoreShortcutTarget(event.target) || event.defaultPrevented) {
+      if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
         return;
       }
 

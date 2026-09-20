@@ -5,6 +5,7 @@ import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import {
   createPhase4Document,
+  copyAsSmiles,
   insertSmilesMoleculeGrid,
   type PastedStructureDepiction
 } from "./documentWorkflow";
@@ -297,5 +298,81 @@ describe("structure list export", () => {
     }));
     molecule.bonds = [];
     await expect(exportStructureListSdf(documentWith([molecule]))).rejects.toThrow("V2000 supports at most 999 atoms");
+  });
+});
+
+describe("SMILES export review regressions", () => {
+  it("surfaces V2000 label loss in a .smi export even when RDKit returns SMILES", async () => {
+    const molecule = moleculeAt("condensed", 0, 0);
+    molecule.atoms[1].element = "NH2";
+    vi.mocked(computeStructureIdentifiers).mockResolvedValue({ smiles: "*C" });
+    const result = await exportStructureListSmi(documentWith([molecule]));
+    expect(result.contents).toBe("*C\t1\n");
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      code: "export.smiles_v2000_loss", objectId: molecule.id, message: expect.stringContaining("NH2")
+    }));
+  });
+
+  it.each(exportListCases)("warns for substituted double-bond stereo in native fallback ($format)", async ({ exportList }) => {
+    const molecule = moleculeAt("alkene", 0, 0);
+    molecule.atoms = ["F", "C", "C", "F"].map((element, index) => ({
+      id: `a${index}`, element, x: index * 30, y: index === 0 ? -30 : index === 3 ? 30 : 0, formalCharge: 0
+    }));
+    molecule.bonds = ["single", "double", "single"].map((order, index) => ({
+      id: `b${index}`, fromAtomId: `a${index}`, toAtomId: `a${index + 1}`, order: order as "single" | "double"
+    }));
+    molecule.structureFormat = "unknown";
+    molecule.structure = "";
+    const result = await exportList(documentWith([molecule]));
+    expect(result.contents).toContain("FC=CF");
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_stereo_dropped", objectId: molecule.id }));
+    molecule.atoms[0].element = "H";
+    expect((await exportList(documentWith([molecule]))).warnings).toEqual([]);
+  });
+
+  it("does not call a dashed double bond dative when copying SMILES", async () => {
+    const molecule = moleculeAt("carbonyl", 0, 0);
+    molecule.atoms[1].element = "O";
+    molecule.bonds[0] = { ...molecule.bonds[0], order: "double", display: { bondStyle: "dashed" } };
+    molecule.structureFormat = "unknown";
+    const warnings: string[] = [];
+    expect(await copyAsSmiles(documentWith([molecule]), warnings)).toBe("C=O");
+    expect(warnings).toEqual([]);
+  });
+
+  it("uses the RDKit stereo SMILES for Copy As and warns when it must fall back", async () => {
+    const molecule = moleculeAt("wedged", 0, 0);
+    molecule.bonds[0].display = { bondStyle: "wedge" };
+    const document = documentWith([molecule]);
+    vi.mocked(computeStructureIdentifiers).mockResolvedValue({ smiles: "C[C@H](F)Cl" });
+    const warnings: string[] = [];
+    expect(await copyAsSmiles(document, warnings)).toBe("C[C@H](F)Cl");
+    expect(warnings).toEqual([]);
+    vi.mocked(computeStructureIdentifiers).mockRejectedValue(new Error("WASM unavailable"));
+    expect(await copyAsSmiles(document, warnings)).toBe("CC");
+    expect(warnings).toEqual([expect.stringContaining("Stereochemistry could not be written")]);
+  });
+
+  it("exports a literal singly bonded N without adding hydrogen through real RDKit", async () => {
+    const { installRealRdkitModuleLoader } = await import("../../../packages/rdkit-adapter/src/testing");
+    const { ensureRdkit, resetRdkitForTesting } = await import("../../../packages/rdkit-adapter/src/conformer");
+    const real = await vi.importActual<typeof import("@chemdraft/rdkit-adapter/identifiers")>("@chemdraft/rdkit-adapter/identifiers");
+    installRealRdkitModuleLoader();
+    vi.mocked(computeStructureIdentifiers).mockImplementation(real.computeStructureIdentifiers);
+    try {
+      const molecule = moleculeAt("literal", 0, 0);
+      molecule.atoms[1] = { ...molecule.atoms[1], element: "N", labelLiteral: true };
+      const result = await exportStructureListSmi(documentWith([molecule]));
+      expect(result.warnings).toEqual([]);
+      const rdkit = await ensureRdkit();
+      const parsed = rdkit.get_mol(result.contents.split("\t")[0])!;
+      try {
+        expect(parsed.get_smiles?.()).toBe("C[N]");
+      } finally {
+        parsed.delete();
+      }
+    } finally {
+      resetRdkitForTesting();
+    }
   });
 });

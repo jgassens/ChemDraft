@@ -11850,7 +11850,7 @@ describe("Phase 4 document workflow", () => {
     expect(geometry?.target).toBeDefined();
   });
 
-  it("serializes the Copy As scope: selection when present, the whole page otherwise", () => {
+  it("serializes the Copy As scope: selection when present, the whole page otherwise", async () => {
     const methanol = setNativeAtomElement(
       insertNativeSingleBondMolecule(createPhase4Document("Copy As Scope"), { x: 300, y: 300 }),
       "atom_002",
@@ -11863,11 +11863,11 @@ describe("Phase 4 document workflow", () => {
     expect(molecules).toHaveLength(2);
 
     // Second molecule (plain ethane) is selected → scope is just that molecule.
-    expect(copyAsSmiles(withEthane)).toBe("CC");
+    expect(await copyAsSmiles(withEthane)).toBe("CC");
 
     // Nothing selected → the whole page, molecules joined with a dot.
     const deselected = { ...withEthane, selection: { ...withEthane.selection, objectIds: [] } };
-    expect(copyAsSmiles(deselected)).toBe("CO.CC");
+    expect(await copyAsSmiles(deselected)).toBe("CO.CC");
 
     // A multi-molecule scope merges into one CTAB with every atom present.
     const merged = copyAsMolfile(deselected, "v2000");
@@ -11932,10 +11932,10 @@ describe("Phase 4 document workflow", () => {
       return { ...bonded, selection: { ...bonded.selection, objectIds: [] } };
     };
 
-    it("keeps the dative bond in SMILES (no dot-disconnect) and warns about the flattening", () => {
+    it("keeps the dative bond in SMILES (no dot-disconnect) and warns about the flattening", async () => {
       const document = dativeZincDocument();
       const warnings: string[] = [];
-      const smiles = copyAsSmiles(document, warnings);
+      const smiles = await copyAsSmiles(document, warnings);
 
       expect(smiles).toBe("[Zn]CC");
       expect(smiles).not.toContain(".");
@@ -11985,7 +11985,7 @@ describe("Phase 4 document workflow", () => {
       expect(plain?.display?.bondStyle).toBeUndefined();
     });
 
-    it("warns when a condensed label must copy as a dummy atom", () => {
+    it("warns when a condensed label must copy as a dummy atom", async () => {
       const seeded = insertNativeSingleBondMolecule(createPhase4Document("Copy Condensed"), { x: 300, y: 300 });
       const molecule = selectedMolecule(seeded);
       const labeled = applyNativeAtomElementTarget(seeded, {
@@ -11997,7 +11997,7 @@ describe("Phase 4 document workflow", () => {
       const scoped = { ...labeled, selection: { ...labeled.selection, objectIds: [] } };
 
       const smilesWarnings: string[] = [];
-      expect(copyAsSmiles(scoped, smilesWarnings)).toBe("C[*]");
+      expect(await copyAsSmiles(scoped, smilesWarnings)).toBe("C[*]");
       expect(smilesWarnings).toHaveLength(1);
       expect(smilesWarnings[0]).toContain("\"Ph\"");
 
@@ -15312,5 +15312,114 @@ describe("dative donors and their hydrogens", () => {
     const dative = moleculeById(dativeDocument, objectId);
     // Solid C–N–Zn leaves one H on the nitrogen; the dative bond frees a slot, so NH2.
     expect(hydrogenCount(dative)).toBe(hydrogenCount(solid) + 1);
+  });
+});
+
+describe("clipboard and chemistry review regressions", () => {
+  it.each([["D", 0, "[2H]"], ["T", 0, "[3H]"], ["D", 1, "[2H+]"], ["T", -1, "[3H-]"]] as const)(
+    "spells isotope label %s with charge %s as %s", (element, formalCharge, expected) => {
+      const molecule = createNativeSingleBondMolecule(createPhase4Document("Isotope"), { x: 200, y: 200 });
+      molecule.atoms = [{ ...molecule.atoms[0], element, formalCharge }];
+      molecule.bonds = [];
+      expect(nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds)).toBe(expected);
+      expect(nativeMoleculeUnspellableLabels(molecule)).toEqual([]);
+    }
+  );
+
+  it("keeps a dashed double bond's valence and formula", () => {
+    const seeded = setNativeAtomElement(
+      insertNativeSingleBondMolecule(createPhase4Document("Dashed carbonyl"), { x: 200, y: 200 }),
+      "atom_002", "O"
+    );
+    const molecule = selectedMolecule(seeded);
+    const document = applyPatch(seeded, {
+      op: "updateObject", objectId: molecule.id,
+      changes: { bonds: [{ ...molecule.bonds[0], order: "double", display: { bondStyle: "dashed" } }] }
+    });
+    // Fragment reconstruction refreshes the formula using the app's own valence count.
+    const payload = createSelectionClipboardPayload(selectDocumentObjects(document, document.pages[0].id, []), [{
+      objectId: molecule.id, atomIds: molecule.atoms.map((atom) => atom.id), bondIds: []
+    }])!;
+    const carbonyl = payload.objects[0] as MoleculeObject;
+    expect(nativeAtomValidationState(carbonyl.atoms[1], carbonyl.bonds)).toMatchObject({ valenceUsed: 2 });
+    expect(atomDisplayLabel(carbonyl.atoms[1], carbonyl.bonds)).toBe("O");
+    expect(carbonyl.chemistry?.formula).toBe("CH2O");
+  });
+
+  it.each([false, true])("keeps charge and radical marks when copying a molecule (fragment: %s)", (fragment) => {
+    for (const spec of [-1, { kind: "radical-dot" as const }] as const) {
+      const seeded = setNativeAtomElement(
+        insertNativeSingleBondMolecule(createPhase4Document("Marked clipboard"), { x: 200, y: 200 }),
+        "atom_002", "O"
+      );
+      const molecule = selectedMolecule(seeded);
+      const marked = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(seeded, spec, {
+        objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0
+      }));
+      const document = selectDocumentObjects(marked, marked.pages[0].id, fragment ? [] : [molecule.id]);
+      const payload = createSelectionClipboardPayload(document, fragment ? [
+        { objectId: molecule.id, atomIds: ["atom_002"], bondIds: [] }
+      ] : []);
+      expect(payload?.objects.filter((object) => object.type === "electron-mark")).toHaveLength(1);
+      const parsedPayload = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
+      // A clipboard need not put the molecule before its marks.
+      parsedPayload.objects.reverse();
+      const beforeReconcile = pasteSelectionClipboardPayload(document, parsedPayload, { x: 480, y: 420 });
+      const pasted = reconcileNativeChargeMarks(beforeReconcile);
+      const copied = pasted.pages[0].objects.find((object): object is MoleculeObject =>
+        object.type === "molecule" && object.id !== molecule.id
+      )!;
+      const oxygen = copied.atoms.find((atom) => atom.element === "O")!;
+      expect(beforeReconcile.pages[0].objects.some((object) => object.type === "electron-mark" &&
+        object.anchor.kind === "atom" && object.anchor.objectId === copied.id && object.anchor.atomId === oxygen.id
+      )).toBe(true);
+      expect(oxygen).toMatchObject(typeof spec === "number"
+        ? { formalCharge: -1, markCharge: -1 }
+        : { formalCharge: 0, markRadicals: 1 });
+      expect(pasted.pages[0].objects.filter((object) => object.type === "electron-mark" &&
+        object.anchor.kind === "atom" && object.anchor.objectId === copied.id && object.anchor.atomId === oxygen.id
+      )).toHaveLength(1);
+      expect(reconcileNativeChargeMarks(pasted)).toBe(pasted);
+    }
+  });
+
+  it("copies whole objects and fragments together without duplicating a whole selected molecule", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Mixed clipboard"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const document = insertNativeTextObject(seeded, { x: 100, y: 100 }, "Caption");
+    const fragment = { objectId: molecule.id, atomIds: ["atom_002"], bondIds: [] };
+    const payload = createSelectionClipboardPayload(document, [fragment])!;
+    expect(payload.objects.map((object) => object.type)).toEqual(["text", "molecule"]);
+    expect((payload.objects[1] as MoleculeObject).atoms).toHaveLength(1);
+    const whole = selectDocumentObjects(document, document.pages[0].id, [...document.selection.objectIds, molecule.id]);
+    const wholePayload = createSelectionClipboardPayload(whole, [fragment])!;
+    expect(wholePayload.objects.filter((object) => object.type === "molecule")).toHaveLength(1);
+    expect((wholePayload.objects.find((object) => object.type === "molecule") as MoleculeObject).atoms).toHaveLength(2);
+  });
+
+  it("cleans up a Ph nickname through the real OCL adapter without changing the label", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Nickname cleanup"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const document = applyNativeAtomElementTarget(seeded, {
+      objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0
+    }, "Ph", { literal: true });
+    expect(moleculeById(document, molecule.id).atoms[1].element).toBe("Ph");
+    const cleaned = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D), molecule.id);
+    expect(cleaned.atoms.map(({ element, formalCharge, labelLiteral }) => ({ element, formalCharge, labelLiteral })))
+      .toEqual(moleculeById(document, molecule.id).atoms.map(({ element, formalCharge, labelLiteral }) => ({ element, formalCharge, labelLiteral })));
+    expect(cleaned.bonds).toEqual(moleculeById(document, molecule.id).bonds);
+    expect(cleaned.atoms.every((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y))).toBe(true);
+  });
+
+  it("grows an ordinary bond when the foreign drop target has no editable graph", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Foreign preview"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const foreign = createNativeSingleBondMolecule(seeded, { x: 400, y: 300 });
+    foreign.bonds[0].toAtomId = "missing-preview-atom";
+    const document = applyPatch(seeded, { op: "addObject", pageId: seeded.pages[0].id, object: foreign });
+    const grown = applyFreeformSingleBondToolAtPoint(document, molecule.id, "atom_002", foreign.atoms[0]);
+    expect(moleculeById(grown, molecule.id).atoms).toHaveLength(3);
+    expect(moleculeById(grown, molecule.id).bonds).toHaveLength(2);
+    expect(moleculeById(grown, foreign.id)).toEqual(foreign);
   });
 });

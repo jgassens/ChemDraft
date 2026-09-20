@@ -43,6 +43,7 @@ import {
   DEFAULT_MIN_PROJECTED_BOND_LENGTH_FRACTION,
   pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
+  isDativeBond,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
   PageSizePresets,
@@ -102,6 +103,7 @@ import {
   exportDocumentToCdxml as exportDocumentToCdxmlText,
   exportDocumentToSvg,
   type BinaryExportResult,
+  type ExportWarning,
   type CdxmlTextExportOptions,
   type PdfExportOptions,
   type SvgExportOptions,
@@ -7327,7 +7329,7 @@ export function applyNativeBondDisplayStyleTarget(
   }
   // Dashed bonds are dative chemistry rather than decoration, and the interchange writers cannot
   // represent a double or higher-order coordination bond without silently changing its meaning.
-  if (bondStyle === "dashed" && bond.order !== "single") {
+  if (bondStyle === "dashed" && !isDativeBond({ ...bond, display: { ...bond.display, bondStyle } })) {
     return document;
   }
 
@@ -13273,25 +13275,34 @@ export function createSelectionClipboardPayload(
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
     object.type === "group" && document.selection.objectIds.includes(object.id)
   );
-  const bounds = selectionBounds(page.objects, selectedObjectIds);
-  if (objects.length === 0 || !bounds) {
-    // No whole object is selected — but a lassoed fragment is still a selection, and copying it
-    // must copy exactly that fragment rather than reporting nothing to copy.
-    return createNativeMoleculeFragmentClipboardPayload(document, moleculeFragments);
+  const fragmentPayload = createNativeMoleculeFragmentClipboardPayload(
+    document,
+    moleculeFragments.filter((fragment) => !selectedIdSet.has(fragment.objectId))
+  );
+  const carriedMarks = objects.flatMap((object) => object.type === "molecule"
+    ? anchoredElectronMarksForTransform(page.objects, object.id, new Set(object.atoms.map((atom) => atom.id)))
+    : []);
+  const copiedObjects = [...new Map([
+    ...objects,
+    ...selectedGroups.filter((group) => group.childObjectIds.some((childId) => selectedIdSet.has(childId))),
+    ...carriedMarks,
+    ...(fragmentPayload?.objects ?? [])
+  ].map((object) => [object.id, object])).values()];
+  const bounds = selectionBounds(copiedObjects, copiedObjects.map((object) => object.id));
+  if (copiedObjects.length === 0 || !bounds) {
+    return undefined;
   }
 
   return {
     kind: "chemdraft-selection",
     version: 1,
-    objects: structuredClone([
-      ...objects,
-      ...selectedGroups.filter((group) =>
-        group.childObjectIds.some((childId) => selectedIdSet.has(childId))
-      )
-    ]) as DocumentObject[],
-    selectionIds: document.selection.objectIds.filter((objectId) =>
-      selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
-    ),
+    objects: structuredClone(copiedObjects) as DocumentObject[],
+    selectionIds: [
+      ...document.selection.objectIds.filter((objectId) =>
+        selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
+      ),
+      ...(fragmentPayload?.selectionIds ?? [])
+    ],
     bounds
   };
 }
@@ -13311,7 +13322,7 @@ function createNativeMoleculeFragmentClipboardPayload(
   }
 
   const page = firstPage(document);
-  const objects: MoleculeObject[] = [];
+  const objects: DocumentObject[] = [];
   for (const fragment of fragments) {
     const molecule = page.objects.find((object): object is MoleculeObject =>
       object.id === fragment.objectId && object.type === "molecule"
@@ -13336,7 +13347,10 @@ function createNativeMoleculeFragmentClipboardPayload(
     const bonds = molecule.bonds.filter((bond) =>
       keptAtomIds.has(bond.fromAtomId) && keptAtomIds.has(bond.toAtomId)
     );
-    objects.push(moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds)));
+    objects.push(
+      moleculeWithPrunedRingStyles(refreshNativeSingleBondGraph(molecule, atoms, bonds)),
+      ...anchoredElectronMarksForTransform(page.objects, molecule.id, keptAtomIds)
+    );
   }
 
   const bounds = selectionBounds(objects, objects.map((object) => object.id));
@@ -13348,7 +13362,7 @@ function createNativeMoleculeFragmentClipboardPayload(
     kind: "chemdraft-selection",
     version: 1,
     objects: structuredClone(objects) as DocumentObject[],
-    selectionIds: objects.map((object) => object.id),
+    selectionIds: objects.filter((object) => object.type === "molecule").map((object) => object.id),
     bounds
   };
 }
@@ -13454,6 +13468,26 @@ export function pasteSelectionClipboardPayload(
     );
   }
 
+  // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
+  // Restore anchors only after every child is present, even if the mark preceded its molecule.
+  for (const object of sourceChildren) {
+    if (object.type !== "electron-mark" || object.anchor.kind !== "atom") {
+      continue;
+    }
+    const moleculeId = object.anchor.objectId && idBySourceId.get(object.anchor.objectId);
+    const molecule = firstPage(next).objects.find((candidate): candidate is MoleculeObject =>
+      candidate.id === moleculeId && candidate.type === "molecule"
+    );
+    if (!molecule || !molecule.atoms.some((atom) => atom.id === object.anchor.atomId)) {
+      continue;
+    }
+    next = applyPatch(next, {
+      op: "updateObject",
+      objectId: idBySourceId.get(object.id)!,
+      changes: { anchor: { ...object.anchor, objectId: molecule.id } }
+    }, { now: phase4Timestamp });
+  }
+
   for (const group of sourceGroups) {
     const childObjectIds = group.childObjectIds
       .filter((childId) => sourceChildIds.has(childId))
@@ -13540,7 +13574,7 @@ function translatedClipboardObject(
     };
   }
 
-  if (object.type === "electron-mark" && object.markKind === "charge") {
+  if (object.type === "electron-mark") {
     return {
       ...object,
       x: nextX,
@@ -14296,15 +14330,19 @@ export function applyNativeMoleculeEngineRelayout(
   // Geometry only, so the export spelling (an abbreviated label as the dummy "*", an atom the
   // engine can place) is the right one here; the R-group spelling is for CIP perception alone.
   const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
-  const depiction = relayout(moleculeToMolfileV2000(ligand, { fromDocFrame: true }));
+  const molfile = moleculeToMolfileV2000(ligand, { fromDocFrame: true });
+  const emittedAtoms = parseMolfileGraph(molfile).atoms;
+  const depiction = relayout(molfile);
   if (depiction.atoms.length !== ligandAtoms.length) {
     throw new Error(
       `Engine re-layout returned ${depiction.atoms.length} atoms for a ${ligandAtoms.length}-atom structure.`
     );
   }
   depiction.atoms.forEach((atom, index) => {
-    const expected = ligandAtoms[index].element;
-    if (atom.element.toUpperCase() !== expected.toUpperCase()) {
+    // A nickname was emitted as a dummy atom; OCL may return C for that placeholder.
+    // Only its coordinates return to the document, so the original label stays intact.
+    const expected = emittedAtoms[index].element;
+    if (expected !== "*" && atom.element.toUpperCase() !== expected.toUpperCase()) {
       throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
     }
   });
@@ -17762,6 +17800,7 @@ export function copyAsMergedMolecule(
 export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): string[] {
   return [...new Set(molecule.atoms
     .filter((atom) =>
+      atom.element !== "D" && atom.element !== "T" &&
       nativeElementFromAtomLabel(atom.element) === undefined &&
       nativeSingleHeavyElementLabelValence(atom.element) === undefined
     )
@@ -17769,34 +17808,23 @@ export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): strin
 }
 
 /**
- * SMILES for the copy scope. `warningsOut`, when given, collects the fidelity gaps SMILES cannot
- * express (AGENTS.md §6.7: no silent lossy copy): dative (dashed) bonds copied as plain single
- * bonds — SMILES has no coordination bond, and dot-disconnecting would falsify component counts,
- * so the bond is kept and the warning says what was lost — and condensed-label atoms that no
- * single SMILES atom can spell, copied as dummy `[*]` atoms.
+ * Copy and structure-list export share the same lazy engine route and warned native fallback.
+ * Keep this import on demand: copying a drawing must not load RDKit at application startup.
  */
-export function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): string | undefined {
+export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
   const molecules = copyAsScopeMolecules(document);
-  const parts = molecules
-    .map((molecule) =>
-      molecule.structureFormat === "smiles" && molecule.structure
-        ? molecule.structure
-        : nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds)
-    )
-    .filter((smiles) => smiles.length > 0);
-  if (warningsOut) {
-    const dativeBondCount = molecules.reduce((sum, molecule) =>
-      sum + molecule.bonds.filter((bond) => bond.display?.bondStyle === "dashed").length, 0);
-    if (dativeBondCount > 0) {
-      warningsOut.push(
-        `SMILES has no dative/coordination bond: ${dativeBondCount} dashed bond${dativeBondCount === 1 ? "" : "s"} copied as plain single.`
-      );
-    }
-    const unspellableLabels = [...new Set(molecules.flatMap(nativeMoleculeUnspellableLabels))];
-    unspellableLabels.forEach((label) => {
-      warningsOut.push(`Atom label "${label}" cannot be spelled as a single SMILES atom; copied as a dummy atom [*].`);
-    });
+  if (molecules.length === 0) {
+    return undefined;
   }
+  const { loadStructureIdentifiers, moleculeSmiles } = await import("./moleculeSmiles");
+  const computeStructureIdentifiers = await loadStructureIdentifiers();
+  const warnings: ExportWarning[] = [];
+  const parts: string[] = [];
+  for (const [index, molecule] of molecules.entries()) {
+    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+    if (smiles.length > 0) parts.push(smiles);
+  }
+  warningsOut?.push(...warnings.map((warning) => warning.message));
   return parts.length > 0 ? parts.join(".") : undefined;
 }
 
@@ -18403,9 +18431,8 @@ function neighborAnglesForAtom(molecule: MoleculeObject, atomId: string): number
  * The atom another molecule object offers as a bond endpoint at `point` — how a dragged bond
  * reaches across objects (a typed "Zn" is its own one-atom molecule until a bond joins it to
  * the ligand). Nearest hit wins across every other molecule on the page whose hit atom still has
- * a free growth slot. "Editable" is NOT part of the filter: a nearer non-editable molecule (an
- * imported structure preview) shadows a farther editable one — the connect attempt then fails
- * rather than reaching past it.
+ * a free growth slot and an editable graph. A preview that cannot be merged must leave the
+ * ordinary bond-growth path available.
  */
 export function findForeignNativeMoleculeBondTarget(
   page: DocumentPage,
@@ -18413,7 +18440,9 @@ export function findForeignNativeMoleculeBondTarget(
   point: PagePoint
 ): { molecule: MoleculeObject; atomId: string; atomPoint: PagePoint } | undefined {
   const hits = page.objects
-    .filter((object): object is MoleculeObject => object.type === "molecule" && object.id !== excludeObjectId)
+    .filter((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id !== excludeObjectId && isEditableNativeMoleculeGraph(object)
+    )
     .map((molecule) => ({ molecule, hit: findNativeMoleculeAtomHit(molecule, point) }))
     .filter((entry): entry is { molecule: MoleculeObject; hit: NonNullable<ReturnType<typeof findNativeMoleculeAtomHit>> } =>
       entry.hit !== undefined && entry.hit.availableBonds > 0
@@ -18822,7 +18851,7 @@ function canSetNativeBondOrder(
   // The dashed style is the dative style, and dative means single: the dashed tool refuses a
   // double or triple bond for that reason, so a dashed bond may not be raised past single
   // either — a "dashed double" would draw as a dative bond and export as a covalent double.
-  if (bond.display?.bondStyle === "dashed" && order !== "single") {
+  if (bond.display?.bondStyle === "dashed" && !isDativeBond({ ...bond, order })) {
     return false;
   }
 
@@ -19898,6 +19927,10 @@ function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0)
     return "C";
   }
 
+  if (atom.element === "D" || atom.element === "T") {
+    return `[${atom.element === "D" ? 2 : 3}H${smilesChargeSuffix(atom.formalCharge)}]`;
+  }
+
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
     // Condensed labels store the whole group in the atom's element string ("CH3", "CO2H", "Ph").
@@ -20188,12 +20221,12 @@ function atomDegreeMap(
 }
 
 /**
- * A dashed bond depicts a dative or partial interaction — a coordinate bond to a metal, a
+ * A dashed single bond depicts a dative or partial interaction — a coordinate bond to a metal, a
  * hydrogen bond, a forming/breaking bond — and occupies no covalent valence slot on either
  * atom: pyridine's N keeps its three bonds and no badge while dash-bonded to a zinc.
  */
 function nativeBondValenceContribution(bond: MoleculeBond): number {
-  return bond.display?.bondStyle === "dashed" ? 0 : nativeBondOrderValue[bond.order] ?? 1;
+  return isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1;
 }
 
 function atomBondOrderUsageMap(
