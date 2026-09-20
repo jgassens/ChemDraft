@@ -19465,7 +19465,7 @@ export function nativeSmilesBondOrderResolution(
 }
 
 /** Node-visit budget for one ring system's matching search; past it the system is reported. */
-const KEKULE_SEARCH_BUDGET = 20000;
+const KEKULE_SEARCH_BUDGET = 200000;
 
 /**
  * Assign alternating single/double orders to the aromatic bonds so the result is a valid Kekulé
@@ -19555,7 +19555,11 @@ function kekulizeNativeAromaticBonds(
     }
     const spare = nativeAtomValenceForCharge(element, atom.formalCharge)
       - (spent.get(atomId) ?? 0) - (ringByAtom.get(atomId)?.length ?? 0) - (atom.markRadicals ?? 0);
-    classOf.set(atomId, spare < 1 ? "never" : (element === "C" || element === "B") && atom.formalCharge === 0 ? "must" : "flex");
+    classOf.set(atomId, kekuleAtomClass(element, atom.formalCharge, spare));
+  }
+  // Deterministic search: neighbours in id order, whatever order the bond array arrived in.
+  for (const [atomId, indices] of ringByAtom) {
+    ringByAtom.set(atomId, [...indices].sort((left, right) => otherEnd(left, atomId).localeCompare(otherEnd(right, atomId))));
   }
 
   // Ring systems: connected components of the ring aromatic bonds, solved one at a time.
@@ -19601,9 +19605,27 @@ function kekulizeNativeAromaticBonds(
 }
 
 /**
+ * What an aromatic ring atom may do in the Kekulé pattern, from its element, charge and the
+ * valence it has to spare. "never": takes no double bond and keeps its lone pair (or, for a
+ * cation carbon, its empty orbital): any atom with no spare slot, any anion, a C⁺. "must": takes
+ * exactly one — a neutral carbon or boron, and a cationic heteroatom such as pyrylium's O⁺ or
+ * an N-alkyl pyridinium N⁺, which has no lone pair left to hold. "flex": the neutral N/P/As
+ * with a spare slot, which is pyridine-type or pyrrole-type depending on the ring — the search
+ * decides. Charges are never "flex": a C⁺ must not trade its role with a neutral nitrogen.
+ */
+function kekuleAtomClass(element: NativeElementSymbol, formalCharge: number, spare: number): "must" | "never" | "flex" {
+  if (spare < 1 || formalCharge < 0) return "never";
+  if (formalCharge > 0) return element === "C" || element === "B" ? "never" : "must";
+  if (element === "C" || element === "B") return "must";
+  return element === "N" || element === "P" || element === "As" ? "flex" : "never";
+}
+
+/**
  * Branch-and-bound matching for one ring system: every "must" atom takes exactly one bond, no
  * "never" atom takes any, and as few "flex" atoms as possible are left out. Returns the chosen
- * bond indices, or undefined when no assignment covers the must atoms (or the budget ran out).
+ * bond indices, or undefined when no assignment covers the must atoms — or when the visit budget
+ * ran out before an assignment leaving no flexible atom out was found, since a provisional best
+ * is then unproven and must not reach the document silently.
  */
 function kekuleMatching(
   systemAtoms: readonly string[],
@@ -19620,9 +19642,14 @@ function kekuleMatching(
   let best: Set<number> | undefined;
   let bestLeftOut = Number.POSITIVE_INFINITY;
   let visits = 0;
+  let exhausted = false;
   const search = (position: number, leftOut: number): void => {
     if (best && bestLeftOut === 0) return;
-    if (leftOut >= bestLeftOut || visits++ > KEKULE_SEARCH_BUDGET) return;
+    if (leftOut >= bestLeftOut) return;
+    if (visits++ > KEKULE_SEARCH_BUDGET) {
+      exhausted = true;
+      return;
+    }
     let index = position;
     while (index < order.length && matched.has(order[index]!)) index += 1;
     if (index >= order.length) {
@@ -19649,7 +19676,7 @@ function kekuleMatching(
     }
   };
   search(0, 0);
-  return best;
+  return exhausted && bestLeftOut > 0 ? undefined : best;
 }
 
 export function nativeSingleBondGraphSmiles(

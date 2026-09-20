@@ -15135,6 +15135,41 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     expect(reparse(smiles)).toEqual({ formula: "C5H4N4", ringCount: 2 });
   });
 
+  it("gives a cationic carbon the left-out slot, not a neutral nitrogen, whatever the bond order", () => {
+    // Azatropylium: N takes a double bond and the C⁺ keeps its hydrogen. With C⁺ and N both
+    // "flexible" the search could hand the hydrogen to the nitrogen instead, and the answer
+    // flipped with the order of the bond array.
+    const ring = aromaticRing(["C", "C", "C", "N", "C", "C", "C"]);
+    const atoms = ring.atoms.map((atom, index) => ({ ...atom, formalCharge: index === 6 ? 1 : 0 }));
+    for (const bonds of [ring.bonds, [...ring.bonds].reverse()]) {
+      const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+      expect(smiles).toContain("[CH+]");
+      expect(smiles).not.toMatch(/\[NH/);
+      expect(reparseFormulaAndCharge(smiles)).toEqual({ formula: "C6H6N", totalCharge: 1 });
+    }
+  });
+
+  it("never returns an unproven pattern when the search budget runs out", () => {
+    // A 37-atom ladder of fused five-rings with many nitrogens: the branch-and-bound may not
+    // prove its best assignment within the budget. It must then report the system, and the
+    // outcome must not depend on the order the bonds were listed in.
+    const elements = "NCCCCNCCNNCCNNCCNNCCNNCCCNCCNCCCNNCCN".split("");
+    const atoms: MoleculeAtom[] = elements.map((element, index) => ({ id: `q${String(index).padStart(2, "0")}`, element, x: index * 10, y: 0, formalCharge: 0 }));
+    const edges: [number, number][] = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 0]];
+    let shared: [number, number] = [3, 4];
+    for (let j = 5; j + 3 < elements.length; j += 4) {
+      edges.push([shared[0], j], [j, j + 1], [j + 1, j + 2], [j + 2, j + 3], [j + 3, shared[1]]);
+      shared = [j + 1, j + 2];
+    }
+    const bonds: MoleculeBond[] = edges.map(([from, to], index) => ({ id: `qb${index}`, fromAtomId: atoms[from]!.id, toAtomId: atoms[to]!.id, order: "aromatic" }));
+    const forward: string[] = [];
+    const backward: string[] = [];
+    const a = nativeSingleBondGraphSmiles(atoms, bonds, forward);
+    const b = nativeSingleBondGraphSmiles(atoms, [...bonds].reverse(), backward);
+    expect(reparse(a).formula).toBe(reparse(b).formula);
+    expect(forward).toEqual(backward);
+  });
+
   it("solves independent aromatic rings separately, so twenty benzenes finish at once", () => {
     // Twenty benzene rings joined in a chain by single bonds: an exhaustive search that
     // multiplied the rings' assignments took seconds here; per-system solving with an early
