@@ -19608,13 +19608,15 @@ function kekulizeNativeAromaticBonds(
  * What an aromatic ring atom may do in the Kekulé pattern, from its element, charge and the
  * valence it has to spare. "never": takes no double bond and keeps its lone pair (or, for a
  * cation carbon, its empty orbital): any atom with no spare slot, any anion, a C⁺. "must": takes
- * exactly one — a neutral carbon or boron, and a cationic heteroatom such as pyrylium's O⁺ or
+ * exactly one — a neutral carbon or boron, a B⁻ (carbon-like), and a cationic heteroatom such as pyrylium's O⁺ or
  * an N-alkyl pyridinium N⁺, which has no lone pair left to hold. "flex": the neutral N/P/As
  * with a spare slot, which is pyridine-type or pyrrole-type depending on the ring — the search
  * decides. Charges are never "flex": a C⁺ must not trade its role with a neutral nitrogen.
  */
 function kekuleAtomClass(element: NativeElementSymbol, formalCharge: number, spare: number): "must" | "never" | "flex" {
-  if (spare < 1 || formalCharge < 0) return "never";
+  if (spare < 1) return "never";
+  // A B⁻ is carbon-like (boratabenzene's B⁻ takes a double bond); every other anion holds a pair.
+  if (formalCharge < 0) return element === "B" ? "must" : "never";
   if (formalCharge > 0) return element === "C" || element === "B" ? "never" : "must";
   if (element === "C" || element === "B") return "must";
   return element === "N" || element === "P" || element === "As" ? "flex" : "never";

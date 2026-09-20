@@ -15150,24 +15150,41 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
   });
 
   it("never returns an unproven pattern when the search budget runs out", () => {
-    // A 37-atom ladder of fused five-rings with many nitrogens: the branch-and-bound may not
-    // prove its best assignment within the budget. It must then report the system, and the
-    // outcome must not depend on the order the bonds were listed in.
-    const elements = "NCCCCNCCNNCCNNCCNNCCNNCCCNCCNCCCNNCCN".split("");
-    const atoms: MoleculeAtom[] = elements.map((element, index) => ({ id: `q${String(index).padStart(2, "0")}`, element, x: index * 10, y: 0, formalCharge: 0 }));
-    const edges: [number, number][] = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 0]];
-    let shared: [number, number] = [3, 4];
-    for (let j = 5; j + 3 < elements.length; j += 4) {
-      edges.push([shared[0], j], [j, j + 1], [j + 1, j + 2], [j + 2, j + 3], [j + 3, shared[1]]);
-      shared = [j + 1, j + 2];
+    // A 45-atom ladder of fused five-rings, four nitrogens in five atoms: the branch-and-bound
+    // cannot prove its best assignment within the budget. It must then report the whole system
+    // rather than hand back a guess, and the outcome must not depend on bond order or atom ids.
+    const elements = ("NNCC".repeat(11) + "N").split("");
+    const build = (prefix: string) => {
+      const atoms: MoleculeAtom[] = elements.map((element, index) => ({ id: `${prefix}${String(index).padStart(3, "0")}`, element, x: index * 10, y: 0, formalCharge: 0 }));
+      const edges: [number, number][] = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 0]];
+      let shared: [number, number] = [3, 4];
+      for (let j = 5; j + 3 < elements.length; j += 4) {
+        edges.push([shared[0], j], [j, j + 1], [j + 1, j + 2], [j + 2, j + 3], [j + 3, shared[1]]);
+        shared = [j + 1, j + 2];
+      }
+      const bonds: MoleculeBond[] = edges.map(([from, to], index) => ({ id: `${prefix}b${index}`, fromAtomId: atoms[from]!.id, toAtomId: atoms[to]!.id, order: "aromatic" }));
+      return { atoms, bonds };
+    };
+    const forward = build("a");
+    const renamed = build("z");
+    for (const { atoms, bonds } of [forward, { atoms: forward.atoms, bonds: [...forward.bonds].reverse() }, renamed]) {
+      const warnings: string[] = [];
+      const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
+      expect(warnings).toEqual([
+        "55 aromatic bonds could not be resolved into alternating single and double bonds; written to SMILES as single."
+      ]);
+      expect(smiles).not.toContain("=");
     }
-    const bonds: MoleculeBond[] = edges.map(([from, to], index) => ({ id: `qb${index}`, fromAtomId: atoms[from]!.id, toAtomId: atoms[to]!.id, order: "aromatic" }));
-    const forward: string[] = [];
-    const backward: string[] = [];
-    const a = nativeSingleBondGraphSmiles(atoms, bonds, forward);
-    const b = nativeSingleBondGraphSmiles(atoms, [...bonds].reverse(), backward);
-    expect(reparse(a).formula).toBe(reparse(b).formula);
-    expect(forward).toEqual(backward);
+  });
+
+  it("treats a boron anion as carbon-like: boratabenzene keeps its ring double bonds", () => {
+    const ring = aromaticRing(["B", "C", "C", "C", "C", "C"]);
+    const atoms = ring.atoms.map((atom, index) => ({ ...atom, formalCharge: index === 0 ? -1 : 0 }));
+    const warnings: string[] = [];
+    const smiles = nativeSingleBondGraphSmiles(atoms, ring.bonds, warnings);
+    expect(warnings).toEqual([]);
+    expect(smiles.match(/=/g)).toHaveLength(3);
+    expect(reparseFormulaAndCharge(smiles)).toEqual({ formula: "C5H6B", totalCharge: -1 });
   });
 
   it("solves independent aromatic rings separately, so twenty benzenes finish at once", () => {
