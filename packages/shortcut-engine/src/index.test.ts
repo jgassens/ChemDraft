@@ -123,6 +123,33 @@ describe("the space key", () => {
 });
 
 describe("shouldIgnoreShortcutTarget", () => {
+  it("lets modified shortcuts and tool keys resolve inside a focused button", () => {
+    const button = window.document.createElement("button");
+    const label = window.document.createElement("span");
+    button.append(label);
+    const registry = createShortcutRegistry([
+      { commandId: "edit.undo", keys: ["Cmd", "Z"] },
+      { commandId: "tool.bond", keys: ["B"] }
+    ], { platform: "macos" });
+    for (const target of [button, label]) {
+      expect(shouldIgnoreShortcutTarget(target, "z")).toBe(false);
+      expect(registry.resolve({ target, key: "z", metaKey: true })).toBe("edit.undo");
+      expect(registry.resolve({ target, key: "b" })).toBe("tool.bond");
+    }
+  });
+
+  it.each([" ", "Spacebar", "Enter"])("leaves button activation key %j to the button", (key) => {
+    const button = window.document.createElement("button");
+    const label = window.document.createElement("span");
+    button.append(label);
+    expect(shouldIgnoreShortcutTarget(button, key)).toBe(true);
+    expect(shouldIgnoreShortcutTarget(label, key)).toBe(true);
+    const registry = createShortcutRegistry([
+      { commandId: "tool.select", keys: [key === "Enter" ? "Enter" : "Space"] }
+    ]);
+    expect(registry.resolve({ target: label, key })).toBeUndefined();
+  });
+
   it("ignores a focused button so Space activates it without also firing a bound tool", () => {
     // ChemDraw scheme binds Space → select tool. Without `button` in the ignore list, pressing
     // Space on a focused palette button both activated the button AND switched tools — one press,

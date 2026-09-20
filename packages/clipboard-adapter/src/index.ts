@@ -661,7 +661,8 @@ export function smilesListTokens(text: string): SmilesListCandidate[] {
   for (const [lineIndex, line] of text.split(/\r\n|\r|\n/).entries()) {
     // Require a separator after bullets so a leading wildcard atom (*CC) stays intact.
     const marker = line.match(/^\s*(?:\d+[.)]|\(\d+\)|[-*•#])(?=\s|$)\s*/)?.[0] ?? "";
-    for (const match of line.slice(marker.length).matchAll(/[^\s,;]+/g)) {
+    const tokens = [...line.slice(marker.length).matchAll(/[^\s,;]+/g)];
+    for (const [tokenIndex, match] of tokens.entries()) {
       let token = match[0];
       let column = marker.length + match.index + 1;
       // Peel CSV quotes and JSON array brackets, but preserve SMILES atom brackets, e.g.
@@ -677,7 +678,10 @@ export function smilesListTokens(text: string): SmilesListCandidate[] {
           break;
         }
       }
-      if (looksLikeSmiles(token)) {
+      // A bare atom is unambiguous enough at the start of a short .smi row, but "I like CCO"
+      // is prose. Keep that exception here so single-paste detection keeps its length guard.
+      const singleAtomRow = tokenIndex === 0 && tokens.length <= 2 && /^[BCNOPSFI]$/.test(token);
+      if (looksLikeSmiles(token) || singleAtomRow) {
         candidates.push({ token, line: lineIndex + 1, column });
       }
     }
@@ -687,7 +691,8 @@ export function smilesListTokens(text: string): SmilesListCandidate[] {
 
 /** Only plausible atom spellings reach the app's SMILES parser. */
 export function smilesListCandidates(text: string): SmilesListCandidate[] {
-  return smilesListTokens(text).filter(({ token }) => looksLikeSmilesStrict(token));
+  // Single letters only reach this list after the row-position check in smilesListTokens.
+  return smilesListTokens(text).filter(({ token }) => looksLikeSmilesStrict(token) || /^[BCNOPSFI]$/.test(token));
 }
 
 export function smilesListDecision(input: {

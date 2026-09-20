@@ -19,6 +19,7 @@ import {
   averageDefinedDepthWeights,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  dativeDeprotonationCount,
   doubleBondSecondaryFlushEnds,
   findNearestAtomAtPoint,
   findNearestBondHit,
@@ -1709,6 +1710,33 @@ describe("layout-engine page SVG planner", () => {
     expect(layout.bounds.x).toBeLessThan(atomLabelLayout("C", drawingStyle).bounds.x);
   });
 
+  it("counts a dashed double bond's full valence in the atom label", () => {
+    const carbonyl = moleculeObject({
+      atoms: [
+        { id: "c", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "o", element: "O", x: 30, y: 0, formalCharge: 0 }
+      ],
+      bonds: [{ id: "b", fromAtomId: "c", toAtomId: "o", order: "double", display: { bondStyle: "dashed" } }],
+      style: { atomLabelHideImplicitHydrogens: false }
+    });
+    expect(atomDisplayLabel(carbonyl.atoms[1], carbonyl.bonds, nativeDrawingStyleFromObjectStyle(carbonyl.style), carbonyl.atoms)).toBe("O");
+  });
+
+  it("does not deprotonate a chalcogen donor for a dashed double bond to a metal", () => {
+    const graph = moleculeObject({
+      atoms: [
+        { id: "s", element: "S", x: 0, y: 0, formalCharge: 0 },
+        { id: "c", element: "C", x: -30, y: 0, formalCharge: 0 },
+        { id: "zn", element: "Zn", x: 30, y: 0, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "cs", fromAtomId: "c", toAtomId: "s", order: "single" },
+        { id: "sz", fromAtomId: "s", toAtomId: "zn", order: "double", display: { bondStyle: "dashed" } }
+      ]
+    });
+    expect(dativeDeprotonationCount(graph.atoms[0], graph.bonds, graph.atoms)).toBe(0);
+  });
+
   it("takes the proton off a pyrrole-type N–H that donates a dative bond to a metal, and only that one", () => {
     // Imidazole: N1 is pyrrole-type (two single ring bonds, each neighbour in a double bond), N3
     // is pyridine-type. A dashed bond from N1 to zinc means imidazolate coordination — no free pair
@@ -1738,6 +1766,13 @@ describe("layout-engine page SVG planner", () => {
     const toZinc = imidazole("Zn");
     expect(label(toZinc, "n1")).toBe("N");
     expect(label(toZinc, "n3")).toBe("N");
+    const dashedDouble = imidazole("Zn");
+    dashedDouble.bonds[5].order = "double";
+    expect(dativeDeprotonationCount(dashedDouble.atoms[0], dashedDouble.bonds, dashedDouble.atoms)).toBe(0);
+    // A dashed display on a neighbouring double bond still supplies conjugation.
+    const dashedConjugation = imidazole("Zn");
+    dashedConjugation.bonds[1].display = { bondStyle: "dashed" };
+    expect(dativeDeprotonationCount(dashedConjugation.atoms[0], dashedConjugation.bonds, dashedConjugation.atoms)).toBe(1);
     // A dashed bond to a carbon is a partial bond, not a coordination: the N–H stays.
     expect(label(imidazole("C"), "n1")).toBe("NH");
 
@@ -1760,7 +1795,7 @@ describe("layout-engine page SVG planner", () => {
     // R–SH binding gold is a thiolate: the drawn label is S, not SH. A thioether has no proton to
     // lose, and an alcohol keeps its own — water and alcohols coordinate metals neutral all the
     // time, so O is deliberately outside this rule.
-    const donor = (element: string, covalentNeighbors: number, dativeTo: "Au" | "C") => {
+    const donor = (element: string, covalentNeighbors: number, dativeTo: string) => {
       const atoms = [
         { id: "d", element, x: 130, y: 100, formalCharge: 0 },
         { id: "c1", element: "C", x: 100, y: 100, formalCharge: 0 },
@@ -1785,6 +1820,9 @@ describe("layout-engine page SVG planner", () => {
       );
 
     expect(label(donor("S", 1, "Au"))).toBe("S");
+    // Post-transition metals use the same classification as molfile coordination export.
+    expect(label(donor("S", 1, "Al"))).toBe("S");
+    expect(label(donor("S", 1, "Sb"))).toBe("SH");
     // A selenol behaves the same way.
     expect(label(donor("Se", 1, "Au"))).toBe("Se");
     // A thioether has both bonds spoken for already: nothing to take off, and it still reads S.

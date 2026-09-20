@@ -1591,7 +1591,7 @@ function expandCdxmlAbbreviationNodes(
   for (const atomElement of atomElements) {
     const nested = childElements(atomElement, "fragment")[0];
     const nodeId = atomElement.attributes.id ?? "";
-    if (!nested || depth > 4) {
+    if (!nested) {
       expandedAtoms.push(atomElement);
       continue;
     }
@@ -1616,15 +1616,27 @@ function expandCdxmlAbbreviationNodes(
 
     const outerBondCount = bondElements.filter((bondElement) =>
       bondElement.attributes.B === nodeId || bondElement.attributes.E === nodeId).length;
-    const expandable = bodyAtoms.length > 0 &&
-      connectionPointIds.size <= 1 &&
-      (outerBondCount === 0 || attachment !== undefined);
-    if (!expandable) {
+    const charge = parseInteger(atomElement.attributes.Charge) ?? 0;
+    let notExpandableReason: string | undefined;
+    if (depth > 4) {
+      notExpandableReason = "its nesting exceeds the supported abbreviation depth.";
+    } else if (charge !== 0) {
+      notExpandableReason = `its charge ${charge} cannot be assigned to a nested atom without guessing.`;
+    } else if (bodyAtoms.length === 0) {
+      notExpandableReason = "it carries no atoms to expand.";
+    } else if (connectionPointIds.size > 1) {
+      notExpandableReason = `it attaches at ${connectionPointIds.size} points, and which bond meets which atom cannot be read from the file.`;
+    } else if (attachment !== undefined && !bodyAtoms.some((atom) => atom.attributes.id === attachment)) {
+      notExpandableReason = "its attachment bond does not reach a body atom.";
+    } else if (outerBondCount > 0 && attachment === undefined) {
+      notExpandableReason = "it has no attachment bond connecting its body to the outer drawing.";
+    }
+    if (notExpandableReason) {
+      const element = elementFromCdxmlAtom(atomElement.attributes.Element);
+      const keptAs = label ? "a label" : element === "C" ? "a carbon atom" : `an atom (${element})`;
       warnings.push({
         code: "cdxml.abbreviation_not_expanded",
-        message: bodyAtoms.length === 0
-          ? `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as a label: it carries no atoms to expand.`
-          : `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as a label: it attaches at ${connectionPointIds.size} points, and which bond meets which atom cannot be read from the file.`
+        message: `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as ${keptAs}: ${notExpandableReason}`
       });
       expandedAtoms.push(atomElement);
       if (label) {
@@ -2827,8 +2839,11 @@ function isChemDraftObjectTag(element: XmlElementView): boolean {
 
 function textContent(children: OrderedXmlTree): string {
   return children.map((child) => {
-    if (typeof child["#text"] === "string") {
-      return child["#text"];
+    const text = child["#text"];
+    // The XML parser coerces standalone numeric/boolean runs. Subscripts such as the 3 in
+    // SO3 are still text, both in atom labels and in the standalone importText path.
+    if (typeof text === "string" || typeof text === "number" || typeof text === "boolean") {
+      return String(text);
     }
     const cdata = cdataContent(child["#cdata"]);
     if (cdata !== undefined) {

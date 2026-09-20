@@ -1,5 +1,7 @@
 import {
   DefaultNativeDrawingStyle,
+  isDativeBond,
+  isMetalSymbol,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   type BondRef,
@@ -5230,10 +5232,9 @@ export function dativeDeprotonationCount(
       return;
     }
     const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
-    if (bond.display?.bondStyle === "dashed") {
+    if (isDativeBond(bond)) {
       const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
-      // A metal is an element outside the covalent valence table (d-block, alkali, alkaline earth).
-      if (neighborElement && neighborElement !== "H" && nativeAtomValenceElectrons[neighborElement] === undefined) {
+      if (neighborElement && isMetalSymbol(neighborElement)) {
         donatesToMetal = true;
       }
       return;
@@ -5249,7 +5250,7 @@ export function dativeDeprotonationCount(
   const conjugated = covalentNeighborIds.every((neighborId) => bonds.some((bond) =>
     (bond.fromAtomId === neighborId || bond.toAtomId === neighborId) &&
     bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id &&
-    bond.display?.bondStyle !== "dashed" &&
+    !isDativeBond(bond) &&
     (bond.order === "double" || bond.order === "aromatic")
   ));
   return conjugated ? 1 : 0;
@@ -5273,11 +5274,10 @@ function terminalChalcogenolDeprotonation(
     if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
       return;
     }
-    if (bond.display?.bondStyle === "dashed") {
+    if (isDativeBond(bond)) {
       const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
       const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
-      // A metal is an element outside the covalent valence table (d-block, alkali, alkaline earth).
-      if (neighborElement && neighborElement !== "H" && nativeAtomValenceElectrons[neighborElement] === undefined) {
+      if (neighborElement && isMetalSymbol(neighborElement)) {
         donatesToMetal = true;
       }
       return;
@@ -5293,9 +5293,9 @@ function terminalChalcogenolDeprotonation(
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {
   return bonds.reduce((sum, bond) => (
     bond.fromAtomId === atomId || bond.toAtomId === atomId
-      // Dashed = dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
+      // A dashed single is dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
       // drawn hydrogen count ignores it — same rule as the valence checker's.
-      ? sum + (bond.display?.bondStyle === "dashed" ? 0 : nativeBondOrderValue[bond.order] ?? 1)
+      ? sum + (isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1)
       : sum
   ), 0);
 }

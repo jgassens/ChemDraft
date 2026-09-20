@@ -122,7 +122,7 @@ export function createShortcutRegistry(
         commandIds: entries.map((entry) => entry.commandId)
       })),
     resolve: (input) => {
-      if (input.defaultPrevented || shouldIgnoreShortcutTarget(input.target ?? null)) {
+      if (input.defaultPrevented || shouldIgnoreShortcutTarget(input.target ?? null, input.key)) {
         return undefined;
       }
 
@@ -186,7 +186,7 @@ export function shortcutChord(shortcut: NormalizedShortcut): string {
   return chordFor(shortcut.key, shortcut.modifiers);
 }
 
-export function shouldIgnoreShortcutTarget(target: EventTarget | null): boolean {
+export function shouldIgnoreShortcutTarget(target: EventTarget | null, key?: string): boolean {
   if (!target || typeof Element === "undefined" || !(target instanceof Element)) {
     return false;
   }
@@ -195,10 +195,15 @@ export function shouldIgnoreShortcutTarget(target: EventTarget | null): boolean 
     return true;
   }
 
-  // Buttons too: Space/Enter ACTIVATE a focused button, so a global binding on the same key
-  // (ChemDraw scheme: Space → select tool) would otherwise double-fire the press. Activatable
-  // chrome owns its keys — palette buttons invoke through their own keydown handler.
-  return Boolean(target.closest("input, textarea, select, button, [contenteditable='true']"));
+  if (target.closest("input, textarea, select, [contenteditable='true']")) {
+    return true;
+  }
+
+  // Space/Enter activate a focused button, so global bindings on those keys would double-fire.
+  // Other shortcuts still work while a toolbar button has focus. Callers without a key keep
+  // the older, conservative behavior until they can pass the actual event key.
+  return Boolean(target.closest("button")) &&
+    (key === undefined || key === " " || key === "Spacebar" || key === "Enter");
 }
 
 export function detectShortcutPlatform(): ShortcutPlatform {

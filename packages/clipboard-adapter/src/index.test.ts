@@ -10,6 +10,7 @@ import {
   looksLikeSmilesStrict,
   parseMolfileGraph,
   smilesListCandidates,
+  smilesListTokens,
   smilesListDecision
 } from "./index";
 
@@ -18,6 +19,10 @@ describe("SMILES list candidates", () => {
     ["", []],
     [" \n\t", []],
     ["CCO", ["CCO"]],
+    ["CCO\nCCN\nO", ["CCO", "CCN", "O"]],
+    ["O water\nCCO ethanol", ["O", "CCO"]],
+    ["I like CCO and CCN", ["CCO", "CCN"]],
+    ["CCO O\nO water solvent\nwater O", ["CCO"]],
     ["CCO\nc1ccccc1\nCC(=O)O", ["CCO", "c1ccccc1", "CC(=O)O"]],
     ["CCO c1ccccc1", ["CCO", "c1ccccc1"]],
     ["CCO\tCCN;CCCl,CCBr", ["CCO", "CCN", "CCCl", "CCBr"]],
@@ -42,6 +47,16 @@ describe("SMILES list candidates", () => {
       { token: "CCCl", line: 2, column: 6 },
       { token: "CCBr", line: 3, column: 1 }
     ]);
+  });
+
+  it("counts single-atom rows in the list decision's tokens, without widening the single-paste filter", () => {
+    expect(smilesListTokens("CCO\nCCN\nO").map(({ token }) => token)).toEqual(["CCO", "CCN", "O"]);
+    expect(smilesListTokens("O water\nCCO ethanol").map(({ token }) => token)).toEqual(["O", "water", "CCO", "ethanol"]);
+    expect(smilesListTokens("I like CCO and CCN").map(({ token }) => token)).toEqual(["like", "CCO", "and", "CCN"]);
+    for (const token of ["B", "C", "N", "O", "P", "S", "F", "I"]) {
+      expect(smilesListCandidates(token)).toEqual([{ token, line: 1, column: 1 }]);
+      expect(looksLikeSmiles(token)).toBe(false);
+    }
   });
 
   it("rejects a 200-word English paragraph without parsing its words", () => {

@@ -35,7 +35,8 @@
  *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
  */
 
-import type { MoleculeBond, MoleculeObject } from "./schemas";
+import { isMetalSymbol } from "./elements";
+import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 
 export interface MolfileWriteOptions {
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
@@ -79,12 +80,22 @@ const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
  * V2000 has no coordination type, so there it degrades to a plain single bond and the writer warns.
  * Requiring single order prevents display styling on a multiple bond from deleting its bond order.
  */
-function isDativeBond(bond: MoleculeBond): boolean {
+export function isDativeBond(bond: MoleculeBond): boolean {
   return bond.order === "single" && bond.display?.bondStyle === "dashed";
 }
 
 function v3000BondTypeCode(bond: MoleculeBond): number {
   return isDativeBond(bond) ? 9 : BOND_ORDER_CODE[bond.order];
+}
+
+function v3000BondAtomIds(bond: MoleculeBond, atomById: ReadonlyMap<string, MoleculeAtom>): [string, string] {
+  // CTfile type 9 is directional: donor first, acceptor second. Drawing from the metal must not
+  // turn an amine donor into an acceptor and cost it a hydrogen when a chemistry engine reads it.
+  if (isDativeBond(bond) && isMetalSymbol(atomById.get(bond.fromAtomId)!.element) &&
+    !isMetalSymbol(atomById.get(bond.toAtomId)!.element)) {
+    return [bond.toAtomId, bond.fromAtomId];
+  }
+  return [bond.fromAtomId, bond.toAtomId];
 }
 
 /**
@@ -94,15 +105,18 @@ function v3000BondTypeCode(bond: MoleculeBond): number {
 function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], warnings?: string[]): void {
   for (const bond of bonds) {
     if (bond.display?.bondStyle === "dashed" && bond.order !== "single") {
+      const code = BOND_ORDER_CODE[bond.order];
+      const emittedOrder = code === 1 ? "single" : code === 2 ? "double" : code === 3 ? "triple" : "aromatic";
+      const article = bond.order === "aromatic" || bond.order === "unknown" ? "an" : "a";
       warnings?.push(
-        `Dashed display on a ${bond.order} bond is not a coordination bond; written as a ${bond.order} bond, dashed style not preserved.`
+        `Dashed display on ${article} ${bond.order} bond is not a coordination bond; written as bond type ${code} (${emittedOrder}), dashed style not preserved.`
       );
     }
   }
 }
 
 /**
- * Every IUPAC element symbol plus the CTfile dummy atom "*". The molfile atom column must hold
+ * Every IUPAC element symbol plus CTfile's D, T and dummy atom "*". The molfile atom column must hold
  * one of these — never a display label. chem-core keeps its own table because the app's element
  * list (`nativeElementSymbols` in documentWorkflow) lives above the package boundary.
  */
@@ -119,8 +133,38 @@ const MOLFILE_ATOM_SYMBOLS = new Set([
   "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
   "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
   "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og",
-  "*"
+  "D", "T", "*"
 ]);
+
+/** Explicit valence stops a reader adding hydrogens to a literal element label. */
+function literalAtomValences(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  format: "V2000" | "V3000"
+): Map<string, number> {
+  const valences = new Map(atoms
+    .filter((atom) => atom.labelLiteral === true && atom.element !== "*" && MOLFILE_ATOM_SYMBOLS.has(atom.element))
+    .map((atom) => [atom.id, 0]));
+  if (valences.size === 0) return valences;
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  for (const bond of bonds) {
+    // Aromatic type 4 is a code, not four covalent bonds. V2000 emits dative as single; V3000
+    // readers count a coordination bond only at its acceptor, so its donor gets no extra H.
+    const order = bond.order === "aromatic" ? 1.5 : BOND_ORDER_CODE[bond.order];
+    const dative = format === "V3000" && isDativeBond(bond);
+    const [from, to] = dative ? v3000BondAtomIds(bond, atomById) : [bond.fromAtomId, bond.toAtomId];
+    if (valences.has(from)) valences.set(from, valences.get(from)! + (dative ? 0 : order));
+    if (valences.has(to)) valences.set(to, valences.get(to)! + order);
+  }
+  for (const [id, valence] of valences) {
+    // CTfile's explicit valence is an integer from 1 to 14, plus a zero-valence sentinel.
+    // Refuse an unrepresentable sum rather than round it and silently invent hydrogens.
+    if (!Number.isInteger(valence) || valence > 14) {
+      throw new Error(`Cannot write literal atom "${id}" with valence ${valence} in ${format}.`);
+    }
+  }
+  return valences;
+}
 
 /**
  * The symbols for the molfile atom column, in atom order, plus the R-group assignments that
@@ -250,11 +294,15 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
   const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
+  const literalValences = literalAtomValences(atoms, writableBonds, "V2000");
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
     const z = f10_4(0);
-    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
+    const valence = literalValences.get(atom.id);
+    const valenceCode = valence === undefined ? 0 : valence === 0 ? 15 : valence;
+    // vvv occupies columns 49–51, after mass, charge, parity, H count and stereo-care.
+    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0${i3(valenceCode)}  0  0  0  0  0  0`);
   });
 
   for (const bond of writableBonds) {
@@ -303,6 +351,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const ySign = options.fromDocFrame ? -1 : 1;
   const atoms = mol.atoms;
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
   const writableBonds = mol.bonds.filter(
     (bond) => atomIndex.has(bond.fromAtomId) && atomIndex.has(bond.toAtomId)
   );
@@ -320,6 +369,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   ];
 
   const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
+  const literalValences = literalAtomValences(atoms, writableBonds, "V3000");
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
@@ -327,17 +377,20 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const radical = radicalCode !== 0 ? ` RAD=${radicalCode}` : "";
     const rgroup = rgroupByAtomNumber.get(index + 1);
     const rgroups30 = rgroup !== undefined ? ` RGROUPS=(1 ${rgroup})` : "";
+    const valence = literalValences.get(atom.id);
+    const valence30 = valence !== undefined ? ` VAL=${valence === 0 ? -1 : valence}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}${rgroups30}`
+      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}${rgroups30}${valence30}`
     );
   });
 
   lines.push("M  V30 END ATOM", "M  V30 BEGIN BOND");
   writableBonds.forEach((bond, index) => {
+    const [from, to] = v3000BondAtomIds(bond, atomById);
     const stereo = wedgeStereoFlag(bond);
     const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : "";
     lines.push(
-      `M  V30 ${index + 1} ${v3000BondTypeCode(bond)} ${atomIndex.get(bond.fromAtomId)!} ${atomIndex.get(bond.toAtomId)!}${config}`
+      `M  V30 ${index + 1} ${v3000BondTypeCode(bond)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
     );
   });
   lines.push("M  V30 END BOND", "M  V30 END CTAB", "M  END");

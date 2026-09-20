@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { ensureRdkit, resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
+import { isDativeBond, isMetalSymbol } from "./index";
 import { moleculeToMolfileV2000, moleculeToMolfileV3000 } from "./molfile";
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 
@@ -9,6 +12,7 @@ type AtomSpec = {
   y: number;
   charge?: number;
   markRadicals?: number;
+  labelLiteral?: boolean;
 };
 type BondSpec = { id: string; from: string; to: string; order?: MoleculeBond["order"]; style?: "wedge" | "hashed" | "dashed" };
 
@@ -25,12 +29,13 @@ function molecule(atoms: AtomSpec[], bonds: BondSpec[]): MoleculeObject {
     structureFormat: "molfile-v2000",
     structure: "",
     atoms: atoms.map(
-      ({ id, element, x, y, charge = 0, markRadicals }): MoleculeAtom => ({
+      ({ id, element, x, y, charge = 0, markRadicals, labelLiteral }): MoleculeAtom => ({
         id,
         element,
         x,
         y,
         formalCharge: charge,
+        ...(labelLiteral !== undefined ? { labelLiteral } : {}),
         ...(markRadicals !== undefined ? { markRadicals } : {})
       })
     ),
@@ -175,6 +180,36 @@ describe("moleculeToMolfileV3000 — radicals and charges", () => {
 });
 
 describe("dative (dashed) bonds", () => {
+  it.each([false, true])("writes the donor before the metal regardless of drawn direction (reversed: %s)", (reversed) => {
+    const amine = molecule(
+      [
+        { id: "c", element: "C", x: 0, y: 0 },
+        { id: "n", element: "N", x: 1.5, y: 0 },
+        { id: "zn", element: "Zn", x: 3, y: 0, charge: 2 }
+      ],
+      [
+        { id: "cn", from: "c", to: "n" },
+        { id: "nz", from: reversed ? "zn" : "n", to: reversed ? "n" : "zn", style: "dashed" }
+      ]
+    );
+    expect(moleculeToMolfileV3000(amine)).toContain("M  V30 2 9 2 3\n");
+  });
+
+  it.each([["N", "O"], ["Zn", "Fe"]])("keeps the drawn order for a dashed %s–%s bond", (first, second) => {
+    const graph = molecule(
+      [{ id: "a", element: first, x: 0, y: 0 }, { id: "b", element: second, x: 1, y: 0 }],
+      [{ id: "b1", from: "b", to: "a", style: "dashed" }]
+    );
+    expect(moleculeToMolfileV3000(graph)).toContain("M  V30 1 9 2 1\n");
+  });
+
+  it("exports the shared single-order dative predicate", () => {
+    const bond = { id: "b", fromAtomId: "a", toAtomId: "b", order: "single" as const };
+    expect(isDativeBond(bond)).toBe(false);
+    expect(isDativeBond({ ...bond, display: { bondStyle: "dashed" } })).toBe(true);
+    expect(isDativeBond({ ...bond, order: "double", display: { bondStyle: "dashed" } })).toBe(false);
+  });
+
   const dative = molecule(
     [
       { id: "a0", element: "N", x: 0, y: 0 },
@@ -213,7 +248,7 @@ describe("dative (dashed) bonds", () => {
 
     expect(moleculeToMolfileV3000(dashedDouble, { warnings })).toMatch(/M {2}V30 1 2 1 2\n/);
     expect(warnings).toEqual([
-      "Dashed display on a double bond is not a coordination bond; written as a double bond, dashed style not preserved."
+      "Dashed display on a double bond is not a coordination bond; written as bond type 2 (double), dashed style not preserved."
     ]);
   });
 
@@ -229,7 +264,7 @@ describe("dative (dashed) bonds", () => {
 
     expect(moleculeToMolfileV2000(dashedDouble, { warnings })).toMatch(/\n\s{2}1\s{2}2\s{2}2\s{2}0/);
     expect(warnings).toEqual([
-      "Dashed display on a double bond is not a coordination bond; written as a double bond, dashed style not preserved."
+      "Dashed display on a double bond is not a coordination bond; written as bond type 2 (double), dashed style not preserved."
     ]);
     expect(warnings.join(" ")).not.toContain("V2000 has no coordination bond type");
   });
@@ -246,6 +281,124 @@ describe("dative (dashed) bonds", () => {
     expect(moleculeToMolfileV3000(plain, { warnings })).toMatch(/M {2}V30 1 1 1 2\n/);
     expect(moleculeToMolfileV2000(plain, { warnings })).toMatch(/\n\s{2}1\s{2}2\s{2}1\s{2}0/);
     expect(warnings).toEqual([]);
+  });
+
+  it.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("warns that dashed unknown order is actually written as single", (write) => {
+    const unknown = molecule(
+      [{ id: "a", element: "C", x: 0, y: 0 }, { id: "b", element: "C", x: 1, y: 0 }],
+      [{ id: "b1", from: "a", to: "b", order: "unknown", style: "dashed" }]
+    );
+    const warnings: string[] = [];
+    write(unknown, { warnings });
+    expect(warnings).toEqual([
+      "Dashed display on an unknown bond is not a coordination bond; written as bond type 1 (single), dashed style not preserved."
+    ]);
+  });
+});
+
+describe("molfile element symbols", () => {
+  it.each(["D", "T"])("writes the CTfile isotope symbol %s verbatim in both formats", (element) => {
+    const graph = molecule([{ id: "a", element, x: 0, y: 0 }], []);
+    const warnings: string[] = [];
+    expect(atomLines(moleculeToMolfileV2000(graph, { warnings }))[0].slice(31, 34)).toBe(element.padEnd(3));
+    expect(moleculeToMolfileV3000(graph, { warnings })).toContain(`M  V30 1 ${element} `);
+    expect(warnings).toEqual([]);
+  });
+
+  it("recognizes metal families without treating metalloids or other non-metals as metals", () => {
+    for (const symbol of ["Li", "Cs", "Be", "Ra", "Sc", "Zn", "Cn", "La", "Lu", "Ac", "Lr", "Al", "Ga", "In", "Sn", "Tl", "Pb", "Bi", "Po"]) {
+      expect(isMetalSymbol(symbol), symbol).toBe(true);
+    }
+    for (const symbol of ["B", "Si", "Ge", "As", "Sb", "Te", "H", "D", "N", "O", "Xe", "Ph", ""]) {
+      expect(isMetalSymbol(symbol), symbol).toBe(false);
+    }
+  });
+});
+
+describe("literal element valence", () => {
+  const literalNitrogen = (labelLiteral: boolean, bonded = true) => molecule(
+    [
+      { id: "n", element: "N", x: 0, y: 0, labelLiteral },
+      ...(bonded ? [{ id: "c", element: "C", x: 1.5, y: 0 }] : [])
+    ],
+    bonded ? [{ id: "b1", from: "n", to: "c" }] : []
+  );
+
+  it("writes explicit valence only for a literal element, in the exact V2000 column", () => {
+    const literal = atomLines(moleculeToMolfileV2000(literalNitrogen(true)))[0];
+    const ordinary = atomLines(moleculeToMolfileV2000(literalNitrogen(false)))[0];
+    expect(literal.slice(48, 51)).toBe("  1");
+    expect(ordinary.slice(48, 51)).toBe("  0");
+    expect(literal.slice(0, 48) + literal.slice(51)).toBe(ordinary.slice(0, 48) + ordinary.slice(51));
+    expect(moleculeToMolfileV3000(literalNitrogen(true))).toContain("M  V30 1 N 0 0 0 0 VAL=1\n");
+    expect(moleculeToMolfileV3000(literalNitrogen(false))).not.toContain("VAL=");
+  });
+
+  it("uses the format's zero-valence sentinel for an unbonded literal element", () => {
+    expect(atomLines(moleculeToMolfileV2000(literalNitrogen(true, false)))[0].slice(48, 51)).toBe(" 15");
+    expect(moleculeToMolfileV3000(literalNitrogen(true, false))).toContain(" VAL=-1\n");
+  });
+
+  it("sums multiple bond orders without counting bonds the writer drops", () => {
+    const graph = molecule(
+      [
+        { id: "n", element: "N", x: 0, y: 0, labelLiteral: true },
+        { id: "c", element: "C", x: 1.5, y: 0 },
+        { id: "o", element: "O", x: -1.5, y: 0 }
+      ],
+      [
+        { id: "nc", from: "n", to: "c" },
+        { id: "on", from: "o", to: "n", order: "double" },
+        { id: "missing", from: "n", to: "absent" }
+      ]
+    );
+    expect(atomLines(moleculeToMolfileV2000(graph))[0].slice(48, 51)).toBe("  3");
+    expect(moleculeToMolfileV3000(graph)).toContain("M  V30 1 N 0 0 0 0 VAL=3\n");
+  });
+
+  it("counts a V3000 dative bond only at its acceptor when setting literal valence", () => {
+    const graph = literalNitrogen(true);
+    graph.atoms.push({ id: "zn", element: "Zn", x: 3, y: 0, formalCharge: 2, labelLiteral: true });
+    graph.bonds.push({ id: "zn", fromAtomId: "zn", toAtomId: "n", order: "single", display: { bondStyle: "dashed" } });
+    expect(moleculeToMolfileV3000(graph)).toContain("M  V30 1 N 0 0 0 0 VAL=1\n");
+    expect(moleculeToMolfileV3000(graph)).toContain("M  V30 3 Zn 3 0 0 0 CHG=2 VAL=1\n");
+    // V2000 has already warned that this becomes a covalent single bond.
+    expect(atomLines(moleculeToMolfileV2000(graph))[0].slice(48, 51)).toBe("  2");
+  });
+
+  it("refuses a fractional literal valence instead of rounding it into added hydrogens", () => {
+    const graph = literalNitrogen(true);
+    graph.bonds[0].order = "aromatic";
+    for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+      expect(() => write(graph)).toThrow('Cannot write literal atom "n" with valence 1.5');
+    }
+  });
+
+  it("leaves non-element literal labels on the dummy and R-group paths", () => {
+    const graph = molecule([{ id: "label", element: "SO3", x: 0, y: 0, labelLiteral: true }], []);
+    for (const abbreviations of ["dummy", "rgroup"] as const) {
+      const warnings: string[] = [];
+      expect(atomLines(moleculeToMolfileV2000(graph, { abbreviations, warnings }))[0].slice(48, 51)).toBe("  0");
+      expect(moleculeToMolfileV3000(graph, { abbreviations, warnings })).not.toContain("VAL=");
+      expect(warnings).toHaveLength(2);
+    }
+  });
+
+  it("does not add hydrogens to literal N when RDKit reads either format", async () => {
+    installRealRdkitModuleLoader();
+    try {
+      const rdkit = await ensureRdkit();
+      for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+        const parsed = rdkit.get_mol(write(literalNitrogen(true)));
+        try {
+          expect(parsed?.get_smiles?.()).toBe("C[N]");
+        } finally {
+          parsed?.delete();
+        }
+      }
+    } finally {
+      resetRdkitForTesting();
+    }
   });
 });
 
