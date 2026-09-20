@@ -15458,6 +15458,19 @@ describe("clipboard and chemistry review regressions", () => {
     expect(cleaned.atoms.every((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y))).toBe(true);
   });
 
+  it.each(["D", "T"])("cleans up a molecule with a %s atom through the real OCL adapter", (isotope) => {
+    // The writer now emits D/T verbatim and OCL hands back plain H for them; the label survives.
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Isotope cleanup"), { x: 200, y: 200 });
+    const molecule = selectedMolecule(seeded);
+    const document = applyNativeAtomElementTarget(seeded, {
+      objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0
+    }, isotope);
+    expect(moleculeById(document, molecule.id).atoms[1].element).toBe(isotope);
+    const cleaned = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D), molecule.id);
+    expect(cleaned.atoms.map((atom) => atom.element)).toEqual(["C", isotope]);
+    expect(cleaned.atoms.every((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y))).toBe(true);
+  });
+
   it("grows an ordinary bond when the foreign drop target has no editable graph", () => {
     const seeded = insertNativeSingleBondMolecule(createPhase4Document("Foreign preview"), { x: 200, y: 200 });
     const molecule = selectedMolecule(seeded);

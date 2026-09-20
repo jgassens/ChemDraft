@@ -14343,10 +14343,13 @@ export function applyNativeMoleculeEngineRelayout(
     );
   }
   depiction.atoms.forEach((atom, index) => {
-    // A nickname was emitted as a dummy atom; OCL may return C for that placeholder.
-    // Only its coordinates return to the document, so the original label stays intact.
+    // A nickname was emitted as a dummy atom, which OCL hands back as C; a D or T label is
+    // written verbatim and comes back as plain H. Only coordinates return to the document, so
+    // the original label stays intact either way.
     const expected = emittedAtoms[index].element;
-    if (expected !== "*" && atom.element.toUpperCase() !== expected.toUpperCase()) {
+    const returned = atom.element.toUpperCase();
+    const substituted = expected === "*" || ((expected === "D" || expected === "T") && returned === "H");
+    if (!substituted && returned !== expected.toUpperCase()) {
       throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
     }
   });
