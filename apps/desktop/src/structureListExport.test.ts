@@ -302,6 +302,22 @@ describe("structure list export", () => {
     expect(engine.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
   });
 
+  it("reports an unresolvable aromatic system only when the native writer produced the SMILES", async () => {
+    const molecule = { ...moleculeAt("odd-aromatic", 0, 0), structureFormat: "unknown" as const };
+    molecule.atoms = ["a1", "a2", "a3", "a4", "a5"].map((id, index) => ({ id, element: "C", x: index * 10, y: 0, formalCharge: 0 }));
+    molecule.bonds = molecule.atoms.map((atom, index) => ({
+      id: `b${index}`, fromAtomId: atom.id, toAtomId: molecule.atoms[(index + 1) % 5].id, order: "aromatic" as const
+    }));
+    const document = documentWith([molecule]);
+    const native = await exportStructureListSmi(document);
+    expect(native.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
+    expect(native.warnings[0].message).toContain("5 aromatic bonds could not be resolved");
+    // RDKit reads the molfile's type-4 bonds itself: no downgrade happened, so no warning.
+    vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "c1cccc1" });
+    const engine = await exportStructureListSmi(document);
+    expect(engine.warnings).toEqual([]);
+  });
+
   it("returns an empty text result for an empty page", async () => {
     const document = createPhase4Document("Empty");
     expect(await exportStructureListSdf(document)).toMatchObject({ contents: "", warnings: [] });

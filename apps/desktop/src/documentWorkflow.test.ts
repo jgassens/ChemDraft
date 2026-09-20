@@ -15061,9 +15061,7 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     expect(reparse(smiles).formula).toBe(formula);
   });
 
-  it("writes an aromatic system with no Kekulé pattern as single and says so", () => {
-    // One aromatic bond whose far carbon already spends its valence on a triple bond: that carbon
-    // has no slot for a double bond, so the first carbon can never be matched.
+  it("writes an aromatic bond outside any ring as single and says so", () => {
     const atoms: MoleculeAtom[] = [
       { id: "k1", element: "C", x: 0, y: 0, formalCharge: 0 },
       { id: "k2", element: "C", x: 10, y: 0, formalCharge: 0 },
@@ -15076,9 +15074,87 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     const warnings: string[] = [];
     const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
     expect(reparse(smiles).formula).toBe("C3H4");
+    expect(warnings).toEqual(["1 aromatic bond outside any ring written to SMILES as single."]);
+  });
+
+  it("writes a ring system with no Kekulé pattern as single, reports it, and leaves other rings alone", () => {
+    // An all-carbon aromatic five-ring cannot alternate (five atoms that each need a double
+    // bond); a benzene in the same molecule object still kekulizes.
+    const five = aromaticRing(["C", "C", "C", "C", "C"]);
+    const six = aromaticRing(["C", "C", "C", "C", "C", "C"]);
+    const atoms: MoleculeAtom[] = [
+      ...five.atoms,
+      ...six.atoms.map((atom) => ({ ...atom, id: `s${atom.id}` }))
+    ];
+    const bonds: MoleculeBond[] = [
+      ...five.bonds,
+      ...six.bonds.map((bond) => ({ ...bond, id: `s${bond.id}`, fromAtomId: `s${bond.fromAtomId}`, toAtomId: `s${bond.toAtomId}` }))
+    ];
+    const warnings: string[] = [];
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
+    // Cyclopentane (C5H10) plus benzene (C6H6), as two components.
+    expect(reparse(smiles).formula).toBe("C11H16");
     expect(warnings).toEqual([
-      "1 aromatic bond could not be resolved into alternating single and double bonds; written to SMILES as single."
+      "5 aromatic bonds could not be resolved into alternating single and double bonds; written to SMILES as single."
     ]);
+  });
+
+  const chargedAromaticCases: [string, string[], number[], string][] = [
+    ["cyclopentadienyl anion keeps its C⁻ hydrogen", ["C", "C", "C", "C", "C"], [0, 0, 0, 0, -1], "C5H5"],
+    ["pyrylium's O⁺ takes a double bond", ["C", "C", "C", "C", "C", "O"], [0, 0, 0, 0, 0, 1], "C5H5O"],
+    ["tropylium's C⁺ is the atom left out", ["C", "C", "C", "C", "C", "C", "C"], [0, 0, 0, 0, 0, 0, 1], "C7H7"]
+  ];
+  it.each(chargedAromaticCases)("%s", (_name, elements, charges, formula) => {
+    const { atoms, bonds } = aromaticRing(elements);
+    const charged = atoms.map((atom, index) => ({ ...atom, formalCharge: charges[index] ?? 0 }));
+    const smiles = nativeSingleBondGraphSmiles(charged, bonds);
+    expect(reparseFormulaAndCharge(smiles)).toEqual({ formula, totalCharge: charges.reduce((sum, charge) => sum + charge, 0) });
+  });
+
+  const adjacentNitrogenCases: [string[], string, string][] = [
+    [["C", "C", "C", "C", "N", "N"], "C4H4N2", "pyridazine: adjacent nitrogens pair with each other"],
+    [["C", "N", "C", "C", "N", "C"], "C4H4N2", "pyrazine"],
+    [["C", "N", "N", "N", "N"], "CH2N4", "tetrazole: exactly one N–H"]
+  ];
+  it.each(adjacentNitrogenCases)("resolves %s → %s (%s)", (elements, formula) => {
+    const ring = aromaticRing(elements);
+    const smiles = nativeSingleBondGraphSmiles(ring.atoms, ring.bonds);
+    expect(reparse(smiles).formula).toBe(formula);
+  });
+
+  it("resolves purine's fused system with exactly one N–H across four nitrogens", () => {
+    // Six-ring N1-C2-N3-C4-C5-C6 fused to five-ring C4-C5-N7-C8-N9 along the C4–C5 bond.
+    const ids = ["N1", "C2", "N3", "C4", "C5", "C6", "N7", "C8", "N9"];
+    const atoms: MoleculeAtom[] = ids.map((id, index) => ({ id, element: id[0]!, x: index * 10, y: 0, formalCharge: 0 }));
+    const edges: [string, string][] = [
+      ["N1", "C2"], ["C2", "N3"], ["N3", "C4"], ["C4", "C5"], ["C5", "C6"], ["C6", "N1"],
+      ["C4", "N9"], ["N9", "C8"], ["C8", "N7"], ["N7", "C5"]
+    ];
+    const bonds: MoleculeBond[] = edges.map(([from, to], index) => ({ id: `pb${index}`, fromAtomId: from, toAtomId: to, order: "aromatic" }));
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+    expect(reparse(smiles)).toEqual({ formula: "C5H4N4", ringCount: 2 });
+  });
+
+  it("solves independent aromatic rings separately, so twenty benzenes finish at once", () => {
+    // Twenty benzene rings joined in a chain by single bonds: an exhaustive search that
+    // multiplied the rings' assignments took seconds here; per-system solving with an early
+    // stop is milliseconds.
+    const atoms: MoleculeAtom[] = [];
+    const bonds: MoleculeBond[] = [];
+    for (let ring = 0; ring < 20; ring += 1) {
+      const ids = Array.from({ length: 6 }, (_, index) => `p${ring}_${index}`);
+      ids.forEach((id, index) => atoms.push({ id, element: "C", x: ring * 100 + index * 10, y: 0, formalCharge: 0 }));
+      ids.forEach((id, index) => bonds.push({
+        id: `${id}_b`, fromAtomId: id, toAtomId: ids[(index + 1) % 6]!, order: "aromatic"
+      }));
+      if (ring > 0) bonds.push({ id: `link${ring}`, fromAtomId: `p${ring - 1}_3`, toAtomId: `p${ring}_0`, order: "single" });
+    }
+    const started = performance.now();
+    const warnings: string[] = [];
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(warnings).toEqual([]);
+    expect(reparse(smiles)).toEqual({ formula: "C120H82", ringCount: 20 });
   });
 
   it("writes an unknown-order chain bond as single and reports it, never silently", () => {
