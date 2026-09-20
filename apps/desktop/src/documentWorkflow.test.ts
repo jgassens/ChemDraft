@@ -15015,6 +15015,89 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     return { formula: molecule.getMolecularFormula().formula, totalCharge };
   };
 
+  const aromaticRing = (elements: readonly string[]): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } => {
+    const atoms: MoleculeAtom[] = elements.map((element, index) => ({
+      id: `r${index + 1}`, element, x: index * 10, y: 0, formalCharge: 0
+    }));
+    const bonds: MoleculeBond[] = atoms.map((atom, index) => ({
+      id: `rb${index + 1}`,
+      fromAtomId: atom.id,
+      toAtomId: atoms[(index + 1) % atoms.length].id,
+      order: "aromatic"
+    }));
+    return { atoms, bonds };
+  };
+
+  it("kekulizes an aromatic six-ring instead of writing cyclohexane", () => {
+    // Every bond drawn `aromatic` (a molfile type-4 import) used to reach the writer as single,
+    // so benzene exported as C6H12. The writer now resolves the ring into alternating orders.
+    const { atoms, bonds } = aromaticRing(["C", "C", "C", "C", "C", "C"]);
+    const warnings: string[] = [];
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
+    expect(smiles.match(/=/g)).toHaveLength(3);
+    expect(smiles).not.toMatch(/[a-z:~]/);
+    expect(reparse(smiles)).toEqual({ formula: "C6H6", ringCount: 1 });
+    expect(warnings).toEqual([]);
+  });
+
+  it("kekulizes a fused aromatic pair to naphthalene", () => {
+    const { atoms, bonds } = fusedBicyclicSkeleton([]);
+    const aromatic = bonds.map((bond): MoleculeBond => ({ ...bond, order: "aromatic" }));
+    const smiles = nativeSingleBondGraphSmiles(atoms, aromatic);
+    expect(smiles.match(/=/g)).toHaveLength(5);
+    expect(reparse(smiles)).toEqual({ formula: "C10H8", ringCount: 2 });
+  });
+
+  const heteroaromaticCases: [string[], string, string][] = [
+    [["C", "C", "C", "C", "C", "N"], "C5H5N", "pyridine's N takes a double bond"],
+    [["C", "C", "C", "C", "N"], "C4H5N", "pyrrole's N keeps its hydrogen"],
+    [["C", "N", "C", "N", "C"], "C3H4N2", "imidazole gets exactly one N–H"],
+    [["C", "C", "C", "C", "O"], "C4H4O", "furan's oxygen never takes a double bond"],
+    [["C", "C", "C", "C", "S"], "C4H4S", "thiophene's sulfur never takes a double bond"]
+  ];
+  it.each(heteroaromaticCases)("resolves aromatic heteroatoms: %s → %s (%s)", (elements, formula) => {
+    const { atoms, bonds } = aromaticRing(elements);
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds);
+    expect(reparse(smiles).formula).toBe(formula);
+  });
+
+  it("writes an aromatic system with no Kekulé pattern as single and says so", () => {
+    // One aromatic bond whose far carbon already spends its valence on a triple bond: that carbon
+    // has no slot for a double bond, so the first carbon can never be matched.
+    const atoms: MoleculeAtom[] = [
+      { id: "k1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "k2", element: "C", x: 10, y: 0, formalCharge: 0 },
+      { id: "k3", element: "C", x: 20, y: 0, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [
+      { id: "kb1", fromAtomId: "k1", toAtomId: "k2", order: "aromatic" },
+      { id: "kb2", fromAtomId: "k2", toAtomId: "k3", order: "triple" }
+    ];
+    const warnings: string[] = [];
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
+    expect(reparse(smiles).formula).toBe("C3H4");
+    expect(warnings).toEqual([
+      "1 aromatic bond could not be resolved into alternating single and double bonds; written to SMILES as single."
+    ]);
+  });
+
+  it("writes an unknown-order chain bond as single and reports it, never silently", () => {
+    const atoms: MoleculeAtom[] = [
+      { id: "u1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "u2", element: "C", x: 10, y: 0, formalCharge: 0 },
+      { id: "u3", element: "C", x: 20, y: 0, formalCharge: 0 }
+    ];
+    const bonds: MoleculeBond[] = [
+      { id: "ub1", fromAtomId: "u1", toAtomId: "u2", order: "unknown" },
+      { id: "ub2", fromAtomId: "u2", toAtomId: "u3", order: "single" }
+    ];
+    const warnings: string[] = [];
+    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
+    expect(smiles).toBe("CCC");
+    expect(reparse(smiles).formula).toBe("C3H8");
+    expect(warnings).toEqual(["1 bond of unknown order written to SMILES as single."]);
+  });
+
   it("linearizes fused naphthalene into a two-ring SMILES that OpenChemLib reparses to C10H8", () => {
     const { atoms, bonds } = fusedBicyclicSkeleton([
       ["a01", "a02"], ["a03", "a04"], ["a05", "a10"], ["a06", "a07"], ["a08", "a09"]

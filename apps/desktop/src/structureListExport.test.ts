@@ -285,6 +285,23 @@ describe("structure list export", () => {
     expect(smi.warnings.every((warning) => warning.objectId === molecule.id)).toBe(true);
   });
 
+  it("reports an unknown-order bond on both the engine and native routes", async () => {
+    const molecule = { ...moleculeAt("unknown-bond", 0, 0), structureFormat: "unknown" as const };
+    molecule.bonds[0].order = "unknown";
+    const document = documentWith([molecule]);
+    const native = await exportStructureListSmi(document);
+    expect(native.contents).toBe("CC\t1\n");
+    expect(native.warnings).toEqual([{
+      code: "export.smiles_bond_order",
+      message: "1 bond of unknown order written to SMILES as single.",
+      severity: "warning",
+      objectId: molecule.id
+    }]);
+    vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "CC" });
+    const engine = await exportStructureListSmi(document);
+    expect(engine.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
+  });
+
   it("returns an empty text result for an empty page", async () => {
     const document = createPhase4Document("Empty");
     expect(await exportStructureListSdf(document)).toMatchObject({ contents: "", warnings: [] });

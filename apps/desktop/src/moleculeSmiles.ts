@@ -1,6 +1,6 @@
 import { isDativeBond, moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
-import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles } from "./documentWorkflow";
+import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesWritableBonds } from "./documentWorkflow";
 
 type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
 
@@ -32,6 +32,13 @@ export async function moleculeSmiles(
       severity: "warning",
       objectId: molecule.id
     });
+  }
+  // Unknown-order bonds write as single on both routes (the V2000 writer has no code for them
+  // either); an aromatic system with no Kekulé pattern does so on the native route.
+  const bondOrderWarnings: string[] = [];
+  nativeSmilesWritableBonds(molecule.atoms, molecule.bonds, bondOrderWarnings);
+  for (const message of bondOrderWarnings) {
+    warnings.push({ code: "export.smiles_bond_order", message, severity: "warning", objectId: molecule.id });
   }
   for (const label of nativeMoleculeUnspellableLabels(molecule)) {
     warnings.push({

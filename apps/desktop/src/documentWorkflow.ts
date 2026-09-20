@@ -19407,10 +19407,153 @@ function formulaFromElementCounts(counts: ReadonlyMap<string, number>): string {
     .join("") || "C0H0";
 }
 
-export function nativeSingleBondGraphSmiles(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]): string {
+/**
+ * Bond orders a SMILES string can carry are single, double and triple. Two drawn orders cannot be
+ * written as they are: `aromatic` (a molfile type-4 bond, which the app otherwise counts as one
+ * covalent slot) and `unknown`. Aromatic bonds are kekulized here — resolved into an alternating
+ * single/double pattern — so every writer and the bracket-atom hydrogen count below see ordinary
+ * orders; a system that has no such pattern is written single and reported. `unknown` is written
+ * single and reported: "~" would read back in OpenChemLib as an any-bond with no hydrogens.
+ * The report goes to `warningsOut` when the caller can surface it (Copy As, the structure-list
+ * export); `refreshNativeSingleBondGraph`, which only stores the string, passes nothing.
+ */
+export function nativeSmilesWritableBonds(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  warningsOut?: string[]
+): MoleculeBond[] {
+  const unknownCount = bonds.filter((bond) => bond.order === "unknown").length;
+  if (unknownCount > 0) {
+    warningsOut?.push(
+      `${unknownCount} bond${unknownCount === 1 ? "" : "s"} of unknown order written to SMILES as single.`
+    );
+  }
+  const kekulized = kekulizeNativeAromaticBonds(atoms, bonds);
+  if (!kekulized) {
+    const aromaticCount = bonds.filter((bond) => bond.order === "aromatic").length;
+    warningsOut?.push(
+      `${aromaticCount} aromatic bond${aromaticCount === 1 ? "" : "s"} could not be resolved into alternating single and double bonds; written to SMILES as single.`
+    );
+  }
+  return (kekulized ?? bonds).map((bond) =>
+    bond.order === "unknown" || bond.order === "aromatic" ? { ...bond, order: "single" } : bond
+  );
+}
+
+/**
+ * Assign alternating single/double orders to the aromatic bonds so the result is a valid Kekulé
+ * structure, or return undefined when no assignment exists.
+ *
+ * Each atom on an aromatic bond either takes exactly one double bond or none. Carbon (and boron)
+ * always take one: a ring carbon never holds a lone pair. Oxygen, sulfur and selenium never do —
+ * their two ring bonds already fill the octet. Nitrogen and phosphorus with a spare slot are the
+ * ambiguous case (pyridine's N takes a double bond, pyrrole's N–H does not), and the app's own
+ * hydrogen count cannot tell them apart, so they are left free and the search decides: a bond set
+ * in which every carbon is matched is accepted, and among those the one leaving the most
+ * nitrogens unmatched (as N–H) is preferred, which gives imidazole one N–H and pyridine none.
+ * A nitrogen with no spare slot (N-methylpyrrole, a charged pyridinium N takes its own) is fixed.
+ * Aromatic systems are small, so an exhaustive search over the bonds is cheap.
+ */
+function kekulizeNativeAromaticBonds(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): MoleculeBond[] | undefined {
+  const aromaticBonds = bonds.filter((bond) => bond.order === "aromatic");
+  if (aromaticBonds.length === 0) {
+    return bonds.map((bond) => bond);
+  }
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const otherUsage = new Map<string, number>();
+  const aromaticDegree = new Map<string, number>();
+  for (const bond of bonds) {
+    const value = bond.order === "aromatic" ? 0 : nativeBondValenceContribution(bond);
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      if (bond.order === "aromatic") {
+        aromaticDegree.set(atomId, (aromaticDegree.get(atomId) ?? 0) + 1);
+      } else {
+        otherUsage.set(atomId, (otherUsage.get(atomId) ?? 0) + value);
+      }
+    }
+  }
+  // How many double bonds each aromatic atom must take: 1, 0, or -1 for "either".
+  const need = new Map<string, number>();
+  for (const atomId of aromaticDegree.keys()) {
+    const atom = atomById.get(atomId);
+    const element = atom ? nativeElementFromAtomLabel(atom.element) : undefined;
+    if (!atom || !element) {
+      return undefined;
+    }
+    const spare = nativeAtomValenceForCharge(element, atom.formalCharge)
+      - (otherUsage.get(atomId) ?? 0) - (aromaticDegree.get(atomId) ?? 0) - (atom.markRadicals ?? 0);
+    if (spare < 1) {
+      need.set(atomId, 0);
+    } else if (element === "N" || element === "P" || element === "As") {
+      need.set(atomId, -1);
+    } else if (element === "O" || element === "S" || element === "Se" || element === "Te") {
+      need.set(atomId, 0);
+    } else {
+      need.set(atomId, 1);
+    }
+  }
+
+  const bondsByAtom = new Map<string, number[]>();
+  aromaticBonds.forEach((bond, index) => {
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      bondsByAtom.set(atomId, [...(bondsByAtom.get(atomId) ?? []), index]);
+    }
+  });
+  const fixedAtoms = [...need.entries()].filter(([, value]) => value === 1).map(([atomId]) => atomId);
+  const matched = new Set<string>();
+  const chosen = new Set<number>();
+  let best: Set<number> | undefined;
+  let bestFreeNitrogens = -1;
+  const freeNitrogenCount = (): number =>
+    [...need.entries()].filter(([atomId, value]) => value === -1 && !matched.has(atomId)).length;
+  const search = (position: number): void => {
+    // Every carbon (fixed atom) must be matched; free atoms may or may not be.
+    const nextAtomId = fixedAtoms.slice(position).find((atomId) => !matched.has(atomId));
+    if (nextAtomId === undefined) {
+      const free = freeNitrogenCount();
+      if (free > bestFreeNitrogens) {
+        bestFreeNitrogens = free;
+        best = new Set(chosen);
+      }
+      return;
+    }
+    for (const bondIndex of bondsByAtom.get(nextAtomId) ?? []) {
+      const bond = aromaticBonds[bondIndex]!;
+      const otherId = bond.fromAtomId === nextAtomId ? bond.toAtomId : bond.fromAtomId;
+      if (matched.has(otherId) || need.get(otherId) === 0) {
+        continue;
+      }
+      matched.add(nextAtomId);
+      matched.add(otherId);
+      chosen.add(bondIndex);
+      search(position);
+      chosen.delete(bondIndex);
+      matched.delete(nextAtomId);
+      matched.delete(otherId);
+    }
+  };
+  search(0);
+  if (!best) {
+    return undefined;
+  }
+  const doubleBondIds = new Set([...best].map((index) => aromaticBonds[index]!.id));
+  return bonds.map((bond) =>
+    bond.order === "aromatic" ? { ...bond, order: doubleBondIds.has(bond.id) ? "double" : "single" } : bond
+  );
+}
+
+export function nativeSingleBondGraphSmiles(
+  atoms: readonly MoleculeAtom[],
+  inputBonds: readonly MoleculeBond[],
+  warningsOut?: string[]
+): string {
   if (atoms.length === 0) {
     return "";
   }
+  const bonds = nativeSmilesWritableBonds(atoms, inputBonds, warningsOut);
   const smilesByAtomId = nativeAtomSmilesById(atoms, bonds);
   const adjacency = nativeAdjacency(atoms, bonds);
   const bondByAtomPair = nativeBondByAtomPair(bonds);
@@ -19905,6 +20048,11 @@ function renderNativeBranch(
   ).join("")}`;
 }
 
+/**
+ * Only single, double and triple ever reach the writers: `nativeSmilesWritableBonds` kekulizes
+ * aromatic bonds and downgrades (with a warning) whatever cannot be written, so the two
+ * orders this function cannot spell never arrive here silently.
+ */
 function bondOrderSymbol(order: MoleculeBond["order"] | undefined): string {
   if (order === "double") {
     return "=";
