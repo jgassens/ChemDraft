@@ -140,7 +140,8 @@ const MOLFILE_ATOM_SYMBOLS = new Set([
 function literalAtomValences(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[],
-  format: "V2000" | "V3000"
+  format: "V2000" | "V3000",
+  warnings?: string[]
 ): Map<string, number> {
   const valences = new Map(atoms
     .filter((atom) => atom.labelLiteral === true && atom.element !== "*" && MOLFILE_ATOM_SYMBOLS.has(atom.element))
@@ -157,10 +158,16 @@ function literalAtomValences(
     if (valences.has(to)) valences.set(to, valences.get(to)! + order);
   }
   for (const [id, valence] of valences) {
-    // CTfile's explicit valence is an integer from 1 to 14, plus a zero-valence sentinel.
-    // Refuse an unrepresentable sum rather than round it and silently invent hydrogens.
+    // CTfile's explicit valence is an integer from 1 to 14, plus a zero-valence sentinel. An
+    // unrepresentable sum (one aromatic bond, 1.5) gets no field and a warning rather than a
+    // rounded value that would invent hydrogens — or an exception that would abort the whole
+    // export, cleanup or 3D pass this writer is feeding.
     if (!Number.isInteger(valence) || valence > 14) {
-      throw new Error(`Cannot write literal atom "${id}" with valence ${valence} in ${format}.`);
+      const atom = atomById.get(id)!;
+      warnings?.push(
+        `Literal atom "${atom.element}" has a bond-order sum of ${valence}, which the ${format} valence field cannot hold; written without it, so a reader may add hydrogens.`
+      );
+      valences.delete(id);
     }
   }
   return valences;
@@ -294,7 +301,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
   const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V2000");
+  const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings);
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
@@ -369,7 +376,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   ];
 
   const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V3000");
+  const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings);
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";

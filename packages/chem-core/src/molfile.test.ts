@@ -366,12 +366,15 @@ describe("literal element valence", () => {
     expect(atomLines(moleculeToMolfileV2000(graph))[0].slice(48, 51)).toBe("  2");
   });
 
-  it("refuses a fractional literal valence instead of rounding it into added hydrogens", () => {
+  it("omits a fractional literal valence with a warning instead of rounding or aborting", () => {
     const graph = literalNitrogen(true);
     graph.bonds[0].order = "aromatic";
-    for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
-      expect(() => write(graph)).toThrow('Cannot write literal atom "n" with valence 1.5');
-    }
+    const warnings: string[] = [];
+    expect(atomLines(moleculeToMolfileV2000(graph, { warnings }))[0].slice(48, 51)).toBe("  0");
+    expect(moleculeToMolfileV3000(graph, { warnings })).not.toContain("VAL=");
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('Literal atom "N" has a bond-order sum of 1.5');
+    expect(warnings[1]).toContain("V3000 valence field cannot hold");
   });
 
   it("leaves non-element literal labels on the dummy and R-group paths", () => {
