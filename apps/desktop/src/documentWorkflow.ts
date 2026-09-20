@@ -19603,7 +19603,13 @@ function renderSingleCycleWithBranchesSmiles(
     const symbol = smilesByAtomId.get(atomId) ?? "C";
     const previousAtomId = cyclePath[index - 1];
     const bondPrefix = previousAtomId ? bondOrderSymbol(bondByAtomPair.get(atomPairKey(previousAtomId, atomId))?.order) : "";
-    const ringClosure = index === 0 || index === cyclePath.length - 1 ? "1" : "";
+    // The closure bond (last atom back to the first) is not a chain bond, so its order has to
+    // ride on the ring digit. SMILES lets it sit at either end; write it once, at the opening
+    // end, as the general DFS writer does. A bare "1" silently downgraded a double closure to
+    // single, turning drawn benzene into cyclohexa-1,3-diene ("C1C=CC=CC1").
+    const ringClosure = index === 0
+      ? `${bondOrderSymbol(bondByAtomPair.get(atomPairKey(atomId, cyclePath[cyclePath.length - 1]))?.order)}1`
+      : index === cyclePath.length - 1 ? "1" : "";
     const cycleNeighbors = new Set(cycleAdjacency.get(atomId) ?? []);
     const branches = (adjacency.get(atomId) ?? [])
       .filter((neighborId) => !cycleNeighbors.has(neighborId))
