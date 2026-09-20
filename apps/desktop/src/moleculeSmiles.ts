@@ -1,6 +1,6 @@
 import { isDativeBond, moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
-import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles } from "./documentWorkflow";
+import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesBondOrderResolution } from "./documentWorkflow";
 
 type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
 
@@ -33,6 +33,14 @@ export async function moleculeSmiles(
       objectId: molecule.id
     });
   }
+  // Unknown-order bonds write as single on both routes (the V2000 writer has no code for them
+  // either). Aromatic downgrades belong to the native writer alone — RDKit reads the molfile's
+  // type-4 bonds and resolves them itself — so those are reported only on the fallback below.
+  const bondOrders = nativeSmilesBondOrderResolution(molecule.atoms, molecule.bonds);
+  const bondOrderWarning = (message: string): ExportWarning => ({
+    code: "export.smiles_bond_order", message, severity: "warning", objectId: molecule.id
+  });
+  warnings.push(...bondOrders.warnings.unknown.map(bondOrderWarning));
   for (const label of nativeMoleculeUnspellableLabels(molecule)) {
     warnings.push({
       code: "export.smiles_atom_label",
@@ -70,6 +78,7 @@ export async function moleculeSmiles(
       objectId: molecule.id
     });
   }
+  warnings.push(...bondOrders.warnings.aromatic.map(bondOrderWarning));
   if (molecule.structureFormat === "smiles" && molecule.structure) return molecule.structure;
   return nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
 }
