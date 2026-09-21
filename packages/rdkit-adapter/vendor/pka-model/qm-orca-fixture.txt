@@ -1,0 +1,33 @@
+# Excerpt from a REAL ORCA 6.1.1 run on Juno, job 320337, 2026-08-08.
+# Regenerate:  sbatch /work/jjg130230/qm-probe/probe.sbatch  then re-extract with the same filter.
+# Deck: B3LYP/6-31G* Opt Freq TightSCF CPCM(water) + smd true, water, charge 0.
+#### freq ####
+                         Program Version 6.1.1  -  RELEASE   -
+Your calculation utilizes the SMD solvation module
+SMD-CDS solvent descriptors:
+SMD CDS free energy correction energy :                 1.44234     Kcal/mol
+FINAL SINGLE POINT ENERGY       -76.382846539998
+SMD-CDS solvent descriptors:
+SMD CDS free energy correction energy :                 1.45335     Kcal/mol
+FINAL SINGLE POINT ENERGY       -76.383172108385
+SMD-CDS solvent descriptors:
+SMD CDS free energy correction energy :                 1.45221     Kcal/mol
+FINAL SINGLE POINT ENERGY       -76.383194660123
+SMD-CDS solvent descriptors:
+SMD CDS free energy correction energy :                 1.45069     Kcal/mol
+FINAL SINGLE POINT ENERGY       -76.383193078008
+SMD-CDS solvent descriptors:
+SMD CDS free energy correction energy :                 1.45062     Kcal/mol
+FINAL SINGLE POINT ENERGY       -76.383197027543
+THERMOCHEMISTRY AT 298.15K
+Final Gibbs free energy         ...    -76.37995015 Eh
+G-E(el)                           ...      0.00324688 Eh      2.04 kcal/mol
+                             ****ORCA TERMINATED NORMALLY****
+#### anion ####
+# Deck: B3LYP/6-31+G** TightSCF CPCM(water) + smd true, acetate, charge -1.
+                         Program Version 6.1.1  -  RELEASE   -
+Your calculation utilizes the SMD solvation module
+SMD-CDS solvent descriptors:
+SMD CDS free energy correction energy :                 3.85042     Kcal/mol
+FINAL SINGLE POINT ENERGY      -228.533795684605
+                             ****ORCA TERMINATED NORMALLY****
