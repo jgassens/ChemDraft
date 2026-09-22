@@ -5,6 +5,15 @@ import { inflateSync } from "node:zlib";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
+import {
+  generateSmiles2DMolfile,
+  resetRdkitForTesting,
+  setRdkitModuleLoader
+} from "@chemdraft/rdkit-adapter";
+
+import { stereoPerceptionMolfile } from "../../../apps/desktop/src/documentWorkflow";
 import { runCli } from "./cli";
 import { renderSmilesToAssets, type RenderedSmiles } from "./renderer";
 
@@ -21,6 +30,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  resetRdkitForTesting();
   await rm(outputDirectory, { recursive: true, force: true });
 });
 
@@ -133,6 +143,26 @@ function expectInkNearAtomLabel(rendered: RenderedSmiles, png: DecodedPng, label
   expect(foundInk, `expected raster ink around the ${label} atom label`).toBe(true);
 }
 
+function expectSvgLabelExtentsInsideViewBox(rendered: RenderedSmiles): void {
+  const maxX = rendered.viewBox.x + rendered.viewBox.width;
+  const maxY = rendered.viewBox.y + rendered.viewBox.height;
+  const labels = planMoleculeAtomLabels(rendered.molecule);
+  expect(labels.length).toBeGreaterThan(0);
+  expect((rendered.svg.match(/<text\b/g) ?? []).length).toBeGreaterThan(0);
+  for (const label of labels) {
+    const halo = label.backgroundVisible ? atomLabelHaloWidthPx(label.drawingStyle) / 2 : 0;
+    const minX = label.anchor.x + label.layout.bounds.x - halo;
+    const minY = label.anchor.y + label.layout.bounds.y - halo;
+    expect(minX, label.label).toBeGreaterThanOrEqual(rendered.viewBox.x - 0.001);
+    expect(minX + label.layout.bounds.width + halo * 2, label.label).toBeLessThanOrEqual(maxX + 0.001);
+    expect(minY, label.label).toBeGreaterThanOrEqual(rendered.viewBox.y - 0.001);
+    expect(minY + label.layout.bounds.height + halo * 2, label.label).toBeLessThanOrEqual(maxY + 0.001);
+  }
+  // These fixtures deliberately contain text-only atom labels. If a future renderer emits paths
+  // for them, the test must gain equivalent path bounds rather than silently stop checking them.
+  expect(rendered.svg).not.toContain("<path");
+}
+
 describe("headless ChemDraft rendering", () => {
   const cases = [
     { name: "ethanol", smiles: "CCO", label: "OH" },
@@ -157,10 +187,35 @@ describe("headless ChemDraft rendering", () => {
   it("preserves tetrahedral stereo as a wedge/hash and reports one stereocenter", async () => {
     const rendered = await renderSmilesToAssets("C[C@H](N)C(=O)O", { name: "alanine" });
     expect(rendered.stereoCenters).toBe(1);
+    expect(rendered.unspecifiedStereoCenters).toBe(0);
     expect(rendered.molecule.bonds.some((bond) =>
       bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed"
     )).toBe(true);
     expect(rendered.svg).toMatch(/data-bond-style="(?:wedge|hashed)"/);
+  });
+
+  it("reports specified and unspecified constitutional stereocenters separately", async () => {
+    const specified = await renderSmilesToAssets("C[C@H](N)C(=O)O");
+    const unspecified = await renderSmilesToAssets("CC(N)C(=O)O");
+    expect([specified.stereoCenters, specified.unspecifiedStereoCenters]).toEqual([1, 0]);
+    expect([unspecified.stereoCenters, unspecified.unspecifiedStereoCenters]).toEqual([0, 1]);
+  });
+
+  it.each([
+    "C[C@H](N)C(=O)O",
+    "C[C@@H](N)C(=O)O",
+    "C[C@H](O)[C@H](N)C(=O)O"
+  ])("reads rendered chirality back with the same R/S descriptors for %s", async (smiles) => {
+    const rendered = await renderSmilesToAssets(smiles);
+    const sourceMolfile = await generateSmiles2DMolfile(smiles);
+    const expected = perceiveStereoCentersFromMolfile(sourceMolfile)
+      .map((center, atomIndex) => ({ atomIndex, ...center }))
+      .filter((center) => center.isStereoCenter);
+    const actual = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(rendered.molecule))
+      .map((center, atomIndex) => ({ atomIndex, ...center }))
+      .filter((center) => center.isStereoCenter);
+    expect(actual).toEqual(expected);
+    expect(actual.every((center) => center.descriptor !== "unspecified")).toBe(true);
   });
 
   it("does not collapse aromatic benzene to all-single bonds", async () => {
@@ -179,6 +234,46 @@ describe("headless ChemDraft rendering", () => {
     const png = decodePng(rendered.png);
     expectWhiteEdges(png);
     expectInkNearAtomLabel(rendered, png, "OH");
+  });
+
+  it.each(["NCC(=O)[O-]", "[NH2-]CC=O"])(
+    "keeps every SVG text/path extent inside a zero-padding viewBox for %s",
+    async (smiles) => {
+      const rendered = await renderSmilesToAssets(smiles, { padding: 0 });
+      expectSvgLabelExtentsInsideViewBox(rendered);
+    }
+  );
+
+  it("fails loudly instead of dropping radical or isotope labels", async () => {
+    const jobsPath = join(outputDirectory, "unsupported-labels.json");
+    await writeFile(jobsPath, JSON.stringify([
+      { name: "radical", smiles: "[CH3]" },
+      { name: "carbon-13", smiles: "C[13CH2]O" },
+      { name: "deuterium", smiles: "[2H]C(Cl)(Br)F" },
+      { name: "ethanol", smiles: "CCO" }
+    ]));
+    const stdout: string[] = [];
+    const code = await runCli(
+      ["--batch", jobsPath, "--out-dir", join(outputDirectory, "unsupported-label-output")],
+      { stdout: (line) => stdout.push(line), stderr: () => undefined }
+    );
+    const results = stdout.map((line) => JSON.parse(line) as {
+      smiles: string;
+      ok: boolean;
+      error?: string;
+    });
+    expect(code).toBe(1);
+    expect(results.map(({ smiles, ok }) => ({ smiles, ok }))).toEqual([
+      { smiles: "[CH3]", ok: false },
+      { smiles: "C[13CH2]O", ok: false },
+      { smiles: "[2H]C(Cl)(Br)F", ok: false },
+      { smiles: "CCO", ok: true }
+    ]);
+    for (const result of results.slice(0, 3)) {
+      expect(result.error).toBe(
+        `SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${result.smiles}`
+      );
+    }
   });
 
   it("reports an unparseable SMILES without a stack trace and exits 1", async () => {
@@ -249,5 +344,50 @@ describe("headless ChemDraft rendering", () => {
     expect(code).toBe(2);
     expect(stdout).toHaveLength(0);
     expect(stderr.join("\n")).toContain("Invalid batch name");
+  });
+
+  it("trims batch names and rejects a duplicate after trimming", async () => {
+    const jobsPath = join(outputDirectory, "duplicate-jobs.json");
+    await writeFile(jobsPath, JSON.stringify([
+      { name: "ethanol", smiles: "CCO" },
+      { name: "  ethanol  ", smiles: "CCO" }
+    ]));
+    const stderr: string[] = [];
+    const code = await runCli(
+      ["--batch", jobsPath, "--out-dir", join(outputDirectory, "duplicate-output")],
+      { stdout: () => undefined, stderr: (line) => stderr.push(line) }
+    );
+    expect(code).toBe(2);
+    expect(stderr.join("\n")).toContain('Duplicate batch name "ethanol"');
+  });
+
+  it("rejects a whitespace-only batch name", async () => {
+    const jobsPath = join(outputDirectory, "blank-name-jobs.json");
+    await writeFile(jobsPath, JSON.stringify([{ name: "   ", smiles: "CCO" }]));
+    const stderr: string[] = [];
+    const code = await runCli(
+      ["--batch", jobsPath, "--out-dir", join(outputDirectory, "blank-output")],
+      { stdout: () => undefined, stderr: (line) => stderr.push(line) }
+    );
+    expect(code).toBe(2);
+    expect(stderr.join("\n")).toContain("Invalid batch name");
+  });
+
+  it.each([
+    ["an unknown flag", ["--smiles", "CCO", "--out", "ethanol.png", "--wat"]],
+    ["--out without an extension", ["--smiles", "CCO", "--out", "ethanol"]]
+  ] as const)("exits 2 for %s", async (_label, argv) => {
+    expect(await runCli(argv, { stdout: () => undefined, stderr: () => undefined })).toBe(2);
+  });
+
+  it("uses the OCL fallback when the RDKit loader fails", async () => {
+    // Prime the renderer's normal Node loader so this test remains independent when selected with
+    // `-t`; the injected failing loader must be the one used by the subsequent render.
+    await renderSmilesToAssets("C", { name: "loader-prime" });
+    setRdkitModuleLoader(() => Promise.reject(new Error("forced RDKit failure")));
+    const rendered = await renderSmilesToAssets("CCO", { name: "fallback" });
+    expect(rendered.engine).toBe("ocl");
+    expect(decodePng(rendered.png).width).toBe(600);
+    expect(rendered.warnings.join("\n")).toContain("forced RDKit failure");
   });
 });

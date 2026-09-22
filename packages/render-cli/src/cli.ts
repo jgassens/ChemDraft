@@ -4,6 +4,8 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  finiteNonNegative,
+  finitePositive,
   renderDefaults,
   renderSmilesToAssets,
   type RenderBackground
@@ -42,18 +44,20 @@ Usage:
   pnpm render --batch <jobs.json> --out-dir <dir> [--format png|svg|both]
 
 Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O"}.
-Names are used verbatim; path separators and names beginning with a dot are rejected.
+Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options:
   --width <px>                    PNG width (default: 600)
   --background white|transparent SVG/PNG background (default: white)
-  --bond-length <px>              Depicted bond length (default: 28, the desktop paste value)
+  --bond-length <px>              Depicted bond length (default: ${renderDefaults.bondLength}, the desktop paste value)
   --padding <px>                  Crop padding around the molecule (default: 24)
   --format png|svg|both           Output format (single mode normally infers the extension)
   --help                          Print this help
 
 Output:
   One JSON line per structure is written to stdout. Progress is written to stderr.
+  stereoCenters counts specified centers; unspecifiedStereoCenters counts constitutional centers
+  without a specified descriptor.
   Exit 0 when every structure succeeds, 1 when any render fails, and 2 for bad arguments.`;
 
 class CliUsageError extends Error {}
@@ -61,10 +65,13 @@ class CliUsageError extends Error {}
 function numericOption(value: string | undefined, flag: string, allowZero: boolean): number {
   if (value === undefined) throw new CliUsageError(`${flag} requires a value.`);
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || (allowZero ? parsed < 0 : parsed <= 0)) {
-    throw new CliUsageError(`${flag} must be ${allowZero ? "a non-negative" : "a positive"} number.`);
+  try {
+    return allowZero
+      ? finiteNonNegative(parsed, flag)
+      : finitePositive(parsed, flag);
+  } catch (error) {
+    throw new CliUsageError(error instanceof Error ? error.message : String(error));
   }
-  return parsed;
 }
 
 function optionValue(argv: readonly string[], index: number, flag: string): string {
@@ -201,6 +208,7 @@ async function readJobs(path: string): Promise<RenderJob[]> {
     throw new CliUsageError(`Could not read batch file "${path}": ${message}`);
   }
   if (!Array.isArray(parsed)) throw new CliUsageError("Batch JSON must be an array of jobs.");
+  const names = new Set<string>();
   return parsed.map((candidate, index) => {
     if (
       !candidate || typeof candidate !== "object" ||
@@ -209,8 +217,13 @@ async function readJobs(path: string): Promise<RenderJob[]> {
     ) {
       throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
     }
-    const job = candidate as RenderJob;
+    const candidateJob = candidate as RenderJob;
+    const job = { ...candidateJob, name: candidateJob.name.trim() };
     validateJobName(job.name);
+    if (names.has(job.name)) {
+      throw new CliUsageError(`Duplicate batch name "${job.name}".`);
+    }
+    names.add(job.name);
     if (!job.smiles.trim()) throw new CliUsageError(`Batch job "${job.name}" has an empty SMILES.`);
     return job;
   });
@@ -255,6 +268,7 @@ async function renderJob(
       files,
       engine: rendered.engine,
       stereoCenters: rendered.stereoCenters,
+      unspecifiedStereoCenters: rendered.unspecifiedStereoCenters,
       warnings: rendered.warnings
     }));
     io.stderr(`Wrote ${files.join(", ")}`);

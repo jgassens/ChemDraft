@@ -51,6 +51,7 @@ export interface RenderedSmiles {
   png: Uint8Array;
   engine: DepictionEngine;
   stereoCenters: number;
+  unspecifiedStereoCenters: number;
   warnings: string[];
   document: ChemDraftDocument;
   molecule: MoleculeObject;
@@ -62,6 +63,7 @@ interface DepictionResult {
   molfile: string;
   engine: DepictionEngine;
   stereoCenters: number;
+  unspecifiedStereoCenters: number;
   warnings: string[];
 }
 
@@ -129,6 +131,29 @@ function structuredOclDepiction(depiction: Depiction2D): PastedStructureDepictio
   };
 }
 
+class UnsupportedMolfileLabelError extends Error {}
+
+function rejectUnsupportedMolfileLabels(molfile: string, smiles: string): void {
+  if (/^M  (?:RAD|ISO)\b/m.test(molfile)) {
+    throw new UnsupportedMolfileLabelError(
+      `SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`
+    );
+  }
+}
+
+function stereoCenterCounts(
+  centers: ReadonlyArray<{ isStereoCenter: boolean; descriptor: "R" | "S" | "unspecified" }>
+): { stereoCenters: number; unspecifiedStereoCenters: number } {
+  return {
+    stereoCenters: centers.filter((center) =>
+      center.isStereoCenter && center.descriptor !== "unspecified"
+    ).length,
+    unspecifiedStereoCenters: centers.filter((center) =>
+      center.isStereoCenter && center.descriptor === "unspecified"
+    ).length
+  };
+}
+
 async function depictSmiles(smiles: string): Promise<DepictionResult> {
   const ocl = await import("@chemdraft/ocl-adapter");
   let rdkitFailure: unknown;
@@ -136,16 +161,18 @@ async function depictSmiles(smiles: string): Promise<DepictionResult> {
   try {
     installNodeRdkitModuleLoader();
     const molfile = await generateSmiles2DMolfile(smiles);
+    rejectUnsupportedMolfileLabels(molfile, smiles);
     const depiction = pastedStructureDepictionFromMolfile(molfile);
-    const stereoCenters = ocl.perceiveStereoCentersFromMolfile(molfile)
-      .filter((center) => center.isStereoCenter).length;
-    return { depiction, molfile, engine: "rdkit", stereoCenters, warnings: [] };
+    const counts = stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(molfile));
+    return { depiction, molfile, engine: "rdkit", ...counts, warnings: [] };
   } catch (error) {
+    if (error instanceof UnsupportedMolfileLabelError) throw error;
     rdkitFailure = error;
   }
 
   try {
     const fallback = ocl.depictSmiles2D(smiles);
+    rejectUnsupportedMolfileLabels(fallback.molfile, smiles);
     let depiction: PastedStructureDepiction;
     try {
       depiction = pastedStructureDepictionFromMolfile(fallback.molfile);
@@ -154,35 +181,30 @@ async function depictSmiles(smiles: string): Promise<DepictionResult> {
       // losslessly via its structured result, exactly as desktop SMILES paste does.
       depiction = structuredOclDepiction(fallback);
     }
-    let stereoCenters: number;
-    try {
-      stereoCenters = ocl.perceiveStereoCentersFromMolfile(fallback.molfile)
-        .filter((center) => center.isStereoCenter).length;
-    } catch {
-      stereoCenters = fallback.bonds.filter((bond) => bond.wedge !== null).length;
-    }
+    const counts = stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(fallback.molfile));
     return {
       depiction,
       molfile: fallback.molfile,
       engine: "ocl",
-      stereoCenters,
+      ...counts,
       warnings: [`RDKit depiction failed; used OpenChemLib fallback: ${errorMessage(rdkitFailure)}`]
     };
   } catch (oclError) {
+    if (oclError instanceof UnsupportedMolfileLabelError) throw oclError;
     throw new Error(
       `Unable to render SMILES "${smiles}": RDKit: ${errorMessage(rdkitFailure)}; OpenChemLib: ${errorMessage(oclError)}`
     );
   }
 }
 
-function finitePositive(value: number, label: string): number {
+export function finitePositive(value: number, label: string): number {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${label} must be a finite number greater than zero.`);
   }
   return value;
 }
 
-function finiteNonNegative(value: number, label: string): number {
+export function finiteNonNegative(value: number, label: string): number {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${label} must be a finite, non-negative number.`);
   }
@@ -382,6 +404,7 @@ export async function renderSmilesToAssets(
     png,
     engine: depicted.engine,
     stereoCenters: depicted.stereoCenters,
+    unspecifiedStereoCenters: depicted.unspecifiedStereoCenters,
     warnings: [...depicted.warnings, ...exported.warnings.map((warning) => warning.message)],
     document,
     molecule,
