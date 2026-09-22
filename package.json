@@ -21,6 +21,7 @@
     "build:sdk": "node scripts/build-sdk.mjs plugin-api && node scripts/build-sdk.mjs plugin-host"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "28.0.3",
     "@types/node": "^26.1.1",
     "esbuild": "^0.27.7",
