@@ -339,6 +339,27 @@ importers:
         specifier: workspace:*
         version: link:../isospec-adapter
 
+  packages/render-cli:
+    dependencies:
+      '@chemdraft/chem-core':
+        specifier: workspace:*
+        version: link:../chem-core
+      '@chemdraft/export-engine':
+        specifier: workspace:*
+        version: link:../export-engine
+      '@chemdraft/layout-engine':
+        specifier: workspace:*
+        version: link:../layout-engine
+      '@chemdraft/ocl-adapter':
+        specifier: workspace:*
+        version: link:../ocl-adapter
+      '@chemdraft/rdkit-adapter':
+        specifier: workspace:*
+        version: link:../rdkit-adapter
+      '@resvg/resvg-js':
+        specifier: ^2.6.2
+        version: 2.6.2
+
   packages/shortcut-engine: {}
 
   packages/style-compat:

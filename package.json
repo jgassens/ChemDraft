@@ -10,6 +10,7 @@
     "dev:web": "pnpm --filter @chemdraft/desktop dev:web",
     "build": "pnpm lint && pnpm --filter @chemdraft/desktop build",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "render": "tsx packages/render-cli/src/cli.ts",
     "plugin:extract": "tsx tools/plugin-extract/extract.ts",
     "plugin:package": "tsx tools/plugin-package/package.ts",
     "running-build": "node scripts/running-build.mjs",

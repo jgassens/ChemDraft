@@ -1,0 +1,24 @@
+{
+  "name": "@chemdraft/render-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/export-engine": "workspace:*",
+    "@chemdraft/layout-engine": "workspace:*",
+    "@chemdraft/ocl-adapter": "workspace:*",
+    "@chemdraft/rdkit-adapter": "workspace:*",
+    "@resvg/resvg-js": "^2.6.2"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/renderer.ts",
+      "default": "./src/renderer.ts"
+    },
+    "./cli": {
+      "types": "./src/cli.ts",
+      "default": "./src/cli.ts"
+    }
+  }
+}
