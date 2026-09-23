@@ -1,5 +1,5 @@
 {
-  "name": "@chemdraft/render-cli",
+  "name": "@chemdraft/chemdraft-cli",
   "version": "0.0.0",
   "private": true,
   "type": "module",

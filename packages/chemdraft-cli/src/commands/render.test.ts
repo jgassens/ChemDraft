@@ -13,9 +13,9 @@ import {
   setRdkitModuleLoader
 } from "@chemdraft/rdkit-adapter";
 
-import { stereoPerceptionMolfile } from "../../../apps/desktop/src/documentWorkflow";
-import { runCli } from "./cli";
-import { renderSmilesToAssets, type RenderedSmiles } from "./renderer";
+import { stereoPerceptionMolfile } from "../../../../apps/desktop/src/documentWorkflow";
+import { renderSmilesToAssets, type RenderedSmiles } from "../document";
+import { runRenderCommand as runCli } from "./render";
 
 interface DecodedPng {
   width: number;

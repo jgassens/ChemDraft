@@ -1,8 +1,3 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { Resvg } from "@resvg/resvg-js";
 
 import {
@@ -19,11 +14,7 @@ import {
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
-import {
-  generateSmiles2DMolfile,
-  setRdkitModuleLoader,
-  type RdkitMinimalModule
-} from "@chemdraft/rdkit-adapter";
+import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 
 import {
   applyMoleculeTargetBondLength,
@@ -32,6 +23,8 @@ import {
   smilesPasteBondLengthPx,
   type PastedStructureDepiction
 } from "../../../apps/desktop/src/documentWorkflow";
+
+import { installNodeEngines } from "./engine";
 
 export type RenderBackground = "white" | "transparent";
 export type DepictionEngine = "rdkit" | "ocl";
@@ -58,7 +51,7 @@ export interface RenderedSmiles {
   viewBox: { x: number; y: number; width: number; height: number };
 }
 
-interface DepictionResult {
+export interface SmilesDepictionResult {
   depiction: PastedStructureDepiction;
   molfile: string;
   engine: DepictionEngine;
@@ -83,31 +76,6 @@ const HIT_TARGET_CLASSES = new Set([
   "native-crossing-hit-target",
   "native-molecule-ring-hit-target"
 ]);
-
-let rdkitLoaderInstalled = false;
-
-/** Register the vendored MinimalLib build using the same Node bootstrap as rdkit-adapter/testing. */
-function installNodeRdkitModuleLoader(): void {
-  if (rdkitLoaderInstalled) return;
-
-  const glueUrl = new URL("../../rdkit-adapter/vendor/RDKit_minimal.js", import.meta.url);
-  const wasmUrl = new URL("../../rdkit-adapter/vendor/RDKit_minimal.wasm", import.meta.url);
-  const glueSource = readFileSync(glueUrl, "utf8");
-  const wasmBinary = new Uint8Array(readFileSync(wasmUrl));
-  const factory = new Function("require", "__dirname", `${glueSource}\n;return initRDKitModule;`)(
-    createRequire(import.meta.url),
-    dirname(fileURLToPath(glueUrl))
-  ) as (options: {
-    locateFile: (file: string) => string;
-    wasmBinary: Uint8Array;
-  }) => Promise<RdkitMinimalModule>;
-
-  setRdkitModuleLoader(() => factory({
-    locateFile: () => fileURLToPath(wasmUrl),
-    wasmBinary
-  }));
-  rdkitLoaderInstalled = true;
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -154,12 +122,16 @@ function stereoCenterCounts(
   };
 }
 
-async function depictSmiles(smiles: string): Promise<DepictionResult> {
+/**
+ * Convert a SMILES string to a ChemDraft-ready 2D depiction. RDKit is preferred; OpenChemLib is
+ * used only after an explicit RDKit failure, which is preserved in the returned warnings.
+ */
+export async function depictSmiles(smiles: string): Promise<SmilesDepictionResult> {
   const ocl = await import("@chemdraft/ocl-adapter");
   let rdkitFailure: unknown;
 
   try {
-    installNodeRdkitModuleLoader();
+    installNodeEngines();
     const molfile = await generateSmiles2DMolfile(smiles);
     rejectUnsupportedMolfileLabels(molfile, smiles);
     const depiction = pastedStructureDepictionFromMolfile(molfile);
@@ -326,17 +298,21 @@ function svgNumber(value: number): string {
   return Number(value.toFixed(3)).toString();
 }
 
-function cropSvg(
+/** Crop an exported document SVG to a molecule's visible content plus the requested padding. */
+export function cropDocumentSvgToContent(
   svg: string,
-  bounds: Bounds,
+  document: ChemDraftDocument,
+  molecule: MoleculeObject,
   padding: number,
   background: RenderBackground
 ): { svg: string; viewBox: RenderedSmiles["viewBox"] } {
+  const bounds = moleculeVisualBounds(document, molecule);
+  const contentPadding = finiteNonNegative(padding, "Padding");
   const viewBox = {
-    x: bounds.minX - padding,
-    y: bounds.minY - padding,
-    width: Math.max(1, bounds.maxX - bounds.minX + padding * 2),
-    height: Math.max(1, bounds.maxY - bounds.minY + padding * 2)
+    x: bounds.minX - contentPadding,
+    y: bounds.minY - contentPadding,
+    width: Math.max(1, bounds.maxX - bounds.minX + contentPadding * 2),
+    height: Math.max(1, bounds.maxY - bounds.minY + contentPadding * 2)
   };
   const rootPattern = /<svg\s+([^>]*?)width="[^"]+"\s+height="[^"]+"\s+viewBox="[^"]+"([^>]*)>/;
   let cropped = svg.replace(
@@ -357,22 +333,40 @@ function cropSvg(
   return { svg: cropped, viewBox };
 }
 
-export async function renderSmilesToAssets(
+/** Rasterize an SVG to a PNG whose output width is measured in pixels. */
+export function svgToPng(svg: string, width: number): Uint8Array {
+  const pngWidth = finitePositive(width, "PNG width");
+  return new Resvg(svg, {
+    fitTo: { mode: "width", value: Math.round(pngWidth) }
+  }).render().asPng();
+}
+
+export interface BuildSmilesDocumentOptions {
+  name?: string;
+  bondLength?: number;
+}
+
+export interface BuiltSmilesDocument {
+  name: string;
+  smiles: string;
+  document: ChemDraftDocument;
+  molecule: MoleculeObject;
+  engine: DepictionEngine;
+  stereoCenters: number;
+  unspecifiedStereoCenters: number;
+  warnings: string[];
+}
+
+/** Build a one-molecule ChemDraft document from SMILES using the desktop insertion workflow. */
+export async function buildSmilesDocument(
   smiles: string,
-  options: RenderSmilesOptions = {}
-): Promise<RenderedSmiles> {
+  options: BuildSmilesDocumentOptions = {}
+): Promise<BuiltSmilesDocument> {
   const trimmedSmiles = smiles.trim();
   if (!trimmedSmiles) throw new Error("Unable to render SMILES: the input is empty.");
 
   const name = options.name ?? "structure";
-  const width = finitePositive(options.width ?? DEFAULT_WIDTH, "PNG width");
   const bondLength = finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
-  const padding = finiteNonNegative(options.padding ?? DEFAULT_PADDING, "Padding");
-  const background = options.background ?? "white";
-  if (background !== "white" && background !== "transparent") {
-    throw new Error(`Background must be "white" or "transparent", received "${String(background)}".`);
-  }
-
   const depicted = await depictSmiles(trimmedSmiles);
   let document = createEmptyDocument({ title: name });
   const page = document.pages[0];
@@ -389,23 +383,50 @@ export async function renderSmilesToAssets(
     molecule = moleculeFromDocument(document);
   }
 
-  const exported = exportDocumentToSvg(document, {
-    background: background === "white" ? "#ffffff" : "transparent"
-  });
-  const cropped = cropSvg(exported.contents, moleculeVisualBounds(document, molecule), padding, background);
-  const png = new Resvg(cropped.svg, {
-    fitTo: { mode: "width", value: Math.round(width) }
-  }).render().asPng();
-
   return {
     name,
     smiles: trimmedSmiles,
-    svg: cropped.svg,
-    png,
+    document,
+    molecule,
     engine: depicted.engine,
     stereoCenters: depicted.stereoCenters,
     unspecifiedStereoCenters: depicted.unspecifiedStereoCenters,
-    warnings: [...depicted.warnings, ...exported.warnings.map((warning) => warning.message)],
+    warnings: depicted.warnings
+  };
+}
+
+/** Render a SMILES string to a cropped SVG, PNG, and the reusable ChemDraft document model. */
+export async function renderSmilesToAssets(
+  smiles: string,
+  options: RenderSmilesOptions = {}
+): Promise<RenderedSmiles> {
+  const name = options.name ?? "structure";
+  const width = finitePositive(options.width ?? DEFAULT_WIDTH, "PNG width");
+  const bondLength = finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
+  const padding = finiteNonNegative(options.padding ?? DEFAULT_PADDING, "Padding");
+  const background = options.background ?? "white";
+  if (background !== "white" && background !== "transparent") {
+    throw new Error(`Background must be "white" or "transparent", received "${String(background)}".`);
+  }
+
+  const built = await buildSmilesDocument(smiles, { name, bondLength });
+  const { document, molecule } = built;
+
+  const exported = exportDocumentToSvg(document, {
+    background: background === "white" ? "#ffffff" : "transparent"
+  });
+  const cropped = cropDocumentSvgToContent(exported.contents, document, molecule, padding, background);
+  const png = svgToPng(cropped.svg, width);
+
+  return {
+    name,
+    smiles: built.smiles,
+    svg: cropped.svg,
+    png,
+    engine: built.engine,
+    stereoCenters: built.stereoCenters,
+    unspecifiedStereoCenters: built.unspecifiedStereoCenters,
+    warnings: [...built.warnings, ...exported.warnings.map((warning) => warning.message)],
     document,
     molecule,
     viewBox: cropped.viewBox
