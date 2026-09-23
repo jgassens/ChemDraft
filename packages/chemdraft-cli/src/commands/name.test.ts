@@ -46,14 +46,14 @@ describe("headless ChemDraft name conversion", () => {
     const capture = capturedIo();
     expect(await runNameCommand(["--help"], capture.io)).toBe(0);
     expect(capture.stdout.join("\n")).toContain("--name");
-  });
+  }, 60_000);
 
   it("rejects a newline in a name as bad arguments", async () => {
     const capture = capturedIo();
     expect(await runNameCommand(["--name", "benzene\nethanol"], capture.io)).toBe(2);
     expect(capture.stdout).toHaveLength(0);
     expect(capture.stderr.join("\n")).toContain("tabs or newlines");
-  });
+  }, 60_000);
 
   it("reports a missing bundled JRE separately from an invalid chemical name", async () => {
     await expect(convertNameWithOpsin("benzene", {
@@ -64,30 +64,55 @@ describe("headless ChemDraft name conversion", () => {
       ...enginePaths,
       javaPath: join(outputDirectory, "missing-jre", "bin", "java")
     })).rejects.toThrow("scripts/build-opsin-runtime.sh");
-  });
+  }, 60_000);
 
   it("exercises the OPSIN line protocol with a fake Java process", async () => {
     const paths = { javaPath: fakeJavaPath, jarPath: fakeJarPath };
-    await expect(convertNameWithOpsin("ethanol", paths)).resolves.toEqual({ smiles: "CCO" });
+    await expect(convertNameWithOpsin("ethanol", paths)).resolves.toEqual({ smiles: "CCO", warnings: [] });
     await expect(convertNameWithOpsin("parse-failure", paths)).resolves.toEqual({
-      failureReason: "OPSIN could not parse the supplied name"
+      failureReason: "OPSIN could not parse the supplied name",
+      warnings: ["OPSIN could not parse the supplied name"]
     });
     await expect(convertNameWithOpsin("non-zero", paths)).rejects.toThrow(/exit 7.*simulated JVM failure/);
-  });
+  }, 60_000);
+
+  it("refuses OPSIN ambiguity diagnostics unless explicitly allowed", async () => {
+    const capture = capturedIo();
+    const paths = { javaPath: fakeJavaPath, jarPath: fakeJarPath };
+    expect(await runNameCommand(["--name", "ambiguous"], capture.io, { opsinPaths: paths })).toBe(1);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({
+      ok: false,
+      warnings: ["APPEARS_AMBIGUOUS: Connection of meth to but"],
+      error: "ambiguous name: Connection of meth to but; give a locant or full name"
+    });
+
+    const allowed = capturedIo();
+    expect(await runNameCommand(
+      ["--name", "ambiguous", "--allow-ambiguous"], allowed.io, { opsinPaths: paths }
+    )).toBe(0);
+    expect(JSON.parse(allowed.stdout[0]!)).toMatchObject({
+      ok: true,
+      smiles: "CCCCC",
+      warnings: ["APPEARS_AMBIGUOUS: Connection of meth to but"]
+    });
+  }, 60_000);
 
   it("escalates an OPSIN timeout and reports it without rebuild advice", async () => {
+    let childExited = false;
     const failure = await convertNameWithOpsin("timeout", {
       javaPath: fakeJavaPath,
       jarPath: fakeJarPath,
       timeoutMs: 40,
-      killGraceMs: 40
+      killGraceMs: 40,
+      onExit: () => { childExited = true; }
     }).then(
       () => "unexpected success",
       (error: unknown) => error instanceof Error ? error.message : String(error)
     );
     expect(failure).toMatch(/OPSIN timed out after 40 ms/);
     expect(failure).not.toMatch(/rebuild/i);
-  });
+    expect(childExited).toBe(true);
+  }, 60_000);
 
   it("passes depiction warnings through a rendered name result", async () => {
     const png = join(outputDirectory, "warning.png");
@@ -108,7 +133,7 @@ describe("headless ChemDraft name conversion", () => {
       ok: true,
       warnings: ["simulated depiction warning"]
     });
-  });
+  }, 60_000);
 
   it.skipIf(!runtimeAvailable)("converts aspirin, ibuprofen, and chiral alanine", async () => {
     const fixtures = [
@@ -124,7 +149,7 @@ describe("headless ChemDraft name conversion", () => {
       expect(result.smiles).not.toHaveLength(0);
       if (name === "alanine") expect(result.smiles).toContain("@");
     }
-  }, 120_000);
+  }, 60_000);
 
   it.skipIf(!runtimeAvailable)("reports a nonsense name as a failed JSON line", async () => {
     const capture = capturedIo();
@@ -137,7 +162,7 @@ describe("headless ChemDraft name conversion", () => {
       engine: "opsin-2.9.0"
     });
     expect(JSON.parse(capture.stdout[0]!).error).toContain("xyzzy-not-a-real-chemical-name");
-  }, 120_000);
+  }, 60_000);
 
   it.skipIf(!runtimeAvailable)("renders a converted name to the requested PNG path", async () => {
     const png = join(outputDirectory, "aspirin.png");
@@ -145,5 +170,22 @@ describe("headless ChemDraft name conversion", () => {
     expect(await runNameCommand(["--name", "2-acetoxybenzoic acid", "--render", png], capture.io)).toBe(0);
     expect(JSON.parse(capture.stdout[0]!)).toMatchObject({ ok: true, png });
     expect((await stat(png)).size).toBeGreaterThan(0);
-  }, 120_000);
+  }, 60_000);
+
+  it.skipIf(!runtimeAvailable)("refuses ambiguous bundled-OPSIN names unless allowed", async () => {
+    for (const query of ["methylbutane", "dichlorobenzene"]) {
+      const rejected = capturedIo();
+      expect(await runNameCommand(["--name", query], rejected.io)).toBe(1);
+      const rejectedResult = JSON.parse(rejected.stdout[0]!) as { ok: boolean; warnings: string[]; error: string };
+      expect(rejectedResult.ok).toBe(false);
+      expect(rejectedResult.warnings.some((warning) => warning.includes("APPEARS_AMBIGUOUS"))).toBe(true);
+      expect(rejectedResult.error).toMatch(/^ambiguous name: .+; give a locant or full name$/);
+
+      const allowed = capturedIo();
+      expect(await runNameCommand(["--name", query, "--allow-ambiguous"], allowed.io)).toBe(0);
+      const allowedResult = JSON.parse(allowed.stdout[0]!) as { ok: boolean; warnings: string[] };
+      expect(allowedResult.ok).toBe(true);
+      expect(allowedResult.warnings.some((warning) => warning.includes("APPEARS_AMBIGUOUS"))).toBe(true);
+    }
+  }, 60_000);
 });

@@ -43,7 +43,7 @@ export async function runCli(
     io.stderr("Run pnpm -s chemdraft --help for usage.");
     return cliExitCode.badArguments;
   }
-  return command.run(commandArgv, io);
+  return (await command.load()).run(commandArgv, io);
 }
 
 const isMain = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);

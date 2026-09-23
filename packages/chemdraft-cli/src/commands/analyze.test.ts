@@ -28,7 +28,8 @@ interface CapturedResult {
     hba: { value: number | null; status: string; reason?: string };
     rotatableBonds: { value: number | null; status: string; reason?: string };
     pka: { value: Array<{
-      atomIndex: number;
+      atomIndex: number | null;
+      derivedAtomIndex?: number;
       siteType: string;
       transition: "acidic" | "basic";
       acidCharge: number;
@@ -36,7 +37,7 @@ interface CapturedResult {
       value: number | null;
       reason?: string;
       interval: { lower: number; upper: number } | null;
-    }> | null; status: string; reason?: string };
+    }> | null; status: string; reason?: string; interpretationId?: string; interpretationLabel?: string };
   };
   run?: AnalysisRun;
 }
@@ -176,6 +177,7 @@ describe("chemdraft analyze", () => {
     expect(composition.code).toBe(0);
     expect(composition.results[0]!.summary!.formula).toEqual({ value: "C9H8O4", status: "ok" });
     expect(composition.results[0]!.summary!.logP).toEqual({ value: null, status: "not-requested" });
+    expect(composition.results[0]!.summary!.pka).toEqual({ value: null, status: "not-requested" });
 
     const boron = await run([
       "--smiles", "OB(O)c1ccccc1",
@@ -193,12 +195,14 @@ describe("chemdraft analyze", () => {
     ]);
     const basic = amine.results[0]!.summary!.pka.value!.find((site) => site.transition === "basic");
     expect(basic).toMatchObject({
-      atomIndex: expect.any(Number),
+      atomIndex: 1,
       siteType: expect.any(String),
       acidCharge: expect.any(Number),
       basis: expect.any(String)
     });
     expect(basic!.siteType).not.toContain("(atom");
+    expect(basic!.value).toBeGreaterThan(10.1);
+    expect(basic!.value).toBeLessThan(11.1);
 
     const sourceRun = amine.results[0]!.run!;
     const ionization = sourceRun.results.find((result) =>
@@ -223,6 +227,67 @@ describe("chemdraft analyze", () => {
     const nullSite = summary.pka.value!.find((site) => site.value === null);
     expect(nullSite).toMatchObject({ value: null, reason: expect.any(String) });
   }, 120_000);
+
+  it("reports a pKa computed on the reference protomer as ok, on the drawn atoms", async () => {
+    // Glycine drawn as its zwitterion: Dimorphite's ladder runs on the reference protomer, so the
+    // only ionization result lives on a derived interpretation. It must not read as not-requested.
+    const { code, results } = await run([
+      "--smiles", "[NH3+]CC(=O)[O-]",
+      "--methods", "dimorphite.ionizable-sites"
+    ]);
+    expect(code).toBe(0);
+    const pka = results[0]!.summary!.pka;
+    expect(pka.status).toBe("ok");
+    expect(pka.interpretationId).toBe("reference-protomer");
+    expect(pka.interpretationLabel).toMatch(/reference protomer/);
+    const sites = pka.value!;
+    expect(sites).toHaveLength(2);
+    const amine = sites.find((site) => site.transition === "basic")!;
+    const carboxyl = sites.find((site) => site.transition === "acidic")!;
+    // Source atoms of [NH3+]CC(=O)[O-]: N0 C1 C2 O3 O4.
+    expect(amine.atomIndex).toBe(0);
+    expect(carboxyl.atomIndex).toBe(4);
+    expect(Math.abs(amine.value! - 9.1)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(carboxyl.value! - 4.3)).toBeLessThanOrEqual(0.5);
+
+    // The mapping, not coincidence, supplies the source index: reverse the ledger's atom mapping and
+    // the same derived sites must land on the mirrored source atoms.
+    const sourceRun = results[0]!.run!;
+    const reversed: AnalysisRun = {
+      ...sourceRun,
+      interpretations: sourceRun.interpretations.map((interpretation) =>
+        interpretation.id !== "reference-protomer"
+          ? interpretation
+          : {
+              ...interpretation,
+              transformations: interpretation.transformations.map((step) => ({
+                ...step,
+                atomMapping: step.atomMapping.map(([, derived]) => [4 - derived, derived] as const)
+              }))
+            })
+    };
+    const remapped = summarizeAnalysisRun(reversed).pka.value!;
+    expect(remapped.find((site) => site.transition === "basic")).toMatchObject({ atomIndex: 4, derivedAtomIndex: 0 });
+    expect(remapped.find((site) => site.transition === "acidic")).toMatchObject({ atomIndex: 0, derivedAtomIndex: 4 });
+
+    // A derived site with no source counterpart is reported with a null index and a reason, not dropped.
+    const orphaned: AnalysisRun = {
+      ...sourceRun,
+      interpretations: sourceRun.interpretations.map((interpretation) =>
+        interpretation.id !== "reference-protomer"
+          ? interpretation
+          : {
+              ...interpretation,
+              transformations: interpretation.transformations.map((step) => ({
+                ...step,
+                atomMapping: step.atomMapping.filter(([, derived]) => derived !== 0)
+              }))
+            })
+    };
+    const orphanSite = summarizeAnalysisRun(orphaned).pka.value!.find((site) => site.transition === "basic");
+    expect(orphanSite).toMatchObject({ atomIndex: null, derivedAtomIndex: 0 });
+    expect(orphanSite!.reason).toMatch(/no counterpart in the drawn structure/);
+  }, 60_000);
 
   it("writes Markdown, returns text inline, and emits JSON runs", async () => {
     const markdownPath = join(outputDirectory, "aspirin.md");

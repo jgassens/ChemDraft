@@ -101,6 +101,30 @@ describe("chemdraft reaction", () => {
     expectSchemeInsideViewBox(rendered);
   });
 
+  it("keeps ionic charge on agent formulas and writes carbon-free formulas in conventional order", async () => {
+    const rendered = await renderReactionScheme(
+      "CC(=O)O.OCC>[O-]S(=O)(=O)O.Cl.[OH-].[Na+].[NH4+].[O-]S(=O)(=O)[O-].Br.F.N>CC(=O)OCC"
+    );
+    expect(rendered.agentTexts.map((agent) => [agent.smiles, agent.text, agent.hillFormula])).toEqual([
+      ["[O-]S(=O)(=O)O", "HSO4⁻", "HO4S"],
+      ["Cl", "HCl", "ClH"],
+      ["[OH-]", "OH⁻", "HO"],
+      ["[Na+]", "Na⁺", "Na"],
+      ["[NH4+]", "NH4⁺", "H4N"],
+      ["[O-]S(=O)(=O)[O-]", "SO4²⁻", "O4S"],
+      ["Br", "HBr", "BrH"],
+      ["F", "HF", "FH"],
+      ["N", "NH3", "H3N"]
+    ]);
+    expect(rendered.agentTexts.every((agent) => agent.source === "formula")).toBe(true);
+    expect(rendered.svg).toContain("HSO4⁻, HCl, OH⁻, Na⁺, NH4⁺, SO4²⁻, HBr, HF, NH3");
+  }, 60_000);
+
+  it("labels the reviewer's bisulfate and HCl agents with charge and H-first order", async () => {
+    const rendered = await renderReactionScheme("CC(=O)O.OCC>[O-]S(=O)(=O)O.Cl>CC(=O)OCC");
+    expect(rendered.agentTexts.map((agent) => agent.text)).toEqual(["HSO4⁻", "HCl"]);
+  }, 60_000);
+
   it("keeps a charged product's complete label boxes inside the reaction viewBox", async () => {
     const rendered = await renderReactionScheme("CCO>>[NH3+]CCCCCCCCC[NH3+]");
     expect(rendered.svg).toContain("NH3+");

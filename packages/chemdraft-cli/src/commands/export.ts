@@ -3,14 +3,17 @@ import { basename, dirname, extname, join } from "node:path";
 
 import { JSDOM } from "jsdom";
 
-import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import { moleculeSmiles } from "../../../../apps/desktop/src/moleculeSmiles";
 
 import { parseOptions, stringOption } from "../args";
-import { buildSmilesDocument } from "../document";
+import {
+  assertCanonicalIdentity,
+  buildSmilesDocument,
+  type BuiltSmilesDocument
+} from "../document";
 import { installNodeEngines } from "../engine";
 import {
   CliUsageError,
@@ -149,7 +152,9 @@ function jobErrorMessage(error: unknown, job: ExportJob): string {
  * real webview; this CLI runs in plain Node, so the shim has to be recreated here rather than
  * reused, since export-engine does not publish it as a runtime API.
  */
-async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
+let pdfDomQueue: Promise<void> = Promise.resolve();
+
+async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
   const writableGlobal = globalThis as typeof globalThis & Record<string, unknown>;
   const globalKeys = [
@@ -170,48 +175,58 @@ async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Pr
   const previousGetBBox = Object.getOwnPropertyDescriptor(dom.window.SVGElement.prototype, "getBBox");
   const previousGetContext = Object.getOwnPropertyDescriptor(dom.window.HTMLCanvasElement.prototype, "getContext");
 
-  const define = (key: string, value: unknown) =>
-    Object.defineProperty(writableGlobal, key, { configurable: true, writable: true, value });
-  define("window", dom.window);
-  define("document", dom.window.document);
-  define("DOMParser", dom.window.DOMParser);
-  define("Node", dom.window.Node);
-  define("Element", dom.window.Element);
-  define("SVGElement", dom.window.SVGElement);
-  define("HTMLElement", dom.window.HTMLElement);
-  define("XMLSerializer", dom.window.XMLSerializer);
-  define("getComputedStyle", dom.window.getComputedStyle.bind(dom.window));
-  define("navigator", dom.window.navigator);
-  Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", {
-    configurable: true,
-    value: () => ({ x: 0, y: 0, width: 80, height: 16 })
-  });
-  Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", {
-    configurable: true,
-    value: () => null
-  });
-
   try {
+    const define = (key: string, value: unknown) =>
+      Object.defineProperty(writableGlobal, key, { configurable: true, writable: true, value });
+    define("window", dom.window);
+    define("document", dom.window.document);
+    define("DOMParser", dom.window.DOMParser);
+    define("Node", dom.window.Node);
+    define("Element", dom.window.Element);
+    define("SVGElement", dom.window.SVGElement);
+    define("HTMLElement", dom.window.HTMLElement);
+    define("XMLSerializer", dom.window.XMLSerializer);
+    define("getComputedStyle", dom.window.getComputedStyle.bind(dom.window));
+    define("navigator", dom.window.navigator);
+    Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", {
+      configurable: true,
+      value: () => ({ x: 0, y: 0, width: 80, height: 16 })
+    });
+    Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: () => null
+    });
     return await callback(new dom.window.DOMParser());
   } finally {
-    if (previousGetContext) {
-      Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", previousGetContext);
-    } else {
-      Reflect.deleteProperty(dom.window.HTMLCanvasElement.prototype, "getContext");
-    }
-    if (previousGetBBox) {
-      Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", previousGetBBox);
-    } else {
-      Reflect.deleteProperty(dom.window.SVGElement.prototype, "getBBox");
-    }
-    for (const [key, descriptor] of previousDescriptors) {
-      if (!descriptor) {
-        Reflect.deleteProperty(writableGlobal, key);
+    try {
+      if (previousGetContext) {
+        Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", previousGetContext);
       } else {
-        Object.defineProperty(writableGlobal, key, descriptor);
+        Reflect.deleteProperty(dom.window.HTMLCanvasElement.prototype, "getContext");
       }
+      if (previousGetBBox) {
+        Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", previousGetBBox);
+      } else {
+        Reflect.deleteProperty(dom.window.SVGElement.prototype, "getBBox");
+      }
+      for (const [key, descriptor] of previousDescriptors) {
+        if (!descriptor) {
+          Reflect.deleteProperty(writableGlobal, key);
+        } else {
+          Object.defineProperty(writableGlobal, key, descriptor);
+        }
+      }
+    } finally {
+      dom.window.close();
     }
   }
+}
+
+/** Serialize installation, export, and exact restoration of process-global DOM shims. */
+async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
+  const run = pdfDomQueue.then(() => withInstalledPdfDom(callback));
+  pdfDomQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 interface PerJobExportResult {
@@ -219,13 +234,21 @@ interface PerJobExportResult {
   warnings: string[];
 }
 
+function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument): string {
+  if (!built.identityVerifiedByRdkit || built.sourceCanonicalSmiles === undefined) {
+    throw new Error(
+      "Unable to export safely: RDKit could not canonicalize the input, so chemical identity cannot be verified."
+    );
+  }
+  return built.sourceCanonicalSmiles;
+}
+
 async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
-  document: ChemDraftDocument,
-  molecule: MoleculeObject
+  built: BuiltSmilesDocument
 ): Promise<PerJobExportResult> {
   if (format === "cdxml") {
-    const result = exportDocumentToCdxml(document);
+    const result = exportDocumentToCdxml(built.document);
     return { contents: result.contents, warnings: result.warnings.map((warning) => warning.message) };
   }
   if (format === "pdf") {
@@ -236,13 +259,12 @@ async function exportPerJobFormat(
     // process crash.
     const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
     const result = await withPdfDom((domParser) =>
-      exportDocumentToPdf(document, { domParser, pageIndex: 0 })
+      exportDocumentToPdf(built.document, { domParser, pageIndex: 0 })
     );
     return { contents: result.bytes, warnings: result.warnings.map((warning) => warning.message) };
   }
-  const warnings: string[] = [];
-  const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings });
-  return { contents: molfile, warnings };
+  await assertCanonicalIdentity(verifiedSourceCanonicalSmiles(built), built.identityMolfile);
+  return { contents: built.identityMolfile, warnings: [] };
 }
 
 async function runPerJobExport(
@@ -257,7 +279,7 @@ async function runPerJobExport(
     const out = outFor(job);
     try {
       const built = await buildSmilesDocument(job.smiles, { name: job.name });
-      const exported = await exportPerJobFormat(format, built.document, built.molecule);
+      const exported = await exportPerJobFormat(format, built);
       await mkdir(dirname(out), { recursive: true });
       await writeFile(out, exported.contents);
       const bytes = typeof exported.contents === "string"
@@ -296,9 +318,9 @@ async function combinedRecord(
 ): Promise<CombinedRecord> {
   const built = await buildSmilesDocument(job.smiles, { name: job.name });
   const warnings = [...built.warnings];
-  const molfileWarnings: string[] = [];
-  const molfile = moleculeToMolfileV2000(built.molecule, { fromDocFrame: true, warnings: molfileWarnings });
-  warnings.push(...molfileWarnings);
+  const molfile = built.identityMolfile;
+  const sourceCanonicalSmiles = verifiedSourceCanonicalSmiles(built);
+  await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
 
   const smilesWarnings: ExportWarning[] = [];
   const smiles = await moleculeSmiles(
@@ -308,7 +330,12 @@ async function combinedRecord(
     computeStructureIdentifiers,
     molfile
   );
-  warnings.push(...smilesWarnings.map((warning) => warning.message));
+  await assertCanonicalIdentity(sourceCanonicalSmiles, smiles);
+  warnings.push(...smilesWarnings
+    // The shared desktop helper still assumes its usual V2000 input. This CLI supplied a V3000
+    // molfile and the identity check above proved RDKit retained every dative bond.
+    .filter((warning) => !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"))
+    .map((warning) => warning.message));
 
   if (format === "smi") {
     return { job, content: `${smiles}\t${job.name}\n`, warnings };

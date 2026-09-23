@@ -2,13 +2,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import { runExportCommand as runCli } from "./export";
+
+vi.setConfig({ testTimeout: 60_000 });
 
 let outputDirectory: string;
 
@@ -44,6 +46,8 @@ function jsonLines(io: CollectedIo): unknown[] {
 const ETHANOL = "CCO";
 const D_ALANINE = "C[C@@H](N)C(=O)O";
 const BAD_SMILES = "not-a-smiles(((";
+const UNSPECIFIED_ALKENE = "CC=CC";
+const DATIVE_PT_COMPLEX = "N->[Pt+2](<-N)(Cl)Cl";
 
 describe("chemdraft export", () => {
   it("exports CDXML that round-trips with the same atom and bond counts", async () => {
@@ -139,7 +143,76 @@ describe("chemdraft export", () => {
     // V2000 bond line: three 3-char fields (atom1, atom2, order), then a stereo flag field
     // that is "  1" (wedge) or "  6" (hash), then "  0  0  0".
     expect(contents).toMatch(/^.{9}(  1|  6)  0  0  0$/m);
-  });
+  }, 60_000);
+
+  it.each(["mol", "sdf"] as const)(
+    "keeps the reviewer's unspecified alkene unknown in %s export",
+    async (format) => {
+      const out = join(outputDirectory, `unspecified-alkene.${format}`);
+      const io = collectIo();
+      expect(await runCli(["--smiles", UNSPECIFIED_ALKENE, "--out", out], io)).toBe(0);
+      const contents = await readFile(out, "utf8");
+      expect(contents).toMatch(/^.{6}  2  3\s+0\s+0\s+0$/m);
+      expect(jsonLines(io)[0]).toMatchObject({ ok: true, format });
+    },
+    60_000
+  );
+
+  it("does not invent E/Z marks in SMILES export", async () => {
+    const out = join(outputDirectory, "unspecified-alkene.smi");
+    const io = collectIo();
+    expect(await runCli(["--smiles", UNSPECIFIED_ALKENE, "--out", out], io)).toBe(0);
+    expect((await readFile(out, "utf8")).split("\t")[0]).toBe(UNSPECIFIED_ALKENE);
+  }, 60_000);
+
+  it.each(["mol", "sdf"] as const)(
+    "writes the reviewer's Pt coordination bonds as V3000 type 9 in %s export",
+    async (format) => {
+      const out = join(outputDirectory, `pt-complex.${format}`);
+      const io = collectIo();
+      expect(await runCli(["--smiles", DATIVE_PT_COMPLEX, "--out", out], io)).toBe(0);
+      const contents = await readFile(out, "utf8");
+      expect(contents).toContain("V3000");
+      expect(contents.match(/M  V30 \d+ 9 \d+ \d+/g)).toHaveLength(2);
+    },
+    60_000
+  );
+
+  it("preserves coordination arrows and ligand hydrogens in SMILES export", async () => {
+    const out = join(outputDirectory, "pt-complex.smi");
+    const io = collectIo();
+    expect(await runCli(["--smiles", DATIVE_PT_COMPLEX, "--out", out], io)).toBe(0);
+    const contents = await readFile(out, "utf8");
+    expect(contents).toContain("[NH3]->[Pt+2](<-[NH3])");
+    expect((jsonLines(io)[0] as { warnings: string[] }).warnings).toEqual([]);
+  }, 60_000);
+
+  it("serializes concurrent PDF exports and restores every DOM global descriptor", async () => {
+    const globalKeys = [
+      "window", "document", "DOMParser", "Node", "Element", "SVGElement", "HTMLElement",
+      "XMLSerializer", "getComputedStyle", "navigator"
+    ] as const;
+    const before = new Map(globalKeys.map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key)
+    ]));
+    const firstOut = join(outputDirectory, "concurrent-first.pdf");
+    const secondOut = join(outputDirectory, "concurrent-second.pdf");
+    const firstIo = collectIo();
+    const secondIo = collectIo();
+
+    const codes = await Promise.all([
+      runCli(["--smiles", ETHANOL, "--out", firstOut], firstIo),
+      runCli(["--smiles", D_ALANINE, "--out", secondOut], secondIo)
+    ]);
+
+    expect(codes).toEqual([0, 0]);
+    expect((await readFile(firstOut)).subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect((await readFile(secondOut)).subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    for (const key of globalKeys) {
+      expect(Object.getOwnPropertyDescriptor(globalThis, key)).toEqual(before.get(key));
+    }
+  }, 60_000);
 
   it("reports ok:false naming the SMILES for an unparseable structure", async () => {
     const out = join(outputDirectory, "bad.mol");

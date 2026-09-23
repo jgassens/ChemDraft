@@ -125,7 +125,11 @@ Reaction SMILES must contain exactly two \u003e separators. Each side is split o
 '.'-joined salt is drawn as two species. Repeated --reactant/--agent/--product flags preserve each
 value as one molecule object, including any '.'-joined salt. Agents are validated and shown above
 the arrow as composition formulas (falling back to SMILES only when composition fails);
---conditions appends additional text there. Species, plus signs, and the arrow use 24 px gutters.
+--conditions appends additional text there. Agent formulas carry their net ionic charge as a
+superscript (HSO4⁻, SO4²⁻, Na⁺, NH4⁺); hydroxide is written OH⁻. Carbon-free formulas use the
+conventional written order rather than strict Hill order (H2SO4, HCl, NH3); each agent's exact
+Hill formula is kept in the result's agentTexts[].hillFormula.
+Species, plus signs, and the arrow use 24 px gutters.
 
 Batch input is a JSON array of named jobs containing either "rxn" or the arrays "reactants",
 "agents", and "products". Array entries preserve '.' as one molecule object. Each job may supply
@@ -418,24 +422,76 @@ function formulaCount(symbol: string, count: number): string {
   return count === 1 ? symbol : `${symbol}${count}`;
 }
 
-function reactionFormula(result: Extract<Awaited<ReturnType<typeof analyzeStructureDetailed>>["run"]["results"][number], { kind: "composition" }>): string | undefined {
-  if (!result.formula || result.status !== "ok") return undefined;
-  if (result.elements.some((entry) => entry.isotope !== undefined)) return result.formula;
+const SUPERSCRIPT_DIGITS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
+
+/**
+ * Net ionic charge as a superscript suffix: "⁻", "⁺", "²⁻". Same convention as the ionization
+ * figure's charge marks (packages/analysis-core/src/ionizationFigure.ts): magnitude digits then the
+ * sign, and no digit for a single charge — so SO4²⁻, never SO4⁻² or SO4--.
+ */
+function chargeSuperscript(charge: number): string {
+  if (charge === 0) return "";
+  const sign = charge > 0 ? "⁺" : "⁻";
+  const magnitude = Math.abs(charge);
+  return magnitude === 1
+    ? sign
+    : `${String(magnitude).split("").map((digit) => SUPERSCRIPT_DIGITS[Number(digit)] ?? digit).join("")}${sign}`;
+}
+
+const HYDROGEN_HALIDES = new Set(["F", "Cl", "Br", "I"]);
+// Pnictogen and tetrel hydrides are written element-first (NH3, NH4⁺, N2H4, PH3, SiH4), unlike
+// chalcogen hydrides (H2O, H2S), which Hill order already writes H-first.
+const ELEMENT_FIRST_HYDRIDES = new Set(["N", "P", "As", "Sb", "Si", "Ge"]);
+
+type CompositionResult = Extract<
+  Awaited<ReturnType<typeof analyzeStructureDetailed>>["run"]["results"][number],
+  { kind: "composition" }
+>;
+
+/** The neutral part of the label, before any charge suffix. */
+function reactionFormulaBody(result: CompositionResult, formula: string, charge: number): string {
+  if (result.elements.some((entry) => entry.isotope !== undefined)) return formula;
   const counts = new Map(result.elements.map((entry) => [entry.symbol, entry.count]));
-  // Readers expect inorganic oxyacids in H-central-atom-O order (H2SO4), while the analysis
-  // contract correctly retains strict no-carbon Hill order (H2O4S). This is display-only and the
-  // exact Hill formula is retained in the JSON record below.
-  if (!counts.has("C") && counts.has("H") && counts.has("O") && counts.size > 2) {
+  if (counts.has("C")) return formula;
+  const hydrogens = counts.get("H");
+  const oxygens = counts.get("O");
+  // Hydroxide is written OH⁻, its conventional form, rather than Hill's H-first HO⁻.
+  if (counts.size === 2 && hydrogens === 1 && oxygens === 1 && charge === -1) return "OH";
+  // Hill order puts a carbon-free formula in plain alphabetical order: ClH, H3N, H4N. Readers
+  // expect HCl and NH3 / NH4⁺.
+  if (counts.size === 2 && hydrogens !== undefined) {
+    const [other] = [...counts.keys()].filter((symbol) => symbol !== "H");
+    if (other && HYDROGEN_HALIDES.has(other)) {
+      return `${formulaCount("H", hydrogens)}${formulaCount(other, counts.get(other)!)}`;
+    }
+    if (other && ELEMENT_FIRST_HYDRIDES.has(other)) {
+      return `${formulaCount(other, counts.get(other)!)}${formulaCount("H", hydrogens)}`;
+    }
+  }
+  // Inorganic oxyacids and oxyanions read H–central atom–O (H2SO4, HSO4⁻, SO4²⁻, KMnO4), while the
+  // analysis contract correctly retains strict carbon-free Hill order (H2O4S, O4S).
+  if (oxygens !== undefined && [...counts.keys()].some((symbol) => symbol !== "H" && symbol !== "O")) {
     const middle = [...counts.entries()]
       .filter(([symbol]) => symbol !== "H" && symbol !== "O")
       .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
     return [
-      formulaCount("H", counts.get("H")!),
+      hydrogens !== undefined ? formulaCount("H", hydrogens) : "",
       ...middle.map(([symbol, count]) => formulaCount(symbol, count)),
-      formulaCount("O", counts.get("O")!)
+      formulaCount("O", oxygens)
     ].join("");
   }
-  return result.formula;
+  return formula;
+}
+
+/**
+ * Display text for an agent. Display-only: the exact Hill formula is kept in the JSON record as
+ * hillFormula. A charged species always carries its net charge — dropping it would turn hydroxide
+ * into "HO" and bisulfate into "HSO4", i.e. a different species.
+ */
+function reactionFormula(result: CompositionResult): string | undefined {
+  if (!result.formula || result.status !== "ok") return undefined;
+  const charge = result.formalCharge ?? 0;
+  return `${reactionFormulaBody(result, result.formula, charge)}${chargeSuperscript(charge)}`;
 }
 
 async function agentText(smiles: string, index: number): Promise<{

@@ -28,6 +28,9 @@ export interface NamedSmilesJob extends NamedBatchJob {
   smiles: string;
 }
 
+const MAX_BATCH_JOBS = 500;
+const batchNamePattern = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$/;
+
 export type SuccessfulJsonLine = {
   name: string;
   ok: true;
@@ -79,9 +82,9 @@ export function handleCliError(error: unknown, io: CliIo, usageCommand: string):
 
 /** Validate the portable filename portion shared by every named batch format. */
 export function validateBatchName(name: string): void {
-  if (!name || name.startsWith(".") || name.includes("/") || name.includes("\\")) {
+  if (!batchNamePattern.test(name)) {
     throw new CliUsageError(
-      `Invalid batch name "${name}": names must be non-empty, must not begin with a dot, and must not contain path separators.`
+      `Invalid batch name ${JSON.stringify(name)}: names must match ${batchNamePattern}.`
     );
   }
 }
@@ -103,14 +106,30 @@ export async function readBatchFile<T extends NamedBatchJob>(
     throw new CliUsageError(`Could not read batch file "${path}": ${message}`);
   }
   if (!Array.isArray(parsed)) throw new CliUsageError("Batch JSON must be an array of jobs.");
+  if (parsed.length > MAX_BATCH_JOBS) {
+    const firstExcess = parsed[MAX_BATCH_JOBS];
+    const name = firstExcess && typeof firstExcess === "object" &&
+      typeof (firstExcess as { name?: unknown }).name === "string"
+      ? ` named ${JSON.stringify((firstExcess as NamedBatchJob).name)}`
+      : "";
+    throw new CliUsageError(
+      `Batch job ${MAX_BATCH_JOBS + 1}${name} exceeds the maximum of ${MAX_BATCH_JOBS} jobs.`
+    );
+  }
 
-  const names = new Set<string>();
+  const names = new Map<string, string>();
   return parsed.map((candidate, index) => {
     const parsedJob = parseJob(candidate, index);
     const job = { ...parsedJob, name: parsedJob.name.trim() };
     validateBatchName(job.name);
-    if (names.has(job.name)) throw new CliUsageError(`Duplicate batch name "${job.name}".`);
-    names.add(job.name);
+    const normalizedName = job.name.toLowerCase();
+    const duplicate = names.get(normalizedName);
+    if (duplicate !== undefined) {
+      throw new CliUsageError(
+        `Duplicate batch name ${JSON.stringify(job.name)}: conflicts with ${JSON.stringify(duplicate)} on case-insensitive filesystems.`
+      );
+    }
+    names.set(normalizedName, job.name);
     validateJob(job, index);
     return job;
   });

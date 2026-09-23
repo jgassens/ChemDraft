@@ -1,7 +1,15 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -17,8 +25,9 @@ import { runRenderCommand } from "../../chemdraft-cli/src/commands/render";
 import { runStereoCommand } from "../../chemdraft-cli/src/commands/stereo";
 import type { CliExitCode, CliIo, JsonLineResult } from "../../chemdraft-cli/src/output";
 
-type CliCommand = (argv: readonly string[], io: CliIo) => Promise<CliExitCode>;
-type ImageFile = { path: string; mimeType: "image/png" | "image/svg+xml" };
+export type CliCommand = (argv: readonly string[], io: CliIo) => Promise<CliExitCode>;
+type OutputFileKind = "image" | "text" | "resource";
+type OutputFile = { path: string; kind: OutputFileKind };
 
 interface CommandSuccess {
   result: Extract<JsonLineResult, { ok: true }>;
@@ -29,7 +38,83 @@ interface CommandFailure {
   error: string;
 }
 
-let temporaryDirectory: Promise<string> | undefined;
+export interface ChemDraftMcpDependencies {
+  mkdir?: typeof mkdir;
+  mkdtemp?: typeof mkdtemp;
+  readFile?: typeof readFile;
+  readdir?: typeof readdir;
+  rm?: typeof rm;
+  stat?: typeof stat;
+  writeFile?: typeof writeFile;
+  now?: () => number;
+  tempDirectory?: () => string;
+  commands?: Partial<ChemDraftMcpCommands>;
+}
+
+export interface ChemDraftMcpCommands {
+  analyze: CliCommand;
+  export: CliCommand;
+  grid: CliCommand;
+  name: CliCommand;
+  nmr: CliCommand;
+  reaction: CliCommand;
+  render: CliCommand;
+  stereo: CliCommand;
+}
+
+interface ServerRuntime {
+  dependencies: Omit<Required<ChemDraftMcpDependencies>, "commands"> & {
+    commands: ChemDraftMcpCommands;
+  };
+  temporaryDirectory?: Promise<string>;
+  lastCleanupAt?: number;
+}
+
+const MAX_RETURNED_PAYLOAD_BYTES = 5 * 1024 * 1024;
+const CALL_RETENTION_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 1000;
+
+const defaultDependencies: Omit<Required<ChemDraftMcpDependencies>, "commands"> & {
+  commands: ChemDraftMcpCommands;
+} = {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+  now: Date.now,
+  tempDirectory: tmpdir,
+  commands: {
+    analyze: runAnalyzeCommand,
+    export: runExportCommand,
+    grid: runGridCommand,
+    name: runNameCommand,
+    nmr: runNmrCommand,
+    reaction: runReactionCommand,
+    render: runRenderCommand,
+    stereo: runStereoCommand
+  }
+};
+
+// RDKit calls are synchronous, and PDF export temporarily installs DOM globals. Keep every MCP
+// invocation in one process-wide critical section, including invocations from separate server instances.
+let toolExecutionTail: Promise<void> = Promise.resolve();
+
+async function withToolExecutionLock<T>(work: () => Promise<T>): Promise<T> {
+  const previous = toolExecutionTail;
+  let release!: () => void;
+  toolExecutionTail = new Promise<void>((resolveRelease) => {
+    release = resolveRelease;
+  });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
 
 function slug(value: string): string {
   const normalized = value
@@ -40,19 +125,57 @@ function slug(value: string): string {
   return normalized.slice(0, 72) || "structure";
 }
 
-async function defaultOutDir(): Promise<string> {
-  temporaryDirectory ??= (async () => {
-    const parent = join(tmpdir(), "chemdraft-mcp");
-    await mkdir(parent, { recursive: true });
-    return mkdtemp(join(parent, "server-"));
-  })();
-  return temporaryDirectory;
+async function cleanupExpiredCallDirectories(runtime: ServerRuntime, parent: string): Promise<void> {
+  const now = runtime.dependencies.now();
+  if (
+    runtime.lastCleanupAt !== undefined &&
+    now - runtime.lastCleanupAt < CLEANUP_INTERVAL_MS
+  ) return;
+
+  const serverEntries = await runtime.dependencies.readdir(parent, { withFileTypes: true });
+  await Promise.all(serverEntries.map(async (serverEntry) => {
+    if (!serverEntry.isDirectory() || !serverEntry.name.startsWith("server-")) return;
+    const serverRoot = join(parent, serverEntry.name);
+    const callEntries = await runtime.dependencies.readdir(serverRoot, { withFileTypes: true });
+    await Promise.all(callEntries.map(async (callEntry) => {
+      if (!callEntry.isDirectory() || !callEntry.name.startsWith("call-")) return;
+      const path = join(serverRoot, callEntry.name);
+      const metadata = await runtime.dependencies.stat(path);
+      if (now - metadata.mtimeMs > CALL_RETENTION_MS) {
+        await runtime.dependencies.rm(path, { recursive: true, force: true });
+      }
+    }));
+  }));
+  runtime.lastCleanupAt = now;
 }
 
-async function outputDirectory(outDir: string | undefined): Promise<string> {
-  const directory = outDir ?? await defaultOutDir();
-  await mkdir(directory, { recursive: true });
-  return directory;
+async function defaultOutDir(runtime: ServerRuntime): Promise<string> {
+  if (!runtime.temporaryDirectory) {
+    const creating = (async () => {
+      const parent = join(runtime.dependencies.tempDirectory(), "chemdraft-mcp");
+      await runtime.dependencies.mkdir(parent, { recursive: true });
+      await cleanupExpiredCallDirectories(runtime, parent);
+      const root = await runtime.dependencies.mkdtemp(join(parent, "server-"));
+      return root;
+    })();
+    runtime.temporaryDirectory = creating;
+    creating.catch(() => {
+      if (runtime.temporaryDirectory === creating) runtime.temporaryDirectory = undefined;
+    });
+  }
+  return runtime.temporaryDirectory;
+}
+
+async function outputDirectory(runtime: ServerRuntime, outDir: string | undefined): Promise<string> {
+  const root = outDir ?? await defaultOutDir(runtime);
+  await runtime.dependencies.mkdir(root, { recursive: true });
+  if (outDir === undefined) {
+    await cleanupExpiredCallDirectories(
+      runtime,
+      join(runtime.dependencies.tempDirectory(), "chemdraft-mcp")
+    );
+  }
+  return runtime.dependencies.mkdtemp(join(root, "call-"));
 }
 
 function commandFailure(stderr: readonly string[], exitCode: CliExitCode): CommandFailure {
@@ -96,45 +219,104 @@ function succeeded(outcome: CommandSuccess | CommandFailure): outcome is Command
   return "result" in outcome;
 }
 
-async function imageContent(files: readonly ImageFile[]) {
-  return Promise.all(files.map(async ({ path, mimeType }) => ({
-    type: "image" as const,
-    data: (await readFile(path)).toString("base64"),
-    mimeType
-  })));
+function payloadTooLarge(path: string): ReturnType<typeof errorResult> {
+  return errorResult(
+    `Output payload "${path}" exceeds the 5 MB MCP limit. Retry with a smaller width or a smaller structure.`
+  );
 }
 
 async function response(
-  command: Promise<CommandSuccess | CommandFailure>,
-  images: readonly ImageFile[] = [],
+  runtime: ServerRuntime,
+  outcome: CommandSuccess | CommandFailure,
+  files: readonly OutputFile[] = [],
   additionalText: string | undefined = undefined
 ) {
-  const outcome = await command;
   if ("error" in outcome) return errorResult(outcome.error);
+  if (Buffer.byteLength(outcome.jsonLine) > MAX_RETURNED_PAYLOAD_BYTES) {
+    return payloadTooLarge("command result");
+  }
+  if (additionalText !== undefined && Buffer.byteLength(additionalText) > MAX_RETURNED_PAYLOAD_BYTES) {
+    return payloadTooLarge("command report");
+  }
+
+  const loaded = await Promise.all(files.map(async (file) => ({
+    ...file,
+    contents: await runtime.dependencies.readFile(file.path)
+  })));
+  const oversized = loaded.find((file) => file.contents.byteLength > MAX_RETURNED_PAYLOAD_BYTES);
+  if (oversized) return payloadTooLarge(oversized.path);
+
   const content: Array<
     | { type: "text"; text: string }
-    | { type: "image"; data: string; mimeType: "image/png" | "image/svg+xml" }
+    | { type: "image"; data: string; mimeType: "image/png" }
+    | { type: "resource"; resource: { uri: string; blob: string; mimeType: "application/pdf" } }
   > = [{ type: "text", text: outcome.jsonLine }];
-  if (additionalText) content.push({ type: "text" as const, text: additionalText });
-  content.push(...await imageContent(images));
+  if (additionalText) content.push({ type: "text", text: additionalText });
+  for (const file of loaded) {
+    if (file.kind === "image") {
+      content.push({ type: "image", data: file.contents.toString("base64"), mimeType: "image/png" });
+    } else if (file.kind === "text") {
+      content.push({ type: "text", text: file.contents.toString("utf8") });
+    } else {
+      content.push({
+        type: "resource",
+        resource: {
+          uri: pathToFileURL(file.path).href,
+          blob: file.contents.toString("base64"),
+          mimeType: "application/pdf"
+        }
+      });
+    }
+  }
   return { content };
 }
 
-function pngFiles(result: Record<string, unknown>): ImageFile[] {
+function resultPaths(result: Record<string, unknown>): string[] {
   const paths = [
     ...(Array.isArray(result.files) ? result.files : []),
     ...(Array.isArray(result.spectrum) ? result.spectrum : []),
     result.png,
     result.out
-  ].filter((value): value is string => typeof value === "string" && value.endsWith(".png"));
-  return [...new Set(paths)].map((path) => ({ path, mimeType: "image/png" }));
+  ].filter((value): value is string => typeof value === "string");
+  return [...new Set(paths)];
+}
+
+function visualFiles(result: Record<string, unknown>): OutputFile[] {
+  const files: OutputFile[] = [];
+  for (const path of resultPaths(result)) {
+    if (path.toLowerCase().endsWith(".png")) files.push({ path, kind: "image" });
+    if (path.toLowerCase().endsWith(".svg")) files.push({ path, kind: "text" });
+  }
+  return files;
+}
+
+function exportFiles(result: Record<string, unknown>, format: string): OutputFile[] {
+  const path = resultPaths(result).find((candidate) => candidate.toLowerCase().endsWith(`.${format}`));
+  if (!path) return [];
+  return [{ path, kind: format === "pdf" ? "resource" : "text" }];
 }
 
 const chemistryHonesty = "Radicals and isotope labels are refused rather than silently changed.";
 
 /** Create the reusable server instance used by stdio and in-memory MCP clients. */
-export function createChemDraftMcpServer(): McpServer {
+export function createChemDraftMcpServer(
+  dependencyOverrides: ChemDraftMcpDependencies = {}
+): McpServer {
+  const runtime: ServerRuntime = {
+    dependencies: {
+      ...defaultDependencies,
+      ...dependencyOverrides,
+      commands: { ...defaultDependencies.commands, ...dependencyOverrides.commands }
+    }
+  };
   const server = new McpServer({ name: "chemdraft", version: "0.0.0" });
+  const runTool = <T>(work: () => Promise<T>) => withToolExecutionLock(async () => {
+    try {
+      return await work();
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : String(error));
+    }
+  });
 
   server.registerTool("render_structure", {
     description: `Render a SMILES structure as PNG, SVG, or both. ${chemistryHonesty}`,
@@ -142,44 +324,65 @@ export function createChemDraftMcpServer(): McpServer {
       smiles: z.string().min(1),
       width: z.number().positive().optional(),
       background: z.enum(["white", "transparent"]).optional(),
+      bondLength: z.number().positive().optional(),
+      padding: z.number().nonnegative().optional(),
       format: z.enum(["png", "svg", "both"]).optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ smiles, width, background, format = "png", outDir }) => {
-    const directory = await outputDirectory(outDir);
+  }, async ({ smiles, width, background, bondLength, padding, format = "png", outDir }) => runTool(async () => {
+    const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.${format === "svg" ? "svg" : "png"}`);
     const argv = ["--smiles", smiles, "--out", output, "--format", format];
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);
-    const outcome = await runCommand(runRenderCommand, argv);
-    return response(Promise.resolve(outcome), succeeded(outcome) ? pngFiles(outcome.result) : []);
-  });
+    if (bondLength !== undefined) argv.push("--bond-length", String(bondLength));
+    if (padding !== undefined) argv.push("--padding", String(padding));
+    const outcome = await runCommand(runtime.dependencies.commands.render, argv);
+    return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
+  }));
 
   server.registerTool("render_grid", {
-    description: `Render named SMILES entries as a PNG grid. ${chemistryHonesty}`,
+    description: `Render named SMILES entries as a PNG or SVG grid. ${chemistryHonesty}`,
     inputSchema: {
       items: z.array(z.object({ name: z.string().min(1), smiles: z.string().min(1) })).min(1),
       labels: z.enum(["none", "letters", "names"]).optional(),
       columns: z.number().int().positive().optional(),
       width: z.number().positive().optional(),
+      gutter: z.number().nonnegative().optional(),
+      padding: z.number().nonnegative().optional(),
+      background: z.enum(["white", "transparent"]).optional(),
+      format: z.enum(["png", "svg"]).optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ items, labels, columns, width, outDir }) => {
-    const directory = await outputDirectory(outDir);
+  }, async ({
+    items,
+    labels,
+    columns,
+    width,
+    gutter,
+    padding,
+    background,
+    format = "png",
+    outDir
+  }) => runTool(async () => {
+    const directory = await outputDirectory(runtime, outDir);
     const name = slug(items.map((item) => item.smiles).join("-"));
     const batch = join(directory, `${name}-grid-items.json`);
-    const output = join(directory, `${name}-grid.png`);
-    await writeFile(batch, JSON.stringify(items));
+    const output = join(directory, `${name}-grid.${format}`);
+    await runtime.dependencies.writeFile(batch, JSON.stringify(items));
     const argv = ["--batch", batch, "--out", output];
     if (labels !== undefined) argv.push("--labels", labels);
     if (columns !== undefined) argv.push("--columns", String(columns));
     if (width !== undefined) argv.push("--width", String(width));
-    const outcome = await runCommand(runGridCommand, argv);
-    return response(Promise.resolve(outcome), succeeded(outcome) ? pngFiles(outcome.result) : []);
-  });
+    if (gutter !== undefined) argv.push("--gutter", String(gutter));
+    if (padding !== undefined) argv.push("--padding", String(padding));
+    if (background !== undefined) argv.push("--background", background);
+    const outcome = await runCommand(runtime.dependencies.commands.grid, argv);
+    return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
+  }));
 
   server.registerTool("render_reaction", {
-    description: `Render a reaction as a PNG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
+    description: `Render a reaction as a PNG or SVG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
     inputSchema: {
       reactionSmiles: z.string().min(1).optional(),
       reactants: z.array(z.string().min(1)).min(1).optional(),
@@ -188,9 +391,22 @@ export function createChemDraftMcpServer(): McpServer {
       conditions: z.string().optional(),
       arrow: z.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
       width: z.number().positive().optional(),
+      background: z.enum(["white", "transparent"]).optional(),
+      format: z.enum(["png", "svg"]).optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ reactionSmiles, reactants, agents, products, conditions, arrow, width, outDir }) => {
+  }, async ({
+    reactionSmiles,
+    reactants,
+    agents,
+    products,
+    conditions,
+    arrow,
+    width,
+    background,
+    format = "png",
+    outDir
+  }) => runTool(async () => {
     const hasArrays = reactants !== undefined || agents !== undefined || products !== undefined;
     if ((reactionSmiles === undefined) === !hasArrays) {
       return errorResult("Provide exactly one of reactionSmiles or reactants/agents/products arrays.");
@@ -198,9 +414,9 @@ export function createChemDraftMcpServer(): McpServer {
     if (hasArrays && (!reactants || !products)) {
       return errorResult("Component-array reactions require at least one reactant and one product.");
     }
-    const directory = await outputDirectory(outDir);
+    const directory = await outputDirectory(runtime, outDir);
     const reactionSlug = reactionSmiles ?? [...reactants!, ...(agents ?? []), ...products!].join("-");
-    const output = join(directory, `${slug(reactionSlug)}-reaction.png`);
+    const output = join(directory, `${slug(reactionSlug)}-reaction.${format}`);
     const argv = reactionSmiles !== undefined
       ? ["--rxn", reactionSmiles, "--out", output]
       : [
@@ -212,9 +428,10 @@ export function createChemDraftMcpServer(): McpServer {
     if (conditions !== undefined) argv.push("--conditions", conditions);
     if (arrow !== undefined) argv.push("--arrow", arrow);
     if (width !== undefined) argv.push("--width", String(width));
-    const outcome = await runCommand(runReactionCommand, argv);
-    return response(Promise.resolve(outcome), succeeded(outcome) ? pngFiles(outcome.result) : []);
-  });
+    if (background !== undefined) argv.push("--background", background);
+    const outcome = await runCommand(runtime.dependencies.commands.reaction, argv);
+    return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
+  }));
 
   server.registerTool("analyze_structure", {
     description: "Analyze a SMILES structure. Every summary field carries a value plus an analysis status, so declined and not-requested methods remain distinct. Quote reported pKa intervals rather than presenting predictions as exact.",
@@ -223,52 +440,68 @@ export function createChemDraftMcpServer(): McpServer {
       methods: z.array(z.string().min(1)).min(1).optional(),
       format: z.enum(["json", "md"]).optional()
     }
-  }, async ({ smiles, methods, format = "json" }) => {
+  }, async ({ smiles, methods, format = "json" }) => runTool(async () => {
+    await outputDirectory(runtime, undefined);
     const argv = ["--smiles", smiles, "--format", format];
     if (methods) argv.push("--methods", methods.join(","));
-    const outcome = await runCommand(runAnalyzeCommand, argv);
+    const outcome = await runCommand(runtime.dependencies.commands.analyze, argv);
     const report = succeeded(outcome) && format === "md" && typeof outcome.result.report === "string"
       ? outcome.result.report
       : undefined;
-    return response(Promise.resolve(outcome), [], report);
-  });
+    return response(runtime, outcome, [], report);
+  }));
 
   server.registerTool("name_to_structure", {
     description: `Convert a chemical name with OPSIN, optionally rendering its structure. ${chemistryHonesty}`,
     inputSchema: {
       name: z.string().min(1),
-      render: z.boolean().optional()
+      render: z.boolean().optional(),
+      allowAmbiguous: z.boolean().optional()
     }
-  }, async ({ name, render = false }) => {
-    const directory = await outputDirectory(undefined);
+  }, async ({ name, render = false, allowAmbiguous = false }) => runTool(async () => {
+    const directory = await outputDirectory(runtime, undefined);
     const output = join(directory, `${slug(name)}.png`);
     const argv = ["--name", name];
     if (render) argv.push("--render", output);
-    const outcome = await runCommand(runNameCommand, argv);
-    return response(Promise.resolve(outcome), succeeded(outcome) ? pngFiles(outcome.result) : []);
-  });
+    if (allowAmbiguous) argv.push("--allow-ambiguous");
+    const outcome = await runCommand(runtime.dependencies.commands.name, argv);
+    return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
+  }));
 
   server.registerTool("check_stereo", {
     description: `Inspect specified and unspecified tetrahedral stereocentres and E/Z double bonds. Atom and bond indices are 0-based. ${chemistryHonesty}`,
     inputSchema: { smiles: z.string().min(1) }
-  }, async ({ smiles }) => response(runCommand(runStereoCommand, ["--smiles", smiles])));
+  }, async ({ smiles }) => runTool(async () => {
+    await outputDirectory(runtime, undefined);
+    return response(runtime, await runCommand(runtime.dependencies.commands.stereo, ["--smiles", smiles]));
+  }));
 
   server.registerTool("predict_nmr", {
     description: "Predict 1H/13C NMR shifts. J values and multiplicities are estimates, not measured values; unmatched environments remain warnings rather than invented values.",
     inputSchema: {
       smiles: z.string().min(1),
       nuclei: z.array(z.enum(["1H", "13C"])).min(1).optional(),
-      spectrum: z.boolean().optional()
+      spectrum: z.boolean().optional(),
+      statistic: z.enum(["median", "mean"]).optional(),
+      ignoreLabileHydrogens: z.boolean().optional()
     }
-  }, async ({ smiles, nuclei, spectrum = false }) => {
-    const directory = await outputDirectory(undefined);
+  }, async ({
+    smiles,
+    nuclei,
+    spectrum = false,
+    statistic,
+    ignoreLabileHydrogens = false
+  }) => runTool(async () => {
+    const directory = await outputDirectory(runtime, undefined);
     const output = join(directory, `${slug(smiles)}-nmr.png`);
     const argv = ["--smiles", smiles];
     if (nuclei) argv.push("--nuclei", nuclei.join(","));
     if (spectrum) argv.push("--spectrum", output);
-    const outcome = await runCommand(runNmrCommand, argv);
-    return response(Promise.resolve(outcome), succeeded(outcome) ? pngFiles(outcome.result) : []);
-  });
+    if (statistic !== undefined) argv.push("--statistic", statistic);
+    if (ignoreLabileHydrogens) argv.push("--ignore-labile");
+    const outcome = await runCommand(runtime.dependencies.commands.nmr, argv);
+    return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
+  }));
 
   server.registerTool("export_structure", {
     description: `Export a SMILES structure without changing its chemistry. ${chemistryHonesty}`,
@@ -277,11 +510,15 @@ export function createChemDraftMcpServer(): McpServer {
       format: z.enum(["cdxml", "pdf", "sdf", "mol", "smi"]),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ smiles, format, outDir }) => {
-    const directory = await outputDirectory(outDir);
+  }, async ({ smiles, format, outDir }) => runTool(async () => {
+    const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.${format}`);
-    return response(runCommand(runExportCommand, ["--smiles", smiles, "--format", format, "--out", output]));
-  });
+    const outcome = await runCommand(
+      runtime.dependencies.commands.export,
+      ["--smiles", smiles, "--format", format, "--out", output]
+    );
+    return response(runtime, outcome, succeeded(outcome) ? exportFiles(outcome.result, format) : []);
+  }));
 
   return server;
 }

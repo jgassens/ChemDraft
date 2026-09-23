@@ -44,15 +44,15 @@ interface ParsedArguments {
 export const renderHelp = `ChemDraft headless structure renderer
 
 Usage:
-  pnpm -s render --smiles <SMILES> --out <file.png|file.svg>
-  pnpm -s render --smiles <SMILES> --out <base> --format both
-  pnpm -s render --batch <jobs.json> --out-dir <dir> [--format png|svg|both]
+  pnpm -s chemdraft render --smiles <SMILES> --out <file.png|file.svg>
+  pnpm -s chemdraft render --smiles <SMILES> --out <base> --format both
+  pnpm -s chemdraft render --batch <jobs.json> --out-dir <dir> [--format png|svg|both]
 
 Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O"}.
 Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options:
-  --width <px>                    PNG width (default: 600)
+  --width <px>                    PNG width, 16–4000 (default: 600)
   --background white|transparent SVG/PNG background (default: white)
   --bond-length <px>              Depicted bond length (default: ${renderDefaults.bondLength}, the desktop paste value)
   --padding <px>                  Crop padding around the molecule (default: 24)
@@ -62,7 +62,7 @@ Options:
 Output:
   One JSON line per structure is written to stdout. Progress is written to stderr.
   stereoCenters counts specified centers; unspecifiedStereoCenters counts constitutional centers
-  without a specified descriptor.
+  without a specified descriptor; unspecifiedDoubleBonds counts unknown E/Z double bonds.
   Exit 0 when every structure succeeds, 1 when any render fails, and 2 for bad arguments.`;
 
 const renderOptions = {
@@ -203,6 +203,7 @@ async function renderJob(
       engine: rendered.engine,
       stereoCenters: rendered.stereoCenters,
       unspecifiedStereoCenters: rendered.unspecifiedStereoCenters,
+      unspecifiedDoubleBonds: rendered.unspecifiedDoubleBonds,
       warnings: rendered.warnings
     });
     writeProgress(io, `Wrote ${files.join(", ")}`);

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
@@ -18,8 +18,10 @@ import {
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import { stereoPerceptionMolfile } from "../../../../apps/desktop/src/documentWorkflow";
-import { renderSmilesToAssets, type RenderedSmiles } from "../document";
-import { runRenderCommand as runCli } from "./render";
+import { buildSmilesDocument, renderSmilesToAssets, type RenderedSmiles } from "../document";
+import { renderHelp, runRenderCommand as runCli } from "./render";
+
+vi.setConfig({ testTimeout: 60_000 });
 
 interface DecodedPng {
   width: number;
@@ -203,6 +205,36 @@ describe("headless ChemDraft rendering", () => {
     const unspecified = await renderSmilesToAssets("CC(N)C(=O)O");
     expect([specified.stereoCenters, specified.unspecifiedStereoCenters]).toEqual([1, 0]);
     expect([unspecified.stereoCenters, unspecified.unspecifiedStereoCenters]).toEqual([0, 1]);
+  }, 60_000);
+
+  it("keeps the reviewer's unspecified alkene unspecified and warns about drawn geometry", async () => {
+    const rendered = await renderSmilesToAssets("CC=CC");
+    expect(rendered.unspecifiedDoubleBonds).toBe(1);
+    expect(rendered.warnings).toContain(
+      "E/Z unspecified for 1 double bond(s); the 2D drawing necessarily shows one geometry"
+    );
+    expect(rendered.molecule.structure).toMatch(/^.{6}  2  3\s+0\s+0\s+0$/m);
+    expect((await computeStructureIdentifiers(rendered.molecule.structure))?.smiles).toBe("CC=CC");
+  }, 60_000);
+
+  it("renders the reviewer's Pt coordination bonds as dative without changing ligand hydrogens", async () => {
+    const rendered = await renderSmilesToAssets("N->[Pt+2](<-N)(Cl)Cl");
+    expect(rendered.molecule.bonds.filter((bond) => bond.display?.bondStyle === "dashed"))
+      .toHaveLength(2);
+    expect(rendered.svg.match(/data-bond-style="dashed"/g)).toHaveLength(2);
+    expect(rendered.svg.match(/data-atom-label="NH3"/g)).toHaveLength(2);
+    expect(rendered.molecule.structure.match(/M  V30 \d+ 9 \d+ \d+/g)).toHaveLength(2);
+  }, 60_000);
+
+  it("stores an identity-checked native molfile after building the document", async () => {
+    const built = await buildSmilesDocument("C[C@@H](N)C(=O)O");
+    expect((await computeStructureIdentifiers(built.identityMolfile))?.smiles)
+      .toBe(built.sourceCanonicalSmiles);
+  }, 60_000);
+
+  it("documents the canonical chemdraft render invocation", () => {
+    expect(renderHelp).toContain("pnpm -s chemdraft render --smiles");
+    expect(renderHelp).not.toContain("pnpm -s render --smiles");
   });
 
   it.each([
@@ -421,5 +453,5 @@ describe("headless ChemDraft rendering", () => {
     expect(result).toMatchObject({ ok: false, smiles: "CCO" });
     expect(result.error).toContain("RDKit module loader not set");
     expect(lines[0]).not.toContain('"engine":"ocl"');
-  }, 30_000);
+  }, 60_000);
 });

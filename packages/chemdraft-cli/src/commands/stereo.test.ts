@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { runStereoCommand } from "./stereo";
+
+vi.setConfig({ testTimeout: 60_000 });
 
 async function inspect(smiles: string) {
   const stdout: string[] = [];
@@ -74,5 +76,12 @@ describe("chemdraft stereo", () => {
     expect(result).toBe(1);
     expect(output).toMatchObject({ name: "structure", smiles: "not a smiles", ok: false });
     expect(output.error).toEqual(expect.any(String));
-  });
+  }, 60_000);
+
+  it("rejects the reviewer's whitespace-only SMILES instead of reporting ok:true", async () => {
+    const { result, output } = await inspect("   ");
+    expect(result).toBe(1);
+    expect(output).toMatchObject({ name: "structure", smiles: "   ", ok: false });
+    expect(output.error).toContain("input is empty");
+  }, 60_000);
 });

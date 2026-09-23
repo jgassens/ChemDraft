@@ -5,6 +5,7 @@ import {
   buildAnalysisReport,
   renderReportMarkdown,
   renderReportText,
+  sourceAtomsFor,
   statusHasValue,
   type AnalysisResult,
   type AnalysisRun,
@@ -53,10 +54,23 @@ interface SummaryValue<T> {
   value: T | null;
   status: SummaryStatus;
   reason?: string;
+  /**
+   * Present only when the value was computed on a derived interpretation (the source result is
+   * absent): which interpretation, and its human-readable label, so the reader knows the number
+   * describes e.g. the reference protomer rather than the drawn charge state.
+   */
+  interpretationId?: string;
+  interpretationLabel?: string;
 }
 
 interface PkaSummarySite {
-  atomIndex: number;
+  /**
+   * 0-based index into the DRAWN (source) structure. A site computed on a derived interpretation is
+   * mapped back through that interpretation's atom-mapping ledger; null when it has no source atom.
+   */
+  atomIndex: number | null;
+  /** The site's index in the interpretation it was computed on, when that is not the source. */
+  derivedAtomIndex?: number;
   siteType: string;
   transition: "acidic" | "basic";
   acidCharge: number;
@@ -95,7 +109,13 @@ Options:
   --help              Show this help.
 
 Every job emits one JSON result line. For md/text without --out, the rendered report is carried in
-that line's "report" field so stdout remains valid JSON Lines.`;
+that line's "report" field so stdout remains valid JSON Lines.
+
+The "summary" object reports the drawn (source) structure where a method ran on it. When a method
+ran only on a derived interpretation - the pKa ladder is built on the reference protomer, with every
+removable formal charge removed - its field carries "interpretationId" and "interpretationLabel", and
+per-site "atomIndex" is mapped back to the 0-based atom of the drawn SMILES ("derivedAtomIndex" keeps
+the index in the derived form). "not-requested" means the method was not run at all.`;
 
 const VALID_METHOD_IDS = rdkitAnalysisContracts().map((contract) => contract.id).sort();
 const VALID_METHOD_ID_SET = new Set(VALID_METHOD_IDS);
@@ -161,11 +181,37 @@ async function readJobs(path: string): Promise<AnalyzeJob[]> {
   });
 }
 
-function sourceResult(run: AnalysisRun, methodId: string): AnalysisResult | undefined {
-  return run.results.find((result) =>
-    result.methodId === methodId &&
-    result.interpretationId === "source"
-  );
+/**
+ * The result a summary field reports: the source interpretation's when the method ran there,
+ * otherwise the first derived interpretation's (preferring one that carries a value). A method whose
+ * contract runs on a derived form — Dimorphite's pKa ladder is built on the reference protomer — is
+ * still a requested, computed result; it must never read as "not-requested".
+ */
+function summaryResult(run: AnalysisRun, methodId: string): AnalysisResult | undefined {
+  const matching = run.results.filter((result) => result.methodId === methodId);
+  return matching.find((result) => result.interpretationId === "source") ??
+    matching.find((result) => statusHasValue(result.status)) ??
+    matching[0];
+}
+
+function interpretationFields(run: AnalysisRun, result: AnalysisResult): {
+  interpretationId?: string;
+  interpretationLabel?: string;
+} {
+  if (result.interpretationId === "source") return {};
+  const label = run.interpretations.find((entry) => entry.id === result.interpretationId)?.label;
+  return {
+    interpretationId: result.interpretationId,
+    ...(label ? { interpretationLabel: label } : {})
+  };
+}
+
+/** Map one atom index from a result's interpretation back to the drawn structure. */
+function sourceAtomIndex(run: AnalysisRun, result: AnalysisResult, atomIndex: number): number | null {
+  if (result.interpretationId === "source") return atomIndex;
+  const interpretation = run.interpretations.find((entry) => entry.id === result.interpretationId);
+  if (!interpretation) return null;
+  return sourceAtomsFor(interpretation, [atomIndex])[0] ?? null;
 }
 
 function resultReason(result: AnalysisResult): string | undefined {
@@ -177,12 +223,13 @@ function summarizeResult<T>(
   methodId: string,
   readValue: (result: AnalysisResult) => T | null
 ): SummaryValue<T> {
-  const result = sourceResult(run, methodId);
+  const result = summaryResult(run, methodId);
   if (!result) return { value: null, status: "not-requested" };
   return {
     value: statusHasValue(result.status) ? readValue(result) : null,
     status: result.status,
-    ...(resultReason(result) ? { reason: resultReason(result) } : {})
+    ...(resultReason(result) ? { reason: resultReason(result) } : {}),
+    ...interpretationFields(run, result)
   };
 }
 
@@ -198,24 +245,41 @@ function identifier(run: AnalysisRun, methodId: string): SummaryValue<string> {
   );
 }
 
+function pkaSite(
+  run: AnalysisRun,
+  result: AnalysisResult,
+  entry: Extract<AnalysisResult, { kind: "ionization" }>["sites"][number]
+): PkaSummarySite {
+  const derived = result.interpretationId !== "source";
+  const atomIndex = sourceAtomIndex(run, result, entry.ionizableAtomIndex);
+  const reasons = [
+    ...(entry.pKa === null
+      ? [entry.derivation ?? "Recognized ionizable site has no reportable pKa value."]
+      : []),
+    ...(atomIndex === null
+      ? [`Site atom ${entry.ionizableAtomIndex} of interpretation "${result.interpretationId}" has no counterpart in the drawn structure.`]
+      : [])
+  ];
+  return {
+    atomIndex,
+    ...(derived ? { derivedAtomIndex: entry.ionizableAtomIndex } : {}),
+    siteType: entry.siteType,
+    transition: entry.transition,
+    acidCharge: entry.acidCharge,
+    basis: entry.basis,
+    value: entry.pKa,
+    ...(reasons.length > 0 ? { reason: reasons.join(" ") } : {}),
+    interval: entry.pKa === null || entry.spread === undefined
+      ? null
+      : { lower: entry.pKa - entry.spread, upper: entry.pKa + entry.spread }
+  };
+}
+
 export function summarizeAnalysisRun(run: AnalysisRun): AnalysisSummary {
-  const ionization = sourceResult(run, "dimorphite.ionizable-sites");
+  const ionization = summaryResult(run, "dimorphite.ionizable-sites");
   const pka = summarizeResult(run, "dimorphite.ionizable-sites", (result) =>
     result.kind === "ionization"
-      ? result.sites.map((entry): PkaSummarySite => ({
-          atomIndex: entry.ionizableAtomIndex,
-          siteType: entry.siteType,
-          transition: entry.transition,
-          acidCharge: entry.acidCharge,
-          basis: entry.basis,
-          value: entry.pKa,
-          ...(entry.pKa === null
-            ? { reason: entry.derivation ?? "Recognized ionizable site has no reportable pKa value." }
-            : {}),
-          interval: entry.pKa === null || entry.spread === undefined
-            ? null
-            : { lower: entry.pKa - entry.spread, upper: entry.pKa + entry.spread }
-        }))
+      ? result.sites.map((entry) => pkaSite(run, result, entry))
       : null
   );
   if (ionization && pka.reason === undefined && resultReason(ionization)) {

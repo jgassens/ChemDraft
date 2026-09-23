@@ -4,9 +4,8 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseOptions, stringOption } from "../args";
-import { renderSmilesToAssets } from "../document";
-import { installNodeEngines } from "../engine";
+import { booleanOption, parseOptions, stringOption } from "../args";
+import type { renderSmilesToAssets } from "../document";
 import {
   CliUsageError,
   cliExitCode,
@@ -34,6 +33,8 @@ export interface OpsinPaths {
   jarPath: string;
   timeoutMs?: number;
   killGraceMs?: number;
+  /** Observes child exit for process-lifecycle tests. */
+  onExit?: () => void;
 }
 
 export interface NameJob {
@@ -46,6 +47,7 @@ interface ParsedArguments {
   name?: string;
   batchFile?: string;
   renderPath?: string;
+  allowAmbiguous: boolean;
 }
 
 export interface NameCommandDependencies {
@@ -68,12 +70,13 @@ Usage:
   pnpm -s chemdraft name --batch <jobs.json>
 
 Batch input is a JSON array of {"name":"aspirin","query":"2-acetoxybenzoic acid"}.
-Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
+Names are trimmed, must match /^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$/, and must be unique without regard to case.
 
 Options:
   --name <name>       Chemical name to convert
   --batch <jobs.json> Convert named queries from a JSON batch
   --render <out.png>  Render a single successful result to PNG
+  --allow-ambiguous   Return OPSIN's result for an ambiguous name
   --help              Print this help
 
 Output:
@@ -84,6 +87,7 @@ const nameOptions = {
   "--name": { kind: "value" },
   "--batch": { kind: "value" },
   "--render": { kind: "value" },
+  "--allow-ambiguous": { kind: "boolean" },
   "--help": { kind: "boolean" }
 } as const;
 
@@ -121,6 +125,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const name = stringOption(parsed, "--name");
   const batchFile = stringOption(parsed, "--batch");
   const renderPath = stringOption(parsed, "--render");
+  const allowAmbiguous = booleanOption(parsed, "--allow-ambiguous");
   if ((name === undefined ? 0 : 1) + (batchFile === undefined ? 0 : 1) !== 1) {
     throw new CliUsageError("Provide exactly one of --name or --batch.");
   }
@@ -128,12 +133,12 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     if (renderPath !== undefined && !renderPath.toLowerCase().endsWith(".png")) {
       throw new CliUsageError("--render must name a .png file.");
     }
-    return { mode: "single", name: validateChemicalName(name), renderPath };
+    return { mode: "single", name: validateChemicalName(name), renderPath, allowAmbiguous };
   }
   if (renderPath !== undefined) {
     throw new CliUsageError("--render is only valid with --name; batch jobs have no shared PNG path.");
   }
-  return { mode: "batch", batchFile };
+  return { mode: "batch", batchFile, allowAmbiguous };
 }
 
 async function readJobs(path: string): Promise<NameJob[]> {
@@ -168,10 +173,19 @@ function parseSmiles(stdout: string): string | undefined {
   return undefined;
 }
 
-function parseFailureReason(stderr: string): string | undefined {
+function parseDiagnostics(stderr: string): string[] {
   return stderr.split(/\r?\n/)
     .map((line) => line.trim())
-    .find((line) => line.length > 0 && !line.startsWith("Run the jar using"));
+    .filter((line) => line.length > 0 && !line.startsWith("Run the jar using"));
+}
+
+function parseFailureReason(stderr: string): string | undefined {
+  return parseDiagnostics(stderr)[0];
+}
+
+function ambiguityReason(warnings: readonly string[]): string | undefined {
+  const warning = warnings.find((candidate) => candidate.includes("APPEARS_AMBIGUOUS"));
+  return warning?.replace(/^.*APPEARS_AMBIGUOUS:\s*/, "") || warning;
 }
 
 async function runOpsin(
@@ -179,7 +193,8 @@ async function runOpsin(
   jarPath: string,
   query: string,
   timeoutMs: number,
-  killGraceMs: number
+  killGraceMs: number,
+  onExit?: () => void
 ): Promise<OpsinOutput> {
   return new Promise((resolveOutput, rejectOutput) => {
     const child = spawn(javaPath, ["-jar", jarPath, "-o", "smi", "-n"], {
@@ -217,6 +232,7 @@ async function runOpsin(
         `Could not start the OPSIN engine at "${javaPath}" with "${jarPath}": ${error.message}. Rebuild it with ${REBUILD_RUNTIME_SCRIPT}.`
       ));
     });
+    child.once("exit", () => onExit?.());
     child.on("close", (exitCode) => {
       closed = true;
       clearTimers();
@@ -240,7 +256,7 @@ async function runOpsin(
 export async function convertNameWithOpsin(
   rawQuery: string,
   paths: OpsinPaths = defaultOpsinPaths()
-): Promise<{ smiles?: string; failureReason?: string }> {
+): Promise<{ smiles?: string; failureReason?: string; warnings: readonly string[] }> {
   const query = validateChemicalName(rawQuery);
   await requireReadable(paths.javaPath, "bundled Java executable", constants.X_OK);
   await requireReadable(paths.jarPath, "OPSIN jar", constants.R_OK);
@@ -249,7 +265,8 @@ export async function convertNameWithOpsin(
     paths.jarPath,
     query,
     paths.timeoutMs ?? OPSIN_TIMEOUT_MS,
-    paths.killGraceMs ?? OPSIN_KILL_GRACE_MS
+    paths.killGraceMs ?? OPSIN_KILL_GRACE_MS,
+    paths.onExit
   );
   if (output.exitCode !== 0) {
     throw new OpsinEngineError(
@@ -257,15 +274,18 @@ export async function convertNameWithOpsin(
     );
   }
   const smiles = parseSmiles(output.stdout);
-  if (smiles) return { smiles };
+  const warnings = parseDiagnostics(output.stderr);
+  if (smiles) return { smiles, warnings };
   return {
-    failureReason: parseFailureReason(output.stderr) ?? `"${query}" could not be interpreted as a chemical name.`
+    failureReason: parseFailureReason(output.stderr) ?? `"${query}" could not be interpreted as a chemical name.`,
+    warnings
   };
 }
 
 async function runJob(
   job: NameJob,
   renderPath: string | undefined,
+  allowAmbiguous: boolean,
   io: CliIo,
   dependencies: NameCommandDependencies
 ): Promise<boolean> {
@@ -274,13 +294,26 @@ async function runJob(
     const converted = await convertNameWithOpsin(job.query, dependencies.opsinPaths);
     if (!converted.smiles) {
       const error = `Could not interpret chemical name "${job.query}": ${converted.failureReason}`;
-      writeJsonLine(io, { name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error });
+      writeJsonLine(io, {
+        name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error, warnings: converted.warnings
+      });
+      writeProgress(io, `Failed ${job.name}: ${error}`);
+      return false;
+    }
+
+    const reason = ambiguityReason(converted.warnings);
+    if (reason !== undefined && !allowAmbiguous) {
+      const error = `ambiguous name: ${reason}; give a locant or full name`;
+      writeJsonLine(io, {
+        name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error, warnings: converted.warnings
+      });
       writeProgress(io, `Failed ${job.name}: ${error}`);
       return false;
     }
 
     if (renderPath !== undefined) {
-      const rendered = await (dependencies.renderSmiles ?? renderSmilesToAssets)(
+      const renderSmiles = dependencies.renderSmiles ?? (await import("../document")).renderSmilesToAssets;
+      const rendered = await renderSmiles(
         converted.smiles,
         { name: job.name }
       );
@@ -293,7 +326,7 @@ async function runJob(
         smiles: converted.smiles,
         engine: OPSIN_VERSION,
         png: renderPath,
-        warnings: rendered.warnings
+        warnings: [...converted.warnings, ...rendered.warnings]
       });
       writeProgress(io, `Wrote ${renderPath}`);
       return true;
@@ -305,7 +338,7 @@ async function runJob(
       ok: true,
       smiles: converted.smiles,
       engine: OPSIN_VERSION,
-      warnings: []
+      warnings: converted.warnings
     });
     writeProgress(io, `Converted ${job.name}`);
     return true;
@@ -331,8 +364,10 @@ export async function runNameCommand(
       io.stdout(nameHelp);
       return cliExitCode.ok;
     }
-    // Rendering invokes RDKit through document.ts; install the Node bridge before either engine is used.
-    installNodeEngines();
+    // Rendering invokes RDKit through document.ts; name-only conversion does not need its loader.
+    if (parsed.mode === "single" && parsed.renderPath !== undefined && dependencies.renderSmiles === undefined) {
+      (await import("../engine")).installNodeEngines();
+    }
     const jobs = parsed.mode === "single"
       ? [{ name: parsed.name!, query: parsed.name! }]
       : await readJobs(parsed.batchFile!);
@@ -341,6 +376,7 @@ export async function runNameCommand(
       if (!await runJob(
         job,
         parsed.mode === "single" ? parsed.renderPath : undefined,
+        parsed.allowAmbiguous,
         io,
         dependencies
       )) {

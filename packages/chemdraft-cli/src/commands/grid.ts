@@ -298,17 +298,18 @@ export async function runGridCommand(
       return cliExitCode.ok;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const failingJob = jobs.find((job) => message.includes(job.smiles));
-      const namedMessage = failingJob && !message.includes(failingJob.smiles)
-        ? `Unable to render SMILES "${failingJob.smiles}": ${message}`
-        : message;
+      // Render errors name the SMILES in quotes; match the quoted form so a short SMILES such as
+      // methane's "C" is not blamed for any message that merely contains the letter C.
+      const failingJob = jobs.find((job) =>
+        message.includes(`"${job.smiles}"`) || message.includes(`"${job.smiles.trim()}"`)
+      );
       writeJsonLine(io, {
         name: "grid",
         ok: false,
-        error: namedMessage,
+        error: message,
         ...(failingJob ? { smiles: failingJob.smiles } : {})
       });
-      writeProgress(io, `Failed grid: ${namedMessage}`);
+      writeProgress(io, `Failed grid: ${message}`);
       return cliExitCode.failed;
     }
   } catch (error) {

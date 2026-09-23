@@ -2,7 +2,10 @@ import { Resvg } from "@resvg/resvg-js";
 
 import {
   createEmptyDocument,
+  moleculeToMolfileV2000,
+  moleculeToMolfileV3000,
   type ChemDraftDocument,
+  type MoleculeBond,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
@@ -18,6 +21,7 @@ import {
   generateSmiles2DMolfile,
   RdkitNotConfiguredError
 } from "@chemdraft/rdkit-adapter";
+import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import {
   applyMoleculeTargetBondLength,
@@ -48,6 +52,7 @@ export interface RenderedSmiles {
   engine: DepictionEngine;
   stereoCenters: number;
   unspecifiedStereoCenters: number;
+  unspecifiedDoubleBonds: number;
   warnings: string[];
   document: ChemDraftDocument;
   molecule: MoleculeObject;
@@ -60,6 +65,10 @@ export interface SmilesDepictionResult {
   engine: DepictionEngine;
   stereoCenters: number;
   unspecifiedStereoCenters: number;
+  sourceCanonicalSmiles?: string;
+  identityVerifiedByRdkit: boolean;
+  unspecifiedDoubleBondIndices: number[];
+  dativeBondIndices: number[];
   warnings: string[];
 }
 
@@ -72,6 +81,10 @@ interface Bounds {
 
 const DEFAULT_WIDTH = 600;
 const DEFAULT_PADDING = 24;
+const MIN_RASTER_WIDTH = 16;
+const MAX_RASTER_WIDTH = 4000;
+const MAX_SMILES_LENGTH = 5000;
+const MAX_HEAVY_ATOMS = 500;
 const HIT_TARGET_CLASSES = new Set([
   "native-bond-hit-target",
   "native-bond-hover-decorator",
@@ -82,6 +95,111 @@ const HIT_TARGET_CLASSES = new Set([
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function isRdkitNotConfiguredError(error: unknown): boolean {
+  return error instanceof RdkitNotConfiguredError ||
+    (error instanceof Error && error.name === "RdkitNotConfiguredError");
+}
+
+function normalizedSmilesInput(smiles: string): string {
+  if (smiles.length > MAX_SMILES_LENGTH) {
+    throw new Error(
+      `Unable to render SMILES: input exceeds the ${MAX_SMILES_LENGTH}-character limit.`
+    );
+  }
+  const trimmed = smiles.trim();
+  if (!trimmed) {
+    throw new Error("Unable to render SMILES: the input is empty.");
+  }
+  return trimmed;
+}
+
+function rejectOversizedDepiction(depiction: PastedStructureDepiction): void {
+  const heavyAtoms = depiction.atoms.filter((atom) => atom.element !== "H").length;
+  if (heavyAtoms > MAX_HEAVY_ATOMS) {
+    throw new Error(
+      `Unable to render SMILES: structure has ${heavyAtoms} heavy atoms; the limit is ${MAX_HEAVY_ATOMS}.`
+    );
+  }
+}
+
+interface SourceBondSemantics {
+  unspecifiedDoubleBondIndices: number[];
+  dativeBondIndices: number[];
+}
+
+/** Read the bond semantics the desktop's structural depiction type cannot currently carry. */
+function sourceBondSemantics(molfile: string): SourceBondSemantics {
+  const unspecifiedDoubleBondIndices: number[] = [];
+  const dativeBondIndices: number[] = [];
+  const lines = molfile.split(/\r?\n/);
+  const v2000CountsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+  if (v2000CountsIndex >= 0) {
+    const counts = lines[v2000CountsIndex] ?? "";
+    const atomCount = Number.parseInt(counts.slice(0, 3).trim(), 10);
+    const bondCount = Number.parseInt(counts.slice(3, 6).trim(), 10);
+    if (Number.isInteger(atomCount) && Number.isInteger(bondCount)) {
+      const bondStart = v2000CountsIndex + 1 + atomCount;
+      for (let index = 0; index < bondCount; index += 1) {
+        const line = lines[bondStart + index] ?? "";
+        const order = Number.parseInt(line.slice(6, 9).trim(), 10);
+        const stereo = Number.parseInt(line.slice(9, 12).trim(), 10);
+        if (order === 2 && stereo === 3) unspecifiedDoubleBondIndices.push(index);
+      }
+    }
+    return { unspecifiedDoubleBondIndices, dativeBondIndices };
+  }
+
+  let inBondSection = false;
+  let bondIndex = 0;
+  for (const line of lines) {
+    if (/^M\s+V30\s+BEGIN BOND\s*$/.test(line)) {
+      inBondSection = true;
+      continue;
+    }
+    if (/^M\s+V30\s+END BOND\s*$/.test(line)) {
+      inBondSection = false;
+      continue;
+    }
+    if (!inBondSection) continue;
+    const match = /^M\s+V30\s+\d+\s+(\d+)\s+\d+\s+\d+\b(.*)$/.exec(line);
+    if (!match) continue;
+    const type = Number(match[1]);
+    if (type === 9) dativeBondIndices.push(bondIndex);
+    if (type === 2 && /\bCFG=2\b/.test(match[2] ?? "")) {
+      unspecifiedDoubleBondIndices.push(bondIndex);
+    }
+    bondIndex += 1;
+  }
+  return { unspecifiedDoubleBondIndices, dativeBondIndices };
+}
+
+async function canonicalSmiles(structure: string, label: "input" | "output"): Promise<string> {
+  const identifiers = await computeStructureIdentifiers(structure);
+  if (!identifiers?.smiles) {
+    throw new Error(`Unable to verify chemical identity: RDKit could not canonicalize the ${label}.`);
+  }
+  return identifiers.smiles;
+}
+
+async function optionalCanonicalSmiles(structure: string): Promise<string | undefined> {
+  try {
+    return (await computeStructureIdentifiers(structure))?.smiles;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Fail closed if RDKit's canonical isomeric SMILES says a conversion changed identity. */
+export async function assertCanonicalIdentity(
+  inputCanonicalSmiles: string,
+  outputStructure: string
+): Promise<void> {
+  const outputCanonicalSmiles = await canonicalSmiles(outputStructure, "output");
+  if (outputCanonicalSmiles !== inputCanonicalSmiles) {
+    throw new Error(`identity changed: ${inputCanonicalSmiles} -> ${outputCanonicalSmiles}`);
+  }
 }
 
 function structuredOclDepiction(depiction: Depiction2D): PastedStructureDepiction {
@@ -99,6 +217,107 @@ function structuredOclDepiction(depiction: Depiction2D): PastedStructureDepictio
       order: bond.order,
       wedge: bond.wedge
     }))
+  };
+}
+
+function withDativeBondStyles(
+  molecule: MoleculeObject,
+  dativeBondIndices: readonly number[]
+): MoleculeObject {
+  if (dativeBondIndices.length === 0) return molecule;
+  const dative = new Set(dativeBondIndices);
+  return {
+    ...molecule,
+    // The metadata was calculated before the structural insert knew these bonds were dative.
+    // Omit that stale derived cache; the native graph and RDKit identity remain authoritative.
+    chemistry: undefined,
+    bonds: molecule.bonds.map((bond, index): MoleculeBond => dative.has(index)
+      ? { ...bond, display: { ...(bond.display ?? {}), bondStyle: "dashed" } }
+      : bond)
+  };
+}
+
+function replaceMolecule(
+  document: ChemDraftDocument,
+  molecule: MoleculeObject
+): ChemDraftDocument {
+  return {
+    ...document,
+    pages: document.pages.map((page) => ({
+      ...page,
+      objects: page.objects.map((object) => object.id === molecule.id ? molecule : object)
+    }))
+  };
+}
+
+function markV2000UnspecifiedDoubleBonds(
+  molfile: string,
+  indices: ReadonlySet<number>
+): string {
+  if (indices.size === 0) return molfile;
+  const lines = molfile.split(/\r?\n/);
+  const countsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
+  if (countsIndex < 0) return molfile;
+  const atomCount = Number.parseInt((lines[countsIndex] ?? "").slice(0, 3).trim(), 10);
+  const bondCount = Number.parseInt((lines[countsIndex] ?? "").slice(3, 6).trim(), 10);
+  if (!Number.isInteger(atomCount) || !Number.isInteger(bondCount)) return molfile;
+  const bondStart = countsIndex + 1 + atomCount;
+  for (const index of indices) {
+    if (index < 0 || index >= bondCount) continue;
+    const lineIndex = bondStart + index;
+    const line = lines[lineIndex];
+    if (!line || Number.parseInt(line.slice(6, 9).trim(), 10) !== 2) continue;
+    lines[lineIndex] = `${line.slice(0, 9)}  3${line.slice(12)}`;
+  }
+  return lines.join(molfile.includes("\r\n") ? "\r\n" : "\n");
+}
+
+function markV3000UnspecifiedDoubleBonds(
+  molfile: string,
+  indices: ReadonlySet<number>
+): string {
+  if (indices.size === 0) return molfile;
+  const lines = molfile.split(/\r?\n/);
+  let inBondSection = false;
+  let bondIndex = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^M\s+V30\s+BEGIN BOND\s*$/.test(line)) {
+      inBondSection = true;
+      continue;
+    }
+    if (/^M\s+V30\s+END BOND\s*$/.test(line)) {
+      inBondSection = false;
+      continue;
+    }
+    if (!inBondSection || !/^M\s+V30\s+\d+\s+\d+\s+\d+\s+\d+\b/.test(line)) continue;
+    if (indices.has(bondIndex) && !/\bCFG=/.test(line)) lines[index] = `${line} CFG=2`;
+    bondIndex += 1;
+  }
+  return lines.join(molfile.includes("\r\n") ? "\r\n" : "\n");
+}
+
+function identityMolfile(
+  molecule: MoleculeObject,
+  semantics: SourceBondSemantics,
+  warnings?: string[]
+): { contents: string; format: "molfile-v2000" | "molfile-v3000" } {
+  const unspecified = new Set(semantics.unspecifiedDoubleBondIndices);
+  if (semantics.dativeBondIndices.length > 0) {
+    return {
+      contents: markV3000UnspecifiedDoubleBonds(
+        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings }),
+        unspecified
+      ),
+      format: "molfile-v3000"
+    };
+  }
+  return {
+    contents: markV2000UnspecifiedDoubleBonds(
+      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings }),
+      unspecified
+    ),
+    format: "molfile-v2000"
   };
 }
 
@@ -130,32 +349,44 @@ function stereoCenterCounts(
  * used only after an explicit RDKit failure, which is preserved in the returned warnings.
  */
 export async function depictSmiles(smiles: string): Promise<SmilesDepictionResult> {
+  const normalizedSmiles = normalizedSmilesInput(smiles);
   const ocl = await import("@chemdraft/ocl-adapter");
   let rdkitFailure: unknown;
 
   try {
     installNodeEngines();
-    const molfile = await generateSmiles2DMolfile(smiles);
-    rejectUnsupportedMolfileLabels(molfile, smiles);
+    const molfile = await generateSmiles2DMolfile(normalizedSmiles);
+    rejectUnsupportedMolfileLabels(molfile, normalizedSmiles);
     const depiction = pastedStructureDepictionFromMolfile(molfile);
+    rejectOversizedDepiction(depiction);
     const counts = stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(molfile));
-    return { depiction, molfile, engine: "rdkit", ...counts, warnings: [] };
+    const semantics = sourceBondSemantics(molfile);
+    const sourceCanonicalSmiles = await canonicalSmiles(normalizedSmiles, "input");
+    await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+    return {
+      depiction,
+      molfile,
+      engine: "rdkit",
+      ...counts,
+      sourceCanonicalSmiles,
+      identityVerifiedByRdkit: true,
+      ...semantics,
+      warnings: []
+    };
   } catch (error) {
     if (error instanceof UnsupportedMolfileLabelError) throw error;
     // A missing platform loader is an application configuration error, not a chemistry failure.
     // Falling back here would make a broken CLI report a successful OCL render.
-    if (
-      (typeof RdkitNotConfiguredError === "function" && error instanceof RdkitNotConfiguredError) ||
-      (error instanceof Error && error.message === "RDKit module loader has not been configured.")
-    ) {
+    if (isRdkitNotConfiguredError(error)) {
       throw error;
     }
+    if (error instanceof Error && /(?:character|heavy atom) limit/.test(error.message)) throw error;
     rdkitFailure = error;
   }
 
   try {
-    const fallback = ocl.depictSmiles2D(smiles);
-    rejectUnsupportedMolfileLabels(fallback.molfile, smiles);
+    const fallback = ocl.depictSmiles2D(normalizedSmiles);
+    rejectUnsupportedMolfileLabels(fallback.molfile, normalizedSmiles);
     let depiction: PastedStructureDepiction;
     try {
       depiction = pastedStructureDepictionFromMolfile(fallback.molfile);
@@ -164,18 +395,42 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
       // losslessly via its structured result, exactly as desktop SMILES paste does.
       depiction = structuredOclDepiction(fallback);
     }
+    rejectOversizedDepiction(depiction);
     const counts = stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(fallback.molfile));
+    const semantics = sourceBondSemantics(fallback.molfile);
+    const [inputCanonicalSmiles, outputCanonicalSmiles] = await Promise.all([
+      optionalCanonicalSmiles(normalizedSmiles),
+      optionalCanonicalSmiles(fallback.molfile)
+    ]);
+    if (
+      inputCanonicalSmiles !== undefined &&
+      outputCanonicalSmiles !== undefined &&
+      inputCanonicalSmiles !== outputCanonicalSmiles
+    ) {
+      throw new Error(`identity changed: ${inputCanonicalSmiles} -> ${outputCanonicalSmiles}`);
+    }
+    const sourceCanonicalSmiles = inputCanonicalSmiles ?? outputCanonicalSmiles;
+    const identityVerifiedByRdkit = inputCanonicalSmiles !== undefined && outputCanonicalSmiles !== undefined;
+    const identityWarnings = !identityVerifiedByRdkit
+      ? ["RDKit could not canonicalize the OpenChemLib fallback input/output pair; identity was not RDKit-verified."]
+      : [];
     return {
       depiction,
       molfile: fallback.molfile,
       engine: "ocl",
       ...counts,
-      warnings: [`RDKit depiction failed; used OpenChemLib fallback: ${errorMessage(rdkitFailure)}`]
+      sourceCanonicalSmiles,
+      identityVerifiedByRdkit,
+      ...semantics,
+      warnings: [
+        `RDKit depiction failed; used OpenChemLib fallback: ${errorMessage(rdkitFailure)}`,
+        ...identityWarnings
+      ]
     };
   } catch (oclError) {
     if (oclError instanceof UnsupportedMolfileLabelError) throw oclError;
     throw new Error(
-      `Unable to render SMILES "${smiles}": RDKit: ${errorMessage(rdkitFailure)}; OpenChemLib: ${errorMessage(oclError)}`
+      `Unable to render SMILES "${normalizedSmiles}": RDKit: ${errorMessage(rdkitFailure)}; OpenChemLib: ${errorMessage(oclError)}`
     );
   }
 }
@@ -362,6 +617,11 @@ export function cropDocumentSvgToContent(
 /** Rasterize an SVG to a PNG whose output width is measured in pixels. */
 export function svgToPng(svg: string, width: number): Uint8Array {
   const pngWidth = finitePositive(width, "PNG width");
+  if (pngWidth < MIN_RASTER_WIDTH || pngWidth > MAX_RASTER_WIDTH) {
+    throw new Error(
+      `PNG width must be between ${MIN_RASTER_WIDTH} and ${MAX_RASTER_WIDTH} pixels; received ${pngWidth}.`
+    );
+  }
   return new Resvg(svg, {
     fitTo: { mode: "width", value: Math.round(pngWidth) }
   }).render().asPng();
@@ -380,6 +640,11 @@ export interface BuiltSmilesDocument {
   engine: DepictionEngine;
   stereoCenters: number;
   unspecifiedStereoCenters: number;
+  unspecifiedDoubleBonds: number;
+  dativeBonds: number;
+  sourceCanonicalSmiles?: string;
+  identityVerifiedByRdkit: boolean;
+  identityMolfile: string;
   warnings: string[];
 }
 
@@ -388,8 +653,7 @@ export async function buildSmilesDocument(
   smiles: string,
   options: BuildSmilesDocumentOptions = {}
 ): Promise<BuiltSmilesDocument> {
-  const trimmedSmiles = smiles.trim();
-  if (!trimmedSmiles) throw new Error("Unable to render SMILES: the input is empty.");
+  const trimmedSmiles = normalizedSmilesInput(smiles);
 
   const name = options.name ?? "structure";
   const bondLength = finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
@@ -404,9 +668,29 @@ export async function buildSmilesDocument(
     trimmedSmiles
   );
   let molecule = moleculeFromDocument(document);
+  molecule = withDativeBondStyles(molecule, depicted.dativeBondIndices);
+  document = replaceMolecule(document, molecule);
   if (Math.abs(bondLength - smilesPasteBondLengthPx) > 0.0001) {
     document = applyMoleculeTargetBondLength(document, [molecule.id], bondLength);
     molecule = moleculeFromDocument(document);
+  }
+
+  const serialized = identityMolfile(molecule, depicted);
+  molecule = {
+    ...molecule,
+    structureFormat: serialized.format,
+    structure: serialized.contents
+  };
+  document = replaceMolecule(document, molecule);
+  if (depicted.sourceCanonicalSmiles !== undefined) {
+    await assertCanonicalIdentity(depicted.sourceCanonicalSmiles, serialized.contents);
+  }
+
+  const warnings = [...depicted.warnings];
+  if (depicted.unspecifiedDoubleBondIndices.length > 0) {
+    warnings.push(
+      `E/Z unspecified for ${depicted.unspecifiedDoubleBondIndices.length} double bond(s); the 2D drawing necessarily shows one geometry`
+    );
   }
 
   return {
@@ -417,7 +701,12 @@ export async function buildSmilesDocument(
     engine: depicted.engine,
     stereoCenters: depicted.stereoCenters,
     unspecifiedStereoCenters: depicted.unspecifiedStereoCenters,
-    warnings: depicted.warnings
+    unspecifiedDoubleBonds: depicted.unspecifiedDoubleBondIndices.length,
+    dativeBonds: depicted.dativeBondIndices.length,
+    sourceCanonicalSmiles: depicted.sourceCanonicalSmiles,
+    identityVerifiedByRdkit: depicted.identityVerifiedByRdkit,
+    identityMolfile: serialized.contents,
+    warnings
   };
 }
 
@@ -452,6 +741,7 @@ export async function renderSmilesToAssets(
     engine: built.engine,
     stereoCenters: built.stereoCenters,
     unspecifiedStereoCenters: built.unspecifiedStereoCenters,
+    unspecifiedDoubleBonds: built.unspecifiedDoubleBonds,
     warnings: [...built.warnings, ...exported.warnings.map((warning) => warning.message)],
     document,
     molecule,

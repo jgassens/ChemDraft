@@ -10,9 +10,13 @@ case "$query" in
     printf 'simulated JVM failure\n' >&2
     exit 7
     ;;
+  ambiguous)
+    printf 'CCCCC\t%s\n' "$query"
+    printf 'APPEARS_AMBIGUOUS: Connection of meth to but\n' >&2
+    ;;
   timeout)
     trap '' TERM
-    while :; do :; done
+    while :; do sleep 0.001; done
     ;;
   *)
     printf 'CCO\t%s\n' "$query"

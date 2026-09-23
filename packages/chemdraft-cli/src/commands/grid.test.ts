@@ -134,4 +134,22 @@ describe("chemdraft grid", () => {
     expect(result.error).toContain("not-smiles");
     await expect(readFile(out)).rejects.toThrow();
   });
+
+  it("attributes a grid failure to the quoted failing SMILES, not a short SMILES it contains", async () => {
+    // Methane's "C" occurs inside the error text ("OpenChemLib"), so an unquoted substring match
+    // would blame methane for the bad entry.
+    const jobs = await writeJobs("methane-bad.json", [
+      { name: "methane", smiles: "C" },
+      { name: "bad", smiles: "not-smiles" }
+    ]);
+    const out = join(outputDirectory, "methane-bad.png");
+    const capture = memoryIo();
+
+    await expect(runGridCommand(["--batch", jobs, "--out", out], capture.io)).resolves.toBe(1);
+
+    const result = JSON.parse(capture.stdout[0] ?? "{}") as { ok: boolean; smiles?: string; error?: string };
+    expect(result.ok).toBe(false);
+    expect(result.smiles).toBe("not-smiles");
+    expect(result.error).toContain('"not-smiles"');
+  }, 60_000);
 });

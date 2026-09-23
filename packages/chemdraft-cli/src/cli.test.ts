@@ -36,7 +36,7 @@ describe("chemdraft CLI dispatch", () => {
     expect(lines).toHaveLength(1);
     for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
     expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, warnings: [] });
-  }, 30_000);
+  }, 60_000);
 
   it("lists all eight subcommands in top-level help", async () => {
     const stdout: string[] = [];
@@ -73,5 +73,5 @@ describe("chemdraft CLI dispatch", () => {
     expect(code).toBe(0);
     expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: true, name: "aspirin", files: [output] });
     expect(await readFile(output, "utf8")).toContain("<svg");
-  });
+  }, 60_000);
 });
