@@ -56,4 +56,19 @@ Planned. This subcommand currently prints `not implemented yet` to stderr and ex
 
 ## export
 
-Planned. This subcommand currently prints `not implemented yet` to stderr and exits 2.
+Export one SMILES string or a JSON batch to CDXML, PDF, SDF, MOL, or SMILES.
+
+```bash
+pnpm chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml
+pnpm chemdraft export --batch jobs.json --out-dir mols --format mol
+pnpm chemdraft export --batch jobs.json --out combined.sdf --format sdf
+```
+
+Batch jobs have the shape `{"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O"}`. In single-structure
+mode the format is normally inferred from `--out`'s extension (`.cdxml`, `.pdf`, `.sdf`, `.mol`,
+`.smi`); `--format` overrides or disambiguates it. Batch mode always requires `--format`.
+
+CDXML, PDF, and MOL are one structure per file: batch mode writes each job's file into `--out-dir`,
+named `<job name>.<extension>`. SDF and SMILES are combined formats: batch mode writes every
+structure into a single file at `--out` instead, with one JSON result line per input job all
+naming that same combined file. Run `pnpm chemdraft export --help` for every option.
