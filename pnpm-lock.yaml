@@ -262,6 +262,18 @@ importers:
         specifier: ^2.6.2
         version: 2.6.2
 
+  packages/chemdraft-mcp:
+    dependencies:
+      '@chemdraft/chemdraft-cli':
+        specifier: workspace:*
+        version: link:../chemdraft-cli
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.1
+        version: 1.30.1(zod@3.25.76)
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+
   packages/chemistry-adapter: {}
 
   packages/clipboard-adapter: {}
