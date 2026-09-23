@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -13,6 +14,8 @@ import {
 
 let outputDirectory: string;
 const enginePaths = defaultOpsinPaths();
+const fakeJavaPath = fileURLToPath(new URL("./__fixtures__/fake-java.sh", import.meta.url));
+const fakeJarPath = fileURLToPath(new URL("./__fixtures__/fake-opsin.jar", import.meta.url));
 const runtimeAvailable = existsSync(dirname(dirname(enginePaths.javaPath)));
 
 if (!runtimeAvailable) {
@@ -21,6 +24,7 @@ if (!runtimeAvailable) {
 
 beforeAll(async () => {
   outputDirectory = await mkdtemp(join(tmpdir(), "chemdraft-name-cli-"));
+  await chmod(fakeJavaPath, 0o755);
 });
 
 afterAll(async () => {
@@ -62,6 +66,50 @@ describe("headless ChemDraft name conversion", () => {
     })).rejects.toThrow("scripts/build-opsin-runtime.sh");
   });
 
+  it("exercises the OPSIN line protocol with a fake Java process", async () => {
+    const paths = { javaPath: fakeJavaPath, jarPath: fakeJarPath };
+    await expect(convertNameWithOpsin("ethanol", paths)).resolves.toEqual({ smiles: "CCO" });
+    await expect(convertNameWithOpsin("parse-failure", paths)).resolves.toEqual({
+      failureReason: "OPSIN could not parse the supplied name"
+    });
+    await expect(convertNameWithOpsin("non-zero", paths)).rejects.toThrow(/exit 7.*simulated JVM failure/);
+  });
+
+  it("escalates an OPSIN timeout and reports it without rebuild advice", async () => {
+    const failure = await convertNameWithOpsin("timeout", {
+      javaPath: fakeJavaPath,
+      jarPath: fakeJarPath,
+      timeoutMs: 40,
+      killGraceMs: 40
+    }).then(
+      () => "unexpected success",
+      (error: unknown) => error instanceof Error ? error.message : String(error)
+    );
+    expect(failure).toMatch(/OPSIN timed out after 40 ms/);
+    expect(failure).not.toMatch(/rebuild/i);
+  });
+
+  it("passes depiction warnings through a rendered name result", async () => {
+    const png = join(outputDirectory, "warning.png");
+    const capture = capturedIo();
+    const renderSmiles = async () => ({
+      png: new Uint8Array([137, 80, 78, 71]),
+      warnings: ["simulated depiction warning"]
+    }) as Awaited<ReturnType<typeof import("../document").renderSmilesToAssets>>;
+    expect(await runNameCommand(
+      ["--name", "ethanol", "--render", png],
+      capture.io,
+      {
+        opsinPaths: { javaPath: fakeJavaPath, jarPath: fakeJarPath },
+        renderSmiles
+      }
+    )).toBe(0);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({
+      ok: true,
+      warnings: ["simulated depiction warning"]
+    });
+  });
+
   it.skipIf(!runtimeAvailable)("converts aspirin, ibuprofen, and chiral alanine", async () => {
     const fixtures = [
       ["aspirin", "2-acetoxybenzoic acid"],
@@ -76,7 +124,7 @@ describe("headless ChemDraft name conversion", () => {
       expect(result.smiles).not.toHaveLength(0);
       if (name === "alanine") expect(result.smiles).toContain("@");
     }
-  });
+  }, 120_000);
 
   it.skipIf(!runtimeAvailable)("reports a nonsense name as a failed JSON line", async () => {
     const capture = capturedIo();
@@ -89,7 +137,7 @@ describe("headless ChemDraft name conversion", () => {
       engine: "opsin-2.9.0"
     });
     expect(JSON.parse(capture.stdout[0]!).error).toContain("xyzzy-not-a-real-chemical-name");
-  });
+  }, 120_000);
 
   it.skipIf(!runtimeAvailable)("renders a converted name to the requested PNG path", async () => {
     const png = join(outputDirectory, "aspirin.png");
@@ -97,5 +145,5 @@ describe("headless ChemDraft name conversion", () => {
     expect(await runNameCommand(["--name", "2-acetoxybenzoic acid", "--render", png], capture.io)).toBe(0);
     expect(JSON.parse(capture.stdout[0]!)).toMatchObject({ ok: true, png });
     expect((await stat(png)).size).toBeGreaterThan(0);
-  });
+  }, 120_000);
 });

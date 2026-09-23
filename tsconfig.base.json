@@ -25,6 +25,8 @@
       "@chemdraft/chemistry-adapter": ["packages/chemistry-adapter/src/index.ts"],
       "@chemdraft/ocl-adapter": ["packages/ocl-adapter/src/index.ts"],
       "@chemdraft/rdkit-adapter": ["packages/rdkit-adapter/src/index.ts"],
+      "@chemdraft/rdkit-adapter/node": ["packages/rdkit-adapter/src/node.ts"],
+      "@chemdraft/rdkit-adapter/identifiers": ["packages/rdkit-adapter/src/identifiers.ts"],
       "@chemdraft/rdkit-adapter/adapter": ["packages/rdkit-adapter/src/adapter.ts"],
       "@chemdraft/rdkit-adapter/constants": ["packages/rdkit-adapter/src/constants.ts"],
       "@chemdraft/rdkit-adapter/testing": ["packages/rdkit-adapter/src/testing.ts"],

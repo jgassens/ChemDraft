@@ -4,9 +4,10 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
-import { runGridCommand } from "./grid";
+import { renderGrid, runGridCommand } from "./grid";
 
 let outputDirectory: string;
 
@@ -43,6 +44,39 @@ const fourStructures = [
 ] as const;
 
 describe("chemdraft grid", () => {
+  it("keeps charged atom-label boxes in every outer cell inside a zero-padding viewBox", async () => {
+    const capture = memoryIo();
+    const rendered = await renderGrid([
+      { name: "carboxylate", smiles: "NCC(=O)[O-]" },
+      { name: "diammonium", smiles: "[NH3+]CCCCCCCCC[NH3+]" }
+    ], {
+      columns: 2,
+      labels: "none",
+      width: 600,
+      gutter: 0,
+      padding: 0,
+      background: "transparent"
+    }, capture.io);
+
+    const maxX = rendered.viewBox.x + rendered.viewBox.width;
+    const maxY = rendered.viewBox.y + rendered.viewBox.height;
+    const molecules = rendered.document.pages[0]!.objects.filter((object) => object.type === "molecule");
+    expect(molecules).toHaveLength(2);
+    expect(rendered.svg).toContain("NH3+");
+    expect(rendered.svg).toContain('data-atom-label="O-"');
+    for (const molecule of molecules) {
+      for (const label of planMoleculeAtomLabels(molecule)) {
+        const halo = label.backgroundVisible ? atomLabelHaloWidthPx(label.drawingStyle) / 2 : 0;
+        const minX = label.anchor.x + label.layout.bounds.x - halo;
+        const minY = label.anchor.y + label.layout.bounds.y - halo;
+        expect(minX, label.label).toBeGreaterThanOrEqual(rendered.viewBox.x - 0.001);
+        expect(minY, label.label).toBeGreaterThanOrEqual(rendered.viewBox.y - 0.001);
+        expect(minX + label.layout.bounds.width + halo * 2, label.label).toBeLessThanOrEqual(maxX + 0.001);
+        expect(minY + label.layout.bounds.height + halo * 2, label.label).toBeLessThanOrEqual(maxY + 0.001);
+      }
+    }
+  });
+
   it("writes four structures as a two-by-two PNG at the requested width", async () => {
     const jobs = await writeJobs("four.json", fourStructures);
     const out = join(outputDirectory, "grid.png");
@@ -70,6 +104,7 @@ describe("chemdraft grid", () => {
 
     const svg = await readFile(out, "utf8");
     for (const label of ["A", "B", "C", "D"]) expect(svg).toContain(`>${label}<`);
+    expect(svg).toContain('fill="#ffffff"');
   });
 
   it("uses job names when names labels are requested", async () => {

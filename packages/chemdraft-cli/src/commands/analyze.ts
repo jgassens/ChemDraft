@@ -7,13 +7,13 @@ import {
   renderReportText,
   statusHasValue,
   type AnalysisResult,
-  type AnalysisRun
+  type AnalysisRun,
+  type AnalysisStatus
 } from "@chemdraft/analysis-core";
 import {
   analyzeStructureDetailed,
   rdkitAnalysisContracts
-} from "../../../rdkit-adapter/src/analysis";
-import { installNodeRdkitModuleLoader } from "../../../rdkit-adapter/src/node";
+} from "@chemdraft/rdkit-adapter";
 
 import { booleanOption, parseOptions, stringOption } from "../args";
 import { installNodeEngines } from "../engine";
@@ -21,6 +21,8 @@ import {
   CliUsageError,
   cliExitCode,
   defaultCliIo,
+  handleCliError,
+  parseNamedSmilesJob,
   readBatchFile,
   resultExitCode,
   writeJsonLine,
@@ -45,29 +47,44 @@ interface ParsedArguments {
   out?: string;
 }
 
+type SummaryStatus = AnalysisStatus | "not-requested";
+
+interface SummaryValue<T> {
+  value: T | null;
+  status: SummaryStatus;
+  reason?: string;
+}
+
+interface PkaSummarySite {
+  atomIndex: number;
+  siteType: string;
+  transition: "acidic" | "basic";
+  acidCharge: number;
+  basis: string;
+  value: number | null;
+  reason?: string;
+  interval: { lower: number; upper: number } | null;
+}
+
 interface AnalysisSummary {
-  formula: string | null;
-  monoisotopicMass: number | null;
-  averageMass: number | null;
-  canonicalSmiles: string | null;
-  inchiKey: string | null;
-  logP: number | null;
-  tpsa: number | null;
-  hbd: number | null;
-  hba: number | null;
-  rotatableBonds: number | null;
-  pka: Array<{
-    site: string;
-    value: number;
-    interval: { lower: number; upper: number } | null;
-  }>;
+  formula: SummaryValue<string>;
+  monoisotopicMass: SummaryValue<number>;
+  averageMass: SummaryValue<number>;
+  canonicalSmiles: SummaryValue<string>;
+  inchiKey: SummaryValue<string>;
+  logP: SummaryValue<number>;
+  tpsa: SummaryValue<number>;
+  hbd: SummaryValue<number>;
+  hba: SummaryValue<number>;
+  rotatableBonds: SummaryValue<number>;
+  pka: SummaryValue<PkaSummarySite[]>;
 }
 
 export const analyzeHelp = `Analyze SMILES with ChemDraft's property and prediction suite.
 
 Usage:
-  pnpm chemdraft analyze --smiles <SMILES> [--methods <id,id>] [--format json|md|text] [--out <file>]
-  pnpm chemdraft analyze --batch <jobs.json> [--methods <id,id>] [--format json|md|text]
+  pnpm -s chemdraft analyze --smiles <SMILES> [--methods <id,id>] [--format json|md|text] [--out <file>]
+  pnpm -s chemdraft analyze --batch <jobs.json> [--methods <id,id>] [--format json|md|text]
 
 Options:
   --smiles <SMILES>   Analyze one structure.
@@ -139,16 +156,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
 }
 
 async function readJobs(path: string): Promise<AnalyzeJob[]> {
-  return readBatchFile(path, (candidate, index) => {
-    if (
-      !candidate || typeof candidate !== "object" ||
-      typeof (candidate as { name?: unknown }).name !== "string" ||
-      typeof (candidate as { smiles?: unknown }).smiles !== "string"
-    ) {
-      throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
-    }
-    return candidate as AnalyzeJob;
-  }, (job) => {
+  return readBatchFile(path, parseNamedSmilesJob, (job) => {
     if (!job.smiles.trim()) throw new CliUsageError(`Batch job "${job.name}" has an empty SMILES.`);
   });
 }
@@ -156,30 +164,67 @@ async function readJobs(path: string): Promise<AnalyzeJob[]> {
 function sourceResult(run: AnalysisRun, methodId: string): AnalysisResult | undefined {
   return run.results.find((result) =>
     result.methodId === methodId &&
-    result.interpretationId === "source" &&
-    statusHasValue(result.status)
+    result.interpretationId === "source"
   );
 }
 
-function scalar(run: AnalysisRun, methodId: string): number | null {
-  const result = sourceResult(run, methodId);
-  return result?.kind === "scalar" && result.value !== null ? result.value : null;
+function resultReason(result: AnalysisResult): string | undefined {
+  return result.applicability.reasons[0] ?? result.warnings[0]?.message;
 }
 
-function identifier(run: AnalysisRun, methodId: string): string | null {
+function summarizeResult<T>(
+  run: AnalysisRun,
+  methodId: string,
+  readValue: (result: AnalysisResult) => T | null
+): SummaryValue<T> {
   const result = sourceResult(run, methodId);
-  return result?.kind === "identifier" ? result.value : null;
-}
-
-function summarize(run: AnalysisRun): AnalysisSummary {
-  const composition = sourceResult(run, "rdkit.composition");
-  const ionization = run.results.find((result) =>
-    result.methodId === "dimorphite.ionizable-sites" &&
-    result.kind === "ionization" &&
-    statusHasValue(result.status)
-  );
+  if (!result) return { value: null, status: "not-requested" };
   return {
-    formula: composition?.kind === "composition" ? composition.formula : null,
+    value: statusHasValue(result.status) ? readValue(result) : null,
+    status: result.status,
+    ...(resultReason(result) ? { reason: resultReason(result) } : {})
+  };
+}
+
+function scalar(run: AnalysisRun, methodId: string): SummaryValue<number> {
+  return summarizeResult(run, methodId, (result) =>
+    result.kind === "scalar" && result.value !== null ? result.value : null
+  );
+}
+
+function identifier(run: AnalysisRun, methodId: string): SummaryValue<string> {
+  return summarizeResult(run, methodId, (result) =>
+    result.kind === "identifier" ? result.value : null
+  );
+}
+
+export function summarizeAnalysisRun(run: AnalysisRun): AnalysisSummary {
+  const ionization = sourceResult(run, "dimorphite.ionizable-sites");
+  const pka = summarizeResult(run, "dimorphite.ionizable-sites", (result) =>
+    result.kind === "ionization"
+      ? result.sites.map((entry): PkaSummarySite => ({
+          atomIndex: entry.ionizableAtomIndex,
+          siteType: entry.siteType,
+          transition: entry.transition,
+          acidCharge: entry.acidCharge,
+          basis: entry.basis,
+          value: entry.pKa,
+          ...(entry.pKa === null
+            ? { reason: entry.derivation ?? "Recognized ionizable site has no reportable pKa value." }
+            : {}),
+          interval: entry.pKa === null || entry.spread === undefined
+            ? null
+            : { lower: entry.pKa - entry.spread, upper: entry.pKa + entry.spread }
+        }))
+      : null
+  );
+  if (ionization && pka.reason === undefined && resultReason(ionization)) {
+    pka.reason = resultReason(ionization);
+  }
+  return {
+    formula: summarizeResult(run, "rdkit.composition", (result) =>
+      result.kind === "composition" ? result.formula : null
+    ),
     monoisotopicMass: scalar(run, "rdkit.monoisotopic-mass"),
     averageMass: scalar(run, "rdkit.average-mass"),
     canonicalSmiles: identifier(run, "rdkit.canonical-smiles"),
@@ -189,18 +234,7 @@ function summarize(run: AnalysisRun): AnalysisSummary {
     hbd: scalar(run, "rdkit.hbd"),
     hba: scalar(run, "rdkit.hba"),
     rotatableBonds: scalar(run, "rdkit.rotatable-bonds"),
-    pka: ionization?.kind === "ionization"
-      ? ionization.sites.flatMap((entry) => {
-          if (entry.pKa === null) return [];
-          return [{
-            site: `${entry.siteType} (atom ${entry.ionizableAtomIndex + 1}, ${entry.transition})`,
-            value: entry.pKa,
-            interval: entry.spread === undefined
-              ? null
-              : { lower: entry.pKa - entry.spread, upper: entry.pKa + entry.spread }
-          }];
-        })
-      : []
+    pka
   };
 }
 
@@ -247,7 +281,7 @@ async function analyzeJob(
     }
 
     const report = buildAnalysisReport(run, { title: job.name });
-    const summary = summarize(run);
+    const summary = summarizeAnalysisRun(run);
     const warnings = warningMessages(run);
     const payload: Record<string, unknown> & { name: string; ok: true; warnings: readonly string[] } = {
       name: job.name,
@@ -316,22 +350,13 @@ export async function runAnalyzeCommand(
     // Install the real vendored MinimalLib loader before the first chemistry call. In particular,
     // never route through desktop helpers whose Node path can silently fall back to another engine.
     installNodeEngines();
-    // The task environment links this package's whole node_modules directory from another worktree.
-    // Under Node+tsx that can give an exports-subpath import and a source import separate module
-    // identities. Install idempotently on the exact source instance used above as well; in a normal
-    // workspace resolution both calls reach the same module and the second one is a no-op.
-    installNodeRdkitModuleLoader();
-
     let allSucceeded = true;
     for (const [index, job] of jobs.entries()) {
       if (!await analyzeJob(job, index, parsed, io)) allSucceeded = false;
     }
     return resultExitCode(allSucceeded);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    io.stderr(`Error: ${message}`);
-    io.stderr("Run pnpm chemdraft analyze --help for usage.");
-    return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
+    return handleCliError(error, io, "analyze");
   }
 }
 

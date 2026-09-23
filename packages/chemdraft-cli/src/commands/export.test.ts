@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -42,7 +42,7 @@ function jsonLines(io: CollectedIo): unknown[] {
 }
 
 const ETHANOL = "CCO";
-const L_ALANINE = "C[C@@H](N)C(=O)O";
+const D_ALANINE = "C[C@@H](N)C(=O)O";
 const BAD_SMILES = "not-a-smiles(((";
 
 describe("chemdraft export", () => {
@@ -119,20 +119,20 @@ describe("chemdraft export", () => {
     expect(lines[0]).toContain("\t");
   });
 
-  it("preserves L-alanine stereochemistry in SMILES export", async () => {
-    const out = join(outputDirectory, "l-alanine.smi");
+  it("preserves D-alanine stereochemistry in SMILES export", async () => {
+    const out = join(outputDirectory, "d-alanine.smi");
     const io = collectIo();
-    const exitCode = await runCli(["--smiles", L_ALANINE, "--out", out], io);
+    const exitCode = await runCli(["--smiles", D_ALANINE, "--out", out], io);
     expect(exitCode).toBe(0);
 
     const contents = await readFile(out, "utf8");
     expect(contents).toContain("@");
   });
 
-  it("preserves L-alanine stereochemistry as a wedge/hash bond flag in SDF export", async () => {
-    const out = join(outputDirectory, "l-alanine.sdf");
+  it("preserves D-alanine stereochemistry as a wedge/hash bond flag in SDF export", async () => {
+    const out = join(outputDirectory, "d-alanine.sdf");
     const io = collectIo();
-    const exitCode = await runCli(["--smiles", L_ALANINE, "--out", out], io);
+    const exitCode = await runCli(["--smiles", D_ALANINE, "--out", out], io);
     expect(exitCode).toBe(0);
 
     const contents = await readFile(out, "utf8");
@@ -159,7 +159,7 @@ describe("chemdraft export", () => {
     const outDir = join(outputDirectory, "batch-mol-out");
     await writeFile(jobsFile, JSON.stringify([
       { name: "ethanol", smiles: ETHANOL },
-      { name: "alanine", smiles: L_ALANINE }
+      { name: "alanine", smiles: D_ALANINE }
     ]));
     const io = collectIo();
     const exitCode = await runCli(["--batch", jobsFile, "--out-dir", outDir, "--format", "mol"], io);
@@ -182,7 +182,7 @@ describe("chemdraft export", () => {
     const out = join(outputDirectory, "batch.sdf");
     await writeFile(jobsFile, JSON.stringify([
       { name: "ethanol", smiles: ETHANOL },
-      { name: "alanine", smiles: L_ALANINE }
+      { name: "alanine", smiles: D_ALANINE }
     ]));
     const io = collectIo();
     const exitCode = await runCli(["--batch", jobsFile, "--out", out, "--format", "sdf"], io);
@@ -203,7 +203,7 @@ describe("chemdraft export", () => {
     const out = join(outputDirectory, "batch.smi");
     await writeFile(jobsFile, JSON.stringify([
       { name: "ethanol", smiles: ETHANOL },
-      { name: "alanine", smiles: L_ALANINE }
+      { name: "alanine", smiles: D_ALANINE }
     ]));
     const io = collectIo();
     const exitCode = await runCli(["--batch", jobsFile, "--out", out, "--format", "smi"], io);
@@ -212,6 +212,36 @@ describe("chemdraft export", () => {
     const contents = await readFile(out, "utf8");
     const lines = contents.split("\n").filter((line) => line.length > 0);
     expect(lines).toHaveLength(2);
+  });
+
+  it("emits one failed JSON line per combined record when --out is a directory", async () => {
+    const jobsFile = join(outputDirectory, "write-error-jobs.json");
+    const out = join(outputDirectory, "combined-output-directory");
+    await writeFile(jobsFile, JSON.stringify([
+      { name: "ethanol", smiles: ETHANOL },
+      { name: "alanine", smiles: D_ALANINE }
+    ]));
+    await mkdir(out);
+    const io = collectIo();
+    const exitCode = await runCli(["--batch", jobsFile, "--out", out, "--format", "sdf"], io);
+
+    expect(exitCode).toBe(1);
+    const lines = jsonLines(io) as Array<{ name: string; ok: boolean; out: string; error: string }>;
+    expect(lines).toHaveLength(2);
+    expect(lines.map((line) => line.name)).toEqual(["ethanol", "alanine"]);
+    for (const line of lines) {
+      expect(line).toMatchObject({ ok: false, out });
+      expect(line.error).toContain(out);
+    }
+  });
+
+  it("does not create an empty combined file when the batch has no records", async () => {
+    const jobsFile = join(outputDirectory, "empty-jobs.json");
+    const out = join(outputDirectory, "empty.smi");
+    await writeFile(jobsFile, "[]");
+    const io = collectIo();
+    expect(await runCli(["--batch", jobsFile, "--out", out, "--format", "smi"], io)).toBe(1);
+    await expect(readFile(out)).rejects.toThrow();
   });
 
   it("rejects --out-dir with a batch sdf/smi format", async () => {

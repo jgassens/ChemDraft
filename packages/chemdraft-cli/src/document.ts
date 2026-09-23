@@ -14,7 +14,10 @@ import {
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
-import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
+import {
+  generateSmiles2DMolfile,
+  RdkitNotConfiguredError
+} from "@chemdraft/rdkit-adapter";
 
 import {
   applyMoleculeTargetBondLength,
@@ -139,6 +142,14 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
     return { depiction, molfile, engine: "rdkit", ...counts, warnings: [] };
   } catch (error) {
     if (error instanceof UnsupportedMolfileLabelError) throw error;
+    // A missing platform loader is an application configuration error, not a chemistry failure.
+    // Falling back here would make a broken CLI report a successful OCL render.
+    if (
+      (typeof RdkitNotConfiguredError === "function" && error instanceof RdkitNotConfiguredError) ||
+      (error instanceof Error && error.message === "RDKit module loader has not been configured.")
+    ) {
+      throw error;
+    }
     rdkitFailure = error;
   }
 
@@ -259,7 +270,8 @@ function includePlannedGeometry(bounds: Bounds, fragment: PageSvgFragment): void
   fragment.children.forEach((child) => includePlannedGeometry(bounds, child));
 }
 
-function moleculeVisualBounds(document: ChemDraftDocument, molecule: MoleculeObject): Bounds {
+/** Visible bounds for the first page, including every molecule label and native text object. */
+export function documentVisualBounds(document: ChemDraftDocument): Bounds {
   const bounds: Bounds = {
     minX: Number.POSITIVE_INFINITY,
     minY: Number.POSITIVE_INFINITY,
@@ -267,29 +279,37 @@ function moleculeVisualBounds(document: ChemDraftDocument, molecule: MoleculeObj
     maxY: Number.NEGATIVE_INFINITY
   };
 
-  molecule.atoms.forEach((atom) => includePoint(bounds, atom.x, atom.y));
-  planMoleculeAtomLabels(molecule).forEach((plan) => {
-    const halo = plan.backgroundVisible ? atomLabelHaloWidthPx(plan.drawingStyle) / 2 : 0;
-    includePoint(
-      bounds,
-      plan.anchor.x + plan.layout.bounds.x,
-      plan.anchor.y + plan.layout.bounds.y,
-      halo
-    );
-    includePoint(
-      bounds,
-      plan.anchor.x + plan.layout.bounds.x + plan.layout.bounds.width,
-      plan.anchor.y + plan.layout.bounds.y + plan.layout.bounds.height,
-      halo
-    );
-  });
-
   const page = document.pages[0];
   if (!page) throw new Error("The render document has no page.");
+
+  for (const object of page.objects) {
+    if (object.type === "molecule") {
+      object.atoms.forEach((atom) => includePoint(bounds, atom.x, atom.y));
+      planMoleculeAtomLabels(object).forEach((plan) => {
+        const halo = plan.backgroundVisible ? atomLabelHaloWidthPx(plan.drawingStyle) / 2 : 0;
+        includePoint(
+          bounds,
+          plan.anchor.x + plan.layout.bounds.x,
+          plan.anchor.y + plan.layout.bounds.y,
+          halo
+        );
+        includePoint(
+          bounds,
+          plan.anchor.x + plan.layout.bounds.x + plan.layout.bounds.width,
+          plan.anchor.y + plan.layout.bounds.y + plan.layout.bounds.height,
+          halo
+        );
+      });
+    } else if (object.type === "text") {
+      includePoint(bounds, object.x, object.y);
+      includePoint(bounds, object.x + object.width, object.y + object.height);
+    }
+  }
+
   planPageSvgRender(page).fragments.forEach((fragment) => includePlannedGeometry(bounds, fragment));
 
   if (![bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].every(Number.isFinite)) {
-    throw new Error("The molecule has no finite visual bounds.");
+    throw new Error("The document has no finite visual bounds.");
   }
   return bounds;
 }
@@ -298,15 +318,37 @@ function svgNumber(value: number): string {
   return Number(value.toFixed(3)).toString();
 }
 
-/** Crop an exported document SVG to a molecule's visible content plus the requested padding. */
+function rewriteSvgRootToViewBox(
+  svg: string,
+  viewBox: RenderedSmiles["viewBox"],
+  background: RenderBackground
+): string {
+  const rootPattern = /<svg\s+([^>]*?)width="[^"]+"\s+height="[^"]+"\s+viewBox="[^"]+"([^>]*)>/;
+  let rewritten = svg.replace(
+    rootPattern,
+    `<svg $1width="${svgNumber(viewBox.width)}" height="${svgNumber(viewBox.height)}" viewBox="${svgNumber(viewBox.x)} ${svgNumber(viewBox.y)} ${svgNumber(viewBox.width)} ${svgNumber(viewBox.height)}"$2>`
+  );
+  if (rewritten === svg) {
+    throw new Error("Could not crop SVG: the exported root dimensions were not found.");
+  }
+
+  if (background === "white") {
+    rewritten = rewritten.replace(
+      /(<svg[^>]*>\n)\s*<rect\s+[^>]*fill="#ffffff"\s*\/>/,
+      `$1  <rect x="${svgNumber(viewBox.x)}" y="${svgNumber(viewBox.y)}" width="${svgNumber(viewBox.width)}" height="${svgNumber(viewBox.height)}" fill="#ffffff" />`
+    );
+  }
+  return rewritten;
+}
+
+/** Crop an exported document SVG to all visible first-page content plus requested padding. */
 export function cropDocumentSvgToContent(
   svg: string,
   document: ChemDraftDocument,
-  molecule: MoleculeObject,
   padding: number,
   background: RenderBackground
 ): { svg: string; viewBox: RenderedSmiles["viewBox"] } {
-  const bounds = moleculeVisualBounds(document, molecule);
+  const bounds = documentVisualBounds(document);
   const contentPadding = finiteNonNegative(padding, "Padding");
   const viewBox = {
     x: bounds.minX - contentPadding,
@@ -314,23 +356,7 @@ export function cropDocumentSvgToContent(
     width: Math.max(1, bounds.maxX - bounds.minX + contentPadding * 2),
     height: Math.max(1, bounds.maxY - bounds.minY + contentPadding * 2)
   };
-  const rootPattern = /<svg\s+([^>]*?)width="[^"]+"\s+height="[^"]+"\s+viewBox="[^"]+"([^>]*)>/;
-  let cropped = svg.replace(
-    rootPattern,
-    `<svg $1width="${svgNumber(viewBox.width)}" height="${svgNumber(viewBox.height)}" viewBox="${svgNumber(viewBox.x)} ${svgNumber(viewBox.y)} ${svgNumber(viewBox.width)} ${svgNumber(viewBox.height)}"$2>`
-  );
-  if (cropped === svg) {
-    throw new Error("Could not crop SVG: the exported root dimensions were not found.");
-  }
-
-  if (background === "white") {
-    cropped = cropped.replace(
-      /(<svg[^>]*>\n)\s*<rect\s+width="[^"]+"\s+height="[^"]+"\s+fill="#ffffff"\s*\/>/,
-      `$1  <rect x="${svgNumber(viewBox.x)}" y="${svgNumber(viewBox.y)}" width="${svgNumber(viewBox.width)}" height="${svgNumber(viewBox.height)}" fill="#ffffff" />`
-    );
-  }
-
-  return { svg: cropped, viewBox };
+  return { svg: rewriteSvgRootToViewBox(svg, viewBox, background), viewBox };
 }
 
 /** Rasterize an SVG to a PNG whose output width is measured in pixels. */
@@ -415,7 +441,7 @@ export async function renderSmilesToAssets(
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"
   });
-  const cropped = cropDocumentSvgToContent(exported.contents, document, molecule, padding, background);
+  const cropped = cropDocumentSvgToContent(exported.contents, document, padding, background);
   const png = svgToPng(cropped.svg, width);
 
   return {

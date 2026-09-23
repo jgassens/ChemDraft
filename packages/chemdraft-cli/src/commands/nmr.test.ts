@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -56,6 +57,7 @@ async function withPluginDir<T>(dir: string, body: () => Promise<T>): Promise<T>
 }
 
 const pluginDir = resolveNmrPluginDir();
+const fixturePluginDir = fileURLToPath(new URL("./__fixtures__/nmr-plugin", import.meta.url));
 const pluginPresent = existsSync(join(pluginDir, "src", "index.ts"));
 if (!pluginPresent) {
   console.log(
@@ -112,6 +114,37 @@ describe("chemdraft nmr without the plugin", () => {
   });
 });
 
+describe("chemdraft nmr with the CI fixture plugin", () => {
+  it("formats resonances, warns on atom-order drift, and writes a relabelled spectrum", async () => {
+    const spectrum = join(outputDirectory, "fixture-spectrum.svg");
+    const { code, lines } = await withPluginDir(fixturePluginDir, () => run([
+      "--smiles", "CCO",
+      "--nuclei", "1H",
+      "--spectrum", spectrum
+    ]));
+    expect(code).toBe(0);
+    expect(lines[0]!.resonances).toEqual([expect.objectContaining({
+      nucleus: "1H",
+      atomIndices: [1],
+      shiftPpm: 3.62,
+      multiplicity: "q",
+      jHz: [7.1],
+      estimated: true,
+      nEquivalent: 2,
+      source: "hose-fragment"
+    })]);
+    expect(lines[0]!.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("NMR_FIXTURE"),
+      expect.stringContaining("NMR_ATOM_ORDER_MISMATCH")
+    ]));
+    expect(lines[0]!.spectrum).toEqual([spectrum]);
+    const svg = await readFile(spectrum, "utf8");
+    expect(svg).toContain("predicted (HOSE / NMRShiftDB2)");
+    expect(svg).toContain("not integration");
+    expect(svg).not.toContain("synthetic fixture");
+  });
+});
+
 describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () => {
   it("predicts three 1H environments for ethanol with estimated multiplicity and J", async () => {
     const { code, lines } = await run(["--smiles", "CCO", "--nuclei", "1H"]);
@@ -143,7 +176,7 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
       expect(line.warnings!.some((warning) => /NMR_(LABILE_PROTON_OMITTED|NO_FRAGMENT_MATCH)/.test(warning))).toBe(true);
     }
     expect(line.database!.license).toMatch(/nmrshiftdb2/i);
-  });
+  }, 60_000);
 
   it("predicts two 13C environments for ethanol", async () => {
     const { code, lines } = await run(["--smiles", "CCO", "--nuclei", "13C"]);
@@ -157,7 +190,7 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(oxygenated.shiftPpm).toBeGreaterThan(50);
     expect(oxygenated.shiftPpm).toBeLessThan(70);
     resonances.forEach((resonance) => expect(resonance.multiplicity).toBeNull());
-  });
+  }, 60_000);
 
   it("omits an unmatched environment with a warning instead of a number", async () => {
     // Ethyl methyl selenide: the Se-bound CH2 has neither a database match nor an applicable rule.
@@ -167,7 +200,7 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(line.resonances!.some((resonance) => resonance.atomIndices.includes(1))).toBe(false);
     expect(line.warnings!.some((warning) => warning.startsWith("NMR_NO_FRAGMENT_MATCH"))).toBe(true);
     expect(line.warnings!.some((warning) => warning.startsWith("NMR_PARTIAL_PREDICTION"))).toBe(true);
-  });
+  }, 60_000);
 
   it("reports an unparseable SMILES as ok:false naming it", async () => {
     const { code, lines } = await run(["--smiles", "C1CC("]);
@@ -185,7 +218,7 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(svg.startsWith("<svg")).toBe(true);
     expect(svg).not.toMatch(/synthetic/i);
     expect(svg).toContain("not integration");
-  });
+  }, 60_000);
 
   it("runs a batch with a PNG spectrum directory", async () => {
     const jobsFile = join(outputDirectory, "jobs.json");
@@ -201,5 +234,5 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(lines.map((line) => [line.name, line.ok])).toEqual([["ethanol", true], ["broken", false]]);
     const png = await readFile(join(spectrumDir, "ethanol-13C.png"));
     expect(Array.from(png.subarray(0, 4))).toEqual([137, 80, 78, 71]);
-  });
+  }, 60_000);
 });

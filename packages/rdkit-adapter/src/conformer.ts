@@ -62,6 +62,14 @@ export interface RdkitMinimalModule {
 
 export type RdkitModuleLoader = () => Promise<RdkitMinimalModule>;
 
+/** Raised when a caller reaches RDKit before its platform loader has been installed. */
+export class RdkitNotConfiguredError extends Error {
+  constructor() {
+    super("RDKit module loader not set (call setRdkitModuleLoader)");
+    this.name = "RdkitNotConfiguredError";
+  }
+}
+
 let moduleLoader: RdkitModuleLoader | undefined;
 let modulePromise: Promise<RdkitMinimalModule> | undefined;
 
@@ -74,7 +82,7 @@ export function setRdkitModuleLoader(loader: RdkitModuleLoader): void {
 /** Resolve the RDKit module singleton (idempotent; retries after a failed load). */
 export function ensureRdkit(): Promise<RdkitMinimalModule> {
   if (!moduleLoader) {
-    return Promise.reject(new Error("RDKit module loader not set (call setRdkitModuleLoader)"));
+    return Promise.reject(new RdkitNotConfiguredError());
   }
   if (!modulePromise) {
     modulePromise = moduleLoader().catch((error) => {

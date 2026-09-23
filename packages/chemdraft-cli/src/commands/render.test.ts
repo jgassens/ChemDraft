@@ -1,17 +1,21 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import {
   generateSmiles2DMolfile,
   resetRdkitForTesting,
   setRdkitModuleLoader
 } from "@chemdraft/rdkit-adapter";
+import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import { stereoPerceptionMolfile } from "../../../../apps/desktop/src/documentWorkflow";
 import { renderSmilesToAssets, type RenderedSmiles } from "../document";
@@ -218,6 +222,19 @@ describe("headless ChemDraft rendering", () => {
     expect(actual.every((center) => center.descriptor !== "unspecified")).toBe(true);
   });
 
+  it.each([
+    "C[C@H](N)C(=O)O",
+    "C[C@@H](N)C(=O)O"
+  ])("keeps the canonical isomeric SMILES after document export for %s", async (smiles) => {
+    const rendered = await renderSmilesToAssets(smiles);
+    const exportedMolfile = moleculeToMolfileV2000(rendered.molecule, { fromDocFrame: true });
+    const [source, exported] = await Promise.all([
+      computeStructureIdentifiers(smiles),
+      computeStructureIdentifiers(exportedMolfile)
+    ]);
+    expect(exported?.smiles).toBe(source?.smiles);
+  });
+
   it("does not collapse aromatic benzene to all-single bonds", async () => {
     const rendered = await renderSmilesToAssets("c1ccccc1", { name: "benzene" });
     expect(rendered.molecule.bonds.some((bond) =>
@@ -390,4 +407,19 @@ describe("headless ChemDraft rendering", () => {
     expect(decodePng(rendered.png).width).toBe(600);
     expect(rendered.warnings.join("\n")).toContain("forced RDKit failure");
   });
+
+  it("reports a missing RDKit loader as configuration failure instead of using OCL", () => {
+    const fixture = fileURLToPath(new URL("./__fixtures__/rdkit-not-configured.ts", import.meta.url));
+    const output = join(outputDirectory, "must-not-render.svg");
+    const child = spawnSync(process.execPath, ["--import", "tsx", fixture, output], {
+      encoding: "utf8"
+    });
+    expect(child.status, child.stderr).toBe(1);
+    const lines = child.stdout.trim().split(/\r?\n/).filter(Boolean);
+    expect(lines).toHaveLength(1);
+    const result = JSON.parse(lines[0]!);
+    expect(result).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(result.error).toContain("RDKit module loader not set");
+    expect(lines[0]).not.toContain('"engine":"ocl"');
+  }, 30_000);
 });

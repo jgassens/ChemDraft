@@ -16,6 +16,8 @@ import {
   CliUsageError,
   cliExitCode,
   defaultCliIo,
+  handleCliError,
+  parseNamedSmilesJob,
   readBatchFile,
   resultExitCode,
   writeJsonLine,
@@ -52,9 +54,9 @@ interface ParsedArguments {
 export const exportHelp = `ChemDraft headless document exporter
 
 Usage:
-  pnpm chemdraft export --smiles <SMILES> --out <file.cdxml|.pdf|.sdf|.mol|.smi>
-  pnpm chemdraft export --batch <jobs.json> --out-dir <dir> --format cdxml|pdf|mol
-  pnpm chemdraft export --batch <jobs.json> --out <file> --format sdf|smi
+  pnpm -s chemdraft export --smiles <SMILES> --out <file.cdxml|.pdf|.sdf|.mol|.smi>
+  pnpm -s chemdraft export --batch <jobs.json> --out-dir <dir> --format cdxml|pdf|mol
+  pnpm -s chemdraft export --batch <jobs.json> --out <file> --format sdf|smi
 
 Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O"}.
 Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
@@ -131,16 +133,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
 }
 
 async function readJobs(path: string): Promise<ExportJob[]> {
-  return readBatchFile(path, (candidate, index) => {
-    if (
-      !candidate || typeof candidate !== "object" ||
-      typeof (candidate as { name?: unknown }).name !== "string" ||
-      typeof (candidate as { smiles?: unknown }).smiles !== "string"
-    ) {
-      throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
-    }
-    return candidate as ExportJob;
-  }, (job) => {
+  return readBatchFile(path, parseNamedSmilesJob, (job) => {
     if (!job.smiles.trim()) throw new CliUsageError(`Batch job "${job.name}" has an empty SMILES.`);
   });
 }
@@ -353,8 +346,35 @@ async function runCombinedExport(
   }
 
   const combined = records.map((record) => record.content).join("");
-  await mkdir(dirname(out), { recursive: true });
-  await writeFile(out, combined);
+  if (records.length === 0) {
+    for (const failure of failures) {
+      writeJsonLine(io, { name: failure.job.name, smiles: failure.job.smiles, ok: false, error: failure.message });
+      writeProgress(io, `Failed ${failure.job.name}: ${failure.message}`);
+    }
+    return false;
+  }
+
+  try {
+    await mkdir(dirname(out), { recursive: true });
+    await writeFile(out, combined);
+  } catch (error) {
+    const fileError = `Could not write combined ${format.toUpperCase()} file "${out}": ${error instanceof Error ? error.message : String(error)}`;
+    for (const record of records) {
+      writeJsonLine(io, {
+        name: record.job.name,
+        smiles: record.job.smiles,
+        ok: false,
+        out,
+        format,
+        error: fileError
+      });
+    }
+    for (const failure of failures) {
+      writeJsonLine(io, { name: failure.job.name, smiles: failure.job.smiles, ok: false, error: failure.message });
+    }
+    writeProgress(io, `Failed combined export: ${fileError}`);
+    return false;
+  }
   const bytes = Buffer.byteLength(combined);
   writeProgress(io, `Wrote ${out}`);
 
@@ -408,10 +428,7 @@ export async function runExportCommand(
     }
     return resultExitCode(allSucceeded);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    io.stderr(`Error: ${message}`);
-    io.stderr("Run pnpm chemdraft export --help for usage.");
-    return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
+    return handleCliError(error, io, "export");
   }
 }
 

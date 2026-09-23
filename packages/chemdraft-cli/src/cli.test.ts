@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -20,6 +22,22 @@ afterAll(async () => {
 });
 
 describe("chemdraft CLI dispatch", () => {
+  it("keeps direct-process stdout as pure JSON Lines", () => {
+    const cliPath = fileURLToPath(new URL("./cli.ts", import.meta.url));
+    const child = spawnSync(process.execPath, [
+      "--import", "tsx",
+      cliPath,
+      "stereo",
+      "--smiles", "C[C@H](N)C(=O)O"
+    ], { encoding: "utf8" });
+
+    expect(child.status, child.stderr).toBe(0);
+    const lines = child.stdout.trim().split(/\r?\n/).filter(Boolean);
+    expect(lines).toHaveLength(1);
+    for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
+    expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, warnings: [] });
+  }, 30_000);
+
   it("lists all eight subcommands in top-level help", async () => {
     const stdout: string[] = [];
     const code = await runCli(["--help"], {

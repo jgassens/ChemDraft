@@ -9,12 +9,10 @@ import {
   insertSmilesMolecule,
   nativeTextObjectSizeForText
 } from "../../../../apps/desktop/src/documentWorkflow";
-import { parseOptions, stringOption } from "../args";
+import { integerOption, numericOption, parseOptions, stringOption } from "../args";
 import {
   cropDocumentSvgToContent,
   depictSmiles,
-  finiteNonNegative,
-  finitePositive,
   renderDefaults,
   svgToPng,
   type RenderBackground,
@@ -25,6 +23,8 @@ import {
   CliUsageError,
   cliExitCode,
   defaultCliIo,
+  handleCliError,
+  parseNamedSmilesJob,
   readBatchFile,
   writeJsonLine,
   writeProgress,
@@ -37,18 +37,22 @@ export interface GridJob {
   smiles: string;
 }
 
-type GridLabels = "none" | "letters" | "names";
+export type GridLabels = "none" | "letters" | "names";
 type GridOutputFormat = "png" | "svg";
 
-interface ParsedArguments {
-  jobsFile: string;
-  out: string;
-  format: GridOutputFormat;
+export interface RenderGridOptions {
   columns?: number;
   labels: GridLabels;
   width: number;
   gutter: number;
+  padding: number;
   background: RenderBackground;
+}
+
+interface ParsedArguments extends RenderGridOptions {
+  jobsFile: string;
+  out: string;
+  format: GridOutputFormat;
 }
 
 interface MeasuredEntry extends GridJob {
@@ -58,17 +62,10 @@ interface MeasuredEntry extends GridJob {
   label: string | null;
 }
 
-interface LabelBounds {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export const gridHelp = `ChemDraft multiple-choice structure grid renderer
 
 Usage:
-  pnpm chemdraft grid --batch <jobs.json> --out <grid.png|grid.svg> [options]
+  pnpm -s chemdraft grid --batch <jobs.json> --out <grid.png|grid.svg> [options]
 
 Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O"}.
 Every entry is validated before the image is written: a bad SMILES fails the entire grid.
@@ -78,7 +75,8 @@ Options:
   --labels none|letters|names    Cell labels (default: letters)
   --width <px>                   PNG width (default: ${renderDefaults.width}; ignored for SVG)
   --gutter <px>                  Space between cells (default: 32)
-  --background                   Use an opaque white background (default: transparent)
+  --padding <px>                 Crop padding around all visible content (default: ${renderDefaults.padding})
+  --background white|transparent Background (default: white)
   --help                         Print this help
 
 Output:
@@ -92,25 +90,10 @@ const gridOptions = {
   "--labels": { kind: "value" },
   "--width": { kind: "value" },
   "--gutter": { kind: "value" },
-  "--background": { kind: "boolean" },
+  "--padding": { kind: "value" },
+  "--background": { kind: "value" },
   "--help": { kind: "boolean" }
 } as const;
-
-function numericOption(value: string | undefined, flag: string, allowZero: boolean): number {
-  if (value === undefined) throw new CliUsageError(`${flag} requires a value.`);
-  const parsed = Number(value);
-  try {
-    return allowZero ? finiteNonNegative(parsed, flag) : finitePositive(parsed, flag);
-  } catch (error) {
-    throw new CliUsageError(error instanceof Error ? error.message : String(error));
-  }
-}
-
-function integerOption(value: string | undefined, flag: string): number {
-  const parsed = numericOption(value, flag, false);
-  if (!Number.isInteger(parsed)) throw new CliUsageError(`${flag} must be a positive integer.`);
-  return parsed;
-}
 
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
@@ -130,6 +113,12 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   if (requestedLabels !== "none" && requestedLabels !== "letters" && requestedLabels !== "names") {
     throw new CliUsageError(`--labels must be none, letters, or names; received "${requestedLabels}".`);
   }
+  const requestedBackground = stringOption(parsed, "--background") ?? renderDefaults.background;
+  if (requestedBackground !== "white" && requestedBackground !== "transparent") {
+    throw new CliUsageError(
+      `--background must be white or transparent; received "${requestedBackground}".`
+    );
+  }
 
   return {
     jobsFile,
@@ -145,21 +134,15 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     gutter: stringOption(parsed, "--gutter") === undefined
       ? 32
       : numericOption(stringOption(parsed, "--gutter"), "--gutter", true),
-    background: parsed.options["--background"] === true ? "white" : "transparent"
+    padding: stringOption(parsed, "--padding") === undefined
+      ? renderDefaults.padding
+      : numericOption(stringOption(parsed, "--padding"), "--padding", true),
+    background: requestedBackground
   };
 }
 
 async function readJobs(path: string): Promise<GridJob[]> {
-  const jobs = await readBatchFile(path, (candidate, index) => {
-    if (
-      !candidate || typeof candidate !== "object" ||
-      typeof (candidate as { name?: unknown }).name !== "string" ||
-      typeof (candidate as { smiles?: unknown }).smiles !== "string"
-    ) {
-      throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
-    }
-    return candidate as GridJob;
-  }, (job) => {
+  const jobs = await readBatchFile(path, parseNamedSmilesJob, (job) => {
     if (!job.smiles.trim()) throw new CliUsageError(`Batch job "${job.name}" has an empty SMILES.`);
   });
   if (jobs.length === 0) throw new CliUsageError("Batch JSON must contain at least one grid entry.");
@@ -215,47 +198,22 @@ function automaticColumns(entries: readonly MeasuredEntry[], gutter: number): nu
   return Math.min(entries.length, Math.max(1, Math.floor((pageWidth - 48) / cellWidth)));
 }
 
-function formatSvgNumber(value: number): string {
-  return Number(value.toFixed(3)).toString();
-}
-
-function expandCropForLabels(
-  svg: string,
-  viewBox: { x: number; y: number; width: number; height: number },
-  labels: readonly LabelBounds[],
-  padding: number,
-  background: RenderBackground
-): string {
-  if (labels.length === 0) return svg;
-  const minX = Math.min(viewBox.x, ...labels.map((label) => label.x - padding));
-  const minY = Math.min(viewBox.y, ...labels.map((label) => label.y - padding));
-  const maxX = Math.max(viewBox.x + viewBox.width, ...labels.map((label) => label.x + label.width + padding));
-  const maxY = Math.max(viewBox.y + viewBox.height, ...labels.map((label) => label.y + label.height + padding));
-  const width = Math.max(1, maxX - minX);
-  const height = Math.max(1, maxY - minY);
-  const rootPattern = /<svg\s+([^>]*?)width="[^"]+"\s+height="[^"]+"\s+viewBox="[^"]+"([^>]*)>/;
-  let cropped = svg.replace(
-    rootPattern,
-    `<svg $1width="${formatSvgNumber(width)}" height="${formatSvgNumber(height)}" viewBox="${formatSvgNumber(minX)} ${formatSvgNumber(minY)} ${formatSvgNumber(width)} ${formatSvgNumber(height)}"$2>`
-  );
-  if (cropped === svg) throw new Error("Could not crop SVG: the exported root dimensions were not found.");
-  if (background === "white") {
-    cropped = cropped.replace(
-      /(<svg[^>]*>\n)\s*<rect\s+[^>]*fill="#ffffff"\s*\/>/,
-      `$1  <rect x="${formatSvgNumber(minX)}" y="${formatSvgNumber(minY)}" width="${formatSvgNumber(width)}" height="${formatSvgNumber(height)}" fill="#ffffff" />`
-    );
-  }
-  return cropped;
-}
-
-async function renderGrid(args: ParsedArguments, jobs: readonly GridJob[], io: CliIo): Promise<{
+export interface RenderedGrid {
   svg: string;
   png: Uint8Array;
+  document: ReturnType<typeof createEmptyDocument>;
+  viewBox: { x: number; y: number; width: number; height: number };
   columns: number;
   rows: number;
   cells: { name: string; smiles: string; label: string | null; column: number; row: number }[];
   warnings: string[];
-}> {
+}
+
+export async function renderGrid(
+  jobs: readonly GridJob[],
+  args: RenderGridOptions,
+  io: CliIo = defaultCliIo
+): Promise<RenderedGrid> {
   const entries = await prepareEntries(jobs, args.labels, io);
   const columns = Math.min(entries.length, args.columns ?? automaticColumns(entries, args.gutter));
   const rows = Math.ceil(entries.length / columns);
@@ -269,7 +227,6 @@ async function renderGrid(args: ParsedArguments, jobs: readonly GridJob[], io: C
   const cellHeight = moleculeHeight + labelGap + labelHeight + args.gutter;
   const margin = 24;
   let document = createEmptyDocument({ title: "ChemDraft grid" });
-  const labelBounds: LabelBounds[] = [];
   const cells = entries.map((entry, index) => {
     const column = index % columns;
     const row = Math.floor(index / columns);
@@ -286,23 +243,24 @@ async function renderGrid(args: ParsedArguments, jobs: readonly GridJob[], io: C
       const x = cellX + (cellWidth - size.width) / 2;
       const y = cellY + moleculeHeight + labelGap;
       document = insertNativeTextObject(document, { x, y }, entry.label);
-      labelBounds.push({ x, y, ...size });
     }
     return { name: entry.name, smiles: entry.smiles, label: entry.label, column, row };
   });
 
-  const firstMolecule = document.pages[0]?.objects.find((object): object is MoleculeObject => object.type === "molecule");
-  if (!firstMolecule) throw new Error("The grid document did not contain any molecules.");
   const exported = exportDocumentToSvg(document, {
     background: args.background === "white" ? "#ffffff" : "transparent"
   });
-  // The shared cropper uses layout-engine molecule geometry. Extend only for native labels,
-  // which are intentionally not part of a molecule's visual bounds.
-  const cropped = cropDocumentSvgToContent(exported.contents, document, firstMolecule, renderDefaults.padding, args.background);
-  const svg = expandCropForLabels(cropped.svg, cropped.viewBox, labelBounds, renderDefaults.padding, args.background);
+  const cropped = cropDocumentSvgToContent(
+    exported.contents,
+    document,
+    args.padding,
+    args.background
+  );
   return {
-    svg,
-    png: svgToPng(svg, args.width),
+    svg: cropped.svg,
+    png: svgToPng(cropped.svg, args.width),
+    document,
+    viewBox: cropped.viewBox,
     columns,
     rows,
     cells,
@@ -324,7 +282,7 @@ export async function runGridCommand(
     const jobs = await readJobs(args.jobsFile);
     writeProgress(io, `Rendering ${jobs.length} structures as one grid…`);
     try {
-      const rendered = await renderGrid(args, jobs, io);
+      const rendered = await renderGrid(jobs, args, io);
       await mkdir(dirname(args.out), { recursive: true });
       await writeFile(args.out, args.format === "svg" ? rendered.svg : rendered.png);
       writeJsonLine(io, {
@@ -354,10 +312,7 @@ export async function runGridCommand(
       return cliExitCode.failed;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    io.stderr(`Error: ${message}`);
-    io.stderr("Run pnpm chemdraft grid --help for usage.");
-    return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
+    return handleCliError(error, io, "grid");
   }
 }
 

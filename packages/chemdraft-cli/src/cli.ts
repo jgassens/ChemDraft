@@ -13,7 +13,7 @@ import {
 const HELP = `ChemDraft command-line tools
 
 Usage:
-  pnpm chemdraft <subcommand> [options]
+  pnpm -s chemdraft <subcommand> [options]
   chemdraft <subcommand> [options]
 
 Subcommands:
@@ -40,7 +40,7 @@ export async function runCli(
   const command = commands.find((candidate) => candidate.name === name);
   if (!command) {
     io.stderr(`Error: unknown subcommand "${name}".`);
-    io.stderr("Run pnpm chemdraft --help for usage.");
+    io.stderr("Run pnpm -s chemdraft --help for usage.");
     return cliExitCode.badArguments;
   }
   return command.run(commandArgv, io);

@@ -179,18 +179,36 @@ export function createChemDraftMcpServer(): McpServer {
   });
 
   server.registerTool("render_reaction", {
-    description: `Render reaction SMILES as a PNG reaction scheme. ${chemistryHonesty}`,
+    description: `Render a reaction as a PNG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
     inputSchema: {
-      reactionSmiles: z.string().min(1),
+      reactionSmiles: z.string().min(1).optional(),
+      reactants: z.array(z.string().min(1)).min(1).optional(),
+      agents: z.array(z.string().min(1)).optional(),
+      products: z.array(z.string().min(1)).min(1).optional(),
       conditions: z.string().optional(),
       arrow: z.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
       width: z.number().positive().optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ reactionSmiles, conditions, arrow, width, outDir }) => {
+  }, async ({ reactionSmiles, reactants, agents, products, conditions, arrow, width, outDir }) => {
+    const hasArrays = reactants !== undefined || agents !== undefined || products !== undefined;
+    if ((reactionSmiles === undefined) === !hasArrays) {
+      return errorResult("Provide exactly one of reactionSmiles or reactants/agents/products arrays.");
+    }
+    if (hasArrays && (!reactants || !products)) {
+      return errorResult("Component-array reactions require at least one reactant and one product.");
+    }
     const directory = await outputDirectory(outDir);
-    const output = join(directory, `${slug(reactionSmiles)}-reaction.png`);
-    const argv = ["--rxn", reactionSmiles, "--out", output];
+    const reactionSlug = reactionSmiles ?? [...reactants!, ...(agents ?? []), ...products!].join("-");
+    const output = join(directory, `${slug(reactionSlug)}-reaction.png`);
+    const argv = reactionSmiles !== undefined
+      ? ["--rxn", reactionSmiles, "--out", output]
+      : [
+          ...reactants!.flatMap((smiles) => ["--reactant", smiles]),
+          ...(agents ?? []).flatMap((smiles) => ["--agent", smiles]),
+          ...products!.flatMap((smiles) => ["--product", smiles]),
+          "--out", output
+        ];
     if (conditions !== undefined) argv.push("--conditions", conditions);
     if (arrow !== undefined) argv.push("--arrow", arrow);
     if (width !== undefined) argv.push("--width", String(width));
@@ -199,7 +217,7 @@ export function createChemDraftMcpServer(): McpServer {
   });
 
   server.registerTool("analyze_structure", {
-    description: "Analyze a SMILES structure. Numbers carry their method contracts; quote the reported pKa interval rather than presenting a prediction as exact.",
+    description: "Analyze a SMILES structure. Every summary field carries a value plus an analysis status, so declined and not-requested methods remain distinct. Quote reported pKa intervals rather than presenting predictions as exact.",
     inputSchema: {
       smiles: z.string().min(1),
       methods: z.array(z.string().min(1)).min(1).optional(),
@@ -231,7 +249,7 @@ export function createChemDraftMcpServer(): McpServer {
   });
 
   server.registerTool("check_stereo", {
-    description: `Inspect specified and unspecified stereocentres in SMILES. ${chemistryHonesty}`,
+    description: `Inspect specified and unspecified tetrahedral stereocentres and E/Z double bonds. Atom and bond indices are 0-based. ${chemistryHonesty}`,
     inputSchema: { smiles: z.string().min(1) }
   }, async ({ smiles }) => response(runCommand(runStereoCommand, ["--smiles", smiles])));
 

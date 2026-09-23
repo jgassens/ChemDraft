@@ -24,6 +24,10 @@ export interface NamedBatchJob {
   name: string;
 }
 
+export interface NamedSmilesJob extends NamedBatchJob {
+  smiles: string;
+}
+
 export type SuccessfulJsonLine = {
   name: string;
   ok: true;
@@ -51,6 +55,26 @@ export function writeProgress(io: CliIo, message: string): void {
 /** Resolve the shared 0 (all succeeded) / 1 (one or more failed) result policy. */
 export function resultExitCode(allSucceeded: boolean): CliExitCode {
   return allSucceeded ? cliExitCode.ok : cliExitCode.failed;
+}
+
+/** Parse the common named-SMILES batch job shape used by structure commands. */
+export function parseNamedSmilesJob(candidate: unknown, index: number): NamedSmilesJob {
+  if (
+    !candidate || typeof candidate !== "object" ||
+    typeof (candidate as { name?: unknown }).name !== "string" ||
+    typeof (candidate as { smiles?: unknown }).smiles !== "string"
+  ) {
+    throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
+  }
+  return candidate as NamedSmilesJob;
+}
+
+/** Emit the shared outer command error and choose usage-error versus runtime-failure exit status. */
+export function handleCliError(error: unknown, io: CliIo, usageCommand: string): CliExitCode {
+  const message = error instanceof Error ? error.message : String(error);
+  io.stderr(`Error: ${message}`);
+  io.stderr(`Run pnpm -s chemdraft ${usageCommand} --help for usage.`);
+  return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
 }
 
 /** Validate the portable filename portion shared by every named batch format. */

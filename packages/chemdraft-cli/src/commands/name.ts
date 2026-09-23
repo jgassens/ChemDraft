@@ -11,6 +11,7 @@ import {
   CliUsageError,
   cliExitCode,
   defaultCliIo,
+  handleCliError,
   readBatchFile,
   resultExitCode,
   writeJsonLine,
@@ -22,6 +23,7 @@ import {
 const OPSIN_VERSION = "opsin-2.9.0";
 const MAX_NAME_LENGTH = 2000;
 const OPSIN_TIMEOUT_MS = 30_000;
+const OPSIN_KILL_GRACE_MS = 1_000;
 const REBUILD_RUNTIME_SCRIPT = "scripts/build-opsin-runtime.sh";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -30,6 +32,8 @@ const workspaceRoot = resolve(packageRoot, "../..");
 export interface OpsinPaths {
   javaPath: string;
   jarPath: string;
+  timeoutMs?: number;
+  killGraceMs?: number;
 }
 
 export interface NameJob {
@@ -44,6 +48,11 @@ interface ParsedArguments {
   renderPath?: string;
 }
 
+export interface NameCommandDependencies {
+  opsinPaths?: OpsinPaths;
+  renderSmiles?: typeof renderSmilesToAssets;
+}
+
 interface OpsinOutput {
   stdout: string;
   stderr: string;
@@ -55,8 +64,8 @@ export class OpsinEngineError extends Error {}
 export const nameHelp = `ChemDraft chemical name converter
 
 Usage:
-  pnpm chemdraft name --name <IUPAC-or-trivial-name> [--render out.png]
-  pnpm chemdraft name --batch <jobs.json>
+  pnpm -s chemdraft name --name <IUPAC-or-trivial-name> [--render out.png]
+  pnpm -s chemdraft name --batch <jobs.json>
 
 Batch input is a JSON array of {"name":"aspirin","query":"2-acetoxybenzoic acid"}.
 Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
@@ -165,7 +174,13 @@ function parseFailureReason(stderr: string): string | undefined {
     .find((line) => line.length > 0 && !line.startsWith("Run the jar using"));
 }
 
-async function runOpsin(javaPath: string, jarPath: string, query: string): Promise<OpsinOutput> {
+async function runOpsin(
+  javaPath: string,
+  jarPath: string,
+  query: string,
+  timeoutMs: number,
+  killGraceMs: number
+): Promise<OpsinOutput> {
   return new Promise((resolveOutput, rejectOutput) => {
     const child = spawn(javaPath, ["-jar", jarPath, "-o", "smi", "-n"], {
       env: {
@@ -179,24 +194,35 @@ async function runOpsin(javaPath: string, jarPath: string, query: string): Promi
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let timedOut = false;
+    let closed = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill();
-    }, OPSIN_TIMEOUT_MS);
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (!closed) child.kill("SIGKILL");
+      }, killGraceMs);
+    }, timeoutMs);
+
+    const clearTimers = (): void => {
+      clearTimeout(timeout);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+    };
 
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.on("error", (error) => {
-      clearTimeout(timeout);
+      clearTimers();
       rejectOutput(new OpsinEngineError(
         `Could not start the OPSIN engine at "${javaPath}" with "${jarPath}": ${error.message}. Rebuild it with ${REBUILD_RUNTIME_SCRIPT}.`
       ));
     });
     child.on("close", (exitCode) => {
-      clearTimeout(timeout);
+      closed = true;
+      clearTimers();
       if (timedOut) {
         rejectOutput(new OpsinEngineError(
-          `The OPSIN engine at "${javaPath}" did not finish within 30 seconds for "${query}". Rebuild it with ${REBUILD_RUNTIME_SCRIPT}.`
+          `OPSIN timed out after ${timeoutMs} ms for "${query}"; the process was terminated.`
         ));
         return;
       }
@@ -218,23 +244,34 @@ export async function convertNameWithOpsin(
   const query = validateChemicalName(rawQuery);
   await requireReadable(paths.javaPath, "bundled Java executable", constants.X_OK);
   await requireReadable(paths.jarPath, "OPSIN jar", constants.R_OK);
-  const output = await runOpsin(paths.javaPath, paths.jarPath, query);
-  const smiles = parseSmiles(output.stdout);
-  if (smiles) return { smiles };
+  const output = await runOpsin(
+    paths.javaPath,
+    paths.jarPath,
+    query,
+    paths.timeoutMs ?? OPSIN_TIMEOUT_MS,
+    paths.killGraceMs ?? OPSIN_KILL_GRACE_MS
+  );
   if (output.exitCode !== 0) {
     throw new OpsinEngineError(
       `OPSIN engine at "${paths.javaPath}" failed for "${query}" (exit ${String(output.exitCode)}): ${parseFailureReason(output.stderr) ?? "no diagnostic was produced"}. Rebuild it with ${REBUILD_RUNTIME_SCRIPT}.`
     );
   }
+  const smiles = parseSmiles(output.stdout);
+  if (smiles) return { smiles };
   return {
     failureReason: parseFailureReason(output.stderr) ?? `"${query}" could not be interpreted as a chemical name.`
   };
 }
 
-async function runJob(job: NameJob, renderPath: string | undefined, io: CliIo): Promise<boolean> {
+async function runJob(
+  job: NameJob,
+  renderPath: string | undefined,
+  io: CliIo,
+  dependencies: NameCommandDependencies
+): Promise<boolean> {
   writeProgress(io, `Converting ${job.name}…`);
   try {
-    const converted = await convertNameWithOpsin(job.query);
+    const converted = await convertNameWithOpsin(job.query, dependencies.opsinPaths);
     if (!converted.smiles) {
       const error = `Could not interpret chemical name "${job.query}": ${converted.failureReason}`;
       writeJsonLine(io, { name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error });
@@ -243,7 +280,10 @@ async function runJob(job: NameJob, renderPath: string | undefined, io: CliIo): 
     }
 
     if (renderPath !== undefined) {
-      const rendered = await renderSmilesToAssets(converted.smiles, { name: job.name });
+      const rendered = await (dependencies.renderSmiles ?? renderSmilesToAssets)(
+        converted.smiles,
+        { name: job.name }
+      );
       await mkdir(dirname(renderPath), { recursive: true });
       await writeFile(renderPath, rendered.png);
       writeJsonLine(io, {
@@ -253,7 +293,7 @@ async function runJob(job: NameJob, renderPath: string | undefined, io: CliIo): 
         smiles: converted.smiles,
         engine: OPSIN_VERSION,
         png: renderPath,
-        warnings: []
+        warnings: rendered.warnings
       });
       writeProgress(io, `Wrote ${renderPath}`);
       return true;
@@ -282,7 +322,8 @@ async function runJob(job: NameJob, renderPath: string | undefined, io: CliIo): 
 
 export async function runNameCommand(
   argv: readonly string[],
-  io: CliIo = defaultCliIo
+  io: CliIo = defaultCliIo,
+  dependencies: NameCommandDependencies = {}
 ): Promise<CliExitCode> {
   try {
     const parsed = parseArguments(argv);
@@ -297,16 +338,18 @@ export async function runNameCommand(
       : await readJobs(parsed.batchFile!);
     let allSucceeded = true;
     for (const job of jobs) {
-      if (!await runJob(job, parsed.mode === "single" ? parsed.renderPath : undefined, io)) {
+      if (!await runJob(
+        job,
+        parsed.mode === "single" ? parsed.renderPath : undefined,
+        io,
+        dependencies
+      )) {
         allSucceeded = false;
       }
     }
     return resultExitCode(allSucceeded);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    io.stderr(`Error: ${message}`);
-    io.stderr("Run pnpm chemdraft name --help for usage.");
-    return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
+    return handleCliError(error, io, "name");
   }
 }
 

@@ -4,12 +4,14 @@ import { homedir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { booleanOption, parseOptions, stringOption } from "../args";
-import { depictSmiles, finitePositive, svgToPng } from "../document";
+import { booleanOption, numericOption, parseOptions, stringOption } from "../args";
+import { depictSmiles, svgToPng } from "../document";
 import {
   CliUsageError,
   cliExitCode,
   defaultCliIo,
+  handleCliError,
+  parseNamedSmilesJob,
   readBatchFile,
   resultExitCode,
   writeJsonLine,
@@ -114,8 +116,8 @@ interface ParsedArguments {
 export const nmrHelp = `ChemDraft NMR shift prediction
 
 Usage:
-  pnpm chemdraft nmr --smiles <SMILES> [--nuclei 1H,13C] [--spectrum out.svg|out.png]
-  pnpm chemdraft nmr --batch <jobs.json> [--nuclei 1H,13C] [--spectrum-dir <dir>]
+  pnpm -s chemdraft nmr --smiles <SMILES> [--nuclei 1H,13C] [--spectrum out.svg|out.png]
+  pnpm -s chemdraft nmr --batch <jobs.json> [--nuclei 1H,13C] [--spectrum-dir <dir>]
 
 Batch input is a JSON array of {"name":"ethanol","smiles":"CCO"}.
 
@@ -247,11 +249,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   let width = DEFAULT_PNG_WIDTH;
   const requestedWidth = stringOption(parsed, "--width");
   if (requestedWidth !== undefined) {
-    try {
-      width = finitePositive(Number(requestedWidth), "--width");
-    } catch (error) {
-      throw new CliUsageError(errorMessage(error));
-    }
+    width = numericOption(requestedWidth, "--width");
   }
 
   const spectrum = stringOption(parsed, "--spectrum");
@@ -292,17 +290,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
 }
 
 async function readJobs(path: string): Promise<NmrJob[]> {
-  return readBatchFile(path, (candidate, index) => {
-    if (
-      !candidate || typeof candidate !== "object" ||
-      typeof (candidate as { name?: unknown }).name !== "string" ||
-      typeof (candidate as { smiles?: unknown }).smiles !== "string"
-    ) {
-      throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
-    }
-    const { name, smiles } = candidate as NmrJob;
-    return { name, smiles };
-  }, (job) => {
+  return readBatchFile(path, parseNamedSmilesJob, (job) => {
     if (!job.smiles.trim()) throw new CliUsageError(`Batch job "${job.name}" has an empty SMILES.`);
   });
 }
@@ -500,9 +488,7 @@ export async function runNmrCommand(
     }
     return resultExitCode(allSucceeded);
   } catch (error) {
-    io.stderr(`Error: ${errorMessage(error)}`);
-    io.stderr("Run pnpm chemdraft nmr --help for usage.");
-    return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
+    return handleCliError(error, io, "nmr");
   }
 }
 

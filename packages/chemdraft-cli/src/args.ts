@@ -76,3 +76,28 @@ export function repeatedOption(parsed: ParsedOptions, flag: string): readonly st
   const value = parsed.options[flag];
   return Array.isArray(value) ? value : [];
 }
+
+/** Parse a finite CLI number, optionally allowing zero. */
+export function numericOption(
+  value: string | undefined,
+  flag: string,
+  allowZero = false
+): number {
+  if (value === undefined) throw new CliUsageError(`${flag} requires a value.`);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || (allowZero ? parsed < 0 : parsed <= 0)) {
+    throw new CliUsageError(
+      allowZero
+        ? `${flag} must be a finite, non-negative number.`
+        : `${flag} must be a finite number greater than zero.`
+    );
+  }
+  return parsed;
+}
+
+/** Parse a positive integer CLI option. */
+export function integerOption(value: string | undefined, flag: string): number {
+  const parsed = numericOption(value, flag);
+  if (!Number.isInteger(parsed)) throw new CliUsageError(`${flag} must be a positive integer.`);
+  return parsed;
+}

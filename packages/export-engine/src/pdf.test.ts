@@ -93,7 +93,7 @@ describe("exportDocumentToPdf", () => {
 
     expect(result.header).toBe("%PDF-");
     expect(result.byteLength).toBeGreaterThan(1000);
-  });
+  }, 60_000);
 });
 
 function nodePdfExportScript(): string {

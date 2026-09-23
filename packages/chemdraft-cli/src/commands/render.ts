@@ -1,10 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import { parseOptions, stringOption } from "../args";
+import { numericOption, parseOptions, stringOption } from "../args";
 import {
-  finiteNonNegative,
-  finitePositive,
   renderDefaults,
   renderSmilesToAssets,
   type RenderBackground
@@ -13,6 +11,8 @@ import {
   CliUsageError,
   cliExitCode,
   defaultCliIo,
+  handleCliError,
+  parseNamedSmilesJob,
   readBatchFile,
   resultExitCode,
   writeJsonLine,
@@ -44,9 +44,9 @@ interface ParsedArguments {
 export const renderHelp = `ChemDraft headless structure renderer
 
 Usage:
-  pnpm render --smiles <SMILES> --out <file.png|file.svg>
-  pnpm render --smiles <SMILES> --out <base> --format both
-  pnpm render --batch <jobs.json> --out-dir <dir> [--format png|svg|both]
+  pnpm -s render --smiles <SMILES> --out <file.png|file.svg>
+  pnpm -s render --smiles <SMILES> --out <base> --format both
+  pnpm -s render --batch <jobs.json> --out-dir <dir> [--format png|svg|both]
 
 Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O"}.
 Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
@@ -77,16 +77,6 @@ const renderOptions = {
   "--padding": { kind: "value" },
   "--help": { kind: "boolean" }
 } as const;
-
-function numericOption(value: string | undefined, flag: string, allowZero: boolean): number {
-  if (value === undefined) throw new CliUsageError(`${flag} requires a value.`);
-  const parsed = Number(value);
-  try {
-    return allowZero ? finiteNonNegative(parsed, flag) : finitePositive(parsed, flag);
-  } catch (error) {
-    throw new CliUsageError(error instanceof Error ? error.message : String(error));
-  }
-}
 
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
@@ -168,16 +158,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
 }
 
 async function readJobs(path: string): Promise<RenderJob[]> {
-  return readBatchFile(path, (candidate, index) => {
-    if (
-      !candidate || typeof candidate !== "object" ||
-      typeof (candidate as { name?: unknown }).name !== "string" ||
-      typeof (candidate as { smiles?: unknown }).smiles !== "string"
-    ) {
-      throw new CliUsageError(`Batch job ${index + 1} must contain string "name" and "smiles" fields.`);
-    }
-    return candidate as RenderJob;
-  }, (job) => {
+  return readBatchFile(path, parseNamedSmilesJob, (job) => {
     if (!job.smiles.trim()) throw new CliUsageError(`Batch job "${job.name}" has an empty SMILES.`);
   });
 }
@@ -267,10 +248,7 @@ export async function runRenderCommand(
     }
     return resultExitCode(allSucceeded);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    io.stderr(`Error: ${message}`);
-    io.stderr("Run pnpm render --help for usage.");
-    return error instanceof CliUsageError ? cliExitCode.badArguments : cliExitCode.failed;
+    return handleCliError(error, io, "render");
   }
 }
 

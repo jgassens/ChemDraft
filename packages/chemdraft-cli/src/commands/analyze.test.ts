@@ -4,9 +4,10 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { AnalysisRun } from "@chemdraft/analysis-core";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
-import { runAnalyzeCommand as runCli } from "./analyze";
+import { runAnalyzeCommand as runCli, summarizeAnalysisRun } from "./analyze";
 
 interface CapturedResult {
   name: string;
@@ -16,38 +17,28 @@ interface CapturedResult {
   report?: string;
   file?: string;
   summary?: {
-    formula: string | null;
-    monoisotopicMass: number | null;
-    averageMass: number | null;
-    canonicalSmiles: string | null;
-    inchiKey: string | null;
-    logP: number | null;
-    tpsa: number | null;
-    hbd: number | null;
-    hba: number | null;
-    rotatableBonds: number | null;
-    pka: Array<{
-      site: string;
-      value: number;
+    formula: { value: string | null; status: string; reason?: string };
+    monoisotopicMass: { value: number | null; status: string; reason?: string };
+    averageMass: { value: number | null; status: string; reason?: string };
+    canonicalSmiles: { value: string | null; status: string; reason?: string };
+    inchiKey: { value: string | null; status: string; reason?: string };
+    logP: { value: number | null; status: string; reason?: string };
+    tpsa: { value: number | null; status: string; reason?: string };
+    hbd: { value: number | null; status: string; reason?: string };
+    hba: { value: number | null; status: string; reason?: string };
+    rotatableBonds: { value: number | null; status: string; reason?: string };
+    pka: { value: Array<{
+      atomIndex: number;
+      siteType: string;
+      transition: "acidic" | "basic";
+      acidCharge: number;
+      basis: string;
+      value: number | null;
+      reason?: string;
       interval: { lower: number; upper: number } | null;
-    }>;
+    }> | null; status: string; reason?: string };
   };
-  run?: {
-    status: string;
-    results: Array<{
-      id: string;
-      methodId: string;
-      interpretationId: string;
-      status: string;
-      kind: string;
-      value?: number | string | null;
-      formula?: string | null;
-    }>;
-    interpretations: Array<{
-      id: string;
-      transformations: unknown[];
-    }>;
-  };
+  run?: AnalysisRun;
 }
 
 const ASPIRIN = "CC(=O)Oc1ccccc1C(=O)O";
@@ -107,19 +98,25 @@ describe("chemdraft analyze", () => {
     const result = results[0]!;
     expect(result.ok).toBe(true);
     expect(result.summary).toMatchObject({
-      formula: "C9H8O4",
-      hbd: 1,
-      hba: 3,
-      rotatableBonds: 2
+      formula: { value: "C9H8O4", status: "ok" },
+      hbd: { value: 1, status: "ok" },
+      hba: { value: 3, status: "ok" },
+      rotatableBonds: { value: 2, status: "ok" }
     });
-    expect(result.summary!.monoisotopicMass).toBeCloseTo(180.042, 3);
-    expect(result.summary!.averageMass).toBeCloseTo(180.159, 3);
-    expect(result.summary!.logP).toBeTypeOf("number");
-    expect(result.summary!.tpsa).toBeCloseTo(63.6, 1);
-    expect(result.summary!.canonicalSmiles).toBeTruthy();
-    expect(result.summary!.inchiKey).toMatch(/^[A-Z]{14}-[A-Z]{10}-[A-Z]$/);
-    expect(result.summary!.pka.length).toBeGreaterThan(0);
-    expect(result.summary!.pka[0]!.interval).toEqual({
+    expect(result.summary!.monoisotopicMass.value).toBeCloseTo(180.042, 3);
+    expect(result.summary!.averageMass.value).toBeCloseTo(180.159, 3);
+    expect(result.summary!.logP.value).toBeTypeOf("number");
+    expect(result.summary!.tpsa.value).toBeCloseTo(63.6, 1);
+    expect(result.summary!.canonicalSmiles.value).toBeTruthy();
+    expect(result.summary!.inchiKey.value).toMatch(/^[A-Z]{14}-[A-Z]{10}-[A-Z]$/);
+    expect(result.summary!.pka.value!.length).toBeGreaterThan(0);
+    expect(result.summary!.pka.value![0]).toMatchObject({
+      atomIndex: expect.any(Number),
+      siteType: expect.any(String),
+      acidCharge: expect.any(Number),
+      basis: expect.any(String)
+    });
+    expect(result.summary!.pka.value![0]!.interval).toEqual({
       lower: expect.any(Number),
       upper: expect.any(Number)
     });
@@ -136,9 +133,10 @@ describe("chemdraft analyze", () => {
 
     expect(code).toBe(0);
     const result = results[0]!;
-    expect(result.summary?.formula).toBe("C7H5NaO2");
-    expect(result.summary?.averageMass).toBe(144.105);
-    expect(result.summary?.logP).toBeNull();
+    expect(result.summary?.formula).toEqual({ value: "C7H5NaO2", status: "ok" });
+    expect(result.summary?.averageMass.value).toBe(144.105);
+    expect(result.summary?.logP).toMatchObject({ value: null, status: "unsupported" });
+    expect(result.summary?.logP.reason).toMatch(/parameters|sodium|Na/i);
     expect(result.run?.interpretations[0]?.id).toBe("source");
     expect(result.run?.interpretations.some((entry) =>
       entry.id === "largest-organic-fragment" && entry.transformations.length > 0
@@ -168,6 +166,62 @@ describe("chemdraft analyze", () => {
     expect(results[0]?.report).toContain("Crippen logP");
     expect(results[0]?.report).toMatch(/unsupported/i);
     expect(results[0]?.report).toMatch(/boron|\bB\b/i);
+  }, 120_000);
+
+  it("distinguishes not-requested summary fields from declined methods", async () => {
+    const composition = await run([
+      "--smiles", ASPIRIN,
+      "--methods", "rdkit.composition"
+    ]);
+    expect(composition.code).toBe(0);
+    expect(composition.results[0]!.summary!.formula).toEqual({ value: "C9H8O4", status: "ok" });
+    expect(composition.results[0]!.summary!.logP).toEqual({ value: null, status: "not-requested" });
+
+    const boron = await run([
+      "--smiles", "OB(O)c1ccccc1",
+      "--methods", "rdkit.crippen-logp"
+    ]);
+    expect(boron.code).toBe(0);
+    expect(boron.results[0]!.summary!.logP).toMatchObject({ value: null, status: "unsupported" });
+    expect(boron.results[0]!.summary!.logP.reason).toMatch(/boron|\bB\b/i);
+  }, 120_000);
+
+  it("reports basic-site metadata separately and retains null-valued recognized sites", async () => {
+    const amine = await run([
+      "--smiles", "CN",
+      "--methods", "dimorphite.ionizable-sites"
+    ]);
+    const basic = amine.results[0]!.summary!.pka.value!.find((site) => site.transition === "basic");
+    expect(basic).toMatchObject({
+      atomIndex: expect.any(Number),
+      siteType: expect.any(String),
+      acidCharge: expect.any(Number),
+      basis: expect.any(String)
+    });
+    expect(basic!.siteType).not.toContain("(atom");
+
+    const sourceRun = amine.results[0]!.run!;
+    const ionization = sourceRun.results.find((result) =>
+      result.kind === "ionization" && result.methodId === "dimorphite.ionizable-sites"
+    );
+    expect(ionization?.kind).toBe("ionization");
+    if (!ionization || ionization.kind !== "ionization") throw new Error("Expected ionization result.");
+    const recognizedSite = ionization.sites[0]!;
+    const summary = summarizeAnalysisRun({
+      ...sourceRun,
+      results: sourceRun.results.map((result) => result === ionization
+        ? {
+            ...ionization,
+            sites: [{
+              ...recognizedSite,
+              pKa: null,
+              derivation: "Recognized site has no reportable pKa value."
+            }]
+          }
+        : result)
+    });
+    const nullSite = summary.pka.value!.find((site) => site.value === null);
+    expect(nullSite).toMatchObject({ value: null, reason: expect.any(String) });
   }, 120_000);
 
   it("writes Markdown, returns text inline, and emits JSON runs", async () => {
@@ -255,6 +309,6 @@ describe("chemdraft analyze", () => {
       stderr: () => undefined
     });
     expect(code).toBe(0);
-    expect(stdout.join("\n")).toContain("pnpm chemdraft analyze --smiles");
+    expect(stdout.join("\n")).toContain("pnpm -s chemdraft analyze --smiles");
   });
 });

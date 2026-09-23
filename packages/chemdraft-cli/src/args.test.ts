@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { booleanOption, parseOptions, repeatedOption, stringOption } from "./args";
+import {
+  booleanOption,
+  integerOption,
+  numericOption,
+  parseOptions,
+  repeatedOption,
+  stringOption
+} from "./args";
 
 describe("parseOptions", () => {
   it("parses value, boolean, repeated, and positional arguments", () => {
@@ -22,5 +29,13 @@ describe("parseOptions", () => {
   it("rejects a value flag without a value", () => {
     expect(() => parseOptions(["--out"], { "--out": { kind: "value" } }))
       .toThrow("--out requires a value");
+  });
+
+  it("parses shared finite numeric and integer options", () => {
+    expect(numericOption("0", "--padding", true)).toBe(0);
+    expect(numericOption("2.5", "--width")).toBe(2.5);
+    expect(integerOption("3", "--columns")).toBe(3);
+    expect(() => numericOption("NaN", "--width")).toThrow("finite number");
+    expect(() => integerOption("1.5", "--columns")).toThrow("positive integer");
   });
 });
