@@ -50,6 +50,90 @@
         </div>
       </section>
 
+      <section class="features" aria-labelledby="features-title">
+        <div class="features-head">
+          <p class="index-number">Features</p>
+          <div class="copy-stack">
+            <h2 id="features-title">What ChemDraft does.</h2>
+            <p>Every screenshot below is the real app with real chemistry, not a mockup. They were taken in ChemDraft’s browser preview build, which runs the same drawing and analysis code as the Mac app.</p>
+          </div>
+        </div>
+
+        <div class="feature-row feature-row-wide">
+          <figure class="feature-shot">
+            <a class="feature-shot-link" href="assets/workspace-reaction-scheme.webp"><img src="assets/workspace-reaction-scheme.webp" width="1120" height="381" decoding="async" alt="ChemDraft window with the Main toolbar above a letter-size page showing a Suzuki coupling: 4-bromoanisole plus phenylboronic acid, a reaction arrow labelled Pd(PPh3)4 above and K2CO3, 80 °C below with subscripts, giving 4-methoxybiphenyl."></a>
+            <figcaption>A Suzuki coupling. The three structures were pasted as SMILES; the reagent labels were typed and set as formula text.</figcaption>
+          </figure>
+          <div class="feature-copy">
+            <p class="index-number">01 Draw</p>
+            <ul class="feature-list">
+              <li><strong>Paste SMILES, get structures.</strong> One SMILES lands where your pointer is, and a pasted list is laid out as a grid of editable molecules.</li>
+              <li><strong>Hover hotkeys.</strong> Point at an atom or bond and press a number to attach or fuse a ring, sprout a wedge, or add a carbonyl.</li>
+              <li><strong>Reaction arrows that mean something.</strong> Reaction, equilibrium, resonance, retrosynthesis and no-reaction arrows, with reagent text that subscripts formulas for you.</li>
+              <li><strong>Toolbars your way.</strong> Rearrange the tool palettes, build your own toolsets, and customize the Main toolbar in place.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="feature-row feature-row-wide">
+          <figure class="feature-shot">
+            <a class="feature-shot-link" href="assets/inspector-isotope-envelope.webp"><img src="assets/inspector-isotope-envelope.webp" width="1120" height="534" loading="lazy" decoding="async" alt="Diclofenac selected on the page beside the Molecular Inspector, open to Mass Spec: a list of ion m/z values such as [M+H]+ 296.0240 and a stick plot of the theoretical isotope envelope with peaks at 295.0167, 296.0200 and 297.0137. The footer names the RDKit and IsoSpec builds with their SHA-256 fingerprints."></a>
+            <figcaption>The Molecular Inspector on diclofenac. The two chlorines show up as the tall M+2 peak in the isotope envelope.</figcaption>
+          </figure>
+          <div class="feature-copy">
+            <p class="index-number">02 Inspect</p>
+            <ul class="feature-list">
+              <li><strong>About sixty properties, offline.</strong> Formula, average and monoisotopic mass, InChI and InChIKey, descriptors and predicted properties, all computed by RDKit running inside the app.</li>
+              <li><strong>Isotope envelopes and ion m/z.</strong> The theoretical isotope pattern (from IsoSpec) and common adduct m/z values for the structure you drew.</li>
+              <li><strong>Every number shows where it came from.</strong> A Provenance section names each method, engine version and fingerprint, and Copy as Markdown carries that record along with the numbers.</li>
+              <li><strong>It says what it did not compute.</strong> Analyses that do not apply to your structure are listed as declined or not computed, so a missing number is never silent.</li>
+              <li><strong>Your structure, as drawn.</strong> Results describe exactly what is on the page; a salt-stripped or neutralized form is a separate, named interpretation you choose.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="feature-row">
+          <figure class="feature-shot">
+            <a class="feature-shot-link" href="assets/inspector-pka.webp"><img src="assets/inspector-pka.webp" width="830" height="585" loading="lazy" decoding="async" alt="Molecular Inspector open to Macroscopic pKa for diclofenac: pKa1 4.18 and pKa2 13.72 from 4 microstates, and species at pH 7.4 of 99.9 percent minus-one charge and under 0.1 percent neutral, with a short explanation of how the values are derived."></a>
+            <figcaption>Estimated macroscopic pKa for diclofenac, with the charge states it predicts at pH 7.4.</figcaption>
+          </figure>
+          <div class="feature-copy">
+            <p class="index-number">03 Predict</p>
+            <ul class="feature-list">
+              <li><strong>pKa, built in.</strong> Estimated pKa values and the charge-state mix at pH 7.4, from a model trained for ChemDraft and combined across protonation microstates.</li>
+              <li><strong>Site by site.</strong> The Ionizable sites view shows the per-atom values that the macroscopic numbers are built from.</li>
+              <li><strong>NMR prediction as a plugin.</strong> The free <a class="text-link" href="https://github.com/jgassens/ChemDraft-NMR-Plugin/releases">NMR predictor plugin</a> gives estimated ¹H and ¹³C shifts from NMRShiftDB2-derived statistics; its ¹H multiplicities are first-order estimates, not measurements.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="feature-row feature-row-flip">
+          <figure class="feature-shot">
+            <a class="feature-shot-link" href="assets/spin-3d-helicene.gif"><img src="assets/spin-3d-helicene.gif" width="640" height="627" loading="lazy" decoding="async" alt="Animated recording of Spin 3D in the ChemDraft Mac app: a flat drawing of a helicene is selected and turned, and the fused rings twist out of the page into a helix."></a>
+            <figcaption>Spin 3D in the Mac app, turning a helicene out of the page.</figcaption>
+          </figure>
+          <div class="feature-copy">
+            <p class="index-number">04 Spin 3D</p>
+            <ul class="feature-list">
+              <li><strong>From flat to 3D and back.</strong> Spin 3D builds a real 3D conformer with RDKit, lets you turn it with the mouse, and flattens the view you pick back onto the page.</li>
+              <li><strong>Depth you can read.</strong> Bonds nearer to you draw darker and thicker, so the shape still reads in a flat figure.</li>
+              <li><strong>Force-field cleanup.</strong> Selectable refinement modes trade speed for how much strain is relaxed.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="feature-row feature-row-text">
+          <p class="index-number">05 Open</p>
+          <ul class="feature-list feature-list-columns">
+            <li><strong>Free and open source.</strong> The app is Apache-2.0, and the full source and history are on GitHub.</li>
+            <li><strong>Local files, no account.</strong> Documents are files on your Mac, and there is nothing to sign in to.</li>
+            <li><strong>Plugins with permissions.</strong> Each plugin declares what it may touch, bundled analyzers run in their own worker, and packages install from a file through the Plugin Manager.</li>
+            <li><strong>Formats in and out.</strong> Opens ChemDraft documents and CDXML; exports SVG, PDF, PNG, JPEG, BMP, GIF, TIFF, CDXML, SDF and SMILES; copies SMILES, InChI, InChIKey, MOL and CDXML.</li>
+            <li><strong>Updates in the app.</strong> Signed app updates are offered from inside ChemDraft, and the NMR plugin gets its updates in the app too.</li>
+          </ul>
+        </div>
+      </section>
+
       <section class="spec-grid" aria-label="ChemDraft download details">
         <dl>
           <div><dt>Platform</dt><dd>Apple Silicon Macs only (arm64).</dd></div>
@@ -73,7 +157,7 @@
         </div>
         <ul class="detail-list">
           <li><strong>Files</strong><span>Local document work stays at the center; compatibility formats are handled as formats, not as the app’s source of truth.</span></li>
-          <li><strong>Export</strong><span>SVG, PDF, PNG, JPEG, BMP, GIF, TIFF, and CDXML export are implemented.</span></li>
+          <li><strong>Export</strong><span>SVG, PDF, PNG, JPEG, BMP, GIF, TIFF, CDXML, SDF, and SMILES export are implemented.</span></li>
           <li><strong>3D</strong><span>Spin 3D is included with selectable refinement modes.</span></li>
           <li><strong>Plugins</strong><span>Plugins run through a managed runtime with a Plugin Manager and permission boundaries.</span></li>
         </ul>
