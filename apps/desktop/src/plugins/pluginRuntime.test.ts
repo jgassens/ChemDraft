@@ -9,6 +9,7 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPluginRuntime, type DesktopPluginRuntimeOptions } from "./createPluginRuntime";
+import { ImageSourceRegistry, type ImageSourceProvider } from "./ImageSourceProvider";
 import { buildPluginMenuItems, PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./pluginMenuModel";
 import {
   applyEnabledPlugins,
@@ -19,10 +20,24 @@ import {
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
 
 function makeRuntime(overrides: Partial<DesktopPluginRuntimeOptions> = {}) {
+  const imageProvider: ImageSourceProvider = {
+    id: "file",
+    label: "File",
+    isAvailable: async () => true,
+    acquire: async () => ({
+      mediaType: "image/png",
+      bytes: new Uint8Array([1, 2, 3]),
+      width: 320,
+      height: 200,
+      source: "file",
+      fileName: "test.png"
+    })
+  };
   return createPluginRuntime({
     getActiveDocument: () => undefined,
     getSelection: () => emptySelection,
     now: () => "2026-07-07T00:00:00.000Z",
+    imageSourceRegistry: new ImageSourceRegistry([imageProvider]),
     ...overrides
   });
 }
@@ -116,7 +131,10 @@ describe("desktop plugin runtime", () => {
     const descriptors = registerBundledPlugins(runtime);
     const notifyPanelClosed = vi.spyOn(runtime.host, "notifyPanelClosed");
 
-    await runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await invocation;
     expect(runtime.panels.getOpenPanel()?.pluginId).toBe(molscribeOcsrManifest.id);
 
     applyEnabledPlugins(runtime, new Set([molscribeOcsrManifest.id]), descriptors);
@@ -126,19 +144,25 @@ describe("desktop plugin runtime", () => {
     expect(runtime.host.getPlugin(molscribeOcsrManifest.id)).toBeUndefined();
   });
 
-  it("runs the canary command through the host and renders its report to the panel controller", async () => {
+  it("acquires an image and renders the honest no-engine report", async () => {
     const runtime = makeRuntime();
     registerBundledPlugins(runtime);
 
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
 
-    await runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await invocation;
 
     const open = runtime.panels.getOpenPanel();
     expect(open?.panelId).toBe(molscribeOcsrPanelId);
-    expect(open?.title).toBe("MolScribe OCSR Review");
+    expect(open?.title).toBe("MolScribe OCSR");
     expect(open?.commandId).toBe(molscribeOcsrCommandId);
     expect(open?.report.title).toContain("MolScribe");
+    expect(open?.report.sections).toEqual([
+      expect.objectContaining({ kind: "text", body: expect.stringContaining("No recognition engine is installed yet") })
+    ]);
 
     runtime.panels.closePanel();
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
@@ -215,7 +239,10 @@ describe("desktop plugin runtime", () => {
     // Single dispatch handles both: plain for core, permission context for plugin-owned.
     await runtime.host.invokeCommand("core.probe");
     expect(coreRan).toBe(1);
-    await runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await invocation;
     expect(runtime.panels.getOpenPanel()?.panelId).toBe(molscribeOcsrPanelId);
 
     // Unregistering a plugin removes only its own commands from the shared registry.

@@ -10,16 +10,17 @@ import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
  * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
- * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`.
+ * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`; 0.1.5
+ * adds command-scoped, host-owned `PluginImagesAPI.requestImage`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
  * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` for 2D layout, `^0.1.3` for
- * text prompts, `^0.1.4` for direct document writes), which this host satisfies and an older one
- * correctly does not.
+ * text prompts, `^0.1.4` for direct document writes, `^0.1.5` for image acquisition), which this
+ * host satisfies and an older one correctly does not.
  */
-export const PluginApiVersion = "0.1.4" as const;
+export const PluginApiVersion = "0.1.5" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -986,6 +987,56 @@ export interface PluginDialogsAPI {
   promptText(request: PluginPromptTextRequest): Promise<PluginPromptTextResult>;
 }
 
+export const PluginImageSourceSchema = z.enum(["file", "screenRegion"]);
+
+/** Host-wide limits enforced after a provider returns, before bytes reach plugin code. */
+export const PluginImageMaxBytes = 25 * 1024 * 1024;
+export const PluginImageMaxDimension = 8_192;
+
+export const PluginImageRequestSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    sources: z
+      .array(PluginImageSourceSchema)
+      .min(1)
+      .max(2)
+      .refine((sources) => new Set(sources).size === sources.length, "Image sources must be unique.")
+      .default(["file", "screenRegion"])
+  })
+  .strict();
+
+export const PluginProvidedImageSchema = z
+  .object({
+    mediaType: z.enum(["image/png", "image/jpeg", "image/tiff", "image/webp"]),
+    // Uint8Array is structured-clone-safe and avoids the 4/3 expansion and duplicate allocation of
+    // base64. The worker bridge preserves it as a typed array end to end.
+    bytes: z.custom<Uint8Array>(
+      (value) => value instanceof Uint8Array,
+      "Image bytes must be provided as a Uint8Array."
+    ),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    source: PluginImageSourceSchema,
+    fileName: z.string().min(1).max(1_024).optional()
+  })
+  .strict();
+
+export const PluginImageRequestResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("provided"), image: PluginProvidedImageSchema }).strict(),
+  z.object({ status: z.literal("cancelled") }).strict(),
+  z.object({ status: z.literal("unavailable"), reason: z.string().min(1).max(2_000) }).strict()
+]);
+
+export type PluginImageSource = z.infer<typeof PluginImageSourceSchema>;
+export type PluginImageRequest = z.input<typeof PluginImageRequestSchema>;
+export type NormalizedPluginImageRequest = z.output<typeof PluginImageRequestSchema>;
+export type PluginProvidedImage = z.infer<typeof PluginProvidedImageSchema>;
+export type PluginImageRequestResult = z.infer<typeof PluginImageRequestResultSchema>;
+
+export interface PluginImagesAPI {
+  requestImage(request: PluginImageRequest): Promise<PluginImageRequestResult>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -1007,6 +1058,8 @@ export interface PluginCommandContext {
   chemistry?: PluginChemistryAPI;
   /** Present only when the plugin declares "ui.panel" and the host provides dialog UI. */
   dialogs?: PluginDialogsAPI;
+  /** Present only with `image.read`; requests are valid only during this plugin's active command. */
+  images?: PluginImagesAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

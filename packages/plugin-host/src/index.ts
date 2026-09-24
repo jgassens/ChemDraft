@@ -16,6 +16,9 @@ import type {
   PluginCommandContribution,
   PluginCommandHandler,
   PluginDialogsAPI,
+  PluginImageRequest,
+  PluginImageRequestResult,
+  PluginImagesAPI,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -30,8 +33,10 @@ import type {
   PluginPanelReport,
   PluginPermission,
   NormalizedPluginPromptTextRequest,
+  NormalizedPluginImageRequest,
   PluginPromptTextRequest,
   PluginPromptTextResult,
+  PluginProvidedImage,
   PluginSelectionAPI,
   PluginSelectionSnapshot,
   PluginStorage,
@@ -45,6 +50,10 @@ export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
 import {
   AppliedPatchReceiptSchema,
+  PluginImageMaxBytes,
+  PluginImageMaxDimension,
+  PluginImageRequestResultSchema,
+  PluginImageRequestSchema,
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
@@ -206,6 +215,12 @@ export interface PluginHostOptions {
     request: NormalizedPluginPromptTextRequest,
     signal: AbortSignal
   ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
+  /** Acquires an image through host-owned UI. The signal aborts when the command ends/unregisters. */
+  requestImage?: (
+    plugin: { id: string; name: string },
+    request: NormalizedPluginImageRequest,
+    signal: AbortSignal
+  ) => PluginImageRequestResult | Promise<PluginImageRequestResult>;
   /** Commits a validated direct patch through the embedding application's normal document/history path. */
   applyDocumentPatch?: (
     request: PluginPatchApplicationRequest
@@ -242,6 +257,7 @@ export class PluginHost {
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
+  private readonly requestImage?: PluginHostOptions["requestImage"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
@@ -261,6 +277,7 @@ export class PluginHost {
     string,
     { invocationToken: symbol; abortController: AbortController }
   >();
+  private readonly openImageRequests = new Map<symbol, Set<AbortController>>();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
@@ -269,6 +286,7 @@ export class PluginHost {
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
+    this.requestImage = options.requestImage;
     this.applyDocumentPatch = options.applyDocumentPatch;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
@@ -320,6 +338,7 @@ export class PluginHost {
   unregisterPlugin(pluginId: string): void {
     const plugin = this.requireRegisteredPlugin(pluginId);
     this.cancelOpenTextPrompt(pluginId);
+    this.cancelOpenImageRequests(pluginId);
     for (const command of plugin.manifest.contributes.commands) {
       this.commands.unregisterOwnedByPlugin(command.id, pluginId);
     }
@@ -446,6 +465,12 @@ export class PluginHost {
               this.promptTextForPlugin(pluginId, invocationToken, request)
           }
         : undefined;
+    const images: PluginImagesAPI | undefined = this.hasPermission(pluginId, "image.read")
+      ? {
+          requestImage: async (request: PluginImageRequest) =>
+            this.requestImageForPlugin(pluginId, invocationToken, request)
+        }
+      : undefined;
     const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
       ? {
           write: async (input) => {
@@ -558,6 +583,7 @@ export class PluginHost {
       selection,
       panels,
       dialogs,
+      images,
       analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
@@ -833,10 +859,70 @@ export class PluginHost {
     }
   }
 
+  private async requestImageForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    request: PluginImageRequest
+  ): Promise<PluginImageRequestResult> {
+    this.requirePermission(pluginId, "image.read");
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call images.requestImage only while one of its own commands is executing.`
+      );
+    }
+
+    const parsedRequest = PluginImageRequestSchema.parse(request);
+    if (!this.requestImage) {
+      return { status: "unavailable", reason: "This host provides no image acquisition UI." };
+    }
+
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    const abortController = new AbortController();
+    const requests = this.openImageRequests.get(invocationToken) ?? new Set<AbortController>();
+    requests.add(abortController);
+    this.openImageRequests.set(invocationToken, requests);
+    const cancelledOnAbort = new Promise<PluginImageRequestResult>((resolve) => {
+      abortController.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+    });
+
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.requestImage(
+            { id: plugin.manifest.id, name: plugin.manifest.name },
+            parsedRequest,
+            abortController.signal
+          )
+        ),
+        cancelledOnAbort
+      ]);
+      const parsedResult = PluginImageRequestResultSchema.parse(result);
+      if (parsedResult.status !== "provided") {
+        return parsedResult;
+      }
+      validateProvidedImage(pluginId, parsedRequest, parsedResult.image);
+      // In-process plugins share a heap with the provider. Give them their own byte snapshot, matching
+      // the independent value a structured-clone worker hop naturally produces.
+      return {
+        status: "provided",
+        image: { ...parsedResult.image, bytes: new Uint8Array(parsedResult.image.bytes) }
+      };
+    } finally {
+      requests.delete(abortController);
+      if (requests.size === 0) {
+        this.openImageRequests.delete(invocationToken);
+      }
+    }
+  }
+
   private finishCommandInvocation(invocationToken: symbol): void {
     const pluginId = this.activeCommandInvocations.get(invocationToken)?.pluginId;
     this.activeCommandInvocations.delete(invocationToken);
     this.textPromptInvocations.delete(invocationToken);
+    for (const controller of this.openImageRequests.get(invocationToken) ?? []) {
+      controller.abort();
+    }
+    this.openImageRequests.delete(invocationToken);
     if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {
       this.cancelOpenTextPrompt(pluginId);
     }
@@ -844,6 +930,16 @@ export class PluginHost {
 
   private cancelOpenTextPrompt(pluginId: string): void {
     this.openTextPrompts.get(pluginId)?.abortController.abort();
+  }
+
+  private cancelOpenImageRequests(pluginId: string): void {
+    for (const [invocationToken, invocation] of this.activeCommandInvocations) {
+      if (invocation.pluginId !== pluginId) continue;
+      for (const controller of this.openImageRequests.get(invocationToken) ?? []) {
+        controller.abort();
+      }
+      this.openImageRequests.delete(invocationToken);
+    }
   }
 
   private requireRegisteredPlugin(pluginId: string): RegisteredPlugin {
@@ -871,6 +967,31 @@ export class PluginHost {
   private timestamp(): string {
     const value = this.now();
     return typeof value === "string" ? value : value.toISOString();
+  }
+}
+
+function validateProvidedImage(
+  pluginId: string,
+  request: NormalizedPluginImageRequest,
+  image: PluginProvidedImage
+): void {
+  if (!request.sources.includes(image.source)) {
+    throw new PluginHostError(
+      `Image provider for plugin "${pluginId}" returned source "${image.source}", which was not requested.`
+    );
+  }
+  if (image.bytes.byteLength === 0) {
+    throw new PluginHostError(`Image provider for plugin "${pluginId}" returned an empty image.`);
+  }
+  if (image.bytes.byteLength > PluginImageMaxBytes) {
+    throw new PluginHostError(
+      `Image for plugin "${pluginId}" is ${image.bytes.byteLength} bytes; the host limit is ${PluginImageMaxBytes} bytes (25 MB).`
+    );
+  }
+  if (image.width > PluginImageMaxDimension || image.height > PluginImageMaxDimension) {
+    throw new PluginHostError(
+      `Image for plugin "${pluginId}" is ${image.width}×${image.height}; each side must be at most ${PluginImageMaxDimension} pixels.`
+    );
   }
 }
 

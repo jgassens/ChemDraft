@@ -1,6 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   AppliedPatchReceipt,
+  PluginImageSource,
   PluginManifest,
   PluginSelectionSnapshot,
   PluginStorage
@@ -34,6 +35,7 @@ import {
 import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
+import type { OpenPluginImageRequest } from "./PluginImageRequestController";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -87,12 +89,15 @@ export interface PluginRuntimeView {
   /** Desktop-native report windows: per plugin+panel id, several may float at once. */
   detachedPanels: readonly OpenPluginPanel[];
   openTextPrompt: OpenPluginTextPrompt | undefined;
+  openImageRequest: OpenPluginImageRequest | undefined;
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
   invokePluginCommand: (commandId: string) => Promise<unknown>;
   closePanel: () => void;
   submitTextPrompt: (id: number, value: string) => void;
   cancelTextPrompt: (id: number) => void;
+  acquireImage: (id: number, source: PluginImageSource) => void;
+  cancelImageRequest: (id: number) => void;
 }
 
 /**
@@ -137,10 +142,12 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     const unsubscribeHost = runtime.host.subscribe(bumpVersion);
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);
     const unsubscribePrompts = runtime.prompts.subscribe(bumpVersion);
+    const unsubscribeImages = runtime.images.subscribe(bumpVersion);
     return () => {
       unsubscribeHost();
       unsubscribePanels();
       unsubscribePrompts();
+      unsubscribeImages();
     };
   }, [runtime]);
 
@@ -327,6 +334,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const detachedPanels = useMemo(() => runtime.panels.getDetachedPanels(), [runtime, version]);
   const diagnostics = useMemo(() => runtime.panels.getDiagnostics(), [runtime, version]);
   const openTextPrompt = useMemo(() => runtime.prompts.getOpenPrompt(), [runtime, version]);
+  const openImageRequest = useMemo(() => runtime.images.getOpenRequest(), [runtime, version]);
 
   // Ownership, not mere presence: the registry is SHARED with core commands now, so `has(id)` would
   // claim every core command too. A command is a plugin command iff a plugin registered it (the host
@@ -342,6 +350,11 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const closePanel = useCallback(() => runtime.panels.closePanel(), [runtime]);
   const submitTextPrompt = useCallback((id: number, value: string) => runtime.prompts.submit(id, value), [runtime]);
   const cancelTextPrompt = useCallback((id: number) => runtime.prompts.cancel(id), [runtime]);
+  const acquireImage = useCallback(
+    (id: number, source: PluginImageSource) => void runtime.images.acquire(id, source),
+    [runtime]
+  );
+  const cancelImageRequest = useCallback((id: number) => runtime.images.cancel(id), [runtime]);
 
   return {
     runtime,
@@ -366,11 +379,14 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     openPanel,
     detachedPanels,
     openTextPrompt,
+    openImageRequest,
     diagnostics,
     isPluginCommand,
     invokePluginCommand,
     closePanel,
     submitTextPrompt,
-    cancelTextPrompt
+    cancelTextPrompt,
+    acquireImage,
+    cancelImageRequest
   };
 }

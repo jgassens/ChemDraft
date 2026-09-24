@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "screen-capture",
+  "description": "Allow only the main document window to query and invoke host-owned screen-region capture.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-screen-capture-available",
+    "allow-capture-screen-region"
+  ]
+}

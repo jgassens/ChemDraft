@@ -3,7 +3,7 @@
 How ChemDraft hosts bundled plugins: the persistent host, the generic
 capability APIs, the declarative panel model, menu integration, the worker
 pattern, and the panel lifecycle. The NMR predictor is the first real consumer;
-`molscribe-ocsr` is the runtime canary. Everything here is domain-neutral — no
+`molscribe-ocsr` is the image-input scaffold. Everything here is domain-neutral — no
 NMR (or any domain) concepts leak into `plugin-api` / `plugin-host`.
 
 ## Layers
@@ -46,6 +46,8 @@ when the manifest declares the matching permission (ADR-0008). A handler sees
 - **`panels`** (`ui.panel`) — `showReport(panelId, report)` pushes a validated,
   declarative `PluginPanelReport`.
 - **`documents`** — read + `proposePatch` (queued for user approval).
+- **`images`** (`image.read`) — command-scoped `requestImage`; the host owns source selection,
+  validates a strict result, and caps inputs at 25 MB / 8192 pixels per side.
 
 ## Declarative panels (no plugin React)
 
@@ -108,12 +110,11 @@ A command may fail by throwing **or** by returning `{ ok: false, error }`. The
 desktop's dispatch surfaces both in the status bar, so a returned not-ok result is
 never silent.
 
-## Canary
+## Image-input scaffold
 
-`molscribe-ocsr` is registered as a bundled plugin purely to exercise the path
-manifest → host → Analyze menu → command → declarative report, without proposing
-any document patch. It, plus the bundled-plugin diagnostics view, is how the
-runtime is smoke-tested end to end (see `MainWindow.plugins.dom.test.ts`).
+`molscribe-ocsr` is registered as a bundled plugin to exercise the real path manifest → host → Analyze
+menu → provider registry → user-selected image → declarative report. No recognition engine is installed,
+so it reports that fact and never creates or proposes chemistry. Mock recognition stays test-only.
 
 ## Extension points
 

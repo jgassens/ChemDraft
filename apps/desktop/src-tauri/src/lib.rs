@@ -2,6 +2,7 @@ mod export;
 mod fonts;
 mod installed_plugins;
 mod opsin;
+mod screen_capture;
 
 use std::{
     collections::HashMap,
@@ -502,6 +503,8 @@ pub fn run() {
             agent_bridge_status,
             opsin::opsin_status,
             opsin::opsin_name_to_structure,
+            screen_capture::screen_capture_available,
+            screen_capture::capture_screen_region,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
             engine3d_sidecar_send_session,
@@ -4007,6 +4010,26 @@ mod tests {
         expect_true(permissions.iter().any(|permission| {
             capability_permission_identifier(permission) == Some("allow-rasterize-svg")
         }));
+    }
+
+    #[test]
+    fn screen_capture_capability_is_main_window_only() {
+        let capture: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/screen-capture.json"))
+                .expect("screen capture capability should parse");
+        assert_eq!(capture["windows"], serde_json::json!(["main"]));
+        let permissions = capture["permissions"]
+            .as_array()
+            .expect("screen capture permissions");
+        for expected in [
+            "allow-screen-capture-available",
+            "allow-capture-screen-region",
+        ] {
+            assert!(permissions.iter().any(|value| value == expected));
+        }
+        let default = include_str!("../capabilities/default.json");
+        assert!(!default.contains("allow-capture-screen-region"));
+        assert!(!default.contains("allow-screen-capture-available"));
     }
 
     #[test]

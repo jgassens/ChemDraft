@@ -5975,6 +5975,34 @@ textarea:focus-visible,
   outline-offset: 1px;
 }
 
+.plugin-image-body {
+  min-height: 88px;
+}
+
+.plugin-image-sources {
+  display: grid;
+  gap: var(--cd-space-3);
+}
+
+.plugin-image-sources .plugin-manager-button {
+  min-height: var(--cd-control-height);
+  text-align: left;
+}
+
+.plugin-image-body p {
+  margin: 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.45;
+}
+
+.plugin-image-body .plugin-image-error {
+  padding: var(--cd-space-3);
+  border: 1px solid var(--cd-stoplight-border);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-danger);
+  color: var(--cd-danger-strong);
+}
+
 .plugin-prompt-actions {
   display: flex;
   justify-content: flex-end;

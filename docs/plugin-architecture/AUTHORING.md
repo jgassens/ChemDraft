@@ -26,9 +26,9 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.4`). API 0.1.4 adds command-scoped `context.documents.applyPatch`; plugins that use it should
-declare `^0.1.4`. API 0.1.3 added the host-owned `context.dialogs.promptText` capability. Existing
-`^0.1.0` through `^0.1.3` packages remain compatible.
+`0.1.5`). API 0.1.5 adds command-scoped `context.images.requestImage`; plugins that use it should
+declare `^0.1.5`. API 0.1.4 added `context.documents.applyPatch`, and 0.1.3 added the host-owned
+`context.dialogs.promptText` capability. Existing `^0.1.0` through `^0.1.4` packages remain compatible.
 
 ## Manifest + registration
 
@@ -103,6 +103,30 @@ if (answer?.status === "submitted") {
 invocation, and each command invocation may call it at most once (including after its first prompt has
 settled). Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
+
+## Host-owned image acquisition
+
+A plugin declaring `image.read` may request a user-selected image only while one of its own commands
+is executing:
+
+```ts
+const result = await context.images?.requestImage({
+  title: "Recognize Structure from Image",
+  // Omit `sources` to offer every provider this host currently has.
+  sources: ["file", "screenRegion"]
+});
+
+if (result?.status === "provided") {
+  const { mediaType, bytes, width, height, source, fileName } = result.image;
+}
+```
+
+`images` is absent without `image.read`, and a retained method rejects after its command ends. The
+result is `provided`, `cancelled`, or `unavailable` with a reason. Image bytes are a `Uint8Array`, not
+base64: typed arrays cross the worker transport through structured clone without base64's expansion.
+The host rejects images larger than 25 MB or 8192 pixels on either side. Supported media types are
+PNG, JPEG, TIFF, and WebP. A plugin receives bytes only after the user explicitly chooses a file or
+screen region; this permission does not grant arbitrary filesystem or whole-screen access.
 
 ## Direct document writes versus proposals
 

@@ -2,11 +2,13 @@ import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { PluginApiVersion } from "@chemdraft/plugin-api";
 import type {
   PluginCommandContext,
+  PluginImageRequestResult,
   PluginManifest,
   PluginPanelReport,
   PluginPermission,
   PluginPromptTextResult
 } from "@chemdraft/plugin-api";
+import { PluginImageMaxBytes } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import pluginHostPackage from "../package.json";
 import {
@@ -295,6 +297,142 @@ describe("PluginHost", () => {
       { status: "submitted", value: "  cyclohexane  " },
       { status: "cancelled" }
     ]);
+  });
+
+  it("exposes images only with image.read and normalizes requests before host acquisition", async () => {
+    const requestImage = vi.fn(async (): Promise<PluginImageRequestResult> => ({
+      status: "provided",
+      image: {
+        mediaType: "image/png",
+        bytes: new Uint8Array([1, 2, 3]),
+        width: 20,
+        height: 10,
+        source: "file",
+        fileName: "structure.png"
+      }
+    }));
+    const host = new PluginHost({ requestImage });
+    let withoutPermission: PluginCommandContext["images"] | "unset" = "unset";
+    host.registerPlugin(
+      {
+        id: "org.test.no-image",
+        name: "No Image",
+        version: "0.0.1",
+        apiVersion: "^0.1.5",
+        entry: "dist/plugin.js",
+        permissions: [],
+        contributes: { commands: [{ id: "plugin.noImage.run", title: "Run" }] }
+      },
+      { commandHandlers: { "plugin.noImage.run": (context) => (withoutPermission = context.images) } }
+    );
+    host.registerPlugin(
+      {
+        id: "org.test.image",
+        name: "Image Reader",
+        version: "0.0.1",
+        apiVersion: "^0.1.5",
+        entry: "dist/plugin.js",
+        permissions: ["image.read"],
+        contributes: {
+          commands: [
+            { id: "plugin.image.run", title: "Run", requiredPermissions: ["image.read"] }
+          ]
+        }
+      },
+      {
+        commandHandlers: {
+          "plugin.image.run": (context) => context.images!.requestImage({ title: "Choose image" })
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.noImage.run");
+    expect(withoutPermission).toBeUndefined();
+    await expect(host.invokeCommand("plugin.image.run")).resolves.toMatchObject({
+      status: "provided",
+      image: { width: 20, height: 10, source: "file" }
+    });
+    expect(requestImage).toHaveBeenCalledWith(
+      { id: "org.test.image", name: "Image Reader" },
+      { title: "Choose image", sources: ["file", "screenRegion"] },
+      expect.any(AbortSignal)
+    );
+  });
+
+  it("rejects a retained images.requestImage call outside its owning command", async () => {
+    const requestImage = vi.fn(async (): Promise<PluginImageRequestResult> => ({ status: "cancelled" }));
+    const host = new PluginHost({ requestImage });
+    let retained: PluginCommandContext["images"];
+    host.registerPlugin(
+      {
+        id: "org.test.late-image",
+        name: "Late Image",
+        version: "0.0.1",
+        apiVersion: "^0.1.5",
+        entry: "dist/plugin.js",
+        permissions: ["image.read"],
+        contributes: { commands: [{ id: "plugin.lateImage.run", title: "Run" }] }
+      },
+      { commandHandlers: { "plugin.lateImage.run": (context) => (retained = context.images) } }
+    );
+
+    await host.invokeCommand("plugin.lateImage.run");
+    await expect(retained!.requestImage({ title: "Too late" })).rejects.toThrow(
+      /images\.requestImage only while one of its own commands is executing/i
+    );
+    expect(requestImage).not.toHaveBeenCalled();
+  });
+
+  it("enforces host image byte and dimension limits with explicit errors", async () => {
+    const requestImage = vi
+      .fn<() => Promise<PluginImageRequestResult>>()
+      .mockResolvedValueOnce({
+        status: "provided",
+        image: {
+          mediaType: "image/png",
+          bytes: new Uint8Array(PluginImageMaxBytes + 1),
+          width: 1,
+          height: 1,
+          source: "file"
+        }
+      })
+      .mockResolvedValueOnce({
+        status: "provided",
+        image: {
+          mediaType: "image/png",
+          bytes: new Uint8Array([1]),
+          width: 8_193,
+          height: 1,
+          source: "file"
+        }
+      });
+    const host = new PluginHost({ requestImage });
+    host.registerPlugin(
+      {
+        id: "org.test.image-limits",
+        name: "Image Limits",
+        version: "0.0.1",
+        apiVersion: "^0.1.5",
+        entry: "dist/plugin.js",
+        permissions: ["image.read"],
+        contributes: {
+          commands: [
+            { id: "plugin.imageLimits.bytes", title: "Bytes" },
+            { id: "plugin.imageLimits.dimensions", title: "Dimensions" }
+          ]
+        }
+      },
+      {
+        commandHandlers: {
+          "plugin.imageLimits.bytes": (context) => context.images!.requestImage({ title: "Bytes" }),
+          "plugin.imageLimits.dimensions": (context) =>
+            context.images!.requestImage({ title: "Dimensions" })
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.imageLimits.bytes")).rejects.toThrow(/25 MB/i);
+    await expect(host.invokeCommand("plugin.imageLimits.dimensions")).rejects.toThrow(/8192 pixels/i);
   });
 
   it("omits documents.applyPatch without document.write", async () => {

@@ -24,6 +24,8 @@ import {
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
 import { PluginPromptTextController } from "./PluginPromptTextController";
+import { createDefaultImageSourceRegistry, type ImageSourceRegistry } from "./ImageSourceProvider";
+import { PluginImageRequestController } from "./PluginImageRequestController";
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
@@ -77,6 +79,8 @@ export interface DesktopPluginRuntimeOptions {
   convertNameToStructure?: DesktopNameToStructureProvider | null;
   /** Serves 2D layout under the same permission and the same null-withholds rule. */
   buildStructureFromSmiles?: DesktopStructureFromSmilesProvider | null;
+  /** Image-provider registry; injectable for tests and future platform/provider additions. */
+  imageSourceRegistry?: ImageSourceRegistry;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -124,6 +128,7 @@ export interface DesktopPluginRuntime {
   host: PluginHost;
   panels: PluginPanelController;
   prompts: PluginPromptTextController;
+  images: PluginImageRequestController;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -163,6 +168,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // late-bound reference so neither construction depends on the other existing first.
   let controller: PluginPanelController | undefined;
   const prompts = new PluginPromptTextController();
+  const images = new PluginImageRequestController(
+    options.imageSourceRegistry ?? createDefaultImageSourceRegistry()
+  );
   const host = new PluginHost({
     commandRegistry: options.commandRegistry,
     getActiveDocument: options.getActiveDocument,
@@ -174,6 +182,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       controller?.showReport(pluginId, panelId, report);
     },
     promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
+    requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
@@ -191,6 +200,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     host,
     panels: controller,
     prompts,
+    images,
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered

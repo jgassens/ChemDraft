@@ -42,6 +42,8 @@ fn main() {
             "toggle_spin3d_debugger_window",
             "opsin_status",
             "opsin_name_to_structure",
+            "screen_capture_available",
+            "capture_screen_region",
             "agent_bridge_status",
             "window_logical_position",
             "take_pending_open_document",

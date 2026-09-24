@@ -23,6 +23,7 @@ import type {
   PluginCommandHandler,
   PluginDialogsAPI,
   PluginDocumentAPI,
+  PluginImagesAPI,
   PluginManifest,
   PluginPanelAPI,
   PluginPermission,
@@ -195,6 +196,13 @@ export function runPluginWorker(
         }
       : undefined;
 
+    const images: PluginImagesAPI | undefined = has("image.read")
+      ? {
+          requestImage: (request) =>
+            call("images", "requestImage", [request]) as ReturnType<PluginImagesAPI["requestImage"]>
+        }
+      : undefined;
+
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
     // `available: false` rather than the plugin having to guess from the capability's presence.
@@ -251,6 +259,7 @@ export function runPluginWorker(
       selection,
       panels,
       dialogs,
+      images,
       analysis,
       chemistry,
       hasPermission: has,

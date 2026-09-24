@@ -23,7 +23,7 @@ these against its own UI; the shapes are the reference implementation.
 
 | File | Role |
 |---|---|
-| `createPluginRuntime.ts` | Constructs the singleton `PluginHost` + `PluginPanelController` and forwards direct patch transactions into the host shell. |
+| `createPluginRuntime.ts` | Constructs the singleton `PluginHost` + controllers and forwards direct patch/image-acquisition transactions into the host shell. |
 | `applyPluginDocumentPatch.ts` | Applies a direct plugin patch through chem-core, discovers and selects inserted objects, and returns the strict applied receipt before the shell records one undo entry. |
 | `usePluginRuntime.ts` | React hook owning the runtime; derives plugins / menu items / open panel / diagnostics and re-renders on host + panel subscriptions. |
 | `registerBundledPlugins.ts` | **The integration point.** Catalog of `{ manifest, options }` descriptors, `applyEnabledPlugins`, and startup registration honoring the user's disabled set. *A host edits this one file to add a plugin.* |
@@ -35,6 +35,7 @@ these against its own UI; the shapes are the reference implementation.
 | `PluginDiagnosticsPanel.tsx` | Bundled-plugin list + runtime diagnostics. |
 | `PluginManagerDialog.tsx` + `pluginPreferences.ts` | The plugin manager (enable/disable, one-click official-catalog install, package install/remove, and explicit host-managed update review) + localStorage preferences. |
 | `PluginPromptTextController.ts` + `PluginPromptTextDialog.tsx` | Persistent host-to-React broker and core-owned modal for `dialogs.promptText`; the dialog identifies the requesting plugin and cancels on teardown. |
+| `ImageSourceProvider.ts` + `PluginImageRequestController.ts` + `PluginImageRequestDialog.tsx` | Registry-driven file/screen acquisition and the core-owned `images.requestImage` modal. Provider availability determines its buttons; plugin code never sees native APIs. |
 | `pluginUpdates.ts` | The compiled-in official plugin catalog plus shared release validation, native download, and pre-install/update package inspection. Plugins never supply these URLs. |
 | `pluginMenuModel.ts` | Maps host menu contributions → web menu items. |
 | `nativePluginMenu.ts` | Syncs plugin menu items into the Tauri native menu. |

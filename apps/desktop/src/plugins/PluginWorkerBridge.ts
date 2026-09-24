@@ -402,6 +402,8 @@ export class PluginWorkerBridge {
         return context.chemistry;
       case "dialogs":
         return context.dialogs;
+      case "images":
+        return context.images;
     }
   }
 

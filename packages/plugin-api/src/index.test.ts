@@ -3,6 +3,8 @@ import pluginApiPackage from "../package.json";
 import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
   AppliedPatchReceiptSchema,
+  PluginImageRequestResultSchema,
+  PluginImageRequestSchema,
   PluginApiVersion,
   PluginPanelReportSchema,
   PluginPromptTextRequestSchema,
@@ -80,6 +82,53 @@ describe("plugin text-prompt schemas", () => {
     expect(PluginPromptTextResultSchema.parse({ status: "cancelled" })).toEqual({ status: "cancelled" });
     expect(() => PluginPromptTextResultSchema.parse({ status: "submitted", value: "" })).toThrow();
     expect(() => PluginPromptTextResultSchema.parse({ status: "cancelled", value: "ignored" })).toThrow();
+  });
+});
+
+describe("plugin image-request schemas", () => {
+  it("strictly validates requests and defaults to every API image source", () => {
+    expect(PluginImageRequestSchema.parse({ title: "Choose an image" })).toEqual({
+      title: "Choose an image",
+      sources: ["file", "screenRegion"]
+    });
+    expect(PluginImageRequestSchema.parse({ title: "Capture", sources: ["screenRegion"] })).toEqual({
+      title: "Capture",
+      sources: ["screenRegion"]
+    });
+    expect(() => PluginImageRequestSchema.parse({ title: "", sources: ["file"] })).toThrow();
+    expect(() => PluginImageRequestSchema.parse({ title: "Image", sources: [] })).toThrow();
+    expect(() => PluginImageRequestSchema.parse({ title: "Image", sources: ["file", "file"] })).toThrow();
+    expect(() => PluginImageRequestSchema.parse({ title: "Image", extra: true })).toThrow();
+  });
+
+  it("uses strict, structured-clone-safe Uint8Array results", () => {
+    const result = PluginImageRequestResultSchema.parse({
+      status: "provided",
+      image: {
+        mediaType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 320,
+        height: 240,
+        source: "screenRegion"
+      }
+    });
+    expect(result.status).toBe("provided");
+    if (result.status !== "provided") throw new Error("expected a provided image");
+    expect(result.image.bytes).toBeInstanceOf(Uint8Array);
+    expect(() =>
+      PluginImageRequestResultSchema.parse({
+        status: "provided",
+        image: {
+          mediaType: "image/gif",
+          bytes: [1, 2, 3],
+          width: 1,
+          height: 1,
+          source: "file"
+        }
+      })
+    ).toThrow();
+    expect(() => PluginImageRequestResultSchema.parse({ status: "cancelled", reason: "ignored" })).toThrow();
+    expect(() => PluginImageRequestResultSchema.parse({ status: "unavailable", reason: "" })).toThrow();
   });
 });
 

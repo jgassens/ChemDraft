@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/plugin-api": "workspace:*"
   },
   "devDependencies": {

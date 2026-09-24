@@ -724,3 +724,85 @@ describe("dialogs.promptText survives the worker boundary", () => {
     bridge.terminate();
   });
 });
+
+describe("images.requestImage survives the worker boundary", () => {
+  it("round-trips Uint8Array bytes through linked structured-clone endpoints", async () => {
+    const imageManifest = parsePluginManifest({
+      id: "org.test.image-worker",
+      name: "Worker Image Probe",
+      version: "0",
+      apiVersion: "^0.1.5",
+      entry: "x",
+      permissions: ["image.read"],
+      contributes: {
+        commands: [
+          { id: "plugin.imageWorker.run", title: "Run", requiredPermissions: ["image.read"] }
+        ]
+      }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest: imageManifest,
+      commandHandlers: {
+        "plugin.imageWorker.run": (context) =>
+          context.images!.requestImage({ title: "Choose structure image", sources: ["file"] })
+      }
+    };
+    const requestImage = vi.fn(async () => ({
+      status: "provided" as const,
+      image: {
+        mediaType: "image/png" as const,
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 640,
+        height: 480,
+        source: "file" as const,
+        fileName: "structure.png"
+      }
+    }));
+    const host = new PluginHost({ requestImage });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(imageManifest, delegatingOptions(imageManifest, bridge));
+
+    const result = await host.invokeCommand("plugin.imageWorker.run");
+    expect(result).toEqual({
+      status: "provided",
+      image: {
+        mediaType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 640,
+        height: 480,
+        source: "file",
+        fileName: "structure.png"
+      }
+    });
+    expect(requestImage).toHaveBeenCalledWith(
+      { id: imageManifest.id, name: imageManifest.name },
+      { title: "Choose structure image", sources: ["file"] },
+      expect.any(AbortSignal)
+    );
+    bridge.terminate();
+  });
+
+  it("omits the worker stub without image.read", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.no-image-worker",
+      name: "No Worker Image",
+      version: "0",
+      apiVersion: "^0.1.5",
+      entry: "x",
+      permissions: [],
+      contributes: { commands: [{ id: "plugin.noImageWorker.inspect", title: "Inspect" }] }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.noImageWorker.inspect": (context) => typeof context.images
+      }
+    };
+    const host = new PluginHost();
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+
+    await expect(host.invokeCommand("plugin.noImageWorker.inspect")).resolves.toBe("undefined");
+    bridge.terminate();
+  });
+});

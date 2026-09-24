@@ -2,16 +2,13 @@
   "id": "org.chemdraft.ocsr.molscribe",
   "name": "MolScribe OCSR",
   "version": "0.0.0",
-  "apiVersion": "^0.1.0",
-  "description": "Fixture-backed scaffold for optional image-to-structure recognition using the external MolScribe OCSR project.",
+  "apiVersion": "^0.1.5",
+  "description": "Image-input scaffold for a future optional MolScribe OCSR integration.",
   "entry": "dist/plugin.js",
   "permissions": [
     "image.read",
-    "document.proposePatch",
-    "analysis.write",
     "ui.menu",
-    "ui.panel",
-    "plugin.storage"
+    "ui.panel"
   ],
   "contributes": {
     "commands": [
@@ -19,8 +16,8 @@
         "id": "plugin.molscribeOcsr.recognizeImage",
         "title": "Recognize Structure from Image",
         "category": "Tools",
-        "description": "Mocked fixture recognizer; queues a proposed patch for user review.",
-        "requiredPermissions": ["image.read", "document.proposePatch", "analysis.write"]
+        "description": "Choose an image for the optional MolScribe OCSR integration.",
+        "requiredPermissions": ["image.read", "ui.panel"]
       }
     ],
     "menus": [
@@ -35,7 +32,7 @@
     "panels": [
       {
         "id": "panel.molscribeOcsr.review",
-        "title": "MolScribe OCSR Review",
+        "title": "MolScribe OCSR",
         "commandId": "plugin.molscribeOcsr.recognizeImage",
         "requiredPermissions": ["ui.panel"]
       }
@@ -46,7 +43,7 @@
         "title": "MolScribe OCSR Image Recognizer",
         "input": "selected-image",
         "commandId": "plugin.molscribeOcsr.recognizeImage",
-        "requiredPermissions": ["image.read", "document.proposePatch"]
+        "requiredPermissions": ["image.read"]
       }
     ]
   }

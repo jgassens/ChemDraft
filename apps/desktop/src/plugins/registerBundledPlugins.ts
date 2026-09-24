@@ -1,16 +1,13 @@
 import {
-  mockSourceImageRef,
+  createMolScribeOcsrCommandHandler,
   molscribeOcsrCommandId,
-  molscribeOcsrManifest,
-  molscribeOcsrPanelId,
-  runMolScribeOcsrMockRecognition
+  molscribeOcsrManifest
 } from "@chemdraft/molscribe-ocsr-plugin";
 import { createMassRegistration, massFragmentManifest, massFragmentPluginId } from "@chemdraft/plugin-mass-fragment";
 import {
   PluginApiVersion,
   type PluginCommandHandler,
   type PluginManifest,
-  type PluginPanelReport,
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
 import type { RegisterPluginOptions } from "@chemdraft/plugin-host";
@@ -67,8 +64,8 @@ export function defaultPluginWorkerFactories(): ReadonlyMap<string, PluginWorker
  * The mass analyzer runs in a per-plugin Web Worker when a factory is available (ADR-0029, M34); its
  * manifest command handlers delegate to a {@link PluginWorkerBridge} that services its capability
  * calls against the real host context. Where no factory is available (node/jsdom), it runs in-process
- * exactly as before, so existing behavior and tests are unaffected. The MolScribe canary deliberately
- * stays in-process — proof that unrelated plugins are untouched.
+ * exactly as before, so existing behavior and tests are unaffected. The lightweight MolScribe
+ * image-input scaffold stays in-process.
  */
 export function createBundledPluginDescriptors(
   options: BundledPluginRuntimeOptions = {}
@@ -79,7 +76,7 @@ export function createBundledPluginDescriptors(
       manifest: molscribeOcsrManifest,
       options: {
         commandHandlers: {
-          [molscribeOcsrCommandId]: createMolscribeCanaryHandler()
+          [molscribeOcsrCommandId]: createMolScribeOcsrCommandHandler()
         }
       }
     },
@@ -192,51 +189,4 @@ export function registerBundledPlugins(
   const descriptors = createBundledPluginDescriptors();
   applyEnabledPlugins(runtime, disabledIds, descriptors);
   return descriptors;
-}
-
-/**
- * Runtime canary handler for MolScribe OCSR. It exercises the plugin's pure fixture recognition and
- * renders the outcome as a declarative panel report, proving the path
- * manifest → host → menu → command → report. It intentionally does not propose a document patch:
- * this milestone verifies the runtime, not OCR insertion, and a canary must not mutate the document.
- */
-function createMolscribeCanaryHandler(): PluginCommandHandler {
-  return async (context) => {
-    const result = runMolScribeOcsrMockRecognition({ sourceImageRef: mockSourceImageRef });
-
-    const report: PluginPanelReport = {
-      title: "MolScribe OCSR (runtime canary)",
-      sections: [
-        {
-          kind: "keyValue",
-          title: "Bundled plugin runtime",
-          rows: [
-            { label: "Plugin", value: context.plugin.name },
-            { label: "Version", value: context.plugin.version },
-            { label: "Command", value: molscribeOcsrCommandId },
-            { label: "Runtime path", value: "Active (manifest → host → menu → command → report)" },
-            { label: "OCR inference", value: "Not run (canary)" }
-          ]
-        },
-        {
-          kind: "keyValue",
-          title: "Fixture recognition output",
-          rows: [
-            { label: "Source image", value: result.sourceImageRef },
-            { label: "Proposed SMILES", value: result.proposedSmiles ?? "—" },
-            { label: "Confidence", value: `${Math.round(result.confidence * 100)}%` }
-          ]
-        },
-        {
-          kind: "text",
-          body:
-            "This panel was rendered by invoking a bundled plugin command through PluginHost and " +
-            "displaying its declarative report. No document changes were made."
-        }
-      ]
-    };
-
-    await context.panels?.showReport(molscribeOcsrPanelId, report);
-    return result;
-  };
 }

@@ -119,14 +119,20 @@ describe("MainWindow bundled plugin integration", () => {
     // No plugin panel before the command runs.
     expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
 
-    // Selecting it invokes the command through the host, which pushes a report the desktop renders.
+    // The browser test has no native image providers, so the host-owned request dialog explains that
+    // honestly. Closing it returns `unavailable`; the plugin reports that state without fake chemistry.
     await click(menuItem!);
+    await vi.waitFor(() => expect(document.querySelector(".plugin-image-dialog")).not.toBeNull());
+    expect(document.querySelector('.plugin-image-dialog [role="alert"]')?.textContent).toContain(
+      "None of the requested image sources"
+    );
+    await click(document.querySelector<HTMLButtonElement>(".plugin-image-dialog .plugin-prompt-actions button")!);
 
+    await vi.waitFor(() => expect(container!.querySelector('[data-testid="plugin-panel"]')).not.toBeNull());
     const panel = container.querySelector('[data-testid="plugin-panel"]');
     expect(panel).not.toBeNull();
     expect(panel!.getAttribute("data-panel-id")).toBe("panel.molscribeOcsr.review");
-    expect(container.textContent).toContain("MolScribe OCSR (runtime canary)");
-    expect(container.textContent).toContain("Runtime path");
+    expect(container.textContent).toContain("Image input is unavailable");
 
     // The panel closes cleanly.
     const closeButton = panel!.querySelector<HTMLButtonElement>(".plugin-panel-close");
