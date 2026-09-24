@@ -3,10 +3,12 @@ import {
   type ChemDraftDocument
 } from "@chemdraft/chem-core";
 import { jsPDF } from "jspdf";
-import { svg2pdf } from "svg2pdf.js";
+import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult } from "./results";
 import { exportDocumentToSvg } from "./svg";
+
+const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 
 export interface PdfExportOptions {
   pageIndex?: number;
@@ -85,4 +87,26 @@ function createDomParser(): DOMParser {
     throw new Error("Cannot export PDF: DOMParser is not available in this environment.");
   }
   return new DomParserConstructor();
+}
+
+function resolveSvg2pdf(module: typeof svg2pdfModule): typeof svg2pdfModule.svg2pdf {
+  if (typeof module.svg2pdf === "function") {
+    return module.svg2pdf;
+  }
+
+  const defaultExport = (module as typeof module & { default?: unknown }).default;
+  if (typeof defaultExport === "function") {
+    return defaultExport as typeof svg2pdfModule.svg2pdf;
+  }
+
+  if (
+    typeof defaultExport === "object" &&
+    defaultExport !== null &&
+    "svg2pdf" in defaultExport &&
+    typeof defaultExport.svg2pdf === "function"
+  ) {
+    return defaultExport.svg2pdf as typeof svg2pdfModule.svg2pdf;
+  }
+
+  throw new Error("Cannot export PDF: svg2pdf.js did not provide an svg2pdf function.");
 }
