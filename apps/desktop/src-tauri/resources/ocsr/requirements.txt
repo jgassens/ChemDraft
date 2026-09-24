@@ -1,0 +1,6 @@
+# Deliberately reviewed MolScribe environment pins. Keep this file in sync with
+# src/ocsr_engine/pins.rs and install.json.
+numpy~=1.26.4
+torch~=2.14.0
+torchvision~=0.29.0
+https://github.com/thomas0809/MolScribe/archive/7296a30413eb55436702011efdff78131f66d162.tar.gz

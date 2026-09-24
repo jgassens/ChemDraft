@@ -63,6 +63,31 @@ InChI (statically linked into the RDKit MinimalLib build above)
   any public redistribution.
 
 --------------------------------------------------------------------------------
+Optional components downloaded only at the user's request
+--------------------------------------------------------------------------------
+
+The following components are not bundled with ChemDraft. After explicit confirmation,
+the OCSR installer downloads them into the user's application-data folder. Their upstream
+licences govern those separately installed copies.
+
+MolScribe source code
+  MIT. Source: https://github.com/thomas0809/MolScribe,
+  commit 7296a30413eb55436702011efdff78131f66d162.
+
+MolScribe model weights (swin_base_char_aux_1m.pth)
+  MIT, as stated by the yujieq/MolScribe Hugging Face model card.
+  Source revision: a0189776b7415b82795c7ee81eed311bf5c8724b.
+
+uv
+  MIT OR Apache-2.0. Source: https://github.com/astral-sh/uv,
+  release 0.12.18.
+
+PyTorch and torchvision
+  BSD-3-Clause. Source: https://github.com/pytorch/pytorch and
+  https://github.com/pytorch/vision. Installed into the private OCSR environment;
+  not bundled with ChemDraft.
+
+--------------------------------------------------------------------------------
 Data under separate terms
 --------------------------------------------------------------------------------
 

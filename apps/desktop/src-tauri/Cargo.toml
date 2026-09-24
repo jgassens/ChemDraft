@@ -13,14 +13,24 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
+libc = "0.2"
 objc2 = { version = "0.6", default-features = false }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPasteboard", "NSWindow", "NSEvent"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSString", "NSGeometry"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "objc2-app-kit"] }
 resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
+# The OCSR engine installer's downloads (uv, the MolScribe model). reqwest 0.12 is already in the
+# graph through tauri-plugin-http; this only turns on its blocking client, which adds no new crate.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Verifies every OCSR engine download before use; also the test-only check that the vendored OPSIN
+# jar's bytes match the SHA-256 in its BUILD.md. Pinned to the version already in Cargo.lock.
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
@@ -29,9 +39,6 @@ tauri-plugin-http = "2.5.9"
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-sparkle-updater = "=0.2.4"
 
-[dev-dependencies]
-# Test-only, and deliberately pinned to the version already in Cargo.lock as a transitive dependency
-# so this adds nothing to the build graph. It exists for one assertion: that the vendored OPSIN jar's
-# bytes match the SHA-256 recorded in its BUILD.md. That jar is a 14 MB executable handed to a JVM,
-# and until this test it was the only vendored artifact whose provenance rested on its own filename.
-sha2 = "0.10"
+# Windows OCSR engine seam: free-disk query and CREATE_NO_WINDOW. Already in the lock graph.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Threading"] }

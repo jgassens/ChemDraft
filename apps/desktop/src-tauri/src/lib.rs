@@ -1,6 +1,7 @@
 mod export;
 mod fonts;
 mod installed_plugins;
+mod ocsr_engine;
 mod opsin;
 mod screen_capture;
 
@@ -328,6 +329,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
+        .manage(ocsr_engine::OcsrEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
@@ -391,6 +393,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
@@ -448,6 +451,8 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            app.state::<ocsr_engine::OcsrEngineState>()
+                .start_idle_reaper();
             // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
             // window loads; Rust no longer parses the manifest or applies customization for it.
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
@@ -503,6 +508,11 @@ pub fn run() {
             agent_bridge_status,
             opsin::opsin_status,
             opsin::opsin_name_to_structure,
+            ocsr_engine::ocsr_engine_status,
+            ocsr_engine::ocsr_engine_install,
+            ocsr_engine::ocsr_engine_cancel_install,
+            ocsr_engine::ocsr_engine_uninstall,
+            ocsr_engine::ocsr_recognize_image,
             screen_capture::screen_capture_available,
             screen_capture::screen_capture_permission_status,
             screen_capture::request_screen_capture_permission,
@@ -523,6 +533,7 @@ pub fn run() {
         .run(|app, event| match event {
             RunEvent::ExitRequested { .. } => {
                 APP_QUITTING.store(true, Ordering::SeqCst);
+                app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
             RunEvent::Reopen { .. } => {
                 if let Err(error) = ensure_main_window_visible(app) {

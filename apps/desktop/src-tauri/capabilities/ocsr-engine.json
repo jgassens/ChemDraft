@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ocsr-engine",
+  "description": "Allow only the main document window to install, manage, and invoke the host-owned local MolScribe engine after explicit user action.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-ocsr-engine-status",
+    "allow-ocsr-engine-install",
+    "allow-ocsr-engine-cancel-install",
+    "allow-ocsr-engine-uninstall",
+    "allow-ocsr-recognize-image"
+  ]
+}
