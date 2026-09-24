@@ -1,8 +1,6 @@
-import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -12,9 +10,10 @@ import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import {
   generateSmiles2DMolfile,
-  resetRdkitForTesting,
-  setRdkitModuleLoader
+  RdkitNotConfiguredError,
+  resetRdkitForTesting
 } from "@chemdraft/rdkit-adapter";
+import * as rdkitAdapter from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import { stereoPerceptionMolfile } from "../../../../apps/desktop/src/documentWorkflow";
@@ -440,28 +439,45 @@ describe("headless ChemDraft rendering", () => {
   });
 
   it("uses the OCL fallback when the RDKit loader fails", async () => {
-    // Prime the renderer's normal Node loader so this test remains independent when selected with
-    // `-t`; the injected failing loader must be the one used by the subsequent render.
-    await renderSmilesToAssets("C", { name: "loader-prime" });
-    setRdkitModuleLoader(() => Promise.reject(new Error("forced RDKit failure")));
-    const rendered = await renderSmilesToAssets("CCO", { name: "fallback" });
-    expect(rendered.engine).toBe("ocl");
-    expect(decodePng(rendered.png).width).toBe(600);
-    expect(rendered.warnings.join("\n")).toContain("forced RDKit failure");
+    const depict = vi.spyOn(rdkitAdapter, "generateSmiles2DMolfile")
+      .mockRejectedValueOnce(new Error("forced RDKit failure"));
+    try {
+      const rendered = await renderSmilesToAssets("CCO", { name: "fallback" });
+      expect(depict).toHaveBeenCalledWith("CCO");
+      expect(rendered.engine).toBe("ocl");
+      expect(decodePng(rendered.png).width).toBe(600);
+      expect(rendered.warnings.join("\n")).toContain("forced RDKit failure");
+    } finally {
+      depict.mockRestore();
+    }
   });
 
-  it("reports a missing RDKit loader as configuration failure instead of using OCL", () => {
-    const fixture = fileURLToPath(new URL("./__fixtures__/rdkit-not-configured.ts", import.meta.url));
-    const output = join(outputDirectory, "must-not-render.svg");
-    const child = spawnSync(process.execPath, ["--import", "tsx", fixture, output], {
-      encoding: "utf8"
-    });
-    expect(child.status, child.stderr).toBe(1);
-    const lines = child.stdout.trim().split(/\r?\n/).filter(Boolean);
-    expect(lines).toHaveLength(1);
-    const result = JSON.parse(lines[0]!);
-    expect(result).toMatchObject({ ok: false, smiles: "CCO" });
-    expect(result.error).toContain("RDKit module loader not set");
-    expect(lines[0]).not.toContain('"engine":"ocl"');
+  it.each([
+    ["an adapter configuration error", () => new RdkitNotConfiguredError()],
+    ["a duplicate-adapter configuration error", () => {
+      const error = new Error("RDKit module loader not set (duplicate module identity).");
+      error.name = "RdkitNotConfiguredError";
+      return error;
+    }]
+  ] as const)("reports %s without using OCL", async (_label, configurationError) => {
+    const depict = vi.spyOn(rdkitAdapter, "generateSmiles2DMolfile")
+      .mockRejectedValueOnce(configurationError());
+    const stdout: string[] = [];
+    try {
+      const code = await runCli(
+        ["--smiles", "CCO", "--out", join(outputDirectory, "must-not-render.svg")],
+        { stdout: (line) => stdout.push(line), stderr: () => undefined }
+      );
+      expect(depict).toHaveBeenCalledWith("CCO");
+      expect(code).toBe(1);
+      expect(stdout).toHaveLength(1);
+      const result = JSON.parse(stdout[0]!);
+      expect(result).toMatchObject({ ok: false, smiles: "CCO" });
+      expect(result.error).toContain("RDKit module loader not set");
+      expect(result).not.toHaveProperty("engine");
+      expect(stdout[0]).not.toContain('"engine":"ocl"');
+    } finally {
+      depict.mockRestore();
+    }
   }, 60_000);
 });
