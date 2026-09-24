@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 
-import { molscribeOcsrManifest } from "@chemdraft/molscribe-ocsr-plugin";
+import { massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import type { PluginManifest } from "@chemdraft/plugin-api";
 import type { PluginHost } from "@chemdraft/plugin-host";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  RECOGNITION_FIXTURE_COMMAND_ID,
+  RECOGNITION_FIXTURE_PANEL_ID,
+  recognitionFixtureManifest
+} from "../testSupport/recognitionFixturePlugin";
 import { PluginPanelSurface, type PluginPanelSurfaceProps } from "./PluginPanelSurface";
 import type { OpenPluginPanel } from "./types";
 import { usePluginRuntime } from "./usePluginRuntime";
@@ -76,13 +81,13 @@ function surfaceProps(overrides: Partial<PluginPanelSurfaceProps> = {}): PluginP
 }
 
 const openPanel: OpenPluginPanel = {
-  pluginId: molscribeOcsrManifest.id,
-  panelId: "panel.molscribeOcsr.review",
-  title: "MolScribe OCSR Review",
-  commandId: "plugin.molscribeOcsr.recognizeImage",
+  pluginId: recognitionFixtureManifest.id,
+  panelId: RECOGNITION_FIXTURE_PANEL_ID,
+  title: "Recognition Fixture Review",
+  commandId: RECOGNITION_FIXTURE_COMMAND_ID,
   openedAt: "2026-07-07T00:00:00.000Z",
   report: {
-    title: "MolScribe OCSR (runtime canary)",
+    title: "Recognition Fixture (runtime canary)",
     sections: [
       { kind: "keyValue", title: "Runtime", rows: [{ label: "Runtime path", value: "Active" }] },
       { kind: "text", body: "No document changes were made." }
@@ -116,7 +121,7 @@ describe("PluginPanelSurface", () => {
     mount(createElement(PluginPanelSurface, surfaceProps({ openPanel, onClose, onRunAgain })));
 
     expect(container!.querySelector('[data-testid="plugin-panel"]')).not.toBeNull();
-    expect(container!.textContent).toContain("MolScribe OCSR (runtime canary)");
+    expect(container!.textContent).toContain("Recognition Fixture (runtime canary)");
     expect(container!.textContent).toContain("Runtime path");
     expect(container!.textContent).toContain("Active");
     expect(container!.textContent).toContain("No document changes were made.");
@@ -127,7 +132,7 @@ describe("PluginPanelSurface", () => {
     act(() => {
       runAgain!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(onRunAgain).toHaveBeenCalledWith("plugin.molscribeOcsr.recognizeImage");
+    expect(onRunAgain).toHaveBeenCalledWith(RECOGNITION_FIXTURE_COMMAND_ID);
     act(() => {
       close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -348,11 +353,11 @@ describe("PluginPanelSurface", () => {
   });
 
   it("lists bundled plugins when diagnostics are open", () => {
-    mount(createElement(PluginPanelSurface, surfaceProps({ diagnosticsOpen: true, plugins: [molscribeOcsrManifest] })));
+    mount(createElement(PluginPanelSurface, surfaceProps({ diagnosticsOpen: true, plugins: [recognitionFixtureManifest] })));
 
-    expect(container!.querySelector(`[data-plugin-id="${molscribeOcsrManifest.id}"]`)).not.toBeNull();
-    expect(container!.textContent).toContain(molscribeOcsrManifest.name);
-    expect(container!.textContent).toContain(`v${molscribeOcsrManifest.version}`);
+    expect(container!.querySelector(`[data-plugin-id="${recognitionFixtureManifest.id}"]`)).not.toBeNull();
+    expect(container!.textContent).toContain(recognitionFixtureManifest.name);
+    expect(container!.textContent).toContain(`v${recognitionFixtureManifest.version}`);
   });
 
   it("shows a stale banner only when the panel is flagged stale (D-09)", () => {
@@ -368,7 +373,7 @@ describe("PluginPanelSurface", () => {
   });
 
   it("renders nothing when neither a panel nor diagnostics is open", () => {
-    mount(createElement(PluginPanelSurface, surfaceProps({ plugins: [molscribeOcsrManifest] })));
+    mount(createElement(PluginPanelSurface, surfaceProps({ plugins: [recognitionFixtureManifest] })));
     expect(container!.querySelector('[data-testid="plugin-surface"]')).toBeNull();
   });
 });
@@ -396,6 +401,6 @@ describe("usePluginRuntime host persistence", () => {
 
     expect(hosts.length).toBeGreaterThanOrEqual(2);
     expect(new Set(hosts).size).toBe(1);
-    expect(plugins.at(-1)?.map((manifest) => manifest.id)).toContain(molscribeOcsrManifest.id);
+    expect(plugins.at(-1)?.map((manifest) => manifest.id)).toContain(massFragmentManifest.id);
   });
 });

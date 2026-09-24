@@ -134,6 +134,14 @@ describe("host-managed plugin update catalog", () => {
         description: "Type a systematic chemical name and insert its structure.",
         repository: "jgassens/ChemDraft-OPSIN-Plugin",
         assetStem: "opsin-name-to-structure"
+      },
+      {
+        pluginId: "org.chemdraft.ocsr.molscribe",
+        displayName: "Structure from Image (MolScribe)",
+        description:
+          "Recognize a drawn structure from an image or screenshot. Downloads a local recognition engine (about 2.5 GB) on first use.",
+        repository: "jgassens/ChemDraft-MolScribe-Plugin",
+        assetStem: "molscribe-ocsr"
       }
     ]);
   });
@@ -284,13 +292,16 @@ describe("host-managed plugin update catalog", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
-  it("reports an official catalog entry with no release explicitly", async () => {
-    await expect(
-      prepareOfficialPluginInstall("org.chemdraft.opsin.nameToStructure", {
-        fetch: async () => new Response(null, { status: 404, statusText: "Not Found" })
-      })
-    ).rejects.toThrow("No release published yet");
-  });
+  it.each(["org.chemdraft.opsin.nameToStructure", "org.chemdraft.ocsr.molscribe"])(
+    "reports an official catalog entry with no release explicitly (%s)",
+    async (pluginId) => {
+      await expect(
+        prepareOfficialPluginInstall(pluginId, {
+          fetch: async () => new Response(null, { status: 404, statusText: "Not Found" })
+        })
+      ).rejects.toThrow("No release published yet");
+    }
+  );
 
   it("keeps the trusted redirect host in step with the capability scope", async () => {
     // The module refuses a redirect that misses these strings, and the capability scope refuses the

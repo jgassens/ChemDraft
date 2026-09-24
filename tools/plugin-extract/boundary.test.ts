@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,10 +139,13 @@ describe("plugin import boundary", () => {
     expect(checkPluginBoundary(root)).toEqual([]);
   });
 
-  it("documents molscribe-ocsr as staying inside the SDK boundary (not extractable)", () => {
-    // molscribe-ocsr used to import chem-core and was brought inside the boundary when it moved to
-    // images.requestImage. It is still excluded from EXTRACTABLE_PLUGINS because it is a scaffold
-    // with no recognition engine.
-    expect(checkPluginBoundary(pluginDir("molscribe-ocsr"))).toEqual([]);
-  });
+  it.each(["molscribe-ocsr", "opsin-name-to-structure"])(
+    "leaves the official %s plugin's boundary to its own repository",
+    (name) => {
+      // Official installable plugins are built and packaged from their own repositories, where the
+      // same SDK boundary is enforced. A copy reappearing here would be a second, unchecked source of
+      // truth for a plugin the app no longer bundles.
+      expect(existsSync(pluginDir(name))).toBe(false);
+    }
+  );
 });

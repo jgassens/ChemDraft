@@ -6,6 +6,11 @@ the commands below. Nothing is downloaded or started at application startup. The
 first obtain explicit user confirmation and invoke `ocsr_engine_install`; recognition remains
 proposal-only in the plugin workflow (AGENTS.md §7, §8).
 
+The recognizer plugin itself is not bundled: it is the official MolScribe OCSR plugin, installed from
+`jgassens/ChemDraft-MolScribe-Plugin` through Add or Remove Plugins. The engine outlives the plugin —
+uninstalling the plugin while the engine is installed asks once whether to remove the engine too, and
+the manager's engine row is shown only while the plugin is installed.
+
 Code: `apps/desktop/src-tauri/src/ocsr_engine/` — `mod.rs` (commands and state), `install.rs`
 (installer), `process.rs` (sidecar lifetime), `protocol.rs` (JSON Lines), `platform.rs` (per-OS seam),
 `pins.rs` (every supply-chain pin). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.

@@ -315,15 +315,121 @@ function OfficialCatalogHarness({
 }
 
 describe("PluginManagerDialog", () => {
-  const molscribeDescriptor: BundledPluginDescriptor = {
-    manifest: {
-      ...manifest,
-      id: "org.chemdraft.ocsr.molscribe",
-      name: "MolScribe OCSR",
-      apiVersion: "^0.1.6"
-    },
-    options: { commandHandlers: {} }
+  const molscribeManifest: PluginManifest = {
+    ...manifest,
+    id: "org.chemdraft.ocsr.molscribe",
+    name: "MolScribe OCSR",
+    apiVersion: "^0.1.6"
   };
+  const molscribeInstalled = installedEntry(molscribeManifest);
+  const installedEngineStatus = {
+    state: "installed" as const,
+    installed: {
+      uvVersion: "0.8.0",
+      pythonVersion: "3.12.8",
+      molscribeCommit: "abc123",
+      modelSha256: "a".repeat(64),
+      installedAt: "2026-09-24T00:00:00.000Z",
+      diskBytes: 2.5 * 1024 ** 3
+    },
+    requiredDiskBytes: 2.5 * 1024 ** 3,
+    freeDiskBytes: 8 * 1024 ** 3
+  };
+
+  it("shows no engine row while the MolScribe plugin is not installed", () => {
+    const runtime = createRuntime();
+    mount(
+      createElement(Harness, {
+        runtime,
+        // Even a descriptor carrying the id (a dev build, say) is not an install.
+        bundledPlugins: [{ manifest: molscribeManifest, options: { commandHandlers: {} } }],
+        recognitionEngineStatus: installedEngineStatus,
+        onUninstallRecognitionEngine: vi.fn(async () => undefined),
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
+  });
+
+  it.each([
+    ["Remove", "confirm-remove-recognition-engine", 1],
+    ["Keep", "keep-recognition-engine", 0]
+  ])(
+    "asks once after uninstalling MolScribe whether to remove the engine too (%s)",
+    async (_label, action, removals) => {
+      const runtime = createRuntime();
+      const onUninstallRecognitionEngine = vi.fn(async () => undefined);
+      const onUninstall = vi.fn(async (_pluginId: string) => {});
+      function UninstallHarness() {
+        const [installed, setInstalled] = useState<readonly InstalledPluginCatalogEntry[]>([molscribeInstalled]);
+        return createElement(Harness, {
+          runtime,
+          installedPlugins: installed,
+          recognitionEngineStatus: installedEngineStatus,
+          onUninstallRecognitionEngine,
+          onUninstallPlugin: async (pluginId) => {
+            await onUninstall(pluginId);
+            setInstalled((current) => current.filter((entry) => entry.record.id !== pluginId));
+          },
+          onClose: vi.fn(),
+          onPluginsChanged: vi.fn()
+        });
+      }
+      mount(createElement(UninstallHarness));
+      expect(document.querySelector('[data-testid="molscribe-engine-row"]')).not.toBeNull();
+      expect(document.querySelector('[data-testid="recognition-engine-removal-offer"]')).toBeNull();
+
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>(
+            `[data-action="uninstall-plugin"][data-plugin-id="${molscribeManifest.id}"]`
+          )!
+          .click();
+      });
+      expect(onUninstall).toHaveBeenCalledWith(molscribeManifest.id);
+      // The plugin is gone, so its engine row is too; the engine itself is still on disk until asked.
+      expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
+      const offer = document.querySelector('[data-testid="recognition-engine-removal-offer"]');
+      expect(offer?.textContent).toContain("Also remove the recognition engine (2.5 GB)?");
+      expect(onUninstallRecognitionEngine).not.toHaveBeenCalled();
+
+      await act(async () => {
+        offer!.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.click();
+      });
+      expect(onUninstallRecognitionEngine).toHaveBeenCalledTimes(removals);
+      expect(document.querySelector('[data-testid="recognition-engine-removal-offer"]')).toBeNull();
+      expect(document.querySelector(".plugin-manager-error")).toBeNull();
+      if (removals === 1) {
+        expect(document.querySelector('[data-testid="plugin-manager-status"]')?.textContent).toBe(
+          "Recognition engine removed."
+        );
+      }
+    }
+  );
+
+  it("does not offer engine removal after uninstalling MolScribe when no engine is installed", async () => {
+    const runtime = createRuntime();
+    const onUninstallRecognitionEngine = vi.fn(async () => undefined);
+    mount(
+      createElement(Harness, {
+        runtime,
+        installedPlugins: [molscribeInstalled],
+        recognitionEngineStatus: { state: "notInstalled", requiredDiskBytes: 0, freeDiskBytes: 0 },
+        onUninstallRecognitionEngine,
+        onUninstallPlugin: vi.fn(async () => {}),
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(`[data-action="uninstall-plugin"][data-plugin-id="${molscribeManifest.id}"]`)!
+        .click();
+    });
+    expect(document.querySelector('[data-testid="recognition-engine-removal-offer"]')).toBeNull();
+    expect(onUninstallRecognitionEngine).not.toHaveBeenCalled();
+  });
 
   it("offers host-owned recognition-engine installation from the MolScribe row", () => {
     const runtime = createRuntime();
@@ -331,7 +437,7 @@ describe("PluginManagerDialog", () => {
     mount(
       createElement(Harness, {
         runtime,
-        bundledPlugins: [molscribeDescriptor],
+        installedPlugins: [molscribeInstalled],
         recognitionEngineStatus: {
           state: "notInstalled",
           requiredDiskBytes: 2 * 1024 ** 3,
@@ -356,7 +462,7 @@ describe("PluginManagerDialog", () => {
     mount(
       createElement(Harness, {
         runtime,
-        bundledPlugins: [molscribeDescriptor],
+        installedPlugins: [molscribeInstalled],
         recognitionEngineStatus: {
           state: "installed",
           installed: {
@@ -392,7 +498,7 @@ describe("PluginManagerDialog", () => {
     mount(
       createElement(Harness, {
         runtime,
-        bundledPlugins: [molscribeDescriptor],
+        installedPlugins: [molscribeInstalled],
         recognitionEngineStatus: {
           state: "installed",
           installed: {
@@ -428,7 +534,7 @@ describe("PluginManagerDialog", () => {
     mount(
       createElement(Harness, {
         runtime,
-        bundledPlugins: [molscribeDescriptor],
+        installedPlugins: [molscribeInstalled],
         recognitionEngineStatus: { state: "unsupported", requiredDiskBytes: 0, freeDiskBytes: 0 },
         onInstallRecognitionEngine: vi.fn(async () => true),
         onClose: vi.fn(),

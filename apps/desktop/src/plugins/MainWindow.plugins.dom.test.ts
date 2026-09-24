@@ -1,12 +1,33 @@
 // @vitest-environment jsdom
 
-import { molscribeOcsrCommandId, molscribeOcsrManifest } from "@chemdraft/molscribe-ocsr-plugin";
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MainWindow } from "../MainWindow";
+import {
+  RECOGNITION_FIXTURE_COMMAND_ID,
+  RECOGNITION_FIXTURE_PANEL_ID
+} from "../testSupport/recognitionFixturePlugin";
+import type { DesktopPluginRuntime } from "./createPluginRuntime";
+
+// No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
+// to the test-only recognition fixture, standing in for an installed plugin.
+const bundled = vi.hoisted(() => ({ withRecognitionFixture: false }));
+vi.mock("./registerBundledPlugins", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./registerBundledPlugins")>();
+  const { recognitionFixtureDescriptor } = await import("../testSupport/recognitionFixturePlugin");
+  return {
+    ...actual,
+    registerBundledPlugins: (runtime: DesktopPluginRuntime, disabledIds?: ReadonlySet<string>) => {
+      if (!bundled.withRecognitionFixture) return actual.registerBundledPlugins(runtime, disabledIds);
+      const descriptors = [...actual.createBundledPluginDescriptors(), recognitionFixtureDescriptor()];
+      actual.applyEnabledPlugins(runtime, disabledIds ?? new Set(), descriptors);
+      return descriptors;
+    }
+  };
+});
 
 function installDomMocks(): void {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,6 +55,7 @@ let root: Root | undefined;
 let container: HTMLElement | undefined;
 
 afterEach(() => {
+  bundled.withRecognitionFixture = false;
   act(() => {
     root?.unmount();
   });
@@ -86,7 +108,28 @@ describe("MainWindow bundled plugin integration", () => {
     expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();
   });
 
+  it("shows no image-recognition item until the MolScribe plugin is installed", async () => {
+    installDomMocks();
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(
+        createElement(MainWindow, { initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: false })
+      );
+      await Promise.resolve();
+    });
+
+    await click(container.querySelector('button[data-menu-section="analyze"]')!);
+    const items = [...container.querySelectorAll<HTMLButtonElement>("button[data-command-id]")];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.some((item) => /molscribe/i.test(item.dataset.commandId ?? ""))).toBe(false);
+    expect(items.some((item) => /Recognize Structure from Image/.test(item.textContent ?? ""))).toBe(false);
+  });
+
   it("routes an Analyze menu contribution through PluginHost and opens its rendered panel", async () => {
+    bundled.withRecognitionFixture = true;
     installDomMocks();
     container = document.createElement("div");
     document.body.append(container);
@@ -105,16 +148,16 @@ describe("MainWindow bundled plugin integration", () => {
 
     expect(document.title).toBe("ChemDraft — test");
 
-    // The bundled plugin's Analyze contribution is present in the (web) menu bar.
+    // The plugin's Analyze contribution is present in the (web) menu bar.
     const analyzeButton = container.querySelector<HTMLButtonElement>('button[data-menu-section="analyze"]');
     expect(analyzeButton).not.toBeNull();
     await click(analyzeButton!);
 
     const menuItem = container.querySelector<HTMLButtonElement>(
-      `button[data-command-id="${molscribeOcsrCommandId}"]`
+      `button[data-command-id="${RECOGNITION_FIXTURE_COMMAND_ID}"]`
     );
     expect(menuItem).not.toBeNull();
-    expect(menuItem!.textContent).toContain("Recognize Structure from Image");
+    expect(menuItem!.textContent).toContain("Recognize Fixture Image");
 
     // No plugin panel before the command runs.
     expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
@@ -131,7 +174,7 @@ describe("MainWindow bundled plugin integration", () => {
     await vi.waitFor(() => expect(container!.querySelector('[data-testid="plugin-panel"]')).not.toBeNull());
     const panel = container.querySelector('[data-testid="plugin-panel"]');
     expect(panel).not.toBeNull();
-    expect(panel!.getAttribute("data-panel-id")).toBe("panel.molscribeOcsr.review");
+    expect(panel!.getAttribute("data-panel-id")).toBe(RECOGNITION_FIXTURE_PANEL_ID);
     expect(container.textContent).toContain("Image input is unavailable");
 
     // The panel closes cleanly.
@@ -167,8 +210,8 @@ describe("MainWindow bundled plugin integration", () => {
 
     const diagnostics = container.querySelector('[data-testid="plugin-diagnostics"]');
     expect(diagnostics).not.toBeNull();
-    expect(container.querySelector(`[data-plugin-id="${molscribeOcsrManifest.id}"]`)).not.toBeNull();
-    expect(container.textContent).toContain(molscribeOcsrManifest.name);
+    expect(container.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
+    expect(container.textContent).toContain(massFragmentManifest.name);
   });
 
   it("registers the mass analyzer in Analyze and lists it in diagnostics — and no NMR item exists anywhere (M39)", async () => {

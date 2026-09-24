@@ -48,6 +48,14 @@ export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
     description: "Type a systematic chemical name and insert its structure.",
     repository: "jgassens/ChemDraft-OPSIN-Plugin",
     assetStem: "opsin-name-to-structure"
+  },
+  {
+    pluginId: "org.chemdraft.ocsr.molscribe",
+    displayName: "Structure from Image (MolScribe)",
+    description:
+      "Recognize a drawn structure from an image or screenshot. Downloads a local recognition engine (about 2.5 GB) on first use.",
+    repository: "jgassens/ChemDraft-MolScribe-Plugin",
+    assetStem: "molscribe-ocsr"
   }
 ];
 

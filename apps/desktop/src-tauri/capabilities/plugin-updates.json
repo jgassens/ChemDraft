@@ -26,6 +26,15 @@
           "url": "https://github.com/jgassens/ChemDraft-OPSIN-Plugin/releases/download/*/opsin-name-to-structure-*.zip.sha256"
         },
         {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-MolScribe-Plugin/releases/latest"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-MolScribe-Plugin/releases/download/*/molscribe-ocsr-*.zip"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-MolScribe-Plugin/releases/download/*/molscribe-ocsr-*.zip.sha256"
+        },
+        {
           "url": "https://release-assets.githubusercontent.com/github-production-release-asset/*"
         }
       ]

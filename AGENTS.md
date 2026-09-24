@@ -369,15 +369,19 @@ Not allowed:
 
 ### 6.13 `examples/plugins/`
 
-Five example plugins live here. Two carry code; three are README-only placeholders.
+Three example plugins live here. One carries code; two are README-only placeholders.
 
 - `mass-fragment-demo` — a working, deliberately non-NMR analyzer that proves the plugin
   infrastructure is domain-agnostic: Hill-notation formula, monoisotopic and average mass, and
   common ESI adduct m/z via OpenChemLib, rendered through the same declarative panel report as any
   other analyzer. Keep it free of spectroscopy concepts, workers, and reference databases — that
   absence is the point of it.
-- `molscribe-ocsr` — working image-to-structure plugin backed by ChemDraft's explicitly installed,
-  host-managed local MolScribe engine; its rules follow below.
+- MolScribe OCSR is NO LONGER an example plugin (moved out 2026-09-24). It is an official
+  installable plugin (`org.chemdraft.ocsr.molscribe`) built from its own repository,
+  `jgassens/ChemDraft-MolScribe-Plugin`, and listed in the host catalog
+  (`apps/desktop/src/plugins/pluginUpdates.ts`) — so, like the NMR predictor, its menu item exists only
+  after the user installs it from Add or Remove Plugins. The recognition engine it drives stays
+  host-managed in the app (§8); the `molscribe-ocsr` example was deleted. Its rules follow below.
 - `advanced-style-pack`, `journal-style-pack` — README-only placeholders. Keep them placeholders
   until a slice implements them, and never describe them as shipped plugins; a README naming a
   future plugin is not a plugin.
@@ -386,7 +390,7 @@ Five example plugins live here. Two carry code; three are README-only placeholde
   (`apps/desktop/src-tauri/src/opsin.rs`) — and the `opsin-name-to-structure` example was deleted.
   Because it spawns a process, it requires `native.execute` in addition to `chemistry.compute`.
 
-`molscribe-ocsr` specifically:
+The MolScribe OCSR plugin specifically (enforced by the host, wherever the plugin's code lives):
 
 Allowed:
 
@@ -771,8 +775,9 @@ window. Undo is the safety net. Reports are for failures; a success needs no win
 
 ## 8. MolScribe OCSR plugin rules
 
-MolScribe OCSR is a working bundled plugin. ChemDraft owns its local recognition engine, installation
-UI, and native boundary; the plugin receives only `recognition.recognizeStructure` for an image the
+MolScribe OCSR is an official installable plugin in its own repository
+(`jgassens/ChemDraft-MolScribe-Plugin`, §6.13); the app does not bundle it. ChemDraft owns its local
+recognition engine, installation UI, and native boundary; the plugin receives only `recognition.recognizeStructure` for an image the
 host returned during that same command invocation. The private Python, PyTorch, MolScribe checkout,
 and model are installed only after explicit user action, run entirely on the computer, and are never
 downloaded or managed by plugin code. Recognition remains proposal-only (§6.13 and §7).

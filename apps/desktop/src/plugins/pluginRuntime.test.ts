@@ -1,14 +1,16 @@
-import {
-  molscribeOcsrCommandId,
-  molscribeOcsrManifest,
-  molscribeOcsrPanelId
-} from "@chemdraft/molscribe-ocsr-plugin";
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
+import {
+  RECOGNITION_FIXTURE_COMMAND_ID,
+  RECOGNITION_FIXTURE_PANEL_ID,
+  RECOGNITION_FIXTURE_TITLE,
+  recognitionFixtureDescriptor,
+  recognitionFixtureManifest
+} from "../testSupport/recognitionFixturePlugin";
 import { createPluginRuntime, type DesktopPluginRuntimeOptions } from "./createPluginRuntime";
 import { ImageSourceRegistry, type ImageSourceProvider } from "./ImageSourceProvider";
 import { buildPluginMenuItems, PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./pluginMenuModel";
@@ -67,6 +69,13 @@ function installedEngine(
   };
 }
 
+/** The bundled catalog plus the test-only recognizer, standing in for an installed recognition plugin. */
+function registerWithRecognitionFixture(runtime: ReturnType<typeof makeRuntime>) {
+  const descriptors = [...createBundledPluginDescriptors(), recognitionFixtureDescriptor()];
+  applyEnabledPlugins(runtime, new Set(), descriptors);
+  return descriptors;
+}
+
 function makeRuntime(overrides: Partial<DesktopPluginRuntimeOptions> = {}) {
   const imageProvider: ImageSourceProvider = {
     id: "file",
@@ -107,14 +116,15 @@ describe("desktop plugin runtime", () => {
     expect(runtime.host.hasPermission(candidate.id, "network.fetch")).toBe(false);
   });
 
-  it("registers molscribe-ocsr as a bundled plugin", () => {
+  it("bundles no image recognizer: MolScribe OCSR arrives only by installing it", () => {
     const runtime = makeRuntime();
     const descriptors = registerBundledPlugins(runtime);
-    expect(runtime.host.listPlugins().map((manifest) => manifest.id)).toContain(molscribeOcsrManifest.id);
-    expect(descriptors.map((descriptor) => descriptor.manifest.id)).toEqual([
-      "org.chemdraft.ocsr.molscribe",
-      "org.chemdraft.mass.fragment"
-    ]);
+    expect(descriptors.map((descriptor) => descriptor.manifest.id)).toEqual(["org.chemdraft.mass.fragment"]);
+    expect(runtime.host.getPlugin("org.chemdraft.ocsr.molscribe")).toBeUndefined();
+    expect(runtime.host.commands.has("plugin.molscribeOcsr.recognizeImage")).toBe(false);
+    const items = buildPluginMenuItems(runtime.host.listMenuContributions());
+    expect(items.some((item) => /molscribe/i.test(item.command.commandId))).toBe(false);
+    expect(items.some((item) => item.command.label === "Recognize Structure from Image")).toBe(false);
   });
 
   it("skips persisted disabled plugins during startup", () => {
@@ -123,7 +133,7 @@ describe("desktop plugin runtime", () => {
 
     expect(runtime.host.getPlugin(massFragmentManifest.id)).toBeUndefined();
     expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(false);
-    expect(runtime.host.listPlugins()).toHaveLength(1);
+    expect(runtime.host.listPlugins()).toHaveLength(0);
   });
 
   it("applies enabled plugins idempotently and updates command and menu contributions live", () => {
@@ -133,24 +143,24 @@ describe("desktop plugin runtime", () => {
     runtime.host.subscribe(changes);
 
     applyEnabledPlugins(runtime, new Set(), descriptors);
-    expect(runtime.host.listPlugins()).toHaveLength(2);
-    expect(changes).toHaveBeenCalledTimes(2);
+    expect(runtime.host.listPlugins()).toHaveLength(1);
+    expect(changes).toHaveBeenCalledTimes(1);
 
     applyEnabledPlugins(runtime, new Set(), descriptors);
-    expect(runtime.host.listPlugins()).toHaveLength(2);
-    expect(changes).toHaveBeenCalledTimes(2);
+    expect(runtime.host.listPlugins()).toHaveLength(1);
+    expect(changes).toHaveBeenCalledTimes(1);
 
     applyEnabledPlugins(runtime, new Set([massFragmentManifest.id]), descriptors);
     expect(runtime.host.getPlugin(massFragmentManifest.id)).toBeUndefined();
     expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(false);
     expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === massFragmentManifest.id)).toBe(false);
-    expect(changes).toHaveBeenCalledTimes(3);
+    expect(changes).toHaveBeenCalledTimes(2);
 
     applyEnabledPlugins(runtime, new Set(), descriptors);
     expect(runtime.host.getPlugin(massFragmentManifest.id)?.manifest.id).toBe(massFragmentManifest.id);
     expect(runtime.host.commands.has(massAnalyzeCommandId)).toBe(true);
     expect(runtime.host.listMenuContributions().some((entry) => entry.pluginId === massFragmentManifest.id)).toBe(true);
-    expect(changes).toHaveBeenCalledTimes(4);
+    expect(changes).toHaveBeenCalledTimes(3);
   });
 
   it("totally tears down a disabled worker plugin and creates a fresh bridge when re-enabled", () => {
@@ -176,44 +186,42 @@ describe("desktop plugin runtime", () => {
 
   it("closes a plugin-owned panel before unregistering its close hook", async () => {
     const runtime = makeRuntime();
-    const descriptors = registerBundledPlugins(runtime);
+    const descriptors = registerWithRecognitionFixture(runtime);
     const notifyPanelClosed = vi.spyOn(runtime.host, "notifyPanelClosed");
 
-    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
     await invocation;
-    expect(runtime.panels.getOpenPanel()?.pluginId).toBe(molscribeOcsrManifest.id);
+    expect(runtime.panels.getOpenPanel()?.pluginId).toBe(recognitionFixtureManifest.id);
 
-    applyEnabledPlugins(runtime, new Set([molscribeOcsrManifest.id]), descriptors);
+    applyEnabledPlugins(runtime, new Set([recognitionFixtureManifest.id]), descriptors);
 
-    expect(notifyPanelClosed).toHaveBeenCalledWith(molscribeOcsrManifest.id, molscribeOcsrPanelId);
+    expect(notifyPanelClosed).toHaveBeenCalledWith(recognitionFixtureManifest.id, RECOGNITION_FIXTURE_PANEL_ID);
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
-    expect(runtime.host.getPlugin(molscribeOcsrManifest.id)).toBeUndefined();
+    expect(runtime.host.getPlugin(recognitionFixtureManifest.id)).toBeUndefined();
   });
 
   it("acquires an image and reports engineNotInstalled in one line when no install dialog is attached", async () => {
     // No UI host renders the installer here, so the host must answer at once instead of waiting on a
     // dialog that will never appear.
     const runtime = makeRuntime();
-    registerBundledPlugins(runtime);
+    registerWithRecognitionFixture(runtime);
 
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
 
-    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
     await expect(invocation).resolves.toEqual({ status: "engineNotInstalled" });
 
     expect(runtime.recognition.getOpenInstall()).toBeUndefined();
     const open = runtime.panels.getOpenPanel();
-    expect(open?.panelId).toBe(molscribeOcsrPanelId);
-    expect(open?.title).toBe("MolScribe OCSR");
-    expect(open?.commandId).toBe(molscribeOcsrCommandId);
-    expect(open?.report.title).toContain("MolScribe");
-    expect(open?.report.sections).toEqual([
-      { kind: "text", body: "Recognition needs the local engine. Install it in Add or Remove Plugins." }
-    ]);
+    expect(open?.panelId).toBe(RECOGNITION_FIXTURE_PANEL_ID);
+    expect(open?.title).toBe(RECOGNITION_FIXTURE_TITLE);
+    expect(open?.commandId).toBe(RECOGNITION_FIXTURE_COMMAND_ID);
+    expect(open?.report.title).toBe(RECOGNITION_FIXTURE_TITLE);
+    expect(open?.report.sections).toEqual([{ kind: "text", body: "Recognition needs the local engine." }]);
 
     runtime.panels.closePanel();
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
@@ -228,9 +236,9 @@ describe("desktop plugin runtime", () => {
       structureRecognitionEngine: engine,
       recognitionStructureValidator: validator
     });
-    registerBundledPlugins(runtime);
+    registerWithRecognitionFixture(runtime);
 
-    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
     await expect(invocation).resolves.toMatchObject({ status: "recognized" });
@@ -240,7 +248,7 @@ describe("desktop plugin runtime", () => {
     const proposals = runtime.host.listProposedPatches();
     expect(proposals).toHaveLength(1);
     expect(proposals[0]).toMatchObject({
-      pluginId: molscribeOcsrManifest.id,
+      pluginId: recognitionFixtureManifest.id,
       proposal: {
         requiresUserApproval: true,
         patch: { op: "addObject", pageId: document.pages[0]!.id, object: { type: "molecule" } },
@@ -258,9 +266,9 @@ describe("desktop plugin runtime", () => {
         message: "The file was not a decodable image."
       }))
     });
-    registerBundledPlugins(runtime);
+    registerWithRecognitionFixture(runtime);
 
-    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
     await expect(invocation).resolves.toEqual({
@@ -312,9 +320,9 @@ describe("desktop plugin runtime", () => {
 
   it("records a controlled diagnostic instead of crashing when a report targets an unknown panel", () => {
     const runtime = makeRuntime();
-    registerBundledPlugins(runtime);
+    registerWithRecognitionFixture(runtime);
 
-    runtime.panels.showReport(molscribeOcsrManifest.id, "panel.does.not.exist", { title: "X", sections: [] });
+    runtime.panels.showReport(recognitionFixtureManifest.id, "panel.does.not.exist", { title: "X", sections: [] });
 
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
     expect(runtime.panels.getDiagnostics().map((diagnostic) => diagnostic.code)).toContain("panel-unknown");
@@ -332,44 +340,44 @@ describe("desktop plugin runtime", () => {
     });
 
     const runtime = makeRuntime({ commandRegistry: shared });
-    registerBundledPlugins(runtime);
+    registerWithRecognitionFixture(runtime);
 
     // One registry serves both worlds.
     expect(runtime.host.commands).toBe(shared);
     expect(runtime.host.commands.has("core.probe")).toBe(true);
-    expect(runtime.host.commands.has(molscribeOcsrCommandId)).toBe(true);
+    expect(runtime.host.commands.has(RECOGNITION_FIXTURE_COMMAND_ID)).toBe(true);
 
     // Ownership: core commands carry no pluginId; plugin commands carry their manifest id.
     expect(runtime.host.commands.get("core.probe")?.pluginId).toBeUndefined();
-    expect(runtime.host.commands.get(molscribeOcsrCommandId)?.pluginId).toBe(molscribeOcsrManifest.id);
+    expect(runtime.host.commands.get(RECOGNITION_FIXTURE_COMMAND_ID)?.pluginId).toBe(recognitionFixtureManifest.id);
 
     // Single dispatch handles both: plain for core, permission context for plugin-owned.
     await runtime.host.invokeCommand("core.probe");
     expect(coreRan).toBe(1);
-    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
     await invocation;
-    expect(runtime.panels.getOpenPanel()?.panelId).toBe(molscribeOcsrPanelId);
+    expect(runtime.panels.getOpenPanel()?.panelId).toBe(RECOGNITION_FIXTURE_PANEL_ID);
 
     // Unregistering a plugin removes only its own commands from the shared registry.
-    runtime.unregisterPlugin(molscribeOcsrManifest.id);
-    expect(runtime.host.commands.has(molscribeOcsrCommandId)).toBe(false);
+    runtime.unregisterPlugin(recognitionFixtureManifest.id);
+    expect(runtime.host.commands.has(RECOGNITION_FIXTURE_COMMAND_ID)).toBe(false);
     expect(runtime.host.commands.has("core.probe")).toBe(true);
   });
 
   it("builds Analyze menu items for registered contributions plus the diagnostics opener", () => {
     const runtime = makeRuntime();
-    registerBundledPlugins(runtime);
+    registerWithRecognitionFixture(runtime);
 
     const items = buildPluginMenuItems(runtime.host.listMenuContributions());
     const commandIds = items.map((item) => item.command.commandId);
 
-    expect(commandIds).toContain(molscribeOcsrCommandId);
+    expect(commandIds).toContain(RECOGNITION_FIXTURE_COMMAND_ID);
     expect(commandIds).toContain(massAnalyzeCommandId);
     expect(commandIds).toContain(PLUGIN_DIAGNOSTICS_COMMAND_ID);
     expect(items.every((item) => item.command.pluginContributed === true)).toBe(true);
-    expect(items.find((item) => item.command.commandId === molscribeOcsrCommandId)?.location).toBe("analyze");
+    expect(items.find((item) => item.command.commandId === RECOGNITION_FIXTURE_COMMAND_ID)?.location).toBe("analyze");
 
     // Core-only build (M39): no bundled contribution may put an NMR item in any menu — NMR features
     // can arrive only through the installer.

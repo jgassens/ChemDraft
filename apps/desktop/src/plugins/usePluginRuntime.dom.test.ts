@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { molscribeOcsrCommandId } from "@chemdraft/molscribe-ocsr-plugin";
+import { massAnalyzeCommandId } from "@chemdraft/plugin-mass-fragment";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -62,7 +62,7 @@ describe("usePluginRuntime on the shared command registry", () => {
     expect(view!.runtime.host.commands).toBe(registry);
     expect(view!.runtime.host.commands.has("core.probe")).toBe(true);
     expect(view!.isPluginCommand("core.probe")).toBe(false);
-    expect(view!.isPluginCommand(molscribeOcsrCommandId)).toBe(true);
+    expect(view!.isPluginCommand(massAnalyzeCommandId)).toBe(true);
     expect(view!.isPluginCommand("no.such.command")).toBe(false);
 
     // Single dispatch: the same invoke path reaches core commands in the shared registry.

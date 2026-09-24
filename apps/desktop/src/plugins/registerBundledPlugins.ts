@@ -1,8 +1,3 @@
-import {
-  createMolScribeOcsrCommandHandler,
-  molscribeOcsrCommandId,
-  molscribeOcsrManifest
-} from "@chemdraft/molscribe-ocsr-plugin";
 import { createMassRegistration, massFragmentManifest, massFragmentPluginId } from "@chemdraft/plugin-mass-fragment";
 import {
   PluginApiVersion,
@@ -64,24 +59,17 @@ export function defaultPluginWorkerFactories(): ReadonlyMap<string, PluginWorker
  * The mass analyzer runs in a per-plugin Web Worker when a factory is available (ADR-0029, M34); its
  * manifest command handlers delegate to a {@link PluginWorkerBridge} that services its capability
  * calls against the real host context. Where no factory is available (node/jsdom), it runs in-process
- * exactly as before, so existing behavior and tests are unaffected. The lightweight MolScribe
- * command stays in-process; the host-owned recognition engine remains behind its capability API.
+ * exactly as before, so existing behavior and tests are unaffected.
+ *
+ * Image-to-structure recognition is not bundled: like name-to-structure, it is an official plugin the
+ * user installs from Add or Remove Plugins, so a fresh app carries no recognition command. The engine it
+ * drives stays host-owned behind `recognition.recognizeStructure`.
  */
 export function createBundledPluginDescriptors(
   options: BundledPluginRuntimeOptions = {}
 ): readonly BundledPluginDescriptor[] {
   const factories = options.pluginWorkerFactories ?? defaultPluginWorkerFactories();
-  return [
-    {
-      manifest: molscribeOcsrManifest,
-      options: {
-        commandHandlers: {
-          [molscribeOcsrCommandId]: createMolScribeOcsrCommandHandler()
-        }
-      }
-    },
-    buildMassDescriptor(factories.get(massFragmentPluginId))
-  ];
+  return [buildMassDescriptor(factories.get(massFragmentPluginId))];
 }
 
 /** Delegating command handlers + panel-close forwarding for a worker-routed plugin: each contributed

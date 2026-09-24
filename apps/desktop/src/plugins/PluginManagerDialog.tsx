@@ -57,6 +57,7 @@ type PluginManagerBusyOperation =
   | { kind: "installPackage" }
   | { kind: "prepareOfficialInstall"; pluginId: string; pluginName: string }
   | { kind: "uninstallPlugin"; pluginId: string; pluginName: string }
+  | { kind: "removeRecognitionEngine" }
   | { kind: "checkUpdates" }
   | { kind: "prepareUpdate"; pluginId: string; pluginName: string }
   | { kind: "applyUpdate"; pluginName: string };
@@ -125,6 +126,9 @@ export function PluginManagerDialog({
   const [updateResultsState, setUpdateResultsState] = useState<CatalogBoundUpdateResults | undefined>(undefined);
   const [noticeState, setNoticeState] = useState<PluginManagerNotice | undefined>(undefined);
   const [busyOperation, setBusyOperation] = useState<PluginManagerBusyOperation | undefined>(undefined);
+  /** Disk size of the recognition engine the user may also want gone, asked once after MolScribe's
+   *  plugin is uninstalled. The engine is host-owned and outlives the plugin unless the user says so. */
+  const [engineRemovalOfferBytes, setEngineRemovalOfferBytes] = useState<number | undefined>(undefined);
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
 
@@ -289,8 +293,22 @@ export function PluginManagerDialog({
       async () => {
         await onUninstallPlugin!(pluginId);
         onPluginsChanged?.();
+        if (
+          pluginId === MOLSCRIBE_PLUGIN_ID &&
+          recognitionEngineStatus?.state === "installed" &&
+          onUninstallRecognitionEngine
+        ) {
+          setEngineRemovalOfferBytes(recognitionEngineStatus.installed?.diskBytes ?? 0);
+        }
       }
     );
+
+  const removeRecognitionEngineAfterUninstall = (): Promise<void> =>
+    run({ kind: "removeRecognitionEngine" }, async () => {
+      setEngineRemovalOfferBytes(undefined);
+      await onUninstallRecognitionEngine!();
+      setNoticeState({ text: "Recognition engine removed." });
+    });
 
   const checkForUpdates = (): Promise<void> =>
     run({ kind: "checkUpdates" }, async () => {
@@ -389,6 +407,39 @@ export function PluginManagerDialog({
           </div>
         ) : null}
 
+        {engineRemovalOfferBytes !== undefined ? (
+          <div
+            aria-labelledby={`${titleId}-engine-offer`}
+            className="plugin-manager-notice"
+            data-testid="recognition-engine-removal-offer"
+            role="group"
+          >
+            <p id={`${titleId}-engine-offer`}>
+              Also remove the recognition engine ({formatDiskBytes(engineRemovalOfferBytes)})?
+            </p>
+            <div className="plugin-manager-package-actions">
+              <button
+                className="plugin-manager-button"
+                data-action="confirm-remove-recognition-engine"
+                disabled={busy}
+                onClick={() => void removeRecognitionEngineAfterUninstall()}
+                type="button"
+              >
+                Remove
+              </button>
+              <button
+                className="plugin-manager-button"
+                data-action="keep-recognition-engine"
+                disabled={busy}
+                onClick={() => setEngineRemovalOfferBytes(undefined)}
+                type="button"
+              >
+                Keep
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <div className="plugin-manager-catalog">
           <ul className="plugin-manager-list" aria-label="Plugins">
             {catalog.map((descriptor) => {
@@ -417,7 +468,7 @@ export function PluginManagerDialog({
                       <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
                     ) : null}
                     {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
-                    {manifest.id === MOLSCRIBE_PLUGIN_ID ? (
+                    {installed && manifest.id === MOLSCRIBE_PLUGIN_ID ? (
                       <RecognitionEngineRow
                         status={recognitionEngineStatus}
                         onRefresh={onRefreshRecognitionEngineStatus}
@@ -860,6 +911,8 @@ function pluginManagerProgressMessage(
       return `Downloading and verifying ${operation.pluginName}…`;
     case "uninstallPlugin":
       return `Uninstalling ${operation.pluginName}…`;
+    case "removeRecognitionEngine":
+      return "Removing the recognition engine…";
     case "checkUpdates":
       return "Checking installed plugins for updates…";
     case "prepareUpdate":

@@ -2,8 +2,8 @@
 
 How ChemDraft hosts bundled plugins: the persistent host, the generic
 capability APIs, the declarative panel model, menu integration, the worker
-pattern, and the panel lifecycle. The NMR predictor is the first real consumer;
-`molscribe-ocsr` is the image-input scaffold. Everything here is domain-neutral — no
+pattern, and the panel lifecycle. The NMR predictor is the first real consumer; the
+MolScribe OCSR plugin (installed, not bundled) is the image-input consumer. Everything here is domain-neutral — no
 NMR (or any domain) concepts leak into `plugin-api` / `plugin-host`.
 
 ## Layers
@@ -110,11 +110,14 @@ A command may fail by throwing **or** by returning `{ ok: false, error }`. The
 desktop's dispatch surfaces both in the status bar, so a returned not-ok result is
 never silent.
 
-## Image-input scaffold
+## Image input
 
-`molscribe-ocsr` is registered as a bundled plugin to exercise the real path manifest → host → Analyze
-menu → provider registry → user-selected image → declarative report. No recognition engine is installed,
-so it reports that fact and never creates or proposes chemistry. Mock recognition stays test-only.
+No image-input plugin is bundled. MolScribe OCSR is an official plugin installed from its own
+repository (`jgassens/ChemDraft-MolScribe-Plugin`) through the host catalog; it reaches the host-managed
+engine through `recognition.recognizeStructure` (see `ocsr-engine.md`). Host tests drive the same path —
+manifest → host → Analyze menu → provider registry → user-selected image → recognition → proposal — with
+the test-only fixture in `apps/desktop/src/testSupport/recognitionFixturePlugin.ts`. Mock recognition
+stays test-only.
 
 ## Extension points
 
