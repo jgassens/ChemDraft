@@ -5,6 +5,7 @@ import { numericOption, parseOptions, stringOption } from "../args";
 import {
   renderDefaults,
   renderSmilesToAssets,
+  validateRasterWidth,
   type RenderBackground
 } from "../document";
 import {
@@ -107,9 +108,10 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     }
     background = requestedBackground;
   }
-  const width = stringOption(parsed, "--width") === undefined
+  const requestedWidth = stringOption(parsed, "--width");
+  const width = requestedWidth === undefined
     ? renderDefaults.width
-    : numericOption(stringOption(parsed, "--width"), "--width", false);
+    : rasterWidth(requestedWidth, "--width");
   const bondLength = stringOption(parsed, "--bond-length") === undefined
     ? renderDefaults.bondLength
     : numericOption(stringOption(parsed, "--bond-length"), "--bond-length", false);
@@ -155,6 +157,15 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     bondLength,
     padding
   };
+}
+
+function rasterWidth(value: string, flag: string): number {
+  const width = numericOption(value, flag);
+  try {
+    return validateRasterWidth(width, flag);
+  } catch (error) {
+    throw new CliUsageError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 async function readJobs(path: string): Promise<RenderJob[]> {

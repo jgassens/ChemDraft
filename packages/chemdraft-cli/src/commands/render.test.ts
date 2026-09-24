@@ -340,6 +340,16 @@ describe("headless ChemDraft rendering", () => {
     expect(stderr.join("\n")).toContain("Failed");
   });
 
+  it("rejects an out-of-range width before rendering and writes no JSON line", async () => {
+    const stdout: string[] = [];
+    const code = await runCli(
+      ["--smiles", "CCO", "--out", join(outputDirectory, "too-wide.svg"), "--width", "5000"],
+      { stdout: (line) => stdout.push(line), stderr: () => undefined }
+    );
+    expect(code).toBe(2);
+    expect(stdout).toEqual([]);
+  });
+
   it("writes both formats from a base path and honors --width", async () => {
     const base = join(outputDirectory, "aspirin-both");
     const stdout: string[] = [];

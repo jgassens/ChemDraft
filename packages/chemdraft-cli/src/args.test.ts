@@ -38,4 +38,12 @@ describe("parseOptions", () => {
     expect(() => numericOption("NaN", "--width")).toThrow("finite number");
     expect(() => integerOption("1.5", "--columns")).toThrow("positive integer");
   });
+
+  it("accepts only unsigned decimal numeric option syntax", () => {
+    expect(numericOption("12", "--width")).toBe(12);
+    expect(numericOption("0.5", "--width")).toBe(0.5);
+    for (const value of ["", "0x10", " 12 ", "1e3", "-1"]) {
+      expect(() => numericOption(value, "--width")).toThrow("finite number greater than zero");
+    }
+  });
 });

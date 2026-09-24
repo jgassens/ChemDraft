@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
@@ -12,6 +12,8 @@ import {
   runReactionCommand,
   type RenderedReactionScheme
 } from "./reaction";
+
+vi.setConfig({ testTimeout: 60_000 });
 
 let outputDirectory: string;
 
@@ -124,6 +126,81 @@ describe("chemdraft reaction", () => {
     const rendered = await renderReactionScheme("CC(=O)O.OCC>[O-]S(=O)(=O)O.Cl>CC(=O)OCC");
     expect(rendered.agentTexts.map((agent) => agent.text)).toEqual(["HSO4⁻", "HCl"]);
   }, 60_000);
+
+  it("writes inorganic salts cation-first while retaining conventional anion order", async () => {
+    const agents = [
+      "[Na+].[BH4-]",
+      "O=C([O-])[O-].[K+].[K+]",
+      "[Na+].[OH-]",
+      "[Na]O",
+      "[Na+].[C-]#N",
+      "[Li+].[AlH4-]",
+      "[Na+].O=C([O-])O",
+      "[K+].[O-][Mn](=O)(=O)=O",
+      "O=S(=O)([O-])[O-].[Na+].[Na+]",
+      "[NH4+].[Cl-]",
+      "CCN(CC)CC",
+      "Cl",
+      "OS(=O)(=O)O",
+      "O=S(=O)(O)[O-]",
+      "O=S(=O)([O-])[O-]",
+      "[Na+]"
+    ];
+    const rendered = await renderReactionScheme({
+      reactants: ["CCO"],
+      agents,
+      products: ["CC=O"]
+    });
+
+    expect(rendered.agentTexts.map((agent) => agent.text)).toEqual([
+      "NaBH4", "K2CO3", "NaOH", "NaOH", "NaCN", "LiAlH4", "NaHCO3", "KMnO4",
+      "Na2SO4", "NH4Cl", "C6H15N", "HCl", "H2SO4", "HSO4⁻", "SO4²⁻", "Na⁺"
+    ]);
+  });
+
+  it("places retrosynthesis targets left of the arrow and precursors right", async () => {
+    const rendered = await renderReactionScheme("CCO>>CC=O", { arrow: "retrosynthesis" });
+    const objects = rendered.document.pages[0]!.objects;
+    const arrow = objects.find((object) => object.type === "reaction-arrow");
+    const molecules = objects.filter((object) => object.type === "molecule");
+    const product = molecules.find((molecule) => molecule.bonds.some((bond) => bond.order === "double"));
+    const reactant = molecules.find((molecule) => molecule.bonds.every((bond) => bond.order !== "double"));
+    const minX = (molecule: NonNullable<typeof product>) => Math.min(...molecule.atoms.map((atom) => atom.x));
+
+    expect(arrow?.start.kind).toBe("point");
+    expect(arrow?.end.kind).toBe("point");
+    expect(product).toBeDefined();
+    expect(reactant).toBeDefined();
+    expect(minX(product!)).toBeLessThan(arrow!.start.point!.x);
+    expect(minX(reactant!)).toBeGreaterThan(arrow!.end.point!.x);
+  });
+
+  it("fails invalid and radical agents by naming the agent SMILES", async () => {
+    for (const agent of ["not-a-smiles", "[CH3]"]) {
+      const stdout: string[] = [];
+      const code = await runReactionCommand(
+        ["--reactant", "CCO", "--agent", agent, "--product", "CC=O", "--out", join(outputDirectory, `${agent === "[CH3]" ? "radical" : "bad"}-agent.svg`)],
+        { stdout: (line) => stdout.push(line), stderr: () => undefined }
+      );
+      expect(code).toBe(1);
+      expect(stdout).toHaveLength(1);
+      expect(JSON.parse(stdout[0]!).error).toContain(agent);
+    }
+  });
+
+  it("rejects out-of-range reaction widths before rendering batch jobs", async () => {
+    const jobsPath = join(outputDirectory, "too-wide-reaction.json");
+    await writeFile(jobsPath, JSON.stringify([
+      { name: "too-wide", rxn: "CCO>>CC=O", width: 5000 }
+    ]));
+    const stdout: string[] = [];
+    const code = await runReactionCommand(
+      ["--batch", jobsPath, "--out-dir", join(outputDirectory, "too-wide-reactions")],
+      { stdout: (line) => stdout.push(line), stderr: () => undefined }
+    );
+    expect(code).toBe(2);
+    expect(stdout).toEqual([]);
+  });
 
   it("keeps a charged product's complete label boxes inside the reaction viewBox", async () => {
     const rendered = await renderReactionScheme("CCO>>[NH3+]CCCCCCCCC[NH3+]");

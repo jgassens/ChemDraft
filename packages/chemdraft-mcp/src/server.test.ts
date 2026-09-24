@@ -1,4 +1,13 @@
-import { access, mkdir, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -292,6 +301,70 @@ describe("ChemDraft MCP server", () => {
     now += 60_001;
     await client.callTool({ name: "check_stereo", arguments: { smiles: "CCO" } });
     await expect(access(newlyOldCall)).rejects.toThrow();
+  }, 60_000);
+
+  it("keeps tool calls successful when cleanup entries disappear", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "chemdraft-mcp-cleanup-race-test-"));
+    temporaryDirectories.push(sandbox);
+    const parent = join(sandbox, "chemdraft-mcp");
+    const readdirRaceRoot = join(parent, "server-readdir-race");
+    const statRaceRoot = join(parent, "server-stat-race");
+    await mkdir(readdirRaceRoot, { recursive: true });
+    await mkdir(join(statRaceRoot, "call-stat-race"), { recursive: true });
+    const missing = Object.assign(new Error("injected cleanup race"), { code: "ENOENT" });
+    const injectedReaddir = (async (path, options) => {
+      if (path === readdirRaceRoot) throw missing;
+      return readdir(path, options as never);
+    }) as typeof readdir;
+    const injectedStat = (async (path, options) => {
+      if (path === join(statRaceRoot, "call-stat-race")) throw missing;
+      return stat(path, options);
+    }) as typeof stat;
+    const stereo: CliCommand = async (_argv, io) => {
+      io.stdout(JSON.stringify({ ok: true, smiles: "CCO" }));
+      return 0;
+    };
+    const client = await connect({
+      readdir: injectedReaddir,
+      stat: injectedStat,
+      tempDirectory: () => sandbox,
+      commands: { stereo }
+    });
+
+    const result = await client.callTool({ name: "check_stereo", arguments: { smiles: "CCO" } });
+
+    expect(result.isError).not.toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({ ok: true, smiles: "CCO" });
+  }, 60_000);
+
+  it("removes old empty server roots but never its own root", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "chemdraft-mcp-empty-root-test-"));
+    temporaryDirectories.push(sandbox);
+    const parent = join(sandbox, "chemdraft-mcp");
+    const oldEmptyRoot = join(parent, "server-old-empty");
+    const currentRoot = join(parent, "server-current");
+    await mkdir(oldEmptyRoot, { recursive: true });
+    await mkdir(currentRoot, { recursive: true });
+    const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(oldEmptyRoot, oldTime, oldTime);
+    await utimes(currentRoot, oldTime, oldTime);
+    const injectedMkdtemp = (async (prefix: string) =>
+      prefix.endsWith("server-") ? currentRoot : mkdtemp(prefix)) as typeof mkdtemp;
+    const stereo: CliCommand = async (_argv, io) => {
+      io.stdout(JSON.stringify({ ok: true, smiles: "CCO" }));
+      return 0;
+    };
+    const client = await connect({
+      mkdtemp: injectedMkdtemp,
+      tempDirectory: () => sandbox,
+      commands: { stereo }
+    });
+
+    const result = await client.callTool({ name: "check_stereo", arguments: { smiles: "CCO" } });
+
+    expect(result.isError).not.toBe(true);
+    await expect(access(oldEmptyRoot)).rejects.toThrow();
+    await expect(access(currentRoot)).resolves.toBeUndefined();
   }, 60_000);
 
   it("returns rendered SVG markup inline along with its output path", async () => {

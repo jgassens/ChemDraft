@@ -18,6 +18,7 @@ import {
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
 import {
+  ensureRdkit,
   generateSmiles2DMolfile,
   RdkitNotConfiguredError
 } from "@chemdraft/rdkit-adapter";
@@ -81,8 +82,8 @@ interface Bounds {
 
 const DEFAULT_WIDTH = 600;
 const DEFAULT_PADDING = 24;
-const MIN_RASTER_WIDTH = 16;
-const MAX_RASTER_WIDTH = 4000;
+export const MIN_RASTER_WIDTH = 16;
+export const MAX_RASTER_WIDTH = 4000;
 const MAX_SMILES_LENGTH = 5000;
 const MAX_HEAVY_ATOMS = 500;
 const HIT_TARGET_CLASSES = new Set([
@@ -97,6 +98,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A caller-controlled input exceeded a documented work or output limit. */
+export class InputLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InputLimitError";
+  }
+}
+
 export function isRdkitNotConfiguredError(error: unknown): boolean {
   return error instanceof RdkitNotConfiguredError ||
     (error instanceof Error && error.name === "RdkitNotConfiguredError");
@@ -104,7 +113,7 @@ export function isRdkitNotConfiguredError(error: unknown): boolean {
 
 function normalizedSmilesInput(smiles: string): string {
   if (smiles.length > MAX_SMILES_LENGTH) {
-    throw new Error(
+    throw new InputLimitError(
       `Unable to render SMILES: input exceeds the ${MAX_SMILES_LENGTH}-character limit.`
     );
   }
@@ -118,9 +127,52 @@ function normalizedSmilesInput(smiles: string): string {
 function rejectOversizedDepiction(depiction: PastedStructureDepiction): void {
   const heavyAtoms = depiction.atoms.filter((atom) => atom.element !== "H").length;
   if (heavyAtoms > MAX_HEAVY_ATOMS) {
-    throw new Error(
+    throw new InputLimitError(
       `Unable to render SMILES: structure has ${heavyAtoms} heavy atoms; the limit is ${MAX_HEAVY_ATOMS}.`
     );
+  }
+}
+
+interface RdkitCountMolecule {
+  delete(): void;
+  get_json?: () => string;
+  get_num_atoms?: () => number;
+}
+
+interface RdkitCountJson {
+  defaults?: { atom?: { z?: number } };
+  molecules?: Array<{ atoms?: Array<{ z?: number }> }>;
+}
+
+/** Refuse oversized structures after a graph parse but before either engine performs 2D layout. */
+async function rejectOversizedSmiles(smiles: string): Promise<void> {
+  installNodeEngines();
+  const rdkit = await ensureRdkit();
+  const molecule = rdkit.get_mol(smiles) as (RdkitCountMolecule & object) | null;
+  // Preserve the existing OCL fallback for inputs RDKit cannot parse. A successful RDKit parse is
+  // the common path and gives us a cheap, layout-free count from the engine's own atom graph.
+  if (!molecule) return;
+
+  try {
+    let heavyAtoms: number | undefined;
+    if (molecule.get_json) {
+      const parsed = JSON.parse(molecule.get_json()) as RdkitCountJson;
+      const defaultAtomicNumber = parsed.defaults?.atom?.z ?? 6;
+      const atoms = parsed.molecules?.[0]?.atoms;
+      if (atoms) {
+        heavyAtoms = atoms.filter((atom) => (atom.z ?? defaultAtomicNumber) !== 1).length;
+      }
+    } else if (molecule.get_num_atoms) {
+      // Older MinimalLib builds expose only this count. Its default SMILES parse removes hydrogens.
+      heavyAtoms = molecule.get_num_atoms();
+    }
+    if (heavyAtoms !== undefined && heavyAtoms > MAX_HEAVY_ATOMS) {
+      throw new InputLimitError(
+        `Unable to render SMILES: structure has ${heavyAtoms} heavy atoms; the limit is ${MAX_HEAVY_ATOMS}.`
+      );
+    }
+  } finally {
+    molecule.delete();
   }
 }
 
@@ -350,6 +402,12 @@ function stereoCenterCounts(
  */
 export async function depictSmiles(smiles: string): Promise<SmilesDepictionResult> {
   const normalizedSmiles = normalizedSmilesInput(smiles);
+  try {
+    await rejectOversizedSmiles(normalizedSmiles);
+  } catch (error) {
+    if (error instanceof InputLimitError || isRdkitNotConfiguredError(error)) throw error;
+    // Preserve the normal depiction path: it reports the RDKit failure and may still use OCL.
+  }
   const ocl = await import("@chemdraft/ocl-adapter");
   let rdkitFailure: unknown;
 
@@ -374,13 +432,12 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
       warnings: []
     };
   } catch (error) {
-    if (error instanceof UnsupportedMolfileLabelError) throw error;
+    if (error instanceof UnsupportedMolfileLabelError || error instanceof InputLimitError) throw error;
     // A missing platform loader is an application configuration error, not a chemistry failure.
     // Falling back here would make a broken CLI report a successful OCL render.
     if (isRdkitNotConfiguredError(error)) {
       throw error;
     }
-    if (error instanceof Error && /(?:character|heavy atom) limit/.test(error.message)) throw error;
     rdkitFailure = error;
   }
 
@@ -428,7 +485,9 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
       ]
     };
   } catch (oclError) {
-    if (oclError instanceof UnsupportedMolfileLabelError) throw oclError;
+    if (oclError instanceof UnsupportedMolfileLabelError || oclError instanceof InputLimitError) {
+      throw oclError;
+    }
     throw new Error(
       `Unable to render SMILES "${normalizedSmiles}": RDKit: ${errorMessage(rdkitFailure)}; OpenChemLib: ${errorMessage(oclError)}`
     );
@@ -447,6 +506,17 @@ export function finiteNonNegative(value: number, label: string): number {
     throw new Error(`${label} must be a finite, non-negative number.`);
   }
   return value;
+}
+
+/** Validate a requested raster width and return the finite value unchanged. */
+export function validateRasterWidth(width: number, flag: string): number {
+  const rasterWidth = finitePositive(width, flag);
+  if (rasterWidth < MIN_RASTER_WIDTH || rasterWidth > MAX_RASTER_WIDTH) {
+    throw new Error(
+      `${flag} must be between ${MIN_RASTER_WIDTH} and ${MAX_RASTER_WIDTH} pixels; received ${rasterWidth}.`
+    );
+  }
+  return rasterWidth;
 }
 
 function moleculeFromDocument(document: ChemDraftDocument): MoleculeObject {
@@ -616,12 +686,7 @@ export function cropDocumentSvgToContent(
 
 /** Rasterize an SVG to a PNG whose output width is measured in pixels. */
 export function svgToPng(svg: string, width: number): Uint8Array {
-  const pngWidth = finitePositive(width, "PNG width");
-  if (pngWidth < MIN_RASTER_WIDTH || pngWidth > MAX_RASTER_WIDTH) {
-    throw new Error(
-      `PNG width must be between ${MIN_RASTER_WIDTH} and ${MAX_RASTER_WIDTH} pixels; received ${pngWidth}.`
-    );
-  }
+  const pngWidth = validateRasterWidth(width, "PNG width");
   return new Resvg(svg, {
     fitTo: { mode: "width", value: Math.round(pngWidth) }
   }).render().asPng();

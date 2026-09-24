@@ -8,7 +8,8 @@ import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
-import { runExportCommand as runCli } from "./export";
+import { buildSmilesDocument } from "../document";
+import { exportPerJobFormat, runExportCommand as runCli } from "./export";
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -44,6 +45,7 @@ function jsonLines(io: CollectedIo): unknown[] {
 }
 
 const ETHANOL = "CCO";
+const L_ALANINE = "C[C@H](N)C(=O)O";
 const D_ALANINE = "C[C@@H](N)C(=O)O";
 const BAD_SMILES = "not-a-smiles(((";
 const UNSPECIFIED_ALKENE = "CC=CC";
@@ -74,6 +76,31 @@ describe("chemdraft export", () => {
       expect.objectContaining({ ok: true, out, format: "cdxml", smiles: ETHANOL })
     ]);
   });
+
+  it.each([
+    ["L-alanine", L_ALANINE],
+    ["the reviewer Pt complex", DATIVE_PT_COMPLEX]
+  ])("identity-checks the written CDXML round trip for %s", async (name, smiles) => {
+    const out = join(outputDirectory, `${name.replaceAll(" ", "-")}.cdxml`);
+    const io = collectIo();
+    expect(await runCli(["--smiles", smiles, "--out", out], io)).toBe(0);
+
+    const opened = openChemDraftPayload(await readFile(out, "utf8"));
+    expect(opened.document).toBeDefined();
+    expect(jsonLines(io)[0]).toMatchObject({ ok: true, smiles, format: "cdxml" });
+  }, 60_000);
+
+  it.each(["cdxml", "pdf"] as const)(
+    "fails closed for an RDKit-unverified %s build",
+    async (format) => {
+      const built = await buildSmilesDocument(ETHANOL, { name: `unverified-${format}` });
+      const unverified = { ...built, identityVerifiedByRdkit: false };
+      await expect(exportPerJobFormat(format, unverified)).rejects.toThrow(
+        "RDKit could not canonicalize the input, so chemical identity cannot be verified"
+      );
+    },
+    60_000
+  );
 
   it("exports a PDF starting with the %PDF signature", async () => {
     const out = join(outputDirectory, "ethanol.pdf");

@@ -1,8 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import { JSDOM } from "jsdom";
-
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import {
+  moleculeToMolfileV2000,
+  moleculeToMolfileV3000,
+  type MoleculeObject
+} from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
@@ -155,6 +159,7 @@ function jobErrorMessage(error: unknown, job: ExportJob): string {
 let pdfDomQueue: Promise<void> = Promise.resolve();
 
 async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
+  const { JSDOM } = await import("jsdom");
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
   const writableGlobal = globalThis as typeof globalThis & Record<string, unknown>;
   const globalKeys = [
@@ -243,27 +248,46 @@ function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument): string {
   return built.sourceCanonicalSmiles;
 }
 
-async function exportPerJobFormat(
+async function assertCdxmlRoundTripIdentity(
+  contents: string,
+  built: BuiltSmilesDocument,
+  sourceCanonicalSmiles: string
+): Promise<void> {
+  const opened = openChemDraftPayload(contents);
+  const molecules = opened.document?.pages.flatMap((page) =>
+    page.objects.filter((object): object is MoleculeObject => object.type === "molecule")
+  ) ?? [];
+  if (molecules.length !== 1) {
+    throw new Error(
+      `Unable to verify CDXML identity: reopening the written file produced ${molecules.length} molecule objects.`
+    );
+  }
+  const molecule = molecules[0]!;
+  const molfile = built.dativeBonds > 0
+    ? moleculeToMolfileV3000(molecule, { fromDocFrame: true })
+    : moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+  await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+}
+
+export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
   built: BuiltSmilesDocument
 ): Promise<PerJobExportResult> {
+  const sourceCanonicalSmiles = verifiedSourceCanonicalSmiles(built);
   if (format === "cdxml") {
     const result = exportDocumentToCdxml(built.document);
+    await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
     return { contents: result.contents, warnings: result.warnings.map((warning) => warning.message) };
   }
   if (format === "pdf") {
-    // Loaded lazily: packages/export-engine/src/pdf.ts statically imports svg2pdf.js's UMD
-    // bundle, which Node's native ESM loader cannot resolve to a named export outside a
-    // bundler/vitest transform. Deferring the import keeps every other format working under
-    // plain `tsx`/`node` and turns a PDF request into a normal per-job failure instead of a
-    // process crash.
+    // Keep the jsPDF/svg2pdf implementation and its Node JSDOM shim out of non-PDF exports.
     const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
     const result = await withPdfDom((domParser) =>
       exportDocumentToPdf(built.document, { domParser, pageIndex: 0 })
     );
     return { contents: result.bytes, warnings: result.warnings.map((warning) => warning.message) };
   }
-  await assertCanonicalIdentity(verifiedSourceCanonicalSmiles(built), built.identityMolfile);
+  await assertCanonicalIdentity(sourceCanonicalSmiles, built.identityMolfile);
   return { contents: built.identityMolfile, warnings: [] };
 }
 

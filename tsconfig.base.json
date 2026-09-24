@@ -31,6 +31,7 @@
       "@chemdraft/rdkit-adapter/constants": ["packages/rdkit-adapter/src/constants.ts"],
       "@chemdraft/rdkit-adapter/testing": ["packages/rdkit-adapter/src/testing.ts"],
       "@chemdraft/isospec-adapter": ["packages/isospec-adapter/src/index.ts"],
+      "@chemdraft/isospec-adapter/node": ["packages/isospec-adapter/src/node.ts"],
       "@chemdraft/isospec-adapter/testing": ["packages/isospec-adapter/src/testing.ts"],
       "@chemdraft/cdx-compat": ["packages/cdx-compat/src/index.ts"],
       "@chemdraft/clipboard-adapter": ["packages/clipboard-adapter/src/index.ts"],

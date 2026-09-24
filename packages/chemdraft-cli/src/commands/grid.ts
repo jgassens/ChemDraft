@@ -1,22 +1,23 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, extname } from "node:path";
 
-import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 
 import {
   insertNativeTextObject,
-  insertSmilesMolecule,
   nativeTextObjectSizeForText
 } from "../../../../apps/desktop/src/documentWorkflow";
 import { integerOption, numericOption, parseOptions, stringOption } from "../args";
 import {
+  buildSmilesDocument,
   cropDocumentSvgToContent,
-  depictSmiles,
+  documentVisualBounds,
   renderDefaults,
   svgToPng,
-  type RenderBackground,
-  type SmilesDepictionResult
+  validateRasterWidth,
+  type BuiltSmilesDocument,
+  type RenderBackground
 } from "../document";
 import { installNodeEngines } from "../engine";
 import {
@@ -56,7 +57,8 @@ interface ParsedArguments extends RenderGridOptions {
 }
 
 interface MeasuredEntry extends GridJob {
-  depiction: SmilesDepictionResult;
+  built: BuiltSmilesDocument;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
   width: number;
   height: number;
   label: string | null;
@@ -120,6 +122,16 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     );
   }
 
+  const requestedWidth = stringOption(parsed, "--width") === undefined
+    ? renderDefaults.width
+    : numericOption(stringOption(parsed, "--width"), "--width", false);
+  let width: number;
+  try {
+    width = validateRasterWidth(requestedWidth, "--width");
+  } catch (error) {
+    throw new CliUsageError(error instanceof Error ? error.message : String(error));
+  }
+
   return {
     jobsFile,
     out,
@@ -128,9 +140,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       ? undefined
       : integerOption(stringOption(parsed, "--columns"), "--columns"),
     labels: requestedLabels,
-    width: stringOption(parsed, "--width") === undefined
-      ? renderDefaults.width
-      : numericOption(stringOption(parsed, "--width"), "--width", false),
+    width,
     gutter: stringOption(parsed, "--gutter") === undefined
       ? 32
       : numericOption(stringOption(parsed, "--gutter"), "--gutter", true),
@@ -159,36 +169,51 @@ function letterLabel(index: number): string {
   return label;
 }
 
-function measureDepiction(entry: GridJob, depiction: SmilesDepictionResult): Pick<MeasuredEntry, "width" | "height"> {
-  let document = createEmptyDocument({ title: entry.name });
-  const page = document.pages[0];
-  if (!page) throw new Error("The grid document has no page.");
-  document = insertSmilesMolecule(
-    document,
-    { x: page.width / 2, y: page.height / 2 },
-    depiction.depiction,
-    entry.smiles.trim()
-  );
-  const molecule = document.pages[0]?.objects.find((object): object is MoleculeObject => object.type === "molecule");
-  if (!molecule) throw new Error(`Unable to measure SMILES "${entry.smiles}".`);
-  return { width: molecule.width, height: molecule.height };
-}
-
 async function prepareEntries(jobs: readonly GridJob[], labels: GridLabels, io: CliIo): Promise<MeasuredEntry[]> {
   installNodeEngines();
   const entries: MeasuredEntry[] = [];
   for (let index = 0; index < jobs.length; index += 1) {
     const job = jobs[index]!;
     writeProgress(io, `Preparing ${job.name}…`);
-    const depiction = await depictSmiles(job.smiles.trim());
+    const built = await buildSmilesDocument(job.smiles.trim(), {
+      name: job.name,
+      bondLength: renderDefaults.bondLength
+    });
+    const bounds = documentVisualBounds(built.document);
     entries.push({
       ...job,
-      depiction,
-      ...measureDepiction(job, depiction),
+      built,
+      bounds,
+      width: bounds.maxX - bounds.minX,
+      height: bounds.maxY - bounds.minY,
       label: labels === "none" ? null : labels === "letters" ? letterLabel(index) : job.name
     });
   }
   return entries;
+}
+
+function translateMolecule(
+  molecule: MoleculeObject,
+  id: string,
+  dx: number,
+  dy: number
+): MoleculeObject {
+  return {
+    ...molecule,
+    id,
+    x: molecule.x + dx,
+    y: molecule.y + dy,
+    atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+  };
+}
+
+function appendMolecule(document: ChemDraftDocument, molecule: MoleculeObject): ChemDraftDocument {
+  return {
+    ...document,
+    pages: document.pages.map((page, index) => index === 0
+      ? { ...page, objects: [...page.objects, molecule] }
+      : page)
+  };
 }
 
 function automaticColumns(entries: readonly MeasuredEntry[], gutter: number): number {
@@ -232,12 +257,14 @@ export async function renderGrid(
     const row = Math.floor(index / columns);
     const cellX = margin + column * cellWidth;
     const cellY = margin + row * cellHeight;
-    document = insertSmilesMolecule(
-      document,
-      { x: cellX + cellWidth / 2, y: cellY + moleculeHeight / 2 },
-      entry.depiction.depiction,
-      entry.smiles.trim()
-    );
+    const visualX = cellX + (cellWidth - entry.width) / 2;
+    const visualY = cellY + (moleculeHeight - entry.height) / 2;
+    document = appendMolecule(document, translateMolecule(
+      entry.built.molecule,
+      `mol_grid_${String(index + 1).padStart(3, "0")}`,
+      visualX - entry.bounds.minX,
+      visualY - entry.bounds.minY
+    ));
     if (entry.label !== null) {
       const size = nativeTextObjectSizeForText(entry.label);
       const x = cellX + (cellWidth - size.width) / 2;
@@ -264,7 +291,7 @@ export async function renderGrid(
     columns,
     rows,
     cells,
-    warnings: [...entries.flatMap((entry) => entry.depiction.warnings), ...exported.warnings.map((warning) => warning.message)]
+    warnings: [...entries.flatMap((entry) => entry.built.warnings), ...exported.warnings.map((warning) => warning.message)]
   };
 }
 

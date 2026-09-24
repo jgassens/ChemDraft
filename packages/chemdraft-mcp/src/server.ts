@@ -67,6 +67,7 @@ interface ServerRuntime {
     commands: ChemDraftMcpCommands;
   };
   temporaryDirectory?: Promise<string>;
+  currentServerRoot?: string;
   lastCleanupAt?: number;
 }
 
@@ -132,21 +133,44 @@ async function cleanupExpiredCallDirectories(runtime: ServerRuntime, parent: str
     now - runtime.lastCleanupAt < CLEANUP_INTERVAL_MS
   ) return;
 
-  const serverEntries = await runtime.dependencies.readdir(parent, { withFileTypes: true });
-  await Promise.all(serverEntries.map(async (serverEntry) => {
-    if (!serverEntry.isDirectory() || !serverEntry.name.startsWith("server-")) return;
-    const serverRoot = join(parent, serverEntry.name);
-    const callEntries = await runtime.dependencies.readdir(serverRoot, { withFileTypes: true });
-    await Promise.all(callEntries.map(async (callEntry) => {
-      if (!callEntry.isDirectory() || !callEntry.name.startsWith("call-")) return;
-      const path = join(serverRoot, callEntry.name);
-      const metadata = await runtime.dependencies.stat(path);
-      if (now - metadata.mtimeMs > CALL_RETENTION_MS) {
-        await runtime.dependencies.rm(path, { recursive: true, force: true });
+  runtime.lastCleanupAt = now;
+  try {
+    const serverEntries = await runtime.dependencies.readdir(parent, { withFileTypes: true });
+    await Promise.all(serverEntries.map(async (serverEntry) => {
+      if (!serverEntry.isDirectory() || !serverEntry.name.startsWith("server-")) return;
+      const serverRoot = join(parent, serverEntry.name);
+      try {
+        const callEntries = await runtime.dependencies.readdir(serverRoot, { withFileTypes: true });
+        await Promise.all(callEntries.map(async (callEntry) => {
+          if (!callEntry.isDirectory() || !callEntry.name.startsWith("call-")) return;
+          const path = join(serverRoot, callEntry.name);
+          try {
+            const metadata = await runtime.dependencies.stat(path);
+            if (now - metadata.mtimeMs > CALL_RETENTION_MS) {
+              await runtime.dependencies.rm(path, { recursive: true, force: true });
+            }
+          } catch {
+            // Another server may remove an entry between readdir, stat, and rm.
+          }
+        }));
+
+        if (callEntries.length === 0 && serverRoot !== runtime.currentServerRoot) {
+          try {
+            const metadata = await runtime.dependencies.stat(serverRoot);
+            if (now - metadata.mtimeMs > CALL_RETENTION_MS) {
+              await runtime.dependencies.rm(serverRoot, { recursive: true, force: true });
+            }
+          } catch {
+            // Empty server roots are also shared with concurrently running processes.
+          }
+        }
+      } catch {
+        // The server directory may disappear after the parent readdir.
       }
     }));
-  }));
-  runtime.lastCleanupAt = now;
+  } catch {
+    // Cleanup is maintenance only; a missing or unreadable shared parent must not fail a tool call.
+  }
 }
 
 async function defaultOutDir(runtime: ServerRuntime): Promise<string> {
@@ -154,13 +178,17 @@ async function defaultOutDir(runtime: ServerRuntime): Promise<string> {
     const creating = (async () => {
       const parent = join(runtime.dependencies.tempDirectory(), "chemdraft-mcp");
       await runtime.dependencies.mkdir(parent, { recursive: true });
-      await cleanupExpiredCallDirectories(runtime, parent);
       const root = await runtime.dependencies.mkdtemp(join(parent, "server-"));
+      runtime.currentServerRoot = root;
+      await cleanupExpiredCallDirectories(runtime, parent);
       return root;
     })();
     runtime.temporaryDirectory = creating;
     creating.catch(() => {
-      if (runtime.temporaryDirectory === creating) runtime.temporaryDirectory = undefined;
+      if (runtime.temporaryDirectory === creating) {
+        runtime.temporaryDirectory = undefined;
+        runtime.currentServerRoot = undefined;
+      }
     });
   }
   return runtime.temporaryDirectory;

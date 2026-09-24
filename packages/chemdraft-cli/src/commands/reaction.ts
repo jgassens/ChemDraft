@@ -18,6 +18,7 @@ import {
   documentVisualBounds,
   renderDefaults,
   svgToPng,
+  validateRasterWidth,
   type BuiltSmilesDocument,
   type RenderBackground
 } from "../document";
@@ -124,11 +125,13 @@ Usage:
 Reaction SMILES must contain exactly two \u003e separators. Each side is split on '.', so a
 '.'-joined salt is drawn as two species. Repeated --reactant/--agent/--product flags preserve each
 value as one molecule object, including any '.'-joined salt. Agents are validated and shown above
-the arrow as composition formulas (falling back to SMILES only when composition fails);
+the arrow as composition formulas; an agent whose composition cannot be computed fails the job.
 --conditions appends additional text there. Agent formulas carry their net ionic charge as a
 superscript (HSO4⁻, SO4²⁻, Na⁺, NH4⁺); hydroxide is written OH⁻. Carbon-free formulas use the
 conventional written order rather than strict Hill order (H2SO4, HCl, NH3); each agent's exact
 Hill formula is kept in the result's agentTexts[].hillFormula.
+With --arrow retrosynthesis, products (the target) are placed on the left and reactants (the
+precursors) on the right; the arrow therefore reads target ⇒ precursors.
 Species, plus signs, and the arrow use 24 px gutters.
 
 Batch input is a JSON array of named jobs containing either "rxn" or the arrays "reactants",
@@ -184,8 +187,14 @@ function reactionFormat(value: unknown, label = "--format"): ReactionOutputForma
 }
 
 function positiveWidth(value: unknown, label = "--width"): number {
-  if (typeof value === "number") return numericOption(String(value), label);
-  return numericOption(typeof value === "string" ? value : undefined, label);
+  const width = typeof value === "number"
+    ? numericOption(String(value), label)
+    : numericOption(typeof value === "string" ? value : undefined, label);
+  try {
+    return validateRasterWidth(width, label);
+  } catch (error) {
+    throw new CliUsageError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function outputFormat(path: string): ReactionOutputFormat {
@@ -442,6 +451,16 @@ const HYDROGEN_HALIDES = new Set(["F", "Cl", "Br", "I"]);
 // Pnictogen and tetrel hydrides are written element-first (NH3, NH4⁺, N2H4, PH3, SiH4), unlike
 // chalcogen hydrides (H2O, H2S), which Hill order already writes H-first.
 const ELEMENT_FIRST_HYDRIDES = new Set(["N", "P", "As", "Sb", "Si", "Ge"]);
+const METAL_ORDER = [
+  "Li", "Na", "K", "Rb", "Cs", "Fr",
+  "Be", "Mg", "Ca", "Sr", "Ba", "Ra",
+  "Al",
+  "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+  "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+  "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+  "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn"
+] as const;
+const METAL_ORDER_INDEX = new Map<string, number>(METAL_ORDER.map((symbol, index) => [symbol, index]));
 
 type CompositionResult = Extract<
   Awaited<ReturnType<typeof analyzeStructureDetailed>>["run"]["results"][number],
@@ -452,6 +471,13 @@ type CompositionResult = Extract<
 function reactionFormulaBody(result: CompositionResult, formula: string, charge: number): string {
   if (result.elements.some((entry) => entry.isotope !== undefined)) return formula;
   const counts = new Map(result.elements.map((entry) => [entry.symbol, entry.count]));
+  const metalSymbols = [...counts.keys()].filter((symbol) => METAL_ORDER_INDEX.has(symbol));
+  const hasMetal = metalSymbols.length > 0;
+  const isInorganic = !counts.has("C") || hasMetal;
+  const isSalt = result.components.length > 1;
+  if (isInorganic && (isSalt || hasMetal)) {
+    return metalFirstInorganicFormula(counts, metalSymbols);
+  }
   if (counts.has("C")) return formula;
   const hydrogens = counts.get("H");
   const oxygens = counts.get("O");
@@ -483,6 +509,56 @@ function reactionFormulaBody(result: CompositionResult, formula: string, charge:
   return formula;
 }
 
+/** Conventional formula order for salts and metal-containing inorganic agents. */
+function metalFirstInorganicFormula(
+  counts: ReadonlyMap<string, number>,
+  metalSymbols: readonly string[]
+): string {
+  const metals = [...metalSymbols]
+    .sort((left, right) => METAL_ORDER_INDEX.get(left)! - METAL_ORDER_INDEX.get(right)!)
+    .map((symbol) => formulaCount(symbol, counts.get(symbol)!));
+  const remaining = [...counts.entries()].filter(([symbol]) => !METAL_ORDER_INDEX.has(symbol));
+  const hydrogens = counts.get("H");
+  const oxygens = counts.get("O");
+  const halides = remaining
+    .filter(([symbol]) => HYDROGEN_HALIDES.has(symbol))
+    .sort(([left], [right]) => left.localeCompare(right));
+  const central = remaining
+    .filter(([symbol]) => symbol !== "H" && symbol !== "O" && !HYDROGEN_HALIDES.has(symbol))
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  // OH is the established written form for hydroxide and metal hydroxides.
+  if (oxygens === 1 && hydrogens === 1 && central.length === 0 && halides.length === 0) {
+    return [...metals, "OH"].join("");
+  }
+  // Oxyanions put an acidic hydrogen first, then their central atom(s), then oxygen: HCO3,
+  // SO4, MnO4. Halides are counterions and therefore remain last.
+  if (oxygens !== undefined) {
+    return [
+      ...metals,
+      hydrogens === undefined ? "" : formulaCount("H", hydrogens),
+      ...central.map(([symbol, amount]) => formulaCount(symbol, amount)),
+      formulaCount("O", oxygens),
+      ...halides.map(([symbol, amount]) => formulaCount(symbol, amount))
+    ].join("");
+  }
+  // Ammonium and the other element-first hydrides are conventionally NH4 / NH3, not H4N.
+  if (central.length === 1 && hydrogens !== undefined && ELEMENT_FIRST_HYDRIDES.has(central[0]![0])) {
+    return [
+      ...metals,
+      formulaCount(central[0]![0], central[0]![1]),
+      formulaCount("H", hydrogens),
+      ...halides.map(([symbol, amount]) => formulaCount(symbol, amount))
+    ].join("");
+  }
+  return [
+    ...metals,
+    ...central.map(([symbol, amount]) => formulaCount(symbol, amount)),
+    hydrogens === undefined ? "" : formulaCount("H", hydrogens),
+    ...halides.map(([symbol, amount]) => formulaCount(symbol, amount))
+  ].join("");
+}
+
 /**
  * Display text for an agent. Display-only: the exact Hill formula is kept in the JSON record as
  * hillFormula. A charged species always carries its net charge — dropping it would turn hydroxide
@@ -494,10 +570,7 @@ function reactionFormula(result: CompositionResult): string | undefined {
   return `${reactionFormulaBody(result, result.formula, charge)}${chargeSuperscript(charge)}`;
 }
 
-async function agentText(smiles: string, index: number): Promise<{
-  agent: ReactionAgentText;
-  warning?: string;
-}> {
+async function agentText(smiles: string, index: number): Promise<ReactionAgentText> {
   try {
     const detailed = await analyzeStructureDetailed({
       format: "smiles",
@@ -511,37 +584,31 @@ async function agentText(smiles: string, index: number): Promise<{
       result.interpretationId === "source" &&
       result.kind === "composition"
     );
-    if (composition?.kind === "composition") {
-      const text = reactionFormula(composition);
-      if (text) {
-        return {
-          agent: {
-            smiles,
-            text,
-            source: "formula",
-            ...(composition.formula ? { hillFormula: composition.formula } : {})
-          }
-        };
-      }
-      const reason = composition.applicability.reasons[0] ?? composition.warnings[0]?.message;
-      return {
-        agent: { smiles, text: smiles, source: "smiles" },
-        warning: `Could not compute an agent formula for "${smiles}"; shown as SMILES${reason ? `: ${reason}` : "."}`
-      };
+    if (composition?.kind !== "composition") {
+      throw new Error("RDKit composition did not return a source result.");
     }
-  } catch (error) {
+    if (composition.radicalElectronCount > 0 || composition.hasExplicitIsotopes) {
+      throw new Error(`SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`);
+    }
+    const text = reactionFormula(composition);
+    if (!text) {
+      const reason = composition.applicability.reasons[0] ?? composition.warnings[0]?.message;
+      throw new Error(reason ?? "RDKit composition declined to provide a formula.");
+    }
     return {
-      agent: { smiles, text: smiles, source: "smiles" },
-      warning: `Could not compute an agent formula for "${smiles}"; shown as SMILES: ${error instanceof Error ? error.message : String(error)}`
+      smiles,
+      text,
+      source: "formula",
+      ...(composition.formula ? { hillFormula: composition.formula } : {})
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("SMILES contains a radical/isotope label")) throw error;
+    throw new Error(`Unable to validate reaction agent SMILES "${smiles}": ${message}`);
   }
-  return {
-    agent: { smiles, text: smiles, source: "smiles" },
-    warning: `Could not compute an agent formula for "${smiles}"; shown as SMILES.`
-  };
 }
 
-/** Build and crop one reaction scheme. Agents are depicted for validation, then shown as formulas. */
+/** Build and crop one reaction scheme. Agents use composition-only validation and formula labels. */
 export async function renderReactionScheme(
   input: string | ParsedReactionSmiles,
   options: {
@@ -567,10 +634,9 @@ export async function renderReactionScheme(
     return depicted;
   };
   const reactants = await depictAll(parsed.reactants);
-  const agents = await depictAll(parsed.agents);
   const products = await depictAll(parsed.products);
   const agentResults = await Promise.all(parsed.agents.map(agentText));
-  const agentTexts = agentResults.map((result) => result.agent);
+  const agentTexts = agentResults;
   const visible = [...reactants, ...products];
   const conditionText = [...agentTexts.map((agent) => agent.text), ...(options.conditions?.trim() ? [options.conditions.trim()] : [])]
     .join(", ");
@@ -624,12 +690,14 @@ export async function renderReactionScheme(
     });
   };
 
-  placeGroup(reactants);
+  const leftSide = arrow === "retrosynthesis" ? products : reactants;
+  const rightSide = arrow === "retrosynthesis" ? reactants : products;
+  placeGroup(leftSide);
   cursor += REACTION_GUTTER;
   const arrowStart = cursor;
   const arrowEnd = arrowStart + arrowLength;
   cursor = arrowEnd + REACTION_GUTTER;
-  placeGroup(products);
+  placeGroup(rightSide);
   const pageWidth = cursor + renderDefaults.padding;
 
   const empty = createEmptyDocument({ title: "Reaction scheme" });
@@ -692,10 +760,8 @@ export async function renderReactionScheme(
     agentTexts,
     warnings: [
       ...reactants,
-      ...agents,
       ...products
     ].flatMap((component) => component.warnings)
-      .concat(agentResults.flatMap((result) => result.warning ? [result.warning] : []))
       .concat(exported.warnings.map((warning) => warning.message))
   };
 }

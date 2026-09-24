@@ -17,14 +17,8 @@ export default defineConfig({
       "@chemdraft/chemistry-adapter": workspacePackage("./packages/chemistry-adapter/src/index.ts"),
       // Exact subpaths only. Do not add a bare rdkit-adapter alias: Vite prefix-matches aliases,
       // and a bare entry would corrupt the desktop's /adapter and /constants imports.
-      // Resolve these through the CLI consumer so their module identity matches the bare package
-      // under both a normal pnpm workspace and an isolated worktree with linked package installs.
-      "@chemdraft/rdkit-adapter/node": workspacePackage(
-        "./packages/chemdraft-cli/node_modules/@chemdraft/rdkit-adapter/src/node.ts"
-      ),
-      "@chemdraft/rdkit-adapter/identifiers": workspacePackage(
-        "./packages/chemdraft-cli/node_modules/@chemdraft/rdkit-adapter/src/identifiers.ts"
-      ),
+      "@chemdraft/rdkit-adapter/node": workspacePackage("./packages/rdkit-adapter/src/node.ts"),
+      "@chemdraft/rdkit-adapter/identifiers": workspacePackage("./packages/rdkit-adapter/src/identifiers.ts"),
       // Mapped explicitly like every sibling. These resolved through the pnpm symlink instead, which
       // works right up until it does not — and left the only two workspace entries in the repo whose
       // resolution took a different path from all the others.
@@ -33,6 +27,7 @@ export default defineConfig({
       // above `/testing` makes it win and rewrite `@chemdraft/isospec-adapter/testing` to
       // `…/src/index.ts/testing`, which resolves to nothing. Twenty-three suites went red on exactly
       // that before this comment existed.
+      "@chemdraft/isospec-adapter/node": workspacePackage("./packages/isospec-adapter/src/node.ts"),
       "@chemdraft/isospec-adapter/testing": workspacePackage("./packages/isospec-adapter/src/testing.ts"),
       "@chemdraft/isospec-adapter": workspacePackage("./packages/isospec-adapter/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("./packages/cdx-compat/src/index.ts"),

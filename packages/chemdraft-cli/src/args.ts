@@ -84,6 +84,15 @@ export function numericOption(
   allowZero = false
 ): number {
   if (value === undefined) throw new CliUsageError(`${flag} requires a value.`);
+  // `Number` accepts JavaScript syntax (hexadecimal, exponents, whitespace, and even an empty
+  // string). CLI numeric flags deliberately accept only ordinary unsigned decimal notation.
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value)) {
+    throw new CliUsageError(
+      allowZero
+        ? `${flag} must be a finite, non-negative number.`
+        : `${flag} must be a finite number greater than zero.`
+    );
+  }
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || (allowZero ? parsed < 0 : parsed <= 0)) {
     throw new CliUsageError(

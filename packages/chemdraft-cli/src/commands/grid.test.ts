@@ -2,12 +2,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import { renderGrid, runGridCommand } from "./grid";
+
+vi.setConfig({ testTimeout: 60_000 });
 
 let outputDirectory: string;
 
@@ -44,6 +46,63 @@ const fourStructures = [
 ] as const;
 
 describe("chemdraft grid", () => {
+  it("preserves safe-build E/Z warnings and dashed dative bonds", async () => {
+    const capture = memoryIo();
+    const rendered = await renderGrid([
+      { name: "unspecified-alkene", smiles: "CC=CC" },
+      { name: "platinum-complex", smiles: "N->[Pt+2](<-N)(Cl)Cl" }
+    ], {
+      columns: 2,
+      labels: "letters",
+      width: 600,
+      gutter: 32,
+      padding: 24,
+      background: "white"
+    }, capture.io);
+
+    expect(rendered.warnings).toContain(
+      "E/Z unspecified for 1 double bond(s); the 2D drawing necessarily shows one geometry"
+    );
+    expect(rendered.svg.match(/stroke-dasharray=/g)).toHaveLength(2);
+  });
+
+  it("keeps a charged outer atom label disjoint from its neighbouring letter label", async () => {
+    const capture = memoryIo();
+    const rendered = await renderGrid([
+      { name: "ammonium", smiles: "[NH4+]" },
+      { name: "chloride", smiles: "[Cl-]" }
+    ], {
+      columns: 2,
+      labels: "letters",
+      width: 600,
+      gutter: 0,
+      padding: 0,
+      background: "transparent"
+    }, capture.io);
+
+    const objects = rendered.document.pages[0]!.objects;
+    const firstMolecule = objects.find((object) => object.type === "molecule");
+    const firstLetter = objects.find((object) => object.type === "text" && object.text === "A");
+    expect(firstMolecule?.type).toBe("molecule");
+    expect(firstLetter?.type).toBe("text");
+    if (firstMolecule?.type !== "molecule" || firstLetter?.type !== "text") return;
+
+    for (const label of planMoleculeAtomLabels(firstMolecule)) {
+      const halo = label.backgroundVisible ? atomLabelHaloWidthPx(label.drawingStyle) / 2 : 0;
+      const atomBox = {
+        minX: label.anchor.x + label.layout.bounds.x - halo,
+        minY: label.anchor.y + label.layout.bounds.y - halo,
+        maxX: label.anchor.x + label.layout.bounds.x + label.layout.bounds.width + halo,
+        maxY: label.anchor.y + label.layout.bounds.y + label.layout.bounds.height + halo
+      };
+      const boxesOverlap = atomBox.minX < firstLetter.x + firstLetter.width &&
+        atomBox.maxX > firstLetter.x &&
+        atomBox.minY < firstLetter.y + firstLetter.height &&
+        atomBox.maxY > firstLetter.y;
+      expect(boxesOverlap, label.label).toBe(false);
+    }
+  });
+
   it("keeps charged atom-label boxes in every outer cell inside a zero-padding viewBox", async () => {
     const capture = memoryIo();
     const rendered = await renderGrid([
@@ -152,4 +211,18 @@ describe("chemdraft grid", () => {
     expect(result.smiles).toBe("not-smiles");
     expect(result.error).toContain('"not-smiles"');
   }, 60_000);
+
+  it("rejects an oversized --width as a usage error before reading or rendering jobs", async () => {
+    const capture = memoryIo();
+    const out = join(outputDirectory, "too-wide.png");
+    await expect(runGridCommand([
+      "--batch", join(outputDirectory, "does-not-exist.json"),
+      "--out", out,
+      "--width", "5000"
+    ], capture.io)).resolves.toBe(2);
+
+    expect(capture.stdout).toHaveLength(0);
+    expect(capture.stderr.join("\n")).toContain("--width must be between 16 and 4000 pixels");
+    expect(capture.stderr.join("\n")).not.toContain("Could not read batch file");
+  });
 });

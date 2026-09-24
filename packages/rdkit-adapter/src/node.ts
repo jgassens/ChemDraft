@@ -3,23 +3,18 @@ import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { installRealIsoSpecModuleLoader } from "@chemdraft/isospec-adapter/testing";
+import { installNodeIsoSpecModuleLoader } from "@chemdraft/isospec-adapter/node";
 
-import { setRdkitModuleLoader, type RdkitMinimalModule } from "./conformer";
+import {
+  setRdkitModuleLoader,
+  type RdkitMinimalModule,
+  type RdkitModuleLoader
+} from "./conformer";
 
-let installed = false;
+let realLoader: RdkitModuleLoader | undefined;
 
-/**
- * Install the vendored RDKit MinimalLib and IsoSpec WASM loaders for Node.js.
- *
- * The installation is process-wide and idempotent. Both engines remain lazy: this function reads
- * their bootstrap assets from disk, but the WASM modules are instantiated only when an adapter asks
- * its registered loader for an engine.
- */
-export function installNodeRdkitModuleLoader(): void {
-  if (installed) return;
-
-  installRealIsoSpecModuleLoader();
+function cachedRealLoader(): RdkitModuleLoader {
+  if (realLoader) return realLoader;
 
   const glueUrl = new URL("../vendor/RDKit_minimal.js", import.meta.url);
   const wasmUrl = new URL("../vendor/RDKit_minimal.wasm", import.meta.url);
@@ -33,9 +28,21 @@ export function installNodeRdkitModuleLoader(): void {
     wasmBinary: Uint8Array;
   }) => Promise<RdkitMinimalModule>;
 
-  setRdkitModuleLoader(() => factory({
+  realLoader = () => factory({
     locateFile: () => fileURLToPath(wasmUrl),
     wasmBinary
-  }));
-  installed = true;
+  });
+  return realLoader;
+}
+
+/**
+ * Install the vendored RDKit MinimalLib and IsoSpec WASM loaders for Node.js.
+ *
+ * The installation is process-wide and idempotent. Both engines remain lazy: this function reads
+ * their bootstrap assets from disk, but the WASM modules are instantiated only when an adapter asks
+ * its registered loader for an engine.
+ */
+export function installNodeRdkitModuleLoader(): void {
+  installNodeIsoSpecModuleLoader();
+  setRdkitModuleLoader(cachedRealLoader());
 }
