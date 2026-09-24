@@ -25,12 +25,33 @@ afterEach(() => {
   root = undefined;
 });
 
-function mount(request: OpenPluginImageRequest, onAcquire = vi.fn(), onCancel = vi.fn()) {
+function mount(
+  request: OpenPluginImageRequest,
+  callbacks: Partial<{
+    onAcquire: ReturnType<typeof vi.fn>;
+    onOpenPermissionSettings: ReturnType<typeof vi.fn>;
+    onPermissionFocus: ReturnType<typeof vi.fn>;
+    onRelaunch: ReturnType<typeof vi.fn>;
+    onCancel: ReturnType<typeof vi.fn>;
+  }> = {}
+) {
+  const onAcquire = callbacks.onAcquire ?? vi.fn();
+  const onOpenPermissionSettings = callbacks.onOpenPermissionSettings ?? vi.fn();
+  const onPermissionFocus = callbacks.onPermissionFocus ?? vi.fn();
+  const onRelaunch = callbacks.onRelaunch ?? vi.fn();
+  const onCancel = callbacks.onCancel ?? vi.fn();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root!.render(createElement(PluginImageRequestDialog, { request, onAcquire, onCancel })));
-  return { onAcquire, onCancel };
+  act(() => root!.render(createElement(PluginImageRequestDialog, {
+    request,
+    onAcquire,
+    onOpenPermissionSettings,
+    onPermissionFocus,
+    onRelaunch,
+    onCancel
+  })));
+  return { onAcquire, onOpenPermissionSettings, onPermissionFocus, onRelaunch, onCancel };
 }
 
 const baseRequest: OpenPluginImageRequest = {
@@ -72,21 +93,55 @@ describe("PluginImageRequestDialog", () => {
     expect(onCancel).toHaveBeenCalledWith(1);
   });
 
-  it("shows unavailable and actionable permission-denied messages", () => {
+  it("shows unavailable messages", () => {
     mount({ ...baseRequest, providers: [], unavailableReason: "Screen capture is unavailable." });
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("unavailable");
+  });
 
-    act(() => root!.render(createElement(PluginImageRequestDialog, {
-      request: {
-        ...baseRequest,
-        error:
-          "Screen capture permission is denied. Allow ChemDraft in System Settings → Privacy & Security → Screen Recording, then try again."
-      },
-      onAcquire: vi.fn(),
-      onCancel: vi.fn()
-    })));
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain("System Settings");
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Screen Recording");
+  it("shows actionable permission controls while keeping the file source available", () => {
+    const onOpenPermissionSettings = vi.fn();
+    const onRelaunch = vi.fn();
+    mount({
+      ...baseRequest,
+      permissionPanel: {
+        source: "screenRegion",
+        status: "denied",
+        message: "ChemDraft needs Screen Recording permission to capture part of the screen.",
+        openSettingsLabel: "Open Screen Recording Settings",
+        restartNote: "macOS applies the permission after ChemDraft restarts.",
+        showRelaunch: true
+      }
+    }, { onOpenPermissionSettings, onRelaunch });
+
+    const fileButton = document.querySelector<HTMLButtonElement>('[data-image-source="file"]')!;
+    expect(fileButton.disabled).toBe(false);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Screen Recording permission");
+    const settings = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Open Screen Recording Settings"
+    )!;
+    const relaunch = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Quit & Reopen ChemDraft"
+    )!;
+    act(() => settings.click());
+    act(() => relaunch.click());
+    expect(onOpenPermissionSettings).toHaveBeenCalledWith(1);
+    expect(onRelaunch).toHaveBeenCalledWith(1);
+  });
+
+  it("rechecks provider permission when the window regains focus", () => {
+    const onPermissionFocus = vi.fn();
+    mount({
+      ...baseRequest,
+      permissionPanel: {
+        source: "screenRegion",
+        status: "denied",
+        message: "Permission needed.",
+        openSettingsLabel: "Open Settings",
+        showRelaunch: true
+      }
+    }, { onPermissionFocus });
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(onPermissionFocus).toHaveBeenCalledWith(1);
   });
 });
 
@@ -154,6 +209,94 @@ describe("PluginImageRequestController", () => {
     await controller.acquire(controller.getOpenRequest()!.id, "screenRegion");
     expect(controller.getOpenRequest()?.error).toContain("Screen Recording");
     controller.cancel(controller.getOpenRequest()!.id);
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("requests not-determined permission before the first capture", async () => {
+    const requestPermission = vi.fn(async () => "granted" as const);
+    const acquire = vi.fn(async () => "cancelled" as const);
+    const provider: ImageSourceProvider = {
+      id: "screenRegion",
+      label: "Screen",
+      isAvailable: async () => true,
+      permission: {
+        status: async () => "notDetermined",
+        request: requestPermission,
+        openSettings: async () => undefined,
+        requiresRestartAfterGrant: true
+      },
+      acquire
+    };
+    const controller = new PluginImageRequestController(new ImageSourceRegistry([provider]));
+    const pending = controller.requestImage(
+      { id: "org.test.image", name: "Image" },
+      { title: "Image", sources: ["screenRegion"] },
+      new AbortController().signal
+    );
+    await vi.waitFor(() => expect(controller.getOpenRequest()).toBeDefined());
+    await controller.acquire(controller.getOpenRequest()!.id, "screenRegion");
+    expect(requestPermission).toHaveBeenCalledOnce();
+    expect(acquire).toHaveBeenCalledOnce();
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("drives denied settings, relaunch, and focus-regain state through the provider", async () => {
+    let status: "denied" | "granted" = "denied";
+    const openSettings = vi.fn(async () => undefined);
+    const relaunch = vi.fn(async () => undefined);
+    const file: ImageSourceProvider = {
+      id: "file",
+      label: "File",
+      isAvailable: async () => true,
+      acquire: async () => "cancelled"
+    };
+    const screen: ImageSourceProvider = {
+      id: "screenRegion",
+      label: "Screen",
+      isAvailable: async () => true,
+      permission: {
+        status: async () => status,
+        request: async () => status,
+        openSettings,
+        requiresRestartAfterGrant: true,
+        deniedMessage: "ChemDraft needs Screen Recording permission to capture part of the screen.",
+        grantedRestartMessage: "Permission granted; restart ChemDraft.",
+        openSettingsLabel: "Open Screen Recording Settings",
+        restartNote: "macOS applies the permission after ChemDraft restarts."
+      },
+      acquire: async () => "cancelled"
+    };
+    const controller = new PluginImageRequestController(
+      new ImageSourceRegistry([file, screen]),
+      relaunch
+    );
+    const pending = controller.requestImage(
+      { id: "org.test.image", name: "Image" },
+      { title: "Image", sources: ["file", "screenRegion"] },
+      new AbortController().signal
+    );
+    await vi.waitFor(() => expect(controller.getOpenRequest()).toBeDefined());
+    const id = controller.getOpenRequest()!.id;
+    await controller.acquire(id, "screenRegion");
+    expect(controller.getOpenRequest()?.permissionPanel?.status).toBe("denied");
+    expect(controller.getOpenRequest()?.providers.map((provider) => provider.id)).toEqual([
+      "file",
+      "screenRegion"
+    ]);
+
+    await controller.openPermissionSettings(id);
+    await controller.relaunch(id);
+    expect(openSettings).toHaveBeenCalledOnce();
+    expect(relaunch).toHaveBeenCalledOnce();
+
+    status = "granted";
+    await controller.refreshPermission(id);
+    expect(controller.getOpenRequest()?.permissionPanel).toMatchObject({
+      status: "restartRequired",
+      message: "Permission granted; restart ChemDraft.",
+      showRelaunch: true
+    });
+    controller.cancel(id);
     await expect(pending).resolves.toEqual({ status: "cancelled" });
   });
 });

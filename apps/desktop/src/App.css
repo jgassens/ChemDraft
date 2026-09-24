@@ -6003,6 +6003,33 @@ textarea:focus-visible,
   color: var(--cd-danger-strong);
 }
 
+.plugin-image-permission {
+  display: grid;
+  gap: var(--cd-space-3);
+  padding: var(--cd-space-4);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-image-permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cd-space-3);
+}
+
+.plugin-image-permission .plugin-image-relaunch {
+  border-color: var(--cd-accent);
+  background: var(--cd-accent);
+  color: white;
+  font-weight: 650;
+}
+
+.plugin-image-permission .plugin-image-permission-note {
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+}
+
 .plugin-prompt-actions {
   display: flex;
   justify-content: flex-end;

@@ -10,10 +10,24 @@ import { isTauriHost } from "./pluginStagingFs";
 
 export type ProvidedImage = PluginProvidedImage;
 
+export type ImageSourcePermissionStatus = "granted" | "denied" | "notDetermined" | "notRequired";
+
+export interface ImageSourcePermission {
+  status(): Promise<ImageSourcePermissionStatus>;
+  request(): Promise<ImageSourcePermissionStatus>;
+  openSettings(): Promise<void>;
+  requiresRestartAfterGrant: boolean;
+  deniedMessage?: string;
+  grantedRestartMessage?: string;
+  openSettingsLabel?: string;
+  restartNote?: string;
+}
+
 export interface ImageSourceProvider {
   id: PluginImageSource;
   label: string;
   isAvailable(): Promise<boolean>;
+  permission?: ImageSourcePermission;
   acquire(signal: AbortSignal): Promise<ProvidedImage | "cancelled">;
 }
 
@@ -115,6 +129,17 @@ export const screenRegionImageSourceProvider: ImageSourceProvider = {
   async isAvailable() {
     return isTauriHost() && (await invoke<boolean>("screen_capture_available"));
   },
+  permission: {
+    status: () => invoke<ImageSourcePermissionStatus>("screen_capture_permission_status"),
+    request: () => invoke<ImageSourcePermissionStatus>("request_screen_capture_permission"),
+    openSettings: () => invoke<void>("open_screen_capture_settings"),
+    requiresRestartAfterGrant: true,
+    deniedMessage: "ChemDraft needs Screen Recording permission to capture part of the screen.",
+    grantedRestartMessage:
+      "Screen Recording permission is granted. Quit and reopen ChemDraft before capturing part of the screen.",
+    openSettingsLabel: "Open Screen Recording Settings",
+    restartNote: "macOS applies the permission after ChemDraft restarts."
+  },
   async acquire(signal) {
     throwIfAborted(signal);
     try {
@@ -150,7 +175,7 @@ function normalizeScreenCaptureError(error: unknown): ImageSourceError {
   if (kind === "permissionDenied" || String(error).includes("permissionDenied")) {
     return new ImageSourceError(
       "permissionDenied",
-      "Screen capture permission is denied. Allow ChemDraft in System Settings → Privacy & Security → Screen Recording, then try again."
+      "ChemDraft needs Screen Recording permission to capture part of the screen."
     );
   }
   if (kind === "unsupported" || String(error).includes("unsupported")) {

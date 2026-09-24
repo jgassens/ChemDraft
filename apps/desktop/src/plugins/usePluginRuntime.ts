@@ -97,6 +97,9 @@ export interface PluginRuntimeView {
   submitTextPrompt: (id: number, value: string) => void;
   cancelTextPrompt: (id: number) => void;
   acquireImage: (id: number, source: PluginImageSource) => void;
+  openImagePermissionSettings: (id: number) => void;
+  refreshImagePermission: (id: number) => void;
+  relaunchForImagePermission: (id: number) => void;
   cancelImageRequest: (id: number) => void;
 }
 
@@ -354,6 +357,18 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     (id: number, source: PluginImageSource) => void runtime.images.acquire(id, source),
     [runtime]
   );
+  const openImagePermissionSettings = useCallback(
+    (id: number) => void runtime.images.openPermissionSettings(id),
+    [runtime]
+  );
+  const refreshImagePermission = useCallback(
+    (id: number) => void runtime.images.refreshPermission(id),
+    [runtime]
+  );
+  const relaunchForImagePermission = useCallback(
+    (id: number) => void runtime.images.relaunch(id),
+    [runtime]
+  );
   const cancelImageRequest = useCallback((id: number) => runtime.images.cancel(id), [runtime]);
 
   return {
@@ -387,6 +402,9 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     submitTextPrompt,
     cancelTextPrompt,
     acquireImage,
+    openImagePermissionSettings,
+    refreshImagePermission,
+    relaunchForImagePermission,
     cancelImageRequest
   };
 }

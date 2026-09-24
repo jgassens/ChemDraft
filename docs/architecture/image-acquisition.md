@@ -16,6 +16,16 @@ interface ImageSourceProvider {
   id: "file" | "screenRegion";
   label: string;
   isAvailable(): Promise<boolean>;
+  permission?: {
+    status(): Promise<"granted" | "denied" | "notDetermined" | "notRequired">;
+    request(): Promise<"granted" | "denied" | "notDetermined" | "notRequired">;
+    openSettings(): Promise<void>;
+    requiresRestartAfterGrant: boolean;
+    deniedMessage?: string;
+    grantedRestartMessage?: string;
+    openSettingsLabel?: string;
+    restartNote?: string;
+  };
   acquire(signal: AbortSignal): Promise<ProvidedImage | "cancelled">;
 }
 ```
@@ -29,20 +39,33 @@ editing the dialog.
 
 ## Native region capture and adding a platform
 
-`apps/desktop/src-tauri/src/screen_capture.rs` owns the `RegionCapture` trait. The Tauri commands and
-temporary-file cleanup call only that trait. The macOS implementation invokes the system
+`apps/desktop/src-tauri/src/screen_capture.rs` owns the `RegionCapture` trait. Alongside availability
+and capture, each platform implements `permission_status()`, `request_permission()`, and
+`open_permission_settings()`. Platforms without a capture-wide gate return `NotRequired`; platforms
+without a relevant settings destination return `Unsupported` from the open method. The Tauri
+commands and temporary-file cleanup call only that trait. The macOS implementation invokes the system
 `/usr/sbin/screencapture -i -x -t png` marquee and uses
-`CGPreflightScreenCaptureAccess` to distinguish Screen Recording denial from Escape cancellation.
+`CGPreflightScreenCaptureAccess` and `CGRequestScreenCaptureAccess` for the Screen Recording gate.
+Its settings action opens
+`x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` directly.
 ChemDraft's visible, non-minimized webview windows are hidden for the interactive capture and restored
 on every outcome. Temporary PNGs live in the app-resolved temp directory and are deleted by a drop
 guard.
 
 To add Windows support, implement `WindowsRegionCapture` with `Windows.Graphics.Capture`, or launch the
 Snipping Tool through `ms-screenclip:` and retrieve the confirmed clipboard image. Return
-`CaptureOutcome::Cancelled` for user cancellation and map access denial distinctly; never move native
-capture or clipboard authority into plugin code. Linux follows the same trait, preferably through
-`xdg-desktop-portal`. Set `is_available()` true only once the implementation is usable. The provider,
-dialog, plugin API, and worker transport require no platform-specific change.
+`CaptureOutcome::Cancelled` for user cancellation and map access denial distinctly. Implement the
+three permission methods even when they only return `NotRequired`/`Unsupported`, then expose them on
+that platform's optional provider `permission` object. Provider-owned copy fields let a platform name
+its gate and settings destination without teaching the dialog about that OS. Linux follows the same
+trait, preferably through `xdg-desktop-portal`; a portal that brokers consent per request normally reports
+`NotRequired`. Never move native capture or clipboard authority into plugin code. Set
+`is_available()` true only once the implementation is usable. The dialog consumes only the optional
+provider permission surface, so it needs no platform branch.
 
-The `screen-capture.json` Tauri capability grants these commands to the `main` window only. Do not add
-them to the broad main/toolset capability.
+On macOS, an ad-hoc-signed development build may lose its Screen Recording grant after each rebuild
+because TCC keys the grant to the app's code signature. Signed and notarized release builds retain the
+grant across normal app updates when their identity and signing remain stable.
+
+The `screen-capture.json` Tauri capability grants capture, permission, settings, and relaunch commands
+to the `main` window only. Do not add them to the broad main/toolset capability.

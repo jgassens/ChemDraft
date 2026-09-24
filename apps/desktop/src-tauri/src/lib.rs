@@ -504,7 +504,11 @@ pub fn run() {
             opsin::opsin_status,
             opsin::opsin_name_to_structure,
             screen_capture::screen_capture_available,
+            screen_capture::screen_capture_permission_status,
+            screen_capture::request_screen_capture_permission,
+            screen_capture::open_screen_capture_settings,
             screen_capture::capture_screen_region,
+            screen_capture::relaunch_app,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
             engine3d_sidecar_send_session,
@@ -4023,13 +4027,25 @@ mod tests {
             .expect("screen capture permissions");
         for expected in [
             "allow-screen-capture-available",
+            "allow-screen-capture-permission-status",
+            "allow-request-screen-capture-permission",
+            "allow-open-screen-capture-settings",
             "allow-capture-screen-region",
+            "allow-relaunch-app",
         ] {
             assert!(permissions.iter().any(|value| value == expected));
         }
         let default = include_str!("../capabilities/default.json");
-        assert!(!default.contains("allow-capture-screen-region"));
-        assert!(!default.contains("allow-screen-capture-available"));
+        for permission in [
+            "allow-screen-capture-available",
+            "allow-screen-capture-permission-status",
+            "allow-request-screen-capture-permission",
+            "allow-open-screen-capture-settings",
+            "allow-capture-screen-region",
+            "allow-relaunch-app",
+        ] {
+            assert!(!default.contains(permission));
+        }
     }
 
     #[test]

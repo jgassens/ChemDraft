@@ -1384,7 +1384,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.24.14.10-codex";
+const CURRENT_BUILD_STAMP = "9.24.14.23-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -16147,6 +16147,9 @@ export function MainWindow({
           key={pluginRuntime.openImageRequest.id}
           request={pluginRuntime.openImageRequest}
           onAcquire={pluginRuntime.acquireImage}
+          onOpenPermissionSettings={pluginRuntime.openImagePermissionSettings}
+          onPermissionFocus={pluginRuntime.refreshImagePermission}
+          onRelaunch={pluginRuntime.relaunchForImagePermission}
           onCancel={pluginRuntime.cancelImageRequest}
         />
       ) : null}

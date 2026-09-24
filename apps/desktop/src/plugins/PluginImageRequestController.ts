@@ -3,9 +3,23 @@ import type {
   PluginImageRequestResult,
   PluginImageSource
 } from "@chemdraft/plugin-api";
+import { invoke } from "@tauri-apps/api/core";
 
-import type { ImageSourceProvider } from "./ImageSourceProvider";
+import type {
+  ImageSourcePermission,
+  ImageSourcePermissionStatus,
+  ImageSourceProvider
+} from "./ImageSourceProvider";
 import { ImageSourceRegistry } from "./ImageSourceProvider";
+
+export interface OpenImagePermissionPanel {
+  source: PluginImageSource;
+  status: "denied" | "restartRequired";
+  message: string;
+  openSettingsLabel: string;
+  restartNote?: string;
+  showRelaunch: boolean;
+}
 
 export interface OpenPluginImageRequest {
   id: number;
@@ -14,6 +28,7 @@ export interface OpenPluginImageRequest {
   request: NormalizedPluginImageRequest;
   providers: readonly Pick<ImageSourceProvider, "id" | "label">[];
   acquiringSource?: PluginImageSource;
+  permissionPanel?: OpenImagePermissionPanel;
   error?: string;
   unavailableReason?: string;
 }
@@ -31,7 +46,10 @@ export class PluginImageRequestController {
   private readonly pending: PendingPluginImageRequest[] = [];
   private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly registry: ImageSourceRegistry) {}
+  constructor(
+    private readonly registry: ImageSourceRegistry,
+    private readonly relaunchApplication: () => Promise<unknown> = () => invoke("relaunch_app")
+  ) {}
 
   async requestImage(
     plugin: { id: string; name: string },
@@ -79,6 +97,7 @@ export class PluginImageRequestController {
     request.error = undefined;
     this.notify();
     try {
+      if (!(await this.preparePermission(request, provider))) return;
       const image = await provider.acquire(request.signal);
       if (request.signal.aborted) {
         this.settle(request, { status: "cancelled" });
@@ -93,6 +112,60 @@ export class PluginImageRequestController {
         return;
       }
       request.acquiringSource = undefined;
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "permissionDenied" &&
+        provider.permission
+      ) {
+        const status = await this.permissionStatusAfterCaptureDenial(provider.permission);
+        this.showPermissionPanel(request, provider, status === "granted");
+        return;
+      }
+      request.error = error instanceof Error ? error.message : String(error);
+      this.notify();
+    }
+  }
+
+  async openPermissionSettings(id: number): Promise<void> {
+    const selection = this.permissionSelection(id);
+    if (!selection) return;
+    try {
+      await selection.permission.openSettings();
+    } catch (error) {
+      selection.request.error = error instanceof Error ? error.message : String(error);
+      this.notify();
+    }
+  }
+
+  async refreshPermission(id: number): Promise<void> {
+    const selection = this.permissionSelection(id);
+    if (!selection) return;
+    try {
+      const status = await selection.permission.status();
+      if (status === "granted") {
+        if (selection.permission.requiresRestartAfterGrant) {
+          this.showPermissionPanel(selection.request, selection.provider, true);
+        } else {
+          selection.request.permissionPanel = undefined;
+          selection.request.error = undefined;
+          this.notify();
+        }
+      } else if (status === "denied") {
+        this.showPermissionPanel(selection.request, selection.provider, false);
+      }
+    } catch (error) {
+      selection.request.error = error instanceof Error ? error.message : String(error);
+      this.notify();
+    }
+  }
+
+  async relaunch(id: number): Promise<void> {
+    const request = this.pending[0];
+    if (!request || request.id !== id || !request.permissionPanel?.showRelaunch) return;
+    try {
+      await this.relaunchApplication();
+    } catch (error) {
       request.error = error instanceof Error ? error.message : String(error);
       this.notify();
     }
@@ -112,6 +185,80 @@ export class PluginImageRequestController {
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  private async preparePermission(
+    request: PendingPluginImageRequest,
+    provider: ImageSourceProvider
+  ): Promise<boolean> {
+    if (!provider.permission) return true;
+    let status = await provider.permission.status();
+    if (status === "notDetermined") {
+      status = await provider.permission.request();
+    }
+    if (status === "denied" || status === "notDetermined") {
+      request.acquiringSource = undefined;
+      this.showPermissionPanel(request, provider, false);
+      return false;
+    }
+    if (
+      status === "granted" &&
+      request.permissionPanel?.source === provider.id &&
+      request.permissionPanel.status === "restartRequired"
+    ) {
+      request.acquiringSource = undefined;
+      this.notify();
+      return false;
+    }
+    request.permissionPanel = undefined;
+    return true;
+  }
+
+  private async permissionStatusAfterCaptureDenial(
+    permission: ImageSourcePermission
+  ): Promise<ImageSourcePermissionStatus> {
+    try {
+      return await permission.status();
+    } catch {
+      return "denied";
+    }
+  }
+
+  private showPermissionPanel(
+    request: PendingPluginImageRequest,
+    provider: ImageSourceProvider,
+    restartRequired: boolean
+  ): void {
+    const permission = provider.permission;
+    if (!permission) return;
+    request.acquiringSource = undefined;
+    request.error = undefined;
+    request.permissionPanel = {
+      source: provider.id,
+      status: restartRequired ? "restartRequired" : "denied",
+      message: restartRequired
+        ? permission.grantedRestartMessage ??
+          "Permission is granted. Quit and reopen ChemDraft before using this image source."
+        : permission.deniedMessage ?? "ChemDraft needs permission to use this image source.",
+      openSettingsLabel: permission.openSettingsLabel ?? "Open Permission Settings",
+      restartNote: permission.requiresRestartAfterGrant ? permission.restartNote : undefined,
+      showRelaunch: permission.requiresRestartAfterGrant
+    };
+    this.notify();
+  }
+
+  private permissionSelection(id: number): {
+    request: PendingPluginImageRequest;
+    provider: ImageSourceProvider;
+    permission: ImageSourcePermission;
+  } | undefined {
+    const request = this.pending[0];
+    if (!request || request.id !== id || !request.permissionPanel) return undefined;
+    const provider = request.providerInstances.find(
+      (candidate) => candidate.id === request.permissionPanel?.source
+    );
+    if (!provider?.permission) return undefined;
+    return { request, provider, permission: provider.permission };
   }
 
   private settle(request: PendingPluginImageRequest, result: PluginImageRequestResult): void {

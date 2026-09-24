@@ -5,6 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "allow-screen-capture-available",
-    "allow-capture-screen-region"
+    "allow-screen-capture-permission-status",
+    "allow-request-screen-capture-permission",
+    "allow-open-screen-capture-settings",
+    "allow-capture-screen-region",
+    "allow-relaunch-app"
   ]
 }

@@ -7,6 +7,9 @@ import type { OpenPluginImageRequest } from "./PluginImageRequestController";
 export interface PluginImageRequestDialogProps {
   request: OpenPluginImageRequest;
   onAcquire: (requestId: number, source: PluginImageSource) => void;
+  onOpenPermissionSettings: (requestId: number) => void;
+  onPermissionFocus: (requestId: number) => void;
+  onRelaunch: (requestId: number) => void;
   onCancel: (requestId: number) => void;
 }
 
@@ -14,7 +17,14 @@ export function isPluginImageKeyboardEvent(event: Pick<KeyboardEvent, "target">)
   return event.target instanceof Element && event.target.closest(".plugin-image-dialog") !== null;
 }
 
-export function PluginImageRequestDialog({ request, onAcquire, onCancel }: PluginImageRequestDialogProps) {
+export function PluginImageRequestDialog({
+  request,
+  onAcquire,
+  onOpenPermissionSettings,
+  onPermissionFocus,
+  onRelaunch,
+  onCancel
+}: PluginImageRequestDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const attributionId = useId();
@@ -58,6 +68,12 @@ export function PluginImageRequestDialog({ request, onAcquire, onCancel }: Plugi
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onCancel, request.id]);
 
+  useEffect(() => {
+    const handleFocus = (): void => onPermissionFocus(request.id);
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [onPermissionFocus, request.id]);
+
   if (typeof document === "undefined") return null;
 
   return createPortal(
@@ -92,6 +108,32 @@ export function PluginImageRequestDialog({ request, onAcquire, onCancel }: Plugi
             </div>
           ) : null}
           {request.unavailableReason ? <p role="alert">{request.unavailableReason}</p> : null}
+          {request.permissionPanel ? (
+            <section className="plugin-image-permission" role="alert">
+              <p>{request.permissionPanel.message}</p>
+              <div className="plugin-image-permission-actions">
+                <button
+                  className="plugin-manager-button"
+                  type="button"
+                  onClick={() => onOpenPermissionSettings(request.id)}
+                >
+                  {request.permissionPanel.openSettingsLabel}
+                </button>
+                {request.permissionPanel.showRelaunch ? (
+                  <button
+                    className="plugin-manager-button plugin-image-relaunch"
+                    type="button"
+                    onClick={() => onRelaunch(request.id)}
+                  >
+                    Quit &amp; Reopen ChemDraft
+                  </button>
+                ) : null}
+              </div>
+              {request.permissionPanel.restartNote ? (
+                <p className="plugin-image-permission-note">{request.permissionPanel.restartNote}</p>
+              ) : null}
+            </section>
+          ) : null}
           {request.error ? <p className="plugin-image-error" role="alert">{request.error}</p> : null}
         </div>
         <footer className="plugin-prompt-actions">
