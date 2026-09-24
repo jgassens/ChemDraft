@@ -10,6 +10,9 @@
     "dev:web": "pnpm --filter @chemdraft/desktop dev:web",
     "build": "pnpm lint && pnpm --filter @chemdraft/desktop build",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "chemdraft": "tsx packages/chemdraft-cli/src/cli.ts",
+    "chemdraft-mcp": "tsx packages/chemdraft-mcp/src/server.ts",
+    "render": "tsx packages/chemdraft-cli/src/cli.ts render",
     "plugin:extract": "tsx tools/plugin-extract/extract.ts",
     "plugin:package": "tsx tools/plugin-package/package.ts",
     "running-build": "node scripts/running-build.mjs",
@@ -21,6 +24,8 @@
     "build:sdk": "node scripts/build-sdk.mjs plugin-api && node scripts/build-sdk.mjs plugin-host"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "28.0.3",
     "@types/node": "^26.1.1",
     "esbuild": "^0.27.7",
