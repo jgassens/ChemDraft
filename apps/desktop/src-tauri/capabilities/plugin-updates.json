@@ -17,6 +17,15 @@
           "url": "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/*/nmr-predictor-*.zip.sha256"
         },
         {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-OPSIN-Plugin/releases/latest"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-OPSIN-Plugin/releases/download/*/opsin-name-to-structure-*.zip"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-OPSIN-Plugin/releases/download/*/opsin-name-to-structure-*.zip.sha256"
+        },
+        {
           "url": "https://release-assets.githubusercontent.com/github-production-release-asset/*"
         }
       ]

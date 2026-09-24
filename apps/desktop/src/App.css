@@ -6015,6 +6015,33 @@ textarea:focus-visible,
   list-style: none;
 }
 
+.plugin-manager-catalog {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.plugin-manager-catalog .plugin-manager-list {
+  overflow: visible;
+}
+
+.plugin-manager-available {
+  border-top: 1px solid var(--cd-border-subtle);
+}
+
+.plugin-manager-available h3 {
+  margin: var(--cd-space-5) var(--cd-space-6) 0;
+  font-size: 13px;
+}
+
+.plugin-manager-available .plugin-manager-list {
+  padding-top: var(--cd-space-4);
+}
+
+.plugin-manager-available-empty {
+  margin: var(--cd-space-4) var(--cd-space-6) var(--cd-space-6);
+  color: var(--cd-text-muted);
+}
+
 .plugin-manager-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

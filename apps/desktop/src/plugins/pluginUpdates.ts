@@ -1,5 +1,5 @@
 /**
- * Host-owned plugin update catalog and download path.
+ * Host-owned official plugin catalog, update checks, and download path.
  *
  * Update locations never come from a plugin manifest. This module maps an allowlisted plugin id to
  * one exact public release repository, validates that repository's response, and downloads through
@@ -22,21 +22,38 @@ import {
   pluginVersionFromReleaseTag
 } from "./pluginVersion";
 
-const NMR_PLUGIN_ID = "org.chemdraft.nmr.predictor";
-
-interface TrustedPluginUpdateSource {
+export interface OfficialPluginCatalogEntry {
   pluginId: string;
+  displayName: string;
+  description: string;
   repository: string;
   assetStem: string;
 }
 
-const TRUSTED_PLUGIN_UPDATE_SOURCES = new Map<string, TrustedPluginUpdateSource>([
-  [NMR_PLUGIN_ID, {
-    pluginId: NMR_PLUGIN_ID,
+/**
+ * The complete host-owned list of official plugins. It is compiled into ChemDraft and is the sole
+ * authority for both one-click installs and update locations; plugin manifests never extend it.
+ */
+export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
+  {
+    pluginId: "org.chemdraft.nmr.predictor",
+    displayName: "NMR Shift Predictor",
+    description: "¹H/¹³C shift prediction from NMRShiftDB2-derived statistics.",
     repository: "jgassens/ChemDraft-NMR-Plugin",
     assetStem: "nmr-predictor"
-  }]
-]);
+  },
+  {
+    pluginId: "org.chemdraft.opsin.nameToStructure",
+    displayName: "Name to Structure (OPSIN)",
+    description: "Type a systematic chemical name and insert its structure.",
+    repository: "jgassens/ChemDraft-OPSIN-Plugin",
+    assetStem: "opsin-name-to-structure"
+  }
+];
+
+const OFFICIAL_PLUGIN_SOURCES = new Map(
+  OFFICIAL_PLUGIN_CATALOG.map((entry) => [entry.pluginId, entry] as const)
+);
 
 interface HostFetchInit extends RequestInit {
   /** Tauri HTTP client option. Zero prevents Rust/reqwest from following an unchecked target. */
@@ -78,6 +95,8 @@ export interface PluginUpdateOffer {
   publishedAt: string;
 }
 
+type OfficialPluginReleaseOffer = Omit<PluginUpdateOffer, "installedVersion">;
+
 export type PluginUpdateCheckResult =
   | {
       status: "unsupported";
@@ -113,6 +132,15 @@ export interface PreparedPluginUpdate {
   checksumVerified: true;
 }
 
+export interface PreparedOfficialPluginInstall {
+  pluginId: string;
+  inspection: PluginPackageInspection;
+  /** HTTPS source shown in the existing package-review disclosure. */
+  sourcePath: string;
+  /** The archive matched the SHA-256 digest in the trusted release response. */
+  checksumVerified: true;
+}
+
 /** Check every installed plugin without allowing one failed source to hide the others. */
 export async function checkForPluginUpdates(
   installedPlugins: readonly InstalledPluginCatalogEntry[],
@@ -121,7 +149,7 @@ export async function checkForPluginUpdates(
   const fetch = options.fetch ?? (tauriFetch as HostFetch);
   return Promise.all(
     installedPlugins.map(async (entry): Promise<PluginUpdateCheckResult> => {
-      const source = TRUSTED_PLUGIN_UPDATE_SOURCES.get(entry.record.id);
+      const source = OFFICIAL_PLUGIN_SOURCES.get(entry.record.id);
       if (!source) {
         return {
           status: "unsupported",
@@ -131,7 +159,11 @@ export async function checkForPluginUpdates(
       }
 
       try {
-        const offer = await fetchLatestOffer(entry, source, fetch);
+        const release = await fetchLatestReleaseOffer(source, fetch);
+        const offer: PluginUpdateOffer = {
+          ...release,
+          installedVersion: entry.record.version
+        };
         const comparison = comparePluginVersions(offer.version, entry.record.version);
         if (comparison <= 0) {
           return {
@@ -165,38 +197,8 @@ export async function preparePluginUpdate(
   offer: PluginUpdateOffer,
   options: { fetch?: HostFetch } = {}
 ): Promise<PreparedPluginUpdate> {
-  const source = assertTrustedOffer(offer);
   const fetch = options.fetch ?? (tauriFetch as HostFetch);
-  const zipBytes = await downloadTrustedReleaseAsset(fetch, {
-    url: offer.packageUrl,
-    limit: DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS.maxCompressedBytes,
-    timeoutMs: UPDATE_DOWNLOAD_TIMEOUT_MS,
-    timeoutLabel: `Downloading ${offer.pluginName} ${offer.version}`,
-    assetLabel: "plugin package",
-    boundedLabel: `${offer.pluginName} update`,
-    failureLabel: `Downloading ${offer.pluginName} ${offer.version}`,
-    redirectLabel: `Downloading ${offer.pluginName}`
-  });
-
-  // The release's own published `.sha256` is what verifies the archive, and it must agree with the
-  // digest GitHub recorded for the asset. Requiring both means a release whose sidecar was made
-  // from different bytes fails closed instead of silently deferring to the API digest — and it
-  // makes the sidecar-must-exist rule enforced earlier actually mean something. Neither value is a
-  // publisher signature; both are integrity metadata.
-  const sidecar = await fetchReleaseSidecar(offer, fetch);
-  const inspection = await inspectPluginPackage({ zipBytes, sidecar });
-  if (inspection.manifest.id !== source.pluginId) {
-    throw new Error(
-      `The update package declares plugin id "${inspection.manifest.id}", but the trusted offer is for ` +
-        `"${source.pluginId}". Refusing the replacement.`
-    );
-  }
-  if (inspection.manifest.version !== offer.version) {
-    throw new Error(
-      `The update package declares version "${inspection.manifest.version}", but the trusted release offered ` +
-        `"${offer.version}". Refusing the replacement.`
-    );
-  }
+  const inspection = await prepareTrustedReleasePackage(offer, fetch);
   if (comparePluginVersions(inspection.manifest.version, offer.installedVersion) <= 0) {
     throw new Error(
       `The downloaded plugin version ${inspection.manifest.version} is not newer than installed version ` +
@@ -212,15 +214,34 @@ export async function preparePluginUpdate(
   };
 }
 
-async function fetchLatestOffer(
-  entry: InstalledPluginCatalogEntry,
-  source: TrustedPluginUpdateSource,
+/** Fetch, verify, and inspect the latest package for one compiled-in official plugin. */
+export async function prepareOfficialPluginInstall(
+  pluginId: string,
+  options: { fetch?: HostFetch } = {}
+): Promise<PreparedOfficialPluginInstall> {
+  const source = OFFICIAL_PLUGIN_SOURCES.get(pluginId);
+  if (!source) {
+    throw new Error(`Plugin "${pluginId}" is not in ChemDraft's official plugin catalog.`);
+  }
+  const fetch = options.fetch ?? (tauriFetch as HostFetch);
+  const offer = await fetchLatestReleaseOffer(source, fetch);
+  const inspection = await prepareTrustedReleasePackage(offer, fetch);
+  return {
+    pluginId,
+    inspection,
+    sourcePath: offer.packageUrl,
+    checksumVerified: true
+  };
+}
+
+async function fetchLatestReleaseOffer(
+  source: OfficialPluginCatalogEntry,
   fetch: HostFetch
-): Promise<PluginUpdateOffer> {
+): Promise<OfficialPluginReleaseOffer> {
   const apiUrl = `https://api.github.com/repos/${source.repository}/releases/latest`;
   const releasePayload = await withUpdateTimeout(
     UPDATE_CHECK_TIMEOUT_MS,
-    `Checking ${entry.manifest.name} updates`,
+    `Checking ${source.displayName} releases`,
     async (signal) => {
       const response = await fetch(apiUrl, {
         method: "GET",
@@ -232,30 +253,33 @@ async function fetchLatestOffer(
       await assertResponseStayedAt(response, apiUrl, "release metadata");
       if (REDIRECT_STATUSES.has(response.status)) {
         await cancelResponseBody(response);
-        throw new Error(`Checking ${entry.manifest.name} refused an unexpected metadata redirect.`);
+        throw new Error(`Checking ${source.displayName} refused an unexpected metadata redirect.`);
       }
       if (!response.ok) {
         await cancelResponseBody(response);
+        if (response.status === 404) {
+          throw new Error("No release published yet");
+        }
         throw new Error(
-          `Checking ${entry.manifest.name} updates failed with HTTP ${response.status} ${response.statusText}.`
+          `Checking ${source.displayName} releases failed with HTTP ${response.status} ${response.statusText}.`
         );
       }
       const bytes = await readBoundedResponseBytes(
         response,
         RELEASE_METADATA_LIMIT_BYTES,
-        `${entry.manifest.name} release metadata`
+        `${source.displayName} release metadata`
       );
       try {
         return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
       } catch {
-        throw new Error(`The latest ${entry.manifest.name} release response is not valid JSON.`);
+        throw new Error(`The latest ${source.displayName} release response is not valid JSON.`);
       }
     }
   );
 
   const release = asRecord(releasePayload, "latest release");
   if (release.draft !== false || release.prerelease !== false) {
-    throw new Error(`The latest ${entry.manifest.name} release is not a published stable release.`);
+    throw new Error(`The latest ${source.displayName} release is not a published stable release.`);
   }
   const tag = requiredString(release.tag_name, "release tag");
   const version = pluginVersionFromReleaseTag(tag);
@@ -304,8 +328,7 @@ async function fetchLatestOffer(
 
   return {
     pluginId: source.pluginId,
-    pluginName: entry.manifest.name,
-    installedVersion: entry.record.version,
+    pluginName: source.displayName,
     version,
     releaseUrl,
     packageUrl,
@@ -316,8 +339,43 @@ async function fetchLatestOffer(
   };
 }
 
-function assertTrustedOffer(offer: PluginUpdateOffer): TrustedPluginUpdateSource {
-  const source = TRUSTED_PLUGIN_UPDATE_SOURCES.get(offer.pluginId);
+async function prepareTrustedReleasePackage(
+  offer: OfficialPluginReleaseOffer,
+  fetch: HostFetch
+): Promise<PluginPackageInspection> {
+  const source = assertTrustedOffer(offer);
+  const zipBytes = await downloadTrustedReleaseAsset(fetch, {
+    url: offer.packageUrl,
+    limit: DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS.maxCompressedBytes,
+    timeoutMs: UPDATE_DOWNLOAD_TIMEOUT_MS,
+    timeoutLabel: `Downloading ${offer.pluginName} ${offer.version}`,
+    assetLabel: "plugin package",
+    boundedLabel: `${offer.pluginName} package`,
+    failureLabel: `Downloading ${offer.pluginName} ${offer.version}`,
+    redirectLabel: `Downloading ${offer.pluginName}`
+  });
+
+  // The release's own published `.sha256` must agree with GitHub's recorded asset digest. Both are
+  // integrity metadata, not a publisher signature.
+  const sidecar = await fetchReleaseSidecar(offer, fetch);
+  const inspection = await inspectPluginPackage({ zipBytes, sidecar });
+  if (inspection.manifest.id !== source.pluginId) {
+    throw new Error(
+      `The package declares plugin id "${inspection.manifest.id}", but the trusted offer is for ` +
+        `"${source.pluginId}". Refusing the package.`
+    );
+  }
+  if (inspection.manifest.version !== offer.version) {
+    throw new Error(
+      `The package declares version "${inspection.manifest.version}", but the trusted release offered ` +
+        `"${offer.version}". Refusing the package.`
+    );
+  }
+  return inspection;
+}
+
+function assertTrustedOffer(offer: OfficialPluginReleaseOffer): OfficialPluginCatalogEntry {
+  const source = OFFICIAL_PLUGIN_SOURCES.get(offer.pluginId);
   if (!source) {
     throw new Error(`Plugin "${offer.pluginId}" has no trusted ChemDraft update source.`);
   }
@@ -417,7 +475,7 @@ async function downloadTrustedReleaseAsset(
   });
 }
 
-async function fetchReleaseSidecar(offer: PluginUpdateOffer, fetch: HostFetch): Promise<string> {
+async function fetchReleaseSidecar(offer: OfficialPluginReleaseOffer, fetch: HostFetch): Promise<string> {
   const bytes = await downloadTrustedReleaseAsset(fetch, {
     url: `${offer.packageUrl}.sha256`,
     limit: MAX_SIDECAR_BYTES,

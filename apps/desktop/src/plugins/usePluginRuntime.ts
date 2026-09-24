@@ -24,7 +24,9 @@ import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreference
 import { createTauriPluginStagingFs, isTauriHost, type PluginStagingFs } from "./pluginStagingFs";
 import {
   checkForPluginUpdates,
+  prepareOfficialPluginInstall,
   preparePluginUpdate,
+  type PreparedOfficialPluginInstall,
   type PluginUpdateCheckResult,
   type PluginUpdateOffer,
   type PreparedPluginUpdate
@@ -74,6 +76,7 @@ export interface PluginRuntimeView {
   /** Show the native picker and describe the chosen package; `undefined` when this build cannot install. */
   pickPackage: (() => Promise<PickedPluginPackage | undefined>) | undefined;
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
+  prepareOfficialPluginInstall: ((pluginId: string) => Promise<PreparedOfficialPluginInstall>) | undefined;
   uninstallInstalledPlugin: ((pluginId: string) => Promise<void>) | undefined;
   checkInstalledPluginUpdates: (() => Promise<readonly PluginUpdateCheckResult[]>) | undefined;
   prepareInstalledPluginUpdate: ((offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>) | undefined;
@@ -277,6 +280,11 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     []
   );
 
+  const prepareCatalogPluginInstall = useCallback(
+    (pluginId: string): Promise<PreparedOfficialPluginInstall> => prepareOfficialPluginInstall(pluginId),
+    []
+  );
+
   const updateInstalledPlugin = useCallback(
     async (prepared: PreparedPluginUpdate): Promise<void> => {
       if (!stagingFs) return;
@@ -344,6 +352,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     // rather than offer an install that would fail on click.
     pickPackage: stagingFs ? pickPackage : undefined,
     installPackage: stagingFs ? installPackage : undefined,
+    prepareOfficialPluginInstall:
+      stagingFs && installedPluginCatalogReady ? prepareCatalogPluginInstall : undefined,
     uninstallInstalledPlugin: stagingFs ? uninstallInstalledPlugin : undefined,
     checkInstalledPluginUpdates:
       stagingFs && installedPluginCatalogReady ? checkInstalledPluginUpdates : undefined,

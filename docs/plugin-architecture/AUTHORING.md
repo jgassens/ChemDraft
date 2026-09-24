@@ -194,26 +194,36 @@ The checksum sidecar makes either archive independently verifiable. It is an **i
 a signature and not a trust decision — and a successful technical build does not override the license
 terms inside the archive.
 
-## Updates
+## Official catalog, installs, and updates
 
-Plugins do not self-update and manifests do not carry an update URL. ChemDraft owns a small trusted
-catalog keyed by plugin id, performs network access in the desktop host, and subjects a downloaded
-replacement to the same archive, manifest, API, permission, and worker-handshake gates as a manual
-install. The plugin worker remains under its same-origin-only CSP and receives no network or
-filesystem capability for this workflow.
+Plugins do not advertise themselves to ChemDraft, self-update, or carry install/update URLs in their
+manifests. ChemDraft compiles a fixed official-plugin catalog into the desktop host. The catalog owns
+each plugin's id, display name, description, exact GitHub repository, and release asset stem; there is
+no network discovery. The **Available** section of **Add or Remove Plugins** lists every catalog entry
+that is not installed and offers a one-click **Install** action.
+
+The desktop host fetches the latest stable release only from that catalog entry's repository and
+requires the exact versioned ZIP and `.zip.sha256` asset names. It applies the same redirect-host,
+download-size, checksum, archive, manifest, API, permission, and worker-handshake gates used by
+manual package installs and updates. Before either an official install or an update is committed, the
+ordinary package-review screen discloses permissions and provenance. The plugin worker remains under
+its same-origin-only CSP and receives no network or filesystem capability for this workflow.
 
 Update checks and installs are user-initiated. ChemDraft first shows an available version, then
 downloads and inspects the package for a second review screen; only an explicit **Update** action
 starts the replacement transaction. The active package stays intact until the candidate has passed
 its worker handshake and the new install record commits.
 
-The first trusted source is `org.chemdraft.nmr.predictor`, published from
+The official catalog contains `org.chemdraft.nmr.predictor`, published from
 `jgassens/ChemDraft-NMR-Plugin` as a stable `vX.Y.Z` GitHub release containing both
-`nmr-predictor-X.Y.Z.zip` and `nmr-predictor-X.Y.Z.zip.sha256`. The updater requires the sidecar to
-remain present for manual distribution, but verifies downloaded bytes against GitHub's release-asset
-digest. That digest establishes package integrity, not cryptographic publisher identity. Do not
-describe this path as signed or use it for silent updates; a future publisher-signature design needs
-its own plugin key, separate from Sparkle's application-update key.
+`nmr-predictor-X.Y.Z.zip` and `nmr-predictor-X.Y.Z.zip.sha256`, and
+`org.chemdraft.opsin.nameToStructure`, published from `jgassens/ChemDraft-OPSIN-Plugin` with
+`opsin-name-to-structure-X.Y.Z.zip` and its `.zip.sha256` sidecar. A catalog entry with no published
+release remains visible and reports that no release is published yet. The host requires the sidecar
+to remain present for manual distribution and verifies downloaded bytes against GitHub's
+release-asset digest. That digest establishes package integrity, not cryptographic publisher
+identity. Do not describe this path as signed or use it for silent updates; a future
+publisher-signature design needs its own plugin key, separate from Sparkle's application-update key.
 
 To host the *extracted source* elsewhere, merge the core-enablement surface
 (`docs/plugin-architecture/CORE-ENABLEMENT.md`) and add one `{ manifest, options }` entry to that

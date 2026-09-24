@@ -12,10 +12,12 @@ import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./ins
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import type {
+  PreparedOfficialPluginInstall,
   PluginUpdateCheckResult,
   PluginUpdateOffer,
   PreparedPluginUpdate
 } from "./pluginUpdates";
+import { OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 
 export interface PluginManagerDialogProps {
@@ -30,6 +32,8 @@ export interface PluginManagerDialogProps {
   onPickPackage?: () => Promise<PickedPluginPackage | undefined>;
   /** Stage, load and register a described package. */
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
+  /** Download and inspect one entry from the host-owned official catalog. */
+  onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
   /** Host-owned update operations. All are absent outside the Tauri desktop. */
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
@@ -42,6 +46,7 @@ export interface PluginManagerDialogProps {
 type PluginManagerBusyOperation =
   | { kind: "pickPackage" }
   | { kind: "installPackage" }
+  | { kind: "prepareOfficialInstall"; pluginId: string; pluginName: string }
   | { kind: "uninstallPlugin"; pluginId: string; pluginName: string }
   | { kind: "checkUpdates" }
   | { kind: "prepareUpdate"; pluginId: string; pluginName: string }
@@ -88,6 +93,7 @@ export function PluginManagerDialog({
   installedPluginCatalogReady = true,
   onPickPackage,
   onInstallPackage,
+  onPrepareOfficialPluginInstall,
   onUninstallPlugin,
   onCheckPluginUpdates,
   onPreparePluginUpdate,
@@ -99,7 +105,9 @@ export function PluginManagerDialog({
   const packageNoteId = useId();
   const [, refreshFromHost] = useReducer((version: number) => version + 1, 0);
   const [error, setError] = useState<string | undefined>(undefined);
-  const [pending, setPending] = useState<PickedPluginPackage | undefined>(undefined);
+  const [pending, setPending] = useState<PickedPluginPackage | PreparedOfficialPluginInstall | undefined>(undefined);
+  const [pendingOfficialPluginId, setPendingOfficialPluginId] = useState<string | undefined>(undefined);
+  const [officialInstallErrors, setOfficialInstallErrors] = useState<ReadonlyMap<string, string>>(new Map());
   const [pendingUpdateState, setPendingUpdateState] = useState<CatalogBoundPreparedUpdate | undefined>(undefined);
   const [updateResultsState, setUpdateResultsState] = useState<CatalogBoundUpdateResults | undefined>(undefined);
   const [noticeState, setNoticeState] = useState<PluginManagerNotice | undefined>(undefined);
@@ -146,6 +154,7 @@ export function PluginManagerDialog({
   // the ordinary case — the **installed copy shadows the bundled one**, matching what the host actually
   // has registered. Listing both would show two rows for one live plugin and let the toggle fight itself.
   const installedIds = new Set(installedPlugins.map((entry) => entry.record.id));
+  const availableOfficialPlugins = OFFICIAL_PLUGIN_CATALOG.filter((entry) => !installedIds.has(entry.pluginId));
   const catalog: readonly BundledPluginDescriptor[] = [
     ...bundledPlugins.filter((descriptor) => !installedIds.has(descriptor.manifest.id)),
     ...installedPlugins.map(
@@ -155,11 +164,14 @@ export function PluginManagerDialog({
   ];
   const enabledIds = new Set(runtime.host.listPlugins().map((manifest) => manifest.id));
   const installSupported = onPickPackage !== undefined && onInstallPackage !== undefined;
+  const officialInstallSupported =
+    onPrepareOfficialPluginInstall !== undefined && onInstallPackage !== undefined;
   const updateSupported =
     onCheckPluginUpdates !== undefined &&
     onPreparePluginUpdate !== undefined &&
     onUpdatePlugin !== undefined;
   const canInstall = installedPluginCatalogReady && installSupported;
+  const canInstallOfficial = installedPluginCatalogReady && officialInstallSupported;
   const canUpdate = installedPluginCatalogReady && updateSupported;
 
   const togglePlugin = (pluginId: string): void => {
@@ -218,6 +230,7 @@ export function PluginManagerDialog({
       // A cancelled picker is not a failure; leave the dialog exactly as it was.
       if (picked) {
         setPendingUpdateState(undefined);
+        setPendingOfficialPluginId(undefined);
         setPending(picked);
         setNoticeState(undefined);
       }
@@ -228,8 +241,29 @@ export function PluginManagerDialog({
       if (!pending) return;
       await onInstallPackage!(pending.inspection);
       setPending(undefined);
+      if (pendingOfficialPluginId) {
+        setOfficialInstallErrors((current) => withoutMapKey(current, pendingOfficialPluginId));
+      }
+      setPendingOfficialPluginId(undefined);
       onPluginsChanged?.();
     });
+
+  const prepareOfficialInstall = (pluginId: string, pluginName: string): Promise<void> => {
+    setBusyOperation({ kind: "prepareOfficialInstall", pluginId, pluginName });
+    setError(undefined);
+    setNoticeState(undefined);
+    setOfficialInstallErrors((current) => withoutMapKey(current, pluginId));
+    return onPrepareOfficialPluginInstall!(pluginId)
+      .then((prepared) => {
+        setPendingUpdateState(undefined);
+        setPendingOfficialPluginId(pluginId);
+        setPending(prepared);
+      })
+      .catch((cause: unknown) => {
+        setOfficialInstallErrors((current) => new Map(current).set(pluginId, messageOf(cause)));
+      })
+      .finally(() => setBusyOperation(undefined));
+  };
 
   const uninstall = (pluginId: string): Promise<void> =>
     run(
@@ -341,80 +375,128 @@ export function PluginManagerDialog({
           </div>
         ) : null}
 
-        <ul className="plugin-manager-list" aria-label="Plugins">
-          {catalog.map((descriptor) => {
-            const manifest = descriptor.manifest;
-            const enabled = enabledIds.has(manifest.id);
-            const installed = installedIds.has(manifest.id);
-            const installedEntry = installedPlugins.find((entry) => entry.record.id === manifest.id);
-            const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
-            const unavailable =
-              installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0);
-            const updateResult = updateResults.get(manifest.id);
-            return (
-              <li className="plugin-manager-item" data-plugin-id={manifest.id} key={manifest.id}>
-                <div className="plugin-manager-details">
-                  <div className="plugin-manager-name">
-                    {manifest.name} <span>v{manifest.version}</span>
-                    {installed ? <span className="plugin-manager-badge">Installed</span> : null}
-                    {updateResult?.status === "available" ? (
-                      <span className="plugin-manager-badge is-update">Update available</span>
+        <div className="plugin-manager-catalog">
+          <ul className="plugin-manager-list" aria-label="Plugins">
+            {catalog.map((descriptor) => {
+              const manifest = descriptor.manifest;
+              const enabled = enabledIds.has(manifest.id);
+              const installed = installedIds.has(manifest.id);
+              const installedEntry = installedPlugins.find((entry) => entry.record.id === manifest.id);
+              const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+              const unavailable =
+                installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0);
+              const updateResult = updateResults.get(manifest.id);
+              return (
+                <li className="plugin-manager-item" data-plugin-id={manifest.id} key={manifest.id}>
+                  <div className="plugin-manager-details">
+                    <div className="plugin-manager-name">
+                      {manifest.name} <span>v{manifest.version}</span>
+                      {installed ? <span className="plugin-manager-badge">Installed</span> : null}
+                      {updateResult?.status === "available" ? (
+                        <span className="plugin-manager-badge is-update">Update available</span>
+                      ) : null}
+                    </div>
+                    <div className="plugin-manager-id">{manifest.id}</div>
+                    {manifest.description ? <p>{manifest.description}</p> : null}
+                    {installed ? <PermissionList permissions={manifest.permissions} /> : null}
+                    {!installed ? (
+                      <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
+                    ) : null}
+                    {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
+                  </div>
+                  <div className="plugin-manager-actions">
+                    <label className="plugin-manager-toggle">
+                      <input
+                        type="checkbox"
+                        aria-label={`Enable ${manifest.name}`}
+                        checked={enabled}
+                        disabled={busy || unavailable}
+                        onChange={() => togglePlugin(manifest.id)}
+                      />
+                      <span>{unavailable ? "Unavailable" : enabled ? "Enabled" : "Disabled"}</span>
+                    </label>
+                    {installed && updateResult?.status === "available" ? (
+                      <button
+                        className="plugin-manager-button"
+                        data-action="review-plugin-update"
+                        data-plugin-id={manifest.id}
+                        disabled={busy || !canUpdate}
+                        onClick={() => void reviewUpdate(updateResult.offer)}
+                        type="button"
+                      >
+                        {busyOperation?.kind === "prepareUpdate" &&
+                        busyOperation.pluginId === manifest.id
+                          ? "Downloading update…"
+                          : "Review update…"}
+                      </button>
+                    ) : null}
+                    {installed && onUninstallPlugin ? (
+                      <button
+                        className="plugin-manager-button"
+                        data-action="uninstall-plugin"
+                        data-plugin-id={manifest.id}
+                        disabled={busy}
+                        onClick={() => void uninstall(manifest.id)}
+                        type="button"
+                      >
+                        {busyOperation?.kind === "uninstallPlugin" &&
+                        busyOperation.pluginId === manifest.id
+                          ? "Uninstalling…"
+                          : "Uninstall"}
+                      </button>
                     ) : null}
                   </div>
-                  <div className="plugin-manager-id">{manifest.id}</div>
-                  {manifest.description ? <p>{manifest.description}</p> : null}
-                  {installed ? <PermissionList permissions={manifest.permissions} /> : null}
-                  {!installed ? (
-                    <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
-                  ) : null}
-                  {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
-                </div>
-                <div className="plugin-manager-actions">
-                  <label className="plugin-manager-toggle">
-                    <input
-                      type="checkbox"
-                      aria-label={`Enable ${manifest.name}`}
-                      checked={enabled}
-                      disabled={busy || unavailable}
-                      onChange={() => togglePlugin(manifest.id)}
-                    />
-                    <span>{unavailable ? "Unavailable" : enabled ? "Enabled" : "Disabled"}</span>
-                  </label>
-                  {installed && updateResult?.status === "available" ? (
-                    <button
-                      className="plugin-manager-button"
-                      data-action="review-plugin-update"
-                      data-plugin-id={manifest.id}
-                      disabled={busy || !canUpdate}
-                      onClick={() => void reviewUpdate(updateResult.offer)}
-                      type="button"
-                    >
-                      {busyOperation?.kind === "prepareUpdate" &&
-                      busyOperation.pluginId === manifest.id
-                        ? "Downloading update…"
-                        : "Review update…"}
-                    </button>
-                  ) : null}
-                  {installed && onUninstallPlugin ? (
-                    <button
-                      className="plugin-manager-button"
-                      data-action="uninstall-plugin"
-                      data-plugin-id={manifest.id}
-                      disabled={busy}
-                      onClick={() => void uninstall(manifest.id)}
-                      type="button"
-                    >
-                      {busyOperation?.kind === "uninstallPlugin" &&
-                      busyOperation.pluginId === manifest.id
-                        ? "Uninstalling…"
-                        : "Uninstall"}
-                    </button>
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                </li>
+              );
+            })}
+          </ul>
+
+          <section className="plugin-manager-available" aria-labelledby={`${titleId}-available`}>
+            <h3 id={`${titleId}-available`}>Available</h3>
+            {availableOfficialPlugins.length > 0 ? (
+              <ul className="plugin-manager-list" aria-label="Available official plugins">
+                {availableOfficialPlugins.map((entry) => {
+                  const rowError = officialInstallErrors.get(entry.pluginId);
+                  const downloading =
+                    busyOperation?.kind === "prepareOfficialInstall" &&
+                    busyOperation.pluginId === entry.pluginId;
+                  return (
+                    <li className="plugin-manager-item" data-plugin-id={entry.pluginId} key={entry.pluginId}>
+                      <div className="plugin-manager-details">
+                        <div className="plugin-manager-name">{entry.displayName}</div>
+                        <div className="plugin-manager-id">{entry.pluginId}</div>
+                        <p>{entry.description}</p>
+                        {rowError ? (
+                          <p
+                            className="plugin-manager-update-status is-error"
+                            data-official-install-error={entry.pluginId}
+                            role="alert"
+                          >
+                            {rowError}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="plugin-manager-actions">
+                        <button
+                          className="plugin-manager-button"
+                          data-action="install-official-plugin"
+                          data-plugin-id={entry.pluginId}
+                          disabled={busy || !canInstallOfficial}
+                          onClick={() => void prepareOfficialInstall(entry.pluginId, entry.displayName)}
+                          type="button"
+                        >
+                          {downloading ? "Downloading…" : "Install"}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="plugin-manager-available-empty">All official plugins are installed.</p>
+            )}
+          </section>
+        </div>
 
         {pendingUpdate ? (
           <PackageReview
@@ -430,7 +512,10 @@ export function PluginManagerDialog({
             busy={busy}
             mode="install"
             subject={pending}
-            onCancel={() => setPending(undefined)}
+            onCancel={() => {
+              setPending(undefined);
+              setPendingOfficialPluginId(undefined);
+            }}
             onConfirm={() => void installPending()}
           />
         ) : (
@@ -663,6 +748,8 @@ function pluginManagerProgressMessage(
       return "Waiting for plugin package selection…";
     case "installPackage":
       return "Installing and verifying the plugin package…";
+    case "prepareOfficialInstall":
+      return `Downloading and verifying ${operation.pluginName}…`;
     case "uninstallPlugin":
       return `Uninstalling ${operation.pluginName}…`;
     case "checkUpdates":
@@ -672,6 +759,13 @@ function pluginManagerProgressMessage(
     case "applyUpdate":
       return `Updating ${operation.pluginName}…`;
   }
+}
+
+function withoutMapKey<K, V>(source: ReadonlyMap<K, V>, key: K): ReadonlyMap<K, V> {
+  if (!source.has(key)) return source;
+  const next = new Map(source);
+  next.delete(key);
+  return next;
 }
 
 /** Declared permissions, displayed without implying that reserved capabilities are currently granted. */

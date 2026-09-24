@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { PluginManifest } from "@chemdraft/plugin-api";
-import { act, createElement, Fragment, useEffect, useReducer } from "react";
+import { act, createElement, Fragment, useEffect, useReducer, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +12,7 @@ import { buildPluginMenuItems } from "./pluginMenuModel";
 import { PluginManagerDialog } from "./PluginManagerDialog";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import type {
+  PreparedOfficialPluginInstall,
   PluginUpdateCheckResult,
   PluginUpdateOffer,
   PreparedPluginUpdate
@@ -101,6 +102,7 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   installedPluginCatalogReady?: boolean;
   onPickPackage?: () => Promise<PickedPluginPackage | undefined>;
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
+  onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
@@ -234,6 +236,28 @@ function preparedUpdate(): PreparedPluginUpdate {
   };
 }
 
+const officialNmrPluginId = "org.chemdraft.nmr.predictor";
+const officialOpsinPluginId = "org.chemdraft.opsin.nameToStructure";
+const officialNmrManifest: PluginManifest = {
+  ...installedManifest,
+  id: officialNmrPluginId,
+  name: "NMR Shift Predictor",
+  version: "0.1.0",
+  description: "¹H/¹³C shift prediction from NMRShiftDB2-derived statistics."
+};
+
+function preparedOfficialInstall(): PreparedOfficialPluginInstall {
+  const picked = pickedPackage(officialNmrManifest);
+  return {
+    pluginId: officialNmrPluginId,
+    inspection: picked.inspection,
+    sourcePath:
+      "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.1.0/" +
+      "nmr-predictor-0.1.0.zip",
+    checksumVerified: true
+  };
+}
+
 function mount(element: ReturnType<typeof createElement>): void {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -250,6 +274,39 @@ function deferred<T>(): {
     resolve = complete;
   });
   return { promise, resolve };
+}
+
+function OfficialCatalogHarness({
+  runtime,
+  initialInstalled = false,
+  prepare,
+  onInstall = async () => {},
+  onUninstall = async () => {}
+}: {
+  runtime: DesktopPluginRuntime;
+  initialInstalled?: boolean;
+  prepare: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
+  onInstall?: (inspection: PluginPackageInspection) => Promise<void>;
+  onUninstall?: (pluginId: string) => Promise<void>;
+}) {
+  const [installed, setInstalled] = useState<readonly InstalledPluginCatalogEntry[]>(
+    initialInstalled ? [installedEntry(officialNmrManifest, false)] : []
+  );
+  return createElement(Harness, {
+    runtime,
+    onClose: vi.fn(),
+    onPluginsChanged: vi.fn(),
+    installedPlugins: installed,
+    onInstallPackage: async (inspection) => {
+      await onInstall(inspection);
+      setInstalled([installedEntry(inspection.manifest, false)]);
+    },
+    onPrepareOfficialPluginInstall: prepare,
+    onUninstallPlugin: async (pluginId) => {
+      await onUninstall(pluginId);
+      setInstalled((current) => current.filter((entry) => entry.record.id !== pluginId));
+    }
+  });
 }
 
 describe("PluginManagerDialog", () => {
@@ -475,6 +532,109 @@ describe("PluginManagerDialog", () => {
     expect(onInstallPackage).toHaveBeenCalledTimes(1);
     expect(onInstallPackage.mock.calls[0][0]).toMatchObject({ manifest: { id: installedPluginId } });
     expect(document.querySelector('[data-testid="plugin-package-review"]')).toBeNull();
+  });
+
+  it("lists every uninstalled official plugin in Available and hides installed entries there", () => {
+    const runtime = createRuntime();
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(OfficialCatalogHarness, {
+        runtime,
+        initialInstalled: true,
+        prepare: vi.fn(async () => preparedOfficialInstall())
+      })
+    );
+
+    const available = document.querySelector('[aria-label="Available official plugins"]');
+    expect(available?.querySelector(`[data-plugin-id="${officialNmrPluginId}"]`)).toBeNull();
+    expect(available?.querySelector(`[data-plugin-id="${officialOpsinPluginId}"]`)?.textContent).toContain(
+      "Name to Structure (OPSIN)"
+    );
+    expect(available?.textContent).toContain("Type a systematic chemical name and insert its structure.");
+    expect(
+      available?.querySelector<HTMLButtonElement>(
+        `[data-action="install-official-plugin"][data-plugin-id="${officialOpsinPluginId}"]`
+      )?.textContent
+    ).toBe("Install");
+  });
+
+  it("downloads an official plugin, reviews it, installs it, and returns it to Available after uninstall", async () => {
+    const runtime = createRuntime();
+    const prepared = deferred<PreparedOfficialPluginInstall>();
+    const onInstall = vi.fn(async () => {});
+    const onUninstall = vi.fn(async () => {});
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(OfficialCatalogHarness, {
+        runtime,
+        prepare: vi.fn(() => prepared.promise),
+        onInstall,
+        onUninstall
+      })
+    );
+
+    const installSelector =
+      `[data-action="install-official-plugin"][data-plugin-id="${officialNmrPluginId}"]`;
+    act(() => {
+      document.querySelector<HTMLButtonElement>(installSelector)!.click();
+    });
+    expect(document.querySelector<HTMLButtonElement>(installSelector)?.textContent).toBe("Downloading…");
+
+    await act(async () => {
+      prepared.resolve(preparedOfficialInstall());
+      await prepared.promise;
+    });
+    const review = document.querySelector('[data-testid="plugin-package-review"]');
+    expect(review?.textContent).toContain("NMR Shift Predictor");
+    expect(review?.textContent).toContain("checksum verified");
+    expect(review?.querySelector('[data-permission="ui.menu"]')).not.toBeNull();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
+    });
+    expect(onInstall).toHaveBeenCalledOnce();
+    expect(
+      document.querySelector(
+        `[aria-label="Available official plugins"] [data-plugin-id="${officialNmrPluginId}"]`
+      )
+    ).toBeNull();
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="uninstall-plugin"][data-plugin-id="${officialNmrPluginId}"]`
+        )!
+        .click();
+    });
+    expect(onUninstall).toHaveBeenCalledWith(officialNmrPluginId);
+    expect(document.querySelector<HTMLButtonElement>(installSelector)?.textContent).toBe("Install");
+  });
+
+  it.each([
+    [officialOpsinPluginId, "No release published yet"],
+    [officialNmrPluginId, "The plugin package does not match its .sha256 checksum."]
+  ])("shows an official install failure on its own row for %s", async (pluginId, message) => {
+    const runtime = createRuntime();
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(OfficialCatalogHarness, {
+        runtime,
+        prepare: vi.fn(async () => {
+          throw new Error(message);
+        })
+      })
+    );
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `[data-action="install-official-plugin"][data-plugin-id="${pluginId}"]`
+        )!
+        .click();
+    });
+
+    expect(document.querySelector(`[data-official-install-error="${pluginId}"]`)?.textContent).toContain(message);
+    expect(document.querySelector(".plugin-manager-error")).toBeNull();
   });
 
   it("identifies network.fetch as unavailable and refuses to install the package", async () => {
