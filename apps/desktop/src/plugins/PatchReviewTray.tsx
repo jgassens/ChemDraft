@@ -3,9 +3,9 @@ import type { PluginHost, QueuedProposedPatch } from "@chemdraft/plugin-host";
 import type { PluginProposalReviewItem } from "./panelBridge";
 
 /**
- * Review affordance for the proposePatch flow. Plugins queue document changes; the user
- * accepts or rejects them here. Plugins never mutate the document directly — this tray is
- * the only path from a proposal into document history.
+ * Review affordance for the proposePatch flow. Plugins queue document changes; the user accepts or
+ * rejects them here. This tray remains the only path from a proposal into document history;
+ * command-scoped `document.write` patches deliberately bypass the proposal queue.
  */
 export function PatchReviewTray({
   host,

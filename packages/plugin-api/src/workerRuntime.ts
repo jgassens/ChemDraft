@@ -155,7 +155,13 @@ export function runPluginWorker(
 
     const documents: PluginDocumentAPI = {
       getActiveDocument: () => call("documents", "getActiveDocument", []) as ReturnType<PluginDocumentAPI["getActiveDocument"]>,
-      proposePatch: (proposal) => call("documents", "proposePatch", [proposal]) as ReturnType<PluginDocumentAPI["proposePatch"]>
+      proposePatch: (proposal) => call("documents", "proposePatch", [proposal]) as ReturnType<PluginDocumentAPI["proposePatch"]>,
+      ...(has("document.write")
+        ? {
+            applyPatch: (patch: Parameters<NonNullable<PluginDocumentAPI["applyPatch"]>>[0]) =>
+              call("documents", "applyPatch", [patch]) as ReturnType<NonNullable<PluginDocumentAPI["applyPatch"]>>
+          }
+        : {})
     };
 
     // The capability objects are transport stubs: each method forwards to the boundary and resolves on

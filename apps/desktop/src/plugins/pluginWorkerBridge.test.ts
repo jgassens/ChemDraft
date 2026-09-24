@@ -567,6 +567,84 @@ describe("every chemistry method survives the worker boundary", () => {
   });
 });
 
+describe("documents.applyPatch survives the worker boundary", () => {
+  it("round-trips a command-scoped direct patch to the host", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.apply-patch-worker",
+      name: "Worker Writer",
+      version: "0",
+      apiVersion: "^0.1.4",
+      entry: "x",
+      permissions: ["document.write"],
+      contributes: {
+        commands: [
+          {
+            id: "plugin.applyPatchWorker.insert",
+            title: "Insert Structure",
+            requiredPermissions: ["document.write"]
+          }
+        ]
+      }
+    });
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_worker"] }));
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.applyPatchWorker.insert": (context) =>
+          context.documents.applyPatch!({
+            reason: "user supplied input",
+            patch: {
+              op: "addObject",
+              pageId: "page_001",
+              object: { id: "mol_worker" }
+            } as never
+          })
+      }
+    };
+    const host = new PluginHost({ applyDocumentPatch });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+
+    await expect(host.invokeCommand("plugin.applyPatchWorker.insert")).resolves.toEqual({
+      applied: true,
+      objectIds: ["mol_worker"]
+    });
+    expect(applyDocumentPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plugin: { id: manifest.id, name: manifest.name, version: manifest.version },
+        command: { id: "plugin.applyPatchWorker.insert", title: "Insert Structure" },
+        undoLabel: "Worker Writer: Insert Structure"
+      })
+    );
+    expect(host.listProposedPatches()).toHaveLength(0);
+    bridge.terminate();
+  });
+
+  it("omits the worker stub without document.write", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.no-apply-patch-worker",
+      name: "Worker Reader",
+      version: "0",
+      apiVersion: "^0.1.4",
+      entry: "x",
+      permissions: [],
+      contributes: { commands: [{ id: "plugin.noApplyPatchWorker.inspect", title: "Inspect" }] }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.noApplyPatchWorker.inspect": (context) => typeof context.documents.applyPatch
+      }
+    };
+    const host = new PluginHost();
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+
+    await expect(host.invokeCommand("plugin.noApplyPatchWorker.inspect")).resolves.toBe("undefined");
+    bridge.terminate();
+  });
+});
+
 describe("dialogs.promptText survives the worker boundary", () => {
   it("round-trips the request and exact submitted value through linked endpoints", async () => {
     const dialogManifest = parsePluginManifest({

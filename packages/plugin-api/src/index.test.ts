@@ -2,16 +2,51 @@ import { describe, expect, it } from "vitest";
 import pluginApiPackage from "../package.json";
 import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
+  AppliedPatchReceiptSchema,
   PluginApiVersion,
   PluginPanelReportSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
+  ProposedDocumentPatchSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
   dangerousPluginPermissions,
   parsePluginManifest,
   validatePluginManifest
 } from "./index";
+
+describe("document patch schemas", () => {
+  it("uses the same strict proposal envelope for direct patches", () => {
+    expect(
+      ProposedDocumentPatchSchema.parse({
+        reason: "Insert deterministic structure",
+        patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } }
+      })
+    ).toMatchObject({
+      reason: "Insert deterministic structure",
+      requiresUserApproval: true,
+      warnings: []
+    });
+    expect(() =>
+      ProposedDocumentPatchSchema.parse({
+        reason: "Insert deterministic structure",
+        patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } },
+        unexpected: true
+      })
+    ).toThrow();
+  });
+
+  it("strictly validates applied-patch receipts", () => {
+    expect(AppliedPatchReceiptSchema.parse({ applied: true, objectIds: ["mol_001"] })).toEqual({
+      applied: true,
+      objectIds: ["mol_001"]
+    });
+    expect(() => AppliedPatchReceiptSchema.parse({ applied: false, objectIds: [] })).toThrow();
+    expect(() =>
+      AppliedPatchReceiptSchema.parse({ applied: true, objectIds: [], status: "accepted" })
+    ).toThrow();
+  });
+});
 
 describe("plugin text-prompt schemas", () => {
   it("strictly validates and normalizes prompt requests", () => {

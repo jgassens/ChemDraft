@@ -1,6 +1,11 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import type { PluginManifest, PluginSelectionSnapshot, PluginStorage } from "@chemdraft/plugin-api";
-import type { CommandRegistry } from "@chemdraft/plugin-host";
+import type {
+  AppliedPatchReceipt,
+  PluginManifest,
+  PluginSelectionSnapshot,
+  PluginStorage
+} from "@chemdraft/plugin-api";
+import type { CommandRegistry, PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { PluginAppMenuItem } from "../appMenu";
@@ -51,6 +56,10 @@ export interface PluginRuntimeProviders {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
 }
 
 export interface PluginRuntimeView {
@@ -106,6 +115,13 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       commandRegistry: providers.commandRegistry,
       createStorage: providers.createStorage,
       onProposedPatchesChanged: () => providersRef.current.onProposedPatchesChanged?.(),
+      applyDocumentPatch: (request) => {
+        const apply = providersRef.current.applyDocumentPatch;
+        if (!apply) {
+          throw new Error("This desktop provides no direct plugin document-write path.");
+        }
+        return apply(request);
+      },
       defaultPanelSurface: isTauriHost() ? "window" : "inApp"
     });
     const bundledPlugins = registerBundledPlugins(runtime);

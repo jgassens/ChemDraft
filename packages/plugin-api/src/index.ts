@@ -2,7 +2,7 @@ import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
 
 // Re-export the chem-core types the SDK's own signatures reference (e.g. `getActiveDocument()` returns
-// a `ChemDraftDocument`, `proposePatch()` takes a `DocumentPatch`). Surfacing them here keeps the plugin
+// a `ChemDraftDocument`, document patch methods take a `DocumentPatch`). Surfacing them here keeps the plugin
 // boundary a single package: a plugin — and a host merging only the SDK — names these without importing
 // chem-core directly (see docs/plugin-architecture and the M33 boundary guard).
 export type { ChemDraftDocument, DocumentObject, DocumentPatch } from "@chemdraft/chem-core";
@@ -10,15 +10,16 @@ import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
  * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
- * `PluginDialogsAPI.promptText`.
+ * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
- * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` to also insert, `^0.1.3` for
- * text prompts), which this host satisfies and an older one correctly does not.
+ * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` for 2D layout, `^0.1.3` for
+ * text prompts, `^0.1.4` for direct document writes), which this host satisfies and an older one
+ * correctly does not.
  */
-export const PluginApiVersion = "0.1.3" as const;
+export const PluginApiVersion = "0.1.4" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -612,6 +613,16 @@ export interface ProposedPatchReceipt {
   resolvedAt?: string;
 }
 
+/** Receipt returned only after the host has committed a direct plugin patch. */
+export const AppliedPatchReceiptSchema = z
+  .object({
+    applied: z.literal(true),
+    objectIds: z.array(NonEmptyStringSchema)
+  })
+  .strict();
+
+export type AppliedPatchReceipt = z.infer<typeof AppliedPatchReceiptSchema>;
+
 export interface PluginStorage {
   get<T = unknown>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
@@ -622,6 +633,8 @@ export interface PluginStorage {
 export interface PluginDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
+  /** Present only with `document.write`; valid only during one of this plugin's command invocations. */
+  applyPatch?(patch: ProposedDocumentPatch): Promise<AppliedPatchReceipt>;
 }
 
 export const PluginStructureFormatSchema = z.enum(["smiles", "molfile-v2000", "molfile-v3000", "unknown"]);
@@ -905,9 +918,9 @@ export const PluginStructureFromSmilesRequestSchema = z
 /**
  * A drawable object, or why there is not one.
  *
- * The object is returned rather than inserted, because inserting is `proposePatch`'s job and that
- * queue is what gives the user a review step. A plugin gets the thing it could not build for itself —
- * atoms, bonds, and **2D coordinates** — and still has to propose it like any other change.
+ * The object is returned rather than inserted. A plugin gets the thing it could not build for itself
+ * — atoms, bonds, and **2D coordinates** — then uses `applyPatch` for deterministic user-supplied
+ * input or `proposePatch` when the result needs user review.
  */
 export type PluginStructureFromSmilesResult =
   | { available: true; built: true; object: DocumentObject }

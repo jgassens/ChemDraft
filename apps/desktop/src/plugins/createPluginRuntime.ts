@@ -1,5 +1,6 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
+  AppliedPatchReceipt,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -16,6 +17,7 @@ import {
   PluginHost,
   validateTrustedPluginManifest,
   type CommandRegistry,
+  type PluginPatchApplicationRequest,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
 
@@ -59,6 +61,10 @@ export interface DesktopPluginRuntimeOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
   /** Desktop routes every report straight to its native window; web keeps the in-app fallback. */
   defaultPanelSurface?: "inApp" | "window";
   /**
@@ -163,6 +169,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     getSelection: options.getSelection,
     createStorage: options.createStorage,
     onProposedPatchesChanged: options.onProposedPatchesChanged,
+    applyDocumentPatch: options.applyDocumentPatch,
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
     },

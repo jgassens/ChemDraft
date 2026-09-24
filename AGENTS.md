@@ -759,6 +759,14 @@ proposed insertion patch
 
 The user must approve insertion. The plugin host applies accepted patches through the normal document patch API.
 
+**Proposal versus direct insertion (plugin API 0.1.4, owner decision 2026-09-24).** Proposal review exists
+for results the user did not author and cannot vouch for — image recognition above all, which stays
+proposal-only. When the user supplied the input themselves and the conversion is deterministic (a name
+they typed, parsed by OPSIN), a confirmation step is friction, not safety. Such a plugin declares
+`document.write` and calls `documents.applyPatch`, available only while one of its own commands is
+executing; the host commits one labelled undo entry, selects what was inserted, and opens no review
+window. Undo is the safety net. Reports are for failures; a success needs no window.
+
 ## 8. MolScribe OCSR plugin rules
 
 The command registry, plugin API, permission system, and proposed-patch workflow all exist, and the

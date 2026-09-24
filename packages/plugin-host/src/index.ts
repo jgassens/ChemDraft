@@ -6,6 +6,7 @@ import type { ApplyPatchOptions } from "@chemdraft/chem-core";
 import { applyPatch } from "@chemdraft/chem-core";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
+  AppliedPatchReceipt,
   PluginAnalysisAPI,
   PluginAnalysisQuery,
   PluginAnalysisRecord,
@@ -43,6 +44,7 @@ import { AnalysisStore } from "./analysisStore";
 export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
 import {
+  AppliedPatchReceiptSchema,
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
@@ -181,6 +183,14 @@ export interface QueuedProposedPatch extends ProposedPatchReceipt {
   proposal: NormalizedProposedDocumentPatch;
 }
 
+/** Host-owned transaction metadata for one command-scoped direct document write. */
+export interface PluginPatchApplicationRequest {
+  plugin: { id: string; name: string; version: string };
+  command: { id: string; title: string };
+  patch: NormalizedProposedDocumentPatch;
+  undoLabel: string;
+}
+
 export interface PluginHostOptions {
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
@@ -196,6 +206,10 @@ export interface PluginHostOptions {
     request: NormalizedPluginPromptTextRequest,
     signal: AbortSignal
   ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
+  /** Commits a validated direct patch through the embedding application's normal document/history path. */
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -228,6 +242,7 @@ export class PluginHost {
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
+  private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
@@ -237,7 +252,10 @@ export class PluginHost {
   private readonly analysisStore: AnalysisStore;
   private nextProposalId = 1;
   private readonly subscribers = new Set<() => void>();
-  private readonly activeCommandInvocations = new Map<symbol, string>();
+  private readonly activeCommandInvocations = new Map<
+    symbol,
+    { pluginId: string; commandId: string; commandTitle: string }
+  >();
   private readonly textPromptInvocations = new Set<symbol>();
   private readonly openTextPrompts = new Map<
     string,
@@ -251,6 +269,7 @@ export class PluginHost {
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
+    this.applyDocumentPatch = options.applyDocumentPatch;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
     this.buildStructureFromSmiles = options.buildStructureFromSmiles;
@@ -527,7 +546,13 @@ export class PluginHost {
           // document — edits would land without ever passing through propose/review.
           return document === undefined ? undefined : deepFreeze(structuredClone(document));
         },
-        proposePatch: async (proposal) => this.proposePatch(pluginId, proposal)
+        proposePatch: async (proposal) => this.proposePatch(pluginId, proposal),
+        ...(this.hasPermission(pluginId, "document.write")
+          ? {
+              applyPatch: async (patch: ProposedDocumentPatch) =>
+                this.applyPatchForPlugin(pluginId, invocationToken, patch)
+            }
+          : {})
       },
       storage,
       selection,
@@ -567,6 +592,32 @@ export class PluginHost {
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
     return snapshot;
+  }
+
+  private async applyPatchForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    patch: ProposedDocumentPatch
+  ): Promise<AppliedPatchReceipt> {
+    this.requirePermission(pluginId, "document.write");
+    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    if (!invocation || invocation.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call documents.applyPatch only while one of its own commands is executing.`
+      );
+    }
+    const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
+    if (!this.applyDocumentPatch) {
+      throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
+    }
+    const plugin = this.requireRegisteredPlugin(pluginId).manifest;
+    const receipt = await this.applyDocumentPatch({
+      plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
+      command: { id: invocation.commandId, title: invocation.commandTitle },
+      patch: parsedPatch,
+      undoLabel: `${plugin.name}: ${invocation.commandTitle}`
+    });
+    return AppliedPatchReceiptSchema.parse(receipt);
   }
 
   listProposedPatches(status?: ProposedPatchStatus): QueuedProposedPatch[] {
@@ -650,7 +701,11 @@ export class PluginHost {
             }
 
             const invocationToken = Symbol(command.id);
-            this.activeCommandInvocations.set(invocationToken, manifest.id);
+            this.activeCommandInvocations.set(invocationToken, {
+              pluginId: manifest.id,
+              commandId: command.id,
+              commandTitle: command.title
+            });
             try {
               return await handler(this.createCommandContext(manifest.id, invocationToken));
             } finally {
@@ -724,7 +779,7 @@ export class PluginHost {
     request: PluginPromptTextRequest
   ): Promise<PluginPromptTextResult> {
     this.requirePermission(pluginId, "ui.panel");
-    if (!invocationToken || this.activeCommandInvocations.get(invocationToken) !== pluginId) {
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call dialogs.promptText only while one of its own commands is executing.`
       );
@@ -779,7 +834,7 @@ export class PluginHost {
   }
 
   private finishCommandInvocation(invocationToken: symbol): void {
-    const pluginId = this.activeCommandInvocations.get(invocationToken);
+    const pluginId = this.activeCommandInvocations.get(invocationToken)?.pluginId;
     this.activeCommandInvocations.delete(invocationToken);
     this.textPromptInvocations.delete(invocationToken);
     if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {

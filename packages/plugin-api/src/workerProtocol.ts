@@ -32,7 +32,8 @@ export const PLUGIN_WORKER_PROTOCOL_VERSION = 1 as const;
 
 /** The capability namespaces a plugin can reach across the boundary — one per capability object on
  *  {@link PluginCommandContext}. `documents` is always present on the context but its methods gate
- *  internally on `document.read` / `document.proposePatch`. */
+ *  internally on `document.read` / `document.proposePatch`; `applyPatch` is present only with
+ *  `document.write`. */
 export type PluginWorkerCapabilityNamespace =
   | "selection"
   | "analysis"
@@ -65,7 +66,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
-  documents: ["getActiveDocument", "proposePatch"],
+  documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
   chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"],
   dialogs: ["promptText"]

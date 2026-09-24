@@ -1,4 +1,5 @@
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { PluginApiVersion } from "@chemdraft/plugin-api";
 import type {
   PluginCommandContext,
   PluginManifest,
@@ -7,6 +8,7 @@ import type {
   PluginPromptTextResult
 } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
+import pluginHostPackage from "../package.json";
 import {
   CommandRegistry,
   CommandRegistryError,
@@ -77,6 +79,10 @@ describe("CommandRegistry", () => {
 });
 
 describe("PluginHost", () => {
+  it("keeps the published package version aligned with the plugin API contract", () => {
+    expect(pluginHostPackage.version).toBe(PluginApiVersion);
+  });
+
   it("exposes dialogs only to plugins that declared ui.panel", async () => {
     const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
     const host = new PluginHost({ promptText });
@@ -289,6 +295,118 @@ describe("PluginHost", () => {
       { status: "submitted", value: "  cyclohexane  " },
       { status: "cancelled" }
     ]);
+  });
+
+  it("omits documents.applyPatch without document.write", async () => {
+    let applyPatchMethod: PluginCommandContext["documents"]["applyPatch"] | "unset" = "unset";
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: [] }));
+    const host = new PluginHost({ applyDocumentPatch });
+    host.registerPlugin(
+      {
+        id: "org.test.no-write",
+        name: "No Write",
+        version: "0.0.1",
+        apiVersion: "^0.1.4",
+        entry: "dist/plugin.js",
+        permissions: [],
+        contributes: { commands: [{ id: "plugin.noWrite.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.noWrite.run": (context) => {
+            applyPatchMethod = context.documents.applyPatch;
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.noWrite.run");
+    expect(applyPatchMethod).toBeUndefined();
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a retained documents.applyPatch call after its command invocation ends", async () => {
+    let retainedApplyPatch: NonNullable<PluginCommandContext["documents"]["applyPatch"]> | undefined;
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_001"] }));
+    const host = new PluginHost({ applyDocumentPatch });
+    host.registerPlugin(
+      {
+        id: "org.test.late-write",
+        name: "Late Write",
+        version: "0.0.1",
+        apiVersion: "^0.1.4",
+        entry: "dist/plugin.js",
+        permissions: ["document.write"],
+        contributes: { commands: [{ id: "plugin.lateWrite.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.lateWrite.run": (context) => {
+            retainedApplyPatch = context.documents.applyPatch;
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.lateWrite.run");
+    expect(retainedApplyPatch).toBeTypeOf("function");
+    await expect(
+      retainedApplyPatch!({
+        reason: "late insertion",
+        patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+      })
+    ).rejects.toThrow(/only while one of its own commands is executing/i);
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it("validates and applies a direct patch during the owning command", async () => {
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_001"] }));
+    const host = new PluginHost({ applyDocumentPatch });
+    host.registerPlugin(
+      {
+        id: "org.test.direct-write",
+        name: "Direct Writer",
+        version: "0.0.1",
+        apiVersion: "^0.1.4",
+        entry: "dist/plugin.js",
+        permissions: ["document.write"],
+        contributes: {
+          commands: [
+            {
+              id: "plugin.directWrite.insert",
+              title: "Insert Structure",
+              requiredPermissions: ["document.write"]
+            }
+          ]
+        }
+      },
+      {
+        commandHandlers: {
+          "plugin.directWrite.insert": (context) =>
+            context.documents.applyPatch!({
+              reason: "user supplied chemical name",
+              patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+            })
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.directWrite.insert")).resolves.toEqual({
+      applied: true,
+      objectIds: ["mol_001"]
+    });
+    expect(applyDocumentPatch).toHaveBeenCalledWith({
+      plugin: { id: "org.test.direct-write", name: "Direct Writer", version: "0.0.1" },
+      command: { id: "plugin.directWrite.insert", title: "Insert Structure" },
+      patch: {
+        reason: "user supplied chemical name",
+        patch: { op: "addObject", pageId: "page_001", object: moleculeObject() },
+        warnings: [],
+        requiresUserApproval: true
+      },
+      undoLabel: "Direct Writer: Insert Structure"
+    });
+    expect(host.listProposedPatches()).toHaveLength(0);
   });
 
   it("registers plugin commands and queues proposed patches for user review", async () => {

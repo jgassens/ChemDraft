@@ -99,8 +99,8 @@ export async function computeIsotopeEnvelopeForPlugin(
  * structure inserted from a name and the same structure pasted as SMILES are the same object rather
  * than two implementations that drift.
  *
- * The object is returned, not inserted. Insertion goes through `proposePatch` like every other plugin
- * change, which is what keeps the user's review step in the path.
+ * The object is returned, not inserted. A plugin uses `applyPatch` for deterministic user-supplied
+ * input or `proposePatch` when the result needs review; either path stays undoable in the host.
  */
 export async function structureFromSmilesForPlugin(
   request: PluginStructureFromSmilesRequest,

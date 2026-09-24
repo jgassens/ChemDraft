@@ -101,6 +101,7 @@ import {
   shouldRestoreDocumentSession
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
+import { applyPluginDocumentPatch } from "./plugins/applyPluginDocumentPatch";
 import { PatchReviewTray, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
@@ -1382,7 +1383,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.24.08.34-codex";
+const CURRENT_BUILD_STAMP = "9.24.10.25-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1967,6 +1968,7 @@ export function MainWindow({
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
+  const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
@@ -2534,7 +2536,8 @@ export function MainWindow({
     return true;
   }, [installDocumentHistory]);
   const commitDocumentChange = useCallback((
-    nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
+    nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
+    undoLabel?: string
   ): boolean => {
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
@@ -2544,9 +2547,13 @@ export function MainWindow({
       return false;
     }
 
+    const present = reconcileNativeChargeMarks(nextDocument);
+    if (undoLabel) {
+      documentUndoLabelsRef.current.set(present, undoLabel);
+    }
     installDocumentHistory({
       past: [...currentHistory.past, currentHistory.present].slice(-DOCUMENT_HISTORY_LIMIT),
-      present: reconcileNativeChargeMarks(nextDocument),
+      present,
       future: []
     });
     setFileState((current) => {
@@ -7096,6 +7103,10 @@ export function MainWindow({
       return;
     }
 
+    const undoLabel = direction === "undo"
+      ? documentUndoLabelsRef.current.get(currentHistory.present)
+      : documentUndoLabelsRef.current.get(nextHistory.present);
+
     installDocumentHistory(nextHistory);
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
@@ -7114,7 +7125,13 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setLastAnalysis(null);
-    setStatus(direction === "undo" ? "Undid last document change" : "Redid document change");
+    setStatus(
+      undoLabel
+        ? `${direction === "undo" ? "Undid" : "Redid"} ${undoLabel}`
+        : direction === "undo"
+          ? "Undid last document change"
+          : "Redid document change"
+    );
   }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession, installDocumentHistory]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
@@ -8259,7 +8276,18 @@ export function MainWindow({
     getSelection: () => buildPluginSelectionSnapshot(documentRef.current),
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
-    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
+    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
+    applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+      const applied = applyPluginDocumentPatch(documentRef.current, patch);
+      commitDocumentChange(applied.document, undoLabel);
+      setSelectedNativeMoleculePart(undefined);
+      setStatus(
+        applied.receipt.objectIds.length > 0
+          ? `${plugin.name}: inserted structure`
+          : `${plugin.name}: applied ${command.title}`
+      );
+      return applied.receipt;
+    }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
 

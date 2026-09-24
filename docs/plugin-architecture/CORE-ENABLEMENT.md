@@ -12,8 +12,8 @@ runtime source imports **only `@chemdraft/plugin-api`**.
 
 | Package | Role | Depends on |
 |---|---|---|
-| `@chemdraft/plugin-api` | The only package a plugin imports. Manifest + contributions schema, command context/handlers, permission list, panel-report schema (text/keyValue/table/svg/linkedFigure), host-owned text-prompt contracts, selection snapshot, analysis records. Re-exports the chem-core document types it references. | `@chemdraft/chem-core` (types), `zod` |
-| `@chemdraft/plugin-host` | The runtime a host embeds: `PluginHost` (register/unregister/list/subscribe, command routing, permission enforcement, analysis store, panel-report forwarding, panel-closed hook) + `CommandRegistry`. | `@chemdraft/chem-core`, `@chemdraft/plugin-api` |
+| `@chemdraft/plugin-api` | The only package a plugin imports. Manifest + contributions schema, command context/handlers, permission list, panel-report schema (text/keyValue/table/svg/linkedFigure), host-owned text-prompt contracts, proposed/direct patch contracts, selection snapshot, analysis records. Re-exports the chem-core document types it references. | `@chemdraft/chem-core` (types), `zod` |
+| `@chemdraft/plugin-host` | The runtime a host embeds: `PluginHost` (register/unregister/list/subscribe, command routing, permission enforcement, command-scoped direct patch forwarding, proposal queue, analysis store, panel-report forwarding, panel-closed hook) + `CommandRegistry`. | `@chemdraft/chem-core`, `@chemdraft/plugin-api` |
 | `@chemdraft/chem-core` | **Types only** for the plugin path: `ChemDraftDocument`, `DocumentPatch` (re-exported through the SDK). A host with its own document model can provide compatible definitions instead of the whole package. | — |
 
 ## 2. Desktop host wiring (`apps/desktop/src/plugins/`)
@@ -23,7 +23,8 @@ these against its own UI; the shapes are the reference implementation.
 
 | File | Role |
 |---|---|
-| `createPluginRuntime.ts` | Constructs the singleton `PluginHost` + `PluginPanelController`. |
+| `createPluginRuntime.ts` | Constructs the singleton `PluginHost` + `PluginPanelController` and forwards direct patch transactions into the host shell. |
+| `applyPluginDocumentPatch.ts` | Applies a direct plugin patch through chem-core, discovers and selects inserted objects, and returns the strict applied receipt before the shell records one undo entry. |
 | `usePluginRuntime.ts` | React hook owning the runtime; derives plugins / menu items / open panel / diagnostics and re-renders on host + panel subscriptions. |
 | `registerBundledPlugins.ts` | **The integration point.** Catalog of `{ manifest, options }` descriptors, `applyEnabledPlugins`, and startup registration honoring the user's disabled set. *A host edits this one file to add a plugin.* |
 | `PluginPanelController.ts` | Owns open-panel state, report forwarding, the panel-closed hook, and runtime diagnostics. |

@@ -26,8 +26,9 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.3`). API 0.1.3 adds the host-owned `context.dialogs.promptText` capability; plugins that use it
-should declare `^0.1.3`. Existing `^0.1.0` and `^0.1.2` packages remain compatible.
+`0.1.4`). API 0.1.4 adds command-scoped `context.documents.applyPatch`; plugins that use it should
+declare `^0.1.4`. API 0.1.3 added the host-owned `context.dialogs.promptText` capability. Existing
+`^0.1.0` through `^0.1.3` packages remain compatible.
 
 ## Manifest + registration
 
@@ -102,6 +103,30 @@ if (answer?.status === "submitted") {
 invocation, and each command invocation may call it at most once (including after its first prompt has
 settled). Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
+
+## Direct document writes versus proposals
+
+A plugin declaring the dangerous `document.write` permission may apply a patch directly while one of
+its own commands is executing. The host validates the same strict `ProposedDocumentPatch` envelope as
+`proposePatch`, commits it through the normal document patch/history path, selects objects inserted by
+the patch, and returns a strict `{ applied: true, objectIds: string[] }` receipt:
+
+```ts
+const receipt = await context.documents.applyPatch?.({
+  reason: "Deterministic structure generated from the name the user entered",
+  patch: { op: "addObject", pageId, object: molecule }
+});
+```
+
+`applyPatch` is absent without `document.write`, and a retained method reference rejects after the
+command invocation ends. The direct write is one undo entry labelled with the plugin and command; it
+does not open the proposal review tray/window.
+
+Use `applyPatch` only when the user supplied the input and the result is deterministic, such as a
+name-to-structure command acting on text entered in the host prompt. Use `proposePatch` for uncertain
+or inferred output that needs inspection. Image recognition remains a proposal flow: low confidence,
+stereochemistry, charge/radical, and abbreviation uncertainty require explicit user approval before
+insertion. Holding `document.write` does not relax that recognition rule.
 
 ## Worker entry
 

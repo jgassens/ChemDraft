@@ -10,7 +10,8 @@
  *    `selection` / `analysis` / `storage` / `panels` objects are present only when the manifest grants
  *    the matching available permission (auto-granted; ADR-0029 is permissive — no consent gate). If the worker
  *    asks for a namespace the context does not carry, the bridge rejects the request. `documents` is
- *    always present but its methods re-check `document.read` / `document.proposePatch` and throw.
+ *    always present; read/proposal methods re-check their permissions, while `applyPatch` is present
+ *    only with `document.write` and remains bound to the active command invocation.
  *  - **Reverse signals** (`panelClosed`, `abort`) travel worker-ward so ADR-0012 panel-close
  *    cancellation works across the boundary.
  *  - **`terminate()` is a total teardown** — the mechanism M36 uninstall will call. After it, no
@@ -396,7 +397,7 @@ export class PluginWorkerBridge {
       case "panels":
         return context.panels;
       case "documents":
-        return context.documents; // always present; its methods gate on document.* internally
+        return context.documents; // always present; individual methods remain permission-gated
       case "chemistry":
         return context.chemistry;
       case "dialogs":
