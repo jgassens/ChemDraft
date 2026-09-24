@@ -139,11 +139,10 @@ describe("plugin import boundary", () => {
     expect(checkPluginBoundary(root)).toEqual([]);
   });
 
-  it("documents molscribe-ocsr as a pre-SDK canary that reaches into chem-core (not extractable)", () => {
-    // molscribe predates the plugin SDK and imports a chem-core type directly. It is intentionally
-    // excluded from EXTRACTABLE_PLUGINS. This assertion records the exception and will trip if the
-    // import changes, forcing a deliberate re-evaluation (fix molscribe, or update this record).
-    const specifiers = checkPluginBoundary(pluginDir("molscribe-ocsr")).map((violation) => violation.specifier);
-    expect(specifiers).toContain("@chemdraft/chem-core");
+  it("documents molscribe-ocsr as staying inside the SDK boundary (not extractable)", () => {
+    // molscribe-ocsr used to import chem-core and was brought inside the boundary when it moved to
+    // images.requestImage. It is still excluded from EXTRACTABLE_PLUGINS because it is a scaffold
+    // with no recognition engine.
+    expect(checkPluginBoundary(pluginDir("molscribe-ocsr"))).toEqual([]);
   });
 });
