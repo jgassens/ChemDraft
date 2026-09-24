@@ -651,6 +651,10 @@ import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
 import { PluginPromptTextDialog, isPluginPromptKeyboardEvent } from "./plugins/PluginPromptTextDialog";
 import { PluginImageRequestDialog, isPluginImageKeyboardEvent } from "./plugins/PluginImageRequestDialog";
+import {
+  StructureRecognitionInstallDialog,
+  isRecognitionInstallKeyboardEvent
+} from "./plugins/StructureRecognitionInstallDialog";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1384,7 +1388,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.24.14.23-codex";
+const CURRENT_BUILD_STAMP = "9.24.15.40-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -9360,7 +9364,11 @@ export function MainWindow({
     const handleKeyDown = (event: KeyboardEvent) => {
       // The prompt owns its keys. MainWindow also has a capture-phase Escape listener, so its global
       // handlers must opt out explicitly; propagation control inside the dialog is too late for that.
-      if (isPluginPromptKeyboardEvent(event) || isPluginImageKeyboardEvent(event)) {
+      if (
+        isPluginPromptKeyboardEvent(event) ||
+        isPluginImageKeyboardEvent(event) ||
+        isRecognitionInstallKeyboardEvent(event)
+      ) {
         return;
       }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
@@ -9557,7 +9565,11 @@ export function MainWindow({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isPluginPromptKeyboardEvent(event) || isPluginImageKeyboardEvent(event)) {
+      if (
+        isPluginPromptKeyboardEvent(event) ||
+        isPluginImageKeyboardEvent(event) ||
+        isRecognitionInstallKeyboardEvent(event)
+      ) {
         return;
       }
       if (event.key === "Shift" || event.shiftKey) {
@@ -9625,7 +9637,11 @@ export function MainWindow({
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
-      if (isPluginPromptKeyboardEvent(event) || isPluginImageKeyboardEvent(event)) return;
+      if (
+        isPluginPromptKeyboardEvent(event) ||
+        isPluginImageKeyboardEvent(event) ||
+        isRecognitionInstallKeyboardEvent(event)
+      ) return;
       if (event.key !== "Escape") return;
     if (spin3dStateRef.current) {
       event.preventDefault();
@@ -9975,7 +9991,11 @@ export function MainWindow({
       return;
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (isPluginPromptKeyboardEvent(event) || isPluginImageKeyboardEvent(event)) {
+      if (
+        isPluginPromptKeyboardEvent(event) ||
+        isPluginImageKeyboardEvent(event) ||
+        isRecognitionInstallKeyboardEvent(event)
+      ) {
         return;
       }
       if (event.key === "Escape") {
@@ -16128,6 +16148,10 @@ export function MainWindow({
           onCheckPluginUpdates={pluginRuntime.checkInstalledPluginUpdates}
           onPreparePluginUpdate={pluginRuntime.prepareInstalledPluginUpdate}
           onUpdatePlugin={pluginRuntime.updateInstalledPlugin}
+          recognitionEngineStatus={pluginRuntime.recognitionEngineStatus}
+          onRefreshRecognitionEngineStatus={pluginRuntime.refreshRecognitionEngineStatus}
+          onInstallRecognitionEngine={pluginRuntime.manageRecognitionEngineInstall}
+          onUninstallRecognitionEngine={pluginRuntime.uninstallRecognitionEngine}
           onClose={() => setPluginManagerOpen(false)}
           onPluginsChanged={() => setStatus("Plugin settings updated")}
         />
@@ -16151,6 +16175,15 @@ export function MainWindow({
           onPermissionFocus={pluginRuntime.refreshImagePermission}
           onRelaunch={pluginRuntime.relaunchForImagePermission}
           onCancel={pluginRuntime.cancelImageRequest}
+        />
+      ) : null}
+      {pluginRuntime.openRecognitionInstall ? (
+        <StructureRecognitionInstallDialog
+          key={pluginRuntime.openRecognitionInstall.id}
+          request={pluginRuntime.openRecognitionInstall}
+          onInstall={pluginRuntime.installRecognitionEngine}
+          onCancel={pluginRuntime.cancelRecognitionEngineInstall}
+          onDecline={pluginRuntime.declineRecognitionEngineInstall}
         />
       ) : null}
 

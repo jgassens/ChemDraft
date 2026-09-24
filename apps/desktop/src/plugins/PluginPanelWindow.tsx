@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { startPaletteWindowDrag } from "../window-manager";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
@@ -90,7 +90,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     ? analysisWindowTitle(analysisPayload)
     : payload?.report.title ?? "Plugin panel";
 
-  const closeWindow = (): void => {
+  const closeWindow = useCallback((): void => {
     if (identity) {
       if (isCoreAnalysisWindow) {
         void requestAnalysisWindowAction({ kind: "close", windowId: identity.panelId }).catch(() => undefined);
@@ -100,7 +100,17 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       }
     }
     void hideCurrentPanelWindow().catch(() => undefined);
-  };
+  }, [identity?.panelId, identity?.pluginId, isCoreAnalysisWindow]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      closeWindow();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeWindow]);
 
   return (
     <aside
@@ -118,6 +128,16 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           }
         }}
       >
+        {/* The window is undecorated (`decorations(false)` in lib.rs), so this stoplight-styled
+            button IS the close control. It stays empty like the palette windows' own: a glyph
+            inside it drew a stray "×" on top of the red dot. */}
+        <button
+          type="button"
+          className="palette-close-button"
+          title="Close panel"
+          aria-label="Close panel"
+          onClick={closeWindow}
+        />
         <span className="palette-title-label">{title}</span>
         {!isCoreAnalysisWindow && payload?.commandId ? (
           <button
@@ -128,14 +148,6 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
             Run again
           </button>
         ) : null}
-        <button
-          type="button"
-          className="palette-close-button"
-          aria-label="Close panel"
-          onClick={closeWindow}
-        >
-          ×
-        </button>
       </div>
       <div className="plugin-panel-content">
         {isCoreAnalysisWindow ? (

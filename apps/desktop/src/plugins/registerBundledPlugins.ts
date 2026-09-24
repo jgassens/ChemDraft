@@ -65,7 +65,7 @@ export function defaultPluginWorkerFactories(): ReadonlyMap<string, PluginWorker
  * manifest command handlers delegate to a {@link PluginWorkerBridge} that services its capability
  * calls against the real host context. Where no factory is available (node/jsdom), it runs in-process
  * exactly as before, so existing behavior and tests are unaffected. The lightweight MolScribe
- * image-input scaffold stays in-process.
+ * command stays in-process; the host-owned recognition engine remains behind its capability API.
  */
 export function createBundledPluginDescriptors(
   options: BundledPluginRuntimeOptions = {}

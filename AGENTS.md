@@ -376,7 +376,8 @@ Five example plugins live here. Two carry code; three are README-only placeholde
   common ESI adduct m/z via OpenChemLib, rendered through the same declarative panel report as any
   other analyzer. Keep it free of spectroscopy concepts, workers, and reference databases — that
   absence is the point of it.
-- `molscribe-ocsr` — image-to-structure scaffold; its rules follow below.
+- `molscribe-ocsr` — working image-to-structure plugin backed by ChemDraft's explicitly installed,
+  host-managed local MolScribe engine; its rules follow below.
 - `advanced-style-pack`, `journal-style-pack` — README-only placeholders. Keep them placeholders
   until a slice implements them, and never describe them as shipped plugins; a README naming a
   future plugin is not a plugin.
@@ -389,20 +390,21 @@ Five example plugins live here. Two carry code; three are README-only placeholde
 
 Allowed:
 
-- Plugin manifest and README scaffold
-- Image-to-structure command stub
+- Plugin manifest and README
+- Image-to-structure command using the host's command-scoped recognition capability
 - Recognized-structure result type usage
-- Fake recognition output for UI and permission testing
+- Fake recognition output in tests only
 - Source-image preservation
 - Proposed-patch acceptance flow
-- Clear instructions for later local-service integration
-- License and citation notice for external MolScribe when real integration is added
+- ChemDraft-managed local engine installation after explicit user action
+- License and citation notice for external MolScribe
 
 Not allowed:
 
-- Installing PyTorch, OpenCV, transformers, Hugging Face tooling, or model checkpoints in foundation tasks
+- Installing Python, PyTorch, MolScribe, or model checkpoints from plugin code
 - Running native code without explicit `native.execute` permission
 - Downloading model weights without explicit user action
+- Declaring `model.download`; engine installation is a host-owned user action
 - Silently inserting recognized structures without user review
 - Deleting or replacing the source image without user action
 
@@ -769,9 +771,11 @@ window. Undo is the safety net. Reports are for failures; a success needs no win
 
 ## 8. MolScribe OCSR plugin rules
 
-The command registry, plugin API, permission system, and proposed-patch workflow all exist, and the
-first serious plugin turned out to be the NMR predictor rather than this one. MolScribe OCSR is
-still a scaffold (§6.13). If it is picked up, these rules apply.
+MolScribe OCSR is a working bundled plugin. ChemDraft owns its local recognition engine, installation
+UI, and native boundary; the plugin receives only `recognition.recognizeStructure` for an image the
+host returned during that same command invocation. The private Python, PyTorch, MolScribe checkout,
+and model are installed only after explicit user action, run entirely on the computer, and are never
+downloaded or managed by plugin code. Recognition remains proposal-only (§6.13 and §7).
 
 Required behavior:
 
@@ -796,13 +800,12 @@ network inference used
 local model/checkpoint missing
 ```
 
-Implementation order, if it is picked up: begin from the existing scaffold's mocked fixture output;
-then a native-service or sidecar contract; then local inference against a user-supplied checkpoint;
-then, only behind explicit user approval, optional checkpoint download; and last, a confidence
-overlay with fixture-based accuracy tests. The sequence is not bureaucracy — each step exists to keep
-heavy dependencies and model weights from arriving before the permission and review flow that gates
-them. Do not vendor large checkpoints into the repository. Do not present recognized structures as
-guaranteed correct.
+The plugin declares `image.read`, `ml.inference`, `model.load`, and `native.execute` to receive the
+recognition capability, plus `document.proposePatch` for insertion review. It must not declare
+`model.download` or `document.write`. The host owns install, cancel, removal, status, and provenance;
+TypeScript callers use the `StructureRecognitionEngine` interface rather than native commands
+directly. Keep mocked recognitions in tests, do not vendor large checkpoints into the repository,
+and do not present recognized structures as guaranteed correct.
 
 ## 8a. Plugin runtime, packaging, and NMR rules (merged 2026-07-16, `1232a444`; see ADR-0030)
 

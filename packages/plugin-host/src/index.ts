@@ -19,6 +19,8 @@ import type {
   PluginImageRequest,
   PluginImageRequestResult,
   PluginImagesAPI,
+  PluginRecognitionAPI,
+  PluginRecognitionResult,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -54,6 +56,8 @@ import {
   PluginImageMaxDimension,
   PluginImageRequestResultSchema,
   PluginImageRequestSchema,
+  PluginProvidedImageSchema,
+  PluginRecognitionResultSchema,
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
@@ -221,6 +225,13 @@ export interface PluginHostOptions {
     request: NormalizedPluginImageRequest,
     signal: AbortSignal
   ) => PluginImageRequestResult | Promise<PluginImageRequestResult>;
+  /** Runs host-owned local recognition. The image has already been verified as one handed to this
+   * invocation; installation and any user consent stay entirely on the embedding host side. */
+  recognizeStructure?: (
+    plugin: { id: string; name: string },
+    image: PluginProvidedImage,
+    signal: AbortSignal
+  ) => PluginRecognitionResult | Promise<PluginRecognitionResult>;
   /** Commits a validated direct patch through the embedding application's normal document/history path. */
   applyDocumentPatch?: (
     request: PluginPatchApplicationRequest
@@ -258,6 +269,7 @@ export class PluginHost {
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
   private readonly requestImage?: PluginHostOptions["requestImage"];
+  private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
@@ -278,6 +290,8 @@ export class PluginHost {
     { invocationToken: symbol; abortController: AbortController }
   >();
   private readonly openImageRequests = new Map<symbol, Set<AbortController>>();
+  private readonly providedImagesByInvocation = new Map<symbol, PluginProvidedImage[]>();
+  private readonly openRecognitionRequests = new Map<symbol, Set<AbortController>>();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
@@ -287,6 +301,7 @@ export class PluginHost {
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
     this.requestImage = options.requestImage;
+    this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
@@ -471,6 +486,16 @@ export class PluginHost {
             this.requestImageForPlugin(pluginId, invocationToken, request)
         }
       : undefined;
+    const recognition: PluginRecognitionAPI | undefined =
+      this.hasPermission(pluginId, "image.read") &&
+      this.hasPermission(pluginId, "ml.inference") &&
+      this.hasPermission(pluginId, "model.load") &&
+      this.hasPermission(pluginId, "native.execute")
+        ? {
+            recognizeStructure: async (image: PluginProvidedImage) =>
+              this.recognizeStructureForPlugin(pluginId, invocationToken, image)
+          }
+        : undefined;
     const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
       ? {
           write: async (input) => {
@@ -584,6 +609,7 @@ export class PluginHost {
       panels,
       dialogs,
       images,
+      recognition,
       analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
@@ -903,15 +929,79 @@ export class PluginHost {
       validateProvidedImage(pluginId, parsedRequest, parsedResult.image);
       // In-process plugins share a heap with the provider. Give them their own byte snapshot, matching
       // the independent value a structured-clone worker hop naturally produces.
-      return {
+      const imageSnapshot = {
         status: "provided",
         image: { ...parsedResult.image, bytes: new Uint8Array(parsedResult.image.bytes) }
-      };
+      } as const;
+      const handedOut = this.providedImagesByInvocation.get(invocationToken) ?? [];
+      handedOut.push({ ...imageSnapshot.image, bytes: new Uint8Array(imageSnapshot.image.bytes) });
+      this.providedImagesByInvocation.set(invocationToken, handedOut);
+      return imageSnapshot;
     } finally {
       requests.delete(abortController);
       if (requests.size === 0) {
         this.openImageRequests.delete(invocationToken);
       }
+    }
+  }
+
+  private async recognizeStructureForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    image: PluginProvidedImage
+  ): Promise<PluginRecognitionResult> {
+    for (const permission of ["image.read", "ml.inference", "model.load", "native.execute"] as const) {
+      this.requirePermission(pluginId, permission);
+    }
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call recognition.recognizeStructure only while one of its own commands is executing.`
+      );
+    }
+
+    const parsedImage = PluginProvidedImageSchema.parse(image);
+    const handedOut = this.providedImagesByInvocation.get(invocationToken) ?? [];
+    const heldImage = handedOut.find((candidate) => providedImagesEqual(candidate, parsedImage));
+    if (!heldImage) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may recognize only an image returned by images.requestImage in this command invocation.`
+      );
+    }
+    if (!this.recognizeStructure) {
+      return {
+        status: "failed",
+        code: "unsupported",
+        message: "This host provides no local structure-recognition engine."
+      };
+    }
+
+    const plugin = this.requireRegisteredPlugin(pluginId).manifest;
+    const abortController = new AbortController();
+    const requests = this.openRecognitionRequests.get(invocationToken) ?? new Set<AbortController>();
+    requests.add(abortController);
+    this.openRecognitionRequests.set(invocationToken, requests);
+    const cancelledOnAbort = new Promise<PluginRecognitionResult>((resolve) => {
+      abortController.signal.addEventListener("abort", () => resolve({ status: "engineNotInstalled" }), {
+        once: true
+      });
+    });
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.recognizeStructure(
+            { id: plugin.id, name: plugin.name },
+            // The host's own retained copy, not the caller's bytes: what is recognized is exactly
+            // what the user chose, whatever the plugin did to its snapshot afterwards.
+            { ...heldImage, bytes: new Uint8Array(heldImage.bytes) },
+            abortController.signal
+          )
+        ),
+        cancelledOnAbort
+      ]);
+      return PluginRecognitionResultSchema.parse(result);
+    } finally {
+      requests.delete(abortController);
+      if (requests.size === 0) this.openRecognitionRequests.delete(invocationToken);
     }
   }
 
@@ -923,6 +1013,11 @@ export class PluginHost {
       controller.abort();
     }
     this.openImageRequests.delete(invocationToken);
+    this.providedImagesByInvocation.delete(invocationToken);
+    for (const controller of this.openRecognitionRequests.get(invocationToken) ?? []) {
+      controller.abort();
+    }
+    this.openRecognitionRequests.delete(invocationToken);
     if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {
       this.cancelOpenTextPrompt(pluginId);
     }
@@ -939,6 +1034,11 @@ export class PluginHost {
         controller.abort();
       }
       this.openImageRequests.delete(invocationToken);
+      this.providedImagesByInvocation.delete(invocationToken);
+      for (const controller of this.openRecognitionRequests.get(invocationToken) ?? []) {
+        controller.abort();
+      }
+      this.openRecognitionRequests.delete(invocationToken);
     }
   }
 
@@ -993,6 +1093,23 @@ function validateProvidedImage(
       `Image for plugin "${pluginId}" is ${image.width}×${image.height}; each side must be at most ${PluginImageMaxDimension} pixels.`
     );
   }
+}
+
+function providedImagesEqual(left: PluginProvidedImage, right: PluginProvidedImage): boolean {
+  if (
+    left.mediaType !== right.mediaType ||
+    left.width !== right.width ||
+    left.height !== right.height ||
+    left.source !== right.source ||
+    left.fileName !== right.fileName ||
+    left.bytes.byteLength !== right.bytes.byteLength
+  ) {
+    return false;
+  }
+  for (let index = 0; index < left.bytes.byteLength; index += 1) {
+    if (left.bytes[index] !== right.bytes[index]) return false;
+  }
+  return true;
 }
 
 class ScopedPluginStorage implements PluginStorage {

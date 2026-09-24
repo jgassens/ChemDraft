@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { PluginHost, QueuedProposedPatch } from "@chemdraft/plugin-host";
 import type { PluginProposalReviewItem } from "./panelBridge";
+import { recognitionStructurePreview } from "./recognitionPreview";
 
 /**
  * Review affordance for the proposePatch flow. Plugins queue document changes; the user accepts or
@@ -80,6 +81,31 @@ export function PatchReviewList({
             <span className="patch-review-plugin">{proposal.pluginName}</span>
           </div>
           <p className="patch-review-reason">{proposal.reason}</p>
+          {proposal.recognition ? (
+            <div className="patch-review-recognition" data-testid="recognition-proposal-preview">
+              <img src={proposal.recognition.sourceImageRef} alt="Source submitted for structure recognition" />
+              <div>
+                <span className={`patch-review-confidence is-${proposal.recognition.confidenceTier}`}>
+                  {capitalize(proposal.recognition.confidenceTier)} confidence
+                </span>
+                {proposal.structurePreview ? (
+                  <img
+                    className="patch-review-structure"
+                    src={proposal.structurePreview}
+                    alt="Recognized structure"
+                    data-testid="recognition-structure-preview"
+                  />
+                ) : null}
+                {proposal.recognition.proposedSmiles ? (
+                  <p>
+                    Recognized structure: <code>{proposal.recognition.proposedSmiles}</code>
+                  </p>
+                ) : (
+                  <p>Recognized structure: MOL structure ready for review</p>
+                )}
+              </div>
+            </div>
+          ) : null}
           {proposal.warnings.length > 0 ? (
             <ul className="patch-review-warnings">
               {proposal.warnings.map((warning) => (
@@ -107,6 +133,12 @@ export function proposalReviewItem(host: PluginHost, proposal: QueuedProposedPat
     pluginId: proposal.pluginId,
     pluginName: host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId,
     reason: proposal.proposal.reason,
-    warnings: proposal.proposal.warnings.map(({ code, message }) => ({ code, message }))
+    warnings: proposal.proposal.warnings.map(({ code, message }) => ({ code, message })),
+    recognition: proposal.proposal.recognition,
+    structurePreview: recognitionStructurePreview(proposal.proposal)
   };
+}
+
+function capitalize(value: string): string {
+  return value.length === 0 ? value : `${value[0].toUpperCase()}${value.slice(1)}`;
 }

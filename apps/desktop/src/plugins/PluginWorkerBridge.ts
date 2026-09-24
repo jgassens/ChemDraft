@@ -404,6 +404,8 @@ export class PluginWorkerBridge {
         return context.dialogs;
       case "images":
         return context.images;
+      case "recognition":
+        return context.recognition;
     }
   }
 

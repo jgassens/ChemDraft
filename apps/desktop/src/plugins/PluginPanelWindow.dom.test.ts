@@ -220,7 +220,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(container!.querySelector('[data-testid="plugin-panel-stale"]')).not.toBeNull();
   });
 
-  it("notifies panel-closed on dismissal so the plugin gets its ADR-0012 cancellation signal", async () => {
+  it("draws its stoplight close button without a stray glyph, and closes by click or Escape", async () => {
     await mountWindow();
     const closes: string[] = [];
     const onClosed = (event: Event) => {
@@ -234,11 +234,19 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       await broadcast(reportPayload());
       const close = container!.querySelector<HTMLButtonElement>(".palette-close-button");
       expect(close).not.toBeNull();
+      expect(close!.getAttribute("aria-label")).toBe("Close panel");
+      expect(close!.textContent).toBe("");
+      expect(container!.querySelector(".palette-title")!.textContent).not.toContain("×");
       await act(async () => {
         close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await Promise.resolve();
       });
       expect(closes).toEqual([PANEL_ID]);
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(closes).toEqual([PANEL_ID, PANEL_ID]);
     } finally {
       window.removeEventListener(PLUGIN_PANEL_CLOSED_EVENT, onClosed);
     }
@@ -286,7 +294,20 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
               pluginId: "org.test.proposer",
               pluginName: "Test Proposer",
               reason: "Insert the recognized structure",
-              warnings: [{ code: "low-confidence", message: "Review the stereochemistry." }]
+              warnings: [{ code: "low-confidence", message: "Review the stereochemistry." }],
+              recognition: {
+                sourceImageRef: "data:image/png;base64,iVBORw==",
+                proposedSmiles: "[C@H](F)Cl",
+                proposedMolfile: "fixture molfile",
+                confidenceTier: "low",
+                elapsedMs: 125,
+                engine: {
+                  name: "MolScribe",
+                  molscribeCommit: "abc123",
+                  modelSha256: "a".repeat(64)
+                }
+              },
+              structurePreview: "data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C%2Fsvg%3E"
             }
           ]
         }
@@ -294,6 +315,14 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     });
 
     expect(container!.textContent).toContain("Insert the recognized structure");
+    expect(container!.textContent).toContain("Low confidence");
+    expect(container!.textContent).toContain("[C@H](F)Cl");
+    expect(container!.querySelector<HTMLImageElement>('[alt="Source submitted for structure recognition"]')?.src).toContain(
+      "data:image/png;base64,iVBORw=="
+    );
+    expect(
+      container!.querySelector<HTMLImageElement>('[data-testid="recognition-structure-preview"]')?.getAttribute("src")
+    ).toBe("data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C%2Fsvg%3E");
     const actions: unknown[] = [];
     const onAction = (event: Event) => actions.push((event as CustomEvent<unknown>).detail);
     window.addEventListener(ANALYSIS_WINDOW_ACTION_EVENT, onAction);

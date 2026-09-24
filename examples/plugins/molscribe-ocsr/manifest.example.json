@@ -2,11 +2,15 @@
   "id": "org.chemdraft.ocsr.molscribe",
   "name": "MolScribe OCSR",
   "version": "0.0.0",
-  "apiVersion": "^0.1.5",
-  "description": "Image-input scaffold for a future optional MolScribe OCSR integration.",
+  "apiVersion": "^0.1.6",
+  "description": "Local image-to-structure recognition with host-managed MolScribe and review before insertion.",
   "entry": "dist/plugin.js",
   "permissions": [
     "image.read",
+    "ml.inference",
+    "model.load",
+    "native.execute",
+    "document.proposePatch",
     "ui.menu",
     "ui.panel"
   ],
@@ -16,8 +20,8 @@
         "id": "plugin.molscribeOcsr.recognizeImage",
         "title": "Recognize Structure from Image",
         "category": "Tools",
-        "description": "Choose an image for the optional MolScribe OCSR integration.",
-        "requiredPermissions": ["image.read", "ui.panel"]
+        "description": "Recognize a chemical structure from an image using the local MolScribe engine.",
+        "requiredPermissions": ["image.read", "ml.inference", "model.load", "native.execute", "document.proposePatch", "ui.panel"]
       }
     ],
     "menus": [
@@ -43,7 +47,7 @@
         "title": "MolScribe OCSR Image Recognizer",
         "input": "selected-image",
         "commandId": "plugin.molscribeOcsr.recognizeImage",
-        "requiredPermissions": ["image.read"]
+        "requiredPermissions": ["image.read", "ml.inference", "model.load", "native.execute"]
       }
     ]
   }

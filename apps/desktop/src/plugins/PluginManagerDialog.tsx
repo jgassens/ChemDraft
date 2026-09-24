@@ -19,6 +19,10 @@ import type {
 } from "./pluginUpdates";
 import { OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
+import { formatDiskBytes, isRecognitionInstallKeyboardEvent } from "./StructureRecognitionInstallDialog";
+import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
+
+const MOLSCRIBE_PLUGIN_ID = "org.chemdraft.ocsr.molscribe";
 
 export interface PluginManagerDialogProps {
   runtime: DesktopPluginRuntime;
@@ -39,6 +43,11 @@ export interface PluginManagerDialogProps {
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
+  recognitionEngineStatus?: StructureRecognitionEngineStatus;
+  /** Asked once when the dialog opens; the engine status is never read at app startup. */
+  onRefreshRecognitionEngineStatus?: () => Promise<void>;
+  onInstallRecognitionEngine?: () => Promise<boolean>;
+  onUninstallRecognitionEngine?: () => Promise<void>;
   onClose: () => void;
   onPluginsChanged?: () => void;
 }
@@ -98,6 +107,10 @@ export function PluginManagerDialog({
   onCheckPluginUpdates,
   onPreparePluginUpdate,
   onUpdatePlugin,
+  recognitionEngineStatus,
+  onRefreshRecognitionEngineStatus,
+  onInstallRecognitionEngine,
+  onUninstallRecognitionEngine,
   onClose,
   onPluginsChanged
 }: PluginManagerDialogProps) {
@@ -137,7 +150,8 @@ export function PluginManagerDialog({
     // and the operation is owned by the install machinery rather than by this dialog — closing does
     // not abandon it, it just stops holding the user hostage to a progress line.
     const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
+      // The engine install dialog opens over this one and owns its own Escape (decline or cancel).
+      if (event.key === "Escape" && !isRecognitionInstallKeyboardEvent(event)) {
         onClose();
       }
     };
@@ -403,6 +417,15 @@ export function PluginManagerDialog({
                       <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
                     ) : null}
                     {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
+                    {manifest.id === MOLSCRIBE_PLUGIN_ID ? (
+                      <RecognitionEngineRow
+                        status={recognitionEngineStatus}
+                        onRefresh={onRefreshRecognitionEngineStatus}
+                        disabled={busy}
+                        onInstall={onInstallRecognitionEngine}
+                        onUninstall={onUninstallRecognitionEngine}
+                      />
+                    ) : null}
                   </div>
                   <div className="plugin-manager-actions">
                     <label className="plugin-manager-toggle">
@@ -558,6 +581,91 @@ export function PluginManagerDialog({
       </section>
     </div>,
     document.body
+  );
+}
+
+function RecognitionEngineRow({
+  status,
+  disabled,
+  onRefresh,
+  onInstall,
+  onUninstall
+}: {
+  status?: StructureRecognitionEngineStatus;
+  disabled: boolean;
+  onRefresh?: () => Promise<void>;
+  onInstall?: () => Promise<boolean>;
+  onUninstall?: () => Promise<void>;
+}) {
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!onRefresh) return;
+    onRefresh().catch((cause: unknown) => setError(`The engine status could not be read: ${messageOf(cause)}`));
+    // Once per dialog opening; a changed callback identity is not a reason to ask again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const run = (action: () => Promise<unknown>, failure: string): void => {
+    setWorking(true);
+    setError(undefined);
+    action()
+      .catch((cause: unknown) => setError(`${failure}: ${messageOf(cause)}`))
+      .finally(() => setWorking(false));
+  };
+
+  const installed = status?.state === "installed";
+  const stateText = !status
+    ? error ? "status unavailable" : "checking…"
+    : installed
+      ? `installed (${formatDiskBytes(status.installed?.diskBytes ?? 0)})`
+      : status.state === "installing"
+        ? "installing…"
+        : status.state === "unsupported"
+          ? "not supported on this computer"
+          : status.state === "broken"
+            ? "damaged — reinstall it"
+            : "not installed";
+  const canInstall = status !== undefined && status.state !== "unsupported" && status.state !== "installing";
+  return (
+    <div data-testid="molscribe-engine-row">
+      <p className="plugin-manager-update-status" data-testid="molscribe-engine-state">
+        Recognition engine: {stateText}
+        {installed && onUninstall ? (
+          <>
+            {" — "}
+            <button
+              className="plugin-manager-link-button"
+              data-action="remove-recognition-engine"
+              disabled={disabled || working}
+              onClick={() => run(onUninstall, "The engine could not be removed")}
+              type="button"
+            >
+              {working ? "Removing…" : "Remove"}
+            </button>
+          </>
+        ) : canInstall && onInstall ? (
+          <>
+            {" — "}
+            <button
+              className="plugin-manager-link-button"
+              data-action="install-recognition-engine"
+              disabled={disabled || working}
+              onClick={() => run(onInstall, "The installer could not be opened")}
+              type="button"
+            >
+              Install…
+            </button>
+          </>
+        ) : null}
+      </p>
+      {error ? (
+        <p className="plugin-manager-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -810,5 +918,10 @@ function formatBytes(bytes: number): string {
 }
 
 function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+  if (cause instanceof Error) return cause.message;
+  // Tauri command rejections arrive as plain `{ code, message }` objects, not Error instances.
+  if (typeof cause === "object" && cause !== null && typeof (cause as { message?: unknown }).message === "string") {
+    return (cause as { message: string }).message;
+  }
+  return String(cause);
 }

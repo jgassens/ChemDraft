@@ -5526,6 +5526,49 @@ textarea:focus-visible,
   color: var(--cd-text-secondary, #6b6a64);
 }
 
+.patch-review-recognition {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 8px;
+  align-items: start;
+  margin: 6px 0;
+}
+
+.patch-review-recognition img {
+  width: 88px;
+  height: 66px;
+  border: 1px solid var(--cd-border, #c8c4ba);
+  border-radius: 4px;
+  background: white;
+  object-fit: contain;
+}
+
+.patch-review-recognition img.patch-review-structure {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 120px;
+  margin-top: 4px;
+}
+
+.patch-review-recognition p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.patch-review-confidence {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.patch-review-confidence.is-low,
+.patch-review-confidence.is-missing {
+  color: var(--cd-danger-strong);
+}
+
 .patch-review-actions {
   display: flex;
   gap: 6px;
@@ -5905,6 +5948,21 @@ textarea:focus-visible,
   opacity: 0.65;
 }
 
+.plugin-manager-link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cd-accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.plugin-manager-link-button:disabled {
+  color: var(--cd-text-disabled);
+  cursor: not-allowed;
+}
+
 /* Host-owned one-line prompt for worker-isolated plugins. It deliberately shares the manager's
    button treatment while naming the requesting plugin in fixed core chrome. */
 .plugin-prompt-backdrop {
@@ -6001,6 +6059,33 @@ textarea:focus-visible,
   border-radius: var(--cd-radius-control);
   background: var(--cd-bg-danger);
   color: var(--cd-danger-strong);
+}
+
+.recognition-install-body p {
+  margin: 0;
+  color: var(--cd-text-secondary);
+  line-height: 1.45;
+}
+
+.recognition-install-progress {
+  display: grid;
+  gap: var(--cd-space-2);
+}
+
+.recognition-install-progress progress {
+  width: 100%;
+}
+
+.recognition-install-progress span {
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+}
+
+.recognition-install-confirm {
+  border-color: var(--cd-accent);
+  background: var(--cd-accent);
+  color: white;
+  font-weight: 650;
 }
 
 .plugin-image-permission {

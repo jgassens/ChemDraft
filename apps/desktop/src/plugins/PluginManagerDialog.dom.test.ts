@@ -98,6 +98,7 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   runtime: DesktopPluginRuntime;
   onClose: () => void;
   onPluginsChanged: () => void;
+  bundledPlugins?: readonly BundledPluginDescriptor[];
   installedPlugins?: readonly InstalledPluginCatalogEntry[];
   installedPluginCatalogReady?: boolean;
   onPickPackage?: () => Promise<PickedPluginPackage | undefined>;
@@ -107,6 +108,10 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
+  recognitionEngineStatus?: import("./structureRecognitionEngine").StructureRecognitionEngineStatus;
+  onRefreshRecognitionEngineStatus?: () => Promise<void>;
+  onInstallRecognitionEngine?: () => Promise<boolean>;
+  onUninstallRecognitionEngine?: () => Promise<void>;
 }) {
   const [, refresh] = useReducer((version: number) => version + 1, 0);
   useEffect(() => runtime.host.subscribe(refresh), [runtime]);
@@ -310,6 +315,148 @@ function OfficialCatalogHarness({
 }
 
 describe("PluginManagerDialog", () => {
+  const molscribeDescriptor: BundledPluginDescriptor = {
+    manifest: {
+      ...manifest,
+      id: "org.chemdraft.ocsr.molscribe",
+      name: "MolScribe OCSR",
+      apiVersion: "^0.1.6"
+    },
+    options: { commandHandlers: {} }
+  };
+
+  it("offers host-owned recognition-engine installation from the MolScribe row", () => {
+    const runtime = createRuntime();
+    const onInstallRecognitionEngine = vi.fn(async () => true);
+    mount(
+      createElement(Harness, {
+        runtime,
+        bundledPlugins: [molscribeDescriptor],
+        recognitionEngineStatus: {
+          state: "notInstalled",
+          requiredDiskBytes: 2 * 1024 ** 3,
+          freeDiskBytes: 8 * 1024 ** 3
+        },
+        onInstallRecognitionEngine,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toContain(
+      "Recognition engine: not installed — Install…"
+    );
+    act(() => document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!.click());
+    expect(onInstallRecognitionEngine).toHaveBeenCalledOnce();
+  });
+
+  it("shows installed engine size and removal in the MolScribe row", () => {
+    const runtime = createRuntime();
+    const onUninstallRecognitionEngine = vi.fn(async () => undefined);
+    mount(
+      createElement(Harness, {
+        runtime,
+        bundledPlugins: [molscribeDescriptor],
+        recognitionEngineStatus: {
+          state: "installed",
+          installed: {
+            uvVersion: "0.8.0",
+            pythonVersion: "3.12.8",
+            molscribeCommit: "abc123",
+            modelSha256: "a".repeat(64),
+            installedAt: "2026-09-24T00:00:00.000Z",
+            diskBytes: 2 * 1024 ** 3
+          },
+          requiredDiskBytes: 2 * 1024 ** 3,
+          freeDiskBytes: 8 * 1024 ** 3
+        },
+        onUninstallRecognitionEngine,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toContain(
+      "Recognition engine: installed (2 GB) — Remove"
+    );
+    act(() => document.querySelector<HTMLButtonElement>('[data-action="remove-recognition-engine"]')!.click());
+    expect(onUninstallRecognitionEngine).toHaveBeenCalledOnce();
+  });
+
+  it("reads the engine status when the dialog opens and reports a failed removal in plain words", async () => {
+    const runtime = createRuntime();
+    const onRefreshRecognitionEngineStatus = vi.fn(async () => undefined);
+    const onUninstallRecognitionEngine = vi.fn(async () => {
+      throw { code: "failed", message: "The engine folder is in use." };
+    });
+    mount(
+      createElement(Harness, {
+        runtime,
+        bundledPlugins: [molscribeDescriptor],
+        recognitionEngineStatus: {
+          state: "installed",
+          installed: {
+            uvVersion: "0.8.0",
+            pythonVersion: "3.12.8",
+            molscribeCommit: "abc123",
+            modelSha256: "a".repeat(64),
+            installedAt: "2026-09-24T00:00:00.000Z",
+            diskBytes: 2 * 1024 ** 3
+          },
+          requiredDiskBytes: 2 * 1024 ** 3,
+          freeDiskBytes: 8 * 1024 ** 3
+        },
+        onRefreshRecognitionEngineStatus,
+        onUninstallRecognitionEngine,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    expect(onRefreshRecognitionEngineStatus).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="remove-recognition-engine"]')!.click();
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[data-testid="molscribe-engine-row"] [role="alert"]')?.textContent).toBe(
+      "The engine could not be removed: The engine folder is in use."
+    );
+  });
+
+  it("says the engine is unsupported without offering an install", () => {
+    const runtime = createRuntime();
+    mount(
+      createElement(Harness, {
+        runtime,
+        bundledPlugins: [molscribeDescriptor],
+        recognitionEngineStatus: { state: "unsupported", requiredDiskBytes: 0, freeDiskBytes: 0 },
+        onInstallRecognitionEngine: vi.fn(async () => true),
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: not supported on this computer"
+    );
+    expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
+  });
+
+  it("leaves Escape to the engine install dialog opened over it", () => {
+    const runtime = createRuntime();
+    const onClose = vi.fn();
+    mount(createElement(Harness, { runtime, onClose, onPluginsChanged: vi.fn() }));
+    const installDialog = document.createElement("div");
+    installDialog.className = "recognition-install-dialog";
+    const target = document.createElement("button");
+    installDialog.appendChild(target);
+    document.body.appendChild(installDialog);
+
+    act(() => target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("disables and re-enables a bundled plugin live while persisting the preference", () => {
     const runtime = createRuntime();
     const onPluginsChanged = vi.fn();

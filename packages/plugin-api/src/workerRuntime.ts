@@ -24,6 +24,7 @@ import type {
   PluginDialogsAPI,
   PluginDocumentAPI,
   PluginImagesAPI,
+  PluginRecognitionAPI,
   PluginManifest,
   PluginPanelAPI,
   PluginPermission,
@@ -203,6 +204,16 @@ export function runPluginWorker(
         }
       : undefined;
 
+    const recognition: PluginRecognitionAPI | undefined =
+      has("image.read") && has("ml.inference") && has("model.load") && has("native.execute")
+        ? {
+            recognizeStructure: (image) =>
+              call("recognition", "recognizeStructure", [image]) as ReturnType<
+                PluginRecognitionAPI["recognizeStructure"]
+              >
+          }
+        : undefined;
+
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
     // `available: false` rather than the plugin having to guess from the capability's presence.
@@ -260,6 +271,7 @@ export function runPluginWorker(
       panels,
       dialogs,
       images,
+      recognition,
       analysis,
       chemistry,
       hasPermission: has,

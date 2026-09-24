@@ -1,8 +1,11 @@
 # @chemdraft/plugin-api
 
-Defines public plugin API types, Zod-backed manifest schemas, permission names, contribution types, command context interfaces, plugin storage contracts, proposed/direct-patch envelopes and receipts, and recognition result types. API 0.1.5 adds the command-scoped, `image.read`-gated `images.requestImage` host capability.
+Defines public plugin API types, Zod-backed manifest schemas, permission names, contribution types, command context interfaces, plugin storage contracts, proposed/direct-patch envelopes and receipts, and recognition result types. API 0.1.6 adds the host-owned `recognition.recognizeStructure` capability for images returned by `images.requestImage` in the same command invocation.
 
 This package must not contain app-specific implementation code or direct document mutation logic.
+
+API 0.1.6 adds `recognition.recognizeStructure`, limited to an image returned by
+`images.requestImage` during the same command invocation and gated on local-inference permissions.
 
 Plugin contribution ids are namespaced by surface: `plugin.<pluginName>.<action>` for commands,
 `menu.<pluginName>.<action>` for menus, `panel.<pluginName>.<name>` for panels, and

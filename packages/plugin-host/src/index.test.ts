@@ -6,6 +6,7 @@ import type {
   PluginManifest,
   PluginPanelReport,
   PluginPermission,
+  PluginProvidedImage,
   PluginPromptTextResult
 } from "@chemdraft/plugin-api";
 import { PluginImageMaxBytes } from "@chemdraft/plugin-api";
@@ -433,6 +434,118 @@ describe("PluginHost", () => {
 
     await expect(host.invokeCommand("plugin.imageLimits.bytes")).rejects.toThrow(/25 MB/i);
     await expect(host.invokeCommand("plugin.imageLimits.dimensions")).rejects.toThrow(/8192 pixels/i);
+  });
+
+  it.each(["image.read", "ml.inference", "model.load", "native.execute"] as const)(
+    "omits recognition when %s is missing",
+    async (missing) => {
+      const required = ["image.read", "ml.inference", "model.load", "native.execute"] as const;
+      const permissions = required.filter((permission) => permission !== missing);
+      const host = new PluginHost();
+      let recognition: PluginCommandContext["recognition"] | "unset" = "unset";
+      host.registerPlugin(
+        {
+          id: `org.test.recognition-missing-${missing.replace(".", "-")}`,
+          name: "Recognition Permission Probe",
+          version: "0.0.1",
+          apiVersion: "^0.1.6",
+          entry: "dist/plugin.js",
+          permissions,
+          contributes: { commands: [{ id: `plugin.recognitionMissing.${missing.replace(".", "-")}`, title: "Run" }] }
+        },
+        {
+          commandHandlers: {
+            [`plugin.recognitionMissing.${missing.replace(".", "-")}`]: (context) => {
+              recognition = context.recognition;
+            }
+          }
+        }
+      );
+      await host.invokeCommand(`plugin.recognitionMissing.${missing.replace(".", "-")}`);
+      expect(recognition).toBeUndefined();
+    }
+  );
+
+  it("accepts only an image handed out in the same active invocation", async () => {
+    const provided: PluginProvidedImage = {
+      mediaType: "image/png",
+      bytes: new Uint8Array([1, 2, 3]),
+      width: 20,
+      height: 10,
+      source: "file"
+    };
+    const recognizeStructure = vi.fn(async () => ({ status: "engineNotInstalled" as const }));
+    const host = new PluginHost({
+      requestImage: async () => ({ status: "provided", image: provided }),
+      recognizeStructure
+    });
+    const permissions: PluginPermission[] = ["image.read", "ml.inference", "model.load", "native.execute"];
+    host.registerPlugin(
+      {
+        id: "org.test.recognition-image-scope",
+        name: "Recognition Scope",
+        version: "0.0.1",
+        apiVersion: "^0.1.6",
+        entry: "dist/plugin.js",
+        permissions,
+        contributes: { commands: [{ id: "plugin.recognitionScope.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.recognitionScope.run": async (context) => {
+            const acquired = await context.images!.requestImage({ title: "Choose image" });
+            if (acquired.status !== "provided") throw new Error("fixture image missing");
+            await expect(
+              context.recognition!.recognizeStructure({
+                ...acquired.image,
+                bytes: new Uint8Array([9, 9, 9])
+              })
+            ).rejects.toThrow(/only an image returned by images\.requestImage in this command invocation/i);
+            return context.recognition!.recognizeStructure(acquired.image);
+          }
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.recognitionScope.run")).resolves.toEqual({ status: "engineNotInstalled" });
+    expect(recognizeStructure).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a retained recognition call after its command invocation ends", async () => {
+    const provided: PluginProvidedImage = {
+      mediaType: "image/png",
+      bytes: new Uint8Array([1]),
+      width: 1,
+      height: 1,
+      source: "file"
+    };
+    const host = new PluginHost({ requestImage: async () => ({ status: "provided", image: provided }) });
+    let retained: PluginCommandContext["recognition"];
+    let retainedImage: PluginProvidedImage | undefined;
+    host.registerPlugin(
+      {
+        id: "org.test.late-recognition",
+        name: "Late Recognition",
+        version: "0.0.1",
+        apiVersion: "^0.1.6",
+        entry: "dist/plugin.js",
+        permissions: ["image.read", "ml.inference", "model.load", "native.execute"],
+        contributes: { commands: [{ id: "plugin.lateRecognition.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.lateRecognition.run": async (context) => {
+            retained = context.recognition;
+            const result = await context.images!.requestImage({ title: "Choose image" });
+            if (result.status === "provided") retainedImage = result.image;
+          }
+        }
+      }
+    );
+    await host.invokeCommand("plugin.lateRecognition.run");
+    await expect(retained!.recognizeStructure(retainedImage!)).rejects.toThrow(
+      /recognition\.recognizeStructure only while one of its own commands is executing/i
+    );
   });
 
   it("omits documents.applyPatch without document.write", async () => {

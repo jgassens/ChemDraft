@@ -4,5 +4,8 @@ Owns plugin manifest handling, command registration, permission enforcement, plu
 
 This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for host/user approval, and forwards `document.write` patches only from the owning plugin's active command invocation. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
 
+API 0.1.6 also gates local structure recognition on `image.read`, `ml.inference`, `model.load`, and
+`native.execute`, and accepts only bytes the host handed to that same command invocation.
+
 Registration is transactional across the shared command registry: all command ids are preflighted,
 partial registration is rolled back, and uninstall removes only commands still owned by that plugin.

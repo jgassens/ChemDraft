@@ -11,16 +11,17 @@ import type { DocumentObject } from "@chemdraft/chem-core";
 /**
  * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
  * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`; 0.1.5
- * adds command-scoped, host-owned `PluginImagesAPI.requestImage`.
+ * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local
+ * `PluginRecognitionAPI.recognizeStructure`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
  * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` for 2D layout, `^0.1.3` for
- * text prompts, `^0.1.4` for direct document writes, `^0.1.5` for image acquisition), which this
- * host satisfies and an older one correctly does not.
+ * text prompts, `^0.1.4` for direct document writes, `^0.1.5` for image acquisition, `^0.1.6` for
+ * local structure recognition), which this host satisfies and an older one correctly does not.
  */
-export const PluginApiVersion = "0.1.5" as const;
+export const PluginApiVersion = "0.1.6" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -501,6 +502,31 @@ export const RecognitionConfidencePointSchema = z
   })
   .strict();
 
+export const RecognitionConfidenceTierSchema = z.enum(["high", "medium", "low", "missing"]);
+
+export const RecognitionEngineProvenanceSchema = z
+  .object({
+    name: NonEmptyStringSchema,
+    molscribeCommit: NonEmptyStringSchema,
+    modelSha256: z.string().regex(/^[a-fA-F0-9]{64}$/, "Model SHA-256 must contain 64 hexadecimal characters.")
+  })
+  .strict();
+
+/** Optional recognition-specific material shown by the host's proposal review. Keeping it on the
+ * proposal means the uncertain structure and its evidence cannot become detached while queued. */
+export const RecognitionProposalReviewSchema = z
+  .object({
+    sourceImageRef: z
+      .string()
+      .regex(/^data:image\/(png|jpeg|tiff|webp);base64,/, "Recognition previews must be image data URIs."),
+    proposedSmiles: z.string().min(1).optional(),
+    proposedMolfile: z.string().min(1),
+    confidenceTier: RecognitionConfidenceTierSchema,
+    engine: RecognitionEngineProvenanceSchema.optional(),
+    elapsedMs: z.number().finite().nonnegative().optional()
+  })
+  .strict();
+
 /** Own-property names that poison `Object.prototype` (or an object's prototype chain) when copied
  *  onto a target by ordinary assignment/merge. `JSON.parse` and `structuredClone` both produce these
  *  as real own keys, so a worker can send one across the boundary. */
@@ -567,7 +593,8 @@ export const ProposedDocumentPatchSchema = z
     patch: DocumentPatchLikeSchema,
     reason: NonEmptyStringSchema,
     warnings: z.array(RecognitionWarningSchema).default([]),
-    requiresUserApproval: z.literal(true).default(true)
+    requiresUserApproval: z.literal(true).default(true),
+    recognition: RecognitionProposalReviewSchema.optional()
   })
   .strict();
 
@@ -576,11 +603,13 @@ export const RecognizedStructureResultSchema = z
     sourceImageRef: NonEmptyStringSchema,
     proposedSmiles: z.string().optional(),
     proposedMolfile: z.string().optional(),
-    confidence: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1).nullable(),
     atomConfidence: z.array(RecognitionConfidencePointSchema).default([]),
     bondConfidence: z.array(RecognitionConfidencePointSchema).default([]),
     warnings: z.array(RecognitionWarningSchema).default([]),
-    proposedPatch: ProposedDocumentPatchSchema.optional()
+    proposedPatch: ProposedDocumentPatchSchema.optional(),
+    engine: RecognitionEngineProvenanceSchema.optional(),
+    elapsedMs: z.number().finite().nonnegative().optional()
   })
   .strict();
 
@@ -600,6 +629,9 @@ export type PluginContributions = z.infer<typeof PluginContributionsSchema>;
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 export type RecognitionWarning = z.infer<typeof RecognitionWarningSchema>;
 export type RecognitionConfidencePoint = z.infer<typeof RecognitionConfidencePointSchema>;
+export type RecognitionConfidenceTier = z.infer<typeof RecognitionConfidenceTierSchema>;
+export type RecognitionEngineProvenance = z.infer<typeof RecognitionEngineProvenanceSchema>;
+export type RecognitionProposalReview = z.infer<typeof RecognitionProposalReviewSchema>;
 export type ProposedDocumentPatch = z.input<typeof ProposedDocumentPatchSchema>;
 export type NormalizedProposedDocumentPatch = z.output<typeof ProposedDocumentPatchSchema>;
 export type RecognizedStructureResult = z.infer<typeof RecognizedStructureResultSchema>;
@@ -1037,6 +1069,37 @@ export interface PluginImagesAPI {
   requestImage(request: PluginImageRequest): Promise<PluginImageRequestResult>;
 }
 
+export const PluginRecognitionFailureCodeSchema = z.enum([
+  "invalidImage",
+  "recognitionFailed",
+  "engineCrashed",
+  "timeout",
+  "busy",
+  "unsupported",
+  "installFailed",
+  "invalidResult"
+]);
+
+export const PluginRecognitionResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("recognized"), result: RecognizedStructureResultSchema }).strict(),
+  z.object({ status: z.literal("engineNotInstalled") }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: PluginRecognitionFailureCodeSchema,
+      message: z.string().min(1).max(2_000)
+    })
+    .strict()
+]);
+
+export type PluginRecognitionFailureCode = z.infer<typeof PluginRecognitionFailureCodeSchema>;
+export type PluginRecognitionResult = z.infer<typeof PluginRecognitionResultSchema>;
+
+export interface PluginRecognitionAPI {
+  /** Recognizes only an image returned by `images.requestImage` in this same command invocation. */
+  recognizeStructure(image: PluginProvidedImage): Promise<PluginRecognitionResult>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -1060,6 +1123,9 @@ export interface PluginCommandContext {
   dialogs?: PluginDialogsAPI;
   /** Present only with `image.read`; requests are valid only during this plugin's active command. */
   images?: PluginImagesAPI;
+  /** Present only with image.read + ml.inference + model.load + native.execute. The host owns any
+   * local-engine install and never delegates model download authority to plugin code. */
+  recognition?: PluginRecognitionAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

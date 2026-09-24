@@ -36,6 +36,8 @@ import { registerBundledPlugins, type BundledPluginDescriptor } from "./register
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
 import type { OpenPluginImageRequest } from "./PluginImageRequestController";
+import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
+import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -90,6 +92,8 @@ export interface PluginRuntimeView {
   detachedPanels: readonly OpenPluginPanel[];
   openTextPrompt: OpenPluginTextPrompt | undefined;
   openImageRequest: OpenPluginImageRequest | undefined;
+  openRecognitionInstall: OpenStructureRecognitionInstall | undefined;
+  recognitionEngineStatus: StructureRecognitionEngineStatus | undefined;
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
   invokePluginCommand: (commandId: string) => Promise<unknown>;
@@ -101,6 +105,12 @@ export interface PluginRuntimeView {
   refreshImagePermission: (id: number) => void;
   relaunchForImagePermission: (id: number) => void;
   cancelImageRequest: (id: number) => void;
+  installRecognitionEngine: (id: number) => void;
+  cancelRecognitionEngineInstall: (id: number) => void;
+  declineRecognitionEngineInstall: (id: number) => void;
+  refreshRecognitionEngineStatus: () => Promise<void>;
+  manageRecognitionEngineInstall: () => Promise<boolean>;
+  uninstallRecognitionEngine: () => Promise<void>;
 }
 
 /**
@@ -146,11 +156,15 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);
     const unsubscribePrompts = runtime.prompts.subscribe(bumpVersion);
     const unsubscribeImages = runtime.images.subscribe(bumpVersion);
+    // No engine status call at startup (§15): the plugin manager and the recognition command each
+    // ask when they need it.
+    const unsubscribeRecognition = runtime.recognition.subscribe(bumpVersion);
     return () => {
       unsubscribeHost();
       unsubscribePanels();
       unsubscribePrompts();
       unsubscribeImages();
+      unsubscribeRecognition();
     };
   }, [runtime]);
 
@@ -338,6 +352,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const diagnostics = useMemo(() => runtime.panels.getDiagnostics(), [runtime, version]);
   const openTextPrompt = useMemo(() => runtime.prompts.getOpenPrompt(), [runtime, version]);
   const openImageRequest = useMemo(() => runtime.images.getOpenRequest(), [runtime, version]);
+  const openRecognitionInstall = useMemo(() => runtime.recognition.getOpenInstall(), [runtime, version]);
+  const recognitionEngineStatus = useMemo(() => runtime.recognition.getStatus(), [runtime, version]);
 
   // Ownership, not mere presence: the registry is SHARED with core commands now, so `has(id)` would
   // claim every core command too. A command is a plugin command iff a plugin registered it (the host
@@ -370,6 +386,28 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [runtime]
   );
   const cancelImageRequest = useCallback((id: number) => runtime.images.cancel(id), [runtime]);
+  const installRecognitionEngine = useCallback(
+    (id: number) => void runtime.recognition.install(id),
+    [runtime]
+  );
+  const cancelRecognitionEngineInstall = useCallback(
+    (id: number) => void runtime.recognition.cancel(id),
+    [runtime]
+  );
+  const declineRecognitionEngineInstall = useCallback(
+    (id: number) => runtime.recognition.decline(id),
+    [runtime]
+  );
+  const refreshRecognitionEngineStatus = useCallback(async () => {
+    await runtime.recognition.refreshStatus();
+  }, [runtime]);
+  const manageRecognitionEngineInstall = useCallback(
+    () => runtime.recognition.manageInstall({ id: "org.chemdraft.ocsr.molscribe", name: "MolScribe OCSR" }),
+    [runtime]
+  );
+  const uninstallRecognitionEngine = useCallback(async () => {
+    await runtime.recognition.uninstall();
+  }, [runtime]);
 
   return {
     runtime,
@@ -395,6 +433,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     detachedPanels,
     openTextPrompt,
     openImageRequest,
+    openRecognitionInstall,
+    recognitionEngineStatus,
     diagnostics,
     isPluginCommand,
     invokePluginCommand,
@@ -405,6 +445,12 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     openImagePermissionSettings,
     refreshImagePermission,
     relaunchForImagePermission,
-    cancelImageRequest
+    cancelImageRequest,
+    installRecognitionEngine,
+    cancelRecognitionEngineInstall,
+    declineRecognitionEngineInstall,
+    refreshRecognitionEngineStatus,
+    manageRecognitionEngineInstall,
+    uninstallRecognitionEngine
   };
 }

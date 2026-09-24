@@ -26,6 +26,14 @@ import { PluginPanelController } from "./PluginPanelController";
 import { PluginPromptTextController } from "./PluginPromptTextController";
 import { createDefaultImageSourceRegistry, type ImageSourceRegistry } from "./ImageSourceProvider";
 import { PluginImageRequestController } from "./PluginImageRequestController";
+import { StructureRecognitionController } from "./StructureRecognitionController";
+import {
+  TauriStructureRecognitionEngine,
+  UnsupportedStructureRecognitionEngine,
+  type StructureRecognitionEngine
+} from "./structureRecognitionEngine";
+import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
+import { isTauriHost } from "./pluginStagingFs";
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
@@ -81,6 +89,10 @@ export interface DesktopPluginRuntimeOptions {
   buildStructureFromSmiles?: DesktopStructureFromSmilesProvider | null;
   /** Image-provider registry; injectable for tests and future platform/provider additions. */
   imageSourceRegistry?: ImageSourceRegistry;
+  /** Local OCSR engine port; injectable for tests and future platform engines. */
+  structureRecognitionEngine?: StructureRecognitionEngine;
+  /** Chemistry validation seam used after recognition and before a proposal is built. */
+  recognitionStructureValidator?: RecognitionStructureValidator;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -129,6 +141,7 @@ export interface DesktopPluginRuntime {
   panels: PluginPanelController;
   prompts: PluginPromptTextController;
   images: PluginImageRequestController;
+  recognition: StructureRecognitionController;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -171,6 +184,19 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const images = new PluginImageRequestController(
     options.imageSourceRegistry ?? createDefaultImageSourceRegistry()
   );
+  const recognitionEngine =
+    options.structureRecognitionEngine ??
+    (isTauriHost() ? new TauriStructureRecognitionEngine() : new UnsupportedStructureRecognitionEngine());
+  const recognition = new StructureRecognitionController(recognitionEngine, (outcome, image) =>
+    options.recognitionStructureValidator
+      ? preparePluginStructureRecognition(
+          outcome,
+          image,
+          options.getActiveDocument(),
+          options.recognitionStructureValidator
+        )
+      : preparePluginStructureRecognition(outcome, image, options.getActiveDocument())
+  );
   const host = new PluginHost({
     commandRegistry: options.commandRegistry,
     getActiveDocument: options.getActiveDocument,
@@ -183,6 +209,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     },
     promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
     requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
+    recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
@@ -201,6 +228,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     panels: controller,
     prompts,
     images,
+    recognition,
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered

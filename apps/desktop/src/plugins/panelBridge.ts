@@ -1,5 +1,5 @@
 import type { AnalysisReport } from "@chemdraft/analysis-core";
-import type { PluginManifest, PluginPanelReport } from "@chemdraft/plugin-api";
+import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } from "@chemdraft/plugin-api";
 import { isDesktopRuntime } from "../window-manager";
 import type { PluginDiagnostic } from "./types";
 
@@ -45,6 +45,9 @@ export interface PluginProposalReviewItem {
   pluginName: string;
   reason: string;
   warnings: readonly { code: string; message: string }[];
+  recognition?: RecognitionProposalReview;
+  /** Host-drawn `image/svg+xml` data URI of the molecule the proposal would insert. */
+  structurePreview?: string;
 }
 
 export type AnalysisWindowContent =

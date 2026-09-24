@@ -9,6 +9,7 @@ import {
   PluginPanelReportSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
+  PluginRecognitionResultSchema,
   ProposedDocumentPatchSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
@@ -392,6 +393,25 @@ describe("validatePluginManifest", () => {
 });
 
 describe("RecognizedStructureResult", () => {
+  it("uses strict API 0.1.6 recognition outcome envelopes", () => {
+    expect(PluginRecognitionResultSchema.parse({ status: "engineNotInstalled" })).toEqual({
+      status: "engineNotInstalled"
+    });
+    expect(
+      PluginRecognitionResultSchema.parse({
+        status: "failed",
+        code: "timeout",
+        message: "Recognition took too long."
+      })
+    ).toEqual({ status: "failed", code: "timeout", message: "Recognition took too long." });
+    expect(() =>
+      PluginRecognitionResultSchema.parse({ status: "engineNotInstalled", downloaded: false })
+    ).toThrow();
+    expect(() =>
+      PluginRecognitionResultSchema.parse({ status: "failed", code: "unknown", message: "No" })
+    ).toThrow();
+  });
+
   it("represents a reviewable image-to-structure result with a real proposed patch envelope", () => {
     const result: RecognizedStructureResult = RecognizedStructureResultSchema.parse({
       sourceImageRef: "fixture://benzene.png",
@@ -429,6 +449,34 @@ describe("RecognizedStructureResult", () => {
     expect(result.confidence).toBeGreaterThan(0.9);
     expect(result.proposedPatch?.requiresUserApproval).toBe(true);
     expect(result.proposedPatch?.patch.op).toBe("addObject");
+  });
+
+  it("accepts nullable confidence and strict engine provenance added in API 0.1.6", () => {
+    const result = RecognizedStructureResultSchema.parse({
+      sourceImageRef: "data:image/png;base64,iVBORw==",
+      proposedSmiles: "C",
+      proposedMolfile: "mol",
+      confidence: null,
+      atomConfidence: [{ id: "0", confidence: 0.61 }],
+      bondConfidence: [{ id: "0-1", confidence: 0.72 }],
+      warnings: [],
+      elapsedMs: 21,
+      engine: {
+        name: "MolScribe",
+        molscribeCommit: "abc123",
+        modelSha256: "a".repeat(64)
+      }
+    });
+
+    expect(result.confidence).toBeNull();
+    expect(result.atomConfidence?.[0]?.confidence).toBe(0.61);
+    expect(result.engine?.name).toBe("MolScribe");
+    expect(() =>
+      RecognizedStructureResultSchema.parse({
+        ...result,
+        engine: { ...result.engine, modelSha256: "not-a-sha" }
+      })
+    ).toThrow();
   });
 
   it("keeps dangerous permission names explicit for host review surfaces", () => {

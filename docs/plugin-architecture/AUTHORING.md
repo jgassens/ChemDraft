@@ -26,9 +26,10 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.5`). API 0.1.5 adds command-scoped `context.images.requestImage`; plugins that use it should
-declare `^0.1.5`. API 0.1.4 added `context.documents.applyPatch`, and 0.1.3 added the host-owned
-`context.dialogs.promptText` capability. Existing `^0.1.0` through `^0.1.4` packages remain compatible.
+`0.1.6`). API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that use it
+should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
+`context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
+capability. Existing `^0.1.0` through `^0.1.5` packages remain compatible.
 
 ## Manifest + registration
 
@@ -127,6 +128,36 @@ base64: typed arrays cross the worker transport through structured clone without
 The host rejects images larger than 25 MB or 8192 pixels on either side. Supported media types are
 PNG, JPEG, TIFF, and WebP. A plugin receives bytes only after the user explicitly chooses a file or
 screen region; this permission does not grant arbitrary filesystem or whole-screen access.
+
+## Host-owned structure recognition
+
+API 0.1.6 exposes local image recognition without giving a plugin model installation or native-call
+authority. Declare all four capability permissions — `image.read`, `ml.inference`, `model.load`, and
+`native.execute` — then pass the exact image returned by `requestImage` during the same command:
+
+```ts
+const selected = await context.images?.requestImage({
+  title: "Recognize Structure from Image",
+  sources: ["file", "screenRegion"]
+});
+if (selected?.status !== "provided") return;
+
+const recognized = await context.recognition?.recognizeStructure(selected.image);
+if (recognized?.status === "recognized") {
+  // Validate warnings and submit recognized.result.proposedPatch with documents.proposePatch.
+}
+```
+
+`recognition` is absent if any one permission is missing. The host rejects an image constructed by the
+plugin, modified after selection, retained from another invocation, or used after the command ends.
+If the local engine is absent, the host identifies the requesting plugin and offers installation; the
+plugin cannot request a download and must not declare `model.download`. Declining or cancelling gives
+`engineNotInstalled`. Recognition failures are typed, and successful results include nullable overall
+confidence, atom/bond confidence, elapsed time, and engine/model provenance.
+
+MolScribe results remain uncertain inferred output. A recognizer must validate the MOL/SMILES through
+available chemistry before proposing it, preserve the source-image preview and applicable uncertainty
+warnings, and use `documents.proposePatch`. It must never use `documents.applyPatch` for recognition.
 
 ## Direct document writes versus proposals
 
