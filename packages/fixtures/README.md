@@ -18,3 +18,9 @@ synthetic target for over/under CDXML interop; do not replace it with a
 proprietary ChemDraw document. `bactvue-visible-subset.cdxml` combines the same
 classes of visible marks observed in the BactVue reference file without copying
 that proprietary scheme.
+
+## OCSR
+
+The `ocsr/` directory holds public-domain structure images with known answers for the opt-in
+real-engine recognition check, `pnpm test:ocsr-real`. They are not read by `pnpm test` or by any
+TypeScript export here; `ocsr/README.md` records each file's source, licence, and expected SMILES.

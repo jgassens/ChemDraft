@@ -23,6 +23,7 @@ import type {
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
 
 import { analysisClient } from "../analysisClient";
+import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import {
   createSmilesMolecule,
   pastedStructureDepictionFromMolfile,
@@ -121,11 +122,7 @@ export async function structureFromSmilesForPlugin(
   const ocl = await import("@chemdraft/ocl-adapter");
   let depiction: PastedStructureDepiction;
   try {
-    const [{ registerRdkitWasmLoader }, rdkit] = await Promise.all([
-      import("../rdkitWasmLoader"),
-      import("@chemdraft/rdkit-adapter")
-    ]);
-    registerRdkitWasmLoader();
+    const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
     depiction = pastedStructureDepictionFromMolfile(await rdkit.generateSmiles2DMolfile(request.smiles));
   } catch {
     try {

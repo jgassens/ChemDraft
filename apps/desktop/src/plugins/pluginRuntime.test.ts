@@ -48,6 +48,7 @@ const recognizedCarbonMonoxide: StructureRecognitionOutcome = {
     { index: 1, symbol: "O", x: 0.75, y: 0, confidence: 0.92 }
   ],
   bonds: [{ begin: 0, end: 1, bondType: "double", confidence: 0.89 }],
+  agreement: { runs: 5, agreeing: 5, invalidRuns: 0, scalesPx: [800, 900, 1000, 1100, 1200] },
   elapsedMs: 80,
   engine: { name: "MolScribe", molscribeCommit: "abc123", modelSha256: "a".repeat(64) }
 };

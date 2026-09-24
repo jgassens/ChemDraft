@@ -31,6 +31,7 @@ async function proposal() {
       confidence: 0.95,
       atoms: [],
       bonds: [],
+      agreement: { runs: 5, agreeing: 5, invalidRuns: 0, scalesPx: [800, 900, 1000, 1100, 1200] },
       elapsedMs: 10,
       engine: { name: "MolScribe", molscribeCommit: "abc123", modelSha256: "a".repeat(64) }
     },

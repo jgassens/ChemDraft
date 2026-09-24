@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::io::{self, Read};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const REQUIRED_DISK_BYTES: u64 = 3_000_000_000;
 pub const UV_VERSION: &str = "0.12.18";
 pub const PYTHON_VERSION: &str = "3.10";

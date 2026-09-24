@@ -12,7 +12,11 @@ use super::protocol::{
     self, ProtocolResultError, RecognitionPayload, SidecarErrorCode, SidecarRequest,
 };
 
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Covers the first request's model load plus a full consensus vote: up to 15 recognitions (the
+/// five first-pass sizes and the rest of the 760-1240 px grid). Measured 2026-09-24 on an M1 Pro
+/// under heavy load: 2.1-2.3 s per recognition of a 70-atom drawing and 2.6 s for a warm model load,
+/// so about 35 s for a full vote; 300 s leaves roughly an 8x margin for slower CPUs and a cold load.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -334,6 +338,7 @@ impl EngineProcess for SystemProcess {
 mod tests {
     use super::*;
     use crate::ocsr_engine::platform::{MacArchitecture, MacPlatform};
+    use crate::ocsr_engine::protocol::RecognitionAgreement;
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
@@ -387,6 +392,12 @@ mod tests {
             confidence: None,
             atoms: Vec::new(),
             bonds: Vec::new(),
+            agreement: RecognitionAgreement {
+                runs: 1,
+                agreeing: 1,
+                invalid_runs: 0,
+                scales_px: vec![800],
+            },
             elapsed_ms: 1,
         }
     }
@@ -528,7 +539,7 @@ if [ "$(basename "$2")" = "fatal" ]; then
   exit 1
 fi
 echo "starting" >&2
-echo '{"type":"ready","protocol":1,"molscribeVersion":"test","torchVersion":"test"}'
+echo '{"type":"ready","protocol":2,"molscribeVersion":"test","torchVersion":"test"}'
 while IFS= read -r line; do
   case "$line" in
     *'"shutdown"'*) exit 0 ;;
@@ -544,7 +555,7 @@ while IFS= read -r line; do
       printf '{"id":"%s","type":"error","code":"invalid_image","message":"unreadable"}\n' "$id"
       continue ;;
   esac
-  printf '{"id":"%s","type":"result","smiles":"C","molfile":"m","confidence":0.5,"atoms":[],"bonds":[],"elapsedMs":1}\n' "$id"
+  printf '{"id":"%s","type":"result","smiles":"C","molfile":"m","confidence":0.5,"atoms":[],"bonds":[],"agreement":{"runs":3,"agreeing":3,"invalidRuns":0,"scalesPx":[800,1000,1200]},"elapsedMs":1}\n' "$id"
 done
 "#;
 

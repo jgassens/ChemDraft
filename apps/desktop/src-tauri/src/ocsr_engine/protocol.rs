@@ -32,6 +32,7 @@ pub enum SidecarMessage {
         confidence: Option<f64>,
         atoms: Vec<RecognizedAtom>,
         bonds: Vec<RecognizedBond>,
+        agreement: RecognitionAgreement,
         #[serde(rename = "elapsedMs")]
         elapsed_ms: u64,
     },
@@ -68,6 +69,40 @@ pub struct RecognizedBond {
     pub confidence: Option<f64>,
 }
 
+/// How far the sidecar's runs agreed. The image is recognized at several sizes (`scales_px`, the
+/// longer side in pixels, one per run) and the answers compared by canonical SMILES; `agreeing`
+/// counts the runs, the returned one included, that gave the returned answer, and `invalid_runs`
+/// the runs whose answer did not parse (or that raised), which never win. `invalid_runs` was added
+/// within protocol 2, so a sidecar that omits it is read as reporting none.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecognitionAgreement {
+    pub runs: u32,
+    pub agreeing: u32,
+    #[serde(default)]
+    pub invalid_runs: u32,
+    pub scales_px: Vec<u32>,
+}
+
+impl RecognitionAgreement {
+    fn validate(&self) -> Result<(), String> {
+        if self.runs == 0
+            || self.agreeing == 0
+            || u64::from(self.agreeing) + u64::from(self.invalid_runs) > u64::from(self.runs)
+            || self.scales_px.len() != self.runs as usize
+        {
+            return Err(format!(
+                "The OCSR sidecar reported an inconsistent agreement ({} of {} runs, {} invalid, {} sizes).",
+                self.agreeing,
+                self.runs,
+                self.invalid_runs,
+                self.scales_px.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SidecarErrorCode {
@@ -82,6 +117,7 @@ pub struct RecognitionPayload {
     pub confidence: Option<f64>,
     pub atoms: Vec<RecognizedAtom>,
     pub bonds: Vec<RecognizedBond>,
+    pub agreement: RecognitionAgreement,
     pub elapsed_ms: u64,
 }
 
@@ -134,15 +170,20 @@ pub fn result_for_id(
             confidence,
             atoms,
             bonds,
+            agreement,
             elapsed_ms,
-        } if id == expected_id => Ok(RecognitionPayload {
-            smiles,
-            molfile,
-            confidence,
-            atoms,
-            bonds,
-            elapsed_ms,
-        }),
+        } if id == expected_id => {
+            agreement.validate().map_err(ProtocolResultError::Crashed)?;
+            Ok(RecognitionPayload {
+                smiles,
+                molfile,
+                confidence,
+                atoms,
+                bonds,
+                agreement,
+                elapsed_ms,
+            })
+        }
         SidecarMessage::Error { id, code, message }
             if id.as_deref().is_none() || id.as_deref() == Some(expected_id) =>
         {
@@ -179,19 +220,45 @@ mod tests {
     fn parses_ready_result_and_error_lines() {
         validate_ready(
             parse_line(
-                r#"{"type":"ready","protocol":1,"molscribeVersion":"commit","torchVersion":"2"}"#,
+                r#"{"type":"ready","protocol":2,"molscribeVersion":"commit","torchVersion":"2"}"#,
             )
             .expect("ready JSON"),
         )
         .expect("ready protocol");
 
         let result = parse_line(
-            r#"{"id":"r1","type":"result","smiles":"C","molfile":"mol","confidence":null,"atoms":[{"index":0,"symbol":"C","x":0.1,"y":0.2,"confidence":null}],"bonds":[],"elapsedMs":12}"#,
+            r#"{"id":"r1","type":"result","smiles":"C","molfile":"mol","confidence":null,"atoms":[{"index":0,"symbol":"C","x":0.1,"y":0.2,"confidence":null}],"bonds":[],"agreement":{"runs":3,"agreeing":2,"scalesPx":[800,1000,1200]},"elapsedMs":12}"#,
         )
         .expect("result JSON");
         let payload = result_for_id(result, "r1").expect("matching result");
         assert_eq!(payload.smiles, "C");
         assert_eq!(payload.confidence, None);
+        assert_eq!(
+            payload.agreement,
+            RecognitionAgreement {
+                runs: 3,
+                agreeing: 2,
+                invalid_runs: 0,
+                scales_px: vec![800, 1000, 1200]
+            }
+        );
+
+        // The current sidecar reports invalid runs; an older protocol-2 sidecar omitted them (above).
+        let result = parse_line(
+            r#"{"id":"r2","type":"result","smiles":"C","molfile":"mol","confidence":0.4,"atoms":[],"bonds":[],"agreement":{"runs":5,"agreeing":2,"invalidRuns":3,"scalesPx":[800,900,1000,1100,1200]},"elapsedMs":12}"#,
+        )
+        .expect("result JSON");
+        assert_eq!(
+            result_for_id(result, "r2")
+                .expect("matching result")
+                .agreement,
+            RecognitionAgreement {
+                runs: 5,
+                agreeing: 2,
+                invalid_runs: 3,
+                scales_px: vec![800, 900, 1000, 1100, 1200]
+            }
+        );
 
         let error = parse_line(
             r#"{"id":"r1","type":"error","code":"invalid_image","message":"bad image"}"#,
@@ -209,13 +276,50 @@ mod tests {
     #[test]
     fn rejects_malformed_lines_and_wrong_protocols() {
         assert!(parse_line("not json").is_err());
-        let ready = parse_line(
-            r#"{"type":"ready","protocol":2,"molscribeVersion":"x","torchVersion":"y"}"#,
+        for old_or_new in [1, 3] {
+            let ready = parse_line(&format!(
+                r#"{{"type":"ready","protocol":{old_or_new},"molscribeVersion":"x","torchVersion":"y"}}"#
+            ))
+            .expect("valid JSON");
+            assert!(validate_ready(ready)
+                .expect_err("protocol mismatch")
+                .contains("requires"));
+        }
+    }
+
+    #[test]
+    fn a_result_must_carry_a_consistent_agreement() {
+        // Protocol 1 results (no agreement) are refused outright.
+        assert!(parse_line(
+            r#"{"id":"r1","type":"result","smiles":"C","molfile":"m","confidence":0.5,"atoms":[],"bonds":[],"elapsedMs":1}"#
         )
-        .expect("valid JSON");
-        assert!(validate_ready(ready)
-            .expect_err("protocol mismatch")
-            .contains("requires"));
+        .is_err());
+        // Unknown agreement fields are refused, not ignored.
+        assert!(parse_line(
+            r#"{"id":"r1","type":"result","smiles":"C","molfile":"m","confidence":0.5,"atoms":[],"bonds":[],"agreement":{"runs":1,"agreeing":1,"scalesPx":[800],"majority":true},"elapsedMs":1}"#
+        )
+        .is_err());
+        for agreement in [
+            r#"{"runs":0,"agreeing":0,"scalesPx":[]}"#,
+            r#"{"runs":3,"agreeing":4,"scalesPx":[800,1000,1200]}"#,
+            r#"{"runs":3,"agreeing":0,"scalesPx":[800,1000,1200]}"#,
+            r#"{"runs":3,"agreeing":3,"scalesPx":[800,1000]}"#,
+            // Agreeing and invalid runs are disjoint, so together they cannot exceed the runs.
+            r#"{"runs":3,"agreeing":2,"invalidRuns":2,"scalesPx":[800,1000,1200]}"#,
+            r#"{"runs":3,"agreeing":1,"invalidRuns":4294967295,"scalesPx":[800,1000,1200]}"#,
+        ] {
+            let message = parse_line(&format!(
+                r#"{{"id":"r1","type":"result","smiles":"C","molfile":"m","confidence":0.5,"atoms":[],"bonds":[],"agreement":{agreement},"elapsedMs":1}}"#
+            ))
+            .expect("valid JSON");
+            assert!(
+                matches!(
+                    result_for_id(message, "r1"),
+                    Err(ProtocolResultError::Crashed(message)) if message.contains("inconsistent agreement")
+                ),
+                "{agreement} must be refused"
+            );
+        }
     }
 
     #[test]

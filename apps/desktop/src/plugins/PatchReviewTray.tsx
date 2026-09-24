@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { PluginHost, QueuedProposedPatch } from "@chemdraft/plugin-host";
 import type { PluginProposalReviewItem } from "./panelBridge";
+import { reviewedRecognition } from "./recognitionAgreement";
 import { recognitionStructurePreview } from "./recognitionPreview";
 
 /**
@@ -128,13 +129,15 @@ export function PatchReviewList({
 }
 
 export function proposalReviewItem(host: PluginHost, proposal: QueuedProposedPatch): PluginProposalReviewItem {
+  // The plugin chose the confidence tier; the host caps it by how far its engine's runs agreed.
+  const { recognition, warnings } = reviewedRecognition(proposal.proposal.recognition, proposal.proposal.warnings);
   return {
     id: proposal.id,
     pluginId: proposal.pluginId,
     pluginName: host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId,
     reason: proposal.proposal.reason,
-    warnings: proposal.proposal.warnings.map(({ code, message }) => ({ code, message })),
-    recognition: proposal.proposal.recognition,
+    warnings,
+    recognition,
     structurePreview: recognitionStructurePreview(proposal.proposal)
   };
 }

@@ -6,6 +6,12 @@ import type {
 } from "@chemdraft/plugin-api";
 
 import { createNativeMolfileMolecule } from "../documentWorkflow";
+import {
+  recognitionAgreementLevel,
+  recognitionDisagreementWarning,
+  rememberRecognitionAgreement
+} from "./recognitionAgreement";
+import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import type { StructureRecognitionOutcome } from "./structureRecognitionEngine";
 
 export type RecognitionStructureValidator = (input: {
@@ -85,7 +91,13 @@ export async function preparePluginStructureRecognition(
     });
   }
   object = recognitionObject(document, object);
+  // The engine recognized the image at several sizes. When they disagreed, say so first: MolScribe's
+  // confidence alone was measured to be as high on wrong answers as on right ones.
+  const agreementWarnings: RecognitionWarning[] =
+    recognitionAgreementLevel(outcome.agreement) === "unanimous" ? [] : [recognitionDisagreementWarning(outcome.agreement)];
+  rememberRecognitionAgreement(outcome.molfile, outcome.agreement);
   const validationWarnings: RecognitionWarning[] = [
+    ...agreementWarnings,
     ...validation.warnings.map((warning) => ({
       code: `validation.${warning.code}`,
       message: warning.message
@@ -149,7 +161,7 @@ async function validateWithAvailableChemistryAdapter(input: {
   format: "molfile-v2000" | "molfile-v3000";
   value: string;
 }) {
-  const { createRdkitAdapter } = await import("@chemdraft/rdkit-adapter/adapter");
+  const { createRdkitAdapter } = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter/adapter"));
   return createRdkitAdapter().validateStructure(input);
 }
 

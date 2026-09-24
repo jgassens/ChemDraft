@@ -76,6 +76,17 @@ export interface StructureRecognitionBond {
   confidence: number;
 }
 
+/** How far the engine's runs agreed: the image is recognized once per size in `scalesPx` (the longer
+ * side, in pixels) and the answers compared by canonical SMILES; `agreeing` counts the runs, the
+ * returned one included, that gave the returned structure, and `invalidRuns` the runs whose answer
+ * did not parse (they never win, but they count in `runs`). */
+export interface StructureRecognitionAgreement {
+  runs: number;
+  agreeing: number;
+  invalidRuns: number;
+  scalesPx: number[];
+}
+
 export type StructureRecognitionOutcome =
   | {
       status: "recognized";
@@ -84,6 +95,7 @@ export type StructureRecognitionOutcome =
       confidence: number | null;
       atoms: StructureRecognitionAtom[];
       bonds: StructureRecognitionBond[];
+      agreement: StructureRecognitionAgreement;
       elapsedMs: number;
       engine: { name: "MolScribe"; molscribeCommit: string; modelSha256: string };
     }

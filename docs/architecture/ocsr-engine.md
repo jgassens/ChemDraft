@@ -135,7 +135,7 @@ The Python packages resolved by uv are constrained, not hashed: torch's transiti
 specific, so a fully hashed lock per platform is a possible later hardening. The receipt records the
 constraints that were in force.
 
-## Sidecar protocol (version 1)
+## Sidecar protocol (version 2)
 
 `resources/ocsr/molscribe_sidecar.py` is bundled with the app; its heavy imports come from the
 user-installed venv. It is started as `venv/bin/python -I molscribe_sidecar.py --checkpoint <model>`
@@ -145,10 +145,10 @@ importing anything heavy the sidecar points file descriptor 1 at stderr and keep
 for protocol output, so a stray `print` from a library cannot corrupt a protocol line.
 
 ```json
-{"type":"ready","protocol":1,"molscribeVersion":"…","torchVersion":"…"}
+{"type":"ready","protocol":2,"molscribeVersion":"…","torchVersion":"…"}
 {"type":"fatal","code":"model_load_failed","message":"…"}
 {"id":"ocsr-1","type":"recognize","imagePath":"/absolute/temporary/image.png"}
-{"id":"ocsr-1","type":"result","smiles":"…","molfile":"…","confidence":0.97,"atoms":[{"index":0,"symbol":"C","x":0.41,"y":0.2,"confidence":0.99}],"bonds":[{"begin":0,"end":1,"bondType":"single","confidence":0.98}],"elapsedMs":812}
+{"id":"ocsr-1","type":"result","smiles":"…","molfile":"…","confidence":0.97,"atoms":[{"index":0,"symbol":"C","x":0.41,"y":0.2,"confidence":0.99}],"bonds":[{"begin":0,"end":1,"bondType":"single","confidence":0.98}],"agreement":{"runs":5,"agreeing":5,"invalidRuns":0,"scalesPx":[800,900,1000,1100,1200]},"elapsedMs":9500}
 {"id":"ocsr-1","type":"error","code":"invalid_image","message":"…"}
 {"type":"shutdown"}
 ```
@@ -157,21 +157,108 @@ The result maps MolScribe's own output keys one-to-one: `atoms[].atom_symbol` �
 (fractions of image width and height), `bonds[].endpoint_atoms` → `begin`/`end`, `bond_type` →
 `bondType` (`single`, `double`, `triple`, `aromatic`, `solid wedge`, `dashed wedge`), and each
 `confidence` as given. A value MolScribe did not return is `null`; nothing is filled in. An image that
-OpenCV cannot read is `invalid_image`; any exception from the model is `recognition_failed`; a
-malformed request line gets an `error` with `id: null`. `shutdown` or EOF on stdin exits 0.
+Pillow cannot decode is `invalid_image`. When every run raised, the model's own error is returned as
+`recognition_failed`; when runs answered but none of their SMILES parsed, `recognition_failed` carries
+the plain message "The engine could not read a valid structure from this image. Try a larger or
+sharper image." A malformed request line gets an `error` with `id: null`. `shutdown` or EOF on stdin
+exits 0. The host refuses a protocol-1 result (no `agreement`), an unknown `agreement` field, and an
+inconsistent one (`agreeing` outside `1..=runs`, `agreeing + invalidRuns > runs`, or `scalesPx` not
+one entry per run). `invalidRuns` was added within protocol 2; the host reads a result without it as
+reporting none.
 
-`python3 apps/desktop/src-tauri/resources/ocsr/molscribe_sidecar.py --selftest` runs the whole
-request loop against a fake model — result mapping, missing confidences, a malformed line, a bad
-path, a model exception, and nothing answered after shutdown — without torch or MolScribe.
+### Preprocessing: flatten onto white
+
+Every image, whatever its source, is decoded with Pillow and flattened onto white before
+recognition: alpha (RGBA, LA, PA) and palette transparency are composited over white, 16-bit gray is
+scaled into 8 bits rather than clipped, EXIF orientation is applied, and the result is RGB. MolScribe
+reads files with OpenCV, which drops the alpha channel, so a transparent background became black:
+Wikimedia's gray + alpha PNG of brevetoxin A came back as a nonsense molecule at confidence 0.087,
+and the same image on white was read correctly. The flattened image is handed to MolScribe's
+`predict_image` as an RGB array, so OpenCV never reads the file.
+
+### Multi-scale consensus
+
+MolScribe crops the white border and then squashes every image to 384 × 384 with bilinear
+resizing. For a large drawing that shrink skips pixels, so the answer depends on the exact input
+size — and the confidence does not reveal it. Brevetoxin A on white, resized to width W: 500 wrong
+(0.774), 600 right (0.500), 700 wrong (0.336), 800–1200 right (0.33–0.76), 1400–1920 wrong
+(0.60–0.72). Even a one-pixel change matters: 800 × 287 was right (0.762) and 800 × 288 unparsable
+(0.39).
+
+A single run is therefore chaotic on a large molecule, and the fix is more votes rather than better
+tuned sizes. Each image is recognized at many sizes, rescaled (LANCZOS, aspect kept) so its longer side
+is the given size:
+
+1. **First pass:** 800, 900, 1000, 1100 and 1200 px. If at least 4 of these 5 give the same valid
+   structure, the vote stops here.
+2. **Otherwise:** also 760 to 1240 px in steps of 40 (the grid's other ten sizes; 900 and 1100 are
+   not on it), so a full vote is **15 runs**.
+
+A size that would enlarge the image more than 2× is skipped; when any are skipped, the original size
+votes as well, and an image too small for every size is recognized once as it is.
+
+The answers are compared by RDKit canonical isomeric SMILES. A run whose SMILES does not parse (for
+example a pentavalent carbon) or that raised is **invalid**: it never wins and never agrees with
+anything, however confident. The winner is the most frequent valid structure; a tie goes to the one
+with the higher mean confidence. The most confident run of the winner is returned. `agreement`
+reports `{runs, agreeing, invalidRuns, scalesPx}`: `runs` counts every run, invalid ones included,
+and `agreeing` the runs that gave the returned structure. Atom `x`/`y` are fractions of the image, so
+they do not depend on the size the returned run used. Each request also writes one
+`vote {"image", "runs": [{px, key, confidence}]}` line to the log, which the real-engine check reads.
+
+The review uses it (`apps/desktop/src/plugins/recognitionAgreement.ts`): the plugin picks a tier from
+the confidence, and the host caps it by how many of **all** runs agreed:
+
+| Runs agreeing | Review tier | Warning |
+| --- | --- | --- |
+| all (unanimous) | the plugin's tier | none |
+| at least two thirds | at most **medium** | yes |
+| fewer | **low** | yes |
+
+The warning reads "Recognition gave different answers at different image sizes; check the structure
+carefully. Only *k* of *n* readings agreed." The cap is applied where the host builds every review
+item (`proposalReviewItem`), keyed by the molfile the host produced, so it holds even if a plugin
+drops the warning. A high tier is never shown for a non-unanimous result; an early stop at 4 of 5 is
+therefore at most medium.
+
+Measured with the installed engine on brevetoxin A (`pnpm test:ocsr-real`, 2026-09-24; Y the right
+structure, x unparsable, - not run):
+
+| Case | 800 900 1000 1100 1200 (first pass) | Result |
+| --- | --- | --- |
+| 1920 px file, transparent | x Y Y Y Y — stopped | right, 4/5, at most medium |
+| Retina screenshot, long side 1400 | Y Y Y Y Y — stopped | right, 5/5, plugin's tier |
+| 1x screenshot, long side 700 + 20 px margin | x x x x x — all 15 run | right, 1/15 (14 unparsable), low |
+
+The 1x case is a resolution limit, not a pipeline one: recognizing directly at 740 or 900 px from the
+full-resolution source was right.
+
+### Checks
+
+`python3 apps/desktop/src-tauri/resources/ocsr/molscribe_sidecar.py --selftest` runs without torch,
+MolScribe or a model (Pillow is required): flattening of gray + alpha, RGBA, palette transparency,
+opaque and 16-bit images; an undecodable file; the choice of sizes, including small images; the vote
+(unanimous, majority beating a more confident outlier, plurality, ties by mean confidence, invalid
+runs never winning); and the whole request loop with a stubbed model — the adaptive stop after 4 of 5,
+a full 15-run vote, 11 confident unparsable runs losing to 3 valid ones, every run unparsable
+(`recognition_failed` with the plain message), a model exception at every size, result mapping with
+`agreement`, missing confidences, a malformed line, a bad path, an undecodable image, and nothing
+answered after shutdown. Where RDKit is importable (the engine venv) it also checks the canonical-SMILES key.
+
+`pnpm test:ocsr-real` is the opt-in accuracy check against a real installed engine and the fixtures
+in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
 
 ## Process lifetime
 
 - **Lazy.** The sidecar starts on the first recognition, not at app start, and is reused afterwards.
 - **One request at a time.** A second request while one is running is **rejected** with `busy`
   immediately; there is no queue.
-- **Timeout.** 120 s per request, measured from the command, so the first request's model load
-  (about 15 s) comes out of the same budget. On timeout the process is killed; the timeout is
-  not retried, and the next request starts a fresh process.
+- **Timeout.** 300 s per request, measured from the command. It must cover the first request's model
+  load plus a full 15-run vote. Measured 2026-09-24 on an M1 Pro while the machine was heavily loaded
+  (load average 30–90): 2.1–2.3 s per recognition of brevetoxin A, a 2.6–7.6 s model load, 9.3 s for
+  a vote that stopped after 5 runs and 26–33 s for a full 15-run vote. 300 s is about 8× the slowest
+  full vote measured, for slower CPUs and a cold first load. On timeout the process is killed; the
+  timeout is not retried, and the next request starts a fresh process.
 - **Crash.** If the process has died (while idle or mid-request) or writes a malformed line, it is
   discarded and the request is retried once against a fresh process. A second failure is reported as
   `engineCrashed`.
@@ -181,7 +268,7 @@ path, a model exception, and nothing answered after shutdown — without torch o
 Image bytes cross IPC as base64, are capped at 25 MB decoded, and are decoded in Rust first, so a
 corrupt or mislabelled image fails as `invalidImage` before the engine starts. The format is taken
 from the bytes, not the declared media type. PNG, JPEG, BMP and TIFF are passed through unchanged;
-GIF is re-encoded as PNG because OpenCV, which MolScribe reads with, cannot open GIF. The bytes go to
+GIF is re-encoded as PNG in Rust (it once had to be, for OpenCV; the sidecar now decodes with Pillow). The bytes go to
 a uniquely named file in the app temp directory, which an RAII guard deletes on every path.
 
 ## Tauri commands
@@ -197,7 +284,7 @@ Python and packages.
 | `ocsr_engine_install` | `onProgress: Channel<InstallProgress>` | status, or `Err({code, message})` with `insufficientDisk`, `network`, `checksumMismatch`, `cancelled`, `unsupported` or `failed`. One install at a time; a second call fails with `failed`. |
 | `ocsr_engine_cancel_install` | — | `()` |
 | `ocsr_engine_uninstall` | — | status. Cancels a running install and waits for it, stops the sidecar, then removes the three `ocsr-engine*` directories. |
-| `ocsr_recognize_image` | `{mediaType, bytesBase64}` | `{status: "recognized", smiles, molfile, confidence, atoms, bonds, elapsedMs, engine: {name: "MolScribe", molscribeCommit, modelSha256}}`, `{status: "notInstalled"}` (also while installing or on an unsupported platform), or `{status: "failed", code, message}` with `invalidImage`, `recognitionFailed`, `engineCrashed` (including a `broken` install), `timeout` or `busy` |
+| `ocsr_recognize_image` | `{mediaType, bytesBase64}` | `{status: "recognized", smiles, molfile, confidence, atoms, bonds, agreement: {runs, agreeing, invalidRuns, scalesPx}, elapsedMs, engine: {name: "MolScribe", molscribeCommit, modelSha256}}`, `{status: "notInstalled"}` (also while installing or on an unsupported platform), or `{status: "failed", code, message}` with `invalidImage`, `recognitionFailed`, `engineCrashed` (including a `broken` install), `timeout` or `busy` |
 
 `InstallProgress` is `{phase, message, bytesDone?, bytesTotal?, estimated?}` with `phase` one of
 `checkingDisk`, `downloadingUv`, `installingPython`, `installingPackages`, `downloadingModel`,

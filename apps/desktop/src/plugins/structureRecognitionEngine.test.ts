@@ -77,6 +77,7 @@ describe("TauriStructureRecognitionEngine", () => {
         confidence: null,
         atoms: [],
         bonds: [],
+        agreement: { runs: 15, agreeing: 10, invalidRuns: 3, scalesPx: [760, 800, 840, 880, 900, 920, 960, 1000, 1040, 1080, 1100, 1120, 1160, 1200, 1240] },
         elapsedMs: 12,
         engine: { name: "MolScribe" as const, molscribeCommit: "abc", modelSha256: "d".repeat(64) }
       }
@@ -95,7 +96,8 @@ describe("TauriStructureRecognitionEngine", () => {
     });
     await expect(engine.recognizeImage({ mediaType: "image/png", bytes: new Uint8Array([0, 1, 255]) })).resolves.toMatchObject({
       status: "recognized",
-      confidence: null
+      confidence: null,
+      agreement: { runs: 15, agreeing: 10, invalidRuns: 3, scalesPx: [760, 800, 840, 880, 900, 920, 960, 1000, 1040, 1080, 1100, 1120, 1160, 1200, 1240] }
     });
     expect(invoke).toHaveBeenCalledWith("ocsr_recognize_image", {
       mediaType: "image/png",

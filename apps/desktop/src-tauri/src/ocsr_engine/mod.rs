@@ -21,7 +21,7 @@ use tauri::{Manager, Runtime};
 
 use install::{InstallPaths, SystemInstallIo};
 use process::{LaunchPaths, ProcessError, ProcessManager};
-use protocol::{RecognizedAtom, RecognizedBond};
+use protocol::{RecognitionAgreement, RecognizedAtom, RecognizedBond};
 
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 static NEXT_TEMP_IMAGE: AtomicU64 = AtomicU64::new(1);
@@ -183,6 +183,7 @@ pub enum RecognitionResponse {
         confidence: Option<f64>,
         atoms: Vec<RecognizedAtom>,
         bonds: Vec<RecognizedBond>,
+        agreement: RecognitionAgreement,
         elapsed_ms: u64,
         engine: RecognitionEngine,
     },
@@ -484,6 +485,7 @@ pub async fn ocsr_recognize_image<R: Runtime>(
                 confidence: payload.confidence,
                 atoms: payload.atoms,
                 bonds: payload.bonds,
+                agreement: payload.agreement,
                 elapsed_ms: payload.elapsed_ms,
                 engine: RecognitionEngine {
                     name: "MolScribe",
@@ -771,6 +773,12 @@ mod tests {
             confidence: None,
             atoms: vec![],
             bonds: vec![],
+            agreement: RecognitionAgreement {
+                runs: 3,
+                agreeing: 2,
+                invalid_runs: 1,
+                scales_px: vec![800, 1000, 1200],
+            },
             elapsed_ms: 12,
             engine: RecognitionEngine {
                 name: "MolScribe",
@@ -781,6 +789,10 @@ mod tests {
         let value = serde_json::to_value(response).expect("serialize response");
         assert_eq!(value["status"], "recognized");
         assert_eq!(value["elapsedMs"], 12);
+        assert_eq!(
+            value["agreement"],
+            serde_json::json!({"runs": 3, "agreeing": 2, "invalidRuns": 1, "scalesPx": [800, 1000, 1200]})
+        );
         assert_eq!(value["confidence"], serde_json::Value::Null);
         assert_eq!(value["engine"]["name"], "MolScribe");
     }

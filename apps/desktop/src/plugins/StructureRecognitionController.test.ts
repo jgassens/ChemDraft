@@ -45,6 +45,7 @@ const recognized: Extract<StructureRecognitionOutcome, { status: "recognized" }>
   confidence: 0.92,
   atoms: [{ index: 0, symbol: "C", x: 0, y: 0, confidence: 0.91 }],
   bonds: [],
+  agreement: { runs: 5, agreeing: 5, invalidRuns: 0, scalesPx: [800, 900, 1000, 1100, 1200] },
   elapsedMs: 120,
   engine: { name: "MolScribe", molscribeCommit: "abc123", modelSha256: "a".repeat(64) }
 };
