@@ -13,6 +13,8 @@ pub(crate) enum CaptureOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CaptureError {
     PermissionDenied,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    // Only non-macOS implementations construct this extension-point variant.
     Unsupported,
     Failed(String),
 }
