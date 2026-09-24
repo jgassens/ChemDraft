@@ -21,6 +21,7 @@ import type {
   PluginChemistryAPI,
   PluginCommandContext,
   PluginCommandHandler,
+  PluginDialogsAPI,
   PluginDocumentAPI,
   PluginManifest,
   PluginPanelAPI,
@@ -178,6 +179,16 @@ export function runPluginWorker(
       ? { showReport: (panelId, report) => call("panels", "showReport", [panelId, report]) as ReturnType<PluginPanelAPI["showReport"]> }
       : undefined;
 
+    const dialogs: PluginDialogsAPI | undefined = has("ui.panel")
+      ? {
+          // Keep this stub on the same typed capability map as the host bridge. Text prompting is
+          // primarily for installed plugins, whose handlers always run here without DOM access; a
+          // missing map entry would therefore make the API dead on arrival despite working in-process.
+          promptText: (request) =>
+            call("dialogs", "promptText", [request]) as ReturnType<PluginDialogsAPI["promptText"]>
+        }
+      : undefined;
+
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
     // `available: false` rather than the plugin having to guess from the capability's presence.
@@ -233,6 +244,7 @@ export function runPluginWorker(
       storage,
       selection,
       panels,
+      dialogs,
       analysis,
       chemistry,
       hasPermission: has,

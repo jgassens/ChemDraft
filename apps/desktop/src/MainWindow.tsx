@@ -638,6 +638,7 @@ import {
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
+import { PluginPromptTextDialog } from "./plugins/PluginPromptTextDialog";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1371,7 +1372,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.21.07.44-opus";
+const CURRENT_BUILD_STAMP = "9.23.19.36-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -15941,6 +15942,15 @@ export function MainWindow({
           onUpdatePlugin={pluginRuntime.updateInstalledPlugin}
           onClose={() => setPluginManagerOpen(false)}
           onPluginsChanged={() => setStatus("Plugin settings updated")}
+        />
+      ) : null}
+
+      {pluginRuntime.openTextPrompt ? (
+        <PluginPromptTextDialog
+          key={pluginRuntime.openTextPrompt.id}
+          prompt={pluginRuntime.openTextPrompt}
+          onSubmit={pluginRuntime.submitTextPrompt}
+          onCancel={pluginRuntime.cancelTextPrompt}
         />
       ) : null}
 

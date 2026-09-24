@@ -399,6 +399,8 @@ export class PluginWorkerBridge {
         return context.documents; // always present; its methods gate on document.* internally
       case "chemistry":
         return context.chemistry;
+      case "dialogs":
+        return context.dialogs;
     }
   }
 

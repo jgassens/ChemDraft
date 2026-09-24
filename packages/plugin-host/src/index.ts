@@ -14,6 +14,7 @@ import type {
   PluginCommandContext,
   PluginCommandContribution,
   PluginCommandHandler,
+  PluginDialogsAPI,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -27,6 +28,9 @@ import type {
   PluginPanelContribution,
   PluginPanelReport,
   PluginPermission,
+  NormalizedPluginPromptTextRequest,
+  PluginPromptTextRequest,
+  PluginPromptTextResult,
   PluginSelectionAPI,
   PluginSelectionSnapshot,
   PluginStorage,
@@ -42,6 +46,8 @@ import {
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
+  PluginPromptTextRequestSchema,
+  PluginPromptTextResultSchema,
   PluginStructureFromSmilesRequestSchema,
   ProposedDocumentPatchSchema,
   parsePluginManifest
@@ -184,6 +190,12 @@ export interface PluginHostOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Renders a validated panel report; absent hosts simply expose no panels API. */
   showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
+  /** Shows host-owned text-prompt UI. The signal aborts when the command ends or plugin unregisters. */
+  promptText?: (
+    plugin: { id: string; name: string },
+    request: NormalizedPluginPromptTextRequest,
+    signal: AbortSignal
+  ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -215,6 +227,7 @@ export class PluginHost {
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
+  private readonly promptText?: PluginHostOptions["promptText"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
@@ -224,6 +237,11 @@ export class PluginHost {
   private readonly analysisStore: AnalysisStore;
   private nextProposalId = 1;
   private readonly subscribers = new Set<() => void>();
+  private readonly activeCommandInvocations = new Map<symbol, string>();
+  private readonly openTextPrompts = new Map<
+    string,
+    { invocationToken: symbol; abortController: AbortController }
+  >();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
@@ -231,6 +249,7 @@ export class PluginHost {
     this.getSelectionSnapshot = options.getSelection;
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
+    this.promptText = options.promptText;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
     this.buildStructureFromSmiles = options.buildStructureFromSmiles;
@@ -280,6 +299,7 @@ export class PluginHost {
    *  survive on purpose: they are user-facing records, not runtime wiring. */
   unregisterPlugin(pluginId: string): void {
     const plugin = this.requireRegisteredPlugin(pluginId);
+    this.cancelOpenTextPrompt(pluginId);
     for (const command of plugin.manifest.contributes.commands) {
       this.commands.unregisterOwnedByPlugin(command.id, pluginId);
     }
@@ -371,7 +391,7 @@ export class PluginHost {
     }
   }
 
-  createCommandContext(pluginId: string): PluginCommandContext {
+  createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const storage = this.hasPermission(pluginId, "plugin.storage") ? this.getStorage(pluginId) : undefined;
     const selection: PluginSelectionAPI | undefined = this.hasPermission(pluginId, "selection.read")
@@ -397,6 +417,13 @@ export class PluginHost {
               const parsedReport = PluginPanelReportSchema.parse(report);
               await this.showPanelReport?.(pluginId, panelId, parsedReport);
             }
+          }
+        : undefined;
+    const dialogs: PluginDialogsAPI | undefined =
+      this.hasPermission(pluginId, "ui.panel") && this.promptText
+        ? {
+            promptText: async (request: PluginPromptTextRequest) =>
+              this.promptTextForPlugin(pluginId, invocationToken, request)
           }
         : undefined;
     const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
@@ -504,6 +531,7 @@ export class PluginHost {
       storage,
       selection,
       panels,
+      dialogs,
       analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
@@ -620,7 +648,13 @@ export class PluginHost {
               this.requirePermission(manifest.id, permission);
             }
 
-            return await handler(this.createCommandContext(manifest.id));
+            const invocationToken = Symbol(command.id);
+            this.activeCommandInvocations.set(invocationToken, manifest.id);
+            try {
+              return await handler(this.createCommandContext(manifest.id, invocationToken));
+            } finally {
+              this.finishCommandInvocation(invocationToken);
+            }
           }
         );
       }
@@ -681,6 +715,72 @@ export class PluginHost {
     for (const listener of this.subscribers) {
       listener();
     }
+  }
+
+  private async promptTextForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    request: PluginPromptTextRequest
+  ): Promise<PluginPromptTextResult> {
+    this.requirePermission(pluginId, "ui.panel");
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken) !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call dialogs.promptText only while one of its own commands is executing.`
+      );
+    }
+    if (this.openTextPrompts.has(pluginId)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" already has an open dialogs.promptText request; concurrent prompts are not allowed.`
+      );
+    }
+    if (!this.promptText) {
+      throw new PluginHostError(`This host provides no text-prompt UI for plugin "${pluginId}".`);
+    }
+
+    const parsedRequest = PluginPromptTextRequestSchema.parse(request);
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    const abortController = new AbortController();
+    const openPrompt = { invocationToken, abortController };
+    this.openTextPrompts.set(pluginId, openPrompt);
+
+    const cancelledOnAbort = new Promise<PluginPromptTextResult>((resolve) => {
+      abortController.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+    });
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.promptText(
+            { id: plugin.manifest.id, name: plugin.manifest.name },
+            parsedRequest,
+            abortController.signal
+          )
+        ),
+        cancelledOnAbort
+      ]);
+      const parsedResult = PluginPromptTextResultSchema.parse(result);
+      if (parsedResult.status === "submitted" && parsedResult.value.length > parsedRequest.maxLength) {
+        throw new PluginHostError(
+          `Plugin "${pluginId}" text prompt returned more than ${parsedRequest.maxLength} characters.`
+        );
+      }
+      return parsedResult;
+    } finally {
+      if (this.openTextPrompts.get(pluginId) === openPrompt) {
+        this.openTextPrompts.delete(pluginId);
+      }
+    }
+  }
+
+  private finishCommandInvocation(invocationToken: symbol): void {
+    const pluginId = this.activeCommandInvocations.get(invocationToken);
+    this.activeCommandInvocations.delete(invocationToken);
+    if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {
+      this.cancelOpenTextPrompt(pluginId);
+    }
+  }
+
+  private cancelOpenTextPrompt(pluginId: string): void {
+    this.openTextPrompts.get(pluginId)?.abortController.abort();
   }
 
   private requireRegisteredPlugin(pluginId: string): RegisteredPlugin {

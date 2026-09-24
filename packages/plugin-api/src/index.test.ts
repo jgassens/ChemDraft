@@ -4,12 +4,49 @@ import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from
 import {
   PluginApiVersion,
   PluginPanelReportSchema,
+  PluginPromptTextRequestSchema,
+  PluginPromptTextResultSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
   dangerousPluginPermissions,
   parsePluginManifest,
   validatePluginManifest
 } from "./index";
+
+describe("plugin text-prompt schemas", () => {
+  it("strictly validates and normalizes prompt requests", () => {
+    expect(
+      PluginPromptTextRequestSchema.parse({ title: "Chemical name", label: "Name" })
+    ).toEqual({ title: "Chemical name", label: "Name", maxLength: 500 });
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({ title: "", label: "Name" })
+    ).toThrow();
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({ title: "Name", label: "", extra: true })
+    ).toThrow();
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({
+        title: "Name",
+        label: "Chemical name",
+        initialValue: "benzene",
+        maxLength: 6
+      })
+    ).toThrow();
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({ title: "Name", label: "Chemical name", maxLength: 2_001 })
+    ).toThrow();
+  });
+
+  it("accepts submitted and cancelled results without trimming submitted text", () => {
+    expect(PluginPromptTextResultSchema.parse({ status: "submitted", value: "  benzene  " })).toEqual({
+      status: "submitted",
+      value: "  benzene  "
+    });
+    expect(PluginPromptTextResultSchema.parse({ status: "cancelled" })).toEqual({ status: "cancelled" });
+    expect(() => PluginPromptTextResultSchema.parse({ status: "submitted", value: "" })).toThrow();
+    expect(() => PluginPromptTextResultSchema.parse({ status: "cancelled", value: "ignored" })).toThrow();
+  });
+});
 
 describe("createStructureSourceFingerprint", () => {
   const base = {

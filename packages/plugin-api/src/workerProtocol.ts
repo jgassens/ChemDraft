@@ -39,13 +39,14 @@ export type PluginWorkerCapabilityNamespace =
   | "storage"
   | "panels"
   | "documents"
-  | "chemistry";
+  | "chemistry"
+  | "dialogs";
 
 /**
  * The methods each namespace exposes. The host bridge validates an incoming request against this map
  * and rejects anything else, so a worker can never invoke an arbitrary property on a capability.
  *
- * THIS MAP IS THE SOURCE OF TRUTH FOR THE WORKER-SIDE STUB TOO — see `chemistryStubMethods` in
+ * THIS MAP IS THE SOURCE OF TRUTH FOR THE WORKER-SIDE STUB TOO — see the typed `call` helper in
  * `workerRuntime.ts`. It used to be a second, hand-maintained list, and the two drifted apart exactly
  * as you would expect: `nameToStructure` (API 0.1.1) and `structureFromSmiles` (API 0.1.2) were each
  * added to the stub and to the in-process host and never here, so both shipped methods were rejected
@@ -66,7 +67,8 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   storage: ["get", "set", "delete", "listKeys"],
   documents: ["getActiveDocument", "proposePatch"],
   panels: ["showReport"],
-  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"]
+  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"],
+  dialogs: ["promptText"]
 } as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
 
 /**

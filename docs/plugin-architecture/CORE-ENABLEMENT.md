@@ -12,7 +12,7 @@ runtime source imports **only `@chemdraft/plugin-api`**.
 
 | Package | Role | Depends on |
 |---|---|---|
-| `@chemdraft/plugin-api` | The only package a plugin imports. Manifest + contributions schema, command context/handlers, permission list, panel-report schema (text/keyValue/table/svg/linkedFigure), selection snapshot, analysis records. Re-exports the chem-core document types it references. | `@chemdraft/chem-core` (types), `zod` |
+| `@chemdraft/plugin-api` | The only package a plugin imports. Manifest + contributions schema, command context/handlers, permission list, panel-report schema (text/keyValue/table/svg/linkedFigure), host-owned text-prompt contracts, selection snapshot, analysis records. Re-exports the chem-core document types it references. | `@chemdraft/chem-core` (types), `zod` |
 | `@chemdraft/plugin-host` | The runtime a host embeds: `PluginHost` (register/unregister/list/subscribe, command routing, permission enforcement, analysis store, panel-report forwarding, panel-closed hook) + `CommandRegistry`. | `@chemdraft/chem-core`, `@chemdraft/plugin-api` |
 | `@chemdraft/chem-core` | **Types only** for the plugin path: `ChemDraftDocument`, `DocumentPatch` (re-exported through the SDK). A host with its own document model can provide compatible definitions instead of the whole package. | — |
 
@@ -32,6 +32,7 @@ these against its own UI; the shapes are the reference implementation.
 | `LinkedFigureView.tsx` + `spectrumExport.ts` | Interactive renderer for the `linkedFigure` report section (generic primary/alternative method model — used by NMR but not NMR-specific; copy/JCAMP export helpers). |
 | `PluginDiagnosticsPanel.tsx` | Bundled-plugin list + runtime diagnostics. |
 | `PluginManagerDialog.tsx` + `pluginPreferences.ts` | The plugin manager (enable/disable, package install/remove, and explicit host-managed update review) + localStorage preferences. |
+| `PluginPromptTextController.ts` + `PluginPromptTextDialog.tsx` | Persistent host-to-React broker and core-owned modal for `dialogs.promptText`; the dialog identifies the requesting plugin and cancels on teardown. |
 | `pluginUpdates.ts` | Host-owned trusted update catalog, release validation, native download, and pre-install package inspection. Plugins never supply these URLs. |
 | `pluginMenuModel.ts` | Maps host menu contributions → web menu items. |
 | `nativePluginMenu.ts` | Syncs plugin menu items into the Tauri native menu. |

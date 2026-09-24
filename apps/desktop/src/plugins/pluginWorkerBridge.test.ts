@@ -27,7 +27,7 @@ import {
 } from "@chemdraft/plugin-api";
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createBundledPluginDescriptors } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
@@ -563,6 +563,50 @@ describe("every chemistry method survives the worker boundary", () => {
     host.registerPlugin(chemistryManifest, delegatingOptions(chemistryManifest, bridge));
     await host.invokeCommand("plugin.chemprobe.run");
     expect(failure).toBeUndefined();
+    bridge.terminate();
+  });
+});
+
+describe("dialogs.promptText survives the worker boundary", () => {
+  it("round-trips the request and exact submitted value through linked endpoints", async () => {
+    const dialogManifest = parsePluginManifest({
+      id: "org.test.dialog-worker",
+      name: "Worker Dialog Probe",
+      version: "0",
+      apiVersion: "^0.1.3",
+      entry: "x",
+      permissions: ["ui.panel"],
+      contributes: { commands: [{ id: "plugin.dialogWorker.run", title: "Run" }] }
+    });
+    let workerResult: unknown;
+    const registration: PluginWorkerRegistration = {
+      manifest: dialogManifest,
+      commandHandlers: {
+        "plugin.dialogWorker.run": async (context) => {
+          workerResult = await context.dialogs?.promptText({
+            title: "Chemical name",
+            label: "Name",
+            placeholder: "benzene"
+          });
+          return workerResult;
+        }
+      }
+    };
+    const promptText = vi.fn(async () => ({ status: "submitted" as const, value: "  benzene  " }));
+    const host = new PluginHost({ promptText });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(dialogManifest, delegatingOptions(dialogManifest, bridge));
+
+    await expect(host.invokeCommand("plugin.dialogWorker.run")).resolves.toEqual({
+      status: "submitted",
+      value: "  benzene  "
+    });
+    expect(workerResult).toEqual({ status: "submitted", value: "  benzene  " });
+    expect(promptText).toHaveBeenCalledWith(
+      { id: dialogManifest.id, name: dialogManifest.name },
+      { title: "Chemical name", label: "Name", placeholder: "benzene", maxLength: 500 },
+      expect.any(AbortSignal)
+    );
     bridge.terminate();
   });
 });

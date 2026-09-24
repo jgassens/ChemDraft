@@ -21,6 +21,7 @@ import {
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
+import { PluginPromptTextController } from "./PluginPromptTextController";
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
@@ -114,6 +115,7 @@ function assertDesktopPluginPermissionsAvailable(manifest: PluginManifest): void
 export interface DesktopPluginRuntime {
   host: PluginHost;
   panels: PluginPanelController;
+  prompts: PluginPromptTextController;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -152,6 +154,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // controller, and the controller reads manifests back off the host. Close the loop with a
   // late-bound reference so neither construction depends on the other existing first.
   let controller: PluginPanelController | undefined;
+  const prompts = new PluginPromptTextController();
   const host = new PluginHost({
     commandRegistry: options.commandRegistry,
     getActiveDocument: options.getActiveDocument,
@@ -161,6 +164,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
     },
+    promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
@@ -177,6 +181,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const runtime: DesktopPluginRuntime = {
     host,
     panels: controller,
+    prompts,
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered

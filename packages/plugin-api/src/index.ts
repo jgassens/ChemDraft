@@ -9,15 +9,16 @@ export type { ChemDraftDocument, DocumentObject, DocumentPatch } from "@chemdraf
 import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
- * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`.
+ * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
+ * `PluginDialogsAPI.promptText`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
- * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` to also insert), which this host
- * satisfies and an older one correctly does not.
+ * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` to also insert, `^0.1.3` for
+ * text prompts), which this host satisfies and an older one correctly does not.
  */
-export const PluginApiVersion = "0.1.2" as const;
+export const PluginApiVersion = "0.1.3" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -935,6 +936,43 @@ export interface PluginChemistryAPI {
   nameToStructure?(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
 }
 
+export const PluginPromptTextRequestSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    label: z.string().min(1).max(200),
+    placeholder: z.string().max(200).optional(),
+    initialValue: z.string().optional(),
+    submitLabel: z.string().max(200).optional(),
+    maxLength: z.number().int().min(1).max(2_000).default(500)
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.initialValue !== undefined && request.initialValue.length > request.maxLength) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum: request.maxLength,
+        type: "string",
+        inclusive: true,
+        exact: false,
+        path: ["initialValue"],
+        message: `Initial value must contain at most ${request.maxLength} characters.`
+      });
+    }
+  });
+
+export const PluginPromptTextResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("submitted"), value: z.string().min(1).max(2_000) }).strict(),
+  z.object({ status: z.literal("cancelled") }).strict()
+]);
+
+export type PluginPromptTextRequest = z.input<typeof PluginPromptTextRequestSchema>;
+export type NormalizedPluginPromptTextRequest = z.output<typeof PluginPromptTextRequestSchema>;
+export type PluginPromptTextResult = z.infer<typeof PluginPromptTextResultSchema>;
+
+export interface PluginDialogsAPI {
+  promptText(request: PluginPromptTextRequest): Promise<PluginPromptTextResult>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -954,6 +992,8 @@ export interface PluginCommandContext {
   analysis?: PluginAnalysisAPI;
   /** Present only when the plugin declares "chemistry.compute" and the host provides an engine. */
   chemistry?: PluginChemistryAPI;
+  /** Present only when the plugin declares "ui.panel" and the host provides dialog UI. */
+  dialogs?: PluginDialogsAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

@@ -26,7 +26,8 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.0`).
+`0.1.3`). API 0.1.3 adds the host-owned `context.dialogs.promptText` capability; plugins that use it
+should declare `^0.1.3`. Existing `^0.1.0` and `^0.1.2` packages remain compatible.
 
 ## Manifest + registration
 
@@ -75,6 +76,31 @@ const runWidget: PluginCommandHandler = async (context) => {
 
 Report section kinds: `text`, `keyValue`, `table`, `svg`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
+
+## One-line text prompts
+
+A plugin declaring `ui.panel` may ask for one line of text from inside one of its own command
+handlers. The desktop renders core-owned modal chrome and always names the requesting plugin, so the
+plugin cannot impersonate ChemDraft:
+
+```ts
+const answer = await context.dialogs?.promptText({
+  title: "Insert from chemical name",
+  label: "Chemical name",
+  placeholder: "e.g. 2-acetyloxybenzoic acid",
+  submitLabel: "Convert",
+  maxLength: 500
+});
+
+if (answer?.status === "submitted") {
+  // answer.value is exactly what the user typed; trim or otherwise interpret it here if appropriate.
+}
+```
+
+`dialogs` is absent without `ui.panel`. `promptText` rejects outside that plugin's active command
+invocation and rejects a second concurrent prompt from the same plugin. Submit is disabled for an
+empty field; cancellation returns `{ status: "cancelled" }`. Disabling, unregistering, or terminating
+the plugin while its prompt is open also cancels it.
 
 ## Worker entry
 

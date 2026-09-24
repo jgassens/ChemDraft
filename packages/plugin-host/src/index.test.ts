@@ -1,5 +1,11 @@
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import type { PluginManifest, PluginPanelReport, PluginPermission } from "@chemdraft/plugin-api";
+import type {
+  PluginCommandContext,
+  PluginManifest,
+  PluginPanelReport,
+  PluginPermission,
+  PluginPromptTextResult
+} from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import {
   CommandRegistry,
@@ -71,6 +77,136 @@ describe("CommandRegistry", () => {
 });
 
 describe("PluginHost", () => {
+  it("exposes dialogs only to plugins that declared ui.panel", async () => {
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText });
+    let dialogs: PluginCommandContext["dialogs"] | "unset" = "unset";
+    host.registerPlugin(
+      {
+        id: "org.test.no-dialogs",
+        name: "No Dialogs",
+        version: "0.0.1",
+        apiVersion: "^0.1.0",
+        entry: "dist/plugin.js",
+        permissions: [],
+        contributes: { commands: [{ id: "plugin.noDialogs.run", title: "Run" }] }
+      },
+      { commandHandlers: { "plugin.noDialogs.run": (context) => (dialogs = context.dialogs) } }
+    );
+
+    await host.invokeCommand("plugin.noDialogs.run");
+    expect(dialogs).toBeUndefined();
+    expect(promptText).not.toHaveBeenCalled();
+  });
+
+  it("rejects dialogs.promptText outside the command invocation that received the context", async () => {
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText });
+    let retainedDialogs: PluginCommandContext["dialogs"];
+    host.registerPlugin(
+      {
+        id: "org.test.retained-dialogs",
+        name: "Retained Dialogs",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.retainedDialogs.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.retainedDialogs.run": (context) => {
+            retainedDialogs = context.dialogs;
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.retainedDialogs.run");
+    await expect(
+      retainedDialogs!.promptText({ title: "Late", label: "Value" })
+    ).rejects.toThrow(/org\.test\.retained-dialogs.*only while.*own commands.*executing/i);
+    expect(promptText).not.toHaveBeenCalled();
+  });
+
+  it("rejects a concurrent second prompt from the same plugin", async () => {
+    let resolvePrompt!: (result: PluginPromptTextResult) => void;
+    const promptText = vi.fn(
+      () => new Promise<PluginPromptTextResult>((resolve) => (resolvePrompt = resolve))
+    );
+    const host = new PluginHost({ promptText });
+    let firstResult: PluginPromptTextResult | undefined;
+    host.registerPlugin(
+      {
+        id: "org.test.concurrent-dialogs",
+        name: "Concurrent Dialogs",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.concurrentDialogs.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.concurrentDialogs.run": async (context) => {
+            const first = context.dialogs!.promptText({ title: "First", label: "Value" });
+            await expect(
+              context.dialogs!.promptText({ title: "Second", label: "Value" })
+            ).rejects.toThrow(/org\.test\.concurrent-dialogs.*already has an open.*concurrent prompts/i);
+            resolvePrompt({ status: "submitted", value: "first answer" });
+            firstResult = await first;
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.concurrentDialogs.run");
+    expect(firstResult).toEqual({ status: "submitted", value: "first answer" });
+    expect(promptText).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes submitted text through exactly and preserves cancellation", async () => {
+    const promptText = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "submitted", value: "  cyclohexane  " })
+      .mockResolvedValueOnce({ status: "cancelled" });
+    const host = new PluginHost({ promptText });
+    const results: PluginPromptTextResult[] = [];
+    host.registerPlugin(
+      {
+        id: "org.test.dialog-results",
+        name: "Dialog Results",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: {
+          commands: [
+            { id: "plugin.dialogResults.submit", title: "Submit" },
+            { id: "plugin.dialogResults.cancel", title: "Cancel" }
+          ]
+        }
+      },
+      {
+        commandHandlers: {
+          "plugin.dialogResults.submit": async (context) => {
+            results.push(await context.dialogs!.promptText({ title: "Submit", label: "Value" }));
+          },
+          "plugin.dialogResults.cancel": async (context) => {
+            results.push(await context.dialogs!.promptText({ title: "Cancel", label: "Value" }));
+          }
+        }
+      }
+    );
+
+    await host.invokeCommand("plugin.dialogResults.submit");
+    await host.invokeCommand("plugin.dialogResults.cancel");
+    expect(results).toEqual([
+      { status: "submitted", value: "  cyclohexane  " },
+      { status: "cancelled" }
+    ]);
+  });
+
   it("registers plugin commands and queues proposed patches for user review", async () => {
     const host = new PluginHost({ now: () => timestamp });
     host.registerPlugin(

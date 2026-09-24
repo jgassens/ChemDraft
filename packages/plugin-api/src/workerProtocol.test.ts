@@ -99,6 +99,8 @@ describe("isPluginApiVersionCompatible", () => {
     // here and correctly refused by a host that predates the method.
     expect(isPluginApiVersionCompatible("^0.1.1", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.1", "0.1.0")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.2", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.3", "0.1.2")).toBe(false);
   });
 });
 

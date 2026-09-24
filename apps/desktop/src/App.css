@@ -5897,6 +5897,85 @@ textarea:focus-visible,
   opacity: 0.65;
 }
 
+/* Host-owned one-line prompt for worker-isolated plugins. It deliberately shares the manager's
+   button treatment while naming the requesting plugin in fixed core chrome. */
+.plugin-prompt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--cd-z-modal-priority);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cd-space-6);
+  background: rgb(12 18 24 / 48%);
+}
+
+.plugin-prompt-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 2 * var(--cd-space-6)));
+  overflow: hidden;
+  border: 1px solid var(--cd-border);
+  border-radius: var(--cd-radius-panel);
+  background: var(--cd-bg-panel-raised);
+  box-shadow: var(--cd-shadow-panel);
+  color: var(--cd-text-primary);
+  font-size: 12px;
+}
+
+.plugin-prompt-header {
+  padding: var(--cd-space-6);
+  border-bottom: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
+.plugin-prompt-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.plugin-prompt-header p {
+  margin: var(--cd-space-2) 0 0;
+  color: var(--cd-text-secondary);
+}
+
+.plugin-prompt-body {
+  display: grid;
+  gap: var(--cd-space-3);
+  padding: var(--cd-space-6);
+}
+
+.plugin-prompt-body label {
+  color: var(--cd-text-secondary);
+  font-weight: 600;
+}
+
+.plugin-prompt-body input {
+  min-height: var(--cd-control-height);
+  padding: 0 var(--cd-space-3);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: var(--cd-bg-control);
+  color: var(--cd-text-primary);
+  font: inherit;
+}
+
+.plugin-prompt-body input:focus {
+  border-color: var(--cd-accent);
+  outline: 2px solid color-mix(in srgb, var(--cd-accent) 28%, transparent);
+  outline-offset: 1px;
+}
+
+.plugin-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--cd-space-3);
+  padding: var(--cd-space-4) var(--cd-space-6);
+  border-top: 1px solid var(--cd-border-subtle);
+  background: var(--cd-bg-panel);
+}
+
 .plugin-manager-error {
   margin: var(--cd-space-5) var(--cd-space-6) 0;
   padding: var(--cd-space-4);
