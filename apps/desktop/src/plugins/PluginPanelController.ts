@@ -20,7 +20,8 @@ export class PluginPanelController {
 
   constructor(
     private readonly host: PluginHost,
-    private readonly nowIso: () => string
+    private readonly nowIso: () => string,
+    private readonly defaultSurface: "inApp" | "window" = "inApp"
   ) {}
 
   /** Entry point wired to `PluginHostOptions.showPanelReport`. Also safe to call from desktop code. */
@@ -45,6 +46,19 @@ export class PluginPanelController {
         ...detachedPanel,
         report,
         commandId: report.rerunCommandId ?? panel.commandId
+      });
+      this.notify();
+      return;
+    }
+
+    if (this.defaultSurface === "window") {
+      this.detached.set(detachedKey, {
+        pluginId,
+        panelId,
+        title: panel.title,
+        report,
+        commandId: report.rerunCommandId ?? panel.commandId,
+        openedAt: this.nowIso()
       });
       this.notify();
       return;

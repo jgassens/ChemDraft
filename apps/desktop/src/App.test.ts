@@ -146,6 +146,7 @@ import {
   projectedPlaneTiltRadiansFromDrag,
   projectedPlaneTiltReadoutDegrees,
   projectedPlaneTiltReadoutLabel,
+  proposalWindowLifecycle,
   projectedPlaneTiltVectorFromDrag,
   rotationDeltaDegrees,
   rotationInputHomeDraftDegrees,
@@ -251,6 +252,7 @@ const desktopCapabilitiesSource = readFileSync(
   new URL("../src-tauri/capabilities/default.json", import.meta.url),
   "utf8"
 );
+const desktopNativeSource = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
@@ -339,6 +341,33 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.graphic-glyph-stroke\s*{[^}]*pointer-events:\s*visiblePainted;/s);
     expect(appCss).toMatch(/\.graphic-glyph-shape,\s*\.graphic-glyph-projected-shape,\s*\.graphic-glyph-path\s*{[^}]*pointer-events:\s*visiblePainted;/s);
     expect(appCss).toMatch(/\.graphic-glyph-hit-target\[data-graphic-hit-fill="true"\]\s*{[^}]*pointer-events:\s*all;/s);
+  });
+
+  it("keeps floating analysis report text selectable for ordinary Cmd/Ctrl+C", () => {
+    const cssWithoutComments = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(cssWithoutComments).toMatch(
+      /\.plugin-panel-content\s*{[^}]*user-select:\s*text;[^}]*-webkit-user-select:\s*text;/s
+    );
+    expect(cssWithoutComments).not.toMatch(/\.plugin-report\s*{[^}]*user-select:\s*none/s);
+    expect(mainWindowSource).toContain("!isDesktopRuntime() ? (");
+    expect(mainWindowSource).not.toContain("onOpenAsWindow=");
+  });
+
+  it("associates analysis windows with the main document instead of global always-on-top", () => {
+    expect(desktopNativeSource).toContain("builder.parent(&main)");
+    expect(desktopNativeSource).toContain("ns_window.setLevel(NSNormalWindowLevel)");
+    expect(desktopNativeSource).toContain("analysis_window_initial_position");
+    expect(desktopNativeSource).not.toMatch(
+      /fn configure_analysis_window[\s\S]*?setLevel\(NSFloatingWindowLevel\)/
+    );
+  });
+
+  it("opens proposal review on arrival, updates it in place, and closes it when the queue empties", () => {
+    expect(proposalWindowLifecycle(0, 0)).toBe("idle");
+    expect(proposalWindowLifecycle(0, 1)).toBe("open");
+    expect(proposalWindowLifecycle(1, 2)).toBe("open");
+    expect(proposalWindowLifecycle(2, 1)).toBe("update");
+    expect(proposalWindowLifecycle(1, 0)).toBe("close");
   });
 
   it("keeps paint containment off the transformed document board (WKWebView ghost pixels)", () => {

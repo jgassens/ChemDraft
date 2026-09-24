@@ -1,11 +1,22 @@
-import type { PluginPanelReport } from "@chemdraft/plugin-api";
+import type { AnalysisReport } from "@chemdraft/analysis-core";
+import type { PluginManifest, PluginPanelReport } from "@chemdraft/plugin-api";
 import { isDesktopRuntime } from "../window-manager";
+import type { PluginDiagnostic } from "./types";
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
 export const PLUGIN_PANEL_REQUEST_EVENT = "chemdraft://plugin-panel-request";
 export const PLUGIN_PANEL_STALENESS_EVENT = "chemdraft://plugin-panel-staleness";
 export const PLUGIN_PANEL_RERUN_EVENT = "chemdraft://plugin-panel-rerun";
 export const PLUGIN_PANEL_CLOSED_EVENT = "chemdraft://plugin-panel-closed";
+export const ANALYSIS_WINDOW_SNAPSHOT_EVENT = "chemdraft://analysis-window-snapshot";
+export const ANALYSIS_WINDOW_ACTION_EVENT = "chemdraft://analysis-window-action";
+
+/** Core-owned identities deliberately use the existing plugin-panel window transport. */
+export const ANALYSIS_WINDOW_OWNER_ID = "core.analysis";
+export const MOLECULAR_INSPECTOR_WINDOW_ID = "molecular-inspector";
+export const VALIDATION_RESULT_WINDOW_ID = "validation-result";
+export const PLUGIN_DIAGNOSTICS_WINDOW_ID = "plugin-diagnostics";
+export const PATCH_REVIEW_WINDOW_ID = "plugin-proposals";
 
 export interface PluginPanelIdentity {
   panelId: string;
@@ -27,6 +38,47 @@ export interface PluginPanelStalenessPayload extends PluginPanelIdentity {
   /** The report revision this verdict was computed for, so it can never mark a newer report. */
   revision: number;
 }
+
+export interface PluginProposalReviewItem {
+  id: string;
+  pluginId: string;
+  pluginName: string;
+  reason: string;
+  warnings: readonly { code: string; message: string }[];
+}
+
+export type AnalysisWindowContent =
+  | {
+      kind: "molecularInspector";
+      report?: AnalysisReport;
+      busy: boolean;
+      stale: boolean;
+    }
+  | {
+      kind: "report";
+      report: PluginPanelReport;
+    }
+  | {
+      kind: "pluginDiagnostics";
+      plugins: readonly PluginManifest[];
+      diagnostics: readonly PluginDiagnostic[];
+    }
+  | {
+      kind: "patchReview";
+      proposals: readonly PluginProposalReviewItem[];
+    };
+
+export interface AnalysisWindowSnapshotPayload extends PluginPanelIdentity {
+  content: AnalysisWindowContent;
+  revision: number;
+}
+
+export type AnalysisWindowAction =
+  | { kind: "close"; windowId: string }
+  | { kind: "copyMolecularInspector"; text: string }
+  | { kind: "changeMolecularInterpretation"; interpretationId?: string }
+  | { kind: "acceptPluginProposal"; proposalId: string }
+  | { kind: "rejectPluginProposal"; proposalId: string };
 
 export interface OpenPluginPanelRequest extends PluginPanelIdentity {
   title: string;
@@ -61,6 +113,55 @@ export async function broadcastPluginPanelReport(payload: PluginPanelReportPaylo
 
   const { emit } = await import("@tauri-apps/api/event");
   await emit<PluginPanelReportPayload>(PLUGIN_PANEL_REPORT_EVENT, payload);
+}
+
+export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSnapshotPayload): Promise<void> {
+  window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_SNAPSHOT_EVENT, { detail: payload }));
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowSnapshotPayload>(ANALYSIS_WINDOW_SNAPSHOT_EVENT, payload);
+}
+
+export function listenForAnalysisWindowSnapshots(
+  handler: (payload: AnalysisWindowSnapshotPayload) => void
+): () => void {
+  const domListener = (event: Event) => {
+    const payload = (event as CustomEvent<unknown>).detail;
+    if (isAnalysisWindowSnapshotPayload(payload)) {
+      handler(payload);
+    }
+  };
+  window.addEventListener(ANALYSIS_WINDOW_SNAPSHOT_EVENT, domListener);
+  return attachTauriListener(
+    ANALYSIS_WINDOW_SNAPSHOT_EVENT,
+    domListener,
+    isAnalysisWindowSnapshotPayload,
+    handler
+  );
+}
+
+export async function requestAnalysisWindowAction(action: AnalysisWindowAction): Promise<void> {
+  window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, action);
+}
+
+export function listenForAnalysisWindowActions(handler: (action: AnalysisWindowAction) => void): () => void {
+  const domListener = (event: Event) => {
+    const payload = (event as CustomEvent<unknown>).detail;
+    if (isAnalysisWindowAction(payload)) {
+      handler(payload);
+    }
+  };
+  window.addEventListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener);
+  return attachTauriListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener, isAnalysisWindowAction, handler);
 }
 
 export function listenForPluginPanelReports(
@@ -299,4 +400,39 @@ function isStalenessPayload(payload: unknown): payload is PluginPanelStalenessPa
     typeof candidate.stale === "boolean" &&
     typeof candidate.revision === "number"
   );
+}
+
+function isAnalysisWindowSnapshotPayload(payload: unknown): payload is AnalysisWindowSnapshotPayload {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowSnapshotPayload>;
+  return (
+    typeof candidate.pluginId === "string" &&
+    typeof candidate.panelId === "string" &&
+    typeof candidate.revision === "number" &&
+    typeof candidate.content === "object" &&
+    candidate.content !== null &&
+    typeof (candidate.content as { kind?: unknown }).kind === "string"
+  );
+}
+
+function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowAction {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as { kind?: unknown; [key: string]: unknown };
+  switch (candidate.kind) {
+    case "close":
+      return typeof candidate.windowId === "string";
+    case "copyMolecularInspector":
+      return typeof candidate.text === "string";
+    case "changeMolecularInterpretation":
+      return candidate.interpretationId === undefined || typeof candidate.interpretationId === "string";
+    case "acceptPluginProposal":
+    case "rejectPluginProposal":
+      return typeof candidate.proposalId === "string";
+    default:
+      return false;
+  }
 }

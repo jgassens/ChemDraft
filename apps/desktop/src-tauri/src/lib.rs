@@ -30,8 +30,9 @@ use tauri::{
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSEvent, NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
+    NSEvent, NSFloatingWindowLevel, NSNormalWindowLevel, NSPasteboard, NSPasteboardTypeString,
+    NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel,
+    NSWindowStyleMask,
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
@@ -982,8 +983,8 @@ struct OpenPluginPanelRequest {
     height: Option<f64>,
 }
 
-/// Plugin panel windows get the same floating-utility treatment as toolset palettes: they
-/// float above the document while the app is active and hide with it on deactivate.
+/// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
+/// transport; each window is parented to the main document rather than being globally floating.
 #[tauri::command]
 fn open_plugin_panel_window(
     app: tauri::AppHandle,
@@ -996,13 +997,14 @@ fn open_plugin_panel_window(
     let label = format!("plugin-panel-{}", request.panel_id.replace('.', "-"));
     if let Some(window) = app.get_webview_window(&label) {
         window.show().map_err(|error| error.to_string())?;
-        configure_toolset_utility_window(&window, true)?;
+        configure_analysis_window(&window)?;
         return Ok(());
     }
 
     let width = request.width.unwrap_or(380.0);
     let height = request.height.unwrap_or(520.0);
-    let window = WebviewWindowBuilder::new(
+    let position = analysis_window_initial_position(&app, width, height);
+    let mut builder = WebviewWindowBuilder::new(
         &app,
         &label,
         WebviewUrl::App(format!("/?window=pluginPanel&panelId={}", request.panel_id).into()),
@@ -1011,16 +1013,83 @@ fn open_plugin_panel_window(
     .inner_size(width, height)
     .min_inner_size(280.0, 200.0)
     .accept_first_mouse(true)
-    .focusable(toolset_window_focusable())
+    .focusable(true)
     .resizable(true)
     .decorations(false)
     .shadow(false)
-    .skip_taskbar(true)
-    .build()
-    .map_err(|error| error.to_string())?;
+    .skip_taskbar(true);
+    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        builder = builder.parent(&main).map_err(|error| error.to_string())?;
+    }
+    if let Some(position) = position {
+        builder = builder.position(position.x, position.y);
+    }
+    let window = builder.build().map_err(|error| error.to_string())?;
 
-    configure_toolset_utility_window(&window, true)?;
+    configure_analysis_window(&window)?;
     Ok(())
+}
+
+fn analysis_window_initial_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    width: f64,
+    height: f64,
+) -> Option<tauri::LogicalPosition<f64>> {
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let scale = main.scale_factor().ok()?;
+    let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
+    let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
+    let monitor = main.current_monitor().ok().flatten()?;
+    let monitor_scale = monitor.scale_factor();
+    let monitor_position = monitor.position().to_logical::<f64>(monitor_scale);
+    let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
+    let left = monitor_position.x;
+    let top = monitor_position.y;
+    let right = left + monitor_size.width;
+    let bottom = top + monitor_size.height;
+    let gap = 16.0;
+
+    let right_of_main = main_position.x + main_size.width + gap;
+    let left_of_main = main_position.x - width - gap;
+    let max_x = (right - width).max(left);
+    let x = if right_of_main + width <= right {
+        right_of_main
+    } else if left_of_main >= left {
+        left_of_main
+    } else {
+        (main_position.x + 32.0).clamp(left, max_x)
+    };
+    let max_y = (bottom - height).max(top);
+    let y = (main_position.y + 48.0).clamp(top, max_y);
+    Some(tauri::LogicalPosition::new(x, y))
+}
+
+#[cfg(target_os = "macos")]
+fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+    let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
+        return Err("Could not access native ChemDraft analysis window.".to_string());
+    };
+    // Normal level + a native parent keeps the window with its document without making it globally
+    // always-on-top. It remains an ordinary focusable, movable, resizable utility surface.
+    ns_window.setLevel(NSNormalWindowLevel);
+    ns_window.setHidesOnDeactivate(false);
+    ns_window.setCanHide(true);
+    ns_window.setIgnoresMouseEvents(false);
+    window
+        .set_focusable(true)
+        .and_then(|_| window.set_focus())
+        .map_err(|error| error.to_string())?;
+    ns_window.orderFront(None);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    window
+        .set_focusable(true)
+        .and_then(|_| window.set_focus())
+        .map_err(|error| error.to_string())
 }
 
 /// Opens (or repositions + reshows) a small floating popover window for a palette — e.g. the

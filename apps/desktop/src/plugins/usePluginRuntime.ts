@@ -72,7 +72,7 @@ export interface PluginRuntimeView {
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
   openPanel: OpenPluginPanel | undefined;
-  /** Panels popped out into floating windows (ADR-0030): per-panelId, several may float at once. */
+  /** Desktop-native report windows: per plugin+panel id, several may float at once. */
   detachedPanels: readonly OpenPluginPanel[];
   openTextPrompt: OpenPluginTextPrompt | undefined;
   diagnostics: readonly PluginDiagnostic[];
@@ -105,7 +105,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
       commandRegistry: providers.commandRegistry,
       createStorage: providers.createStorage,
-      onProposedPatchesChanged: () => providersRef.current.onProposedPatchesChanged?.()
+      onProposedPatchesChanged: () => providersRef.current.onProposedPatchesChanged?.(),
+      defaultPanelSurface: isTauriHost() ? "window" : "inApp"
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };

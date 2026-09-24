@@ -5556,6 +5556,16 @@ textarea:focus-visible,
   overflow-y: auto;
   padding: 10px 12px;
   font-size: 12px;
+  /* Analysis is evidence, not canvas chrome: every textual result remains natively selectable and
+     ordinary Cmd/Ctrl+C is left to the focused webview. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.plugin-panel-content button,
+.plugin-panel-content select {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .plugin-panel-section h2 {
@@ -5687,7 +5697,6 @@ textarea:focus-visible,
 
 .plugin-panel-run-again,
 .plugin-panel-expand,
-.plugin-panel-open-window,
 .plugin-panel-close {
   height: var(--cd-control-height);
   padding: 0 var(--cd-space-4);
@@ -5701,7 +5710,6 @@ textarea:focus-visible,
 
 .plugin-panel-run-again:hover,
 .plugin-panel-expand:hover,
-.plugin-panel-open-window:hover,
 .plugin-panel-close:hover {
   background: var(--cd-bg-hover);
   color: var(--cd-text-primary);

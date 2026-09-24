@@ -813,11 +813,13 @@ their `ui.toolbar` gate and whole-plugin rollback, and provenance maps stay accu
 
 **Panels are declarative and rendered by ONE renderer.** Plugins push `PluginPanelReport` data (text,
 keyValue, table, svg, linkedFigure sections); `PluginReportRenderer` is the single renderer for every
-surface — the in-app panel surface AND the floating `PluginPanelWindow` (ADR-0030). Never reintroduce a
-window-private section switch: an unknown section kind must never be silently dropped. The in-app
-surface keeps single-panel semantics with replacement-close (ADR-0012); popped-out windows are
-per-panelId (several may float); dismissing a window is a real panel close and must notify the plugin.
-Staleness (D-09) and Run again travel with the report over the panel bridge.
+surface — the floating `PluginPanelWindow` on desktop and the in-app web-build fallback. Never
+reintroduce a window-private section switch: an unknown section kind must never be silently dropped.
+On desktop, all analysis and plugin surfaces are independent native windows keyed per plugin+panel;
+the drawing viewport contains only the canvas and drawn objects. The in-app surface and its
+single-panel replacement semantics exist only for the web build. Dismissing a plugin report window
+is a real panel close and must notify the plugin. Staleness (D-09), Run again, built-in analysis
+actions, and proposal review actions travel over the shared snapshot/event bridge.
 
 **Isolation and installs.** Bundled analyzer plugins execute in per-plugin module Workers
 (`PluginWorkerBridge`, ADR-0029/M34); capability requests are serviced by the permission-gated host

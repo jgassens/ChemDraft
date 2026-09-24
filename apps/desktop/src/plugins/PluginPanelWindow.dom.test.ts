@@ -5,9 +5,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ANALYSIS_WINDOW_ACTION_EVENT,
+  ANALYSIS_WINDOW_OWNER_ID,
+  MOLECULAR_INSPECTOR_WINDOW_ID,
+  PATCH_REVIEW_WINDOW_ID,
+  PLUGIN_DIAGNOSTICS_WINDOW_ID,
+  VALIDATION_RESULT_WINDOW_ID,
   broadcastPluginPanelReport,
   broadcastPluginPanelStaleness,
+  broadcastAnalysisWindowSnapshot,
   listenForPluginPanelReruns,
+  openPluginPanelWindow,
   PLUGIN_PANEL_CLOSED_EVENT,
   PLUGIN_PANEL_RERUN_EVENT,
   parsePluginPanelWindowId,
@@ -15,6 +23,9 @@ import {
   type PluginPanelReportPayload
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
+
+const tauriInvoke = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,18 +39,20 @@ afterEach(() => {
   container?.remove();
   root = undefined;
   container = undefined;
+  delete (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__;
+  tauriInvoke.mockClear();
 });
 
 const PANEL_ID = "panel.exampleAnalyzer.result";
 const PLUGIN_ID = "org.test.exampleAnalyzer";
 const WINDOW_ID = pluginPanelWindowId(PLUGIN_ID, PANEL_ID);
 
-async function mountWindow(): Promise<void> {
+async function mountWindow(windowId = WINDOW_ID): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(createElement(PluginPanelWindow, { panelId: WINDOW_ID }));
+    root!.render(createElement(PluginPanelWindow, { panelId: windowId }));
     await Promise.resolve();
   });
 }
@@ -77,6 +90,26 @@ async function broadcast(payload: PluginPanelReportPayload): Promise<void> {
 }
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  it("opens plugin and built-in analysis identities through the one existing native transport", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await openPluginPanelWindow({
+      pluginId: ANALYSIS_WINDOW_OWNER_ID,
+      panelId: VALIDATION_RESULT_WINDOW_ID,
+      title: "Validation Result",
+      width: 500,
+      height: 520
+    });
+
+    expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
+      request: {
+        panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, VALIDATION_RESULT_WINDOW_ID),
+        title: "Validation Result",
+        width: 500,
+        height: 520
+      }
+    });
+  });
+
   it("returns listener cleanup synchronously so an immediate effect cleanup cannot leak", () => {
     const handler = vi.fn();
     const cleanup = listenForPluginPanelReruns(handler);
@@ -236,5 +269,107 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await broadcast(reportPayload({ report: { title: "Correct owner", sections: [] } }));
     expect(container!.textContent).toContain("Correct owner");
     expect(container!.textContent).not.toContain("Wrong owner");
+  });
+
+  it("renders proposal review in the shared analysis window and relays Accept/Reject", async () => {
+    await mountWindow(pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID));
+    await act(async () => {
+      await broadcastAnalysisWindowSnapshot({
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: PATCH_REVIEW_WINDOW_ID,
+        revision: 1,
+        content: {
+          kind: "patchReview",
+          proposals: [
+            {
+              id: "proposal-1",
+              pluginId: "org.test.proposer",
+              pluginName: "Test Proposer",
+              reason: "Insert the recognized structure",
+              warnings: [{ code: "low-confidence", message: "Review the stereochemistry." }]
+            }
+          ]
+        }
+      });
+    });
+
+    expect(container!.textContent).toContain("Insert the recognized structure");
+    const actions: unknown[] = [];
+    const onAction = (event: Event) => actions.push((event as CustomEvent<unknown>).detail);
+    window.addEventListener(ANALYSIS_WINDOW_ACTION_EVENT, onAction);
+    try {
+      const [accept, reject] = [...container!.querySelectorAll<HTMLButtonElement>(".patch-review-actions button")];
+      await act(async () => {
+        accept!.click();
+        reject!.click();
+        await Promise.resolve();
+      });
+      expect(actions).toEqual([
+        { kind: "acceptPluginProposal", proposalId: "proposal-1" },
+        { kind: "rejectPluginProposal", proposalId: "proposal-1" }
+      ]);
+    } finally {
+      window.removeEventListener(ANALYSIS_WINDOW_ACTION_EVENT, onAction);
+    }
+  });
+
+  it("renders the built-in Molecular Inspector, validation result, and diagnostics snapshot kinds", async () => {
+    await mountWindow(pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, MOLECULAR_INSPECTOR_WINDOW_ID));
+    await act(async () => {
+      await broadcastAnalysisWindowSnapshot({
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: MOLECULAR_INSPECTOR_WINDOW_ID,
+        revision: 1,
+        content: { kind: "molecularInspector", busy: false, stale: false }
+      });
+    });
+    expect(container!.textContent).toContain("Select a structure to see its analyses here.");
+
+    act(() => root!.unmount());
+    root = createRoot(container!);
+    await act(async () => {
+      root!.render(
+        createElement(PluginPanelWindow, {
+          panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, VALIDATION_RESULT_WINDOW_ID)
+        })
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await broadcastAnalysisWindowSnapshot({
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: VALIDATION_RESULT_WINDOW_ID,
+        revision: 1,
+        content: {
+          kind: "report",
+          report: {
+            title: "Validation Result",
+            sections: [{ kind: "text", body: "No validation warnings or errors were reported." }]
+          }
+        }
+      });
+    });
+    expect(container!.textContent).toContain("No validation warnings or errors were reported.");
+
+    act(() => root!.unmount());
+    root = createRoot(container!);
+    await act(async () => {
+      root!.render(
+        createElement(PluginPanelWindow, {
+          panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, PLUGIN_DIAGNOSTICS_WINDOW_ID)
+        })
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await broadcastAnalysisWindowSnapshot({
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: PLUGIN_DIAGNOSTICS_WINDOW_ID,
+        revision: 1,
+        content: { kind: "pluginDiagnostics", plugins: [], diagnostics: [] }
+      });
+    });
+    expect(container!.querySelector('[data-testid="plugin-diagnostics"]')).not.toBeNull();
+    expect(container!.textContent).toContain("No bundled plugins are registered.");
   });
 });

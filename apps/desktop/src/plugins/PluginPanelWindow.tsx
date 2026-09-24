@@ -1,25 +1,32 @@
 import { useEffect, useState } from "react";
 import { startPaletteWindowDrag } from "../window-manager";
 import {
+  ANALYSIS_WINDOW_OWNER_ID,
   hideCurrentPanelWindow,
+  listenForAnalysisWindowSnapshots,
   listenForPluginPanelReports,
   listenForPluginPanelStaleness,
   notifyPluginPanelClosed,
   parsePluginPanelWindowId,
+  requestAnalysisWindowAction,
   requestPluginPanelRerun,
   requestPluginPanelReport,
+  type AnalysisWindowSnapshotPayload,
   type PluginPanelReportPayload
 } from "./panelBridge";
 import { PluginReportRenderer } from "./PluginReportRenderer";
+import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
+import { PatchReviewList } from "./PatchReviewTray";
+import { MolecularInspectorPane } from "../analysis/MolecularInspectorPane";
 
 /**
- * Floating utility window that renders a plugin's declarative report. Content arrives over
- * the event bridge (a request on mount, plus broadcasts from the main window); the window
- * holds no plugin code.
+ * Floating native analysis window. It renders either a plugin's declarative report or one of the
+ * host-owned Analyze surfaces. Content arrives over the request/replay event bridge and the window
+ * holds no plugin code or document authority.
  *
- * The report body is the SAME renderer the in-app surface uses ({@link PluginReportRenderer},
- * ADR-0030), so every section kind — including the interactive `linkedFigure` — renders identically
- * in both places, and a future section kind can never be silently dropped by a private switch.
+ * Plugin report bodies use the SAME renderer as the web fallback ({@link PluginReportRenderer}), so
+ * every section kind — including `linkedFigure` — renders identically and cannot be dropped by a
+ * window-private switch.
  * "Run again" is relayed to the main window (the plugin runtime lives there), staleness (D-09) is
  * pushed FROM the main window (only it can compare against the live document), and dismissing the
  * window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
@@ -29,6 +36,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   // composite window id produced by panelBridge. Decode it before filtering any messages.
   const identity = parsePluginPanelWindowId(panelId);
   const [payload, setPayload] = useState<PluginPanelReportPayload | undefined>();
+  const [analysisPayload, setAnalysisPayload] = useState<AnalysisWindowSnapshotPayload | undefined>();
   const [staleness, setStaleness] = useState<{ revision: number; stale: boolean } | undefined>();
 
   useEffect(() => {
@@ -50,6 +58,12 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       }
       setPayload((current) => (current && current.revision >= next.revision ? current : next));
     });
+    const unlistenAnalysis = listenForAnalysisWindowSnapshots((next) => {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
+        return;
+      }
+      setAnalysisPayload((current) => (current && current.revision >= next.revision ? current : next));
+    });
     const unlistenStaleness = listenForPluginPanelStaleness((next) => {
       if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
         return;
@@ -65,16 +79,33 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
 
     return () => {
       unlistenReports();
+      unlistenAnalysis();
       unlistenStaleness();
     };
   }, [identity?.panelId, identity?.pluginId]);
 
+  const isCoreAnalysisWindow = identity?.pluginId === ANALYSIS_WINDOW_OWNER_ID;
   const stale = payload !== undefined && staleness?.revision === payload.revision && staleness.stale;
+  const title = isCoreAnalysisWindow
+    ? analysisWindowTitle(analysisPayload)
+    : payload?.report.title ?? "Plugin panel";
+
+  const closeWindow = (): void => {
+    if (identity) {
+      if (isCoreAnalysisWindow) {
+        void requestAnalysisWindowAction({ kind: "close", windowId: identity.panelId }).catch(() => undefined);
+      } else {
+        // A plugin report window close is a real ADR-0012 close: the plugin cancels in-flight work.
+        void notifyPluginPanelClosed(identity).catch(() => undefined);
+      }
+    }
+    void hideCurrentPanelWindow().catch(() => undefined);
+  };
 
   return (
     <aside
       className="plugin-panel-shell"
-      aria-label={payload?.report.title ?? "Plugin panel"}
+      aria-label={title}
       data-panel-id={identity?.panelId}
       data-plugin-id={identity?.pluginId}
     >
@@ -87,8 +118,8 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           }
         }}
       >
-        <span className="palette-title-label">{payload?.report.title ?? "Plugin panel"}</span>
-        {payload?.commandId ? (
+        <span className="palette-title-label">{title}</span>
+        {!isCoreAnalysisWindow && payload?.commandId ? (
           <button
             type="button"
             className="plugin-panel-run-again"
@@ -101,19 +132,19 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           type="button"
           className="palette-close-button"
           aria-label="Close panel"
-          onClick={() => {
-            // Notify first (a real ADR-0012 close — the plugin cancels in-flight work), then hide.
-            if (identity) {
-              void notifyPluginPanelClosed(identity).catch(() => undefined);
-            }
-            void hideCurrentPanelWindow().catch(() => undefined);
-          }}
+          onClick={closeWindow}
         >
           ×
         </button>
       </div>
       <div className="plugin-panel-content">
-        {payload ? (
+        {isCoreAnalysisWindow ? (
+          analysisPayload ? (
+            <AnalysisWindowContent payload={analysisPayload} />
+          ) : (
+            <p className="plugin-panel-waiting">Waiting for analysis content…</p>
+          )
+        ) : payload ? (
           <>
             {stale ? (
               <div className="plugin-panel-stale" role="status" data-testid="plugin-panel-stale">
@@ -129,4 +160,57 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       </div>
     </aside>
   );
+}
+
+function analysisWindowTitle(payload: AnalysisWindowSnapshotPayload | undefined): string {
+  if (!payload) return "Analysis";
+  switch (payload.content.kind) {
+    case "molecularInspector":
+      return "Molecular Inspector";
+    case "pluginDiagnostics":
+      return "Bundled Plugins";
+    case "patchReview":
+      return "Plugin Proposals";
+    case "report":
+      return payload.content.report.title || "Analysis";
+  }
+}
+
+function AnalysisWindowContent({ payload }: { payload: AnalysisWindowSnapshotPayload }) {
+  const { content } = payload;
+  switch (content.kind) {
+    case "molecularInspector":
+      return (
+        <MolecularInspectorPane
+          report={content.report}
+          busy={content.busy}
+          stale={content.stale}
+          onCopy={(text) => {
+            void requestAnalysisWindowAction({ kind: "copyMolecularInspector", text }).catch(() => undefined);
+          }}
+          onChangeInterpretation={(interpretationId) => {
+            void requestAnalysisWindowAction({
+              kind: "changeMolecularInterpretation",
+              ...(interpretationId ? { interpretationId } : {})
+            }).catch(() => undefined);
+          }}
+        />
+      );
+    case "report":
+      return <PluginReportRenderer report={content.report} />;
+    case "pluginDiagnostics":
+      return <PluginDiagnosticsPanel plugins={content.plugins} diagnostics={content.diagnostics} />;
+    case "patchReview":
+      return (
+        <PatchReviewList
+          proposals={content.proposals}
+          onAccept={(proposalId) => {
+            void requestAnalysisWindowAction({ kind: "acceptPluginProposal", proposalId }).catch(() => undefined);
+          }}
+          onReject={(proposalId) => {
+            void requestAnalysisWindowAction({ kind: "rejectPluginProposal", proposalId }).catch(() => undefined);
+          }}
+        />
+      );
+  }
 }

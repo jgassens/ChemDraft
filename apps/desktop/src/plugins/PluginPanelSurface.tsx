@@ -15,9 +15,6 @@ export interface PluginPanelSurfaceProps {
   onClose: () => void;
   onCloseDiagnostics: () => void;
   onRunAgain: (commandId: string) => void;
-  /** Pop the open panel out into a floating native window (ADR-0030). Desktop only: absent (and the
-   *  control hidden) on the browser build, which keeps the in-app surface. */
-  onOpenAsWindow?: () => void;
 }
 
 interface PanelOffset {
@@ -86,10 +83,8 @@ function offsetsEqual(left: PanelOffset, right: PanelOffset): boolean {
 }
 
 /**
- * Desktop chrome around contributed panels: title, close, and a "Run again" action (the panel
- * contribution's command) around a plugin's declarative report, plus the toggleable bundled-plugin
- * diagnostics view. Renders nothing when neither a panel nor diagnostics is open, so it stays inert
- * until the plugin runtime is actually used.
+ * Web-build fallback around contributed panels and bundled-plugin diagnostics. Desktop never mounts
+ * this surface: all analysis/plugin content lives in independent native windows there.
  */
 export function PluginPanelSurface(props: PluginPanelSurfaceProps) {
   const { openPanel, diagnosticsOpen } = props;
@@ -115,7 +110,6 @@ export function PluginPanelSurface(props: PluginPanelSurfaceProps) {
           onToggleExpand={() => setExpanded((value) => !value)}
           onClose={props.onClose}
           onRunAgain={props.onRunAgain}
-          onOpenAsWindow={props.onOpenAsWindow}
         />
       ) : null}
       {diagnosticsOpen ? (
@@ -142,8 +136,7 @@ function OpenPanelView({
   expanded,
   onToggleExpand,
   onClose,
-  onRunAgain,
-  onOpenAsWindow
+  onRunAgain
 }: {
   panel: OpenPluginPanel;
   stale: boolean;
@@ -152,7 +145,6 @@ function OpenPanelView({
   onToggleExpand: () => void;
   onClose: () => void;
   onRunAgain: (commandId: string) => void;
-  onOpenAsWindow?: () => void;
 }) {
   const runCommandId = panel.commandId;
   const panelRef = useRef<HTMLElement | null>(null);
@@ -274,16 +266,6 @@ function OpenPanelView({
           {runCommandId ? (
             <button type="button" className="plugin-panel-run-again" onClick={() => onRunAgain(runCommandId)}>
               Run again
-            </button>
-          ) : null}
-          {onOpenAsWindow ? (
-            <button
-              type="button"
-              className="plugin-panel-open-window"
-              aria-label="Open panel as window"
-              onClick={onOpenAsWindow}
-            >
-              Open as window
             </button>
           ) : null}
           <button type="button" className="plugin-panel-close" aria-label="Close panel" onClick={onClose}>

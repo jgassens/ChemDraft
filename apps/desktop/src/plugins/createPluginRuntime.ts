@@ -59,6 +59,8 @@ export interface DesktopPluginRuntimeOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /** Desktop routes every report straight to its native window; web keeps the in-app fallback. */
+  defaultPanelSurface?: "inApp" | "window";
   /**
    * Serves `chemistry.compute`. Defaults to the real engine-backed implementation; injectable so tests
    * can drive the capability without standing up an analysis worker. Passing `null` withholds it, which
@@ -170,7 +172,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
     now
   });
-  controller = new PluginPanelController(host, nowIso);
+  controller = new PluginPanelController(host, nowIso, options.defaultPanelSurface);
 
   const toolsetsByPluginId = new Map<string, DesktopToolsetDefinition[]>();
   const pluginIdByToolsetId = new Map<string, string>();

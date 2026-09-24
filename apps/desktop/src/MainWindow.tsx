@@ -80,6 +80,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
+import type { PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -100,16 +101,25 @@ import {
   shouldRestoreDocumentSession
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
-import { PatchReviewTray } from "./plugins/PatchReviewTray";
+import { PatchReviewTray, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
+  ANALYSIS_WINDOW_OWNER_ID,
+  MOLECULAR_INSPECTOR_WINDOW_ID,
+  PATCH_REVIEW_WINDOW_ID,
+  PLUGIN_DIAGNOSTICS_WINDOW_ID,
+  VALIDATION_RESULT_WINDOW_ID,
+  broadcastAnalysisWindowSnapshot,
   broadcastPluginPanelReport,
   broadcastPluginPanelStaleness,
   hidePluginPanelWindow,
+  listenForAnalysisWindowActions,
   listenForPluginPanelCloses,
   listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
   pluginPanelIdentityKey,
+  type AnalysisWindowContent,
+  type AnalysisWindowSnapshotPayload,
   type PluginPanelIdentity,
   type PluginPanelReportPayload
 } from "./plugins/panelBridge";
@@ -1372,7 +1382,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.23.20.03-codex";
+const CURRENT_BUILD_STAMP = "9.24.08.34-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -7533,6 +7543,42 @@ export function MainWindow({
   // core bindings memo because "plugins.manage" is a core binding that opens the manager.
   const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
   const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+  const analysisWindowSnapshotsRef = useRef(new Map<string, AnalysisWindowSnapshotPayload>());
+  const analysisWindowRevisionRef = useRef(0);
+  const publishAnalysisWindow = useCallback(
+    (
+      windowId: string,
+      title: string,
+      content: AnalysisWindowContent,
+      options: { open?: boolean; width?: number; height?: number } = {}
+    ) => {
+      if (!isDesktopRuntime()) return;
+      const payload: AnalysisWindowSnapshotPayload = {
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: windowId,
+        content,
+        revision: ++analysisWindowRevisionRef.current
+      };
+      const key = pluginPanelIdentityKey(ANALYSIS_WINDOW_OWNER_ID, windowId);
+      analysisWindowSnapshotsRef.current.set(key, payload);
+
+      const opened = options.open
+        ? openPluginPanelWindow({
+            pluginId: ANALYSIS_WINDOW_OWNER_ID,
+            panelId: windowId,
+            title,
+            width: options.width,
+            height: options.height
+          })
+        : Promise.resolve();
+      void opened
+        .then(() => broadcastAnalysisWindowSnapshot(payload))
+        .catch((error: unknown) => {
+          setStatus(`Could not open ${title}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    },
+    []
+  );
 
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
     new Map()
@@ -7614,11 +7660,21 @@ export function MainWindow({
           openExportDialog();
         }
         if (action.id === "analyze.molecularProperties") {
-          // Open the window BEFORE looking at the selection, and regardless of it. Two reasons: the
-          // window is up while a slow analysis runs (it shows its own empty state, then fills in),
-          // and with nothing selected the command still does something visible instead of appearing
-          // to do nothing at all.
-          if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
+          // Desktop analysis never occupies a toolbar or the drawing viewport. Open the shared
+          // analysis-window host before starting the worker so progress/empty state is visible.
+          if (isDesktopRuntime()) {
+            publishAnalysisWindow(
+              MOLECULAR_INSPECTOR_WINDOW_ID,
+              "Molecular Inspector",
+              {
+                kind: "molecularInspector",
+                report: analysisReport,
+                busy: analysisBusy,
+                stale: analysisReportIsStale
+              },
+              { open: true, width: 940, height: 660 }
+            );
+          } else if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
             await toggleToolset(molecularInspectorToolsetId);
           }
           const molecule = getSelectedMolecule(document);
@@ -7655,6 +7711,12 @@ export function MainWindow({
             value: molecule.structure
           });
           setLastAnalysis(analysis);
+          publishAnalysisWindow(
+            VALIDATION_RESULT_WINDOW_ID,
+            "Validation Result",
+            { kind: "report", report: validationResultReport(analysis) },
+            { open: true, width: 500, height: 520 }
+          );
 
           if (analysis.validation.valid) {
             const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
@@ -8110,6 +8172,10 @@ export function MainWindow({
     return bindings;
   }, [
     activeToolState,
+    analysisBusy,
+    analysisInterpretation,
+    analysisReport,
+    analysisReportIsStale,
     addChargeToHoveredNativeAtom,
     addCarbonylToHoveredNativeAtom,
     addSingleBondToHoveredNativeAtom,
@@ -8138,10 +8204,12 @@ export function MainWindow({
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
     pasteClipboard,
+    publishAnalysisWindow,
     quickActions,
     resetDocumentHistory,
     restoreDocumentHistory,
     restoreToolAfterEyedropper,
+    runMolecularProperties,
     saveCurrentDocument,
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
@@ -8174,6 +8242,7 @@ export function MainWindow({
   const pluginPanelReportsRef = useRef(new Map<string, PluginPanelReportPayload>());
   const pluginPanelRevisionRef = useRef(0);
   const pluginPanelStalenessSentRef = useRef(new Map<string, { revision: number; stale: boolean }>());
+  const openedPluginPanelWindowsRef = useRef(new Set<string>());
   // Serialize repeated analyzer requests per owning plugin. Reports do not expose an invocation id,
   // so overlapping runs cannot otherwise prove which late result is older. A monotonic generation
   // suppresses obsolete status updates while the queue guarantees the newest requested run settles
@@ -8246,6 +8315,11 @@ export function MainWindow({
   useEffect(() => {
     const unlisten = listenForPluginPanelRequests((identity) => {
       const key = pluginPanelIdentityKey(identity.pluginId, identity.panelId);
+      const analysisPayload = analysisWindowSnapshotsRef.current.get(key);
+      if (analysisPayload) {
+        void broadcastAnalysisWindowSnapshot(analysisPayload).catch(() => undefined);
+        return;
+      }
       const payload = pluginPanelReportsRef.current.get(key);
       if (payload) {
         void broadcastPluginPanelReport(payload).catch(() => undefined);
@@ -8262,51 +8336,10 @@ export function MainWindow({
     return unlisten;
   }, []);
 
-  // "Open as window" (ADR-0030): move the in-app panel into a floating native window. The controller
-  // detaches it WITHOUT a close notification — the panel is still open, just on another surface — and
-  // the report is served over the panel bridge, so the window holds no plugin code.
-  const popOutOpenPanel = useCallback(() => {
-    const panel = pluginRuntime.runtime.panels.getOpenPanel();
-    if (!panel) {
-      return;
-    }
-    pluginRuntime.runtime.panels.detachPanel(panel.pluginId, panel.panelId);
-    const payload: PluginPanelReportPayload = {
-      pluginId: panel.pluginId,
-      panelId: panel.panelId,
-      report: panel.report,
-      commandId: panel.commandId,
-      revision: ++pluginPanelRevisionRef.current
-    };
-    const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
-    pluginPanelReportsRef.current.set(key, payload);
-    void openPluginPanelWindow({
-      pluginId: panel.pluginId,
-      panelId: panel.panelId,
-      title: panel.report.title || panel.title
-    }).catch((error: unknown) => {
-      // The panel was detached before the window existed. Swallowing this stranded it: off the
-      // in-app surface, with no window to render it, recoverable only by disabling the plugin.
-      pluginPanelReportsRef.current.delete(key);
-      const reattached = pluginRuntime.runtime.panels.reattachPanel(panel.pluginId, panel.panelId);
-      if (!reattached) {
-        // Another panel claimed the in-app slot meanwhile, so there is nowhere to put this one
-        // back. Close it properly instead — the plugin gets its ADR-0012 cancellation signal
-        // rather than waiting on a panel that no surface will ever show.
-        pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
-      }
-      pluginRuntime.runtime.panels.reportDiagnostic(
-        "panel.window_open_failed",
-        `Could not open "${panel.report.title || panel.title}" in a window; ${
-          reattached ? "it stayed in the app" : "it was closed"
-        }. (${error instanceof Error ? error.message : String(error)})`
-      );
-    });
-    void broadcastPluginPanelReport(payload).catch(() => undefined);
-  }, [pluginRuntime.runtime]);
-
   // Detached panel windows: mirror report updates (a plugin may push pending -> result for a detached
-  // panel) and staleness (D-09 recomputed against the live document) over the bridge.
+  // panel) and staleness (D-09 recomputed against the live document) over the bridge. In the desktop
+  // runtime the controller puts every showReport directly in this set, so simultaneous analyzers do
+  // not pass through — or replace one another in — the browser fallback's single in-app slot.
   useEffect(() => {
     for (const panel of pluginRuntime.detachedPanels) {
       const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
@@ -8321,6 +8354,22 @@ export function MainWindow({
         };
         pluginPanelReportsRef.current.set(key, payload);
         void broadcastPluginPanelReport(payload).catch(() => undefined);
+      }
+      if (isDesktopRuntime() && !openedPluginPanelWindowsRef.current.has(key)) {
+        openedPluginPanelWindowsRef.current.add(key);
+        void openPluginPanelWindow({
+          pluginId: panel.pluginId,
+          panelId: panel.panelId,
+          title: panel.report.title || panel.title
+        }).catch((error: unknown) => {
+          openedPluginPanelWindowsRef.current.delete(key);
+          pluginPanelReportsRef.current.delete(key);
+          pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
+          pluginRuntime.runtime.panels.reportDiagnostic(
+            "panel.window_open_failed",
+            `Could not open "${panel.report.title || panel.title}" in a window; it was closed. (${error instanceof Error ? error.message : String(error)})`
+          );
+        });
       }
       const source = panel.report.source;
       const stale = source
@@ -8338,7 +8387,7 @@ export function MainWindow({
           .catch(() => undefined);
       }
     }
-  }, [document, pluginRuntime.detachedPanels]);
+  }, [document, pluginRuntime.detachedPanels, pluginRuntime.runtime]);
 
   // A dismissed window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
   // The stored report stays cached so a reopened window is re-served instantly.
@@ -8377,6 +8426,7 @@ export function MainWindow({
       if (!current.has(key)) {
         void hidePluginPanelWindow(identity.pluginId, identity.panelId).catch(() => undefined);
         pluginPanelStalenessSentRef.current.delete(key);
+        openedPluginPanelWindowsRef.current.delete(key);
       }
     }
     previouslyDetachedPanelsRef.current = current;
@@ -8405,6 +8455,86 @@ export function MainWindow({
       }
     },
     [pluginRuntime.runtime]
+  );
+
+  // Core analysis snapshots use the same request/replay bridge and native window host as plugin
+  // reports. Browser builds retain the in-app/toolset surfaces below.
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    publishAnalysisWindow(MOLECULAR_INSPECTOR_WINDOW_ID, "Molecular Inspector", {
+      kind: "molecularInspector",
+      report: analysisReport,
+      busy: analysisBusy,
+      stale: analysisReportIsStale
+    });
+  }, [analysisBusy, analysisReport, analysisReportIsStale, publishAnalysisWindow]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime() || !pluginDiagnosticsOpen) return;
+    publishAnalysisWindow(PLUGIN_DIAGNOSTICS_WINDOW_ID, "Bundled Plugins", {
+      kind: "pluginDiagnostics",
+      plugins: pluginRuntime.plugins,
+      diagnostics: pluginRuntime.diagnostics
+    });
+  }, [pluginDiagnosticsOpen, pluginRuntime.diagnostics, pluginRuntime.plugins, publishAnalysisWindow]);
+
+  const previousProposalCountRef = useRef(0);
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
+    const previousCount = previousProposalCountRef.current;
+    previousProposalCountRef.current = pending.length;
+    const transition = proposalWindowLifecycle(previousCount, pending.length);
+    if (transition === "idle") return;
+    if (transition === "close") {
+      analysisWindowSnapshotsRef.current.delete(
+        pluginPanelIdentityKey(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID)
+      );
+      void hidePluginPanelWindow(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID).catch(() => undefined);
+      return;
+    }
+    publishAnalysisWindow(
+      PATCH_REVIEW_WINDOW_ID,
+      "Plugin Proposals",
+      {
+        kind: "patchReview",
+        proposals: pending.map((proposal) => proposalReviewItem(pluginRuntime.runtime.host, proposal))
+      },
+      { open: transition === "open", width: 420, height: 420 }
+    );
+  }, [patchQueueVersion, pluginRuntime.runtime, publishAnalysisWindow]);
+
+  useEffect(
+    () =>
+      listenForAnalysisWindowActions((action) => {
+        switch (action.kind) {
+          case "close":
+            if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
+              setPluginDiagnosticsOpen(false);
+            }
+            return;
+          case "copyMolecularInspector":
+            copyAnalysisText(action.text);
+            return;
+          case "changeMolecularInterpretation":
+            recomputeAnalysisFor(action.interpretationId);
+            return;
+          case "acceptPluginProposal": {
+            const proposal = pluginRuntime.runtime.host
+              .listProposedPatches("pending")
+              .find((candidate) => candidate.id === action.proposalId);
+            if (proposal) acceptPluginProposal(proposal);
+            return;
+          }
+          case "rejectPluginProposal": {
+            const proposal = pluginRuntime.runtime.host
+              .listProposedPatches("pending")
+              .find((candidate) => candidate.id === action.proposalId);
+            if (proposal) rejectPluginProposal(proposal);
+          }
+        }
+      }),
+    [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]
   );
 
   const invoke = useCallback(async (commandId: string) => {
@@ -8445,7 +8575,21 @@ export function MainWindow({
     }
 
     if (commandId === PLUGIN_DIAGNOSTICS_COMMAND_ID) {
-      setPluginDiagnosticsOpen((open) => !open);
+      if (isDesktopRuntime()) {
+        setPluginDiagnosticsOpen(true);
+        publishAnalysisWindow(
+          PLUGIN_DIAGNOSTICS_WINDOW_ID,
+          "Bundled Plugins",
+          {
+            kind: "pluginDiagnostics",
+            plugins: pluginRuntime.plugins,
+            diagnostics: pluginRuntime.diagnostics
+          },
+          { open: true, width: 500, height: 560 }
+        );
+      } else {
+        setPluginDiagnosticsOpen((open) => !open);
+      }
       return;
     }
 
@@ -8505,7 +8649,9 @@ export function MainWindow({
     importMoleculeInspectorTemplate,
     invokePluginCommand,
     pluginCommandExists,
-    pluginRuntime.plugins
+    pluginRuntime.diagnostics,
+    pluginRuntime.plugins,
+    publishAnalysisWindow
   ]);
 
   invokeCommandRef.current = invoke;
@@ -15966,17 +16112,18 @@ export function MainWindow({
         />
       ) : null}
 
-      <PluginPanelSurface
-        openPanel={pluginRuntime.openPanel}
-        diagnosticsOpen={pluginDiagnosticsOpen}
-        plugins={pluginRuntime.plugins}
-        diagnostics={pluginRuntime.diagnostics}
-        stale={pluginPanelStale}
-        onClose={pluginRuntime.closePanel}
-        onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
-        onRunAgain={(commandId) => invoke(commandId)}
-        onOpenAsWindow={isDesktopRuntime() ? popOutOpenPanel : undefined}
-      />
+      {!isDesktopRuntime() ? (
+        <PluginPanelSurface
+          openPanel={pluginRuntime.openPanel}
+          diagnosticsOpen={pluginDiagnosticsOpen}
+          plugins={pluginRuntime.plugins}
+          diagnostics={pluginRuntime.diagnostics}
+          stale={pluginPanelStale}
+          onClose={pluginRuntime.closePanel}
+          onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
+          onRunAgain={(commandId) => invoke(commandId)}
+        />
+      ) : null}
 
 
 
@@ -16520,12 +16667,14 @@ export function MainWindow({
             onCancel={() => applyPendingMoleculeStyleOverrideChoice("cancel")}
           />
         ) : null}
-        <PatchReviewTray
-          host={pluginRuntime.runtime.host}
-          queueVersion={patchQueueVersion}
-          onAccept={acceptPluginProposal}
-          onReject={rejectPluginProposal}
-        />
+        {!isDesktopRuntime() ? (
+          <PatchReviewTray
+            host={pluginRuntime.runtime.host}
+            queueVersion={patchQueueVersion}
+            onAccept={acceptPluginProposal}
+            onReject={rejectPluginProposal}
+          />
+        ) : null}
         {customizeToolbarsOpen ? (
           <CustomizeToolbarsDialog
             baseToolsets={toolbarCatalog.baseToolsets()}
@@ -27292,4 +27441,59 @@ function isNativeMoleculeGraph(object: MoleculeObject): boolean {
 function formatValidationFailure(analysis: StructureAnalysisResult): string {
   const firstError = analysis.validation.errors[0] ?? analysis.validation.warnings[0];
   return firstError ? `Validation unavailable: ${firstError.message}` : "Validation unavailable";
+}
+
+/** Host-owned presentation of the adapter result; no chemistry is derived at this UI boundary. */
+function validationResultReport(analysis: StructureAnalysisResult): PluginPanelReport {
+  const rows = [
+    { label: "Status", value: analysis.validation.valid ? "Valid" : "Invalid" },
+    { label: "Formula", value: analysis.properties.formula ?? "Unavailable" },
+    {
+      label: "Average mass",
+      value: analysis.properties.averageMass === undefined ? "Unavailable" : analysis.properties.averageMass.toFixed(3)
+    },
+    {
+      label: "Exact mass",
+      value: analysis.properties.exactMass === undefined ? "Unavailable" : analysis.properties.exactMass.toFixed(5)
+    },
+    {
+      label: "Total charge",
+      value: analysis.properties.totalCharge === undefined ? "Unavailable" : String(analysis.properties.totalCharge)
+    },
+    { label: "Atoms", value: analysis.properties.atomCount === undefined ? "Unavailable" : String(analysis.properties.atomCount) },
+    { label: "Bonds", value: analysis.properties.bondCount === undefined ? "Unavailable" : String(analysis.properties.bondCount) }
+  ];
+  const notices = [
+    ...analysis.validation.errors,
+    ...analysis.validation.warnings,
+    ...analysis.warnings
+  ].filter(
+    (notice, index, all) =>
+      all.findIndex((candidate) => candidate.code === notice.code && candidate.message === notice.message) === index
+  );
+
+  return {
+    title: "Validation Result",
+    sections: [
+      { kind: "keyValue", title: "Selected structure", rows },
+      ...(notices.length > 0
+        ? [
+            {
+              kind: "table" as const,
+              title: "Warnings and errors",
+              columns: ["Severity", "Code", "Message"],
+              rows: notices.map((notice) => [notice.severity, notice.code, notice.message])
+            }
+          ]
+        : [{ kind: "text" as const, body: "No validation warnings or errors were reported." }])
+    ]
+  };
+}
+
+export function proposalWindowLifecycle(
+  previousCount: number,
+  currentCount: number
+): "idle" | "open" | "update" | "close" {
+  if (currentCount <= 0) return previousCount > 0 ? "close" : "idle";
+  return previousCount <= 0 || currentCount > previousCount ? "open" : "update";
 }

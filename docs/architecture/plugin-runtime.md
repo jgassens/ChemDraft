@@ -57,6 +57,17 @@ carry an optional `source: { objectId, sourceFingerprint }`; desktop chrome
 compares it against the live document (`computeObjectFingerprint`) and shows a
 **stale** banner when the structure changed since the report was computed.
 
+On desktop, a report goes directly to its own native analysis window, keyed by
+plugin id plus panel id. Several reports may remain open at once; none render in
+the main drawing viewport. `PluginPanelWindow` is also the host for core-owned
+Molecular Inspector, validation result, bundled-plugin diagnostics, and plugin
+proposal review snapshots. They all reuse `openPluginPanelWindow` and the same
+request/replay event bridge; interactive actions travel back to the main window,
+where the document and plugin runtime live. The native windows are children of
+the main document window, not global always-on-top panels, and retain their
+session position when hidden and reopened. The in-app `PluginPanelSurface` and
+proposal tray are web-build fallbacks only.
+
 ## Menu integration + drift test
 
 Plugin menu contributions become app-menu items via `pluginMenuModel`, tagged
@@ -85,6 +96,11 @@ supersedes the prior; closing the panel aborts the active one; replacing it with
 different plugin/panel is also treated as a close; and the command
 re-checks `signal.aborted` after the predictor resolves, so a late result never
 writes a record or resurrects a dismissed panel.
+
+Closing a native plugin report window sends the same real panel-close signal.
+Closing a core analysis window only hides that host-owned surface; invoking its
+Analyze command reopens it with the latest cached snapshot. Proposal review
+opens when the queue gains a proposal and hides when the queue becomes empty.
 
 ## Command error channel (ADR-0010)
 

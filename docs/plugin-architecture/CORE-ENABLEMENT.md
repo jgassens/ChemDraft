@@ -27,7 +27,8 @@ these against its own UI; the shapes are the reference implementation.
 | `usePluginRuntime.ts` | React hook owning the runtime; derives plugins / menu items / open panel / diagnostics and re-renders on host + panel subscriptions. |
 | `registerBundledPlugins.ts` | **The integration point.** Catalog of `{ manifest, options }` descriptors, `applyEnabledPlugins`, and startup registration honoring the user's disabled set. *A host edits this one file to add a plugin.* |
 | `PluginPanelController.ts` | Owns open-panel state, report forwarding, the panel-closed hook, and runtime diagnostics. |
-| `PluginPanelSurface.tsx` | Desktop chrome around a contributed panel (drag, "Run again", close) plus the diagnostics panel. |
+| `PluginPanelWindow.tsx` + `panelBridge.ts` | Desktop-native host for plugin reports and built-in analysis snapshots, including Run again, staleness, close, and interactive action routing. |
+| `PluginPanelSurface.tsx` | Browser-build in-app fallback for contributed reports and diagnostics; never mounted in the desktop drawing window. |
 | `PluginReportRenderer.tsx` | Renders a declarative `PluginPanelReport`'s sections. |
 | `LinkedFigureView.tsx` + `spectrumExport.ts` | Interactive renderer for the `linkedFigure` report section (generic primary/alternative method model — used by NMR but not NMR-specific; copy/JCAMP export helpers). |
 | `PluginDiagnosticsPanel.tsx` | Bundled-plugin list + runtime diagnostics. |
@@ -52,8 +53,9 @@ these against its own UI; the shapes are the reference implementation.
 ## 4. Host shell wiring (`apps/desktop/src/MainWindow.tsx`)
 
 Call sites, not new modules: call `usePluginRuntime`, feed `pluginMenuItems` into the menu model,
-render `PluginPanelSurface` and `PluginManagerDialog`, register the `plugins.manage` command, and
-sync plugin menu items into the native menu via effect.
+route desktop reports through `openPluginPanelWindow` and the snapshot/event bridge, render
+`PluginPanelSurface` only for the web fallback, render `PluginManagerDialog`, register the
+`plugins.manage` command, and sync plugin menu items into the native menu via effect.
 
 ## 5. Build wiring
 
