@@ -129,7 +129,7 @@ describe("PluginHost", () => {
     expect(promptText).not.toHaveBeenCalled();
   });
 
-  it("rejects a concurrent second prompt from the same plugin", async () => {
+  it("rejects a concurrent second prompt in the same command invocation", async () => {
     let resolvePrompt!: (result: PluginPromptTextResult) => void;
     const promptText = vi.fn(
       () => new Promise<PluginPromptTextResult>((resolve) => (resolvePrompt = resolve))
@@ -152,7 +152,7 @@ describe("PluginHost", () => {
             const first = context.dialogs!.promptText({ title: "First", label: "Value" });
             await expect(
               context.dialogs!.promptText({ title: "Second", label: "Value" })
-            ).rejects.toThrow(/org\.test\.concurrent-dialogs.*already has an open.*concurrent prompts/i);
+            ).rejects.toThrow(/org\.test\.concurrent-dialogs.*at most once per command invocation/i);
             resolvePrompt({ status: "submitted", value: "first answer" });
             firstResult = await first;
           }
@@ -163,6 +163,90 @@ describe("PluginHost", () => {
     await host.invokeCommand("plugin.concurrentDialogs.run");
     expect(firstResult).toEqual({ status: "submitted", value: "first answer" });
     expect(promptText).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a second prompt after the first settled in the same command invocation", async () => {
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText });
+    host.registerPlugin(
+      {
+        id: "org.test.repeated-dialogs",
+        name: "Repeated Dialogs",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.repeatedDialogs.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.repeatedDialogs.run": async (context) => {
+            await context.dialogs!.promptText({ title: "First", label: "Value" });
+            await context.dialogs!.promptText({ title: "Second", label: "Value" });
+          }
+        }
+      }
+    );
+
+    const error = await host.invokeCommand("plugin.repeatedDialogs.run").catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(PluginHostError);
+    expect(error).toHaveProperty(
+      "message",
+      expect.stringMatching(/org\.test\.repeated-dialogs.*at most once per command invocation/i)
+    );
+    expect(promptText).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates prompt requests before opening host UI", async () => {
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText });
+    host.registerPlugin(
+      {
+        id: "org.test.invalid-dialog",
+        name: "Invalid Dialog",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.invalidDialog.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.invalidDialog.run": (context) =>
+            context.dialogs!.promptText({ title: "", label: "Value", maxLength: 0 })
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.invalidDialog.run")).rejects.toThrow();
+    expect(promptText).not.toHaveBeenCalled();
+  });
+
+  it("rejects a host UI result longer than the request maxLength", async () => {
+    const promptText = vi.fn(async () => ({ status: "submitted" as const, value: "12345" }));
+    const host = new PluginHost({ promptText });
+    host.registerPlugin(
+      {
+        id: "org.test.long-dialog-result",
+        name: "Long Dialog Result",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.longDialogResult.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.longDialogResult.run": (context) =>
+            context.dialogs!.promptText({ title: "Prompt", label: "Value", maxLength: 4 })
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.longDialogResult.run")).rejects.toThrow(
+      /org\.test\.long-dialog-result.*more than 4 characters/i
+    );
+    expect(promptText).toHaveBeenCalledOnce();
   });
 
   it("passes submitted text through exactly and preserves cancellation", async () => {

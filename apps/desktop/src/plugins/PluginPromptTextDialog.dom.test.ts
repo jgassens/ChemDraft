@@ -6,8 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createPluginRuntime } from "./createPluginRuntime";
-import { PluginPromptTextDialog } from "./PluginPromptTextDialog";
-import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
+import { PluginPromptTextDialog, isPluginPromptKeyboardEvent } from "./PluginPromptTextDialog";
+import { PluginPromptTextController, type OpenPluginTextPrompt } from "./PluginPromptTextController";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -62,7 +62,7 @@ describe("PluginPromptTextDialog", () => {
       return open
         ? createElement(PluginPromptTextDialog, {
             prompt,
-            onSubmit: (value) => {
+            onSubmit: (_promptId, value) => {
               onSubmit(value);
               setOpen(false);
             },
@@ -82,13 +82,16 @@ describe("PluginPromptTextDialog", () => {
     expect(document.getElementById(dialog.getAttribute("aria-labelledby")!)?.textContent).toBe(
       "Insert from chemical name"
     );
-    expect(document.body.textContent).toContain("Requested by OPSIN Name to Structure");
+    expect(document.getElementById(dialog.getAttribute("aria-describedby")!)?.textContent).toBe(
+      "Requested by OPSIN Name to Structure (org.test.opsin)"
+    );
     expect(document.activeElement).toBe(input);
     expect(submit.disabled).toBe(true);
 
     act(() => setInputValue(input, "  benzene  "));
     expect(submit.disabled).toBe(false);
-    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    // Browsers use the form's native submission path when Enter is pressed in this one-line input.
+    act(() => (dialog as HTMLFormElement).requestSubmit());
 
     expect(onSubmit).toHaveBeenCalledWith("  benzene  ");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
@@ -115,16 +118,108 @@ describe("PluginPromptTextDialog", () => {
         : null;
     }
 
-    mount(createElement(Harness));
-    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    const appShortcutHandler = vi.fn();
+    const windowKeyDown = (event: KeyboardEvent) => {
+      if (!isPluginPromptKeyboardEvent(event)) {
+        appShortcutHandler();
+      }
+    };
+    window.addEventListener("keydown", windowKeyDown, { capture: true });
+    try {
+      mount(createElement(Harness));
+      const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
+      act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 
-    expect(onCancel).toHaveBeenCalledOnce();
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(prior);
+      expect(onCancel).toHaveBeenCalledOnce();
+      expect(appShortcutHandler).not.toHaveBeenCalled();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(prior);
+    } finally {
+      window.removeEventListener("keydown", windowKeyDown, { capture: true });
+    }
+  });
+
+  it("cycles focus from the last control to the first and from the first to the last", () => {
+    mount(createElement(PluginPromptTextDialog, { prompt, onSubmit: vi.fn(), onCancel: vi.fn() }));
+    const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
+    const submit = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.type === "submit"
+    )!;
+
+    act(() => setInputValue(input, "benzene"));
+    submit.focus();
+    act(() => submit.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })));
+    expect(document.activeElement).toBe(input);
+
+    input.focus();
+    act(() =>
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }))
+    );
+    expect(document.activeElement).toBe(submit);
+  });
+});
+
+describe("PluginPromptTextController", () => {
+  it("settles queued prompts by id and ignores stale submit/cancel events", async () => {
+    const controller = new PluginPromptTextController();
+    const first = controller.promptText(
+      { id: "org.test.first", name: "First" },
+      { title: "First", label: "Value", maxLength: 20 },
+      new AbortController().signal
+    );
+    const firstId = controller.getOpenPrompt()!.id;
+    const second = controller.promptText(
+      { id: "org.test.second", name: "Second" },
+      { title: "Second", label: "Value", maxLength: 20 },
+      new AbortController().signal
+    );
+
+    controller.submit(firstId, "first answer");
+    await expect(first).resolves.toEqual({ status: "submitted", value: "first answer" });
+    const secondId = controller.getOpenPrompt()!.id;
+    expect(controller.getOpenPrompt()?.pluginId).toBe("org.test.second");
+
+    controller.submit(firstId, "stale answer");
+    controller.cancel(firstId);
+    expect(controller.getOpenPrompt()?.id).toBe(secondId);
+
+    controller.submit(secondId, "second answer");
+    await expect(second).resolves.toEqual({ status: "submitted", value: "second answer" });
+    expect(controller.getOpenPrompt()).toBeUndefined();
   });
 });
 
 describe("plugin prompt lifecycle", () => {
+  it("cancels a fire-and-forget prompt and closes it when its command returns", async () => {
+    let promptResult: PluginPromptTextResult | undefined;
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    runtime.host.registerPlugin(
+      {
+        id: "org.test.prompt-command-end",
+        name: "Prompt Command End",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.promptCommandEnd.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.promptCommandEnd.run": (context) => {
+            void context.dialogs!
+              .promptText({ title: "Prompt", label: "Value" })
+              .then((result) => (promptResult = result));
+            return { ok: true };
+          }
+        }
+      }
+    );
+
+    await expect(runtime.host.invokeCommand("plugin.promptCommandEnd.run")).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(promptResult).toEqual({ status: "cancelled" }));
+    expect(runtime.prompts.getOpenPrompt()).toBeUndefined();
+  });
+
   it("resolves an open prompt as cancelled when the plugin is disabled", async () => {
     const manifest: PluginManifest = {
       id: "org.test.prompt-disable",

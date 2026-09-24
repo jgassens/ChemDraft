@@ -79,8 +79,8 @@ export interface PluginRuntimeView {
   isPluginCommand: (commandId: string) => boolean;
   invokePluginCommand: (commandId: string) => Promise<unknown>;
   closePanel: () => void;
-  submitTextPrompt: (value: string) => void;
-  cancelTextPrompt: () => void;
+  submitTextPrompt: (id: number, value: string) => void;
+  cancelTextPrompt: (id: number) => void;
 }
 
 /**
@@ -315,8 +315,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [runtime]
   );
   const closePanel = useCallback(() => runtime.panels.closePanel(), [runtime]);
-  const submitTextPrompt = useCallback((value: string) => runtime.prompts.submit(value), [runtime]);
-  const cancelTextPrompt = useCallback(() => runtime.prompts.cancel(), [runtime]);
+  const submitTextPrompt = useCallback((id: number, value: string) => runtime.prompts.submit(id, value), [runtime]);
+  const cancelTextPrompt = useCallback((id: number) => runtime.prompts.cancel(id), [runtime]);
 
   return {
     runtime,

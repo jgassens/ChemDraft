@@ -80,8 +80,9 @@ spectrum/structure figure with a generic primary/alternative method model).
 ## One-line text prompts
 
 A plugin declaring `ui.panel` may ask for one line of text from inside one of its own command
-handlers. The desktop renders core-owned modal chrome and always names the requesting plugin, so the
-plugin cannot impersonate ChemDraft:
+handlers. The desktop renders core-owned modal chrome and shows the manifest-declared name and id of
+the plugin that invoked it. The host guarantees which plugin made the request; it does not attest that
+the plugin's self-declared display name is honest:
 
 ```ts
 const answer = await context.dialogs?.promptText({
@@ -98,9 +99,9 @@ if (answer?.status === "submitted") {
 ```
 
 `dialogs` is absent without `ui.panel`. `promptText` rejects outside that plugin's active command
-invocation and rejects a second concurrent prompt from the same plugin. Submit is disabled for an
-empty field; cancellation returns `{ status: "cancelled" }`. Disabling, unregistering, or terminating
-the plugin while its prompt is open also cancels it.
+invocation, and each command invocation may call it at most once (including after its first prompt has
+settled). Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
+Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
 
 ## Worker entry
 

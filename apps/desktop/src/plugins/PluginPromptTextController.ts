@@ -54,17 +54,17 @@ export class PluginPromptTextController {
     return this.pending[0];
   }
 
-  submit(value: string): void {
+  submit(id: number, value: string): void {
     const prompt = this.pending[0];
-    if (!prompt || value.length === 0 || value.length > prompt.request.maxLength) {
+    if (!prompt || prompt.id !== id || value.length === 0 || value.length > prompt.request.maxLength) {
       return;
     }
     this.settle(prompt, { status: "submitted", value });
   }
 
-  cancel(): void {
+  cancel(id: number): void {
     const prompt = this.pending[0];
-    if (prompt) {
+    if (prompt?.id === id) {
       this.settle(prompt, { status: "cancelled" });
     }
   }

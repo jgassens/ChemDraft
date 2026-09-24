@@ -609,4 +609,40 @@ describe("dialogs.promptText survives the worker boundary", () => {
     );
     bridge.terminate();
   });
+
+  it("enforces one prompt per command invocation after the first worker prompt settles", async () => {
+    const dialogManifest = parsePluginManifest({
+      id: "org.test.dialog-worker-repeat",
+      name: "Worker Dialog Repeat",
+      version: "0",
+      apiVersion: "^0.1.3",
+      entry: "x",
+      permissions: ["ui.panel"],
+      contributes: { commands: [{ id: "plugin.dialogWorkerRepeat.run", title: "Run" }] }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest: dialogManifest,
+      commandHandlers: {
+        "plugin.dialogWorkerRepeat.run": async (context) => {
+          await context.dialogs!.promptText({ title: "First", label: "Value" });
+          try {
+            await context.dialogs!.promptText({ title: "Second", label: "Value" });
+            return "unexpectedly opened a second prompt";
+          } catch (error) {
+            return (error as Error).message;
+          }
+        }
+      }
+    };
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(dialogManifest, delegatingOptions(dialogManifest, bridge));
+
+    await expect(host.invokeCommand("plugin.dialogWorkerRepeat.run")).resolves.toMatch(
+      /org\.test\.dialog-worker-repeat.*at most once per command invocation/i
+    );
+    expect(promptText).toHaveBeenCalledOnce();
+    bridge.terminate();
+  });
 });

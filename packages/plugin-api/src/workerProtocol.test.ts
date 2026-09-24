@@ -148,15 +148,17 @@ describe("runPluginWorker", () => {
     expect(settled).toMatchObject({ commandRequestId: 7, ok: true, value: { objectIds: ["x"], molecules: [] } });
   });
 
-  it("omits a capability object the manifest does not grant (mirrors the host's optional context)", async () => {
+  it("omits selection and dialogs stubs when the manifest grants neither permission", async () => {
     const endpoint = new ControlledEndpoint();
     let sawSelection = true;
+    let sawDialogs = true;
     runPluginWorker(
       {
         manifest: manifest([]),
         commandHandlers: {
           [commandId]: async (context) => {
             sawSelection = context.selection !== undefined;
+            sawDialogs = context.dialogs !== undefined;
             return { ok: true };
           }
         }
@@ -166,6 +168,7 @@ describe("runPluginWorker", () => {
     endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
     await flush();
     expect(sawSelection).toBe(false);
+    expect(sawDialogs).toBe(false);
   });
 
   it("reports an unknown command instead of hanging", async () => {

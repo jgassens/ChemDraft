@@ -238,6 +238,7 @@ export class PluginHost {
   private nextProposalId = 1;
   private readonly subscribers = new Set<() => void>();
   private readonly activeCommandInvocations = new Map<symbol, string>();
+  private readonly textPromptInvocations = new Set<symbol>();
   private readonly openTextPrompts = new Map<
     string,
     { invocationToken: symbol; abortController: AbortController }
@@ -728,6 +729,12 @@ export class PluginHost {
         `Plugin "${pluginId}" may call dialogs.promptText only while one of its own commands is executing.`
       );
     }
+    if (this.textPromptInvocations.has(invocationToken)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call dialogs.promptText at most once per command invocation.`
+      );
+    }
+    this.textPromptInvocations.add(invocationToken);
     if (this.openTextPrompts.has(pluginId)) {
       throw new PluginHostError(
         `Plugin "${pluginId}" already has an open dialogs.promptText request; concurrent prompts are not allowed.`
@@ -774,6 +781,7 @@ export class PluginHost {
   private finishCommandInvocation(invocationToken: symbol): void {
     const pluginId = this.activeCommandInvocations.get(invocationToken);
     this.activeCommandInvocations.delete(invocationToken);
+    this.textPromptInvocations.delete(invocationToken);
     if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {
       this.cancelOpenTextPrompt(pluginId);
     }

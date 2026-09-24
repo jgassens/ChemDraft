@@ -638,7 +638,7 @@ import {
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
-import { PluginPromptTextDialog } from "./plugins/PluginPromptTextDialog";
+import { PluginPromptTextDialog, isPluginPromptKeyboardEvent } from "./plugins/PluginPromptTextDialog";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1372,7 +1372,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.23.19.36-codex";
+const CURRENT_BUILD_STAMP = "9.23.20.03-codex";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -9183,6 +9183,11 @@ export function MainWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // The prompt owns its keys. MainWindow also has a capture-phase Escape listener, so its global
+      // handlers must opt out explicitly; propagation control inside the dialog is too late for that.
+      if (isPluginPromptKeyboardEvent(event)) {
+        return;
+      }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
         return;
       }
@@ -9377,6 +9382,9 @@ export function MainWindow({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isPluginPromptKeyboardEvent(event)) {
+        return;
+      }
       if (event.key === "Shift" || event.shiftKey) {
         setShiftPressed(true);
       }
@@ -9442,6 +9450,7 @@ export function MainWindow({
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
+      if (isPluginPromptKeyboardEvent(event)) return;
       if (event.key !== "Escape") return;
     if (spin3dStateRef.current) {
       event.preventDefault();
@@ -9791,6 +9800,9 @@ export function MainWindow({
       return;
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (isPluginPromptKeyboardEvent(event)) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         setCustomizeMode(false);
