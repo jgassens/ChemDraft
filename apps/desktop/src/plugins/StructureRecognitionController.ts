@@ -37,6 +37,7 @@ export class StructureRecognitionController {
   private pending: PendingInstall | undefined;
   private latestStatus: StructureRecognitionEngineStatus | undefined;
   private readonly listeners = new Set<() => void>();
+  private presenters = 0;
 
   constructor(
     private readonly engine: StructureRecognitionEngine,
@@ -56,6 +57,21 @@ export class StructureRecognitionController {
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** The UI that renders the install dialog attaches here for as long as it is mounted. Without one,
+   * an install request has nobody to answer it, so recognition reports `engineNotInstalled` at once
+   * rather than waiting on a dialog that will never appear. Detaching the last presenter cancels an
+   * open request for the same reason. */
+  attachInstallPresenter(): () => void {
+    this.presenters += 1;
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      this.presenters -= 1;
+      if (this.presenters === 0 && this.pending) void this.cancel(this.pending.id);
+    };
   }
 
   async refreshStatus(): Promise<StructureRecognitionEngineStatus> {
@@ -176,7 +192,7 @@ export class StructureRecognitionController {
     signal?: AbortSignal
   ): Promise<boolean> {
     if (signal?.aborted) return Promise.resolve(false);
-    if (this.pending) return Promise.resolve(false);
+    if (this.pending || this.presenters === 0) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       const pending: PendingInstall = {
         id: this.nextId++,

@@ -159,7 +159,10 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     // No engine status call at startup (§15): the plugin manager and the recognition command each
     // ask when they need it.
     const unsubscribeRecognition = runtime.recognition.subscribe(bumpVersion);
+    // MainWindow renders the install dialog from this hook's `openRecognitionInstall`.
+    const detachInstallPresenter = runtime.recognition.attachInstallPresenter();
     return () => {
+      detachInstallPresenter();
       unsubscribeHost();
       unsubscribePanels();
       unsubscribePrompts();

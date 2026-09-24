@@ -71,7 +71,10 @@ function setup(initial: StructureRecognitionEngineStatus = installed) {
     }
   };
   const prepare = vi.fn(async () => prepared);
-  return { controller: new StructureRecognitionController(engine, prepare), engine, prepare, prepared };
+  const controller = new StructureRecognitionController(engine, prepare);
+  // Stands in for MainWindow's install dialog; tests without one construct the controller directly.
+  const detachPresenter = controller.attachInstallPresenter();
+  return { controller, engine, prepare, prepared, detachPresenter };
 }
 
 describe("StructureRecognitionController", () => {
@@ -185,5 +188,42 @@ describe("StructureRecognitionController", () => {
     abort.abort();
     await expect(pending).resolves.toEqual({ status: "engineNotInstalled" });
     expect(controller.getOpenInstall()).toBeUndefined();
+  });
+
+  it("reports engineNotInstalled at once when no install dialog is attached, instead of waiting forever", async () => {
+    const engine: StructureRecognitionEngine = {
+      status: vi.fn(async () => notInstalled),
+      install: vi.fn(async () => installed),
+      cancelInstall: vi.fn(async () => notInstalled),
+      uninstall: vi.fn(async () => notInstalled),
+      recognizeImage: vi.fn(async () => recognized)
+    };
+    const controller = new StructureRecognitionController(engine, vi.fn());
+
+    await expect(
+      controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal)
+    ).resolves.toEqual({ status: "engineNotInstalled" });
+    await expect(controller.manageInstall({ id: "p", name: "P" })).resolves.toBe(false);
+    expect(controller.getOpenInstall()).toBeUndefined();
+    expect(engine.install).not.toHaveBeenCalled();
+    expect(engine.recognizeImage).not.toHaveBeenCalled();
+  });
+
+  it("settles an open install request when its dialog host goes away", async () => {
+    const { controller, engine, detachPresenter } = setup(notInstalled);
+    const pending = controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(controller.getOpenInstall()).toBeDefined();
+
+    detachPresenter();
+    detachPresenter(); // idempotent: a second detach must not drive the count negative
+
+    await expect(pending).resolves.toEqual({ status: "engineNotInstalled" });
+    expect(controller.getOpenInstall()).toBeUndefined();
+    expect(engine.recognizeImage).not.toHaveBeenCalled();
+    await expect(
+      controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal)
+    ).resolves.toEqual({ status: "engineNotInstalled" });
   });
 });

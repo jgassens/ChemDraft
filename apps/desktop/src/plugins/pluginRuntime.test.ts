@@ -8,6 +8,7 @@ import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 
+import { createPhase4Document } from "../documentWorkflow";
 import { createPluginRuntime, type DesktopPluginRuntimeOptions } from "./createPluginRuntime";
 import { ImageSourceRegistry, type ImageSourceProvider } from "./ImageSourceProvider";
 import { buildPluginMenuItems, PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./pluginMenuModel";
@@ -16,8 +17,55 @@ import {
   createBundledPluginDescriptors,
   registerBundledPlugins
 } from "./registerBundledPlugins";
+import type {
+  StructureRecognitionEngine,
+  StructureRecognitionEngineStatus,
+  StructureRecognitionOutcome
+} from "./structureRecognitionEngine";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
+
+const carbonMonoxideMolfile = [
+  "Recognized carbon monoxide",
+  "  MolScribe",
+  "",
+  "  2  1  0  0  0  0            999 V2000",
+  "   -0.7500    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+  "    0.7500    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+  "  1  2  2  0  0  0  0",
+  "M  END"
+].join("\n");
+
+const recognizedCarbonMonoxide: StructureRecognitionOutcome = {
+  status: "recognized",
+  smiles: "C=O",
+  molfile: carbonMonoxideMolfile,
+  confidence: 0.91,
+  atoms: [
+    { index: 0, symbol: "C", x: -0.75, y: 0, confidence: 0.9 },
+    { index: 1, symbol: "O", x: 0.75, y: 0, confidence: 0.92 }
+  ],
+  bonds: [{ begin: 0, end: 1, bondType: "double", confidence: 0.89 }],
+  elapsedMs: 80,
+  engine: { name: "MolScribe", molscribeCommit: "abc123", modelSha256: "a".repeat(64) }
+};
+
+function installedEngine(
+  recognizeImage: StructureRecognitionEngine["recognizeImage"]
+): StructureRecognitionEngine & { recognizeImage: ReturnType<typeof vi.fn> } {
+  const status: StructureRecognitionEngineStatus = {
+    state: "installed",
+    requiredDiskBytes: 0,
+    freeDiskBytes: 0
+  };
+  return {
+    status: vi.fn(async () => status),
+    install: vi.fn(async () => status),
+    cancelInstall: vi.fn(async () => status),
+    uninstall: vi.fn(async () => status),
+    recognizeImage: vi.fn(recognizeImage)
+  };
+}
 
 function makeRuntime(overrides: Partial<DesktopPluginRuntimeOptions> = {}) {
   const imageProvider: ImageSourceProvider = {
@@ -144,7 +192,9 @@ describe("desktop plugin runtime", () => {
     expect(runtime.host.getPlugin(molscribeOcsrManifest.id)).toBeUndefined();
   });
 
-  it("acquires an image and renders the honest no-engine report", async () => {
+  it("acquires an image and reports engineNotInstalled in one line when no install dialog is attached", async () => {
+    // No UI host renders the installer here, so the host must answer at once instead of waiting on a
+    // dialog that will never appear.
     const runtime = makeRuntime();
     registerBundledPlugins(runtime);
 
@@ -153,19 +203,76 @@ describe("desktop plugin runtime", () => {
     const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
-    await invocation;
+    await expect(invocation).resolves.toEqual({ status: "engineNotInstalled" });
 
+    expect(runtime.recognition.getOpenInstall()).toBeUndefined();
     const open = runtime.panels.getOpenPanel();
     expect(open?.panelId).toBe(molscribeOcsrPanelId);
     expect(open?.title).toBe("MolScribe OCSR");
     expect(open?.commandId).toBe(molscribeOcsrCommandId);
     expect(open?.report.title).toContain("MolScribe");
     expect(open?.report.sections).toEqual([
-      expect.objectContaining({ kind: "text", body: expect.stringContaining("No recognition engine is installed yet") })
+      { kind: "text", body: "Recognition needs the local engine. Install it in Add or Remove Plugins." }
     ]);
 
     runtime.panels.closePanel();
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
+  });
+
+  it("turns an installed engine's recognition into a reviewable proposal without opening a panel", async () => {
+    const document = createPhase4Document();
+    const engine = installedEngine(async () => recognizedCarbonMonoxide);
+    const validator = vi.fn(async () => ({ valid: true, errors: [], warnings: [] }));
+    const runtime = makeRuntime({
+      getActiveDocument: () => document,
+      structureRecognitionEngine: engine,
+      recognitionStructureValidator: validator
+    });
+    registerBundledPlugins(runtime);
+
+    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await expect(invocation).resolves.toMatchObject({ status: "recognized" });
+
+    expect(engine.recognizeImage).toHaveBeenCalledWith({ mediaType: "image/png", bytes: new Uint8Array([1, 2, 3]) });
+    expect(validator).toHaveBeenCalledWith({ format: "molfile-v2000", value: carbonMonoxideMolfile });
+    const proposals = runtime.host.listProposedPatches();
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      pluginId: molscribeOcsrManifest.id,
+      proposal: {
+        requiresUserApproval: true,
+        patch: { op: "addObject", pageId: document.pages[0]!.id, object: { type: "molecule" } },
+        recognition: { proposedSmiles: "C=O", proposedMolfile: carbonMonoxideMolfile }
+      }
+    });
+    expect(runtime.panels.getOpenPanel()).toBeUndefined();
+  });
+
+  it("reports a failed recognition in the plugin panel and proposes nothing", async () => {
+    const runtime = makeRuntime({
+      structureRecognitionEngine: installedEngine(async () => ({
+        status: "failed",
+        code: "invalidImage",
+        message: "The file was not a decodable image."
+      }))
+    });
+    registerBundledPlugins(runtime);
+
+    const invocation = runtime.host.invokeCommand(molscribeOcsrCommandId);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await expect(invocation).resolves.toEqual({
+      status: "failed",
+      code: "invalidImage",
+      message: "The file was not a decodable image."
+    });
+
+    expect(runtime.host.listProposedPatches()).toEqual([]);
+    expect(runtime.panels.getOpenPanel()?.report.sections).toEqual([
+      { kind: "text", body: "Recognition failed: The file was not a decodable image." }
+    ]);
   });
 
   it("reads selection from the provider on demand, so the persistent host sees live state", async () => {
