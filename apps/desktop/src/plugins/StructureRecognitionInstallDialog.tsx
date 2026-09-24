@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import type { StructureRecognitionInstallError } from "./structureRecognitionEngine";
 
@@ -64,10 +65,6 @@ export function StructureRecognitionInstallDialog({
 
   if (typeof document === "undefined") return null;
 
-  const progress = request.progress;
-  const byteProgress =
-    progress?.bytesDone !== undefined && progress.bytesTotal !== undefined && progress.bytesTotal > 0;
-
   return createPortal(
     <div className="plugin-prompt-backdrop" role="presentation">
       <div
@@ -97,21 +94,11 @@ export function StructureRecognitionInstallDialog({
           )}
           {request.status.detail ? <p>{request.status.detail}</p> : null}
           {request.installing ? (
-            <div className="recognition-install-progress" aria-live="polite">
-              <p>{progress?.message ?? "Installing the recognition engine…"}</p>
-              {byteProgress ? (
-                <>
-                  <progress
-                    aria-label="Recognition engine install progress"
-                    value={progress.bytesDone}
-                    max={progress.bytesTotal}
-                  />
-                  <span>
-                    {formatDiskBytes(progress.bytesDone!)} of {formatDiskBytes(progress.bytesTotal!)}
-                  </span>
-                </>
-              ) : null}
-            </div>
+            <RecognitionInstallProgress
+              progress={request.progress}
+              startedAt={request.startedAt}
+              phaseStartedAt={request.phaseStartedAt}
+            />
           ) : null}
           {request.error ? (
             <p className="plugin-image-error" role="alert">

@@ -139,9 +139,10 @@ describe("host-managed plugin update catalog", () => {
         pluginId: "org.chemdraft.ocsr.molscribe",
         displayName: "Structure from Image (MolScribe)",
         description:
-          "Recognize a drawn structure from an image or screenshot. Downloads a local recognition engine (about 2.5 GB) on first use.",
+          "Recognize a drawn structure from an image or screenshot. Installing it also downloads a local recognition engine (about 2.5 GB).",
         repository: "jgassens/ChemDraft-MolScribe-Plugin",
-        assetStem: "molscribe-ocsr"
+        assetStem: "molscribe-ocsr",
+        requiresEngine: "structureRecognition"
       }
     ]);
   });

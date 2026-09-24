@@ -17,6 +17,33 @@ export interface OpenStructureRecognitionInstall {
   installing: boolean;
   progress?: StructureRecognitionInstallProgress;
   error?: StructureRecognitionInstallError;
+  /** While installing: when the install and its current phase started (ms since epoch). */
+  startedAt?: number;
+  phaseStartedAt?: number;
+}
+
+/**
+ * The engine install currently running, or the last one that failed. It belongs to the controller —
+ * not to whichever window started it — so closing and reopening Add or Remove Plugins shows the same
+ * install still in progress instead of offering Install again.
+ */
+export interface StructureRecognitionInstallRun {
+  running: boolean;
+  startedAt: number;
+  phaseStartedAt: number;
+  progress?: StructureRecognitionInstallProgress;
+  /** Set once a run has stopped without installing: failed, cancelled, or unsupported. */
+  error?: StructureRecognitionInstallError;
+}
+
+interface InstallRunState extends StructureRecognitionInstallRun {
+  promise: Promise<boolean>;
+}
+
+export interface StructureRecognitionControllerOptions {
+  now?: () => number;
+  /** How often a host-owned install this controller did not start is polled for progress. */
+  followIntervalMs?: number;
 }
 
 interface PendingInstall extends OpenStructureRecognitionInstall {
@@ -36,13 +63,20 @@ export class StructureRecognitionController {
   private nextId = 1;
   private pending: PendingInstall | undefined;
   private latestStatus: StructureRecognitionEngineStatus | undefined;
+  private run: InstallRunState | undefined;
   private readonly listeners = new Set<() => void>();
   private presenters = 0;
+  private readonly now: () => number;
+  private readonly followIntervalMs: number;
 
   constructor(
     private readonly engine: StructureRecognitionEngine,
-    private readonly prepareResult: PrepareRecognitionResult
-  ) {}
+    private readonly prepareResult: PrepareRecognitionResult,
+    options: StructureRecognitionControllerOptions = {}
+  ) {
+    this.now = options.now ?? Date.now;
+    this.followIntervalMs = options.followIntervalMs ?? 500;
+  }
 
   getStatus(): StructureRecognitionEngineStatus | undefined {
     return this.latestStatus;
@@ -51,7 +85,23 @@ export class StructureRecognitionController {
   getOpenInstall(): OpenStructureRecognitionInstall | undefined {
     if (!this.pending) return undefined;
     const { resolve: _resolve, signal: _signal, onAbort: _onAbort, ...open } = this.pending;
+    const run = this.run;
+    if (open.installing && run?.running) {
+      return {
+        ...open,
+        progress: run.progress ?? open.progress,
+        startedAt: run.startedAt,
+        phaseStartedAt: run.phaseStartedAt
+      };
+    }
     return open;
+  }
+
+  /** The running engine install, or the last one that stopped without installing. */
+  getInstallRun(): StructureRecognitionInstallRun | undefined {
+    if (!this.run) return undefined;
+    const { promise: _promise, ...run } = this.run;
+    return run;
   }
 
   subscribe(listener: () => void): () => void {
@@ -75,9 +125,77 @@ export class StructureRecognitionController {
   }
 
   async refreshStatus(): Promise<StructureRecognitionEngineStatus> {
-    this.latestStatus = await this.engine.status();
+    const status = await this.engine.status();
+    this.latestStatus = status;
+    // An install is running that this controller is not driving (the page was reloaded, say).
+    // Follow it through the host's progress snapshot rather than offer a second install.
+    if (status.state === "installing" && !this.run?.running) this.follow(status);
     this.notify();
-    return this.latestStatus;
+    return status;
+  }
+
+  /**
+   * Installs the engine directly — the plugin manager's one-click path, with progress shown where
+   * the user already is. Joins an install that is already running rather than starting another.
+   * Resolves `true` once installed; never rejects — a failure is recorded on the run for the UI.
+   */
+  installEngine(): Promise<boolean> {
+    if (this.run?.running) return this.run.promise;
+    const now = this.now();
+    const run = {
+      running: true,
+      startedAt: now,
+      phaseStartedAt: now,
+      progress: { phase: "checkingDisk", message: "Checking available disk space…" }
+    } as InstallRunState;
+    this.run = run;
+    run.promise = this.engine
+      .install((progress) => this.applyProgress(run, progress))
+      .then((status): boolean => {
+        this.latestStatus = status;
+        if (status.state === "installed") {
+          if (this.run === run) this.run = undefined;
+          return true;
+        }
+        this.stopRun(run, {
+          code: status.state === "unsupported" ? "unsupported" : "failed",
+          message: status.detail ?? "The recognition engine was not installed."
+        });
+        return false;
+      })
+      .catch((error: unknown): boolean => {
+        const normalized = isStructureRecognitionInstallError(error)
+          ? error
+          : { code: "failed" as const, message: messageOf(error) };
+        if (normalized.code === "unsupported" && this.latestStatus) {
+          this.latestStatus = { ...this.latestStatus, state: "unsupported", detail: normalized.message };
+        }
+        this.stopRun(run, normalized);
+        if (normalized.code !== "unsupported") {
+          // The host is no longer installing; show what it left (not installed, or the old engine).
+          this.engine.status().then(
+            (status) => {
+              this.latestStatus = status;
+              this.notify();
+            },
+            () => undefined
+          );
+        }
+        return false;
+      })
+      .finally(() => this.notify());
+    this.notify();
+    return run.promise;
+  }
+
+  /** Cancels the running engine install, whoever started it. The run records the cancellation. */
+  async cancelEngineInstall(): Promise<void> {
+    if (!this.run?.running) return;
+    try {
+      await this.engine.cancelInstall();
+    } catch {
+      // The install's own rejection still reports the outcome.
+    }
   }
 
   async recognize(
@@ -129,42 +247,95 @@ export class StructureRecognitionController {
     pending.error = undefined;
     pending.progress = { phase: "checkingDisk", message: "Checking available disk space…" };
     this.notify();
-    try {
-      const status = await this.engine.install((progress) => {
-        if (this.pending !== pending) return;
-        pending.progress = progress;
-        this.notify();
-      });
-      if (this.pending !== pending) return;
-      pending.status = status;
-      this.latestStatus = status;
-      if (status.state === "installed") {
-        this.settle(pending, true);
-      } else if (status.state === "unsupported") {
-        pending.installing = false;
-        this.notify();
-      } else {
-        pending.installing = false;
-        pending.error = { code: "failed", message: status.detail ?? "The recognition engine was not installed." };
-        this.notify();
-      }
-    } catch (error) {
-      if (this.pending !== pending) return;
-      const normalized = isStructureRecognitionInstallError(error)
-        ? error
-        : { code: "failed" as const, message: messageOf(error) };
-      if (normalized.code === "cancelled") {
-        this.settle(pending, false);
-        return;
-      }
-      pending.installing = false;
-      pending.error = normalized;
-      if (normalized.code === "unsupported") {
-        pending.status = { ...pending.status, state: "unsupported", detail: normalized.message };
-        this.latestStatus = pending.status;
-      }
-      this.notify();
+    await this.awaitRun(pending);
+  }
+
+  /** Ties an open install dialog to the shared run, so the dialog and the plugin manager always
+   *  show the same install, and the dialog settles when that install ends. */
+  private async awaitRun(pending: PendingInstall): Promise<void> {
+    const installed = await this.installEngine();
+    if (this.pending !== pending) return;
+    if (installed) {
+      if (this.latestStatus) pending.status = this.latestStatus;
+      this.settle(pending, true);
+      return;
     }
+    const error = this.run?.error ?? { code: "failed" as const, message: "The recognition engine was not installed." };
+    if (error.code === "cancelled") {
+      this.settle(pending, false);
+      return;
+    }
+    pending.installing = false;
+    pending.error = error;
+    if (error.code === "unsupported") {
+      pending.status = { ...pending.status, state: "unsupported", detail: error.message };
+      this.latestStatus = pending.status;
+    }
+    this.notify();
+  }
+
+  private applyProgress(run: InstallRunState, progress: StructureRecognitionInstallProgress): void {
+    if (this.run !== run || !run.running) return;
+    if (run.progress?.phase !== progress.phase) run.phaseStartedAt = this.now();
+    run.progress = progress;
+    this.notify();
+  }
+
+  private stopRun(run: InstallRunState, error: StructureRecognitionInstallError): void {
+    if (this.run !== run) return;
+    run.running = false;
+    run.error = error;
+  }
+
+  /** Polls the host's progress snapshot until an install this controller did not start ends. */
+  private follow(status: StructureRecognitionEngineStatus): void {
+    const now = this.now();
+    const run = {
+      running: true,
+      startedAt: now - (status.installElapsedMs ?? 0),
+      phaseStartedAt: now,
+      progress: status.progress
+    } as InstallRunState;
+    this.run = run;
+    run.promise = new Promise<boolean>((resolve) => {
+      const poll = (): void => {
+        setTimeout(() => {
+          if (this.run !== run) {
+            resolve(false);
+            return;
+          }
+          this.engine.status().then(
+            (next) => {
+              if (this.run !== run) {
+                resolve(false);
+                return;
+              }
+              this.latestStatus = next;
+              if (next.state === "installing") {
+                if (next.progress) this.applyProgress(run, next.progress);
+                else this.notify();
+                poll();
+                return;
+              }
+              if (next.state === "installed") {
+                this.run = undefined;
+                this.notify();
+                resolve(true);
+                return;
+              }
+              this.stopRun(run, {
+                code: "failed",
+                message: "The recognition engine install stopped before it finished."
+              });
+              this.notify();
+              resolve(false);
+            },
+            () => poll()
+          );
+        }, this.followIntervalMs);
+      };
+      poll();
+    });
   }
 
   async cancel(id: number): Promise<void> {
@@ -199,7 +370,7 @@ export class StructureRecognitionController {
         pluginId: plugin.id,
         pluginName: plugin.name,
         status,
-        installing: status.state === "installing",
+        installing: status.state === "installing" || this.run?.running === true,
         signal,
         resolve
       };
@@ -209,6 +380,9 @@ export class StructureRecognitionController {
       }
       this.pending = pending;
       this.notify();
+      // An install is already running (started from the plugin manager, say): show it, and
+      // continue once it finishes.
+      if (pending.installing) void this.awaitRun(pending);
     });
   }
 

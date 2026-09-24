@@ -11,8 +11,50 @@ The recognizer plugin itself is not bundled: it is the official MolScribe OCSR p
 uninstalling the plugin while the engine is installed asks once whether to remove the engine too, and
 the manager's engine row is shown only while the plugin is installed.
 
+## One-click install from the catalog
+
+A catalog entry that needs the engine says so as data — `requiresEngine: "structureRecognition"` in
+`OFFICIAL_PLUGIN_CATALOG` (`pluginUpdates.ts`) — and the plugin manager keys only on that, never on a
+plugin id. For such an entry the single **Install** button does both installs:
+
+1. The package review states, before the user confirms, that the local recognition engine comes too:
+   about 2.5 GB to download, the free space it needs, and the free space now (status is re-read when
+   the review opens). It warns if space is short; it says so instead when the engine is already
+   installed or the computer is unsupported.
+2. Confirming installs the plugin, then immediately starts the engine install in the plugin's row,
+   with the same progress display as the first-use dialog.
+3. If the engine install fails or is cancelled, the plugin stays installed. The row names the error in
+   plain words and offers **Install engine again** as a full-size button. The engine row never uses a
+   text link: **Install engine**, **Cancel install** and **Remove engine** are all ordinary buttons.
+
+The first-use dialog (opened when recognition runs without an engine) remains the fallback path, and
+shares the same install: if one is already running it shows that one and continues when it finishes.
+
+## Install progress
+
+The install belongs to `StructureRecognitionController`, which lives as long as the plugin runtime —
+not to whichever window started it. Closing and reopening Add or Remove Plugins therefore shows the
+same install still running (`getInstallRun()`), never a second Install. If the webview itself lost that
+state (a reload), `ocsr_engine_status` still reports `installing` with the host's latest `progress`
+event and `installElapsedMs`, and the controller follows it by polling status every 500 ms until the
+install ends.
+
+Every phase shows **Step N of 5**, an overall bar, the elapsed time, and for the current step either a
+byte bar ("X MB of Y MB") or, when a step reports no bytes, how long it usually takes. The overall bar
+weights steps by size: uv ≈ 20 MB, Python ≈ 40 MB, packages ≈ 1.2 GB, model 1.13 GB, verify small
+(`structureRecognitionInstallProgress.ts`).
+
+uv prints no byte counts when not attached to a terminal, so the two uv steps are **estimated** in Rust
+(`progress.rs`): while `uv python install` runs, the growth of `python/` and the uv cache is measured
+every 500 ms against about 75 MB; while `uv pip install` runs, the growth of the uv cache and the venv
+against about 1.2 GB. The estimate is monotonic, is capped at 99% while the step runs, and only the
+step's successful exit reports 100%; such events carry `estimated: true` and the UI labels them
+"(estimated)". The expected totals come from one macOS arm64 install and only drive the bar. Events
+reach the webview at most about four times a second (a new phase or a completed byte count always
+passes); the status snapshot sees every event.
+
 Code: `apps/desktop/src-tauri/src/ocsr_engine/` — `mod.rs` (commands and state), `install.rs`
-(installer), `process.rs` (sidecar lifetime), `protocol.rs` (JSON Lines), `platform.rs` (per-OS seam),
+(installer), `progress.rs` (install progress estimates), `process.rs` (sidecar lifetime), `protocol.rs` (JSON Lines), `platform.rs` (per-OS seam),
 `pins.rs` (every supply-chain pin). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.
 
 ## Installed layout
@@ -151,14 +193,16 @@ Python and packages.
 
 | Command | Arguments | Returns |
 | --- | --- | --- |
-| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}` |
+| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}`; `progress` (the latest `InstallProgress`) and `installElapsedMs` are present only while `installing` |
 | `ocsr_engine_install` | `onProgress: Channel<InstallProgress>` | status, or `Err({code, message})` with `insufficientDisk`, `network`, `checksumMismatch`, `cancelled`, `unsupported` or `failed`. One install at a time; a second call fails with `failed`. |
 | `ocsr_engine_cancel_install` | — | `()` |
 | `ocsr_engine_uninstall` | — | status. Cancels a running install and waits for it, stops the sidecar, then removes the three `ocsr-engine*` directories. |
 | `ocsr_recognize_image` | `{mediaType, bytesBase64}` | `{status: "recognized", smiles, molfile, confidence, atoms, bonds, elapsedMs, engine: {name: "MolScribe", molscribeCommit, modelSha256}}`, `{status: "notInstalled"}` (also while installing or on an unsupported platform), or `{status: "failed", code, message}` with `invalidImage`, `recognitionFailed`, `engineCrashed` (including a `broken` install), `timeout` or `busy` |
 
-`InstallProgress` is `{phase, message, bytesDone?, bytesTotal?}` with `phase` one of `checkingDisk`,
-`downloadingUv`, `installingPython`, `installingPackages`, `downloadingModel`, `verifying`, `done`.
+`InstallProgress` is `{phase, message, bytesDone?, bytesTotal?, estimated?}` with `phase` one of
+`checkingDisk`, `downloadingUv`, `installingPython`, `installingPackages`, `downloadingModel`,
+`verifying`, `done`. `estimated: true` marks byte counts derived from directory growth (see Install
+progress); it is omitted otherwise.
 
 ## Platform seam
 

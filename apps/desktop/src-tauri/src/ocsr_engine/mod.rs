@@ -2,6 +2,7 @@ mod install;
 mod pins;
 mod platform;
 mod process;
+mod progress;
 mod protocol;
 
 use std::fs;
@@ -56,6 +57,13 @@ pub struct OcsrEngineStatus {
     pub free_disk_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// While `installing`: the latest progress event, so a window that did not start the install
+    /// (or was closed and reopened) can show where it is instead of offering Install again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<InstallProgress>,
+    /// While `installing`: milliseconds since the install started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -79,6 +87,10 @@ pub struct InstallProgress {
     pub bytes_done: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_total: Option<u64>,
+    /// The byte counts are an estimate from directory growth, not a transfer count
+    /// (see `progress.rs`). Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -181,9 +193,16 @@ pub enum RecognitionResponse {
     },
 }
 
+/// The running install's start time and latest progress, read by `ocsr_engine_status`.
+struct InstallSnapshot {
+    started: Instant,
+    progress: Option<InstallProgress>,
+}
+
 pub struct OcsrEngineState {
     installing: Arc<AtomicBool>,
     cancel_install: Arc<AtomicBool>,
+    install_snapshot: Arc<Mutex<Option<InstallSnapshot>>>,
     stop_reaper: Arc<AtomicBool>,
     request_gate: Arc<Mutex<()>>,
     process: Arc<Mutex<ProcessManager>>,
@@ -194,6 +213,7 @@ impl Default for OcsrEngineState {
         Self {
             installing: Arc::new(AtomicBool::new(false)),
             cancel_install: Arc::new(AtomicBool::new(false)),
+            install_snapshot: Arc::new(Mutex::new(None)),
             stop_reaper: Arc::new(AtomicBool::new(false)),
             request_gate: Arc::new(Mutex::new(())),
             process: Arc::new(Mutex::new(ProcessManager::system())),
@@ -263,22 +283,35 @@ pub async fn ocsr_engine_install<R: Runtime>(
         ));
     }
     state.cancel_install.store(false, Ordering::SeqCst);
+    let snapshot = state.install_snapshot.clone();
+    *lock_ignoring_poison(&snapshot) = Some(InstallSnapshot {
+        started: Instant::now(),
+        progress: None,
+    });
     // A reinstall replaces the files a running sidecar was started from; recognition reports
     // `notInstalled` while `installing` is set, so nothing restarts it until the install ends.
     state.stop_sidecar();
     let installing = state.installing.clone();
     let cancel = state.cancel_install.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        struct ResetInstall(Arc<AtomicBool>);
+        struct ResetInstall(Arc<AtomicBool>, Arc<Mutex<Option<InstallSnapshot>>>);
         impl Drop for ResetInstall {
             fn drop(&mut self) {
+                *lock_ignoring_poison(&self.1) = None;
                 self.0.store(false, Ordering::SeqCst);
             }
         }
-        let _reset = ResetInstall(installing);
+        let _reset = ResetInstall(installing, snapshot.clone());
         let io = SystemInstallIo::new()?;
-        let reporter = move |progress| {
-            let _ = on_progress.send(progress);
+        // Every event updates the snapshot; the channel gets at most about four a second.
+        let throttle = Mutex::new(progress::ProgressThrottle::new(progress::EMIT_INTERVAL));
+        let reporter = move |progress: InstallProgress| {
+            if let Some(current) = lock_ignoring_poison(&snapshot).as_mut() {
+                current.progress = Some(progress.clone());
+            }
+            if lock_ignoring_poison(&throttle).admit(&progress, Instant::now()) {
+                let _ = on_progress.send(progress);
+            }
         };
         install::install(&paths, platform.as_ref(), &io, &cancel, &reporter, free)
     })
@@ -497,16 +530,28 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
                 required_disk_bytes: pins::REQUIRED_DISK_BYTES,
                 free_disk_bytes: free,
                 detail: Some(detail),
+                progress: None,
+                install_elapsed_ms: None,
             }
         }
     };
     if state.installing.load(Ordering::SeqCst) {
+        let (progress, install_elapsed_ms) =
+            match lock_ignoring_poison(&state.install_snapshot).as_ref() {
+                Some(snapshot) => (
+                    snapshot.progress.clone(),
+                    Some(u64::try_from(snapshot.started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+                ),
+                None => (None, None),
+            };
         return OcsrEngineStatus {
             state: EngineState::Installing,
             installed: None,
             required_disk_bytes: pins::REQUIRED_DISK_BYTES,
             free_disk_bytes: free,
             detail: None,
+            progress,
+            install_elapsed_ms,
         };
     }
     let root = paths.final_dir();
@@ -517,6 +562,8 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
             required_disk_bytes: pins::REQUIRED_DISK_BYTES,
             free_disk_bytes: free,
             detail: None,
+            progress: None,
+            install_elapsed_ms: None,
         };
     }
     let receipt = match install::read_receipt(&root.join(install::RECEIPT_FILE)) {
@@ -550,6 +597,8 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
         required_disk_bytes: pins::REQUIRED_DISK_BYTES,
         free_disk_bytes: free,
         detail: None,
+        progress: None,
+        install_elapsed_ms: None,
     }
 }
 
@@ -592,6 +641,12 @@ fn existing_ancestor(path: &Path) -> PathBuf {
     candidate.to_path_buf()
 }
 
+fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn broken_status(free_disk_bytes: u64, detail: impl Into<String>) -> OcsrEngineStatus {
     OcsrEngineStatus {
         state: EngineState::Broken,
@@ -599,6 +654,8 @@ fn broken_status(free_disk_bytes: u64, detail: impl Into<String>) -> OcsrEngineS
         required_disk_bytes: pins::REQUIRED_DISK_BYTES,
         free_disk_bytes,
         detail: Some(detail.into()),
+        progress: None,
+        install_elapsed_ms: None,
     }
 }
 
@@ -736,6 +793,8 @@ mod tests {
             required_disk_bytes: pins::REQUIRED_DISK_BYTES,
             free_disk_bytes: 7,
             detail: None,
+            progress: None,
+            install_elapsed_ms: None,
         };
         assert_eq!(
             serde_json::to_value(&status).expect("status"),
@@ -791,10 +850,41 @@ mod tests {
             message: "m".to_string(),
             bytes_done: Some(1),
             bytes_total: Some(2),
+            estimated: false,
         };
         assert_eq!(
             serde_json::to_value(&progress).expect("progress"),
             serde_json::json!({"phase": "downloadingModel", "message": "m", "bytesDone": 1, "bytesTotal": 2})
+        );
+        let estimate = InstallProgress {
+            phase: InstallPhase::InstallingPackages,
+            estimated: true,
+            ..progress
+        };
+        let installing = OcsrEngineStatus {
+            state: EngineState::Installing,
+            installed: None,
+            required_disk_bytes: 3,
+            free_disk_bytes: 7,
+            detail: None,
+            progress: Some(estimate),
+            install_elapsed_ms: Some(1_500),
+        };
+        assert_eq!(
+            serde_json::to_value(&installing).expect("installing status"),
+            serde_json::json!({
+                "state": "installing",
+                "requiredDiskBytes": 3,
+                "freeDiskBytes": 7,
+                "progress": {
+                    "phase": "installingPackages",
+                    "message": "m",
+                    "bytesDone": 1,
+                    "bytesTotal": 2,
+                    "estimated": true
+                },
+                "installElapsedMs": 1_500
+            })
         );
         for (phase, name) in [
             (InstallPhase::CheckingDisk, "checkingDisk"),

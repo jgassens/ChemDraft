@@ -5948,19 +5948,23 @@ textarea:focus-visible,
   opacity: 0.65;
 }
 
-.plugin-manager-link-button {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--cd-accent);
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
+/* The recognition engine's block inside its plugin's row: state, live progress, and full-size
+   buttons (never a text link — a first-time user must be able to find Install engine). */
+.plugin-manager-engine {
+  display: grid;
+  gap: var(--cd-space-2);
+  margin-top: var(--cd-space-2);
 }
 
-.plugin-manager-link-button:disabled {
-  color: var(--cd-text-disabled);
-  cursor: not-allowed;
+.plugin-manager-engine-disclosure {
+  display: grid;
+  gap: var(--cd-space-1);
+  margin: var(--cd-space-2) 0;
+  line-height: 1.45;
+}
+
+.plugin-manager-engine-disclosure p {
+  margin: 0;
 }
 
 /* Host-owned one-line prompt for worker-isolated plugins. It deliberately shares the manager's
@@ -6076,7 +6080,14 @@ textarea:focus-visible,
   width: 100%;
 }
 
-.recognition-install-progress span {
+.recognition-install-progress .recognition-install-step {
+  margin: 0;
+  color: var(--cd-text-primary);
+  font-weight: 600;
+}
+
+.recognition-install-progress .recognition-install-caption {
+  margin: 0;
   color: var(--cd-text-secondary);
   font-size: 11px;
 }

@@ -36,7 +36,10 @@ import { registerBundledPlugins, type BundledPluginDescriptor } from "./register
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
 import type { OpenPluginImageRequest } from "./PluginImageRequestController";
-import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
+import type {
+  OpenStructureRecognitionInstall,
+  StructureRecognitionInstallRun
+} from "./StructureRecognitionController";
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 
 /**
@@ -94,6 +97,8 @@ export interface PluginRuntimeView {
   openImageRequest: OpenPluginImageRequest | undefined;
   openRecognitionInstall: OpenStructureRecognitionInstall | undefined;
   recognitionEngineStatus: StructureRecognitionEngineStatus | undefined;
+  /** The running engine install, or the last one that stopped without installing. */
+  recognitionEngineInstall: StructureRecognitionInstallRun | undefined;
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
   invokePluginCommand: (commandId: string) => Promise<unknown>;
@@ -109,7 +114,9 @@ export interface PluginRuntimeView {
   cancelRecognitionEngineInstall: (id: number) => void;
   declineRecognitionEngineInstall: (id: number) => void;
   refreshRecognitionEngineStatus: () => Promise<void>;
-  manageRecognitionEngineInstall: () => Promise<boolean>;
+  /** Installs the engine in place, with progress in the plugin manager (no separate dialog). */
+  startRecognitionEngineInstall: () => Promise<boolean>;
+  cancelRunningRecognitionEngineInstall: () => Promise<void>;
   uninstallRecognitionEngine: () => Promise<void>;
 }
 
@@ -357,6 +364,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const openImageRequest = useMemo(() => runtime.images.getOpenRequest(), [runtime, version]);
   const openRecognitionInstall = useMemo(() => runtime.recognition.getOpenInstall(), [runtime, version]);
   const recognitionEngineStatus = useMemo(() => runtime.recognition.getStatus(), [runtime, version]);
+  const recognitionEngineInstall = useMemo(() => runtime.recognition.getInstallRun(), [runtime, version]);
 
   // Ownership, not mere presence: the registry is SHARED with core commands now, so `has(id)` would
   // claim every core command too. A command is a plugin command iff a plugin registered it (the host
@@ -404,8 +412,9 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const refreshRecognitionEngineStatus = useCallback(async () => {
     await runtime.recognition.refreshStatus();
   }, [runtime]);
-  const manageRecognitionEngineInstall = useCallback(
-    () => runtime.recognition.manageInstall({ id: "org.chemdraft.ocsr.molscribe", name: "MolScribe OCSR" }),
+  const startRecognitionEngineInstall = useCallback(() => runtime.recognition.installEngine(), [runtime]);
+  const cancelRunningRecognitionEngineInstall = useCallback(
+    () => runtime.recognition.cancelEngineInstall(),
     [runtime]
   );
   const uninstallRecognitionEngine = useCallback(async () => {
@@ -438,6 +447,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     openImageRequest,
     openRecognitionInstall,
     recognitionEngineStatus,
+    recognitionEngineInstall,
     diagnostics,
     isPluginCommand,
     invokePluginCommand,
@@ -453,7 +463,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     cancelRecognitionEngineInstall,
     declineRecognitionEngineInstall,
     refreshRecognitionEngineStatus,
-    manageRecognitionEngineInstall,
+    startRecognitionEngineInstall,
+    cancelRunningRecognitionEngineInstall,
     uninstallRecognitionEngine
   };
 }

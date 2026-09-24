@@ -19,6 +19,11 @@ import type {
 } from "./pluginUpdates";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
+import type {
+  StructureRecognitionEngine,
+  StructureRecognitionEngineStatus,
+  StructureRecognitionInstallProgress
+} from "./structureRecognitionEngine";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -110,7 +115,9 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
   recognitionEngineStatus?: import("./structureRecognitionEngine").StructureRecognitionEngineStatus;
   onRefreshRecognitionEngineStatus?: () => Promise<void>;
+  recognitionEngineInstall?: import("./StructureRecognitionController").StructureRecognitionInstallRun;
   onInstallRecognitionEngine?: () => Promise<boolean>;
+  onCancelRecognitionEngineInstall?: () => Promise<void>;
   onUninstallRecognitionEngine?: () => Promise<void>;
 }) {
   const [, refresh] = useReducer((version: number) => version + 1, 0);
@@ -449,10 +456,17 @@ describe("PluginManagerDialog", () => {
       })
     );
 
-    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toContain(
-      "Recognition engine: not installed — Install…"
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: not installed"
     );
-    act(() => document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!.click());
+    expect(document.querySelector('[data-testid="molscribe-engine-install-note"]')?.textContent).toContain(
+      "Downloads about 2.5 GB and needs 2 GB free (8 GB free now)."
+    );
+    const install = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
+    // A full-size button, never a small text link.
+    expect(install.className).toBe("plugin-manager-button");
+    expect(install.textContent).toBe("Install engine");
+    act(() => install.click());
     expect(onInstallRecognitionEngine).toHaveBeenCalledOnce();
   });
 
@@ -482,10 +496,13 @@ describe("PluginManagerDialog", () => {
       })
     );
 
-    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toContain(
-      "Recognition engine: installed (2 GB) — Remove"
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: installed (2 GB)"
     );
-    act(() => document.querySelector<HTMLButtonElement>('[data-action="remove-recognition-engine"]')!.click());
+    const remove = document.querySelector<HTMLButtonElement>('[data-action="remove-recognition-engine"]')!;
+    expect(remove.className).toBe("plugin-manager-button");
+    expect(remove.textContent).toBe("Remove engine");
+    act(() => remove.click());
     expect(onUninstallRecognitionEngine).toHaveBeenCalledOnce();
   });
 
@@ -1412,5 +1429,289 @@ describe("PluginManagerDialog", () => {
         .click();
     });
     expect(onUninstallPlugin).toHaveBeenCalledWith(installedPluginId);
+  });
+});
+
+describe("PluginManagerDialog one-click engine install", () => {
+  const molscribeId = "org.chemdraft.ocsr.molscribe";
+  const molscribeManifest: PluginManifest = {
+    ...installedManifest,
+    id: molscribeId,
+    name: "MolScribe OCSR",
+    version: "0.1.0",
+    description: "Recognize a drawn structure from an image."
+  };
+  const gib = 1024 ** 3;
+  const notInstalled: StructureRecognitionEngineStatus = {
+    state: "notInstalled",
+    requiredDiskBytes: 3e9,
+    freeDiskBytes: 8 * gib
+  };
+  const installedStatus: StructureRecognitionEngineStatus = {
+    state: "installed",
+    installed: {
+      uvVersion: "0.12.18",
+      pythonVersion: "3.10",
+      molscribeCommit: "abc123",
+      modelSha256: "a".repeat(64),
+      installedAt: "2026-09-24T00:00:00.000Z",
+      diskBytes: 2.5 * gib
+    },
+    requiredDiskBytes: 3e9,
+    freeDiskBytes: 5 * gib
+  };
+
+  /** A native engine whose install the test drives by hand: progress events, then success or failure. */
+  function fakeEngine(initial: StructureRecognitionEngineStatus = notInstalled) {
+    let status = initial;
+    let report: ((progress: StructureRecognitionInstallProgress) => void) | undefined;
+    let finish: ((status: StructureRecognitionEngineStatus) => void) | undefined;
+    let fail: ((error: unknown) => void) | undefined;
+    const engine: StructureRecognitionEngine = {
+      status: vi.fn(async () => status),
+      install: vi.fn(
+        (onProgress) =>
+          new Promise<StructureRecognitionEngineStatus>((resolve, reject) => {
+            report = onProgress;
+            finish = resolve;
+            fail = reject;
+          })
+      ),
+      cancelInstall: vi.fn(async () => {
+        fail?.({ code: "cancelled", message: "MolScribe installation was cancelled." });
+        return status;
+      }),
+      uninstall: vi.fn(async () => notInstalled),
+      recognizeImage: vi.fn(async () => ({ status: "notInstalled" as const }))
+    };
+    return {
+      engine,
+      setStatus: (next: StructureRecognitionEngineStatus) => {
+        status = next;
+      },
+      progress: (event: StructureRecognitionInstallProgress) => act(() => report!(event)),
+      succeed: async () => {
+        status = installedStatus;
+        await act(async () => finish!(installedStatus));
+      },
+      fail: async (error: unknown) => {
+        await act(async () => fail!(error));
+      }
+    };
+  }
+
+  function preparedMolscribe(): PreparedOfficialPluginInstall {
+    return {
+      pluginId: molscribeId,
+      inspection: pickedPackage(molscribeManifest).inspection,
+      sourcePath:
+        "https://github.com/jgassens/ChemDraft-MolScribe-Plugin/releases/download/v0.1.0/molscribe-ocsr-0.1.0.zip",
+      checksumVerified: true
+    };
+  }
+
+  /** Wires the dialog to the runtime's real recognition controller, the way MainWindow does. */
+  function WiredHarness({
+    runtime,
+    installed,
+    onInstallPackage
+  }: {
+    runtime: DesktopPluginRuntime;
+    installed: readonly InstalledPluginCatalogEntry[];
+    onInstallPackage: (inspection: PluginPackageInspection) => Promise<void>;
+  }) {
+    const [, bump] = useReducer((version: number) => version + 1, 0);
+    useEffect(() => runtime.recognition.subscribe(bump), [runtime]);
+    return createElement(Harness, {
+      runtime,
+      onClose: vi.fn(),
+      onPluginsChanged: vi.fn(),
+      installedPlugins: installed,
+      onInstallPackage,
+      onPrepareOfficialPluginInstall: async () => preparedMolscribe(),
+      onUninstallPlugin: async () => {},
+      recognitionEngineStatus: runtime.recognition.getStatus(),
+      recognitionEngineInstall: runtime.recognition.getInstallRun(),
+      onRefreshRecognitionEngineStatus: async () => {
+        await runtime.recognition.refreshStatus();
+      },
+      onInstallRecognitionEngine: () => runtime.recognition.installEngine(),
+      onCancelRecognitionEngineInstall: () => runtime.recognition.cancelEngineInstall(),
+      onUninstallRecognitionEngine: async () => {
+        await runtime.recognition.uninstall();
+      }
+    });
+  }
+
+  function CatalogFlow({ runtime, onInstall }: { runtime: DesktopPluginRuntime; onInstall: () => void }) {
+    const [installed, setInstalled] = useState<readonly InstalledPluginCatalogEntry[]>([]);
+    return createElement(WiredHarness, {
+      runtime,
+      installed,
+      onInstallPackage: async (inspection) => {
+        onInstall();
+        setInstalled([installedEntry(inspection.manifest)]);
+      }
+    });
+  }
+
+  function runtimeWith(engine: StructureRecognitionEngine): DesktopPluginRuntime {
+    return createPluginRuntime({
+      getActiveDocument: () => undefined,
+      getSelection: () => ({ objectIds: [], molecules: [] }),
+      structureRecognitionEngine: engine
+    });
+  }
+
+  async function reviewAndConfirmMolscribe(): Promise<void> {
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(`[data-action="install-official-plugin"][data-plugin-id="${molscribeId}"]`)!
+        .click();
+    });
+  }
+
+  const stepText = () => document.querySelector('[data-testid="recognition-install-step"]')?.textContent;
+  const engineRow = () => document.querySelector('[data-testid="molscribe-engine-row"]');
+
+  it("states the engine in the review, then installs the plugin and the engine from one Install", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    const onInstall = vi.fn();
+    mount(createElement(CatalogFlow, { runtime, onInstall }));
+
+    await reviewAndConfirmMolscribe();
+    const disclosure = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
+    expect(disclosure?.textContent).toContain("Also installs the local recognition engine");
+    expect(disclosure?.textContent).toContain("about 2.5 GB to download");
+    expect(disclosure?.textContent).toContain("Needs 2.8 GB free. Free now: 8 GB.");
+    expect(fake.engine.install).not.toHaveBeenCalled();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
+    });
+    expect(onInstall).toHaveBeenCalledOnce();
+    expect(fake.engine.install).toHaveBeenCalledOnce();
+
+    // The plugin is installed and its row carries the engine install in progress — no second click.
+    expect(engineRow()).not.toBeNull();
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: installing"
+    );
+    expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
+    expect(stepText()).toBe("Step 1 of 5: Checking free disk space");
+
+    fake.progress({ phase: "downloadingUv", message: "m", bytesDone: 4e6, bytesTotal: 17e6 });
+    expect(stepText()).toBe("Step 1 of 5: Downloading the installer");
+    expect(document.querySelector('[data-testid="recognition-install-phase-text"]')?.textContent).toBe(
+      "4 MB of 17 MB"
+    );
+
+    // uv sends no byte counts here; the step and the overall bar must not disappear.
+    fake.progress({ phase: "installingPackages", message: "Installing pinned MolScribe dependencies." });
+    expect(stepText()).toBe("Step 3 of 5: Installing PyTorch and MolScribe");
+    expect(document.querySelector('[data-testid="recognition-install-overall"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="recognition-install-phase-text"]')?.textContent).toContain(
+      "usually takes"
+    );
+
+    fake.progress({ phase: "installingPackages", message: "m", bytesDone: 300e6, bytesTotal: 1200e6, estimated: true });
+    expect(document.querySelector('[data-testid="recognition-install-phase-text"]')?.textContent).toBe(
+      "About 300 MB of 1,200 MB (estimated)"
+    );
+
+    await fake.succeed();
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: installed (2.5 GB)"
+    );
+    expect(document.querySelector('[data-testid="recognition-install-progress"]')).toBeNull();
+  });
+
+  it("keeps the plugin installed and offers an Install engine button when the engine install fails", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    mount(createElement(CatalogFlow, { runtime, onInstall: vi.fn() }));
+    await reviewAndConfirmMolscribe();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
+    });
+    fake.progress({ phase: "downloadingModel", message: "m", bytesDone: 10e6, bytesTotal: 1134.9e6 });
+
+    await fake.fail({ code: "network", message: "Download interrupted for https://huggingface.co/…" });
+
+    const row = document.querySelector(`li[data-plugin-id="${molscribeId}"]`)!;
+    expect(row.querySelector(".plugin-manager-badge")?.textContent).toBe("Installed");
+    expect(row.querySelector('[data-action="uninstall-plugin"]')).not.toBeNull();
+    expect(row.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
+      "The recognition engine could not be downloaded. Check your connection and try again."
+    );
+    const retry = row.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
+    expect(retry.className).toBe("plugin-manager-button");
+    expect(retry.textContent).toBe("Install engine again");
+    expect(retry.disabled).toBe(false);
+
+    await act(async () => retry.click());
+    expect(fake.engine.install).toHaveBeenCalledTimes(2);
+    expect(stepText()).toBe("Step 1 of 5: Checking free disk space");
+  });
+
+  it("reports a cancelled engine install in plain words and keeps the plugin", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    mount(createElement(CatalogFlow, { runtime, onInstall: vi.fn() }));
+    await reviewAndConfirmMolscribe();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="cancel-recognition-engine-install"]')!.click();
+    });
+    expect(fake.engine.cancelInstall).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
+      "Installation was cancelled."
+    );
+    expect(document.querySelector('[data-action="install-recognition-engine"]')?.textContent).toBe(
+      "Install engine again"
+    );
+  });
+
+  it("reattaches to the running install when Add or Remove Plugins is closed and reopened", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    const molscribeInstalled = [installedEntry(molscribeManifest)];
+    const open = (): void =>
+      mount(createElement(WiredHarness, { runtime, installed: molscribeInstalled, onInstallPackage: async () => {} }));
+
+    open();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!.click();
+    });
+    fake.progress({ phase: "installingPackages", message: "m", bytesDone: 480e6, bytesTotal: 1200e6, estimated: true });
+    // The host now reports the install in progress to anyone who asks.
+    fake.setStatus({ ...notInstalled, state: "installing" });
+
+    // Close the manager while uv is still working…
+    act(() => root!.unmount());
+    container!.remove();
+    expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();
+
+    // …and open it again: the same install, still in progress, and no second Install offered.
+    open();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(stepText()).toBe("Step 3 of 5: Installing PyTorch and MolScribe");
+    expect(document.querySelector('[data-testid="recognition-install-phase-text"]')?.textContent).toBe(
+      "About 480 MB of 1,200 MB (estimated)"
+    );
+    expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
+    expect(document.querySelector('[data-action="cancel-recognition-engine-install"]')).not.toBeNull();
+    expect(fake.engine.install).toHaveBeenCalledOnce();
+
+    fake.progress({ phase: "downloadingModel", message: "m", bytesDone: 500e6, bytesTotal: 1134.9e6 });
+    expect(stepText()).toBe("Step 4 of 5: Downloading the recognition model");
   });
 });

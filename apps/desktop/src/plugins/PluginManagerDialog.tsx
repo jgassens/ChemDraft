@@ -18,11 +18,26 @@ import type {
   PreparedPluginUpdate
 } from "./pluginUpdates";
 import { OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
-import { formatDiskBytes, isRecognitionInstallKeyboardEvent } from "./StructureRecognitionInstallDialog";
+import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";
+import {
+  formatDiskBytes,
+  isRecognitionInstallKeyboardEvent,
+  recognitionInstallErrorMessage
+} from "./StructureRecognitionInstallDialog";
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 
-const MOLSCRIBE_PLUGIN_ID = "org.chemdraft.ocsr.molscribe";
+/** Whether the official catalog says this plugin needs the host-managed recognition engine. The
+ *  catalog entry is the only authority; nothing here keys on a particular plugin id. */
+function requiresRecognitionEngine(pluginId: string | undefined): boolean {
+  return (
+    pluginId !== undefined &&
+    OFFICIAL_PLUGIN_CATALOG.some(
+      (entry) => entry.pluginId === pluginId && entry.requiresEngine === "structureRecognition"
+    )
+  );
+}
 
 export interface PluginManagerDialogProps {
   runtime: DesktopPluginRuntime;
@@ -44,9 +59,14 @@ export interface PluginManagerDialogProps {
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
   recognitionEngineStatus?: StructureRecognitionEngineStatus;
+  /** The engine install in progress, or the last one that stopped without installing. It outlives
+   *  this dialog, so reopening the dialog shows the same install rather than offering another. */
+  recognitionEngineInstall?: StructureRecognitionInstallRun;
   /** Asked once when the dialog opens; the engine status is never read at app startup. */
   onRefreshRecognitionEngineStatus?: () => Promise<void>;
+  /** Installs the engine in place; progress arrives through `recognitionEngineInstall`. */
   onInstallRecognitionEngine?: () => Promise<boolean>;
+  onCancelRecognitionEngineInstall?: () => Promise<void>;
   onUninstallRecognitionEngine?: () => Promise<void>;
   onClose: () => void;
   onPluginsChanged?: () => void;
@@ -109,8 +129,10 @@ export function PluginManagerDialog({
   onPreparePluginUpdate,
   onUpdatePlugin,
   recognitionEngineStatus,
+  recognitionEngineInstall,
   onRefreshRecognitionEngineStatus,
   onInstallRecognitionEngine,
+  onCancelRecognitionEngineInstall,
   onUninstallRecognitionEngine,
   onClose,
   onPluginsChanged
@@ -254,6 +276,10 @@ export function PluginManagerDialog({
       }
     });
 
+  const engineInstalling =
+    recognitionEngineInstall?.running === true || recognitionEngineStatus?.state === "installing";
+  const pendingNeedsEngine = requiresRecognitionEngine(pendingOfficialPluginId);
+
   const installPending = (): Promise<void> =>
     run({ kind: "installPackage" }, async () => {
       if (!pending) return;
@@ -264,6 +290,17 @@ export function PluginManagerDialog({
       }
       setPendingOfficialPluginId(undefined);
       onPluginsChanged?.();
+      // One click: the review already said the engine comes too, so start it now. Its progress
+      // shows in the plugin's row; a failure leaves the plugin installed with an Install engine
+      // button, because the plugin itself installed fine.
+      if (
+        pendingNeedsEngine &&
+        onInstallRecognitionEngine &&
+        recognitionEngineStatus?.state !== "installed" &&
+        recognitionEngineStatus?.state !== "unsupported"
+      ) {
+        void onInstallRecognitionEngine();
+      }
     });
 
   const prepareOfficialInstall = (pluginId: string, pluginName: string): Promise<void> => {
@@ -276,6 +313,8 @@ export function PluginManagerDialog({
         setPendingUpdateState(undefined);
         setPendingOfficialPluginId(pluginId);
         setPending(prepared);
+        // The review states the engine's size against the free space now, so read it fresh.
+        if (requiresRecognitionEngine(pluginId)) onRefreshRecognitionEngineStatus?.().catch(() => undefined);
       })
       .catch((cause: unknown) => {
         setOfficialInstallErrors((current) => new Map(current).set(pluginId, messageOf(cause)));
@@ -294,7 +333,7 @@ export function PluginManagerDialog({
         await onUninstallPlugin!(pluginId);
         onPluginsChanged?.();
         if (
-          pluginId === MOLSCRIBE_PLUGIN_ID &&
+          requiresRecognitionEngine(pluginId) &&
           recognitionEngineStatus?.state === "installed" &&
           onUninstallRecognitionEngine
         ) {
@@ -468,12 +507,14 @@ export function PluginManagerDialog({
                       <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
                     ) : null}
                     {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
-                    {installed && manifest.id === MOLSCRIBE_PLUGIN_ID ? (
+                    {installed && requiresRecognitionEngine(manifest.id) ? (
                       <RecognitionEngineRow
                         status={recognitionEngineStatus}
+                        run={recognitionEngineInstall}
                         onRefresh={onRefreshRecognitionEngineStatus}
                         disabled={busy}
                         onInstall={onInstallRecognitionEngine}
+                        onCancel={onCancelRecognitionEngineInstall}
                         onUninstall={onUninstallRecognitionEngine}
                       />
                     ) : null}
@@ -509,7 +550,7 @@ export function PluginManagerDialog({
                         className="plugin-manager-button"
                         data-action="uninstall-plugin"
                         data-plugin-id={manifest.id}
-                        disabled={busy}
+                        disabled={busy || (engineInstalling && requiresRecognitionEngine(manifest.id))}
                         onClick={() => void uninstall(manifest.id)}
                         type="button"
                       >
@@ -584,6 +625,7 @@ export function PluginManagerDialog({
         ) : pending ? (
           <PackageReview
             busy={busy}
+            engine={pendingNeedsEngine ? { status: recognitionEngineStatus } : undefined}
             mode="install"
             subject={pending}
             onCancel={() => {
@@ -637,15 +679,19 @@ export function PluginManagerDialog({
 
 function RecognitionEngineRow({
   status,
+  run,
   disabled,
   onRefresh,
   onInstall,
+  onCancel,
   onUninstall
 }: {
   status?: StructureRecognitionEngineStatus;
+  run?: StructureRecognitionInstallRun;
   disabled: boolean;
   onRefresh?: () => Promise<void>;
   onInstall?: () => Promise<boolean>;
+  onCancel?: () => Promise<void>;
   onUninstall?: () => Promise<void>;
 }) {
   const [working, setWorking] = useState(false);
@@ -658,7 +704,7 @@ function RecognitionEngineRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const run = (action: () => Promise<unknown>, failure: string): void => {
+  const perform = (action: () => Promise<unknown>, failure: string): void => {
     setWorking(true);
     setError(undefined);
     action()
@@ -666,54 +712,121 @@ function RecognitionEngineRow({
       .finally(() => setWorking(false));
   };
 
-  const installed = status?.state === "installed";
-  const stateText = !status
-    ? error ? "status unavailable" : "checking…"
-    : installed
-      ? `installed (${formatDiskBytes(status.installed?.diskBytes ?? 0)})`
-      : status.state === "installing"
-        ? "installing…"
+  // A run this window did not start (or started before it was reopened) is still this install.
+  const installing = run?.running === true || status?.state === "installing";
+  const installed = !installing && status?.state === "installed";
+  const stateText = installing
+    ? "installing"
+    : !status
+      ? error ? "status unavailable" : "checking…"
+      : installed
+        ? `installed (${formatDiskBytes(status.installed?.diskBytes ?? 0)})`
         : status.state === "unsupported"
           ? "not supported on this computer"
           : status.state === "broken"
             ? "damaged — reinstall it"
             : "not installed";
-  const canInstall = status !== undefined && status.state !== "unsupported" && status.state !== "installing";
+  const canInstall = !installing && status !== undefined && status.state !== "unsupported" && !installed;
+  const runError = !installing ? run?.error : undefined;
   return (
-    <div data-testid="molscribe-engine-row">
+    <div className="plugin-manager-engine" data-testid="molscribe-engine-row">
       <p className="plugin-manager-update-status" data-testid="molscribe-engine-state">
         Recognition engine: {stateText}
-        {installed && onUninstall ? (
-          <>
-            {" — "}
-            <button
-              className="plugin-manager-link-button"
-              data-action="remove-recognition-engine"
-              disabled={disabled || working}
-              onClick={() => run(onUninstall, "The engine could not be removed")}
-              type="button"
-            >
-              {working ? "Removing…" : "Remove"}
-            </button>
-          </>
-        ) : canInstall && onInstall ? (
-          <>
-            {" — "}
-            <button
-              className="plugin-manager-link-button"
-              data-action="install-recognition-engine"
-              disabled={disabled || working}
-              onClick={() => run(onInstall, "The installer could not be opened")}
-              type="button"
-            >
-              Install…
-            </button>
-          </>
-        ) : null}
       </p>
+      {installing ? (
+        <RecognitionInstallProgress
+          progress={run?.progress ?? status?.progress}
+          startedAt={run?.startedAt}
+          phaseStartedAt={run?.phaseStartedAt}
+        />
+      ) : null}
+      {runError && status ? (
+        <p className="plugin-manager-update-status is-error" data-testid="molscribe-engine-install-error" role="alert">
+          {recognitionInstallErrorMessage(runError, status)}
+        </p>
+      ) : null}
+      {canInstall && status && onInstall ? (
+        <p className="plugin-manager-update-status" data-testid="molscribe-engine-install-note">
+          Downloads about 2.5 GB and needs {formatDiskBytes(status.requiredDiskBytes)} free (
+          {formatDiskBytes(status.freeDiskBytes)} free now). It runs entirely on this computer.
+        </p>
+      ) : null}
+      <div className="plugin-manager-package-actions">
+        {installing && onCancel ? (
+          <button
+            className="plugin-manager-button"
+            data-action="cancel-recognition-engine-install"
+            disabled={working}
+            onClick={() => perform(onCancel, "The install could not be cancelled")}
+            type="button"
+          >
+            Cancel install
+          </button>
+        ) : null}
+        {installed && onUninstall ? (
+          <button
+            className="plugin-manager-button"
+            data-action="remove-recognition-engine"
+            disabled={disabled || working}
+            onClick={() => perform(onUninstall, "The engine could not be removed")}
+            type="button"
+          >
+            {working ? "Removing…" : "Remove engine"}
+          </button>
+        ) : null}
+        {canInstall && onInstall ? (
+          <button
+            className="plugin-manager-button"
+            data-action="install-recognition-engine"
+            disabled={disabled || working}
+            onClick={() => perform(onInstall, "The engine install could not start")}
+            type="button"
+          >
+            {runError || status?.state === "broken" ? "Install engine again" : "Install engine"}
+          </button>
+        ) : null}
+      </div>
       {error ? (
         <p className="plugin-manager-error" role="alert">
           {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** What installing an engine-requiring plugin also downloads, stated before the user confirms. */
+function RecognitionEngineDisclosure({ status }: { status?: StructureRecognitionEngineStatus }) {
+  if (status?.state === "installed") {
+    return (
+      <p className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
+        Its recognition engine is already installed on this computer.
+      </p>
+    );
+  }
+  if (status?.state === "unsupported") {
+    return (
+      <p className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure" role="alert">
+        This plugin needs a local recognition engine, which this computer doesn’t support yet. The plugin will
+        install, but it cannot recognize images here.
+      </p>
+    );
+  }
+  const shortOfSpace = status !== undefined && status.freeDiskBytes < status.requiredDiskBytes;
+  return (
+    <div className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
+      <p>
+        <strong>Also installs the local recognition engine:</strong> a private Python, PyTorch and the MolScribe
+        model — about 2.5 GB to download. It runs entirely on this computer; images never leave it.
+      </p>
+      <p>
+        Needs {formatDiskBytes(status?.requiredDiskBytes ?? 3e9)} free.{" "}
+        {status ? `Free now: ${formatDiskBytes(status.freeDiskBytes)}.` : "Free space: checking…"}
+      </p>
+      {shortOfSpace ? (
+        <p className="plugin-manager-unavailable" role="alert">
+          There isn’t enough free space for the engine. The plugin will still install; free up space, then use
+          Install engine.
         </p>
       ) : null}
     </div>
@@ -729,6 +842,7 @@ function RecognitionEngineRow({
 function PackageReview({
   busy,
   currentVersion,
+  engine,
   mode,
   subject,
   onCancel,
@@ -736,6 +850,8 @@ function PackageReview({
 }: {
   busy: boolean;
   currentVersion?: string;
+  /** Present when installing this plugin also installs the recognition engine. */
+  engine?: { status?: StructureRecognitionEngineStatus };
   mode: "install" | "update";
   subject: Pick<PickedPluginPackage, "inspection" | "checksumVerified">;
   onCancel: () => void;
@@ -758,6 +874,8 @@ function PackageReview({
         {manifest.description ? <p data-testid="plugin-package-description">{manifest.description}</p> : null}
 
         <PermissionList permissions={manifest.permissions} />
+
+        {engine ? <RecognitionEngineDisclosure status={engine.status} /> : null}
 
         {unavailablePermissions.length > 0 ? (
           <p className="plugin-manager-unavailable" data-testid="plugin-package-unavailable" role="alert">

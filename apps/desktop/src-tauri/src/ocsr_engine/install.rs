@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use flate2::read::GzDecoder;
@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use super::pins;
 use super::platform::{self, EnginePlatform};
+use super::progress::{self, GrowthEstimator};
 use super::{InstallError, InstallErrorCode, InstallPhase, InstallProgress};
 
 pub const ENGINE_DIR: &str = "ocsr-engine";
@@ -121,6 +122,13 @@ pub enum RunStep {
     VerifyEnvironment,
 }
 
+/// Progress for a uv step that reports none of its own: the estimator is sampled every
+/// [`progress::SAMPLE_INTERVAL`] while the child runs, and reports 100% when it exits successfully.
+pub struct RunWatch<'a> {
+    pub estimator: GrowthEstimator,
+    pub progress: &'a dyn ProgressReporter,
+}
+
 pub struct Download<'a> {
     pub url: &'a str,
     pub sha256: &'a str,
@@ -144,6 +152,9 @@ pub trait InstallIo: Send + Sync {
         destination: &Path,
     ) -> Result<(), InstallError>;
 
+    // One seam for every child process the installer starts; bundling these into a struct would
+    // only move the same eight names into a type used at four call sites.
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         platform: &dyn EnginePlatform,
@@ -152,6 +163,7 @@ pub trait InstallIo: Send + Sync {
         args: &[OsString],
         env: &[(OsString, OsString)],
         cancel: &AtomicBool,
+        watch: Option<RunWatch<'_>>,
     ) -> Result<(), InstallError>;
 }
 
@@ -285,6 +297,7 @@ impl InstallIo for SystemInstallIo {
         args: &[OsString],
         env: &[(OsString, OsString)],
         cancel: &AtomicBool,
+        mut watch: Option<RunWatch<'_>>,
     ) -> Result<(), InstallError> {
         check_cancel(cancel)?;
         let mut command = Command::new(program);
@@ -299,6 +312,7 @@ impl InstallIo for SystemInstallIo {
         let mut child = command.spawn().map_err(|error| {
             InstallError::failed(format!("Could not run {}: {error}", program.display()))
         })?;
+        let mut last_sample = Instant::now();
         loop {
             if cancel.load(Ordering::SeqCst) {
                 let _ = child.kill();
@@ -308,6 +322,9 @@ impl InstallIo for SystemInstallIo {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
+                        if let Some(watch) = watch.as_mut() {
+                            watch.progress.report(watch.estimator.finished());
+                        }
                         return Ok(());
                     }
                     return Err(InstallError::failed(format!(
@@ -315,7 +332,15 @@ impl InstallIo for SystemInstallIo {
                         program.display()
                     )));
                 }
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Ok(None) => {
+                    if let Some(watch) = watch.as_mut() {
+                        if last_sample.elapsed() >= progress::SAMPLE_INTERVAL {
+                            last_sample = Instant::now();
+                            watch.progress.report(watch.estimator.sample());
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
                 Err(error) => {
                     return Err(InstallError::failed(format!(
                         "Could not inspect {}: {error}",
@@ -416,6 +441,15 @@ pub fn install(
         &os_args(["python", "install", pins::PYTHON_VERSION]),
         &environment,
         cancel,
+        Some(RunWatch {
+            estimator: GrowthEstimator::new(
+                InstallPhase::InstallingPython,
+                "Installing Python",
+                vec![python_install_dir.clone(), cache_dir.clone()],
+                progress::PYTHON_EXPECTED_GROWTH_BYTES,
+            ),
+            progress,
+        }),
     )?;
     io.run(
         platform,
@@ -434,6 +468,7 @@ pub fn install(
         ],
         &environment,
         cancel,
+        None,
     )?;
 
     progress.report(message(
@@ -456,6 +491,15 @@ pub fn install(
         ],
         &environment,
         cancel,
+        Some(RunWatch {
+            estimator: GrowthEstimator::new(
+                InstallPhase::InstallingPackages,
+                "Installing PyTorch and MolScribe",
+                vec![cache_dir.clone(), partial.join("venv")],
+                progress::PACKAGES_EXPECTED_GROWTH_BYTES,
+            ),
+            progress,
+        }),
     )?;
 
     progress.report(message(
@@ -563,6 +607,7 @@ fn commit_staged_tree(
                 ]),
                 &[],
                 cancel,
+                None,
             )
         });
     match outcome {
@@ -723,6 +768,7 @@ fn download_progress(phase: InstallPhase, done: u64, total: Option<u64>) -> Inst
         },
         bytes_done: Some(done),
         bytes_total: total,
+        estimated: false,
     }
 }
 
@@ -732,6 +778,7 @@ fn message(phase: InstallPhase, message: &str) -> InstallProgress {
         message: message.to_string(),
         bytes_done: None,
         bytes_total: None,
+        estimated: false,
     }
 }
 
@@ -1019,6 +1066,7 @@ mod tests {
             args: &[OsString],
             _env: &[(OsString, OsString)],
             cancel: &AtomicBool,
+            watch: Option<RunWatch<'_>>,
         ) -> Result<(), InstallError> {
             let name = match step {
                 RunStep::InstallPython => "python",
@@ -1053,7 +1101,16 @@ mod tests {
                     program.display()
                 )));
             }
-            self.step(name, cancel)
+            // Mimic `SystemInstallIo`: one running estimate, then 100% on a successful exit.
+            let mut watch = watch;
+            if let Some(watch) = watch.as_mut() {
+                watch.progress.report(watch.estimator.sample());
+            }
+            self.step(name, cancel)?;
+            if let Some(watch) = watch.as_mut() {
+                watch.progress.report(watch.estimator.finished());
+            }
+            Ok(())
         }
     }
 
@@ -1098,9 +1155,9 @@ mod tests {
         let paths = test_paths(&root);
         let platform = MacPlatform::new(MacArchitecture::Aarch64);
         let io = FakeIo::new(None);
-        let reported = Mutex::new(Vec::new());
+        let reported = Mutex::new(Vec::<InstallProgress>::new());
         let reporter =
-            |progress: InstallProgress| reported.lock().expect("reported").push(progress.phase);
+            |progress: InstallProgress| reported.lock().expect("reported").push(progress);
         let receipt = install(
             &paths,
             &platform,
@@ -1114,8 +1171,25 @@ mod tests {
             *io.steps.lock().expect("steps"),
             ["uv", "python", "venv", "packages", "model", "verify"]
         );
+        let events = reported.lock().expect("reported");
+        let mut phases: Vec<InstallPhase> = events.iter().map(|event| event.phase).collect();
+        phases.dedup();
+        // The two uv steps report estimated byte progress, ending at 100% when uv exits.
+        for phase in [
+            InstallPhase::InstallingPython,
+            InstallPhase::InstallingPackages,
+        ] {
+            let estimates: Vec<_> = events
+                .iter()
+                .filter(|event| event.phase == phase && event.estimated)
+                .collect();
+            assert!(estimates.len() >= 2, "{phase:?} sent no estimate");
+            let last = estimates.last().expect("estimate");
+            assert!(last.bytes_total.is_some_and(|total| total > 0));
+            assert_eq!(last.bytes_done, last.bytes_total);
+        }
         assert_eq!(
-            *reported.lock().expect("reported"),
+            phases,
             [
                 InstallPhase::CheckingDisk,
                 InstallPhase::DownloadingUv,

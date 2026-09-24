@@ -22,6 +22,11 @@ export interface StructureRecognitionEngineStatus {
   requiredDiskBytes: number;
   freeDiskBytes: number;
   detail?: string;
+  /** While `installing`: the host's latest progress event, so a window that did not start the
+   *  install — or was closed and reopened — can show where it is. */
+  progress?: StructureRecognitionInstallProgress;
+  /** While `installing`: milliseconds since the install started. */
+  installElapsedMs?: number;
 }
 
 export type StructureRecognitionInstallPhase =
@@ -38,6 +43,9 @@ export interface StructureRecognitionInstallProgress {
   message: string;
   bytesDone?: number;
   bytesTotal?: number;
+  /** The byte counts are the host's estimate from directory growth (uv reports none), not a
+   *  transfer count. They stay below the total until the step finishes. */
+  estimated?: boolean;
 }
 
 export type StructureRecognitionInstallErrorCode =

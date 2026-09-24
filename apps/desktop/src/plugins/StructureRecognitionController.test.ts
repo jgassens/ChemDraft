@@ -5,6 +5,7 @@ import { StructureRecognitionController } from "./StructureRecognitionController
 import type {
   StructureRecognitionEngine,
   StructureRecognitionEngineStatus,
+  StructureRecognitionInstallProgress,
   StructureRecognitionOutcome
 } from "./structureRecognitionEngine";
 
@@ -225,5 +226,94 @@ describe("StructureRecognitionController", () => {
     await expect(
       controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal)
     ).resolves.toEqual({ status: "engineNotInstalled" });
+  });
+
+  it("follows a host-owned install it did not start, with the host's progress snapshot, until it ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const installing: StructureRecognitionEngineStatus = {
+        ...notInstalled,
+        state: "installing",
+        progress: { phase: "installingPackages", message: "m", bytesDone: 400, bytesTotal: 1200, estimated: true },
+        installElapsedMs: 90_000
+      };
+      const statuses = [installing, installing, installed];
+      const engine: StructureRecognitionEngine = {
+        status: vi.fn(async () => statuses.shift() ?? installed),
+        install: vi.fn(async () => installed),
+        cancelInstall: vi.fn(async () => notInstalled),
+        uninstall: vi.fn(async () => notInstalled),
+        recognizeImage: vi.fn(async () => recognized)
+      };
+      const controller = new StructureRecognitionController(engine, vi.fn(), {
+        now: () => 1_000_000,
+        followIntervalMs: 500
+      });
+
+      await controller.refreshStatus();
+      expect(controller.getInstallRun()).toEqual({
+        running: true,
+        startedAt: 1_000_000 - 90_000,
+        phaseStartedAt: 1_000_000,
+        progress: installing.progress
+      });
+      // Joining never starts a second native install.
+      const joined = controller.installEngine();
+      expect(engine.install).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(controller.getInstallRun()?.running).toBe(true);
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(joined).resolves.toBe(true);
+      expect(controller.getInstallRun()).toBeUndefined();
+      expect(controller.getStatus()?.state).toBe("installed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a failed direct install on the run, and a retry starts a fresh one", async () => {
+    const { controller, engine } = setup(notInstalled);
+    vi.mocked(engine.install).mockRejectedValueOnce({ code: "network", message: "offline" });
+
+    await expect(controller.installEngine()).resolves.toBe(false);
+    expect(controller.getInstallRun()).toMatchObject({
+      running: false,
+      error: { code: "network", message: "offline" }
+    });
+
+    await expect(controller.installEngine()).resolves.toBe(true);
+    expect(engine.install).toHaveBeenCalledTimes(2);
+    expect(controller.getInstallRun()).toBeUndefined();
+  });
+
+  it("shows a first-use dialog on an install already running, and continues when it finishes", async () => {
+    const { controller, engine, prepared } = setup(notInstalled);
+    let finish!: (status: StructureRecognitionEngineStatus) => void;
+    let report!: (progress: StructureRecognitionInstallProgress) => void;
+    vi.mocked(engine.install).mockImplementationOnce(
+      (onProgress) =>
+        new Promise((resolve) => {
+          report = onProgress;
+          finish = resolve;
+        })
+    );
+    const running = controller.installEngine();
+    report({ phase: "downloadingModel", message: "m", bytesDone: 1, bytesTotal: 4 });
+    vi.mocked(engine.status).mockResolvedValue({ ...notInstalled, state: "installing" });
+
+    const pending = controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(controller.getOpenInstall()).toMatchObject({
+      installing: true,
+      progress: { phase: "downloadingModel", bytesDone: 1, bytesTotal: 4 }
+    });
+
+    finish(installed);
+    await running;
+    await expect(pending).resolves.toEqual(prepared);
+    expect(engine.install).toHaveBeenCalledOnce();
+    expect(controller.getOpenInstall()).toBeUndefined();
   });
 });

@@ -28,6 +28,9 @@ export interface OfficialPluginCatalogEntry {
   description: string;
   repository: string;
   assetStem: string;
+  /** A host-managed engine the plugin cannot work without. Installing the plugin from the catalog
+   *  also installs it, in the same flow, after saying so in the review. */
+  requiresEngine?: "structureRecognition";
 }
 
 /**
@@ -53,9 +56,10 @@ export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
     pluginId: "org.chemdraft.ocsr.molscribe",
     displayName: "Structure from Image (MolScribe)",
     description:
-      "Recognize a drawn structure from an image or screenshot. Downloads a local recognition engine (about 2.5 GB) on first use.",
+      "Recognize a drawn structure from an image or screenshot. Installing it also downloads a local recognition engine (about 2.5 GB).",
     repository: "jgassens/ChemDraft-MolScribe-Plugin",
-    assetStem: "molscribe-ocsr"
+    assetStem: "molscribe-ocsr",
+    requiresEngine: "structureRecognition"
   }
 ];
 
