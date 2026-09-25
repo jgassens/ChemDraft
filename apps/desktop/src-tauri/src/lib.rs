@@ -1810,6 +1810,11 @@ fn write_clipboard_text_items_impl(
     _app: &tauri::AppHandle,
     items: Vec<ClipboardWriteTextItem>,
 ) -> Result<(), String> {
+    write_native_clipboard_text_items(items)
+}
+
+#[cfg(target_os = "macos")]
+fn write_native_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
 
@@ -5853,7 +5858,7 @@ mod tests {
         use objc2_foundation::NSData;
 
         let selection_json = r#"{"kind":"chemdraft-selection","objects":[{"type":"molecule","atoms":[{"el":"C"},{"el":"O"}]}]}"#;
-        write_clipboard_text_items_impl(vec![ClipboardWriteTextItem {
+        write_native_clipboard_text_items(vec![ClipboardWriteTextItem {
             r#type: "application/x-chemdraft-selection+json".to_string(),
             text: selection_json.to_string(),
         }])
