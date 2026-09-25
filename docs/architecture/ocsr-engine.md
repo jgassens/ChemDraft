@@ -67,7 +67,7 @@ ocsr-engine/
   python/                    uv-managed Python 3.10 (UV_PYTHON_INSTALL_DIR)
   python-bin/, uv-state/     uv's executable links and state, kept inside the tree
   venv/                      isolated MolScribe environment
-  requirements.txt           reviewed package constraints (copied from resources/ocsr/)
+  requirements.txt           the hash-locked package set (copied from resources/ocsr/)
   swin_base_char_aux_1m.pth  pinned model
   install.json               receipt: every pin plus install date and size
 ```
@@ -86,9 +86,16 @@ reinstall).
    then opened; only the `uv`/`uv.exe` entry is extracted. A `uv` on `PATH` is never used.
 4. **Python.** `uv python install 3.10`, then `uv venv --python 3.10 --python-preference only-managed
    --relocatable`.
-5. **Packages.** `uv pip install --requirement requirements.txt` into the venv: torch, torchvision and
-   numpy under `~=` constraints, and MolScribe from the GitHub archive tarball at the pinned commit (no
-   Git needed).
+5. **Packages.** First the MolScribe source archive (GitHub, at the pinned commit; no Git needed) is
+   streamed to the staging tree by Rust with the same client, stall timeout and size cut-off as the
+   model, and its byte count and SHA-256 must match the pin — so a tampered archive fails in seconds,
+   before PyTorch is downloaded. Then the bundled requirements file is checked against its pinned
+   SHA-256 and installed with `uv pip install --require-hashes --requirement requirements.txt`: every
+   package, transitive ones included, is an exact `==` pin with its archive hashes, and uv refuses
+   anything unpinned, unhashed or mismatched. Last, MolScribe is installed from the verified local
+   archive with `--no-deps --no-index --no-build-isolation`: its dependencies are the locked set, nothing
+   is fetched, and the sdist builds with the venv's hash-locked setuptools rather than an unverified
+   build environment. The archive is deleted afterwards.
 6. **Model.** Streamed to disk with throttled progress (about one event per MB); the byte count and
    SHA-256 must both match the pin, and a response that runs past the pinned size is cut off.
 7. **Receipt.** The download cache, temporary directory and uv archive are removed, the layout is
@@ -120,20 +127,51 @@ reported as `broken` with a `detail`, never accepted silently. Status checks siz
 
 All pins live in `src/ocsr_engine/pins.rs`. Changing any of them is a deliberate, reviewed
 supply-chain change that must update `resources/ocsr/requirements.txt`, NOTICE, the dependency
-inventory, and this document together; a test asserts the requirements file and `pins.rs` agree.
+inventory, and this document together. Tests assert that the requirements file's SHA-256 is
+`REQUIREMENTS_LOCK_SHA256`, that every entry in it is an exact pin followed by hashes, and that it
+pins the torch, torchvision and numpy versions in `pins.rs`.
 
 | What | Pin |
 | --- | --- |
 | uv | 0.12.18, per-platform archive SHA-256 |
 | Python | 3.10 (uv-managed) |
-| torch / torchvision / numpy | `~=2.14.0` / `~=0.29.0` / `~=1.26.4` |
-| MolScribe | `thomas0809/MolScribe` archive at `7296a30413eb55436702011efdff78131f66d162` |
+| Python packages | `resources/ocsr/requirements.txt`: 109 exact pins with SHA-256 hashes (torch 2.14.0, torchvision 0.29.0, numpy 1.26.4, and the rest of MolScribe's dependency tree); the file itself is pinned by SHA-256 |
+| MolScribe | `thomas0809/MolScribe` archive at `7296a30413eb55436702011efdff78131f66d162`, 5,727,892 bytes, SHA-256 `8e323f47…e2d6` |
 | Model | `yujieq/MolScribe` revision `a0189776…`, `swin_base_char_aux_1m.pth`, 1,134,940,406 bytes, SHA-256 `6f0df56f…ea1d` |
 | Free disk | 3.0 GB |
 
-The Python packages resolved by uv are constrained, not hashed: torch's transitive set is platform
-specific, so a fully hashed lock per platform is a possible later hardening. The receipt records the
-constraints that were in force.
+### The requirements lock
+
+`resources/ocsr/requirements.in` lists what the engine needs — torch, torchvision and numpy at the
+reviewed versions, MolScribe's own `install_requires` (read from its `setup.py` at the pinned commit),
+and setuptools to build it. `requirements.txt` is generated from it by
+
+```bash
+uv pip compile requirements.in --universal --python-version 3.10 --generate-hashes -o requirements.txt
+```
+
+`--universal` writes one file for every platform, with environment markers on the packages only some
+need (`colorama` on Windows, `uvloop` off Windows, and CUDA packages marked Linux-only, which no
+supported target installs). It was first resolved on 2026-09-24 constrained to exactly what a real
+macOS arm64 install had produced, so the lock reproduces that install: a fresh venv installed from it
+with `--require-hashes`, plus MolScribe from the verified archive, matched the real engine's
+`uv pip freeze` package for package and passed the import check. uv keeps the versions already in
+`requirements.txt` when it re-locks, so re-running the command changes nothing unless `requirements.in`
+changes or `--upgrade` is passed. After any re-lock, update `REQUIREMENTS_LOCK_SHA256` (taken with line
+endings normalized to LF, so a CRLF checkout on Windows still matches).
+
+A tarball cannot be hash-locked by URL, which is why MolScribe is not in the lock: Rust verifies the
+archive and uv installs the local file with `--no-deps`.
+
+**Intel Macs are not installable at these pins.** PyTorch publishes no macOS x86_64 wheel for 2.14.0
+(its last Intel-Mac release was 2.2), so `--require-hashes` finds nothing to install and the packages
+step fails with uv's resolution error. This was already true of the earlier `~=2.14.0` constraint; the
+lock only makes it explicit. Supporting Intel Macs needs a deliberate decision — an older torch for
+that platform, or reporting it `unsupported` up front — not a silent fallback.
+
+The receipt records the lock's SHA-256, the exact torch/torchvision/numpy versions and the MolScribe
+archive's SHA-256; a receipt from before the lock does not match these pins and reads as `broken`, so
+such an install is replaced by a verified one.
 
 ## Sidecar protocol (version 2)
 
@@ -268,8 +306,16 @@ in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
 Image bytes cross IPC as base64, are capped at 25 MB decoded, and are decoded in Rust first, so a
 corrupt or mislabelled image fails as `invalidImage` before the engine starts. The format is taken
 from the bytes, not the declared media type. PNG, JPEG, BMP and TIFF are passed through unchanged;
-GIF is re-encoded as PNG in Rust (it once had to be, for OpenCV; the sidecar now decodes with Pillow). The bytes go to
+GIF is re-encoded as PNG in Rust (it once had to be, for OpenCV; the sidecar now decodes with Pillow).
+WebP is the one format not decoded in Rust — the app's `image` crate is built without a WebP decoder —
+so it passes through by its signature and Pillow decodes it in the sidecar, which reports
+`invalid_image` if it cannot (the sidecar self-test round-trips a transparent WebP). The bytes go to
 a uniquely named file in the app temp directory, which an RAII guard deletes on every path.
+
+The engine accepts exactly the media types a host hands a plugin — PNG, JPEG, TIFF and WebP
+(`PluginImageMediaTypes` in `packages/plugin-api`, `SUPPORTED_MEDIA_TYPES` in `mod.rs`). A Rust test
+reads the TypeScript list and fails if the two differ, so an image the host accepts is never refused
+by the engine.
 
 ## Tauri commands
 

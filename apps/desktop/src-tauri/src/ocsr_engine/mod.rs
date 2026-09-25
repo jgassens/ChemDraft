@@ -668,6 +668,11 @@ fn failed(code: RecognitionErrorCode, message: impl Into<String>) -> Recognition
     }
 }
 
+/// Exactly the media types a host hands a plugin (`PluginImageMediaTypes` in
+/// packages/plugin-api/src/index.ts). An image the host accepts must never be refused here; a test
+/// reads the TypeScript list and fails if the two differ.
+const SUPPORTED_MEDIA_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/tiff", "image/webp"];
+
 fn is_supported_media_type(media_type: &str) -> bool {
     let essence = media_type
         .split(';')
@@ -675,19 +680,23 @@ fn is_supported_media_type(media_type: &str) -> bool {
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    matches!(
-        essence.as_str(),
-        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/bmp" | "image/tiff"
-    )
+    SUPPORTED_MEDIA_TYPES.contains(&essence.as_str())
 }
 
 /// Decodes the image here, so a corrupt or mislabelled payload is reported as `invalidImage`
 /// before the engine starts, and picks the file the sidecar will read. The format comes from the
 /// bytes, not the declared media type. PNG, JPEG, BMP and TIFF pass through unchanged; anything
 /// else (GIF) is re-encoded as PNG, because MolScribe reads with OpenCV, which cannot open GIF.
+///
+/// WebP is the exception to decoding here: this build's `image` crate has no WebP decoder, so a
+/// WebP passes through by its signature and the sidecar decodes it with Pillow (which it does for
+/// every format), reporting `invalid_image` if it cannot.
 fn prepare_image(bytes: &[u8]) -> Result<(&'static str, Cow<'_, [u8]>), String> {
     let format = image::guess_format(bytes)
         .map_err(|_| "The image format is not recognized.".to_string())?;
+    if format == ImageFormat::WebP {
+        return Ok(("webp", Cow::Borrowed(bytes)));
+    }
     let decoded = image::load_from_memory_with_format(bytes, format)
         .map_err(|error| format!("The image could not be decoded: {error}"))?;
     match format {
@@ -969,9 +978,44 @@ mod tests {
     }
 
     #[test]
+    fn engine_media_types_match_the_host_image_media_types() {
+        let plugin_api = include_str!("../../../../../packages/plugin-api/src/index.ts");
+        let declaration = "export const PluginImageMediaTypes = [";
+        let start = plugin_api
+            .find(declaration)
+            .expect("PluginImageMediaTypes declaration")
+            + declaration.len();
+        let end = start + plugin_api[start..].find(']').expect("end of list");
+        let host: Vec<&str> = plugin_api[start..end]
+            .split(',')
+            .map(|item| item.trim().trim_matches('"'))
+            .filter(|item| !item.is_empty())
+            .collect();
+        assert_eq!(host, SUPPORTED_MEDIA_TYPES);
+        for media_type in host {
+            assert!(is_supported_media_type(media_type), "{media_type}");
+        }
+    }
+
+    #[test]
+    fn webp_passes_through_for_the_sidecar_to_decode() {
+        // A 1x1 white lossless WebP, as Pillow writes it.
+        let webp: &[u8] = &[
+            0x52, 0x49, 0x46, 0x46, 0x1e, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
+            0x38, 0x4c, 0x11, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0xd0, 0xff,
+            0xfe, 0xf7, 0xbf, 0xff, 0x81, 0x88, 0xe8, 0x7f, 0x00, 0x00,
+        ];
+        let (extension, bytes) = prepare_image(webp).expect("webp");
+        assert_eq!(extension, "webp");
+        assert!(matches!(bytes, Cow::Borrowed(_)));
+    }
+
+    #[test]
     fn media_types_and_size_guard_are_strict() {
         assert!(is_supported_media_type("image/png"));
+        assert!(is_supported_media_type("image/webp"));
         assert!(is_supported_media_type("IMAGE/JPEG; charset=binary"));
+        assert!(!is_supported_media_type("image/gif"));
         assert!(!is_supported_media_type("image/svg+xml"));
         assert!(!is_supported_media_type("application/octet-stream"));
         for len in 0..64 {
@@ -1050,18 +1094,45 @@ mod tests {
     }
 
     #[test]
-    fn bundled_requirements_match_reviewed_constraints() {
+    fn bundled_requirements_are_the_reviewed_hash_lock() {
         let requirements = include_str!("../../resources/ocsr/requirements.txt");
-        for pin in [
-            format!("numpy{}", pins::NUMPY_CONSTRAINT),
-            format!("torch{}", pins::TORCH_CONSTRAINT),
-            format!("torchvision{}", pins::TORCHVISION_CONSTRAINT),
-            pins::MOLSCRIBE_SOURCE_URL.to_string(),
-        ] {
+        assert_eq!(
+            pins::text_sha256(requirements.as_bytes()),
+            pins::REQUIREMENTS_LOCK_SHA256,
+            "requirements.txt changed: re-lock deliberately and update REQUIREMENTS_LOCK_SHA256"
+        );
+        // Every requirement is an exact `==` pin followed by at least one hash, so uv's
+        // --require-hashes has something to check for each package.
+        let mut lines = requirements.lines().peekable();
+        let mut packages = Vec::new();
+        while let Some(line) = lines.next() {
+            if line.trim().is_empty() || line.starts_with('#') || line.starts_with(' ') {
+                continue;
+            }
+            let spec = line.trim_end_matches('\\').trim();
+            let name_version = spec.split(';').next().unwrap_or_default().trim();
             assert!(
-                requirements.lines().any(|line| line == pin),
-                "missing {pin}"
+                name_version.contains("==") && !name_version.contains("://"),
+                "not an exact pin: {line}"
             );
+            assert!(
+                lines
+                    .peek()
+                    .is_some_and(|next| next.trim_start().starts_with("--hash=sha256:")),
+                "no hash for {line}"
+            );
+            packages.push(name_version.to_string());
         }
+        for pin in [
+            format!("numpy=={}", pins::NUMPY_VERSION),
+            format!("torch=={}", pins::TORCH_VERSION),
+            format!("torchvision=={}", pins::TORCHVISION_VERSION),
+        ] {
+            assert!(packages.contains(&pin), "missing {pin}");
+        }
+        // MolScribe itself is not in the lock: it is installed --no-deps from the archive that
+        // Rust verified against MOLSCRIBE_SOURCE_SHA256.
+        assert!(!requirements.contains("MolScribe/archive"));
+        assert!(!packages.iter().any(|pin| pin.starts_with("molscribe")));
     }
 }

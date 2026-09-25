@@ -981,7 +981,8 @@ export class PluginHost {
     requests.add(abortController);
     this.openRecognitionRequests.set(invocationToken, requests);
     const cancelledOnAbort = new Promise<PluginRecognitionResult>((resolve) => {
-      abortController.signal.addEventListener("abort", () => resolve({ status: "engineNotInstalled" }), {
+      // Abandoned, not declined: the plugin should stay silent rather than explain an install.
+      abortController.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), {
         once: true
       });
     });

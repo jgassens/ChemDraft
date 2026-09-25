@@ -109,8 +109,8 @@ pub(crate) fn relaunch_app(app: AppHandle) {
 pub(crate) async fn capture_screen_region(
     app: AppHandle,
 ) -> Result<ScreenCaptureResponse, ScreenCaptureCommandError> {
-    let path = capture_temp_path(&app)?;
-    let temp = CaptureTempFile(path.clone());
+    let temp = capture_temp_file(&app)?;
+    let path = temp.path.clone();
     // Only windows that are currently visible and not already minimized are changed. Restoring the
     // same set in Drop makes every success/error/cancellation path put ChemDraft back as it was.
     let hidden_windows = HiddenChemDraftWindows::hide(&app);
@@ -126,17 +126,19 @@ pub(crate) async fn capture_screen_region(
     response
 }
 
-fn capture_temp_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, ScreenCaptureCommandError> {
+fn capture_temp_file<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<CaptureTempFile, ScreenCaptureCommandError> {
     let directory = app.path().temp_dir().map_err(|error| {
         ScreenCaptureCommandError::Failed(format!(
             "Could not resolve the app temporary directory: {error}"
         ))
     })?;
-    Ok(directory.join(format!(
-        "chemdraft-screen-region-{}-{}.png",
-        std::process::id(),
-        NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed)
-    )))
+    CaptureTempFile::create(&directory).map_err(|error| {
+        ScreenCaptureCommandError::Failed(format!(
+            "Could not create a private file for the screen capture: {error}"
+        ))
+    })
 }
 
 fn capture_to_response(
@@ -175,19 +177,103 @@ fn capture_to_response(
     }
 }
 
-struct CaptureTempFile(PathBuf);
+/// Where a capture lands: `region.png` inside a directory created for this capture alone.
+///
+/// A shared temporary directory (`/tmp` on Linux, sometimes on macOS) lets another local user
+/// pre-create or link a predictable name, or read the captured screen. So the directory gets an
+/// unguessable name and is created exclusively (it must not already exist) with 0700 permissions,
+/// and the file inside is created exclusively with 0600. The directory is what keeps the capture
+/// private even if `screencapture` replaces the file rather than writing into it. Dropping this
+/// removes both, on every success, error and cancellation path.
+struct CaptureTempFile {
+    directory: PathBuf,
+    path: PathBuf,
+}
+
+impl CaptureTempFile {
+    fn create(base: &Path) -> std::io::Result<Self> {
+        let mut last_error = None;
+        for _ in 0..32 {
+            let directory = base.join(format!("chemdraft-screen-region-{}", unguessable_token()));
+            match create_private_dir(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+            // From here the directory is ours; a failure below must not leave it behind.
+            let temp = Self {
+                path: directory.join("region.png"),
+                directory,
+            };
+            create_private_file(&temp.path)?;
+            return Ok(temp);
+        }
+        Err(last_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "no unused screen-capture directory name",
+            )
+        }))
+    }
+}
 
 impl Drop for CaptureTempFile {
     fn drop(&mut self) {
-        match std::fs::remove_file(&self.0) {
+        match std::fs::remove_dir_all(&self.directory) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => eprintln!(
-                "Could not remove screen-capture temporary file {}: {error}",
-                self.0.display()
+                "Could not remove screen-capture temporary directory {}: {error}",
+                self.directory.display()
             ),
         }
     }
+}
+
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+// Windows: a directory under the per-user %TEMP% inherits that user's ACL.
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new().create(path)
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map(drop)
+}
+
+/// 128 bits from two independently keyed SipHash instances (`RandomState` draws its keys from the
+/// OS random source), mixed with the process id, a counter and the clock. The name only has to be
+/// unguessable; the exclusive create is what makes it safe.
+fn unguessable_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let nonce = NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let word = || {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u64(nonce);
+        hasher.write_u32(std::process::id());
+        hasher.write_u128(nanos);
+        hasher.finish()
+    };
+    format!("{:016x}{:016x}", word(), word())
 }
 
 struct HiddenChemDraftWindows<R: Runtime> {
@@ -456,6 +542,57 @@ mod tests {
         )
         .expect("cancelled response");
         assert!(matches!(cancelled, ScreenCaptureResponse::Cancelled));
+    }
+
+    #[test]
+    fn capture_file_is_private_unpredictable_and_always_removed() {
+        let base = test_path("private-base");
+        std::fs::create_dir_all(&base).expect("base");
+        let first = CaptureTempFile::create(&base).expect("first capture file");
+        let second = CaptureTempFile::create(&base).expect("second capture file");
+        assert_ne!(first.directory, second.directory);
+        let name = first
+            .directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("name");
+        let token = name
+            .strip_prefix("chemdraft-screen-region-")
+            .expect("prefix");
+        assert_eq!(token.len(), 32);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(first.path.is_file());
+        assert_eq!(std::fs::metadata(&first.path).expect("file").len(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| {
+                std::fs::metadata(path)
+                    .expect("metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777
+            };
+            assert_eq!(mode(&first.directory), 0o700);
+            assert_eq!(mode(&first.path), 0o600);
+        }
+
+        // Exclusive creation: an existing file at the capture path is never reused.
+        assert_eq!(
+            create_private_file(&first.path)
+                .expect_err("existing file")
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+
+        // Removed on drop, including after a capture wrote into it.
+        std::fs::write(&first.path, b"captured").expect("capture");
+        let (directory, other) = (first.directory.clone(), second.directory.clone());
+        drop(first);
+        drop(second);
+        assert!(!directory.exists());
+        assert!(!other.exists());
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

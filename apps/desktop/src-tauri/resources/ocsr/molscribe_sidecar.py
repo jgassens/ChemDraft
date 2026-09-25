@@ -440,6 +440,17 @@ def _selftest_preprocessing(directory):
     deep.save(deep_path)
     assert load_flattened(deep_path).getpixel((1, 1)) == (255, 255, 255)
 
+    # WebP reaches the sidecar undecoded (the app's Rust image decoder has no WebP support), so
+    # Pillow must read it; transparency is flattened like any other format.
+    webp = Image.new("RGBA", (6, 4), (0, 0, 0, 0))
+    webp.putpixel((3, 2), (0, 0, 0, 255))
+    webp_path = os.path.join(directory, "drawing.webp")
+    webp.save(webp_path, "WEBP", lossless=True)
+    flat_webp = load_flattened(webp_path)
+    assert flat_webp.mode == "RGB" and flat_webp.size == (6, 4)
+    assert flat_webp.getpixel((0, 0)) == (255, 255, 255)
+    assert flat_webp.getpixel((3, 2)) == (0, 0, 0)
+
     garbage = os.path.join(directory, "garbage.png")
     with open(garbage, "wb") as handle:
         handle.write(b"not an image")

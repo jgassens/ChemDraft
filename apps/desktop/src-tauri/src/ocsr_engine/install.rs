@@ -30,11 +30,13 @@ pub struct InstallReceipt {
     pub uv_asset: String,
     pub uv_sha256: String,
     pub python_version: String,
-    pub torch_constraint: String,
-    pub torchvision_constraint: String,
-    pub numpy_constraint: String,
+    pub requirements_sha256: String,
+    pub torch_version: String,
+    pub torchvision_version: String,
+    pub numpy_version: String,
     pub molscribe_commit: String,
     pub molscribe_source_url: String,
+    pub molscribe_source_sha256: String,
     pub model_revision: String,
     pub model_url: String,
     pub model_sha256: String,
@@ -50,11 +52,13 @@ impl InstallReceipt {
             uv_asset: platform.uv_asset().to_string(),
             uv_sha256: platform.uv_sha256().to_string(),
             python_version: pins::PYTHON_VERSION.to_string(),
-            torch_constraint: pins::TORCH_CONSTRAINT.to_string(),
-            torchvision_constraint: pins::TORCHVISION_CONSTRAINT.to_string(),
-            numpy_constraint: pins::NUMPY_CONSTRAINT.to_string(),
+            requirements_sha256: pins::REQUIREMENTS_LOCK_SHA256.to_string(),
+            torch_version: pins::TORCH_VERSION.to_string(),
+            torchvision_version: pins::TORCHVISION_VERSION.to_string(),
+            numpy_version: pins::NUMPY_VERSION.to_string(),
             molscribe_commit: pins::MOLSCRIBE_COMMIT.to_string(),
             molscribe_source_url: pins::MOLSCRIBE_SOURCE_URL.to_string(),
+            molscribe_source_sha256: pins::MOLSCRIBE_SOURCE_SHA256.to_string(),
             model_revision: pins::MODEL_REVISION.to_string(),
             model_url: pins::MODEL_URL.to_string(),
             model_sha256: pins::MODEL_SHA256.to_string(),
@@ -69,11 +73,13 @@ impl InstallReceipt {
             && self.uv_asset == platform.uv_asset()
             && self.uv_sha256 == platform.uv_sha256()
             && self.python_version == pins::PYTHON_VERSION
-            && self.torch_constraint == pins::TORCH_CONSTRAINT
-            && self.torchvision_constraint == pins::TORCHVISION_CONSTRAINT
-            && self.numpy_constraint == pins::NUMPY_CONSTRAINT
+            && self.requirements_sha256 == pins::REQUIREMENTS_LOCK_SHA256
+            && self.torch_version == pins::TORCH_VERSION
+            && self.torchvision_version == pins::TORCHVISION_VERSION
+            && self.numpy_version == pins::NUMPY_VERSION
             && self.molscribe_commit == pins::MOLSCRIBE_COMMIT
             && self.molscribe_source_url == pins::MOLSCRIBE_SOURCE_URL
+            && self.molscribe_source_sha256 == pins::MOLSCRIBE_SOURCE_SHA256
             && self.model_revision == pins::MODEL_REVISION
             && self.model_url == pins::MODEL_URL
             && self.model_sha256 == pins::MODEL_SHA256
@@ -119,6 +125,7 @@ pub enum RunStep {
     InstallPython,
     CreateVenv,
     InstallPackages,
+    InstallMolScribe,
     VerifyEnvironment,
 }
 
@@ -473,10 +480,40 @@ pub fn install(
 
     progress.report(message(
         InstallPhase::InstallingPackages,
+        "Downloading the pinned MolScribe source.",
+    ));
+    // Verified before anything is installed: a tampered archive fails in seconds, not after the
+    // PyTorch download. A requirements file cannot hash-lock a URL, so the check is done here.
+    let molscribe_source = partial.join(pins::MOLSCRIBE_SOURCE_FILENAME);
+    io.download(
+        Download {
+            url: pins::MOLSCRIBE_SOURCE_URL,
+            sha256: pins::MOLSCRIBE_SOURCE_SHA256,
+            size: Some(pins::MOLSCRIBE_SOURCE_BYTES),
+            phase: InstallPhase::InstallingPackages,
+        },
+        &molscribe_source,
+        cancel,
+        progress,
+    )?;
+
+    progress.report(message(
+        InstallPhase::InstallingPackages,
         "Installing pinned MolScribe dependencies.",
     ));
+    let requirements = fs::read(&paths.requirements).map_err(InstallError::failed_io)?;
+    let requirements_sha256 = pins::text_sha256(&requirements);
+    if requirements_sha256 != pins::REQUIREMENTS_LOCK_SHA256 {
+        return Err(InstallError::checksum(format!(
+            "The bundled requirements lock does not match this build: expected SHA-256 {}, found {requirements_sha256}.",
+            pins::REQUIREMENTS_LOCK_SHA256
+        )));
+    }
     let installed_requirements = partial.join(REQUIREMENTS_FILE);
-    fs::copy(&paths.requirements, &installed_requirements).map_err(InstallError::failed_io)?;
+    fs::write(&installed_requirements, &requirements).map_err(InstallError::failed_io)?;
+    let venv_python = platform.venv_python(&partial).into_os_string();
+    // Every package, transitive ones included, is pinned with hashes; `--require-hashes` makes uv
+    // refuse anything unpinned, unhashed, or whose archive does not match.
     io.run(
         platform,
         RunStep::InstallPackages,
@@ -485,7 +522,8 @@ pub fn install(
             OsString::from("pip"),
             OsString::from("install"),
             OsString::from("--python"),
-            platform.venv_python(&partial).into_os_string(),
+            venv_python.clone(),
+            OsString::from("--require-hashes"),
             OsString::from("--requirement"),
             installed_requirements.into_os_string(),
         ],
@@ -501,6 +539,29 @@ pub fn install(
             progress,
         }),
     )?;
+
+    // The verified local archive, with nothing else: `--no-deps` because its dependencies are the
+    // locked set above, `--no-index` so nothing is fetched, and `--no-build-isolation` so the sdist
+    // builds with the venv's hash-locked setuptools instead of an unverified download.
+    io.run(
+        platform,
+        RunStep::InstallMolScribe,
+        &uv,
+        &[
+            OsString::from("pip"),
+            OsString::from("install"),
+            OsString::from("--python"),
+            venv_python,
+            OsString::from("--no-deps"),
+            OsString::from("--no-index"),
+            OsString::from("--no-build-isolation"),
+            molscribe_source.clone().into_os_string(),
+        ],
+        &environment,
+        cancel,
+        None,
+    )?;
+    fs::remove_file(&molscribe_source).map_err(InstallError::failed_io)?;
 
     progress.report(message(
         InstallPhase::DownloadingModel,
@@ -1002,6 +1063,10 @@ mod tests {
     /// with a chosen code (a `Cancelled` failure also raises the cancel flag, as a user would).
     struct FakeIo {
         steps: Mutex<Vec<&'static str>>,
+        /// Each child process's step name and arguments, in order.
+        runs: Mutex<Vec<(&'static str, Vec<OsString>)>>,
+        /// Each download's step name and pinned SHA-256/size, in order.
+        downloads: Mutex<Vec<(&'static str, String, Option<u64>)>>,
         fail_at: Option<(&'static str, InstallErrorCode)>,
     }
 
@@ -1009,8 +1074,24 @@ mod tests {
         fn new(fail_at: Option<(&'static str, InstallErrorCode)>) -> Self {
             Self {
                 steps: Mutex::new(Vec::new()),
+                runs: Mutex::new(Vec::new()),
+                downloads: Mutex::new(Vec::new()),
                 fail_at,
             }
+        }
+
+        fn args_of(&self, step: &str) -> Vec<String> {
+            self.runs
+                .lock()
+                .expect("runs")
+                .iter()
+                .find(|(name, _)| *name == step)
+                .map(|(_, args)| {
+                    args.iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_else(|| panic!("no {step} run"))
         }
 
         fn step(&self, name: &'static str, cancel: &AtomicBool) -> Result<(), InstallError> {
@@ -1040,8 +1121,14 @@ mod tests {
         ) -> Result<(), InstallError> {
             let name = match spec.phase {
                 InstallPhase::DownloadingUv => "uv",
+                _ if spec.url == pins::MOLSCRIBE_SOURCE_URL => "molscribe-source",
                 _ => "model",
             };
+            self.downloads.lock().expect("downloads").push((
+                name,
+                spec.sha256.to_string(),
+                spec.size,
+            ));
             let file = File::create(destination).expect("fake download");
             file.set_len(spec.size.unwrap_or(8))
                 .expect("fake download size");
@@ -1072,8 +1159,10 @@ mod tests {
                 RunStep::InstallPython => "python",
                 RunStep::CreateVenv => "venv",
                 RunStep::InstallPackages => "packages",
+                RunStep::InstallMolScribe => "molscribe",
                 RunStep::VerifyEnvironment => "verify",
             };
+            self.runs.lock().expect("runs").push((name, args.to_vec()));
             if matches!(step, RunStep::CreateVenv) {
                 // Mimic uv: the venv's interpreter is an ABSOLUTE link into the managed Python,
                 // and pyvenv.cfg names the managed Python's bin directory absolutely.
@@ -1126,7 +1215,7 @@ mod tests {
 
     fn test_paths(root: &Path) -> InstallPaths {
         let requirements = root.join("source-requirements.txt");
-        fs::write(&requirements, "fixture").expect("requirements");
+        fs::write(&requirements, BUNDLED_REQUIREMENTS).expect("requirements");
         InstallPaths {
             app_data: root.to_path_buf(),
             requirements,
@@ -1169,7 +1258,16 @@ mod tests {
         .expect("fake install");
         assert_eq!(
             *io.steps.lock().expect("steps"),
-            ["uv", "python", "venv", "packages", "model", "verify"]
+            [
+                "uv",
+                "python",
+                "venv",
+                "molscribe-source",
+                "packages",
+                "molscribe",
+                "model",
+                "verify"
+            ]
         );
         let events = reported.lock().expect("reported");
         let mut phases: Vec<InstallPhase> = events.iter().map(|event| event.phase).collect();
@@ -1232,7 +1330,15 @@ mod tests {
 
     #[test]
     fn cancellation_at_any_step_removes_the_partial_directory() {
-        for step in ["uv", "python", "venv", "packages", "model"] {
+        for step in [
+            "uv",
+            "python",
+            "venv",
+            "molscribe-source",
+            "packages",
+            "molscribe",
+            "model",
+        ] {
             let root = temp_root("cancel");
             let paths = test_paths(&root);
             let error = run_install(
@@ -1260,6 +1366,91 @@ mod tests {
         assert_no_staging(&paths);
         assert!(!paths.final_dir().exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    const BUNDLED_REQUIREMENTS: &str = include_str!("../../resources/ocsr/requirements.txt");
+
+    #[test]
+    fn packages_install_hash_locked_and_molscribe_from_the_verified_archive_alone() {
+        let root = temp_root("locked");
+        let paths = test_paths(&root);
+        let io = FakeIo::new(None);
+        run_install(&paths, &io).expect("fake install");
+
+        let downloads = io.downloads.lock().expect("downloads").clone();
+        assert!(downloads.contains(&(
+            "molscribe-source",
+            pins::MOLSCRIBE_SOURCE_SHA256.to_string(),
+            Some(pins::MOLSCRIBE_SOURCE_BYTES)
+        )));
+
+        let packages = io.args_of("packages");
+        assert!(packages.iter().any(|arg| arg == "--require-hashes"));
+        let requirement = packages
+            .iter()
+            .position(|arg| arg == "--requirement")
+            .map(|index| &packages[index + 1])
+            .expect("requirements argument");
+        assert!(requirement.ends_with(REQUIREMENTS_FILE));
+
+        let molscribe = io.args_of("molscribe");
+        for flag in ["--no-deps", "--no-index", "--no-build-isolation"] {
+            assert!(molscribe.iter().any(|arg| arg == flag), "missing {flag}");
+        }
+        // The only thing installed is the local archive Rust verified; never the URL.
+        assert!(molscribe
+            .last()
+            .expect("archive argument")
+            .ends_with(pins::MOLSCRIBE_SOURCE_FILENAME));
+        assert!(!molscribe.iter().any(|arg| arg.contains("://")));
+        assert!(!paths
+            .final_dir()
+            .join(pins::MOLSCRIBE_SOURCE_FILENAME)
+            .exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_tampered_molscribe_archive_stops_the_install_before_any_package_is_installed() {
+        let root = temp_root("tarball");
+        let paths = test_paths(&root);
+        let io = FakeIo::new(Some((
+            "molscribe-source",
+            InstallErrorCode::ChecksumMismatch,
+        )));
+        let error = run_install(&paths, &io).expect_err("tampered archive");
+        assert_eq!(error.code, InstallErrorCode::ChecksumMismatch);
+        assert!(!io.steps.lock().expect("steps").contains(&"packages"));
+        assert_no_staging(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_requirements_file_that_is_not_the_reviewed_lock_is_refused() {
+        let root = temp_root("lock");
+        let paths = test_paths(&root);
+        fs::write(
+            &paths.requirements,
+            BUNDLED_REQUIREMENTS.replace("torch==2.14.0", "torch==2.14.1"),
+        )
+        .expect("edited lock");
+        let io = FakeIo::new(None);
+        let error = run_install(&paths, &io).expect_err("edited lock");
+        assert_eq!(error.code, InstallErrorCode::ChecksumMismatch);
+        assert!(!io.steps.lock().expect("steps").contains(&"packages"));
+        assert_no_staging(&paths);
+
+        // Line-ending style alone is not a change: a CRLF checkout of the same lock installs.
+        let crlf_root = temp_root("lock-crlf");
+        let crlf = test_paths(&crlf_root);
+        fs::write(
+            &crlf.requirements,
+            BUNDLED_REQUIREMENTS.replace('\n', "\r\n"),
+        )
+        .expect("crlf lock");
+        run_install(&crlf, &FakeIo::new(None)).expect("crlf lock installs");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(crlf_root);
     }
 
     #[test]

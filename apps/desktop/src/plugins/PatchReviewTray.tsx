@@ -58,7 +58,40 @@ export function PatchReviewTray({
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        {pending.length === 1 ? "1 plugin proposal" : `${pending.length} plugin proposals`}
+        {pendingProposalsLabel(pending.length)}
+      </button>
+    </div>
+  );
+}
+
+export function pendingProposalsLabel(count: number): string {
+  return count === 1 ? "1 plugin proposal" : `${count} plugin proposals`;
+}
+
+/**
+ * Desktop way back to the Plugin Proposals window. Proposals review in their own native window,
+ * which the user can close with proposals still pending; without this badge they would be
+ * unreachable until the queue changed. Shown only while proposals wait and the window is closed.
+ */
+export function PendingProposalsBadge({
+  count,
+  windowOpen,
+  onReview
+}: {
+  count: number;
+  windowOpen: boolean;
+  onReview(): void;
+}) {
+  if (count <= 0 || windowOpen) return null;
+  return (
+    <div className="patch-review-tray" data-pending-proposals-badge="true">
+      <button
+        type="button"
+        className="patch-review-badge"
+        title="Review plugin proposals"
+        onClick={onReview}
+      >
+        {pendingProposalsLabel(count)}
       </button>
     </div>
   );

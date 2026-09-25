@@ -102,7 +102,7 @@ import {
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { applyPluginDocumentPatch } from "./plugins/applyPluginDocumentPatch";
-import { PatchReviewTray, proposalReviewItem } from "./plugins/PatchReviewTray";
+import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
@@ -1388,7 +1388,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.24.17.23-opus";
+const CURRENT_BUILD_STAMP = "9.24.22.55-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -8512,6 +8512,28 @@ export function MainWindow({
   }, [pluginDiagnosticsOpen, pluginRuntime.diagnostics, pluginRuntime.plugins, publishAnalysisWindow]);
 
   const previousProposalCountRef = useRef(0);
+  // Pending proposal count and whether their review window is open, for the desktop badge that
+  // reopens the window after the user closes it with proposals still waiting.
+  const [proposalReview, setProposalReview] = useState({ pending: 0, windowOpen: false });
+  const publishProposalReview = useCallback(
+    (open: boolean) => {
+      const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
+      publishAnalysisWindow(
+        PATCH_REVIEW_WINDOW_ID,
+        "Plugin Proposals",
+        {
+          kind: "patchReview",
+          proposals: pending.map((proposal) => proposalReviewItem(pluginRuntime.runtime.host, proposal))
+        },
+        { open, width: 420, height: 420 }
+      );
+    },
+    [pluginRuntime.runtime, publishAnalysisWindow]
+  );
+  const reopenProposalReview = useCallback(() => {
+    publishProposalReview(true);
+    setProposalReview((current) => ({ ...current, windowOpen: true }));
+  }, [publishProposalReview]);
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
@@ -8524,18 +8546,15 @@ export function MainWindow({
         pluginPanelIdentityKey(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID)
       );
       void hidePluginPanelWindow(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID).catch(() => undefined);
+      setProposalReview({ pending: 0, windowOpen: false });
       return;
     }
-    publishAnalysisWindow(
-      PATCH_REVIEW_WINDOW_ID,
-      "Plugin Proposals",
-      {
-        kind: "patchReview",
-        proposals: pending.map((proposal) => proposalReviewItem(pluginRuntime.runtime.host, proposal))
-      },
-      { open: transition === "open", width: 420, height: 420 }
-    );
-  }, [patchQueueVersion, pluginRuntime.runtime, publishAnalysisWindow]);
+    publishProposalReview(transition === "open");
+    setProposalReview((current) => ({
+      pending: pending.length,
+      windowOpen: transition === "open" ? true : current.windowOpen
+    }));
+  }, [patchQueueVersion, pluginRuntime.runtime, publishProposalReview]);
 
   useEffect(
     () =>
@@ -8544,6 +8563,9 @@ export function MainWindow({
           case "close":
             if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
               setPluginDiagnosticsOpen(false);
+            }
+            if (action.windowId === PATCH_REVIEW_WINDOW_ID) {
+              setProposalReview((current) => ({ ...current, windowOpen: false }));
             }
             return;
           case "copyMolecularInspector":
@@ -16751,7 +16773,13 @@ export function MainWindow({
             onAccept={acceptPluginProposal}
             onReject={rejectPluginProposal}
           />
-        ) : null}
+        ) : (
+          <PendingProposalsBadge
+            count={proposalReview.pending}
+            windowOpen={proposalReview.windowOpen}
+            onReview={reopenProposalReview}
+          />
+        )}
         {customizeToolbarsOpen ? (
           <CustomizeToolbarsDialog
             baseToolsets={toolbarCatalog.baseToolsets()}

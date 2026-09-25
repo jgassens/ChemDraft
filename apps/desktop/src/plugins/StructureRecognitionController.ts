@@ -46,10 +46,13 @@ export interface StructureRecognitionControllerOptions {
   followIntervalMs?: number;
 }
 
+/** How an install request ended: installed, declined (or not completed), or cancelled by the user. */
+type InstallRequestOutcome = "installed" | "declined" | "cancelled";
+
 interface PendingInstall extends OpenStructureRecognitionInstall {
   signal?: AbortSignal;
   onAbort?: () => void;
-  resolve: (installed: boolean) => void;
+  resolve: (outcome: InstallRequestOutcome) => void;
 }
 
 export type PrepareRecognitionResult = (
@@ -111,8 +114,8 @@ export class StructureRecognitionController {
 
   /** The UI that renders the install dialog attaches here for as long as it is mounted. Without one,
    * an install request has nobody to answer it, so recognition reports `engineNotInstalled` at once
-   * rather than waiting on a dialog that will never appear. Detaching the last presenter cancels an
-   * open request for the same reason. */
+   * rather than waiting on a dialog that will never appear. Detaching the last presenter ends an open
+   * request the same way: nobody answered it, which is not the user cancelling. */
   attachInstallPresenter(): () => void {
     this.presenters += 1;
     let attached = true;
@@ -120,7 +123,7 @@ export class StructureRecognitionController {
       if (!attached) return;
       attached = false;
       this.presenters -= 1;
-      if (this.presenters === 0 && this.pending) void this.cancel(this.pending.id);
+      if (this.presenters === 0 && this.pending) void this.stop(this.pending.id, "declined");
     };
   }
 
@@ -203,7 +206,7 @@ export class StructureRecognitionController {
     image: PluginProvidedImage,
     signal: AbortSignal
   ): Promise<PluginRecognitionResult> {
-    if (signal.aborted) return { status: "engineNotInstalled" };
+    if (signal.aborted) return { status: "cancelled" };
     let status: StructureRecognitionEngineStatus;
     try {
       status = await this.refreshStatus();
@@ -212,8 +215,11 @@ export class StructureRecognitionController {
     }
 
     if (status.state !== "installed") {
-      const installed = await this.requestInstall(plugin, status, signal);
-      if (!installed || signal.aborted) return { status: "engineNotInstalled" };
+      const outcome = await this.requestInstall(plugin, status, signal);
+      // A cancel or an abandoned invocation is the user's own act: the plugin stays silent. Only a
+      // declined or incomplete install is `engineNotInstalled`, which a plugin may explain.
+      if (outcome === "cancelled" || signal.aborted) return { status: "cancelled" };
+      if (outcome !== "installed") return { status: "engineNotInstalled" };
     }
 
     let outcome: StructureRecognitionOutcome;
@@ -231,7 +237,7 @@ export class StructureRecognitionController {
   async manageInstall(plugin: { id: string; name: string }): Promise<boolean> {
     const status = await this.refreshStatus();
     if (status.state === "installed") return true;
-    return this.requestInstall(plugin, status);
+    return (await this.requestInstall(plugin, status)) === "installed";
   }
 
   async uninstall(): Promise<StructureRecognitionEngineStatus> {
@@ -257,12 +263,12 @@ export class StructureRecognitionController {
     if (this.pending !== pending) return;
     if (installed) {
       if (this.latestStatus) pending.status = this.latestStatus;
-      this.settle(pending, true);
+      this.settle(pending, "installed");
       return;
     }
     const error = this.run?.error ?? { code: "failed" as const, message: "The recognition engine was not installed." };
     if (error.code === "cancelled") {
-      this.settle(pending, false);
+      this.settle(pending, "cancelled");
       return;
     }
     pending.installing = false;
@@ -338,7 +344,12 @@ export class StructureRecognitionController {
     });
   }
 
-  async cancel(id: number): Promise<void> {
+  /** The user cancelled the install dialog (or the invocation that opened it was abandoned). */
+  cancel(id: number): Promise<void> {
+    return this.stop(id, "cancelled");
+  }
+
+  private async stop(id: number, outcome: Exclude<InstallRequestOutcome, "installed">): Promise<void> {
     const pending = this.pending;
     if (!pending || pending.id !== id) return;
     if (pending.installing || pending.status.state === "installing") {
@@ -348,23 +359,24 @@ export class StructureRecognitionController {
         // Cancellation remains cancellation even when native teardown cannot return a fresh status.
       }
     }
-    if (this.pending === pending) this.settle(pending, false);
+    if (this.pending === pending) this.settle(pending, outcome);
   }
 
   decline(id: number): void {
     const pending = this.pending;
     if (!pending || pending.id !== id || pending.installing) return;
-    this.settle(pending, false);
+    this.settle(pending, "declined");
   }
 
   private requestInstall(
     plugin: { id: string; name: string },
     status: StructureRecognitionEngineStatus,
     signal?: AbortSignal
-  ): Promise<boolean> {
-    if (signal?.aborted) return Promise.resolve(false);
-    if (this.pending || this.presenters === 0) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
+  ): Promise<InstallRequestOutcome> {
+    if (signal?.aborted) return Promise.resolve("cancelled");
+    // Nobody can answer a dialog (or one is already open): the engine is simply not installed.
+    if (this.pending || this.presenters === 0) return Promise.resolve("declined");
+    return new Promise<InstallRequestOutcome>((resolve) => {
       const pending: PendingInstall = {
         id: this.nextId++,
         pluginId: plugin.id,
@@ -386,11 +398,11 @@ export class StructureRecognitionController {
     });
   }
 
-  private settle(pending: PendingInstall, installed: boolean): void {
+  private settle(pending: PendingInstall, outcome: InstallRequestOutcome): void {
     if (this.pending !== pending) return;
     if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
     this.pending = undefined;
-    pending.resolve(installed);
+    pending.resolve(outcome);
     this.notify();
   }
 

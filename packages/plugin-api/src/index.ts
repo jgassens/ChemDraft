@@ -1025,6 +1025,13 @@ export const PluginImageSourceSchema = z.enum(["file", "screenRegion"]);
 export const PluginImageMaxBytes = 25 * 1024 * 1024;
 export const PluginImageMaxDimension = 8_192;
 
+/**
+ * The image formats a host hands a plugin, and so the formats the local recognition engine must
+ * accept. The desktop engine keeps an identical list (`SUPPORTED_MEDIA_TYPES` in
+ * apps/desktop/src-tauri/src/ocsr_engine/mod.rs), and a Rust test fails if the two differ.
+ */
+export const PluginImageMediaTypes = ["image/png", "image/jpeg", "image/tiff", "image/webp"] as const;
+
 export const PluginImageRequestSchema = z
   .object({
     title: z.string().min(1).max(200),
@@ -1039,7 +1046,7 @@ export const PluginImageRequestSchema = z
 
 export const PluginProvidedImageSchema = z
   .object({
-    mediaType: z.enum(["image/png", "image/jpeg", "image/tiff", "image/webp"]),
+    mediaType: z.enum(PluginImageMediaTypes),
     // Uint8Array is structured-clone-safe and avoids the 4/3 expansion and duplicate allocation of
     // base64. The worker bridge preserves it as a typed array end to end.
     bytes: z.custom<Uint8Array>(
@@ -1083,6 +1090,10 @@ export const PluginRecognitionFailureCodeSchema = z.enum([
 export const PluginRecognitionResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("recognized"), result: RecognizedStructureResultSchema }).strict(),
   z.object({ status: z.literal("engineNotInstalled") }).strict(),
+  // The user cancelled the install, or the command invocation was abandoned. Nothing failed and the
+  // user already knows, so a plugin should stay silent — unlike `engineNotInstalled`, which means the
+  // user declined the install or it did not complete, and is worth a line of explanation.
+  z.object({ status: z.literal("cancelled") }).strict(),
   z
     .object({
       status: z.literal("failed"),

@@ -72,7 +72,8 @@ licences govern those separately installed copies.
 
 MolScribe source code
   MIT. Source: https://github.com/thomas0809/MolScribe,
-  commit 7296a30413eb55436702011efdff78131f66d162.
+  commit 7296a30413eb55436702011efdff78131f66d162 (archive SHA-256
+  8e323f473b96c80ff88112f2653a064a443fcfd918654a0d7e0f7866bd5ee2d6).
 
 MolScribe model weights (swin_base_char_aux_1m.pth)
   MIT, as stated by the yujieq/MolScribe Hugging Face model card.

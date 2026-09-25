@@ -102,6 +102,7 @@ export function createRecognitionFixtureCommandHandler(): PluginCommandHandler<
     }
 
     const recognition = await context.recognition!.recognizeStructure(imageResult.image);
+    if (recognition.status === "cancelled") return recognition;
     if (recognition.status === "engineNotInstalled") {
       await showMessage(context, "Recognition needs the local engine.");
       return recognition;

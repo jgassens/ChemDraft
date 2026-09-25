@@ -145,7 +145,7 @@ describe("StructureRecognitionController", () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  it("cancels an in-flight install through the engine and reports engineNotInstalled", async () => {
+  it("cancels an in-flight install through the engine and reports cancelled, not engineNotInstalled", async () => {
     const { controller, engine } = setup(notInstalled);
     vi.mocked(engine.install).mockImplementationOnce(
       () => new Promise(() => undefined) // the native install never finishes on its own
@@ -158,7 +158,7 @@ describe("StructureRecognitionController", () => {
     expect(controller.getOpenInstall()?.installing).toBe(true);
 
     await controller.cancel(id);
-    await expect(pending).resolves.toEqual({ status: "engineNotInstalled" });
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
     expect(engine.cancelInstall).toHaveBeenCalledOnce();
     expect(engine.recognizeImage).not.toHaveBeenCalled();
   });
@@ -188,8 +188,43 @@ describe("StructureRecognitionController", () => {
     await Promise.resolve();
     expect(controller.getOpenInstall()).toBeDefined();
     abort.abort();
-    await expect(pending).resolves.toEqual({ status: "engineNotInstalled" });
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
     expect(controller.getOpenInstall()).toBeUndefined();
+  });
+
+  it("reports cancelled when the user cancels the install dialog before installing", async () => {
+    const { controller, engine } = setup(notInstalled);
+    const pending = controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    await controller.cancel(controller.getOpenInstall()!.id);
+
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+    expect(engine.cancelInstall).not.toHaveBeenCalled();
+    expect(engine.recognizeImage).not.toHaveBeenCalled();
+  });
+
+  it("reports cancelled for an invocation abandoned before recognition starts", async () => {
+    const { controller, engine } = setup();
+    const abort = new AbortController();
+    abort.abort();
+    await expect(controller.recognize({ id: "p", name: "P" }, image, abort.signal)).resolves.toEqual({
+      status: "cancelled"
+    });
+    expect(engine.status).not.toHaveBeenCalled();
+  });
+
+  it("reports engineNotInstalled, not cancelled, when an install fails and the user then closes the dialog", async () => {
+    const { controller, engine } = setup(notInstalled);
+    vi.mocked(engine.install).mockRejectedValueOnce({ code: "network", message: "Offline." });
+    const pending = controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    const id = controller.getOpenInstall()!.id;
+    await controller.install(id);
+    controller.decline(id);
+
+    await expect(pending).resolves.toEqual({ status: "engineNotInstalled" });
   });
 
   it("reports engineNotInstalled at once when no install dialog is attached, instead of waiting forever", async () => {

@@ -1,10 +1,11 @@
-import type {
-  PluginImageSource,
-  PluginProvidedImage
+import {
+  PluginImageMaxBytes,
+  type PluginImageSource,
+  type PluginProvidedImage
 } from "@chemdraft/plugin-api";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { readFile } from "@tauri-apps/plugin-fs";
+import { readFile, stat } from "@tauri-apps/plugin-fs";
 
 import { isTauriHost } from "./pluginStagingFs";
 
@@ -111,8 +112,13 @@ export const fileImageSourceProvider: ImageSourceProvider = {
     });
     if (typeof selection !== "string") return "cancelled";
     throwIfAborted(signal);
+    // Size first: a multi-gigabyte pick must be refused before it is read into memory, not after.
+    rejectOversizedFile(await fileSizeIfKnown(selection));
+    throwIfAborted(signal);
     const bytes = await readFile(selection);
     throwIfAborted(signal);
+    // The file may have grown since it was measured, or could not be measured at all.
+    rejectOversizedFile(bytes.byteLength);
     const metadata = inspectSupportedImage(bytes);
     return {
       ...metadata,
@@ -162,6 +168,25 @@ export const screenRegionImageSourceProvider: ImageSourceProvider = {
     }
   }
 };
+
+/** The file's size, or undefined when it cannot be measured without reading it (a host without the
+ * `fs:allow-stat` capability). Then the size is checked once the bytes are read instead. */
+async function fileSizeIfKnown(path: string): Promise<number | undefined> {
+  try {
+    return (await stat(path)).size;
+  } catch (error) {
+    console.warn(`[chemdraft images] could not measure ${path} before reading it:`, error);
+    return undefined;
+  }
+}
+
+function rejectOversizedFile(size: number | undefined): void {
+  if (size === undefined || size <= PluginImageMaxBytes) return;
+  throw new ImageSourceError(
+    "invalidImage",
+    `The selected file is ${size} bytes; images must be at most ${PluginImageMaxBytes} bytes (25 MB).`
+  );
+}
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException("Image acquisition was cancelled.", "AbortError");

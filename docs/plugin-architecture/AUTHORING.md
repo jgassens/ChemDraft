@@ -151,8 +151,10 @@ if (recognized?.status === "recognized") {
 `recognition` is absent if any one permission is missing. The host rejects an image constructed by the
 plugin, modified after selection, retained from another invocation, or used after the command ends.
 If the local engine is absent, the host identifies the requesting plugin and offers installation; the
-plugin cannot request a download and must not declare `model.download`. Declining or cancelling gives
-`engineNotInstalled`. Recognition failures are typed, and successful results include nullable overall
+plugin cannot request a download and must not declare `model.download`. Declining the install, or an
+install that fails, gives `engineNotInstalled`, which a plugin may explain. Cancelling — the user
+cancels a running install, or the command invocation is abandoned — gives `cancelled`: the user
+already knows, so the plugin should stay silent. Recognition failures are typed, and successful results include nullable overall
 confidence, atom/bond confidence, elapsed time, and engine/model provenance.
 
 MolScribe results remain uncertain inferred output. A recognizer must validate the MOL/SMILES through

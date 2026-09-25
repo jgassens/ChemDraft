@@ -97,8 +97,10 @@ manager opens or when a recognition starts — never at app startup.
    An `unsupported` computer gets an explanation and no Install button.
 4. **Install** streams phase text and, for byte phases, a progress bar; **Cancel** calls
    `cancelInstall()`. An install error keeps the dialog open with a plain explanation per code.
-5. Success continues into recognition; **Not now**, Escape, Cancel, or the command ending resolves
-   the plugin's call with `engineNotInstalled`.
+5. Success continues into recognition. **Not now** (or Escape) before installing, closing the dialog
+   after a failed install, or no install dialog being available resolves the plugin's call with
+   `engineNotInstalled`. **Cancel** (or Escape) during the install, or the command ending, resolves it
+   with `cancelled`, and the plugin stays silent.
 6. A recognized result is validated through the chemistry adapter, turned into document geometry by
    the MOL paste path, and returned for the plugin to *propose*; invalid output returns `failed` /
    `invalidResult` and is never proposed.

@@ -397,6 +397,9 @@ describe("RecognizedStructureResult", () => {
     expect(PluginRecognitionResultSchema.parse({ status: "engineNotInstalled" })).toEqual({
       status: "engineNotInstalled"
     });
+    // A user cancel is its own outcome, so a plugin can stay silent instead of explaining an install.
+    expect(PluginRecognitionResultSchema.parse({ status: "cancelled" })).toEqual({ status: "cancelled" });
+    expect(() => PluginRecognitionResultSchema.parse({ status: "cancelled", reason: "abort" })).toThrow();
     expect(
       PluginRecognitionResultSchema.parse({
         status: "failed",

@@ -1001,6 +1001,53 @@ struct OpenPluginPanelRequest {
     height: Option<f64>,
 }
 
+/// The native window label for a panel id. Must be injective: `panel.a-b.c` and `panel.a.b-c` are
+/// different panels and must never share (and so replace or reveal) one window. Tauri labels allow
+/// `:` but not `.`, and panel ids never contain `:` (`is_valid_plugin_storage_id`), so swapping `.`
+/// for `:` loses nothing. The app's hex-encoded ids (`pluginPanelWindowId` in panelBridge.ts)
+/// contain neither and pass through unchanged, which `hidePluginPanelWindow` relies on.
+fn plugin_panel_window_label(panel_id: &str) -> String {
+    format!("plugin-panel-{}", panel_id.replace('.', ":"))
+}
+
+#[cfg(test)]
+mod plugin_panel_label_tests {
+    use super::{is_valid_plugin_storage_id, plugin_panel_window_label};
+
+    #[test]
+    fn distinct_panel_ids_never_share_a_window_label() {
+        let ids = [
+            "panel.a-b.c",
+            "panel.a.b-c",
+            "panel-a.b.c",
+            "panel.a.b.c",
+            "panel-a-b-c",
+            "panel_a.b",
+        ];
+        let labels: std::collections::HashSet<_> =
+            ids.iter().map(|id| plugin_panel_window_label(id)).collect();
+        assert_eq!(labels.len(), ids.len());
+    }
+
+    #[test]
+    fn labels_use_only_characters_tauri_accepts() {
+        let label = plugin_panel_window_label("org.chemdraft.nmr_v2-panel");
+        assert!(label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_')));
+        assert!(is_valid_plugin_storage_id("org.chemdraft.nmr_v2-panel"));
+    }
+
+    #[test]
+    fn hex_window_ids_from_the_app_pass_through_unchanged() {
+        // panelBridge.ts hides a window by rebuilding this exact label.
+        assert_eq!(
+            plugin_panel_window_label("v1x6f7267x70616e656c"),
+            "plugin-panel-v1x6f7267x70616e656c"
+        );
+    }
+}
+
 /// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
 /// transport; each window is parented to the main document rather than being globally floating.
 #[tauri::command]
@@ -1012,7 +1059,7 @@ fn open_plugin_panel_window(
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
 
-    let label = format!("plugin-panel-{}", request.panel_id.replace('.', "-"));
+    let label = plugin_panel_window_label(&request.panel_id);
     if let Some(window) = app.get_webview_window(&label) {
         window.show().map_err(|error| error.to_string())?;
         configure_analysis_window(&window)?;

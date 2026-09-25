@@ -511,6 +511,51 @@ describe("PluginHost", () => {
     expect(recognizeStructure).toHaveBeenCalledOnce();
   });
 
+  it("reports cancelled, not engineNotInstalled, when recognition is abandoned mid-call", async () => {
+    const provided: PluginProvidedImage = {
+      mediaType: "image/png",
+      bytes: new Uint8Array([1]),
+      width: 1,
+      height: 1,
+      source: "file"
+    };
+    let recognitionStarted!: () => void;
+    const started = new Promise<void>((resolve) => (recognitionStarted = resolve));
+    const recognizeStructure = vi.fn(() => {
+      recognitionStarted();
+      return new Promise<never>(() => undefined); // the engine never answers on its own
+    });
+    const host = new PluginHost({
+      requestImage: async () => ({ status: "provided", image: provided }),
+      recognizeStructure
+    });
+    host.registerPlugin(
+      {
+        id: "org.test.abandoned-recognition",
+        name: "Abandoned Recognition",
+        version: "0.0.1",
+        apiVersion: "^0.1.6",
+        entry: "dist/plugin.js",
+        permissions: ["image.read", "ml.inference", "model.load", "native.execute"],
+        contributes: { commands: [{ id: "plugin.abandonedRecognition.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.abandonedRecognition.run": async (context) => {
+            const acquired = await context.images!.requestImage({ title: "Choose image" });
+            if (acquired.status !== "provided") throw new Error("fixture image missing");
+            return context.recognition!.recognizeStructure(acquired.image);
+          }
+        }
+      }
+    );
+
+    const invocation = host.invokeCommand("plugin.abandonedRecognition.run");
+    await started;
+    host.unregisterPlugin("org.test.abandoned-recognition");
+    await expect(invocation).resolves.toEqual({ status: "cancelled" });
+  });
+
   it("rejects a retained recognition call after its command invocation ends", async () => {
     const provided: PluginProvidedImage = {
       mediaType: "image/png",
