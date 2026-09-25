@@ -245,4 +245,3 @@ function sameLiveProgress(
     a.progress?.estimated === b.progress?.estimated
   );
 }
-

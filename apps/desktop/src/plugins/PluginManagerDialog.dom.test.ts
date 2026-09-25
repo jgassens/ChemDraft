@@ -1430,6 +1430,42 @@ describe("PluginManagerDialog", () => {
     });
     expect(onUninstallPlugin).toHaveBeenCalledWith(installedPluginId);
   });
+
+  it("keeps the keyboard on the dialog when a row's Uninstall button becomes disabled mid-operation", async () => {
+    const runtime = createRuntime();
+    // Never resolves during the test: the button stays disabled and "Uninstalling…" for the assertions.
+    const onUninstallPlugin = vi.fn(() => new Promise<void>(() => {}));
+    const entry = installedEntry();
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins: [entry],
+        onUninstallPlugin
+      })
+    );
+
+    const uninstallButton = document.querySelector<HTMLButtonElement>(
+      `[data-action="uninstall-plugin"][data-plugin-id="${installedPluginId}"]`
+    )!;
+    act(() => uninstallButton.focus());
+    expect(document.activeElement).toBe(uninstallButton);
+
+    await act(async () => {
+      uninstallButton.click();
+    });
+
+    // The button itself stays in the tree but turns disabled — jsdom, like the browser, does not move
+    // focus off it on its own, so without keepFocusInsideDialog the keyboard would stay stranded there.
+    expect(uninstallButton.textContent).toBe("Uninstalling…");
+    expect(uninstallButton.disabled).toBe(true);
+    expect(document.activeElement).not.toBe(uninstallButton);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.querySelector('[data-testid="plugin-manager-dialog"]')!.contains(document.activeElement)).toBe(
+      true
+    );
+  });
 });
 
 describe("PluginManagerDialog one-click engine install", () => {
@@ -1755,6 +1791,39 @@ describe("PluginManagerDialog one-click engine install", () => {
     ).toBe(false);
   });
 
+  it("keeps the keyboard on the dialog when Install engine unmounts and Cancel install takes its place", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    mount(
+      createElement(WiredHarness, {
+        runtime,
+        installed: [installedEntry(molscribeManifest)],
+        onInstallPackage: async () => {}
+      })
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const install = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
+    act(() => install.focus());
+    expect(document.activeElement).toBe(install);
+
+    await act(async () => {
+      install.click();
+    });
+    fake.progress({ phase: "installingPackages", message: "m", bytesDone: 100e6, bytesTotal: 1200e6, estimated: true });
+
+    // The row swaps from an Install engine button to a distinct Cancel install button: the focused
+    // element is unmounted, not merely disabled.
+    expect(install.isConnected).toBe(false);
+    expect(document.querySelector('[data-action="cancel-recognition-engine-install"]')).not.toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.querySelector('[data-testid="plugin-manager-dialog"]')!.contains(document.activeElement)).toBe(
+      true
+    );
+  });
+
   it("renders a null engine status as still checking instead of crashing", async () => {
     const runtime = createRuntime();
     // What the old cancelInstall contract stored: Tauri's null for Rust's `()`.
@@ -1776,4 +1845,3 @@ describe("PluginManagerDialog one-click engine install", () => {
     expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
   });
 });
-

@@ -9,6 +9,7 @@ import {
   notifyPluginPanelClosed,
   parsePluginPanelWindowId,
   requestAnalysisWindowAction,
+  requestCopyMolecularInspectorText,
   requestPluginPanelRerun,
   requestPluginPanelReport,
   type AnalysisWindowSnapshotPayload,
@@ -197,9 +198,7 @@ function AnalysisWindowContent({ payload }: { payload: AnalysisWindowSnapshotPay
           report={content.report}
           busy={content.busy}
           stale={content.stale}
-          onCopy={(text) => {
-            void requestAnalysisWindowAction({ kind: "copyMolecularInspector", text }).catch(() => undefined);
-          }}
+          onCopy={(text) => requestCopyMolecularInspectorText(text)}
           onChangeInterpretation={(interpretationId) => {
             void requestAnalysisWindowAction({
               kind: "changeMolecularInterpretation",

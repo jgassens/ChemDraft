@@ -4,6 +4,7 @@ import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AnalysisReport } from "@chemdraft/analysis-core";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_ACTION_RESULT_EVENT,
@@ -124,6 +125,14 @@ async function broadcast(payload: PluginPanelReportPayload): Promise<void> {
     await broadcastPluginPanelReport(payload);
   });
 }
+
+const INSPECTOR_REPORT: AnalysisReport = {
+  title: "Molecular properties",
+  interpretations: [{ id: "source", label: "as drawn", active: true, changesIdentity: false, ledger: [] }],
+  sections: [{ kind: "keyValue", title: "Composition", rows: [{ label: "Formula", value: "C9H8O4" }] }],
+  engineSummary: "rdkit-minimallib-wasm 2026.03.3 (sha256:48b725a2)",
+  fingerprint: "fnv1a64:0123456789abcdef"
+};
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
   it("opens plugin and built-in analysis identities through the one existing native transport", async () => {
@@ -261,6 +270,74 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(exportButton.textContent).toBe("Export failed");
+  });
+
+  it("copies through the main window's native clipboard and shows Copied on success", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    const windowId = pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, MOLECULAR_INSPECTOR_WINDOW_ID);
+    window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${windowId}`);
+    tauriEvents.setResponder((name, payload) => {
+      const action = payload as { kind?: string; requestId?: string };
+      if (name === ANALYSIS_WINDOW_ACTION_EVENT && action.kind === "copyMolecularInspector") {
+        void tauriEvents.emit(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId: action.requestId, ok: true });
+      }
+    });
+    await mountWindow(windowId);
+    await act(async () => {
+      await broadcastAnalysisWindowSnapshot({
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: MOLECULAR_INSPECTOR_WINDOW_ID,
+        revision: 1,
+        content: { kind: "molecularInspector", report: INSPECTOR_REPORT, busy: false, stale: false }
+      });
+    });
+    const copyButton = [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy"
+    )!;
+
+    await act(async () => {
+      copyButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const request = tauriEvents.emitted.find(
+      (event) =>
+        event.name === ANALYSIS_WINDOW_ACTION_EVENT &&
+        (event.payload as { kind?: string }).kind === "copyMolecularInspector"
+    );
+    expect((request?.payload as { text: string }).text).toContain("C9H8O4");
+    expect(copyButton.textContent).toBe("Copied");
+  });
+
+  it("shows Copy failed when the main window reports the clipboard write failed", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    const windowId = pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, MOLECULAR_INSPECTOR_WINDOW_ID);
+    window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${windowId}`);
+    tauriEvents.setResponder((name, payload) => {
+      const action = payload as { kind?: string; requestId?: string };
+      if (name === ANALYSIS_WINDOW_ACTION_EVENT && action.kind === "copyMolecularInspector") {
+        void tauriEvents.emit(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId: action.requestId, ok: false });
+      }
+    });
+    await mountWindow(windowId);
+    await act(async () => {
+      await broadcastAnalysisWindowSnapshot({
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: MOLECULAR_INSPECTOR_WINDOW_ID,
+        revision: 1,
+        content: { kind: "molecularInspector", report: INSPECTOR_REPORT, busy: false, stale: false }
+      });
+    });
+    const copyButton = [...container!.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy"
+    )!;
+
+    await act(async () => {
+      copyButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(copyButton.textContent).toBe("Copy failed");
   });
 
   it("returns listener cleanup synchronously so an immediate effect cleanup cannot leak", () => {

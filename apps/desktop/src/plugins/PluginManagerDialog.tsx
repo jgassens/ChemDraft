@@ -1,4 +1,4 @@
-import { useEffect, useId, useReducer, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { dangerousPluginPermissions, type PluginPermission } from "@chemdraft/plugin-api";
@@ -9,6 +9,7 @@ import {
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
 import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
+import { keepFocusInsideDialog } from "./PluginImageRequestDialog";
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import type {
@@ -153,6 +154,7 @@ export function PluginManagerDialog({
   const [engineRemovalOfferBytes, setEngineRemovalOfferBytes] = useState<number | undefined>(undefined);
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
+  const dialogRef = useRef<HTMLElement>(null);
 
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =
@@ -170,6 +172,11 @@ export function PluginManagerDialog({
 
   // Keep the checkboxes truthful even when a registration changes outside this dialog.
   useEffect(() => runtime.host.subscribe(refreshFromHost), [runtime]);
+
+  // A row's button swaps label mid-operation (Install -> Downloading…, Install engine -> Cancel
+  // install, Uninstall -> Removing…) by becoming disabled; keep the keyboard on this dialog instead
+  // of letting it drop to <body>, from where Escape and the canvas shortcuts behind the modal take over.
+  useLayoutEffect(() => keepFocusInsideDialog(dialogRef.current));
 
   useEffect(() => {
     // Escape works even while an operation runs. A trusted-update download is allowed two minutes,
@@ -406,12 +413,14 @@ export function PluginManagerDialog({
       }}
     >
       <section
+        ref={dialogRef}
         aria-busy={busy}
         aria-labelledby={titleId}
         aria-modal="true"
         className="plugin-manager-dialog"
         data-testid="plugin-manager-dialog"
         role="dialog"
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="plugin-manager-header">

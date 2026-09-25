@@ -80,7 +80,7 @@ export interface AnalysisWindowSnapshotPayload extends PluginPanelIdentity {
 
 export type AnalysisWindowAction =
   | { kind: "close"; windowId: string }
-  | { kind: "copyMolecularInspector"; text: string }
+  | { kind: "copyMolecularInspector"; requestId?: string; text: string }
   | { kind: "changeMolecularInterpretation"; interpretationId?: string }
   | { kind: "acceptPluginProposal"; proposalId: string }
   | { kind: "rejectPluginProposal"; proposalId: string }
@@ -90,6 +90,12 @@ export type AnalysisWindowAction =
 export interface AnalysisWindowSaveResult {
   requestId: string;
   result: SaveTextFileResult;
+}
+
+/** Main → window: whether a `copyMolecularInspector` action actually reached the clipboard. */
+export interface AnalysisWindowCopyResult {
+  requestId: string;
+  ok: boolean;
 }
 
 export interface OpenPluginPanelRequest extends PluginPanelIdentity {
@@ -178,6 +184,49 @@ export async function respondToSaveTextFile(requestId: string, result: SaveTextF
   }
   const { emit } = await import("@tauri-apps/api/event");
   await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
+}
+
+/**
+ * Window → main: copy Molecular Inspector text through the main window's native clipboard, and
+ * resolve with whether it actually landed.
+ *
+ * Report windows hold no clipboard permission of their own; the main window performs the write and
+ * this returns its real outcome, so the floating window's "Copied" label can say "Copy failed"
+ * instead of claiming success regardless (mirrors `requestSaveTextFileFromMain`).
+ */
+export async function requestCopyMolecularInspectorText(text: string): Promise<boolean> {
+  if (!isDesktopRuntime()) {
+    return false;
+  }
+  const requestId = `copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  try {
+    const { emit, listen } = await import("@tauri-apps/api/event");
+    let answer: (ok: boolean) => void = () => undefined;
+    const answered = new Promise<boolean>((resolve) => {
+      answer = resolve;
+    });
+    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (isCopyResult(event.payload) && event.payload.requestId === requestId) {
+        answer(event.payload.ok);
+      }
+    });
+    await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, { kind: "copyMolecularInspector", requestId, text });
+    return await answered;
+  } catch {
+    return false;
+  } finally {
+    unlisten?.();
+  }
+}
+
+/** Main → window: answer a `copyMolecularInspector` action. */
+export async function respondToCopyMolecularInspector(requestId: string, ok: boolean): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowCopyResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, ok });
 }
 
 export async function broadcastPluginPanelReport(payload: PluginPanelReportPayload): Promise<void> {
@@ -501,7 +550,10 @@ function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowActi
     case "close":
       return typeof candidate.windowId === "string";
     case "copyMolecularInspector":
-      return typeof candidate.text === "string";
+      return (
+        (candidate.requestId === undefined || typeof candidate.requestId === "string") &&
+        typeof candidate.text === "string"
+      );
     case "changeMolecularInterpretation":
       return candidate.interpretationId === undefined || typeof candidate.interpretationId === "string";
     case "acceptPluginProposal":
@@ -532,4 +584,13 @@ function isSaveResult(payload: unknown): payload is AnalysisWindowSaveResult {
     typeof candidate.requestId === "string" &&
     (candidate.result === "saved" || candidate.result === "cancelled" || candidate.result === "failed")
   );
+}
+
+/** Distinguished from a save result by shape (`ok` vs. `result`) on the same shared result event. */
+function isCopyResult(payload: unknown): payload is AnalysisWindowCopyResult {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowCopyResult>;
+  return typeof candidate.requestId === "string" && typeof candidate.ok === "boolean";
 }

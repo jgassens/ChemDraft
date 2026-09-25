@@ -119,6 +119,7 @@ import {
   listenForPluginPanelRequests,
   openPluginPanelWindow,
   pluginPanelIdentityKey,
+  respondToCopyMolecularInspector,
   respondToSaveTextFile,
   type AnalysisWindowAction,
   type AnalysisWindowContent,
@@ -1730,16 +1731,16 @@ export function MainWindow({
    * it inline is what makes the canvas stutter. `slot: "selection"` means a second invocation while
    * one is in flight supersedes it rather than racing it.
    */
-  /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it. */
-  const copyAnalysisText = useCallback((text: string) => {
+  /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it.
+   *  Resolves with whether the clipboard write actually succeeded, so the floating window's own
+   *  "Copied" label can tell success from failure instead of always claiming success. */
+  const copyAnalysisText = useCallback(async (text: string): Promise<boolean> => {
     // The floating inspector's Copy reaches here over the event bridge, outside any user gesture in
     // this document, so the web Clipboard API would be refused. The native clipboard command is not
     // gesture-bound; the status reports what actually happened.
-    void writeClipboardTextItems([{ type: "text/plain", text }])
-      .catch(() => false)
-      .then((didWrite) => {
-        setStatus(didWrite ? "Analysis copied" : "Could not copy the analysis to the clipboard");
-      });
+    const didWrite = await writeClipboardTextItems([{ type: "text/plain", text }]).catch(() => false);
+    setStatus(didWrite ? "Analysis copied" : "Could not copy the analysis to the clipboard");
+    return didWrite;
   }, []);
 
   const runMolecularProperties = useCallback(
@@ -1981,6 +1982,12 @@ export function MainWindow({
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
+  // Identifies the working document for a plugin's `documents.applyPatch` (see
+  // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Bumped only in `resetDocumentHistory` — the
+  // single place the document is REPLACED (File > New, every Open path including session restore) —
+  // never on an ordinary edit, so a plugin write started before a replace and landing after it is
+  // refused rather than silently inserted into the new document.
+  const documentIdentityRef = useRef(0);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const fileStateRef = useRef<NativeFileState>(fileState);
@@ -2528,6 +2535,9 @@ export function MainWindow({
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
+    // The document is being REPLACED, not edited — bump before installing the new history so a plugin
+    // write already in flight against the old document key is refused rather than landing here.
+    documentIdentityRef.current += 1;
     installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(nextDocument)));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
@@ -8292,6 +8302,7 @@ export function MainWindow({
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
+    getActiveDocumentKey: () => String(documentIdentityRef.current),
     getSelection: () => buildPluginSelectionSnapshot(documentRef.current),
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
@@ -8616,9 +8627,17 @@ export function MainWindow({
               setProposalReview((current) => ({ ...current, windowOpen: false }));
             }
             return;
-          case "copyMolecularInspector":
-            handlers.copyAnalysisText(action.text);
+          case "copyMolecularInspector": {
+            // requestId is absent from a fire-and-forget dispatch with no listener for the result
+            // (the web toolbar fallback's direct call); only answer when someone is actually waiting.
+            const { requestId, text } = action;
+            void handlers
+              .copyAnalysisText(text)
+              .catch(() => false)
+              .then((ok) => (requestId ? respondToCopyMolecularInspector(requestId, ok) : undefined))
+              .catch(() => undefined);
             return;
+          }
           case "changeMolecularInterpretation":
             handlers.recomputeAnalysisFor(action.interpretationId);
             return;

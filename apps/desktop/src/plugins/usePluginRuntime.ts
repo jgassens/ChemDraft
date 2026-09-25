@@ -58,6 +58,10 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 
 export interface PluginRuntimeProviders {
   getActiveDocument: () => ChemDraftDocument | undefined;
+  /** Identifies the working document for a plugin's `documents.applyPatch` (see
+   *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
+   *  File > New in one session are indistinguishable to the write-binding check. */
+  getActiveDocumentKey?: () => string | undefined;
   getSelection: () => PluginSelectionSnapshot;
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
    *  use (commands/coreCommandRegistrar), so one dispatch serves both. Must be referentially stable
@@ -139,6 +143,9 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   if (ownerRef.current === null) {
     const runtime = createPluginRuntime({
       getActiveDocument: () => providersRef.current.getActiveDocument(),
+      getActiveDocumentKey: providers.getActiveDocumentKey
+        ? () => providersRef.current.getActiveDocumentKey?.()
+        : undefined,
       getSelection: () => providersRef.current.getSelection(),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
@@ -548,4 +555,3 @@ function statusKey(status: StructureRecognitionEngineStatus): Partial<StructureR
   const { progress: _progress, installElapsedMs: _elapsed, ...rest } = status;
   return rest.state === "installing" ? { ...rest, freeDiskBytes: undefined } : rest;
 }
-

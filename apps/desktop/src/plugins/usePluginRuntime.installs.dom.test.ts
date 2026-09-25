@@ -249,4 +249,3 @@ describe("usePluginRuntime installed catalog readiness", () => {
     expect(view?.installedPlugins.map((entry) => entry.record.id)).toEqual([pluginId]);
   });
 });
-

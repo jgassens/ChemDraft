@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
+import type { MoleculeObject } from "@chemdraft/chem-core";
 import { massAnalyzeCommandId } from "@chemdraft/plugin-mass-fragment";
-import { CommandRegistry } from "@chemdraft/plugin-host";
+import type { AppliedPatchReceipt, PluginManifest } from "@chemdraft/plugin-api";
+import { CommandRegistry, type PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -58,15 +60,48 @@ afterEach(() => {
   container = undefined;
 });
 
-function Probe({ registry, capture }: { registry: CommandRegistry; capture: (view: PluginRuntimeView) => void }) {
+function Probe({
+  registry,
+  capture,
+  getActiveDocumentKey,
+  applyDocumentPatch
+}: {
+  registry: CommandRegistry;
+  capture: (view: PluginRuntimeView) => void;
+  getActiveDocumentKey?: () => string | undefined;
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
+}) {
   capture(
     usePluginRuntime({
       getActiveDocument: () => undefined,
+      getActiveDocumentKey,
       getSelection: () => ({ objectIds: [], molecules: [] }),
-      commandRegistry: registry
+      commandRegistry: registry,
+      applyDocumentPatch
     })
   );
   return null;
+}
+
+function moleculeObject(id = "mol_001"): MoleculeObject {
+  return {
+    id,
+    type: "molecule",
+    x: 80,
+    y: 96,
+    width: 160,
+    height: 120,
+    rotation: 0,
+    style: {},
+    structureFormat: "smiles",
+    structure: "c1ccccc1",
+    atoms: [],
+    bonds: [],
+    superatoms: [],
+    rGroups: []
+  };
 }
 
 describe("usePluginRuntime on the shared command registry", () => {
@@ -173,3 +208,90 @@ describe("usePluginRuntime on the shared command registry", () => {
   });
 });
 
+describe("usePluginRuntime document identity wiring", () => {
+  const documentWritePluginId = "org.chemdraft.test.documentKey";
+  const documentWriteCommandId = "plugin.documentKeyTest.write";
+  const documentWriteManifest: PluginManifest = {
+    id: documentWritePluginId,
+    name: "Document Key Test Plugin",
+    version: "1.0.0",
+    apiVersion: "^0.1.0",
+    entry: "dist/plugin.js",
+    permissions: ["document.write"],
+    contributes: {
+      commands: [
+        { id: documentWriteCommandId, title: "Write", requiredPermissions: ["document.write"], enabled: true }
+      ],
+      menus: [],
+      panels: [],
+      toolbarButtons: [],
+      toolsets: [],
+      inspectors: [],
+      templates: [],
+      importers: [],
+      exporters: [],
+      analyzers: [],
+      transformers: [],
+      recognizers: []
+    }
+  };
+
+  it("threads getActiveDocumentKey through to the host so a write started before a document replace is refused", async () => {
+    const registry = new CommandRegistry();
+    let activeKey = "doc-1";
+    // Flips true for the second invocation, mid-command — the moment File > New (bumping MainWindow's
+    // document identity ref) would land while a plugin write is in flight.
+    let replaceDocumentMidCommand = false;
+    const applyDocumentPatch = vi.fn(
+      (): AppliedPatchReceipt => ({ applied: true, objectIds: ["mol_001"] })
+    );
+
+    let view: PluginRuntimeView | undefined;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        createElement(Probe, {
+          registry,
+          capture: (captured) => {
+            view = captured;
+          },
+          getActiveDocumentKey: () => activeKey,
+          applyDocumentPatch
+        })
+      );
+      await Promise.resolve();
+    });
+
+    act(() => {
+      view!.runtime.registerPlugin(documentWriteManifest, {
+        commandHandlers: {
+          [documentWriteCommandId]: async (context) => {
+            if (replaceDocumentMidCommand) activeKey = "doc-2";
+            return context.documents.applyPatch!({
+              reason: "test write",
+              patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+            });
+          }
+        }
+      });
+    });
+
+    // An ordinary edit: the document identity is unchanged for the whole command, so the write lands.
+    await act(async () => {
+      await expect(view!.invokePluginCommand(documentWriteCommandId)).resolves.toMatchObject({ applied: true });
+    });
+    expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
+
+    // File > New (or Open) replaces the document while this command is still running: the key it
+    // started with no longer matches, and the write is refused rather than landing in the new document.
+    replaceDocumentMidCommand = true;
+    await act(async () => {
+      await expect(view!.invokePluginCommand(documentWriteCommandId)).rejects.toThrow(
+        "The document changed while the plugin was running; nothing was inserted."
+      );
+    });
+    expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
+  });
+});
