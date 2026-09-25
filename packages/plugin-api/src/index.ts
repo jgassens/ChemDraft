@@ -598,6 +598,19 @@ export const ProposedDocumentPatchSchema = z
   })
   .strict();
 
+/**
+ * The `op` of a recognition `proposedPatch` handed to a plugin WITHOUT `document.read`.
+ *
+ * The insertion the host builds for a recognized structure is laid out against the active document: its
+ * page id, an object id derived from the document's object count, and page-centre coordinates. Handing
+ * those to a plugin that was never granted `document.read` would leak the document past that gate, so
+ * such a plugin receives `{ op: HostHeldRecognitionPatchOp, ref }` instead. The host keeps the real
+ * patch and substitutes it when the plugin passes this value to `documents.proposePatch` during the same
+ * command invocation (once). The value is opaque: pass it through unchanged. `documents.applyPatch`
+ * refuses it — recognition is proposal-only.
+ */
+export const HostHeldRecognitionPatchOp = "hostHeldRecognition" as const;
+
 export const RecognizedStructureResultSchema = z
   .object({
     sourceImageRef: NonEmptyStringSchema,

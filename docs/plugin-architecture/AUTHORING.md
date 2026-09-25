@@ -100,7 +100,9 @@ if (answer?.status === "submitted") {
 }
 ```
 
-`dialogs` is absent without `ui.panel`. `promptText` rejects outside that plugin's active command
+`dialogs` is absent without `ui.panel` and present with it, whether the plugin runs in-process or in its
+worker. An embedding host that has no prompt UI rejects the call with a plain error rather than hiding
+the capability, so both execution paths see the same shape. `promptText` rejects outside that plugin's active command
 invocation, and each command invocation may call it at most once (including after its first prompt has
 settled). Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
@@ -159,7 +161,20 @@ confidence, atom/bond confidence, elapsed time, and engine/model provenance.
 
 MolScribe results remain uncertain inferred output. A recognizer must validate the MOL/SMILES through
 available chemistry before proposing it, preserve the source-image preview and applicable uncertainty
-warnings, and use `documents.proposePatch`. It must never use `documents.applyPatch` for recognition.
+warnings, and use `documents.proposePatch`. It must never use `documents.applyPatch` for recognition,
+and the host enforces that (below).
+
+**`proposedPatch` without `document.read`.** The insertion the host builds for a recognized structure is
+laid out against the active document — its page id, an object id derived from the document's object
+count, and page-centre coordinates. A plugin that did not declare `document.read` must not learn those,
+so it receives `proposedPatch.patch` as an opaque `{ op: "hostHeldRecognition", ref }`
+(`HostHeldRecognitionPatchOp` in `@chemdraft/plugin-api`). Pass the `proposedPatch` to
+`documents.proposePatch` unchanged — overriding `reason`, `warnings`, and `recognition` is fine — during
+the same command invocation; the host substitutes the real insertion, queues it once, and returns a
+receipt without the patch. A second proposal of the same `ref`, a forged `ref`, or a proposal after the
+command ends is refused. A plugin that holds `document.read` receives the insertion itself, as before.
+The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
+`proposedPatch` unchanged, so it takes this path with no code change.
 
 ## Direct document writes versus proposals
 
@@ -183,7 +198,35 @@ Use `applyPatch` only when the user supplied the input and the result is determi
 name-to-structure command acting on text entered in the host prompt. Use `proposePatch` for uncertain
 or inferred output that needs inspection. Image recognition remains a proposal flow: low confidence,
 stereochemistry, charge/radical, and abbreviation uncertainty require explicit user approval before
-insertion. Holding `document.write` does not relax that recognition rule.
+insertion. Holding `document.write` does not relax that recognition rule, and the host enforces it:
+
+- once `recognition.recognizeStructure` has returned `recognized` in a command invocation, every
+  `documents.applyPatch` call in that invocation is refused;
+- `applyPatch` refuses any patch carrying a `recognition` review block, and any
+  `hostHeldRecognition` reference.
+
+The rule is deliberately scoped to the **invocation**, not the plugin: a plugin may declare both the
+recognition permissions and `document.write` and still insert deterministic user input (a typed name)
+from a different command. Refusing `document.write` outright to every plugin holding the recognition
+permissions would have forced such a plugin to split in two without making recognition any safer. What
+the rule cannot see is a plugin that stores a recognized structure and re-creates it in a later command;
+that is a manifest-review matter, the same as any other misuse of a granted permission.
+
+**A direct write is bound to its document.** The host records which document was active when the
+command started and refuses `applyPatch` if a different document is active when the write arrives —
+after File > New, File > Open, or a switch to another document window — with "The document changed
+while the plugin was running; nothing was inserted." Edits and undo inside the same document do not
+count as a change. Proposals are unaffected: the user reviews and accepts them into the document in
+front of them.
+
+## Proposal lifetime
+
+A proposal stays in the host's queue only while it is pending. Accepting or rejecting it removes it
+(a recognition proposal carries its whole source image, which must not be held for the session), so
+`listProposedPatches("accepted")` and `listProposedPatches("rejected")` are always empty; the result of
+an accept or reject is carried by its return value and the `onProposedPatchesChanged` notification.
+Pending proposals survive unregistering the plugin — an update or disable must not discard review the
+user has not done yet.
 
 ## Worker entry
 

@@ -782,8 +782,9 @@ describe("PluginHost", () => {
     const updated = host.acceptProposedPatch(queued.id, document, { now: timestamp });
 
     expect(updated.pages[0].objects).toEqual([moleculeObject()]);
-    expect(host.listProposedPatches("accepted")).toHaveLength(1);
-    expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(PluginHostError);
+    // Resolved proposals leave the queue rather than holding their payload for the session.
+    expect(host.listProposedPatches()).toHaveLength(0);
+    expect(() => host.acceptProposedPatch(queued.id, updated)).toThrow(/does not exist/);
   });
 
   // A hostile plugin can hand the host a self-referencing proposal: the patch interior is
@@ -815,11 +816,11 @@ describe("PluginHost", () => {
     // Every queue operation stays usable, so the user can still see and dismiss the proposal.
     expect(() => host.listProposedPatches()).not.toThrow();
     expect(host.listProposedPatches("pending")).toHaveLength(1);
-    expect(() => host.rejectProposedPatch(queued.id)).not.toThrow();
-    expect(host.listProposedPatches("rejected")).toHaveLength(1);
+    let rejected!: ReturnType<PluginHost["rejectProposedPatch"]>;
+    expect(() => (rejected = host.rejectProposedPatch(queued.id))).not.toThrow();
+    expect(host.listProposedPatches()).toHaveLength(0);
 
     // And the snapshot is still frozen through the cycle.
-    const [rejected] = host.listProposedPatches("rejected");
     expect(Object.isFrozen(rejected)).toBe(true);
     expect(Object.isFrozen(rejected.proposal.patch)).toBe(true);
   });
@@ -858,11 +859,11 @@ describe("PluginHost", () => {
     // Every queue operation stays usable, so the user can still see and dismiss the proposal.
     expect(() => host.listProposedPatches()).not.toThrow();
     expect(host.listProposedPatches("pending")).toHaveLength(1);
-    expect(() => host.rejectProposedPatch(queued.id)).not.toThrow();
+    let rejected!: ReturnType<PluginHost["rejectProposedPatch"]>;
+    expect(() => (rejected = host.rejectProposedPatch(queued.id))).not.toThrow();
 
     // The surrounding graph is still frozen — only the views themselves are exempt, because the
     // language does not permit locking them.
-    const [rejected] = host.listProposedPatches("rejected");
     const patch = rejected.proposal.patch as unknown as Record<string, unknown>;
     expect(Object.isFrozen(rejected)).toBe(true);
     expect(Object.isFrozen(patch)).toBe(true);
@@ -1549,5 +1550,252 @@ describe("PluginHost document boundary", () => {
       (handed as { title: string }).title = "hijacked";
     }).toThrow();
     expect(live.title).not.toBe("hijacked");
+  });
+});
+
+describe("PluginHost recognition, document binding, and queue release", () => {
+  const recognitionPermissions: PluginPermission[] = ["image.read", "ml.inference", "model.load", "native.execute"];
+  const image: PluginProvidedImage = {
+    mediaType: "image/png",
+    bytes: new Uint8Array([1, 2, 3]),
+    width: 20,
+    height: 10,
+    source: "file"
+  };
+  // What the desktop builds: an insertion laid out against the active document.
+  const documentDerivedPatch = { op: "addObject", pageId: "page_secret", object: moleculeObject("mol_ocsr_042") };
+  const recognized = {
+    status: "recognized" as const,
+    result: {
+      sourceImageRef: "data:image/png;base64,AQID",
+      proposedSmiles: "c1ccccc1",
+      proposedMolfile: "benzene\n\n\n  0  0  0  0  0  0            999 V2000\nM  END",
+      confidence: 0.9,
+      proposedPatch: {
+        patch: documentDerivedPatch,
+        reason: "Insert the locally recognized structure after review.",
+        requiresUserApproval: true as const
+      }
+    }
+  };
+
+  function recognitionHost(options: ConstructorParameters<typeof PluginHost>[0] = {}) {
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_001"] }));
+    const host = new PluginHost({
+      now: () => timestamp,
+      createId: () => "fixed",
+      requestImage: async () => ({ status: "provided", image }),
+      recognizeStructure: async () => recognized as never,
+      applyDocumentPatch,
+      ...options
+    });
+    return { host, applyDocumentPatch };
+  }
+
+  function register(
+    host: PluginHost,
+    permissions: PluginPermission[],
+    handlers: Record<string, (context: PluginCommandContext) => unknown>
+  ) {
+    host.registerPlugin(
+      {
+        id: "org.test.recognizer",
+        name: "Recognizer",
+        version: "0.0.1",
+        apiVersion: "^0.1.6",
+        entry: "dist/plugin.js",
+        permissions,
+        contributes: { commands: Object.keys(handlers).map((id) => ({ id, title: id })) }
+      },
+      { commandHandlers: handlers as never }
+    );
+  }
+
+  async function recognize(context: PluginCommandContext) {
+    const acquired = await context.images!.requestImage({ title: "Choose image" });
+    if (acquired.status !== "provided") throw new Error("fixture image missing");
+    const result = await context.recognition!.recognizeStructure(acquired.image);
+    if (result.status !== "recognized") throw new Error("fixture recognition missing");
+    return result;
+  }
+
+  it("refuses documents.applyPatch in an invocation that recognized an image, while proposePatch still works", async () => {
+    const { host, applyDocumentPatch } = recognitionHost();
+    register(host, [...recognitionPermissions, "document.write", "document.proposePatch"], {
+      "plugin.recognizer.run": async (context) => {
+        const result = await recognize(context);
+        await expect(
+          context.documents.applyPatch!({
+            reason: "sneak the recognized structure in",
+            patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+          })
+        ).rejects.toThrow(/must go through documents\.proposePatch for review; documents\.applyPatch was refused/);
+        return context.documents.proposePatch({ ...result.result.proposedPatch!, reason: "Review me" });
+      }
+    });
+
+    await expect(host.invokeCommand("plugin.recognizer.run")).resolves.toMatchObject({ status: "pending" });
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+    expect(host.listProposedPatches("pending")).toHaveLength(1);
+  });
+
+  it("refuses a patch carrying a recognition review block, but lets another command write directly", async () => {
+    const { host, applyDocumentPatch } = recognitionHost();
+    const patch = { op: "addObject", pageId: "page_001", object: moleculeObject() } as const;
+    register(host, [...recognitionPermissions, "document.write"], {
+      "plugin.recognizer.smuggle": (context) =>
+        context.documents.applyPatch!({
+          reason: "recognized",
+          patch,
+          recognition: {
+            sourceImageRef: "data:image/png;base64,AQID",
+            proposedMolfile: "M  END",
+            confidenceTier: "high"
+          }
+        }),
+      // The rule is per invocation: the same plugin may still write deterministic input elsewhere.
+      "plugin.recognizer.fromName": (context) => context.documents.applyPatch!({ reason: "typed name", patch })
+    });
+
+    await expect(host.invokeCommand("plugin.recognizer.smuggle")).rejects.toThrow(
+      /passed a recognition proposal to documents\.applyPatch/
+    );
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+    await expect(host.invokeCommand("plugin.recognizer.fromName")).resolves.toEqual({
+      applied: true,
+      objectIds: ["mol_001"]
+    });
+  });
+
+  it("withholds the document-derived insertion from a plugin without document.read and resolves it on proposal", async () => {
+    const { host } = recognitionHost();
+    let handed: unknown;
+    let receipt: unknown;
+    register(host, [...recognitionPermissions, "document.proposePatch"], {
+      "plugin.recognizer.run": async (context) => {
+        const result = await recognize(context);
+        handed = result.result.proposedPatch;
+        receipt = await context.documents.proposePatch({ ...result.result.proposedPatch!, reason: "Review me" });
+        // Single use: the same insertion cannot be queued twice.
+        await expect(
+          context.documents.proposePatch({ ...result.result.proposedPatch!, reason: "Again" })
+        ).rejects.toThrow(/only once, during the command invocation that recognized it/);
+        // Its refusal on applyPatch is covered above; a forged ref never resolves either.
+        await expect(
+          context.documents.proposePatch({
+            reason: "forged",
+            patch: { op: "hostHeldRecognition", ref: "recognition_guess" } as never
+          })
+        ).rejects.toThrow(/only once, during the command invocation that recognized it/);
+      }
+    });
+
+    await host.invokeCommand("plugin.recognizer.run");
+    expect(JSON.stringify(handed)).not.toMatch(/page_secret|mol_ocsr_042/);
+    expect(handed).toMatchObject({ patch: { op: "hostHeldRecognition", ref: "recognition_fixed" } });
+    expect(JSON.stringify(receipt)).not.toMatch(/page_secret|mol_ocsr_042/);
+    expect(receipt).toEqual({
+      id: "proposal_1",
+      pluginId: "org.test.recognizer",
+      status: "pending",
+      createdAt: timestamp
+    });
+    const [queued] = host.listProposedPatches("pending");
+    expect(queued.proposal).toMatchObject({ reason: "Review me", patch: documentDerivedPatch });
+  });
+
+  it("hands a plugin holding document.read the insertion itself", async () => {
+    const { host } = recognitionHost();
+    let handed: unknown;
+    register(host, [...recognitionPermissions, "document.read"], {
+      "plugin.recognizer.run": async (context) => {
+        handed = (await recognize(context)).result.proposedPatch;
+      }
+    });
+    await host.invokeCommand("plugin.recognizer.run");
+    expect(handed).toMatchObject({ patch: documentDerivedPatch });
+  });
+
+  it("binds documents.applyPatch to the document the command was invoked on", async () => {
+    let activeKey = "document-a";
+    let switchDocument = false;
+    const { host, applyDocumentPatch } = recognitionHost({ getActiveDocumentKey: () => activeKey });
+    register(host, ["document.write"], {
+      "plugin.recognizer.write": async (context) => {
+        if (switchDocument) activeKey = "document-b"; // File > New/Open while the plugin runs
+        return context.documents.applyPatch!({
+          reason: "typed name",
+          patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+        });
+      }
+    });
+
+    await expect(host.invokeCommand("plugin.recognizer.write")).resolves.toMatchObject({ applied: true });
+    expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
+
+    switchDocument = true;
+    await expect(host.invokeCommand("plugin.recognizer.write")).rejects.toThrow(
+      "The document changed while the plugin was running; nothing was inserted."
+    );
+    expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases accepted and rejected proposals from the queue", () => {
+    const host = new PluginHost({ now: () => timestamp });
+    host.registerPlugin({ ...minimalManifest("org.test.release"), permissions: ["document.proposePatch"] });
+    const queueSize = () => (host as unknown as { proposedPatches: Map<string, unknown> }).proposedPatches.size;
+    const propose = () =>
+      host.proposePatch("org.test.release", {
+        reason: "recognized",
+        patch: { op: "addObject", pageId: "page_001", object: moleculeObject(`mol_${queueSize()}`) },
+        recognition: {
+          sourceImageRef: `data:image/png;base64,${"A".repeat(4096)}`,
+          proposedMolfile: "M  END",
+          confidenceTier: "high"
+        }
+      });
+
+    const accepted = propose();
+    const rejected = propose();
+    const pending = propose();
+    expect(queueSize()).toBe(3);
+
+    host.acceptProposedPatch(accepted.id, createEmptyDocument({ now: timestamp }), { now: timestamp });
+    expect(host.rejectProposedPatch(rejected.id).status).toBe("rejected");
+    expect(queueSize()).toBe(1);
+    expect(host.listProposedPatches().map((entry) => entry.id)).toEqual([pending.id]);
+
+    // Pending review survives an unregister (update/disable), so the user can still resolve it.
+    host.unregisterPlugin("org.test.release");
+    expect(queueSize()).toBe(1);
+    host.rejectProposedPatch(pending.id);
+    expect(queueSize()).toBe(0);
+  });
+
+  it("exposes dialogs whenever ui.panel is declared and rejects the call when the host has no prompt UI", async () => {
+    const host = new PluginHost();
+    let dialogs: PluginCommandContext["dialogs"];
+    host.registerPlugin(
+      {
+        id: "org.test.noprompt",
+        name: "No Prompt",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.noPrompt.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.noPrompt.run": (context) => {
+            dialogs = context.dialogs;
+            return context.dialogs!.promptText({ title: "Name", label: "Name" });
+          }
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.noPrompt.run")).rejects.toThrow(/provides no text-prompt UI/);
+    expect(dialogs).toBeDefined();
   });
 });

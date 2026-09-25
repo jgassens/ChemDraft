@@ -52,6 +52,7 @@ export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
 import {
   AppliedPatchReceiptSchema,
+  HostHeldRecognitionPatchOp,
   PluginImageMaxBytes,
   PluginImageMaxDimension,
   PluginImageRequestResultSchema,
@@ -207,6 +208,14 @@ export interface PluginPatchApplicationRequest {
 export interface PluginHostOptions {
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
+  /**
+   * Identifies the document the user is working in — stable across edits and undo, different after
+   * File > New/Open or switching to another document. Read once when a plugin command starts and again
+   * before a `documents.applyPatch` commits: a mismatch refuses the write, so a plugin still running
+   * after the user moved on can never insert into a document it was not invoked on. Absent, the host
+   * cannot tell documents apart and performs no such check.
+   */
+  getActiveDocumentKey?: () => string | undefined;
   getSelection?: () => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
   /** Storage backend factory (defaults to per-plugin in-memory maps). The desktop app
    *  supplies a disk-backed implementation; the host stays platform-free. */
@@ -264,6 +273,7 @@ export class PluginHost {
   private readonly storageByPluginId = new Map<string, PluginStorage>();
   private readonly panelClosedHandlers = new Map<string, (panelId: string) => void>();
   private readonly getActiveDocument?: PluginHostOptions["getActiveDocument"];
+  private readonly getActiveDocumentKey?: PluginHostOptions["getActiveDocumentKey"];
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
@@ -280,10 +290,7 @@ export class PluginHost {
   private readonly analysisStore: AnalysisStore;
   private nextProposalId = 1;
   private readonly subscribers = new Set<() => void>();
-  private readonly activeCommandInvocations = new Map<
-    symbol,
-    { pluginId: string; commandId: string; commandTitle: string }
-  >();
+  private readonly activeCommandInvocations = new Map<symbol, ActiveCommandInvocation>();
   private readonly textPromptInvocations = new Set<symbol>();
   private readonly openTextPrompts = new Map<
     string,
@@ -292,10 +299,14 @@ export class PluginHost {
   private readonly openImageRequests = new Map<symbol, Set<AbortController>>();
   private readonly providedImagesByInvocation = new Map<symbol, PluginProvidedImage[]>();
   private readonly openRecognitionRequests = new Map<symbol, Set<AbortController>>();
+  /** Real recognition insertions withheld from plugins without `document.read`, per invocation, keyed
+   *  by the opaque `ref` the plugin was handed instead (see `HostHeldRecognitionPatchOp`). */
+  private readonly heldRecognitionPatches = new Map<symbol, Map<string, NormalizedProposedDocumentPatch>>();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
     this.getActiveDocument = options.getActiveDocument;
+    this.getActiveDocumentKey = options.getActiveDocumentKey;
     this.getSelectionSnapshot = options.getSelection;
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
@@ -348,8 +359,10 @@ export class PluginHost {
     this.panelClosedHandlers.get(pluginId)?.(panelId);
   }
 
-  /** Removes a plugin and its registered commands. Storage scopes and proposal history
-   *  survive on purpose: they are user-facing records, not runtime wiring. */
+  /** Removes a plugin and its registered commands. Storage scopes and PENDING proposals survive on
+   *  purpose: they are user-facing records, not runtime wiring — an update (`replacePlugin`) or a
+   *  disable must not silently discard a proposal the user has not reviewed yet. Resolved proposals
+   *  are already gone: accept/reject removes them from the queue. */
   unregisterPlugin(pluginId: string): void {
     const plugin = this.requireRegisteredPlugin(pluginId);
     this.cancelOpenTextPrompt(pluginId);
@@ -473,13 +486,15 @@ export class PluginHost {
             }
           }
         : undefined;
-    const dialogs: PluginDialogsAPI | undefined =
-      this.hasPermission(pluginId, "ui.panel") && this.promptText
-        ? {
-            promptText: async (request: PluginPromptTextRequest) =>
-              this.promptTextForPlugin(pluginId, invocationToken, request)
-          }
-        : undefined;
+    // Presence tracks the permission alone, as `chemistry` below explains: the worker stub is built
+    // from manifest permissions and cannot know whether this host wired a prompt UI, so gating on
+    // `this.promptText` too made the two paths disagree. A host without one rejects the call instead.
+    const dialogs: PluginDialogsAPI | undefined = this.hasPermission(pluginId, "ui.panel")
+      ? {
+          promptText: async (request: PluginPromptTextRequest) =>
+            this.promptTextForPlugin(pluginId, invocationToken, request)
+        }
+      : undefined;
     const images: PluginImagesAPI | undefined = this.hasPermission(pluginId, "image.read")
       ? {
           requestImage: async (request: PluginImageRequest) =>
@@ -596,7 +611,12 @@ export class PluginHost {
           // document — edits would land without ever passing through propose/review.
           return document === undefined ? undefined : deepFreeze(structuredClone(document));
         },
-        proposePatch: async (proposal) => this.proposePatch(pluginId, proposal),
+        proposePatch: async (proposal) => {
+          const { snapshot, hostHeld } = this.enqueueProposal(pluginId, proposal, invocationToken);
+          // The substituted patch is the document-derived insertion this plugin was not allowed to
+          // read; its receipt must not hand it back.
+          return hostHeld ? proposalReceipt(snapshot) : snapshot;
+        },
         ...(this.hasPermission(pluginId, "document.write")
           ? {
               applyPatch: async (patch: ProposedDocumentPatch) =>
@@ -627,8 +647,34 @@ export class PluginHost {
   }
 
   proposePatch(pluginId: string, proposal: ProposedDocumentPatch): QueuedProposedPatch {
+    return this.enqueueProposal(pluginId, proposal, undefined).snapshot;
+  }
+
+  private enqueueProposal(
+    pluginId: string,
+    proposal: ProposedDocumentPatch,
+    invocationToken: symbol | undefined
+  ): { snapshot: QueuedProposedPatch; hostHeld: boolean } {
     this.requirePermission(pluginId, "document.proposePatch");
-    const parsedProposal = ProposedDocumentPatchSchema.parse(proposal);
+    let parsedProposal = ProposedDocumentPatchSchema.parse(proposal);
+    const hostHeld = isHostHeldRecognitionPatch(parsedProposal.patch);
+    if (hostHeld) {
+      const ref = (parsedProposal.patch as unknown as { ref?: unknown }).ref;
+      const held = invocationToken ? this.heldRecognitionPatches.get(invocationToken) : undefined;
+      const heldPatch = typeof ref === "string" ? held?.get(ref) : undefined;
+      if (
+        !invocationToken ||
+        this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId ||
+        !heldPatch
+      ) {
+        throw new PluginHostError(
+          `Plugin "${pluginId}" may propose a recognized structure only once, during the command invocation that recognized it.`
+        );
+      }
+      // Single use: a second proposal of the same insertion would collide on its object id.
+      held!.delete(ref as string);
+      parsedProposal = { ...parsedProposal, patch: heldPatch.patch };
+    }
     const timestamp = this.timestamp();
     const queued: QueuedProposedPatch = {
       id: `proposal_${this.nextProposalId++}`,
@@ -643,7 +689,7 @@ export class PluginHost {
     const snapshot = snapshotProposal(queued);
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
-    return snapshot;
+    return { snapshot, hostHeld };
   }
 
   private async applyPatchForPlugin(
@@ -659,8 +705,24 @@ export class PluginHost {
       );
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
+    // Recognition is proposal-only (AGENTS.md §7/§8): enforced here, not left to plugin good manners.
+    // The rule is per invocation rather than per plugin, so one plugin may still recognize images in
+    // one command and write deterministic user input in another.
+    if (invocation.recognized) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" recognized an image in this command, so its result must go through documents.proposePatch for review; documents.applyPatch was refused.`
+      );
+    }
+    if (parsedPatch.recognition !== undefined || isHostHeldRecognitionPatch(parsedPatch.patch)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" passed a recognition proposal to documents.applyPatch; recognized structures must be proposed for review with documents.proposePatch.`
+      );
+    }
     if (!this.applyDocumentPatch) {
       throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
+    }
+    if (this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
+      throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");
     }
     const plugin = this.requireRegisteredPlugin(pluginId).manifest;
     const receipt = await this.applyDocumentPatch({
@@ -688,6 +750,9 @@ export class PluginHost {
 
     queued.status = "accepted";
     queued.resolvedAt = this.timestamp();
+    // Resolved proposals leave the queue: a recognition proposal carries its whole source image as a
+    // data URI (up to ~35 MB), and nothing reads a resolved entry back.
+    this.proposedPatches.delete(proposalId);
     this.onProposedPatchesChanged?.();
     return updated;
   }
@@ -696,8 +761,10 @@ export class PluginHost {
     const queued = this.requirePendingProposal(proposalId);
     queued.status = "rejected";
     queued.resolvedAt = this.timestamp();
+    const snapshot = snapshotProposal(queued);
+    this.proposedPatches.delete(proposalId);
     this.onProposedPatchesChanged?.();
-    return snapshotProposal(queued);
+    return snapshot;
   }
 
   getStorage(pluginId: string): PluginStorage {
@@ -756,7 +823,9 @@ export class PluginHost {
             this.activeCommandInvocations.set(invocationToken, {
               pluginId: manifest.id,
               commandId: command.id,
-              commandTitle: command.title
+              commandTitle: command.title,
+              documentKey: this.getActiveDocumentKey?.(),
+              recognized: false
             });
             try {
               return await handler(this.createCommandContext(manifest.id, invocationToken));
@@ -999,7 +1068,31 @@ export class PluginHost {
         ),
         cancelledOnAbort
       ]);
-      return PluginRecognitionResultSchema.parse(result);
+      const parsed = PluginRecognitionResultSchema.parse(result);
+      if (parsed.status !== "recognized") return parsed;
+      const invocation = this.activeCommandInvocations.get(invocationToken);
+      if (invocation) invocation.recognized = true;
+      const proposedPatch = parsed.result.proposedPatch;
+      if (!proposedPatch || this.hasPermission(pluginId, "document.read")) return parsed;
+      // No `document.read`: keep the document-derived insertion host-side and hand out an opaque
+      // reference that `documents.proposePatch` resolves during this invocation.
+      // An invocation that already ended can never propose, so nothing is held for it.
+      const ref = `recognition_${this.createId()}`;
+      if (invocation) {
+        const held = this.heldRecognitionPatches.get(invocationToken) ?? new Map<string, NormalizedProposedDocumentPatch>();
+        held.set(ref, proposedPatch);
+        this.heldRecognitionPatches.set(invocationToken, held);
+      }
+      return {
+        ...parsed,
+        result: {
+          ...parsed.result,
+          proposedPatch: {
+            ...proposedPatch,
+            patch: { op: HostHeldRecognitionPatchOp, ref } as unknown as NormalizedProposedDocumentPatch["patch"]
+          }
+        }
+      };
     } finally {
       requests.delete(abortController);
       if (requests.size === 0) this.openRecognitionRequests.delete(invocationToken);
@@ -1015,6 +1108,7 @@ export class PluginHost {
     }
     this.openImageRequests.delete(invocationToken);
     this.providedImagesByInvocation.delete(invocationToken);
+    this.heldRecognitionPatches.delete(invocationToken);
     for (const controller of this.openRecognitionRequests.get(invocationToken) ?? []) {
       controller.abort();
     }
@@ -1036,6 +1130,7 @@ export class PluginHost {
       }
       this.openImageRequests.delete(invocationToken);
       this.providedImagesByInvocation.delete(invocationToken);
+      this.heldRecognitionPatches.delete(invocationToken);
       for (const controller of this.openRecognitionRequests.get(invocationToken) ?? []) {
         controller.abort();
       }
@@ -1069,6 +1164,25 @@ export class PluginHost {
     const value = this.now();
     return typeof value === "string" ? value : value.toISOString();
   }
+}
+
+interface ActiveCommandInvocation {
+  pluginId: string;
+  commandId: string;
+  commandTitle: string;
+  /** `getActiveDocumentKey()` when the command started; `applyPatch` must still see the same key. */
+  documentKey: string | undefined;
+  /** Set once recognition returned a structure in this invocation; `applyPatch` is then refused. */
+  recognized: boolean;
+}
+
+function isHostHeldRecognitionPatch(patch: NormalizedProposedDocumentPatch["patch"]): boolean {
+  return (patch as { op: string }).op === HostHeldRecognitionPatchOp;
+}
+
+function proposalReceipt(queued: QueuedProposedPatch): ProposedPatchReceipt {
+  const { id, pluginId, status, createdAt, resolvedAt } = queued;
+  return { id, pluginId, status, createdAt, ...(resolvedAt === undefined ? {} : { resolvedAt }) };
 }
 
 function validateProvidedImage(

@@ -1,6 +1,14 @@
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
-import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
-import { CommandRegistry } from "@chemdraft/plugin-host";
+import {
+  PluginApiVersion,
+  parsePluginManifest,
+  runPluginWorker,
+  type PluginCommandHandler,
+  type PluginSelectionSnapshot,
+  type PluginWorkerEndpoint,
+  type PluginWorkerHandle
+} from "@chemdraft/plugin-api";
+import { CommandRegistry, PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
@@ -14,6 +22,7 @@ import {
 import { createPluginRuntime, type DesktopPluginRuntimeOptions } from "./createPluginRuntime";
 import { ImageSourceRegistry, type ImageSourceProvider } from "./ImageSourceProvider";
 import { buildPluginMenuItems, PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./pluginMenuModel";
+import { PluginWorkerBridge } from "./PluginWorkerBridge";
 import {
   applyEnabledPlugins,
   createBundledPluginDescriptors,
@@ -242,7 +251,15 @@ describe("desktop plugin runtime", () => {
     const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
     await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
     await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
-    await expect(invocation).resolves.toMatchObject({ status: "recognized" });
+    const outcome = await invocation;
+    expect(outcome).toMatchObject({ status: "recognized" });
+    // The fixture, like the official MolScribe plugin, holds no `document.read`: it is handed an opaque
+    // reference, never the page id, object id, or page-centre placement laid out against the document.
+    expect(outcome).toMatchObject({
+      result: { proposedPatch: { patch: { op: "hostHeldRecognition", ref: expect.any(String) } } }
+    });
+    expect(JSON.stringify(outcome)).not.toContain(document.pages[0]!.id);
+    expect(JSON.stringify(outcome)).not.toContain("mol_ocsr_");
 
     expect(engine.recognizeImage).toHaveBeenCalledWith({ mediaType: "image/png", bytes: new Uint8Array([1, 2, 3]) });
     expect(validator).toHaveBeenCalledWith({ format: "molfile-v2000", value: carbonMonoxideMolfile });
@@ -384,4 +401,181 @@ describe("desktop plugin runtime", () => {
     // can arrive only through the installer.
     expect(items.some((item) => /nmr/i.test(item.command.commandId) || /nmr/i.test(item.command.label))).toBe(false);
   });
+
+  it("refuses a direct write when the document changed while the plugin command ran", async () => {
+    const documentA = { ...createPhase4Document("A.chemdraft"), id: "doc_a" };
+    const documentB = { ...createPhase4Document("B.chemdraft"), id: "doc_b" };
+    let active = documentA;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_001"] }));
+    const runtime = makeRuntime({ getActiveDocument: () => active, applyDocumentPatch });
+    runtime.registerPlugin(
+      {
+        id: "org.test.writer",
+        name: "Writer",
+        version: "0.0.1",
+        apiVersion: "^0.1.4",
+        entry: "dist/plugin.js",
+        permissions: ["document.write"],
+        contributes: { commands: [{ id: "plugin.writer.insert", title: "Insert" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.writer.insert": async (context) => {
+            await gate;
+            return context.documents.applyPatch!({
+              reason: "typed name",
+              patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } as never }
+            });
+          }
+        }
+      }
+    );
+
+    // An edit keeps the document's identity: the write still lands.
+    const edited = runtime.host.invokeCommand("plugin.writer.insert");
+    active = { ...documentA, title: "A (edited).chemdraft" };
+    release();
+    await expect(edited).resolves.toEqual({ applied: true, objectIds: ["mol_001"] });
+
+    // File > Open of another document mid-command: refused, nothing reaches the document path.
+    active = documentA;
+    const switched = runtime.host.invokeCommand("plugin.writer.insert");
+    active = documentB;
+    await expect(switched).rejects.toThrow("The document changed while the plugin was running; nothing was inserted.");
+    expect(applyDocumentPatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers an embedder-supplied document key, which can tell two File > New documents apart", async () => {
+    const document = createPhase4Document();
+    let session = 1;
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: [] }));
+    const runtime = makeRuntime({
+      getActiveDocument: () => document, // identical id and creation stamp for every new document
+      getActiveDocumentKey: () => `session-${session}`,
+      applyDocumentPatch
+    });
+    runtime.registerPlugin(
+      {
+        id: "org.test.writer-keyed",
+        name: "Keyed Writer",
+        version: "0.0.1",
+        apiVersion: "^0.1.4",
+        entry: "dist/plugin.js",
+        permissions: ["document.write"],
+        contributes: { commands: [{ id: "plugin.writerKeyed.insert", title: "Insert" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.writerKeyed.insert": async (context) => {
+            session += 1; // File > New while the plugin runs
+            return context.documents.applyPatch!({
+              reason: "typed name",
+              patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } as never }
+            });
+          }
+        }
+      }
+    );
+
+    await expect(runtime.host.invokeCommand("plugin.writerKeyed.insert")).rejects.toThrow(/document changed/);
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it("gives a worker-routed plugin the same dialogs presence as the host, with a clear rejection when no prompt UI exists", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.worker-noprompt",
+      name: "Worker No Prompt",
+      version: "0",
+      apiVersion: "^0.1.3",
+      entry: "x",
+      permissions: ["ui.panel"],
+      contributes: { commands: [{ id: "plugin.workerNoPrompt.run", title: "Run" }] }
+    });
+    const { mainSide, workerSide } = linkedEndpoints();
+    runPluginWorker(
+      {
+        manifest,
+        commandHandlers: {
+          "plugin.workerNoPrompt.run": async (context) => {
+            if (!context.dialogs) return "no dialogs";
+            try {
+              await context.dialogs.promptText({ title: "Name", label: "Name" });
+              return "prompted";
+            } catch (error) {
+              return (error as Error).message;
+            }
+          }
+        }
+      },
+      workerSide as unknown as PluginWorkerEndpoint
+    );
+    const bridge = new PluginWorkerBridge({
+      pluginId: manifest.id,
+      createWorker: () => mainSide as unknown as PluginWorkerHandle,
+      hostApiVersion: PluginApiVersion
+    });
+    // An embedder with no prompt UI at all.
+    const host = new PluginHost();
+    const commandHandlers: Record<string, PluginCommandHandler> = {
+      "plugin.workerNoPrompt.run": (context) => bridge.invokeCommand("plugin.workerNoPrompt.run", context)
+    };
+    host.registerPlugin(manifest, { commandHandlers });
+
+    // Before: the worker saw `dialogs` and the bridge answered "not granted". Now both sides agree the
+    // capability exists, and the host's own reason comes back across the boundary.
+    await expect(host.invokeCommand("plugin.workerNoPrompt.run")).resolves.toMatch(/provides no text-prompt UI/);
+    bridge.terminate();
+  });
 });
+
+type MessageListener = (event: { data: unknown }) => void;
+
+/** Minimal structured-cloning message port pair standing in for a real Worker boundary (see the fuller
+ *  harness in pluginWorkerBridge.test.ts). */
+class FakeEndpoint {
+  peer!: FakeEndpoint;
+  terminated = false;
+  private readonly listeners = new Set<MessageListener>();
+  private buffer: unknown[] = [];
+
+  postMessage(message: unknown): void {
+    if (this.terminated) return;
+    const data = structuredClone(message);
+    queueMicrotask(() => this.peer.receive(data));
+  }
+
+  private receive(data: unknown): void {
+    if (this.terminated) return;
+    if (this.listeners.size === 0) {
+      this.buffer.push(data);
+      return;
+    }
+    for (const listener of this.listeners) listener({ data });
+  }
+
+  addEventListener(type: string, listener: unknown): void {
+    if (type !== "message") return;
+    this.listeners.add(listener as MessageListener);
+    const pending = this.buffer;
+    this.buffer = [];
+    for (const data of pending) (listener as MessageListener)({ data });
+  }
+
+  removeEventListener(type: string, listener: unknown): void {
+    if (type === "message") this.listeners.delete(listener as MessageListener);
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+}
+
+function linkedEndpoints(): { mainSide: FakeEndpoint; workerSide: FakeEndpoint } {
+  const mainSide = new FakeEndpoint();
+  const workerSide = new FakeEndpoint();
+  mainSide.peer = workerSide;
+  workerSide.peer = mainSide;
+  return { mainSide, workerSide };
+}

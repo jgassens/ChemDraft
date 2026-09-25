@@ -58,6 +58,14 @@ export type DesktopStructureFromSmilesProvider = (
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
   getActiveDocument: () => ChemDraftDocument | undefined;
+  /**
+   * Identifies the working document so a plugin's `documents.applyPatch` lands only in the document its
+   * command was invoked on (see `PluginHostOptions.getActiveDocumentKey`). It must stay the same across
+   * edits and undo and change on File > New/Open or a switch to another document. The embedding window
+   * knows that best — e.g. a counter it bumps whenever it replaces the document history rather than
+   * pushing onto it. Without one, the runtime falls back to {@link documentIdentityKey}.
+   */
+  getActiveDocumentKey?: () => string | undefined;
   /** Builds an immutable selection snapshot from current desktop state. */
   getSelection?: () => PluginSelectionSnapshot | undefined;
   /**
@@ -200,6 +208,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const host = new PluginHost({
     commandRegistry: options.commandRegistry,
     getActiveDocument: options.getActiveDocument,
+    getActiveDocumentKey:
+      options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
     getSelection: options.getSelection,
     createStorage: options.createStorage,
     onProposedPatchesChanged: options.onProposedPatchesChanged,
@@ -291,6 +301,16 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   };
   return runtime;
+}
+
+/**
+ * Fallback document identity: the document's own id and creation time, both of which edits and undo
+ * leave alone. It tells an opened file from the document it replaced, but NOT two documents created by
+ * File > New in one session — those share `doc_001` and a fixed creation stamp — which is why an
+ * embedder that can tell documents apart should pass `getActiveDocumentKey` instead.
+ */
+export function documentIdentityKey(document: ChemDraftDocument | undefined): string | undefined {
+  return document === undefined ? undefined : `${document.id}\u0000${document.createdAt}`;
 }
 
 function pluginToolsetToDefinition(contribution: PluginToolsetContribution): DesktopToolsetDefinition {
