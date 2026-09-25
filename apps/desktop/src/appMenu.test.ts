@@ -62,14 +62,29 @@ describe("app menu model", () => {
     expect([...webIds].sort()).toEqual([...nativeIds].sort());
   });
 
-  it("exposes the OS-predefined edit commands as web commands but excludes them from the native set", () => {
+  it("exposes the OS-predefined clipboard commands as web commands but excludes them from the native set", () => {
     const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
     const predefined = commands.filter((command) => command.nativePredefined).map((command) => command.commandId);
-    expect(predefined).toEqual(["edit.undo", "edit.redo", "clipboard.cut", "clipboard.copy", "clipboard.paste"]);
+    expect(predefined).toEqual(["clipboard.cut", "clipboard.copy", "clipboard.paste"]);
 
     const routed = nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT));
-    expect(routed).not.toContain("edit.undo");
     expect(routed).not.toContain("clipboard.paste");
+  });
+
+  // Tester report: no working Undo. AppKit's predefined Undo only reaches the webview's text undo
+  // manager, so Edit ▸ Undo/Redo must be routed commands that reach the document history.
+  it("routes Edit ▸ Undo ⌘Z and Redo ⇧⌘Z to the document, first in the Edit menu", () => {
+    const edit = buildAppMenuModel(EMPTY_CONTEXT).find((section) => section.id === "edit");
+    const [undo, redo, divider] = edit?.items ?? [];
+    expect(undo).toMatchObject({ kind: "command", commandId: "edit.undo", label: "Undo", shortcut: "⌘Z" });
+    expect(redo).toMatchObject({ kind: "command", commandId: "edit.redo", label: "Redo", shortcut: "⇧⌘Z" });
+    expect(divider?.kind).toBe("separator");
+    expect((undo as AppMenuCommand).nativePredefined).toBeFalsy();
+    expect((redo as AppMenuCommand).nativePredefined).toBeFalsy();
+
+    const routed = nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT));
+    expect(routed).toContain("edit.undo");
+    expect(routed).toContain("edit.redo");
   });
 
   it("reflects toggle state on checkable items", () => {

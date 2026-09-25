@@ -652,6 +652,13 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
+import {
+  editHistoryDirection,
+  isForcedDocumentHistoryCommandId,
+  performTextFieldHistory,
+  resolveEditHistoryRoute,
+  stripForcedDocumentHistorySuffix
+} from "./editHistoryRouting";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
 import { PluginPromptTextDialog, isPluginPromptKeyboardEvent } from "./plugins/PluginPromptTextDialog";
 import { PluginImageRequestDialog, isPluginImageKeyboardEvent } from "./plugins/PluginImageRequestDialog";
@@ -1167,7 +1174,20 @@ type AtomLabelEditState = {
   initialElement: string;
   initialLiteral: boolean;
   draft: string;
+  /**
+   * The selection in force before the edit selected the atom. A blur-ended edit restores it (minus
+   * the edited molecule), so the atom is not left behind as the target of single-key hotkeys.
+   */
+  selectionBefore: {
+    objectIds: readonly string[];
+    nativeParts: readonly NativeMoleculeSelectionPart[];
+  };
 };
+/**
+ * How an atom-label edit ended. "commit" is a deliberate Enter or Tab; "blur" is focus leaving the
+ * editor, which can happen mid-word (a click elsewhere, another window taking focus).
+ */
+type AtomLabelFinishReason = "commit" | "blur";
 type AtomLabelEditOptions = {
   clearDraft?: boolean;
 };
@@ -1859,6 +1879,13 @@ export function MainWindow({
   const [activeArtPaintTarget, setActiveArtPaintTarget] = useState<GraphicStylePaintTarget>("fill");
   const [artPaintTargetCueActive, setArtPaintTargetCueActive] = useState(false);
   const [activeAtomLabelEdit, setActiveAtomLabelEdit] = useState<AtomLabelEditState | undefined>();
+  // Render-synced, so a blur fired while the editor unmounts sees the edit as already closed.
+  const activeAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
+  activeAtomLabelEditRef.current = activeAtomLabelEdit;
+  // The edit last closed deliberately (Enter, Tab, Escape), whose atom stays selected. Every other
+  // close restores the pre-edit selection; see the atom-label close effect.
+  const atomLabelEditKeepsSelectionRef = useRef<AtomLabelEditState | undefined>(undefined);
+  const previousAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
@@ -5248,6 +5275,12 @@ export function MainWindow({
       return false;
     }
 
+    // Moving straight from one label edit to another keeps the first edit's record: the selection
+    // on screen now is that edit's own atom, not what the user had selected.
+    const selectionBefore = activeAtomLabelEditRef.current?.selectionBefore ?? {
+      objectIds: [...currentDocument.selection.objectIds],
+      nativeParts: [...selectedNativeMoleculePartsRef.current]
+    };
     replacePresentDocument((current) => selectDocumentObject(current, target.objectId));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -5256,7 +5289,8 @@ export function MainWindow({
       atomId: target.atomId,
       initialElement: atom.element,
       initialLiteral: atom.labelLiteral === true,
-      draft: options.clearDraft ? "" : atom.element
+      draft: options.clearDraft ? "" : atom.element,
+      selectionBefore
     });
     setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "atom", atomId: target.atomId });
     setHoveredNativeAtom(undefined);
@@ -5289,6 +5323,13 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const cancelAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
+    // Mirrors finishAtomLabelEdit's guard: a late cancel (the editor unmounting after another path
+    // already closed or replaced the edit) must not revert an atom that is no longer being edited,
+    // nor leave a stale value in atomLabelEditKeepsSelectionRef for a later edit's close to trip over.
+    const active = activeAtomLabelEditRef.current;
+    if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
+      return;
+    }
     replacePresentDocument((current) =>
       applyNativeAtomElementTarget(current, {
         objectId: state.objectId,
@@ -5297,8 +5338,68 @@ export function MainWindow({
         distanceToPointer: 0
       }, state.initialElement, { literal: state.initialLiteral })
     );
+    atomLabelEditKeepsSelectionRef.current = state;
     setActiveAtomLabelEdit(undefined);
     setStatus("Atom label unchanged");
+  }, [replacePresentDocument]);
+
+  const finishAtomLabelEdit = useCallback((state: AtomLabelEditState, reason: AtomLabelFinishReason) => {
+    // The label itself is already in the document: every keystroke wrote it. Finishing only closes
+    // the editor. A late blur (the input unmounting after Enter, or after another path closed the
+    // edit) must not touch a selection that no longer belongs to this edit.
+    const active = activeAtomLabelEditRef.current;
+    if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
+      return;
+    }
+    if (reason === "commit") {
+      atomLabelEditKeepsSelectionRef.current = state;
+    }
+    // Any other close restores the pre-edit selection: see the atom-label close effect.
+    setActiveAtomLabelEdit(undefined);
+  }, []);
+
+  /**
+   * Put the selection back the way it was before `state`'s edit selected its atom. The atom was
+   * selected only so the editor could open on it; left selected after an edit that ended mid-word,
+   * the rest of the word lands on it as hotkeys ("O" relabels it, Backspace strips it). Anything
+   * that has since replaced the edit's selection (a click on another object, Select All) wins, and
+   * anything on the edited molecule is dropped from the restore, since that is exactly what stray
+   * keystrokes would hit.
+   */
+  const restoreSelectionAfterAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
+    const parts = selectedNativeMoleculePartsRef.current;
+    const stillEditSelection = parts.length === 1 &&
+      parts[0]?.kind === "atom" &&
+      parts[0].objectId === state.objectId &&
+      parts[0].atomId === state.atomId;
+    if (!stillEditSelection) {
+      return;
+    }
+    // A path that closes the edit without clearing `parts` (undo via restoreDocumentHistory, which
+    // resets activeAtomLabelEdit but not selectedNativeMoleculePart) can change which OBJECTS are
+    // selected while leaving the edit's atom-part selection looking untouched. The part-only check
+    // above would then overwrite that newer object selection with the pre-edit one, so it is skipped
+    // unless the current object selection is still exactly the edit's own single-object selection.
+    const currentObjectIds = documentRef.current.selection.objectIds;
+    const stillEditObjectSelection = currentObjectIds.length === 1 && currentObjectIds[0] === state.objectId;
+    if (!stillEditObjectSelection) {
+      return;
+    }
+    replacePresentDocument((current) => {
+      const page = current.pages[0];
+      if (!page) {
+        return current;
+      }
+      const existingIds = new Set(page.objects.map((object) => object.id));
+      const editSelectedIds = new Set(current.selection.objectIds);
+      const restoredIds = state.selectionBefore.objectIds.filter((objectId) =>
+        existingIds.has(objectId) && !editSelectedIds.has(objectId)
+      );
+      return selectDocumentObjects(current, page.id, restoredIds);
+    });
+    setSelectedNativeMoleculeParts(
+      state.selectionBefore.nativeParts.filter((part) => part.objectId !== state.objectId)
+    );
   }, [replacePresentDocument]);
 
   /**
@@ -5353,10 +5454,28 @@ export function MainWindow({
     textEditorFocusTimeoutsRef.current = [];
   }, []);
 
-  const focusTextObjectEditor = useCallback((objectId: string) => {
+  /**
+   * Put keyboard focus in an inline canvas editor and keep it there while the native window
+   * settles: raise this window and its webview, then retry, because a palette or popover window
+   * can still hold key status for a frame or two after the editor mounts. Shared by the text-object
+   * and atom-label editors; only one inline editor is active at a time, so they share the timers.
+   */
+  const scheduleInlineEditorFocus = useCallback((focusEditor: () => void) => {
     clearScheduledTextEditorFocus();
 
-    const focusEditor = () => {
+    const focusNativeSurfaceAndEditor = () => {
+      void focusCurrentWindowAndWebview().finally(focusEditor);
+      focusEditor();
+    };
+
+    focusNativeSurfaceAndEditor();
+    textEditorFocusTimeoutsRef.current = [0, 16, 80].map((delay) =>
+      window.setTimeout(focusNativeSurfaceAndEditor, delay)
+    );
+  }, [clearScheduledTextEditorFocus]);
+
+  const focusTextObjectEditor = useCallback((objectId: string) => {
+    scheduleInlineEditorFocus(() => {
       const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
         `[data-object-id="${objectId}"] .text-object-editor`
       );
@@ -5369,18 +5488,25 @@ export function MainWindow({
       if (editor.value === "Text") {
         editor.select();
       }
-    };
+    });
+  }, [scheduleInlineEditorFocus]);
 
-    const focusNativeSurfaceAndEditor = () => {
-      void focusCurrentWindowAndWebview().finally(focusEditor);
-      focusEditor();
-    };
+  const focusAtomLabelEditor = useCallback((objectId: string, atomId: string) => {
+    scheduleInlineEditorFocus(() => {
+      const editor = pageRef.current?.querySelector<HTMLInputElement>(
+        `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+      );
+      // Already focused: leave it, so a retry never moves the caret the user is typing at.
+      if (!editor || editor.ownerDocument.activeElement === editor) {
+        return;
+      }
 
-    focusNativeSurfaceAndEditor();
-    textEditorFocusTimeoutsRef.current = [0, 16, 80].map((delay) =>
-      window.setTimeout(focusNativeSurfaceAndEditor, delay)
-    );
-  }, [clearScheduledTextEditorFocus]);
+      window.focus();
+      editor.focus({ preventScroll: true });
+      const end = editor.value.length;
+      editor.setSelectionRange(end, end);
+    });
+  }, [scheduleInlineEditorFocus]);
 
   const recordTextSelection = useCallback((objectId: string, range: NativeTextSelectionRange) => {
     const nextSelection = { objectId, range };
@@ -8725,6 +8851,39 @@ export function MainWindow({
       return;
     }
 
+    // Edit ▸ Undo/Redo stay enabled in the native menu, so a focused text field's ⌘Z and an empty
+    // history both arrive here. Neither may reach the registry: the field wants native text undo,
+    // and a disabled edit.undo would throw instead of saying "Nothing to undo".
+    //
+    // A secondary window forwards here (see `installSecondaryWindowEditHistory`) only after finding
+    // no text field focused THERE, wrapping the commandId so we know to skip our own activeElement
+    // check below: this window is not key when that happens, so `globalThis.document.activeElement`
+    // can still be a hidden field of ours that never blurred, and checking it would undo that field's
+    // text instead of the drawing the user actually asked to undo.
+    const forcedDocumentHistory = isForcedDocumentHistoryCommandId(commandId);
+    if (forcedDocumentHistory) {
+      // From here on, dispatch under the real id: nothing downstream (the command registry included)
+      // knows about the forwarding wrapper.
+      commandId = stripForcedDocumentHistorySuffix(commandId);
+    }
+    const historyDirection = editHistoryDirection(commandId);
+    if (historyDirection) {
+      const history = documentHistoryRef.current;
+      const route = resolveEditHistoryRoute(historyDirection, {
+        activeElement: globalThis.document?.activeElement,
+        canUndo: history.past.length > 0,
+        canRedo: history.future.length > 0
+      }, { forceDocument: forcedDocumentHistory });
+      if (route === "text") {
+        performTextFieldHistory(historyDirection, globalThis.document);
+        return;
+      }
+      if (route === "nothing") {
+        restoreDocumentHistory(historyDirection);
+        return;
+      }
+    }
+
     // Route through the host so plugin commands run with their permission context; core commands
     // (no pluginId on the definition) dispatch straight through the shared registry as before.
     // For plugin-owned commands, ADR-0010 applies: a command may fail by throwing OR by resolving
@@ -8783,7 +8942,8 @@ export function MainWindow({
     pluginCommandExists,
     pluginRuntime.diagnostics,
     pluginRuntime.plugins,
-    publishAnalysisWindow
+    publishAnalysisWindow,
+    restoreDocumentHistory
   ]);
 
   invokeCommandRef.current = invoke;
@@ -8895,6 +9055,39 @@ export function MainWindow({
 
     focusTextObjectEditor(activeTextEditObjectId);
   }, [activeTextEditObjectId, document, focusTextObjectEditor]);
+
+  // Harden focus once per atom-label edit (not per keystroke: the draft changes on every key).
+  const atomLabelEditObjectId = activeAtomLabelEdit?.objectId;
+  const atomLabelEditAtomId = activeAtomLabelEdit?.atomId;
+  useEffect(() => {
+    if (atomLabelEditObjectId === undefined || atomLabelEditAtomId === undefined) {
+      return;
+    }
+
+    focusAtomLabelEditor(atomLabelEditObjectId, atomLabelEditAtomId);
+    // The retries must not outlive the edit: after Enter, Tab, or Escape they would raise this
+    // window again over whatever the user moved on to.
+    return clearScheduledTextEditorFocus;
+  }, [atomLabelEditAtomId, atomLabelEditObjectId, clearScheduledTextEditorFocus, focusAtomLabelEditor]);
+
+  // The one place an atom-label edit's close is handled. Dozens of paths end an edit by clearing
+  // `activeAtomLabelEdit` directly — a tool picked in the palette, a palette command, a click on the
+  // canvas, a document change — and each would otherwise leave the edited atom selected for the next
+  // keystroke to strip. Watching the transition catches all of them; a layout effect, so the
+  // selection is restored before the browser can deliver another key.
+  useLayoutEffect(() => {
+    const previous = previousAtomLabelEditRef.current;
+    previousAtomLabelEditRef.current = activeAtomLabelEdit;
+    if (!previous || activeAtomLabelEdit) {
+      return;
+    }
+    const kept = atomLabelEditKeepsSelectionRef.current;
+    atomLabelEditKeepsSelectionRef.current = undefined;
+    if (kept && kept.objectId === previous.objectId && kept.atomId === previous.atomId) {
+      return;
+    }
+    restoreSelectionAfterAtomLabelEdit(previous);
+  }, [activeAtomLabelEdit, restoreSelectionAfterAtomLabelEdit]);
 
   useEffect(() => {
     const objectIds = [...document.selection.objectIds];
@@ -16699,7 +16892,7 @@ export function MainWindow({
                       onTextResizeStart={startTextResize}
                       onAtomLabelChange={updateAtomLabelDraft}
                       onAtomLabelCancel={cancelAtomLabelEdit}
-                      onAtomLabelFinish={() => setActiveAtomLabelEdit(undefined)}
+                      onAtomLabelFinish={finishAtomLabelEdit}
                     />
                   );
                 })}
@@ -22687,7 +22880,7 @@ function DocumentObjectView({
   onTextResizeStart(objectId: string, edge: TextResizeEdge, event: PointerEvent<HTMLButtonElement>): void;
   onAtomLabelChange(state: AtomLabelEditState, text: string): void;
   onAtomLabelCancel(state: AtomLabelEditState): void;
-  onAtomLabelFinish(): void;
+  onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -22838,9 +23031,11 @@ function DocumentObjectView({
   };
   const handleAtomLabelKeyDown = (state: AtomLabelEditState, event: ReactKeyboardEvent<HTMLInputElement>) => {
     event.stopPropagation();
-    if (event.key === "Enter") {
+    // Tab finishes like Enter. Left to the browser it would move focus to the next control,
+    // ending the edit by blur and sending the rest of the word to the canvas hotkeys.
+    if (event.key === "Enter" || event.key === "Tab") {
       event.preventDefault();
-      onAtomLabelFinish();
+      onAtomLabelFinish(state, "commit");
     }
     if (event.key === "Escape") {
       event.preventDefault();
@@ -23330,7 +23525,16 @@ function DocumentObjectView({
                     fontStyle: labelStyle.atomLabelFontStyle
                   }}
                   value={editingAtomLabel.draft}
-                  onBlur={onAtomLabelFinish}
+                  onBlur={(event) => {
+                    // A blur while the document itself has lost focus is the window being
+                    // deactivated (a native palette or popover became key), not the user leaving
+                    // the editor. Keep the edit open: the browser hands focus back to this input
+                    // when the window is reactivated, so the rest of the word still lands here.
+                    if (!event.currentTarget.ownerDocument.hasFocus()) {
+                      return;
+                    }
+                    onAtomLabelFinish(editingAtomLabel, "blur");
+                  }}
                   onChange={(event) => onAtomLabelChange(editingAtomLabel, event.currentTarget.value)}
                   onKeyDown={(event) => handleAtomLabelKeyDown(editingAtomLabel, event)}
                   onPointerDown={(event) => event.stopPropagation()}
