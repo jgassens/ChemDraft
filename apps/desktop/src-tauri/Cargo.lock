@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "chemdraft"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "image",
  "objc2",
