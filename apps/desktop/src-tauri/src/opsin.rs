@@ -22,6 +22,8 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use tauri::{Manager, Runtime};
 
+use crate::WithoutConsoleWindow;
+
 /// How long OPSIN gets before we give up on it. A name is parsed in milliseconds once the JVM is up,
 /// and the whole invocation measures ~0.4 s, so this is a hang guard rather than a budget.
 const OPSIN_TIMEOUT_SECS: u64 = 30;
@@ -277,6 +279,7 @@ pub fn convert_with(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .without_console_window()
         .spawn()
         .map_err(|error| {
             OpsinError::engine_failure(format!("Could not start the name parser: {error}"))

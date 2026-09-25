@@ -22,6 +22,15 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-http = "2.5.9"
 
+# Off macOS, a second launch (e.g. double-clicking a document while ChemDraft runs) must hand its
+# arguments to the running instance; macOS gets this from LaunchServices via RunEvent::Opened.
+[target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+# Already in the graph through tauri/tao; used directly for window ownership (and the clipboard).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPasteboard", "NSWindow", "NSEvent"] }

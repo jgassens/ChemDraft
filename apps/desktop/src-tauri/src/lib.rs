@@ -18,10 +18,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(target_os = "macos")]
-use tauri::menu::AboutMetadata;
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu},
+    menu::{
+        AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
+    },
     webview::PageLoadEvent,
     Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -39,6 +39,25 @@ use objc2_foundation::NSString;
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
+/// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
+/// A no-op elsewhere.
+pub(crate) trait WithoutConsoleWindow {
+    fn without_console_window(&mut self) -> &mut Self;
+}
+
+impl WithoutConsoleWindow for Command {
+    fn without_console_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
+}
 const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
 const SPIN3D_DEBUGGER_WINDOW_ROUTE: &str = "/?window=spin3d-debugger";
 const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
@@ -52,11 +71,6 @@ const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_LEAVE_EVENT: &str = "chemdraft://palette-pointer-leave";
-// Reached only from RunEvent::Opened (macOS/iOS/Android) until Windows/Linux file-open lands.
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
-    allow(dead_code)
-)]
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
@@ -328,7 +342,26 @@ const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Registered first, as the plugin requires. A second launch forwards its argv here (a document
+    // double-clicked while ChemDraft runs) instead of starting a rival process on the same
+    // app_data_dir. macOS routes such opens to the running app itself (RunEvent::Opened).
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        let cwd = PathBuf::from(cwd);
+        if let Err(error) = handle_opened_document_args(app, argv.into_iter().skip(1), &cwd) {
+            eprintln!("Could not open ChemDraft document from a second launch: {error}");
+        }
+        if let Err(error) = ensure_main_window_visible(app) {
+            eprintln!("Could not show ChemDraft main window for a second launch: {error}");
+        }
+        if let Err(error) = focus_main_document_window_impl(app) {
+            eprintln!("Could not focus ChemDraft document window for a second launch: {error}");
+        }
+    }));
+
+    let builder = builder
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ToolsetWindowDirectory::default())
@@ -382,11 +415,23 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
+                    // macOS: closing the document window hides it and the app lives on in the
+                    // Dock (RunEvent::Reopen brings it back).
+                    #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if let Err(error) = window.hide() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
                         }
+                    }
+                    // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
+                    // prewarmed popovers would keep a windowless process alive: closing the
+                    // document window quits. Raise the quit flag first so the palette teardown that
+                    // follows isn't recorded as user closes.
+                    #[cfg(not(target_os = "macos"))]
+                    WindowEvent::CloseRequested { .. } => {
+                        APP_QUITTING.store(true, Ordering::SeqCst);
+                        window.app_handle().exit(0);
                     }
                     WindowEvent::Destroyed => {
                         // The close button only hides the main window, so its actual destruction
@@ -465,6 +510,18 @@ pub fn run() {
 
             if let Err(error) = focus_main_document_window_impl(app) {
                 eprintln!("Could not focus ChemDraft document window: {error}");
+            }
+
+            // Off macOS a document opened from the shell arrives as a launch argument. Queued as
+            // the pending document, which the window drains once it mounts.
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            if let Ok(cwd) = std::env::current_dir() {
+                let args = std::env::args_os()
+                    .skip(1)
+                    .map(|arg| arg.to_string_lossy().into_owned());
+                if let Err(error) = handle_opened_document_args(app, args, &cwd) {
+                    eprintln!("Could not open ChemDraft document from launch arguments: {error}");
+                }
             }
 
             // Palettes never become key, so hover must be fed to their webviews (see
@@ -888,7 +945,7 @@ fn set_toolbars_menu(
         .run_on_main_thread(move || {
             let plugin_items = current_plugin_menu_items(&app);
             match create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
-                .and_then(|menu| app.set_menu(menu).map(|_| ()))
+                .and_then(|menu| install_app_menu(&app, menu))
             {
                 Ok(()) => {}
                 Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
@@ -1285,6 +1342,10 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
             }
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1669,6 +1730,7 @@ fn ensure_spin3d_debugger_window<R: Runtime>(
     .center()
     .build()
     .map_err(|error| error.to_string())
+    .and_then(without_app_menu_bar)
 }
 
 fn spin3d_debugger_window_label() -> &'static str {
@@ -1714,6 +1776,17 @@ fn ensure_preferences_window<R: Runtime>(
     .center()
     .build()
     .map_err(|error| error.to_string())
+    .and_then(without_app_menu_bar)
+}
+
+/// Off macOS, Tauri attaches the app menu bar to every window it builds. Only the document window
+/// should carry one; auxiliary windows drop it. (macOS has one global menu bar, so a no-op there.)
+fn without_app_menu_bar<R: Runtime>(
+    window: tauri::WebviewWindow<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    #[cfg(not(target_os = "macos"))]
+    window.remove_menu().map_err(|error| error.to_string())?;
+    Ok(window)
 }
 
 #[tauri::command]
@@ -1898,6 +1971,7 @@ fn start_engine3d_sidecar_session_from_path(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .without_console_window()
         .spawn()
         .map_err(|error| format!("Could not start interactive 3D sidecar: {error}"))?;
 
@@ -2224,6 +2298,49 @@ fn handle_opened_document_urls<R: Runtime>(
     let Some(payload) = opened_payload else {
         return Ok(());
     };
+    deliver_opened_document(app, payload)
+}
+
+/// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
+/// second launch). Flags are skipped; the first existing `.chemdraft`/`.cdxml` file wins,
+/// mirroring the first-file-URL rule of the macOS path.
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+fn handle_opened_document_args<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    args: impl IntoIterator<Item = String>,
+    cwd: &Path,
+) -> Result<(), String> {
+    let path = args
+        .into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .map(|arg| cwd.join(arg))
+        .find(|path| is_openable_document_path(path));
+    let Some(path) = path else {
+        return Ok(());
+    };
+    deliver_opened_document(app, open_document_payload_from_path(&path)?)
+}
+
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios", target_os = "android"),
+    allow(dead_code)
+)]
+fn is_openable_document_path(path: &Path) -> bool {
+    let extension_ok = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("chemdraft") || extension.eq_ignore_ascii_case("cdxml")
+        });
+    extension_ok && path.is_file()
+}
+
+/// Queue an opened document for the window to drain on mount (cold start), bring the window up,
+/// and deliver it to an already-listening window.
+fn deliver_opened_document<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    payload: NativeOpenDocumentPayload,
+) -> Result<(), String> {
     let state = app.state::<PendingOpenDocument>();
     {
         let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
@@ -2246,24 +2363,24 @@ fn open_document_payload_from_url(
     let path = url
         .to_file_path()
         .map_err(|_| format!("Opened URL is not a local file path: {url}"))?;
-    let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    open_document_payload_from_path(&path).map(Some)
+}
+
+fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
+    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Untitled.chemdraft")
         .to_string();
 
-    Ok(Some(NativeOpenDocumentPayload {
+    Ok(NativeOpenDocumentPayload {
         path: path.to_string_lossy().to_string(),
         display_name,
         contents,
-    }))
+    })
 }
 
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
-    allow(dead_code)
-)]
 fn emit_open_document_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     payload: &NativeOpenDocumentPayload,
@@ -2350,6 +2467,19 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
     Ok(())
 }
 
+/// Install a rebuilt app menu. Off macOS `AppHandle::set_menu` attaches the bar to every open
+/// window, so strip it again from all but the document window (see `without_app_menu_bar`).
+fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tauri::Result<()> {
+    app.set_menu(menu)?;
+    #[cfg(not(target_os = "macos"))]
+    for (label, window) in app.webview_windows() {
+        if label != MAIN_WINDOW_LABEL {
+            window.remove_menu()?;
+        }
+    }
+    Ok(())
+}
+
 fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let app = app.clone();
     app.clone()
@@ -2357,7 +2487,7 @@ fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
             let (entries, view_state) = current_toolbars_menu_model(&app);
             let plugin_items = current_plugin_menu_items(&app);
             let result = create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
-                .and_then(|menu| app.set_menu(menu).map(|_| ()));
+                .and_then(|menu| install_app_menu(&app, menu));
             if let Err(error) = result {
                 eprintln!("Could not update ChemDraft plugin menu: {error}");
             }
@@ -2635,18 +2765,25 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::close_window(app, None)?,
                 ],
             )?,
-            &Submenu::with_items(app, "Help", true, &[])?,
+            // macOS keeps About in the application menu; elsewhere Help is its home.
+            &Submenu::with_items(
+                app,
+                "Help",
+                true,
+                &[
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::about(app, None, Some(about_metadata(app)))?,
+                ],
+            )?,
         ],
     )
 }
 
-#[cfg(target_os = "macos")]
-fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
-    let package_info = app.package_info();
+fn about_metadata<R: Runtime>(app: &tauri::AppHandle<R>) -> AboutMetadata<'static> {
     let config = app.config();
-    let about_metadata = AboutMetadata {
+    AboutMetadata {
         name: Some("ChemDraft".to_string()),
-        version: Some(package_info.version.to_string()),
+        version: Some(app.package_info().version.to_string()),
         copyright: config.bundle.copyright.clone(),
         authors: config
             .bundle
@@ -2654,7 +2791,13 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             .clone()
             .map(|publisher| vec![publisher]),
         ..Default::default()
-    };
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    let package_info = app.package_info();
+    let about_metadata = about_metadata(app);
 
     Submenu::with_items(
         app,
@@ -3134,11 +3277,40 @@ fn toolset_window_hides_on_deactivate() -> bool {
     true
 }
 
+/// The non-macOS counterpart of the floating utility panel: no app menu bar, and (on Windows)
+/// owned by the document window — an owned window always stays above its owner, hides when the
+/// owner is minimized, and is destroyed with it.
 #[cfg(not(target_os = "macos"))]
 fn configure_toolset_utility_window<R: Runtime>(
-    _window: &tauri::WebviewWindow<R>,
+    window: &tauri::WebviewWindow<R>,
     _order_front: bool,
 ) -> Result<(), String> {
+    window.remove_menu().map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    set_owned_by_main_window(window)?;
+    Ok(())
+}
+
+/// Tauri can only set an owner at build time (`WebviewWindowBuilder::owner`); GWLP_HWNDPARENT is
+/// the documented Win32 way to set the owner of an existing top-level window, which lets every
+/// palette/popover/tooltip path share this one configuration step.
+#[cfg(windows)]
+fn set_owned_by_main_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_HWNDPARENT};
+
+    if window.label() == MAIN_WINDOW_LABEL {
+        return Ok(());
+    }
+    let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    let owner = main.hwnd().map_err(|error| error.to_string())?;
+    let owned = window.hwnd().map_err(|error| error.to_string())?;
+    // SAFETY: both handles come from live Tauri windows on this thread's window system; setting the
+    // owner neither frees nor reparents either window's resources.
+    unsafe {
+        SetWindowLongPtrW(owned.0 as _, GWLP_HWNDPARENT, owner.0 as isize);
+    }
     Ok(())
 }
 
@@ -3632,6 +3804,27 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn openable_document_paths_are_existing_chemdraft_or_cdxml_files() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-open-args-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        for name in ["a.chemdraft", "b.CDXML", "c.txt"] {
+            fs::write(dir.join(name), "<CDXML/>").expect("fixture");
+        }
+
+        assert!(is_openable_document_path(&dir.join("a.chemdraft")));
+        assert!(is_openable_document_path(&dir.join("b.CDXML")));
+        assert!(!is_openable_document_path(&dir.join("c.txt")));
+        assert!(!is_openable_document_path(&dir.join("missing.cdxml")));
+        assert!(!is_openable_document_path(&dir));
+
+        let payload = open_document_payload_from_path(&dir.join("a.chemdraft")).expect("payload");
+        assert_eq!(payload.display_name, "a.chemdraft");
+        assert_eq!(payload.contents, "<CDXML/>");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn layout_state_read_error_never_becomes_defaults() {
