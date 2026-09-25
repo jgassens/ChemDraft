@@ -121,8 +121,8 @@ describe("atom label editor focus", () => {
     return object;
   }
 
-  function atomElement(atomId: string): string | undefined {
-    return molecule().atoms.find((atom) => atom.id === atomId)?.element;
+  function atomElement(atomId: string, objectIndex = 0): string | undefined {
+    return molecule(objectIndex).atoms.find((atom) => atom.id === atomId)?.element;
   }
 
   function labelEditor(): HTMLInputElement | null {
@@ -362,5 +362,91 @@ describe("atom label editor focus", () => {
     expect(labelEditor()).toBeNull();
     expect(atomElement(atomId)).toBe("N");
     expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId });
+  });
+
+  it("Escape reverts the typed label but keeps the atom selected, like a commit", async () => {
+    await renderMainWindow(ringDocument());
+    const objectId = molecule().id;
+    const atomId = await startLabelEdit();
+    await typeIntoEditor("N");
+    expect(atomElement(atomId)).toBe("N");
+
+    await act(async () => {
+      labelEditor()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(labelEditor()).toBeNull();
+    // Reverted, not left as the typed draft.
+    expect(atomElement(atomId)).toBe("C");
+    // A cancel keeps the edited atom selected, the same as Enter's commit (cancelAtomLabelEdit sets
+    // atomLabelEditKeepsSelectionRef just like finishAtomLabelEdit's "commit" branch does); only some
+    // OTHER path closing the edit — blur, a tool switch, undo — restores the pre-edit selection.
+    expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId });
+    expect(bridge().snapshot().selection.objectIds).toEqual([objectId]);
+  });
+
+  it("a cancelled edit's kept selection correctly seeds the next edit's own restore", async () => {
+    // Regression guard for cancelAtomLabelEdit's activeAtomLabelEditRef check, mirroring the one
+    // finishAtomLabelEdit already has: without it, a cancel call that ever ran against a no-longer-
+    // open edit would leave a stray value in atomLabelEditKeepsSelectionRef for a later, unrelated
+    // edit's close to trip over. This chains two edits through a cancel to exercise that path.
+    const oneRing = insertNativeTemplateMolecule(createPhase4Document("Label focus"), { x: 200, y: 300 }, "cyclohexane");
+    const twoRings = insertNativeTemplateMolecule(oneRing, { x: 500, y: 300 }, "cyclohexane");
+    const firstRingId = twoRings.pages[0].objects[0]!.id;
+    await renderMainWindow(selectDocumentObjects(twoRings, twoRings.pages[0].id, []));
+
+    const firstAtomId = await startLabelEdit(0);
+    await typeIntoEditor("N");
+    await act(async () => {
+      labelEditor()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(labelEditor()).toBeNull();
+    expect(atomElement(firstAtomId, 0)).toBe("C");
+    // The cancelled edit's ring stays selected.
+    expect(bridge().snapshot().selection.objectIds).toEqual([firstRingId]);
+
+    // A second, unrelated edit on the other ring, ended by blur rather than Escape.
+    const secondAtomId = await startLabelEdit(1);
+    await typeIntoEditor("O");
+    await blurWithinFocusedWindow();
+
+    expect(labelEditor()).toBeNull();
+    expect(atomElement(secondAtomId, 1)).toBe("O");
+    // The second edit's own restore ran cleanly, putting back exactly what was selected right before
+    // IT started (the first ring, left selected by the cancel) — not corrupted by the earlier cancel.
+    expect(bridge().snapshot().selection.objectIds).toEqual([firstRingId]);
+  });
+
+  it("undo during an open label edit keeps its own selection, not the edit's pre-edit one", async () => {
+    // Regression guard for restoreSelectionAfterAtomLabelEdit: restoreDocumentHistory closes the edit
+    // (clearing activeAtomLabelEdit) without clearing selectedNativeMoleculePart, so the part-only
+    // check alone would still think nothing has replaced the edit's selection and clobber undo's own.
+    const oneRing = insertNativeTemplateMolecule(createPhase4Document("Label focus"), { x: 200, y: 300 }, "cyclohexane");
+    const twoRings = insertNativeTemplateMolecule(oneRing, { x: 500, y: 300 }, "cyclohexane");
+    const firstRingId = twoRings.pages[0].objects[0]!.id;
+    await renderMainWindow(selectDocumentObjects(twoRings, twoRings.pages[0].id, [firstRingId]));
+
+    // One undo step: delete the selected ring, leaving the other alone with nothing selected.
+    await pressOnWindow("Delete");
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(bridge().snapshot().selection.objectIds).toEqual([]);
+
+    // Edit the remaining ring's label. Its own selection (itself) differs from what undoing the
+    // delete will restore (the first ring, selected).
+    const remainingRingId = bridge().snapshot().document.pages[0].objects[0]!.id;
+    await startLabelEdit(0);
+    expect(bridge().snapshot().selection.objectIds).toEqual([remainingRingId]);
+
+    // Blurred but still open — exactly what choosing Edit ▸ Undo from the menu looks like mid-word,
+    // since the window loses key status to deliver the click.
+    await loseFocusToAnotherWindow();
+    expect(labelEditor()).not.toBeNull();
+
+    await paletteCommand("edit.undo");
+
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    // Undo's own selection (the first ring) must survive, not be overwritten with the selection from
+    // before the label edit started (nothing, at that point).
+    expect(bridge().snapshot().selection.objectIds).toEqual([firstRingId]);
   });
 });

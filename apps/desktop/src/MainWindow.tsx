@@ -637,7 +637,13 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
-import { editHistoryDirection, performTextFieldHistory, resolveEditHistoryRoute } from "./editHistoryRouting";
+import {
+  editHistoryDirection,
+  isForcedDocumentHistoryCommandId,
+  performTextFieldHistory,
+  resolveEditHistoryRoute,
+  stripForcedDocumentHistorySuffix
+} from "./editHistoryRouting";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
@@ -1385,7 +1391,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.24.22.45-opus";
+const CURRENT_BUILD_STAMP = "9.24.23.16-sonnet";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -5275,6 +5281,13 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const cancelAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
+    // Mirrors finishAtomLabelEdit's guard: a late cancel (the editor unmounting after another path
+    // already closed or replaced the edit) must not revert an atom that is no longer being edited,
+    // nor leave a stale value in atomLabelEditKeepsSelectionRef for a later edit's close to trip over.
+    const active = activeAtomLabelEditRef.current;
+    if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
+      return;
+    }
     replacePresentDocument((current) =>
       applyNativeAtomElementTarget(current, {
         objectId: state.objectId,
@@ -5318,6 +5331,16 @@ export function MainWindow({
       parts[0].objectId === state.objectId &&
       parts[0].atomId === state.atomId;
     if (!stillEditSelection) {
+      return;
+    }
+    // A path that closes the edit without clearing `parts` (undo via restoreDocumentHistory, which
+    // resets activeAtomLabelEdit but not selectedNativeMoleculePart) can change which OBJECTS are
+    // selected while leaving the edit's atom-part selection looking untouched. The part-only check
+    // above would then overwrite that newer object selection with the pre-edit one, so it is skipped
+    // unless the current object selection is still exactly the edit's own single-object selection.
+    const currentObjectIds = documentRef.current.selection.objectIds;
+    const stillEditObjectSelection = currentObjectIds.length === 1 && currentObjectIds[0] === state.objectId;
+    if (!stillEditObjectSelection) {
       return;
     }
     replacePresentDocument((current) => {
@@ -8554,6 +8577,18 @@ export function MainWindow({
     // Edit ▸ Undo/Redo stay enabled in the native menu, so a focused text field's ⌘Z and an empty
     // history both arrive here. Neither may reach the registry: the field wants native text undo,
     // and a disabled edit.undo would throw instead of saying "Nothing to undo".
+    //
+    // A secondary window forwards here (see `installSecondaryWindowEditHistory`) only after finding
+    // no text field focused THERE, wrapping the commandId so we know to skip our own activeElement
+    // check below: this window is not key when that happens, so `globalThis.document.activeElement`
+    // can still be a hidden field of ours that never blurred, and checking it would undo that field's
+    // text instead of the drawing the user actually asked to undo.
+    const forcedDocumentHistory = isForcedDocumentHistoryCommandId(commandId);
+    if (forcedDocumentHistory) {
+      // From here on, dispatch under the real id: nothing downstream (the command registry included)
+      // knows about the forwarding wrapper.
+      commandId = stripForcedDocumentHistorySuffix(commandId);
+    }
     const historyDirection = editHistoryDirection(commandId);
     if (historyDirection) {
       const history = documentHistoryRef.current;
@@ -8561,7 +8596,7 @@ export function MainWindow({
         activeElement: globalThis.document?.activeElement,
         canUndo: history.past.length > 0,
         canRedo: history.future.length > 0
-      });
+      }, { forceDocument: forcedDocumentHistory });
       if (route === "text") {
         performTextFieldHistory(historyDirection, globalThis.document);
         return;

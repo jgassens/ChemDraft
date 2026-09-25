@@ -13,9 +13,12 @@ import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
 import {
   editHistoryDirection,
+  forceDocumentHistoryCommandId,
   installSecondaryWindowEditHistory,
+  isForcedDocumentHistoryCommandId,
   isTextEditingElement,
-  resolveEditHistoryRoute
+  resolveEditHistoryRoute,
+  stripForcedDocumentHistorySuffix
 } from "./editHistoryRouting";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
@@ -95,6 +98,30 @@ describe("edit history routing", () => {
     expect(resolveEditHistoryRoute("undo", { activeElement: button, canUndo: true, canRedo: false })).toBe("document");
     expect(resolveEditHistoryRoute("redo", { activeElement: null, canUndo: true, canRedo: false })).toBe("nothing");
   });
+
+  it("skips the text-field check when the caller forces the document route", () => {
+    const field = document.createElement("input");
+    // Ordinarily a focused text field wins...
+    expect(resolveEditHistoryRoute("undo", { activeElement: field, canUndo: true, canRedo: false })).toBe("text");
+    // ...but a secondary window has already established no text field is focused THERE, so the
+    // document window must not re-decide that from its own (possibly stale) active element.
+    expect(
+      resolveEditHistoryRoute("undo", { activeElement: field, canUndo: true, canRedo: false }, { forceDocument: true })
+    ).toBe("document");
+    expect(
+      resolveEditHistoryRoute("redo", { activeElement: field, canUndo: false, canRedo: false }, { forceDocument: true })
+    ).toBe("nothing");
+  });
+
+  it("round-trips the forced-document commandId wrapper", () => {
+    const wrapped = forceDocumentHistoryCommandId("edit.undo");
+    expect(wrapped).not.toBe("edit.undo");
+    expect(isForcedDocumentHistoryCommandId(wrapped)).toBe(true);
+    expect(isForcedDocumentHistoryCommandId("edit.undo")).toBe(false);
+    expect(stripForcedDocumentHistorySuffix(wrapped)).toBe("edit.undo");
+    expect(stripForcedDocumentHistorySuffix("edit.undo")).toBe("edit.undo");
+    expect(editHistoryDirection(stripForcedDocumentHistorySuffix(wrapped))).toBe("undo");
+  });
 });
 
 // Rust delivers Edit ▸ Undo / Redo to the key window. In a palette, popover, preferences, or plugin
@@ -144,7 +171,12 @@ describe("Edit ▸ Undo / Redo in a secondary window", () => {
     chooseMenuItem("edit.undo");
     checkbox.blur();
     chooseMenuItem("edit.redo");
-    expect(forwardToMain.mock.calls).toEqual([["edit.undo"], ["edit.redo"]]);
+    // Wrapped so the document window skips its own (possibly stale) text-field check: see
+    // `forceDocumentHistoryCommandId`.
+    expect(forwardToMain.mock.calls).toEqual([
+      [forceDocumentHistoryCommandId("edit.undo")],
+      [forceDocumentHistoryCommandId("edit.redo")]
+    ]);
     expect(execCommand).not.toHaveBeenCalled();
   });
 
@@ -325,5 +357,44 @@ describe("Edit menu Undo / Redo", () => {
     await chooseMenuItem("edit.undo");
     expect(objectCount()).toBe(1);
     expect(execCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("a command forwarded from a secondary window undoes the drawing even with a stale focused field of its own", async () => {
+    await renderMainWindow(twoRingDocument());
+    await deleteBothRingsSeparately();
+
+    // A hidden field left over in the document window: it never blurred because this window was not
+    // key while a palette window had focus, so `document.activeElement` here still points at it.
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const staleField = document.createElement("input");
+    container.append(staleField);
+    staleField.focus();
+    expect(document.activeElement).toBe(staleField);
+
+    // The secondary window already established that no text field was focused THERE, and forwards
+    // with the forcing wrapper; this window must not re-decide from its own (stale) active element.
+    await chooseMenuItem(forceDocumentHistoryCommandId("edit.undo"));
+    expect(objectCount()).toBe(1);
+    expect(execCommand).not.toHaveBeenCalled();
+
+    await chooseMenuItem(forceDocumentHistoryCommandId("edit.redo"));
+    expect(objectCount()).toBe(0);
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("an unforced command still reports 'Nothing to undo' rather than silently going to a stale field", async () => {
+    await renderMainWindow(twoRingDocument());
+
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const staleField = document.createElement("input");
+    container.append(staleField);
+    staleField.focus();
+
+    await chooseMenuItem(forceDocumentHistoryCommandId("edit.undo"));
+    expect(objectCount()).toBe(2);
+    expect(statusText()).toContain("Nothing to undo");
+    expect(execCommand).not.toHaveBeenCalled();
   });
 });

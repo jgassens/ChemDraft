@@ -63,13 +63,43 @@ export function isTextEditingElement(element: Element | null | undefined): boole
 
 export function resolveEditHistoryRoute(
   direction: EditHistoryDirection,
-  state: { activeElement: Element | null | undefined; canUndo: boolean; canRedo: boolean }
+  state: { activeElement: Element | null | undefined; canUndo: boolean; canRedo: boolean },
+  options?: {
+    /**
+     * A secondary window already decided no text field was focused there, and forwarded the command
+     * to the document window for exactly that reason. The document window's own `activeElement` can
+     * still be a text input (a hidden field never blurred, since the document window is not key), so
+     * that check must not run a second time here — it would undo the field's text instead of the
+     * drawing. See `installSecondaryWindowEditHistory`.
+     */
+    forceDocument?: boolean;
+  }
 ): EditHistoryRoute {
-  if (isTextEditingElement(state.activeElement)) {
+  if (!options?.forceDocument && isTextEditingElement(state.activeElement)) {
     return "text";
   }
   const canMove = direction === "undo" ? state.canUndo : state.canRedo;
   return canMove ? "document" : "nothing";
+}
+
+/** Suffix marking a commandId as forwarded from a secondary window with no text field focused there. */
+const FORCE_DOCUMENT_HISTORY_SUFFIX = ":forceDocumentHistory";
+
+/** Wraps `commandId` so the document window skips its own text-field check when it arrives. */
+export function forceDocumentHistoryCommandId(commandId: string): string {
+  return `${commandId}${FORCE_DOCUMENT_HISTORY_SUFFIX}`;
+}
+
+/** True when `commandId` was wrapped by `forceDocumentHistoryCommandId`. */
+export function isForcedDocumentHistoryCommandId(commandId: string): boolean {
+  return commandId.endsWith(FORCE_DOCUMENT_HISTORY_SUFFIX);
+}
+
+/** Undoes `forceDocumentHistoryCommandId`, returning `commandId` unchanged if it was not wrapped. */
+export function stripForcedDocumentHistorySuffix(commandId: string): string {
+  return isForcedDocumentHistoryCommandId(commandId)
+    ? commandId.slice(0, -FORCE_DOCUMENT_HISTORY_SUFFIX.length)
+    : commandId;
 }
 
 /**
@@ -108,8 +138,9 @@ export function installSecondaryWindowEditHistory(options: {
       performTextFieldHistory(direction, doc);
       return;
     }
-    void Promise.resolve(options.forwardToMain(commandId)).catch((error: unknown) => {
-      console.error(`Could not forward ${commandId} to the document window.`, error);
+    const forwardedCommandId = forceDocumentHistoryCommandId(commandId);
+    void Promise.resolve(options.forwardToMain(forwardedCommandId)).catch((error: unknown) => {
+      console.error(`Could not forward ${forwardedCommandId} to the document window.`, error);
     });
   };
   target.addEventListener(DOM_COMMAND_EVENT, listener);
