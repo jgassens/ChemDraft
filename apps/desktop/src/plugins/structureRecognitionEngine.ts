@@ -111,7 +111,9 @@ export type StructureRecognitionOutcome =
 export interface StructureRecognitionEngine {
   status(): Promise<StructureRecognitionEngineStatus>;
   install(onProgress: (progress: StructureRecognitionInstallProgress) => void): Promise<StructureRecognitionEngineStatus>;
-  cancelInstall(): Promise<StructureRecognitionEngineStatus>;
+  /** Asks the host to stop its running install. Returns nothing (Rust `ocsr_engine_cancel_install`
+   *  returns `()`); the install's own settlement and `status()` report what was left. */
+  cancelInstall(): Promise<void>;
   uninstall(): Promise<StructureRecognitionEngineStatus>;
   recognizeImage(input: { mediaType: string; bytes: Uint8Array }): Promise<StructureRecognitionOutcome>;
 }
@@ -144,8 +146,8 @@ export class TauriStructureRecognitionEngine implements StructureRecognitionEngi
     return this.invokeCommand("ocsr_engine_install", { onProgress: channel });
   }
 
-  cancelInstall(): Promise<StructureRecognitionEngineStatus> {
-    return this.invokeCommand("ocsr_engine_cancel_install");
+  async cancelInstall(): Promise<void> {
+    await this.invokeCommand<void>("ocsr_engine_cancel_install");
   }
 
   uninstall(): Promise<StructureRecognitionEngineStatus> {
@@ -179,8 +181,8 @@ export class UnsupportedStructureRecognitionEngine implements StructureRecogniti
       message: this.unsupported.detail ?? "Local MolScribe recognition is unsupported."
     } satisfies StructureRecognitionInstallError;
   }
-  async cancelInstall(): Promise<StructureRecognitionEngineStatus> {
-    return this.unsupported;
+  async cancelInstall(): Promise<void> {
+    // Nothing is ever installing here.
   }
   async uninstall(): Promise<StructureRecognitionEngineStatus> {
     return this.unsupported;

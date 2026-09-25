@@ -50,6 +50,7 @@ const recognized: Extract<StructureRecognitionOutcome, { status: "recognized" }>
   engine: { name: "MolScribe", molscribeCommit: "abc123", modelSha256: "a".repeat(64) }
 };
 
+// Like Rust's `ocsr_engine_cancel_install`, which returns `()`, the fakes' cancelInstall resolves to nothing.
 function setup(initial: StructureRecognitionEngineStatus = installed) {
   const engine: StructureRecognitionEngine = {
     status: vi.fn(async () => initial),
@@ -57,7 +58,7 @@ function setup(initial: StructureRecognitionEngineStatus = installed) {
       onProgress({ phase: "downloadingModel", message: "Downloading…", bytesDone: 2, bytesTotal: 4 });
       return installed;
     }),
-    cancelInstall: vi.fn(async () => notInstalled),
+    cancelInstall: vi.fn(async () => undefined),
     uninstall: vi.fn(async () => notInstalled),
     recognizeImage: vi.fn(async () => recognized)
   };
@@ -231,7 +232,7 @@ describe("StructureRecognitionController", () => {
     const engine: StructureRecognitionEngine = {
       status: vi.fn(async () => notInstalled),
       install: vi.fn(async () => installed),
-      cancelInstall: vi.fn(async () => notInstalled),
+      cancelInstall: vi.fn(async () => undefined),
       uninstall: vi.fn(async () => notInstalled),
       recognizeImage: vi.fn(async () => recognized)
     };
@@ -277,7 +278,7 @@ describe("StructureRecognitionController", () => {
       const engine: StructureRecognitionEngine = {
         status: vi.fn(async () => statuses.shift() ?? installed),
         install: vi.fn(async () => installed),
-        cancelInstall: vi.fn(async () => notInstalled),
+        cancelInstall: vi.fn(async () => undefined),
         uninstall: vi.fn(async () => notInstalled),
         recognizeImage: vi.fn(async () => recognized)
       };
@@ -351,5 +352,163 @@ describe("StructureRecognitionController", () => {
     await expect(pending).resolves.toEqual(prepared);
     expect(engine.install).toHaveBeenCalledOnce();
     expect(controller.getOpenInstall()).toBeUndefined();
+  });
+
+  it("never stores the cancel command's empty reply as the engine status", async () => {
+    const { controller, engine } = setup(notInstalled);
+    // Exactly what Tauri hands back for a `()` command.
+    vi.mocked(engine.cancelInstall).mockResolvedValue(null as unknown as void);
+    let fail!: (error: unknown) => void;
+    vi.mocked(engine.install).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        })
+    );
+    const listener = vi.fn(() => {
+      // Whatever the UI reads on every notification must be a status or nothing — never null.
+      expect(controller.getStatus()).not.toBeNull();
+    });
+    controller.subscribe(listener);
+    const pending = controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    const id = controller.getOpenInstall()!.id;
+    void controller.install(id);
+
+    await controller.cancel(id);
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+    expect(engine.cancelInstall).toHaveBeenCalledOnce();
+    expect(controller.getStatus()).toEqual(notInstalled);
+
+    // The host's own rejection ends the run, and the status is refreshed through status().
+    fail({ code: "cancelled", message: "Installation was cancelled." });
+    await vi.waitFor(() => expect(controller.getInstallRun()?.running).toBe(false));
+    expect(controller.getInstallRun()?.error?.code).toBe("cancelled");
+    expect(controller.getStatus()).toEqual(notInstalled);
+    expect(listener).toHaveBeenCalled();
+  });
+
+  it("cancels the running install from the plugin manager without taking a status from the reply", async () => {
+    const { controller, engine } = setup(notInstalled);
+    vi.mocked(engine.cancelInstall).mockResolvedValue(null as unknown as void);
+    vi.mocked(engine.install).mockImplementationOnce(() => new Promise(() => undefined));
+    await controller.refreshStatus();
+    void controller.installEngine();
+
+    await controller.cancelEngineInstall();
+    expect(engine.cancelInstall).toHaveBeenCalledOnce();
+    expect(controller.getStatus()).toEqual(notInstalled);
+  });
+
+  describe("a dialog that joined an install started elsewhere", () => {
+    async function joinedDialog(signal = new AbortController().signal) {
+      const context = setup(notInstalled);
+      const { controller, engine } = context;
+      let finish!: (status: StructureRecognitionEngineStatus) => void;
+      vi.mocked(engine.install).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          })
+      );
+      // The user started the install from Add or Remove Plugins.
+      const running = controller.installEngine();
+      vi.mocked(engine.status).mockResolvedValue({ ...notInstalled, state: "installing" });
+      const pending = controller.recognize({ id: "p", name: "P" }, image, signal);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(controller.getOpenInstall()).toMatchObject({ installing: true, ownsInstall: false });
+      return { ...context, running, pending, finish: (status: StructureRecognitionEngineStatus) => finish(status) };
+    }
+
+    it("settles as cancelled when closed, and leaves the shared install running", async () => {
+      const { controller, engine, pending, running, finish } = await joinedDialog();
+
+      await controller.cancel(controller.getOpenInstall()!.id);
+      await expect(pending).resolves.toEqual({ status: "cancelled" });
+      expect(engine.cancelInstall).not.toHaveBeenCalled();
+      expect(controller.getInstallRun()?.running).toBe(true);
+
+      finish(installed);
+      await expect(running).resolves.toBe(true);
+    });
+
+    it("settles as cancelled when its invocation is abandoned, and leaves the shared install running", async () => {
+      const abort = new AbortController();
+      const { controller, engine, pending } = await joinedDialog(abort.signal);
+
+      abort.abort();
+      await expect(pending).resolves.toEqual({ status: "cancelled" });
+      expect(controller.getOpenInstall()).toBeUndefined();
+      expect(engine.cancelInstall).not.toHaveBeenCalled();
+      expect(controller.getInstallRun()?.running).toBe(true);
+    });
+
+    it("still lets Cancel install in the plugin manager stop it", async () => {
+      const { controller, engine } = await joinedDialog();
+      await controller.cancelEngineInstall();
+      expect(engine.cancelInstall).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("marks a dialog whose own Install started the run as owning it", async () => {
+    const { controller, engine } = setup(notInstalled);
+    vi.mocked(engine.install).mockImplementationOnce(() => new Promise(() => undefined));
+    void controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    const id = controller.getOpenInstall()!.id;
+    expect(controller.getOpenInstall()?.ownsInstall).toBe(false);
+    void controller.install(id);
+    expect(controller.getOpenInstall()).toMatchObject({ installing: true, ownsInstall: true });
+  });
+
+  it("leaves an owned install running when only the invocation is abandoned", async () => {
+    const { controller, engine } = setup(notInstalled);
+    vi.mocked(engine.install).mockImplementationOnce(() => new Promise(() => undefined));
+    const abort = new AbortController();
+    const pending = controller.recognize({ id: "p", name: "P" }, image, abort.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    void controller.install(controller.getOpenInstall()!.id);
+
+    abort.abort();
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+    // Only an explicit Cancel stops an install; it stays visible in Add or Remove Plugins.
+    expect(engine.cancelInstall).not.toHaveBeenCalled();
+    expect(controller.getInstallRun()?.running).toBe(true);
+  });
+
+  it("reports an unsupported engine as failed/unsupported without opening an install dialog", async () => {
+    const detail = "The recognition engine needs a Mac with Apple silicon.";
+    const { controller, engine } = setup({ ...notInstalled, state: "unsupported", detail });
+    const listener = vi.fn();
+    controller.subscribe(listener);
+
+    await expect(
+      controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal)
+    ).resolves.toEqual({ status: "failed", code: "unsupported", message: detail });
+    expect(controller.getOpenInstall()).toBeUndefined();
+    expect(engine.install).not.toHaveBeenCalled();
+    expect(engine.recognizeImage).not.toHaveBeenCalled();
+  });
+
+  it("reports failed/unsupported when the install itself finds the computer unsupported", async () => {
+    const { controller, engine } = setup(notInstalled);
+    vi.mocked(engine.install).mockRejectedValueOnce({ code: "unsupported", message: "Intel Macs are not supported." });
+    const pending = controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    const id = controller.getOpenInstall()!.id;
+    await controller.install(id);
+    expect(controller.getOpenInstall()?.status.state).toBe("unsupported");
+    controller.decline(id);
+
+    await expect(pending).resolves.toEqual({
+      status: "failed",
+      code: "unsupported",
+      message: "Intel Macs are not supported."
+    });
   });
 });

@@ -1,9 +1,11 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { keepFocusInsideDialog, trapDialogTab } from "./PluginImageRequestDialog";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import type { StructureRecognitionInstallError } from "./structureRecognitionEngine";
+import { formatGigabytes } from "./structureRecognitionInstallProgress";
 
 export interface StructureRecognitionInstallDialogProps {
   request: OpenStructureRecognitionInstall;
@@ -36,6 +38,9 @@ export function StructureRecognitionInstallDialog({
     };
   }, []);
 
+  // Install swaps the footer, unmounting the focused button; keep the keyboard on this dialog.
+  useLayoutEffect(() => keepFocusInsideDialog(dialogRef.current));
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (!isRecognitionInstallKeyboardEvent(event)) return;
@@ -47,17 +52,7 @@ export function StructureRecognitionInstallDialog({
         return;
       }
       if (event.key !== "Tab") return;
-      const buttons = dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
-      if (!buttons?.length) return;
-      const first = buttons[0];
-      const last = buttons[buttons.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapDialogTab(event, dialogRef.current);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -70,6 +65,7 @@ export function StructureRecognitionInstallDialog({
       <div
         ref={dialogRef}
         className="plugin-prompt-dialog recognition-install-dialog"
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -100,6 +96,12 @@ export function StructureRecognitionInstallDialog({
               phaseStartedAt={request.phaseStartedAt}
             />
           ) : null}
+          {request.installing && !request.ownsInstall ? (
+            <p data-testid="recognition-install-joined-note">
+              This install was already running when {request.pluginName} asked for it. Closing this window does
+              not stop it; you can cancel it in Add or Remove Plugins.
+            </p>
+          ) : null}
           {request.error ? (
             <p className="plugin-image-error" role="alert">
               {recognitionInstallErrorMessage(request.error, request.status)}
@@ -108,8 +110,9 @@ export function StructureRecognitionInstallDialog({
         </div>
         <footer className="plugin-prompt-actions">
           {request.installing ? (
+            // A dialog that joined someone else's install only closes; see StructureRecognitionController.cancel.
             <button className="plugin-manager-button" type="button" onClick={() => void onCancel(request.id)}>
-              Cancel
+              {request.ownsInstall ? "Cancel" : "Close"}
             </button>
           ) : (
             <>
@@ -156,8 +159,7 @@ export function recognitionInstallErrorMessage(
   }
 }
 
+/** Disk sizes in the install flow, in decimal gigabytes like every other size it shows. */
 export function formatDiskBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 GB";
-  const gib = bytes / 1024 ** 3;
-  return `${gib >= 10 ? gib.toFixed(0) : gib.toFixed(1).replace(/\.0$/, "")} GB`;
+  return formatGigabytes(bytes);
 }

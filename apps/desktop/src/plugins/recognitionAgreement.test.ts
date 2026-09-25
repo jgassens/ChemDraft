@@ -10,6 +10,7 @@ import {
   capRecognitionConfidenceTier,
   recognitionAgreementLevel,
   recognitionDisagreementWarning,
+  recognitionSingleSizeWarning,
   resetRecognitionAgreementsForTesting
 } from "./recognitionAgreement";
 import type { StructureRecognitionAgreement } from "./structureRecognitionEngine";
@@ -28,6 +29,8 @@ const molfile = [
 const FIRST_PASS = [800, 900, 1000, 1100, 1200];
 const FULL_VOTE = [760, 800, 840, 880, 900, 920, 960, 1000, 1040, 1080, 1100, 1120, 1160, 1200, 1240];
 const UNANIMOUS: StructureRecognitionAgreement = { runs: 5, agreeing: 5, invalidRuns: 0, scalesPx: FIRST_PASS };
+// A small image (long side ≤ ~379 px) is read at one size only: nothing to compare it with.
+const SINGLE: StructureRecognitionAgreement = { runs: 1, agreeing: 1, invalidRuns: 0, scalesPx: [300] };
 // The adaptive stop: 4 of the 5 first-pass sizes agreed.
 const EARLY_STOP: StructureRecognitionAgreement = { runs: 5, agreeing: 4, invalidRuns: 1, scalesPx: FIRST_PASS };
 // Exactly two thirds of a full vote.
@@ -88,7 +91,8 @@ beforeEach(() => {
 describe("recognition agreement levels", () => {
   it("classifies unanimous, two-thirds and split votes over all runs, unparsable ones included", () => {
     expect(recognitionAgreementLevel(UNANIMOUS)).toBe("unanimous");
-    expect(recognitionAgreementLevel({ runs: 1, agreeing: 1, invalidRuns: 0, scalesPx: [300] })).toBe("unanimous");
+    // One reading agreeing with itself is no cross-size evidence.
+    expect(recognitionAgreementLevel(SINGLE)).toBe("single");
     expect(recognitionAgreementLevel(EARLY_STOP)).toBe("supermajority");
     expect(recognitionAgreementLevel(TWO_THIRDS)).toBe("supermajority");
     expect(recognitionAgreementLevel({ ...TWO_THIRDS, agreeing: 9 })).toBe("split");
@@ -104,6 +108,12 @@ describe("recognition agreement levels", () => {
   it("never leaves a high tier on a result the runs did not all agree on", () => {
     const tiers: RecognitionConfidenceTier[] = ["high", "medium", "low", "missing"];
     expect(tiers.map((tier) => capRecognitionConfidenceTier(tier, "unanimous"))).toEqual(tiers);
+    expect(tiers.map((tier) => capRecognitionConfidenceTier(tier, "single"))).toEqual([
+      "medium",
+      "medium",
+      "low",
+      "missing"
+    ]);
     expect(tiers.map((tier) => capRecognitionConfidenceTier(tier, "supermajority"))).toEqual([
       "medium",
       "medium",
@@ -142,6 +152,15 @@ describe("recognition results carry the disagreement warning", () => {
     expect(result.proposedPatch?.warnings[0]).toEqual(warning);
     expect(warning.message).toContain(`Only ${agreement.agreeing} of ${agreement.runs} readings agreed.`);
   });
+
+  it("warns that a single-size reading could not be checked", async () => {
+    const result = await prepare(SINGLE);
+    expect(result.warnings[0]).toEqual({
+      code: "recognition.single-size",
+      message: "This image was too small to check at several sizes; check the structure carefully."
+    });
+    expect(result.proposedPatch?.warnings[0]).toEqual(recognitionSingleSizeWarning());
+  });
 });
 
 describe("the host caps the plugin's confidence tier in review", () => {
@@ -163,6 +182,14 @@ describe("the host caps the plugin's confidence tier in review", () => {
     expect(reviewed("low").recognition?.confidenceTier).toBe("low");
   });
 
+  it("shows a single-size reading as medium at most, with its warning even if the plugin dropped it", async () => {
+    await prepare(SINGLE);
+    const item = reviewed("high");
+    expect(item.recognition?.confidenceTier).toBe("medium");
+    expect(item.warnings).toEqual([recognitionSingleSizeWarning()]);
+    expect(reviewed("high", [recognitionSingleSizeWarning()]).warnings).toEqual([recognitionSingleSizeWarning()]);
+  });
+
   it("shows less than two thirds as low, and does not repeat a warning the plugin passed on", async () => {
     await prepare(SPLIT);
     const passedOn = [
@@ -176,13 +203,14 @@ describe("the host caps the plugin's confidence tier in review", () => {
     expect(reviewed("high").warnings).toEqual([recognitionDisagreementWarning(SPLIT)]);
   });
 
-  it("never shows high unless unanimous, for every possible vote of up to 15 runs", async () => {
+  it("never shows high unless unanimous over several sizes, for every possible vote of up to 15 runs", async () => {
     for (let runs = 1; runs <= 15; runs += 1) {
       for (let agreeing = 1; agreeing <= runs; agreeing += 1) {
         resetRecognitionAgreementsForTesting();
         await prepare({ runs, agreeing, invalidRuns: runs - agreeing, scalesPx: FULL_VOTE.slice(0, runs) });
         const tier = reviewed("high").recognition?.confidenceTier;
-        const expected = agreeing === runs ? "high" : agreeing * 3 >= runs * 2 ? "medium" : "low";
+        const expected =
+          agreeing === runs && runs > 1 ? "high" : agreeing * 3 >= runs * 2 ? "medium" : "low";
         expect(tier, `${agreeing} of ${runs}`).toBe(expected);
       }
     }

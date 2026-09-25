@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
-import { StructureRecognitionInstallDialog } from "./StructureRecognitionInstallDialog";
+import { StructureRecognitionInstallDialog, formatDiskBytes } from "./StructureRecognitionInstallDialog";
 import type { StructureRecognitionInstallProgress } from "./structureRecognitionEngine";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,6 +23,8 @@ afterEach(() => {
 });
 
 const gib = 1024 ** 3;
+// Disk sizes are decimal gigabytes throughout the install flow.
+const gb = 1e9;
 
 function request(overrides: Partial<OpenStructureRecognitionInstall> = {}): OpenStructureRecognitionInstall {
   return {
@@ -31,10 +33,11 @@ function request(overrides: Partial<OpenStructureRecognitionInstall> = {}): Open
     pluginName: "MolScribe OCSR",
     status: {
       state: "notInstalled",
-      requiredDiskBytes: 2 * gib,
-      freeDiskBytes: 3 * gib
+      requiredDiskBytes: 2 * gb,
+      freeDiskBytes: 3 * gb
     },
     installing: false,
+    ownsInstall: false,
     ...overrides
   };
 }
@@ -49,6 +52,16 @@ function renderDialog(open: OpenStructureRecognitionInstall, callbacks = {
   root = createRoot(container);
   act(() => root!.render(createElement(StructureRecognitionInstallDialog, { request: open, ...callbacks })));
   return callbacks;
+}
+
+function rerenderDialog(open: OpenStructureRecognitionInstall, callbacks: ReturnType<typeof renderDialog>) {
+  act(() => root!.render(createElement(StructureRecognitionInstallDialog, { request: open, ...callbacks })));
+}
+
+function dialog(): HTMLElement {
+  const element = document.querySelector<HTMLElement>(".recognition-install-dialog");
+  if (!element) throw new Error("Missing install dialog");
+  return element;
 }
 
 function button(label: string): HTMLButtonElement {
@@ -78,6 +91,7 @@ describe("StructureRecognitionInstallDialog", () => {
     const callbacks = renderDialog(
       request({
         installing: true,
+        ownsInstall: true,
         progress: {
           phase: "downloadingModel",
           message: "Downloading the recognition model…",
@@ -118,8 +132,8 @@ describe("StructureRecognitionInstallDialog", () => {
       request({
         status: {
           state: "unsupported",
-          requiredDiskBytes: 2 * gib,
-          freeDiskBytes: 3 * gib
+          requiredDiskBytes: 2 * gb,
+          freeDiskBytes: 3 * gb
         }
       })
     );
@@ -135,8 +149,8 @@ describe("StructureRecognitionInstallDialog", () => {
       request({
         status: {
           state: "unsupported",
-          requiredDiskBytes: 2 * gib,
-          freeDiskBytes: 3 * gib,
+          requiredDiskBytes: 2 * gb,
+          freeDiskBytes: 3 * gb,
           detail: "The recognition engine needs a Mac with Apple silicon."
         }
       })
@@ -155,7 +169,9 @@ describe("StructureRecognitionInstallDialog", () => {
   });
 
   it("maps Escape to cancel while installing, and keeps Tab inside the dialog", () => {
-    const callbacks = renderDialog(request({ installing: true, progress: { phase: "installingPython", message: "Installing Python…" } }));
+    const callbacks = renderDialog(
+      request({ installing: true, ownsInstall: true, progress: { phase: "installingPython", message: "Installing Python…" } })
+    );
     expect(document.querySelector('[data-testid="recognition-install-step"]')?.textContent).toBe(
       "Step 2 of 5: Installing Python"
     );
@@ -166,6 +182,64 @@ describe("StructureRecognitionInstallDialog", () => {
     act(() => cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(callbacks.onCancel).toHaveBeenCalledWith(7);
     expect(callbacks.onDecline).not.toHaveBeenCalled();
+  });
+
+  it("keeps the keyboard on the dialog when Install swaps the footer out from under the focused button", () => {
+    const callbacks = renderDialog(request());
+    const install = button("Install");
+    act(() => install.focus());
+    act(() => install.click());
+    expect(callbacks.onInstall).toHaveBeenCalledWith(7);
+
+    // The controller marks the request installing: the focused Install button unmounts.
+    rerenderDialog(
+      request({ installing: true, ownsInstall: true, progress: { phase: "checkingDisk", message: "m" } }),
+      callbacks
+    );
+    expect(install.isConnected).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog().contains(document.activeElement)).toBe(true);
+    // The container, never the new Cancel button: a repeated Enter must not cancel the install.
+    expect(document.activeElement).toBe(dialog());
+
+    // Keys still target the dialog, so its own handler (and MainWindow's opt-out) see them.
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })));
+    expect(document.activeElement).toBe(button("Cancel"));
+    act(() => dialog().focus());
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(callbacks.onCancel).toHaveBeenCalledWith(7);
+  });
+
+  it("keeps focus when an install fails and the footer swaps back", () => {
+    const callbacks = renderDialog(
+      request({ installing: true, ownsInstall: true, progress: { phase: "checkingDisk", message: "m" } })
+    );
+    expect(document.activeElement).toBe(button("Cancel"));
+    rerenderDialog(request({ error: { code: "network", message: "offline" } }), callbacks);
+    expect(dialog().contains(document.activeElement)).toBe(true);
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(callbacks.onDecline).toHaveBeenCalledWith(7);
+  });
+
+  it("offers Close, not Cancel, on an install it only joined, and says the install carries on", () => {
+    const callbacks = renderDialog(
+      request({ installing: true, ownsInstall: false, progress: { phase: "installingPython", message: "m" } })
+    );
+    expect(() => button("Cancel")).toThrow();
+    act(() => button("Close").click());
+    expect(callbacks.onCancel).toHaveBeenCalledWith(7);
+    expect(document.querySelector('[data-testid="recognition-install-joined-note"]')?.textContent).toContain(
+      "Closing this window does not stop it"
+    );
+  });
+
+  it("states disk sizes in decimal gigabytes, like the rest of the install flow", () => {
+    expect(formatDiskBytes(3_000_000_000)).toBe("3 GB");
+    expect(formatDiskBytes(2_500_000_000)).toBe("2.5 GB");
+    expect(formatDiskBytes(12_400_000_000)).toBe("12 GB");
+    expect(formatDiskBytes(0)).toBe("0 GB");
+    renderDialog(request({ status: { state: "notInstalled", requiredDiskBytes: 3e9, freeDiskBytes: 2.5e9 } }));
+    expect(document.body.textContent).toContain("Space needed: 3 GB. Free space: 2.5 GB.");
   });
 
   it.each<[string, StructureRecognitionInstallProgress, string, string]>([

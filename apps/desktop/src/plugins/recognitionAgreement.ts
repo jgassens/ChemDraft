@@ -13,13 +13,32 @@ import type { StructureRecognitionAgreement } from "./structureRecognitionEngine
  * "high" review tier is that every size gave the same structure. The plugin picks the tier from the
  * confidence number; the host caps it here, because the plugin never sees the agreement.
  *
- * - `unanimous`: every run gave the returned structure; the plugin's tier stands.
+ * - `unanimous`: more than one run, and every run gave the returned structure; the plugin's tier stands.
+ * - `single`: the image was too small to read at more than one size, so there is no cross-size
+ *   evidence at all — one reading agreeing with itself is not agreement; at most medium.
  * - `supermajority`: at least two thirds of all runs (unparsable ones included) agreed; at most medium.
  * - `split`: anything less; low.
  */
-export type RecognitionAgreementLevel = "unanimous" | "supermajority" | "split";
+export type RecognitionAgreementLevel = "unanimous" | "single" | "supermajority" | "split";
 
 export const RECOGNITION_SCALE_DISAGREEMENT_CODE = "recognition.scale-disagreement";
+export const RECOGNITION_SINGLE_SIZE_CODE = "recognition.single-size";
+
+/** The warning for a recognition read at only one size: nothing corroborated it. */
+export function recognitionSingleSizeWarning(): RecognitionWarning {
+  return {
+    code: RECOGNITION_SINGLE_SIZE_CODE,
+    message: "This image was too small to check at several sizes; check the structure carefully."
+  };
+}
+
+/** The warning a recognition carries for its agreement level, or none when every size agreed. */
+export function recognitionAgreementWarning(agreement: StructureRecognitionAgreement): RecognitionWarning | undefined {
+  const level = recognitionAgreementLevel(agreement);
+  if (level === "unanimous") return undefined;
+  if (level === "single") return recognitionSingleSizeWarning();
+  return recognitionDisagreementWarning(agreement);
+}
 
 /** The warning for a non-unanimous recognition, naming how many of the engine's readings agreed. */
 export function recognitionDisagreementWarning(agreement: StructureRecognitionAgreement): RecognitionWarning {
@@ -32,12 +51,13 @@ export function recognitionDisagreementWarning(agreement: StructureRecognitionAg
 }
 
 export function recognitionAgreementLevel(agreement: StructureRecognitionAgreement): RecognitionAgreementLevel {
-  if (agreement.agreeing >= agreement.runs) return "unanimous";
+  if (agreement.agreeing >= agreement.runs) return agreement.runs > 1 ? "unanimous" : "single";
   if (agreement.agreeing * 3 >= agreement.runs * 2) return "supermajority";
   return "split";
 }
 
-/** Unanimous keeps the confidence tier; a two-thirds agreement is at most medium; anything less is low. */
+/** Unanimous keeps the confidence tier; a single reading or a two-thirds agreement is at most medium;
+ * anything less is low. */
 export function capRecognitionConfidenceTier(
   tier: RecognitionConfidenceTier,
   level: RecognitionAgreementLevel
@@ -85,8 +105,9 @@ export function reviewedRecognition(
   const level = recognitionAgreementLevel(agreement);
   if (level === "unanimous") return { recognition, warnings: copied };
   const confidenceTier = capRecognitionConfidenceTier(recognition.confidenceTier, level);
-  if (!copied.some((warning) => warning.code === RECOGNITION_SCALE_DISAGREEMENT_CODE)) {
-    copied.unshift(recognitionDisagreementWarning(agreement));
+  const warning = recognitionAgreementWarning(agreement);
+  if (warning && !copied.some((existing) => existing.code === warning.code)) {
+    copied.unshift(warning);
   }
   return { recognition: { ...recognition, confidenceTier }, warnings: copied };
 }

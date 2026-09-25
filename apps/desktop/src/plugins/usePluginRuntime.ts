@@ -38,9 +38,11 @@ import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
 import type { OpenPluginImageRequest } from "./PluginImageRequestController";
 import type {
   OpenStructureRecognitionInstall,
+  StructureRecognitionController,
   StructureRecognitionInstallRun
 } from "./StructureRecognitionController";
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
+import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -165,7 +167,19 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     const unsubscribeImages = runtime.images.subscribe(bumpVersion);
     // No engine status call at startup (§15): the plugin manager and the recognition command each
     // ask when they need it.
-    const unsubscribeRecognition = runtime.recognition.subscribe(bumpVersion);
+    //
+    // Install progress arrives several times a second for the whole install. It reaches the progress
+    // display through its own store; here only a change the rest of the UI shows (a dialog opening,
+    // an install starting or stopping, a new engine state) bumps the shared version — otherwise every
+    // event re-rendered MainWindow and rebuilt the native menu bar.
+    let recognitionKey = recognitionViewKey(runtime.recognition);
+    const unsubscribeRecognition = runtime.recognition.subscribe(() => {
+      const next = recognitionViewKey(runtime.recognition);
+      if (next === recognitionKey) return;
+      recognitionKey = next;
+      bumpVersion();
+    });
+    const disconnectProgress = recognitionInstallProgressStore.connect(runtime.recognition);
     // MainWindow renders the install dialog from this hook's `openRecognitionInstall`.
     const detachInstallPresenter = runtime.recognition.attachInstallPresenter();
     return () => {
@@ -175,6 +189,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       unsubscribePrompts();
       unsubscribeImages();
       unsubscribeRecognition();
+      disconnectProgress();
     };
   }, [runtime]);
 
@@ -271,6 +286,16 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         inspection,
         replaces: bundledPlugins.find((candidate) => candidate.manifest.id === inspection.manifest.id)
       });
+      // A fresh install (from the catalog or a package) is the user asking for this plugin, so it must
+      // not inherit a disabled preference left by something that once had its id — the removed bundled
+      // MolScribe canary shared org.chemdraft.ocsr.molscribe with the catalog plugin, and a user who had
+      // disabled the canary got the new plugin back disabled after restart. Uninstall already clears it.
+      // An update is different: that plugin is installed and its toggle is on screen, so its disabled
+      // state is the user's current choice and `updateInstalledPlugin` preserves it.
+      const disabled = loadDisabledPluginIds();
+      if (disabled.delete(record.id)) {
+        saveDisabledPluginIds(disabled);
+      }
       setInstalledPlugins((current) => [
         ...current.filter((entry) => entry.record.id !== record.id),
         { record, manifest: descriptor.manifest, descriptor }
@@ -348,17 +373,29 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [bundledPlugins, installedPlugins, runtime, stagingFs]
   );
 
-  const plugins = useMemo(() => runtime.host.listPlugins(), [runtime, version]);
-  const pluginMenuItems = useMemo(
-    () =>
-      buildPluginMenuItems(
-        runtime.host.listMenuContributions(),
-        (commandId) => runtime.host.commands.get(commandId)?.enabled === true
-      ),
-    [runtime, version]
+  // These three keep their identity until their content changes: MainWindow re-syncs the native menu
+  // bar whenever `pluginMenuItems` is a new array, and an unrelated host or panel notification must
+  // not rebuild it.
+  const plugins = useStableValue(
+    useMemo(() => runtime.host.listPlugins(), [runtime, version]),
+    sameElements
+  );
+  const pluginMenuItems = useStableValue(
+    useMemo(
+      () =>
+        buildPluginMenuItems(
+          runtime.host.listMenuContributions(),
+          (commandId) => runtime.host.commands.get(commandId)?.enabled === true
+        ),
+      [runtime, version]
+    ),
+    sameJson
   );
   const openPanel = useMemo(() => runtime.panels.getOpenPanel(), [runtime, version]);
-  const detachedPanels = useMemo(() => runtime.panels.getDetachedPanels(), [runtime, version]);
+  const detachedPanels = useStableValue(
+    useMemo(() => runtime.panels.getDetachedPanels(), [runtime, version]),
+    sameElements
+  );
   const diagnostics = useMemo(() => runtime.panels.getDiagnostics(), [runtime, version]);
   const openTextPrompt = useMemo(() => runtime.prompts.getOpenPrompt(), [runtime, version]);
   const openImageRequest = useMemo(() => runtime.images.getOpenRequest(), [runtime, version]);
@@ -468,3 +505,47 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     uninstallRecognitionEngine
   };
 }
+
+/** The last value, kept while `same` says the new one carries the same content. */
+function useStableValue<T>(next: T, same: (previous: T, next: T) => boolean): T {
+  const ref = useRef(next);
+  if (ref.current !== next && !same(ref.current, next)) ref.current = next;
+  return ref.current;
+}
+
+function sameElements<T>(previous: readonly T[], next: readonly T[]): boolean {
+  return previous.length === next.length && previous.every((value, index) => value === next[index]);
+}
+
+/** Plain-data comparison for menu items (strings, booleans, and nested plain objects only). */
+function sameJson<T>(previous: T, next: T): boolean {
+  return JSON.stringify(previous) === JSON.stringify(next);
+}
+
+/**
+ * Everything about recognition the UI renders from the shared version, minus what changes with every
+ * progress event: the progress itself, phase timings, and the host's elapsed time and free-space
+ * reading while it installs (the install is what consumes that space).
+ */
+function recognitionViewKey(recognition: StructureRecognitionController): string {
+  const open = recognition.getOpenInstall();
+  const status = recognition.getStatus();
+  const run = recognition.getInstallRun();
+  return JSON.stringify([
+    open && {
+      ...open,
+      progress: undefined,
+      startedAt: undefined,
+      phaseStartedAt: undefined,
+      status: statusKey(open.status)
+    },
+    status && statusKey(status),
+    run && { running: run.running, startedAt: run.startedAt, error: run.error }
+  ]);
+}
+
+function statusKey(status: StructureRecognitionEngineStatus): Partial<StructureRecognitionEngineStatus> {
+  const { progress: _progress, installElapsedMs: _elapsed, ...rest } = status;
+  return rest.state === "installing" ? { ...rest, freeDiskBytes: undefined } : rest;
+}
+

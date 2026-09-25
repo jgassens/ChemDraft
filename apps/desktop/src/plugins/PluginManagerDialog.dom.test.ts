@@ -337,10 +337,10 @@ describe("PluginManagerDialog", () => {
       molscribeCommit: "abc123",
       modelSha256: "a".repeat(64),
       installedAt: "2026-09-24T00:00:00.000Z",
-      diskBytes: 2.5 * 1024 ** 3
+      diskBytes: 2.5e9
     },
-    requiredDiskBytes: 2.5 * 1024 ** 3,
-    freeDiskBytes: 8 * 1024 ** 3
+    requiredDiskBytes: 2.5e9,
+    freeDiskBytes: 8e9
   };
 
   it("shows no engine row while the MolScribe plugin is not installed", () => {
@@ -447,8 +447,8 @@ describe("PluginManagerDialog", () => {
         installedPlugins: [molscribeInstalled],
         recognitionEngineStatus: {
           state: "notInstalled",
-          requiredDiskBytes: 2 * 1024 ** 3,
-          freeDiskBytes: 8 * 1024 ** 3
+          requiredDiskBytes: 2e9,
+          freeDiskBytes: 8e9
         },
         onInstallRecognitionEngine,
         onClose: vi.fn(),
@@ -485,10 +485,10 @@ describe("PluginManagerDialog", () => {
             molscribeCommit: "abc123",
             modelSha256: "a".repeat(64),
             installedAt: "2026-09-24T00:00:00.000Z",
-            diskBytes: 2 * 1024 ** 3
+            diskBytes: 2e9
           },
-          requiredDiskBytes: 2 * 1024 ** 3,
-          freeDiskBytes: 8 * 1024 ** 3
+          requiredDiskBytes: 2e9,
+          freeDiskBytes: 8e9
         },
         onUninstallRecognitionEngine,
         onClose: vi.fn(),
@@ -524,10 +524,10 @@ describe("PluginManagerDialog", () => {
             molscribeCommit: "abc123",
             modelSha256: "a".repeat(64),
             installedAt: "2026-09-24T00:00:00.000Z",
-            diskBytes: 2 * 1024 ** 3
+            diskBytes: 2e9
           },
-          requiredDiskBytes: 2 * 1024 ** 3,
-          freeDiskBytes: 8 * 1024 ** 3
+          requiredDiskBytes: 2e9,
+          freeDiskBytes: 8e9
         },
         onRefreshRecognitionEngineStatus,
         onUninstallRecognitionEngine,
@@ -1441,11 +1441,12 @@ describe("PluginManagerDialog one-click engine install", () => {
     version: "0.1.0",
     description: "Recognize a drawn structure from an image."
   };
-  const gib = 1024 ** 3;
+  // Disk sizes are decimal gigabytes throughout the install flow.
+  const gb = 1e9;
   const notInstalled: StructureRecognitionEngineStatus = {
     state: "notInstalled",
     requiredDiskBytes: 3e9,
-    freeDiskBytes: 8 * gib
+    freeDiskBytes: 8 * gb
   };
   const installedStatus: StructureRecognitionEngineStatus = {
     state: "installed",
@@ -1455,10 +1456,10 @@ describe("PluginManagerDialog one-click engine install", () => {
       molscribeCommit: "abc123",
       modelSha256: "a".repeat(64),
       installedAt: "2026-09-24T00:00:00.000Z",
-      diskBytes: 2.5 * gib
+      diskBytes: 2.5 * gb
     },
     requiredDiskBytes: 3e9,
-    freeDiskBytes: 5 * gib
+    freeDiskBytes: 5 * gb
   };
 
   /** A native engine whose install the test drives by hand: progress events, then success or failure. */
@@ -1477,9 +1478,9 @@ describe("PluginManagerDialog one-click engine install", () => {
             fail = reject;
           })
       ),
+      // Like Rust's `ocsr_engine_cancel_install`: it returns nothing; the install's rejection reports it.
       cancelInstall: vi.fn(async () => {
         fail?.({ code: "cancelled", message: "MolScribe installation was cancelled." });
-        return status;
       }),
       uninstall: vi.fn(async () => notInstalled),
       recognizeImage: vi.fn(async () => ({ status: "notInstalled" as const }))
@@ -1584,7 +1585,8 @@ describe("PluginManagerDialog one-click engine install", () => {
     const disclosure = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
     expect(disclosure?.textContent).toContain("Also installs the local recognition engine");
     expect(disclosure?.textContent).toContain("about 2.5 GB to download");
-    expect(disclosure?.textContent).toContain("Needs 2.8 GB free. Free now: 8 GB.");
+    // 3,000,000,000 bytes is 3 GB, as every other size in the flow is stated (not 2.8 "GB" of 1024³).
+    expect(disclosure?.textContent).toContain("Needs 3 GB free. Free now: 8 GB.");
     expect(fake.engine.install).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -1714,4 +1716,64 @@ describe("PluginManagerDialog one-click engine install", () => {
     fake.progress({ phase: "downloadingModel", message: "m", bytesDone: 500e6, bytesTotal: 1134.9e6 });
     expect(stepText()).toBe("Step 4 of 5: Downloading the recognition model");
   });
+
+  it("keeps Cancel install available for the whole install started from the row, and cancels it", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    mount(
+      createElement(WiredHarness, {
+        runtime,
+        installed: [installedEntry(molscribeManifest)],
+        onInstallPackage: async () => {}
+      })
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!.click();
+    });
+    // The install's promise is still pending (it settles only when the whole install ends)…
+    fake.progress({ phase: "installingPackages", message: "m", bytesDone: 100e6, bytesTotal: 1200e6, estimated: true });
+    const cancel = document.querySelector<HTMLButtonElement>('[data-action="cancel-recognition-engine-install"]')!;
+    // …and Cancel install is usable throughout.
+    expect(cancel.disabled).toBe(false);
+
+    await act(async () => cancel.click());
+    expect(fake.engine.cancelInstall).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
+      "Installation was cancelled."
+    );
+    const retry = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
+    expect(retry.textContent).toBe("Install engine again");
+    expect(retry.disabled).toBe(false);
+
+    // Starting again from "Install engine again" leaves Cancel install enabled too.
+    await act(async () => retry.click());
+    expect(
+      document.querySelector<HTMLButtonElement>('[data-action="cancel-recognition-engine-install"]')?.disabled
+    ).toBe(false);
+  });
+
+  it("renders a null engine status as still checking instead of crashing", async () => {
+    const runtime = createRuntime();
+    // What the old cancelInstall contract stored: Tauri's null for Rust's `()`.
+    const nullStatus = null as unknown as StructureRecognitionEngineStatus;
+    mount(
+      createElement(Harness, {
+        runtime,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn(),
+        installedPlugins: [installedEntry(molscribeManifest)],
+        recognitionEngineStatus: nullStatus,
+        onInstallRecognitionEngine: vi.fn(async () => true),
+        onUninstallRecognitionEngine: vi.fn(async () => undefined)
+      })
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: checking…"
+    );
+    expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
+  });
 });
+

@@ -5993,6 +5993,12 @@ textarea:focus-visible,
   font-size: 12px;
 }
 
+/* The dialog container takes focus only to keep the keyboard inside the modal when its focused
+   control goes away (keepFocusInsideDialog); that is not a control the user should see ringed. */
+.plugin-prompt-dialog:focus {
+  outline: none;
+}
+
 .plugin-prompt-header {
   padding: var(--cd-space-6);
   border-bottom: 1px solid var(--cd-border-subtle);

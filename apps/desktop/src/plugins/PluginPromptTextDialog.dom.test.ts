@@ -139,6 +139,24 @@ describe("PluginPromptTextDialog", () => {
     }
   });
 
+  it("ignores Escape aimed at another plugin dialog open at the same time", () => {
+    const onCancel = vi.fn();
+    mount(createElement(PluginPromptTextDialog, { prompt, onSubmit: vi.fn(), onCancel }));
+    // Stands in for the image-request dialog, which also carries .plugin-prompt-dialog.
+    const other = document.createElement("div");
+    other.className = "plugin-prompt-dialog plugin-image-dialog";
+    const otherButton = document.createElement("button");
+    other.appendChild(otherButton);
+    document.body.appendChild(other);
+
+    act(() => otherButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(onCancel).not.toHaveBeenCalled();
+
+    const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(onCancel).toHaveBeenCalledWith(1);
+  });
+
   it("cycles focus from the last control to the first and from the first to the last", () => {
     mount(createElement(PluginPromptTextDialog, { prompt, onSubmit: vi.fn(), onCancel: vi.fn() }));
     const input = document.querySelector<HTMLInputElement>(".plugin-prompt-body input")!;

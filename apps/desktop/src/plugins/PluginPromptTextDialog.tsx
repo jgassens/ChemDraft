@@ -36,6 +36,12 @@ export function PluginPromptTextDialog({ prompt, onSubmit, onCancel }: PluginPro
 
   useEffect(() => {
     const handleDialogKeyDown = (event: KeyboardEvent): void => {
+      // Only keys aimed at this dialog. Another plugin dialog (an image request, the engine installer)
+      // may be open at the same time and owns its own Escape; a window-wide handler here would cancel
+      // this prompt too.
+      if (!(event.target instanceof Node) || !dialogRef.current?.contains(event.target)) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();

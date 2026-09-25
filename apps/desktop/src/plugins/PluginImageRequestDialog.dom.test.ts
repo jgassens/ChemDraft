@@ -54,6 +54,14 @@ function mount(
   return { onAcquire, onOpenPermissionSettings, onPermissionFocus, onRelaunch, onCancel };
 }
 
+function rerender(request: OpenPluginImageRequest, callbacks: ReturnType<typeof mount>) {
+  act(() => root!.render(createElement(PluginImageRequestDialog, { request, ...callbacks })));
+}
+
+function imageDialog(): HTMLElement {
+  return document.querySelector<HTMLElement>(".plugin-image-dialog")!;
+}
+
 const baseRequest: OpenPluginImageRequest = {
   id: 1,
   pluginId: "org.test.image",
@@ -91,6 +99,49 @@ describe("PluginImageRequestDialog", () => {
       );
     });
     expect(onCancel).toHaveBeenCalledWith(1);
+  });
+
+  it("keeps the keyboard on the dialog while the focused source is disabled for acquiring, and after it fails", () => {
+    const callbacks = mount(baseRequest);
+    const file = document.querySelector<HTMLButtonElement>('[data-image-source="file"]')!;
+    act(() => file.focus());
+    act(() => file.click());
+    expect(callbacks.onAcquire).toHaveBeenCalledWith(1, "file");
+
+    // Acquiring: every source button is disabled, including the focused one.
+    rerender({ ...baseRequest, acquiringSource: "file" }, callbacks);
+    expect(file.disabled).toBe(true);
+    expect(document.activeElement).toBe(imageDialog());
+
+    // An oversized file (or a failed capture) re-enables the sources with an error; focus stays put.
+    rerender(
+      {
+        ...baseRequest,
+        error: "The selected image is 9000 × 10 pixels; images must be at most 8192 pixels on each side."
+      },
+      callbacks
+    );
+    expect(imageDialog().contains(document.activeElement)).toBe(true);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("8192 pixels");
+
+    // Tab still cycles inside the dialog, and Escape still cancels.
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true })));
+    expect(document.activeElement).toBe(file);
+    act(() => imageDialog().focus());
+    act(() =>
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }))
+    );
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(callbacks.onCancel).toHaveBeenCalledWith(1);
+  });
+
+  it("refocuses the dialog when focus drops to the page body", () => {
+    const callbacks = mount(baseRequest);
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(document.activeElement).toBe(document.body);
+    rerender({ ...baseRequest, acquiringSource: "screenRegion" }, callbacks);
+    expect(document.activeElement).toBe(imageDialog());
   });
 
   it("shows unavailable messages", () => {

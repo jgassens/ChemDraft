@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import type { StructureRecognitionInstallProgress } from "./structureRecognitionEngine";
-import { describeRecognitionInstall, formatMegabytes } from "./structureRecognitionInstallProgress";
+import {
+  describeRecognitionInstall,
+  formatMegabytes,
+  recognitionInstallProgressStore
+} from "./structureRecognitionInstallProgress";
 
 export interface RecognitionInstallProgressProps {
   progress?: StructureRecognitionInstallProgress;
@@ -13,8 +17,20 @@ export interface RecognitionInstallProgressProps {
  * The one progress display for a recognition-engine install, used by the first-use install dialog
  * and by the plugin manager. It never goes blank: every phase shows its step, the overall bar, and
  * either a byte bar or a time estimate, with the elapsed time ticking once a second.
+ *
+ * The props are the snapshot the window was last rendered with. While an install runs, the live
+ * progress store is newer — progress events deliberately do not re-render the windows that pass
+ * these props — so it takes precedence.
  */
-export function RecognitionInstallProgress({ progress, startedAt, phaseStartedAt }: RecognitionInstallProgressProps) {
+export function RecognitionInstallProgress(props: RecognitionInstallProgressProps) {
+  const live = useSyncExternalStore(
+    recognitionInstallProgressStore.subscribe,
+    recognitionInstallProgressStore.getSnapshot,
+    recognitionInstallProgressStore.getSnapshot
+  );
+  const { progress, startedAt, phaseStartedAt } = live
+    ? { progress: live.progress ?? props.progress, startedAt: live.startedAt, phaseStartedAt: live.phaseStartedAt }
+    : props;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);

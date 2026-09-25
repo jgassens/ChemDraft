@@ -686,7 +686,7 @@ function RecognitionEngineRow({
   onCancel,
   onUninstall
 }: {
-  status?: StructureRecognitionEngineStatus;
+  status?: StructureRecognitionEngineStatus | null;
   run?: StructureRecognitionInstallRun;
   disabled: boolean;
   onRefresh?: () => Promise<void>;
@@ -695,6 +695,9 @@ function RecognitionEngineRow({
   onUninstall?: () => Promise<void>;
 }) {
   const [working, setWorking] = useState(false);
+  /** Install was clicked and the run has not shown up yet. Only this — never the whole install — keeps
+   *  the buttons busy, so Cancel install is available for as long as the install runs. */
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
@@ -713,11 +716,27 @@ function RecognitionEngineRow({
   };
 
   // A run this window did not start (or started before it was reopened) is still this install.
+  // `status` is checked with `!= null` throughout: a status must never be null, but a null one must
+  // degrade to "checking…" rather than take the whole window down in render.
   const installing = run?.running === true || status?.state === "installing";
   const installed = !installing && status?.state === "installed";
+
+  useEffect(() => {
+    if (installing) setStarting(false);
+  }, [installing]);
+
+  const startInstall = (install: () => Promise<boolean>): void => {
+    setStarting(true);
+    setError(undefined);
+    // The promise settles only when the whole install ends; the run itself reports failures, so all
+    // that is caught here is a call that could not start.
+    install()
+      .catch((cause: unknown) => setError(`The engine install could not start: ${messageOf(cause)}`))
+      .finally(() => setStarting(false));
+  };
   const stateText = installing
     ? "installing"
-    : !status
+    : status == null
       ? error ? "status unavailable" : "checking…"
       : installed
         ? `installed (${formatDiskBytes(status.installed?.diskBytes ?? 0)})`
@@ -726,7 +745,7 @@ function RecognitionEngineRow({
           : status.state === "broken"
             ? "damaged — reinstall it"
             : "not installed";
-  const canInstall = !installing && status !== undefined && status.state !== "unsupported" && !installed;
+  const canInstall = !installing && status != null && status.state !== "unsupported" && !installed;
   const runError = !installing ? run?.error : undefined;
   return (
     <div className="plugin-manager-engine" data-testid="molscribe-engine-row">
@@ -778,8 +797,8 @@ function RecognitionEngineRow({
           <button
             className="plugin-manager-button"
             data-action="install-recognition-engine"
-            disabled={disabled || working}
-            onClick={() => perform(onInstall, "The engine install could not start")}
+            disabled={disabled || working || starting}
+            onClick={() => startInstall(onInstall)}
             type="button"
           >
             {runError || status?.state === "broken" ? "Install engine again" : "Install engine"}
@@ -796,7 +815,7 @@ function RecognitionEngineRow({
 }
 
 /** What installing an engine-requiring plugin also downloads, stated before the user confirms. */
-function RecognitionEngineDisclosure({ status }: { status?: StructureRecognitionEngineStatus }) {
+function RecognitionEngineDisclosure({ status }: { status?: StructureRecognitionEngineStatus | null }) {
   if (status?.state === "installed") {
     return (
       <p className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
@@ -812,7 +831,7 @@ function RecognitionEngineDisclosure({ status }: { status?: StructureRecognition
       </p>
     );
   }
-  const shortOfSpace = status !== undefined && status.freeDiskBytes < status.requiredDiskBytes;
+  const shortOfSpace = status != null && status.freeDiskBytes < status.requiredDiskBytes;
   return (
     <div className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
       <p>
@@ -821,7 +840,7 @@ function RecognitionEngineDisclosure({ status }: { status?: StructureRecognition
       </p>
       <p>
         Needs {formatDiskBytes(status?.requiredDiskBytes ?? 3e9)} free.{" "}
-        {status ? `Free now: ${formatDiskBytes(status.freeDiskBytes)}.` : "Free space: checking…"}
+        {status != null ? `Free now: ${formatDiskBytes(status.freeDiskBytes)}.` : "Free space: checking…"}
       </p>
       {shortOfSpace ? (
         <p className="plugin-manager-unavailable" role="alert">

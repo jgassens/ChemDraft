@@ -150,7 +150,99 @@ export function formatMegabytes(bytes: number): string {
   return `${megabytes < 10 ? megabytes.toFixed(1).replace(/\.0$/, "") : Math.round(megabytes).toLocaleString("en-US")} MB`;
 }
 
+/** Decimal gigabytes (10⁹ bytes), the same convention as {@link formatMegabytes}: disk space and
+ *  download sizes in the install flow must not mix 1024³ "GB" with 10⁹ ones. */
+export function formatGigabytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 GB";
+  const gigabytes = bytes / 1e9;
+  return `${gigabytes >= 10 ? Math.round(gigabytes).toLocaleString("en-US") : gigabytes.toFixed(1).replace(/\.0$/, "")} GB`;
+}
+
 function clamp(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
 }
+
+/** Where a running install is right now: what the progress display shows. */
+export interface LiveRecognitionInstallProgress {
+  progress?: StructureRecognitionInstallProgress;
+  startedAt: number;
+  phaseStartedAt: number;
+}
+
+/** What the store reads from: the recognition controller's run and its change notifications. */
+export interface RecognitionInstallProgressSource {
+  subscribe(listener: () => void): () => void;
+  getInstallRun():
+    | { running: boolean; progress?: StructureRecognitionInstallProgress; startedAt: number; phaseStartedAt: number }
+    | undefined;
+}
+
+/**
+ * The live progress of the running engine install, kept apart from the plugin runtime's shared
+ * version. An install sends progress several times a second for ten minutes; routing that through
+ * the runtime re-rendered the whole main window and rebuilt the native menu bar on every event. Only
+ * the progress display subscribes here (`useSyncExternalStore`), so only it re-renders.
+ *
+ * Module-level because the one desktop runtime is created once and the progress display is rendered
+ * by windows that receive only plain props. The latest connection wins; disconnecting clears it.
+ */
+export class RecognitionInstallProgressStore {
+  private source: RecognitionInstallProgressSource | undefined;
+  private unsubscribeSource: (() => void) | undefined;
+  private snapshot: LiveRecognitionInstallProgress | undefined;
+  private readonly listeners = new Set<() => void>();
+
+  connect(source: RecognitionInstallProgressSource): () => void {
+    this.unsubscribeSource?.();
+    this.source = source;
+    this.unsubscribeSource = source.subscribe(() => this.refresh());
+    this.refresh();
+    return () => {
+      if (this.source !== source) return;
+      this.unsubscribeSource?.();
+      this.unsubscribeSource = undefined;
+      this.source = undefined;
+      this.refresh();
+    };
+  }
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  /** Stable between changes, as `useSyncExternalStore` requires. Undefined when nothing is running. */
+  readonly getSnapshot = (): LiveRecognitionInstallProgress | undefined => this.snapshot;
+
+  private refresh(): void {
+    const run = this.source?.getInstallRun();
+    const next: LiveRecognitionInstallProgress | undefined = run?.running
+      ? { progress: run.progress, startedAt: run.startedAt, phaseStartedAt: run.phaseStartedAt }
+      : undefined;
+    if (sameLiveProgress(this.snapshot, next)) return;
+    this.snapshot = next;
+    for (const listener of this.listeners) listener();
+  }
+}
+
+export const recognitionInstallProgressStore = new RecognitionInstallProgressStore();
+
+function sameLiveProgress(
+  a: LiveRecognitionInstallProgress | undefined,
+  b: LiveRecognitionInstallProgress | undefined
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.startedAt === b.startedAt &&
+    a.phaseStartedAt === b.phaseStartedAt &&
+    a.progress?.phase === b.progress?.phase &&
+    a.progress?.message === b.progress?.message &&
+    a.progress?.bytesDone === b.progress?.bytesDone &&
+    a.progress?.bytesTotal === b.progress?.bytesTotal &&
+    a.progress?.estimated === b.progress?.estimated
+  );
+}
+

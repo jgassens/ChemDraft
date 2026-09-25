@@ -15,6 +15,12 @@ export interface OpenStructureRecognitionInstall {
   pluginName: string;
   status: StructureRecognitionEngineStatus;
   installing: boolean;
+  /**
+   * True once this dialog's own Install started the running install. A dialog that only joined an
+   * install already running (started from Add or Remove Plugins, say) does not own it: closing that
+   * dialog ends the plugin's request but leaves the shared install running.
+   */
+  ownsInstall: boolean;
   progress?: StructureRecognitionInstallProgress;
   error?: StructureRecognitionInstallError;
   /** While installing: when the install and its current phase started (ms since epoch). */
@@ -194,10 +200,20 @@ export class StructureRecognitionController {
   /** Cancels the running engine install, whoever started it. The run records the cancellation. */
   async cancelEngineInstall(): Promise<void> {
     if (!this.run?.running) return;
+    await this.cancelRunningInstall();
+  }
+
+  /**
+   * Asks the host to stop its install. The native command returns nothing, so its result is never
+   * mistaken for a status: the run that was cancelled reports the outcome itself — the direct install's
+   * rejection refreshes the status through `status()`, and a followed install's next poll reads it.
+   */
+  private async cancelRunningInstall(): Promise<void> {
     try {
       await this.engine.cancelInstall();
     } catch {
-      // The install's own rejection still reports the outcome.
+      // Cancellation remains cancellation even when native teardown reports an error; the run's own
+      // settlement still reports what the host left behind.
     }
   }
 
@@ -214,11 +230,19 @@ export class StructureRecognitionController {
       return { status: "failed", code: "installFailed", message: `Recognition engine status failed: ${messageOf(error)}` };
     }
 
+    // An engine this computer cannot run is not something the user declined: offering an install
+    // that can never succeed (or letting the plugin suggest one) would be a false promise.
+    if (status.state === "unsupported") return unsupportedResult(status);
+
     if (status.state !== "installed") {
       const outcome = await this.requestInstall(plugin, status, signal);
       // A cancel or an abandoned invocation is the user's own act: the plugin stays silent. Only a
       // declined or incomplete install is `engineNotInstalled`, which a plugin may explain.
       if (outcome === "cancelled" || signal.aborted) return { status: "cancelled" };
+      // The install itself found the computer unsupported (the dialog said so before closing).
+      if (outcome !== "installed" && this.latestStatus?.state === "unsupported") {
+        return unsupportedResult(this.latestStatus);
+      }
       if (outcome !== "installed") return { status: "engineNotInstalled" };
     }
 
@@ -250,6 +274,8 @@ export class StructureRecognitionController {
     const pending = this.pending;
     if (!pending || pending.id !== id || pending.installing || pending.status.state === "unsupported") return;
     pending.installing = true;
+    // Owned only if this click starts the install; one already running (from the plugin manager) is joined.
+    pending.ownsInstall = !this.run?.running;
     pending.error = undefined;
     pending.progress = { phase: "checkingDisk", message: "Checking available disk space…" };
     this.notify();
@@ -344,20 +370,32 @@ export class StructureRecognitionController {
     });
   }
 
-  /** The user cancelled the install dialog (or the invocation that opened it was abandoned). */
+  /**
+   * The user clicked Cancel (or pressed Escape) in the install dialog.
+   *
+   * Who may stop the shared install: only the dialog whose own Install started it. A dialog that
+   * joined an install already running — typically one the user started from Add or Remove Plugins —
+   * only ends this plugin's request; the install carries on, and Add or Remove Plugins still offers
+   * Cancel install. Either way the request settles as cancelled.
+   */
   cancel(id: number): Promise<void> {
-    return this.stop(id, "cancelled");
+    return this.stop(id, "cancelled", { cancelOwnedInstall: true });
   }
 
-  private async stop(id: number, outcome: Exclude<InstallRequestOutcome, "installed">): Promise<void> {
+  /**
+   * Ends a request nobody explicitly cancelled: the invocation that opened it was abandoned (`abort`)
+   * or the dialog host went away (`declined`). These never stop the shared install — the user did not
+   * ask for that, and the install stays visible and cancellable in Add or Remove Plugins.
+   */
+  private async stop(
+    id: number,
+    outcome: Exclude<InstallRequestOutcome, "installed">,
+    { cancelOwnedInstall = false }: { cancelOwnedInstall?: boolean } = {}
+  ): Promise<void> {
     const pending = this.pending;
     if (!pending || pending.id !== id) return;
-    if (pending.installing || pending.status.state === "installing") {
-      try {
-        this.latestStatus = await this.engine.cancelInstall();
-      } catch {
-        // Cancellation remains cancellation even when native teardown cannot return a fresh status.
-      }
+    if (cancelOwnedInstall && pending.installing && pending.ownsInstall && this.run?.running) {
+      await this.cancelRunningInstall();
     }
     if (this.pending === pending) this.settle(pending, outcome);
   }
@@ -383,11 +421,12 @@ export class StructureRecognitionController {
         pluginName: plugin.name,
         status,
         installing: status.state === "installing" || this.run?.running === true,
+        ownsInstall: false,
         signal,
         resolve
       };
       if (signal) {
-        pending.onAbort = () => void this.cancel(pending.id);
+        pending.onAbort = () => void this.stop(pending.id, "cancelled");
         signal.addEventListener("abort", pending.onAbort, { once: true });
       }
       this.pending = pending;
@@ -409,6 +448,12 @@ export class StructureRecognitionController {
   private notify(): void {
     for (const listener of this.listeners) listener();
   }
+}
+
+function unsupportedResult(status: StructureRecognitionEngineStatus): PluginRecognitionResult {
+  const message =
+    status.detail?.trim() || "This computer isn’t supported by the MolScribe recognition engine.";
+  return { status: "failed", code: "unsupported", message: message.slice(0, 2_000) };
 }
 
 function messageOf(error: unknown): string {

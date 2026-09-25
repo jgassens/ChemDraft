@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 import type { PluginImageSource } from "@chemdraft/plugin-api";
@@ -15,6 +15,50 @@ export interface PluginImageRequestDialogProps {
 
 export function isPluginImageKeyboardEvent(event: Pick<KeyboardEvent, "target">): boolean {
   return event.target instanceof Element && event.target.closest(".plugin-image-dialog") !== null;
+}
+
+/**
+ * Keeps keyboard focus inside a modal dialog whose focused control just went away.
+ *
+ * These dialogs own their keys only for events *targeted inside them* (their own handlers and
+ * MainWindow's opt-outs both test the event target). When the focused button unmounts (a footer that
+ * swaps) or turns disabled (a source that is acquiring), the browser drops focus to `<body>`; from then
+ * on Escape and Tab do nothing and Delete, Backspace or Cmd+Z reach the canvas behind the modal. So
+ * after every render, a dialog whose focus fell out is refocused on its own container
+ * (`tabIndex={-1}`), never on a button, so a repeated Enter cannot trigger an action nobody chose.
+ * Focus that moved somewhere real (another dialog, an input) is left alone.
+ */
+export function keepFocusInsideDialog(dialog: HTMLElement | null): void {
+  if (!dialog?.isConnected) return;
+  const active = document.activeElement;
+  const dropped = active === null || active === document.body || active === document.documentElement;
+  const disabledInside =
+    active instanceof HTMLElement && dialog.contains(active) && active !== dialog && active.matches(":disabled");
+  if (dropped || disabledInside) dialog.focus({ preventScroll: true });
+}
+
+/** Tab and Shift+Tab cycle through the dialog's enabled buttons, including from the container itself. */
+export function trapDialogTab(event: KeyboardEvent, dialog: HTMLElement | null): void {
+  const buttons = dialog?.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
+  if (!buttons || buttons.length === 0) {
+    // Nothing to move to: stay on the dialog rather than leave it.
+    event.preventDefault();
+    return;
+  }
+  const first = buttons[0];
+  const last = buttons[buttons.length - 1];
+  const active = document.activeElement;
+  const onAButton = Array.prototype.includes.call(buttons, active);
+  if (!onAButton) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 export function PluginImageRequestDialog({
@@ -37,6 +81,10 @@ export function PluginImageRequestDialog({
     };
   }, []);
 
+  // A source button turning disabled while it acquires (or the failure that follows) must not leave
+  // the modal without focus.
+  useLayoutEffect(() => keepFocusInsideDialog(dialogRef.current));
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (!isPluginImageKeyboardEvent(event)) return;
@@ -52,17 +100,7 @@ export function PluginImageRequestDialog({
         return;
       }
       if (event.key !== "Tab") return;
-      const focusable = dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
-      if (!focusable || focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapDialogTab(event, dialogRef.current);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -81,6 +119,7 @@ export function PluginImageRequestDialog({
       <div
         ref={dialogRef}
         className="plugin-prompt-dialog plugin-image-dialog"
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

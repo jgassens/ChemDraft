@@ -1,5 +1,6 @@
 import {
   PluginImageMaxBytes,
+  PluginImageMaxDimension,
   type PluginImageSource,
   type PluginProvidedImage
 } from "@chemdraft/plugin-api";
@@ -120,6 +121,7 @@ export const fileImageSourceProvider: ImageSourceProvider = {
     // The file may have grown since it was measured, or could not be measured at all.
     rejectOversizedFile(bytes.byteLength);
     const metadata = inspectSupportedImage(bytes);
+    rejectUnusableDimensions(metadata.width, metadata.height, "The selected image");
     return {
       ...metadata,
       bytes: new Uint8Array(bytes),
@@ -155,6 +157,8 @@ export const screenRegionImageSourceProvider: ImageSourceProvider = {
       if (!Array.isArray(response.bytes) || !response.width || !response.height) {
         throw new ImageSourceError("failed", "Screen capture returned no usable PNG image.");
       }
+      rejectOversizedFile(response.bytes.length, "The captured region");
+      rejectUnusableDimensions(response.width, response.height, "The captured region");
       return {
         mediaType: "image/png",
         bytes: new Uint8Array(response.bytes),
@@ -180,12 +184,27 @@ async function fileSizeIfKnown(path: string): Promise<number | undefined> {
   }
 }
 
-function rejectOversizedFile(size: number | undefined): void {
+function rejectOversizedFile(size: number | undefined, subject = "The selected file"): void {
   if (size === undefined || size <= PluginImageMaxBytes) return;
   throw new ImageSourceError(
     "invalidImage",
-    `The selected file is ${size} bytes; images must be at most ${PluginImageMaxBytes} bytes (25 MB).`
+    `${subject} is ${size} bytes; images must be at most ${PluginImageMaxBytes} bytes (25 MB).`
   );
+}
+
+/** The same per-side limit plugin-host enforces on a provided image. Checked here, while the dialog is
+ * still open, so the user sees a plain error and can pick another image instead of the plugin
+ * receiving a failure for an image it never saw. */
+function rejectUnusableDimensions(width: number, height: number, subject: string): void {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new ImageSourceError("invalidImage", `${subject} has no usable width and height.`);
+  }
+  if (width > PluginImageMaxDimension || height > PluginImageMaxDimension) {
+    throw new ImageSourceError(
+      "invalidImage",
+      `${subject} is ${width} × ${height} pixels; images must be at most ${PluginImageMaxDimension} pixels on each side.`
+    );
+  }
 }
 
 function throwIfAborted(signal: AbortSignal): void {

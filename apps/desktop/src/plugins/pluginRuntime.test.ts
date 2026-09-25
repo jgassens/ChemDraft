@@ -73,9 +73,26 @@ function installedEngine(
   return {
     status: vi.fn(async () => status),
     install: vi.fn(async () => status),
-    cancelInstall: vi.fn(async () => status),
+    // Like Rust's `ocsr_engine_cancel_install`, which returns `()`.
+    cancelInstall: vi.fn(async () => undefined),
     uninstall: vi.fn(async () => status),
     recognizeImage: vi.fn(recognizeImage)
+  };
+}
+
+/** An engine that is supported but not installed yet: recognition would need the installer. */
+function notInstalledEngine(): StructureRecognitionEngine {
+  const status: StructureRecognitionEngineStatus = {
+    state: "notInstalled",
+    requiredDiskBytes: 3e9,
+    freeDiskBytes: 8e9
+  };
+  return {
+    status: vi.fn(async () => status),
+    install: vi.fn(async () => status),
+    cancelInstall: vi.fn(async () => undefined),
+    uninstall: vi.fn(async () => status),
+    recognizeImage: vi.fn(async () => ({ status: "notInstalled" as const }))
   };
 }
 
@@ -214,8 +231,8 @@ describe("desktop plugin runtime", () => {
 
   it("acquires an image and reports engineNotInstalled in one line when no install dialog is attached", async () => {
     // No UI host renders the installer here, so the host must answer at once instead of waiting on a
-    // dialog that will never appear.
-    const runtime = makeRuntime();
+    // dialog that will never appear. (A supported engine: an unsupported one is not "not installed".)
+    const runtime = makeRuntime({ structureRecognitionEngine: notInstalledEngine() });
     registerWithRecognitionFixture(runtime);
 
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
@@ -235,6 +252,18 @@ describe("desktop plugin runtime", () => {
 
     runtime.panels.closePanel();
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
+  });
+
+  it("reports an unsupported engine as failed/unsupported, not as an engine the user declined", async () => {
+    // The default engine outside Tauri is the unsupported one.
+    const runtime = makeRuntime();
+    registerWithRecognitionFixture(runtime);
+
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await expect(invocation).resolves.toMatchObject({ status: "failed", code: "unsupported" });
+    expect(runtime.recognition.getOpenInstall()).toBeUndefined();
   });
 
   it("turns an installed engine's recognition into a reviewable proposal without opening a panel", async () => {

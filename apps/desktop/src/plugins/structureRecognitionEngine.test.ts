@@ -9,13 +9,14 @@ import {
 describe("TauriStructureRecognitionEngine", () => {
   it("uses the exact status, cancel, and uninstall commands", async () => {
     const status = { state: "notInstalled" as const, requiredDiskBytes: 10, freeDiskBytes: 20 };
-    const invoke = vi.fn(async () => status);
+    // Rust's ocsr_engine_cancel_install returns `()`, which Tauri delivers as null.
+    const invoke = vi.fn(async (command: string) => (command === "ocsr_engine_cancel_install" ? null : status));
     const engine = new TauriStructureRecognitionEngine(
       invoke as unknown as ConstructorParameters<typeof TauriStructureRecognitionEngine>[0]
     );
 
     await expect(engine.status()).resolves.toEqual(status);
-    await expect(engine.cancelInstall()).resolves.toEqual(status);
+    await expect(engine.cancelInstall()).resolves.toBeUndefined();
     await expect(engine.uninstall()).resolves.toEqual(status);
     expect(invoke.mock.calls).toEqual([
       ["ocsr_engine_status"],

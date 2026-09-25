@@ -6,11 +6,7 @@ import type {
 } from "@chemdraft/plugin-api";
 
 import { createNativeMolfileMolecule } from "../documentWorkflow";
-import {
-  recognitionAgreementLevel,
-  recognitionDisagreementWarning,
-  rememberRecognitionAgreement
-} from "./recognitionAgreement";
+import { recognitionAgreementWarning, rememberRecognitionAgreement } from "./recognitionAgreement";
 import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import type { StructureRecognitionOutcome } from "./structureRecognitionEngine";
 
@@ -91,10 +87,11 @@ export async function preparePluginStructureRecognition(
     });
   }
   object = recognitionObject(document, object);
-  // The engine recognized the image at several sizes. When they disagreed, say so first: MolScribe's
-  // confidence alone was measured to be as high on wrong answers as on right ones.
-  const agreementWarnings: RecognitionWarning[] =
-    recognitionAgreementLevel(outcome.agreement) === "unanimous" ? [] : [recognitionDisagreementWarning(outcome.agreement)];
+  // The engine recognized the image at several sizes. When they disagreed — or the image was too small
+  // to read at more than one — say so first: MolScribe's confidence alone was measured to be as high
+  // on wrong answers as on right ones.
+  const agreementWarning = recognitionAgreementWarning(outcome.agreement);
+  const agreementWarnings: RecognitionWarning[] = agreementWarning ? [agreementWarning] : [];
   rememberRecognitionAgreement(outcome.molfile, outcome.agreement);
   const validationWarnings: RecognitionWarning[] = [
     ...agreementWarnings,
