@@ -29,6 +29,8 @@ export function StructureRecognitionInstallDialog({
   const titleId = useId();
   const descriptionId = useId();
   const unsupported = request.status.state === "unsupported";
+  // An engine is on disk but does not match this build; the detail says why in plain words.
+  const reinstall = request.status.state === "broken";
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
@@ -125,7 +127,7 @@ export function StructureRecognitionInstallDialog({
                   type="button"
                   onClick={() => void onInstall(request.id)}
                 >
-                  Install
+                  {reinstall ? "Install engine again" : "Install"}
                 </button>
               ) : null}
             </>

@@ -752,10 +752,12 @@ function RecognitionEngineRow({
         : status.state === "unsupported"
           ? "not supported on this computer"
           : status.state === "broken"
-            ? "damaged — reinstall it"
+            ? "needs to be installed again"
             : "not installed";
   const canInstall = !installing && status != null && status.state !== "unsupported" && !installed;
   const runError = !installing ? run?.error : undefined;
+  // The host's plain reason, such as an engine from an older ChemDraft that no longer matches.
+  const brokenDetail = !installing && !runError && status?.state === "broken" ? status.detail?.trim() : undefined;
   return (
     <div className="plugin-manager-engine" data-testid="molscribe-engine-row">
       <p className="plugin-manager-update-status" data-testid="molscribe-engine-state">
@@ -767,6 +769,11 @@ function RecognitionEngineRow({
           startedAt={run?.startedAt}
           phaseStartedAt={run?.phaseStartedAt}
         />
+      ) : null}
+      {brokenDetail ? (
+        <p className="plugin-manager-update-status" data-testid="molscribe-engine-detail">
+          {brokenDetail}
+        </p>
       ) : null}
       {runError && status ? (
         <p className="plugin-manager-update-status is-error" data-testid="molscribe-engine-install-error" role="alert">

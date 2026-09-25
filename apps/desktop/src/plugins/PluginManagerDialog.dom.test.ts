@@ -470,6 +470,69 @@ describe("PluginManagerDialog", () => {
     expect(onInstallRecognitionEngine).toHaveBeenCalledOnce();
   });
 
+  it("says in plain words why a broken engine must be installed again", () => {
+    const runtime = createRuntime();
+    const onInstallRecognitionEngine = vi.fn(async () => true);
+    mount(
+      createElement(Harness, {
+        runtime,
+        installedPlugins: [molscribeInstalled],
+        recognitionEngineStatus: {
+          state: "broken",
+          requiredDiskBytes: 3e9,
+          freeDiskBytes: 8e9,
+          detail: "The recognition engine needs to be updated. Install the engine again to update it."
+        },
+        onInstallRecognitionEngine,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: needs to be installed again"
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-detail"]')?.textContent).toBe(
+      "The recognition engine needs to be updated. Install the engine again to update it."
+    );
+    const install = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
+    expect(install.textContent).toBe("Install engine again");
+    act(() => install.click());
+    expect(onInstallRecognitionEngine).toHaveBeenCalledOnce();
+  });
+
+  it("shows the host's check of an older engine as a running step, not an Install button", () => {
+    const runtime = createRuntime();
+    mount(
+      createElement(Harness, {
+        runtime,
+        installedPlugins: [molscribeInstalled],
+        recognitionEngineStatus: {
+          state: "installing",
+          requiredDiskBytes: 3e9,
+          freeDiskBytes: 8e9,
+          progress: {
+            phase: "verifying",
+            message: "Checking the installed recognition engine against this version of ChemDraft."
+          },
+          installElapsedMs: 1200
+        },
+        onInstallRecognitionEngine: vi.fn(async () => true),
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Recognition engine: installing"
+    );
+    expect(document.querySelector('[data-testid="recognition-install-step"]')?.textContent).toBe(
+      "Step 5 of 5: Checking the installation"
+    );
+    expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
+    expect(document.querySelector('[data-testid="molscribe-engine-detail"]')).toBeNull();
+  });
+
   it("shows installed engine size and removal in the MolScribe row", () => {
     const runtime = createRuntime();
     const onUninstallRecognitionEngine = vi.fn(async () => undefined);

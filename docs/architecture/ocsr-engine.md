@@ -60,7 +60,8 @@ passes); the status snapshot sees every event.
 
 Code: `apps/desktop/src-tauri/src/ocsr_engine/` — `mod.rs` (commands and state), `install.rs`
 (installer), `progress.rs` (install progress estimates), `process.rs` (sidecar lifetime), `protocol.rs` (JSON Lines), `platform.rs` (per-OS seam),
-`pins.rs` (every supply-chain pin). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.
+`pins.rs` (every supply-chain pin), `receipt.rs` (the install receipt and its versions), `upgrade.rs`
+(in-place receipt upgrade). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.
 
 ## Installed layout
 
@@ -74,7 +75,7 @@ ocsr-engine/
   venv/                      isolated MolScribe environment
   requirements.txt           the hash-locked package set (copied from resources/ocsr/)
   swin_base_char_aux_1m.pth  pinned model
-  install.json               receipt: every pin plus install date and size
+  install.json               receipt: schema version, every pin, install date and size
 ```
 
 Only three names are ever touched, all siblings in the app-data directory: `ocsr-engine/`,
@@ -145,6 +146,71 @@ idempotent.
 whose pins differ from this build's, a missing uv/interpreter/model, or a model of the wrong size is
 reported as `broken` with a `detail`, never accepted silently. Status checks sizes, not hashes: hashing
 1.1 GB on every status call would be too slow, and the hash was verified before the file was kept.
+A receipt from an older ChemDraft is the exception: it is checked once, in full, and upgraded in place
+(see [Receipt versions](#receipt-versions-and-in-place-upgrade)).
+
+`detail` is shown to the user as it is, so it is always plain words. A receipt that cannot be read
+says "The recognition engine’s installation record is damaged. Install the engine again."; an engine
+that does not match this build says "The recognition engine needs to be updated. Install the engine
+again to update it." The parser's own message (`missing field … at line 17 column 1`) goes to the app
+log only. The plugin manager's engine row shows a broken engine as "needs to be installed again" with
+the `detail` beneath it and **Install engine again**; the first-use dialog shows the `detail` and the
+same button label.
+
+## Receipt versions and in-place upgrade
+
+`install.json` carries `receiptVersion`. Each version is parsed by its own struct (`receipt.rs`), so an
+older receipt is read, not rejected:
+
+| Version | Written by | Shape |
+| --- | --- | --- |
+| 1 | installs before the hash lock (before 6635f42) | range constraints (`torchConstraint` …), no `requirementsSha256`, no `receiptVersion` |
+| 2 | 6635f42 on | exact versions and the lock's SHA-256; `receiptVersion: 2` (6635f42 itself wrote no version field and is recognized by `requirementsSha256`); `upgradedInPlace: {fromReceiptVersion, upgradedAt}` when rewritten by the upgrade below |
+
+A version newer than the build understands reads as `broken` ("installed by a newer version of
+ChemDraft").
+
+A version-1 engine may be exactly what a fresh install makes today; rejecting it, as 6635f42 did,
+costs every existing user a 2.4 GB re-download. Instead, the first status call that finds one starts a check
+on its own thread and reports `installing` with phase `verifying` ("Checking the installation") while
+it runs; the check never runs on the main thread (a synchronous Tauri command does) and never runs
+twice. It takes the install's `installing` flag and staging lock, so a real install waits, uninstall
+cancels it, and the startup sweep leaves the tree alone. Nothing is downloaded, and nothing is written
+except the new receipt. In order, cheapest first (`upgrade.rs`):
+
+1. The old receipt's uv, Python, MolScribe and model pins equal the current ones.
+2. The bundled requirements file is the reviewed lock (`REQUIREMENTS_LOCK_SHA256`).
+3. The installed `uv --version` is the pinned version.
+4. `venv/bin/python -I -B -c …` imports `cv2, molscribe, numpy, torch, torchvision` (as the post-install
+   check does), then prints its PEP 508 marker environment; its Python must be the pinned minor
+   version. `-B` keeps it from writing bytecode into the engine.
+5. The venv's packages, read from each `*.dist-info/METADATA`, equal the lock by `name==version`
+   exactly: every lock entry whose marker holds for that environment is installed at its version, and
+   nothing else is installed except MolScribe. A marker, variable or requirement form the evaluator
+   does not understand fails the check rather than being guessed. An `.egg-info` fails it too.
+6. MolScribe's `direct_url.json` names the pinned archive URL (or, for the current installer, the
+   verified local archive).
+7. The model's size and SHA-256 equal the pin — hashed last, since it is the slow step.
+
+Name-and-version equality is enough for step 5 because PyPI never lets a published file be replaced:
+the same version on the same platform is the same wheel the lock hashes. On success the receipt is
+rewritten in the current format, keeping the original `installedAt` and `diskBytes`, with
+`upgradedInPlace`, written to `install.json.tmp` and renamed over the old one. On failure the old
+receipt is left as it was, status reports `broken` with the plain `detail` above, the technical reason
+goes to the log, and the refusal is remembered for the session (cleared by an install or uninstall), so
+status does not hash the model again. Cancelling the check (Cancel install, or uninstall) is remembered
+the same way with its own message; a restart checks again.
+
+The first real engine checked this way, a macOS arm64 install from 2026-09-24 with the owner's version-1
+receipt, passed every step (89 distributions: the 88 lock entries that apply on that platform, plus
+MolScribe) in 56 s in a debug build, most of it the model hash. To repeat that check read-only against
+any installed engine:
+
+```bash
+cd apps/desktop/src-tauri
+CHEMDRAFT_OCSR_ENGINE_DIR="$HOME/Library/Application Support/<bundle id>/ocsr-engine" \
+  cargo test --lib ocsr_engine::upgrade::tests::real_engine -- --ignored --nocapture
+```
 
 ## Pins
 
@@ -195,8 +261,9 @@ packages step, `platform::current()` reports `unsupported` up front, before anyt
 an older torch build for that platform — not a silent fallback.
 
 The receipt records the lock's SHA-256, the exact torch/torchvision/numpy versions and the MolScribe
-archive's SHA-256; a receipt from before the lock does not match these pins and reads as `broken`, so
-such an install is replaced by a verified one.
+archive's SHA-256. An install from before the lock is checked against the lock in place and keeps
+working if it matches; only one that differs has to be installed again (see
+[Receipt versions](#receipt-versions-and-in-place-upgrade)).
 
 ## Sidecar protocol (version 2)
 
@@ -362,7 +429,7 @@ Python and packages.
 
 | Command | Arguments | Returns |
 | --- | --- | --- |
-| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}`; `progress` (the latest `InstallProgress`) and `installElapsedMs` are present only while `installing` |
+| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}`; `progress` (the latest `InstallProgress`) and `installElapsedMs` are present only while `installing`, which includes the check of an engine with an older receipt (phase `verifying`) |
 | `ocsr_engine_install` | `onProgress: Channel<InstallProgress>` | status, or `Err({code, message})` with `insufficientDisk`, `network`, `checksumMismatch`, `cancelled`, `unsupported` or `failed`. One install at a time; a second call fails with `failed`. |
 | `ocsr_engine_cancel_install` | — | `()` |
 | `ocsr_engine_uninstall` | — | status. Cancels a running install and waits for it, stops the sidecar, then removes the three `ocsr-engine*` directories. |

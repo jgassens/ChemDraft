@@ -7,14 +7,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use flate2::read::GzDecoder;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::pins;
 use super::platform::{self, EnginePlatform};
 use super::progress::{self, GrowthEstimator};
+use super::receipt::{read_current_receipt, write_receipt, InstallReceipt};
 use super::{InstallError, InstallErrorCode, InstallPhase, InstallProgress};
 
 pub const ENGINE_DIR: &str = "ocsr-engine";
@@ -23,70 +22,6 @@ pub const PARTIAL_DIR: &str = "ocsr-engine.partial";
 pub const PREVIOUS_DIR: &str = "ocsr-engine.previous";
 pub const RECEIPT_FILE: &str = "install.json";
 pub const REQUIREMENTS_FILE: &str = "requirements.txt";
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallReceipt {
-    pub uv_version: String,
-    pub uv_asset: String,
-    pub uv_sha256: String,
-    pub python_version: String,
-    pub requirements_sha256: String,
-    pub torch_version: String,
-    pub torchvision_version: String,
-    pub numpy_version: String,
-    pub molscribe_commit: String,
-    pub molscribe_source_url: String,
-    pub molscribe_source_sha256: String,
-    pub model_revision: String,
-    pub model_url: String,
-    pub model_sha256: String,
-    pub model_bytes: u64,
-    pub installed_at: String,
-    pub disk_bytes: u64,
-}
-
-impl InstallReceipt {
-    fn pinned(platform: &dyn EnginePlatform, disk_bytes: u64) -> Self {
-        Self {
-            uv_version: pins::UV_VERSION.to_string(),
-            uv_asset: platform.uv_asset().to_string(),
-            uv_sha256: platform.uv_sha256().to_string(),
-            python_version: pins::PYTHON_VERSION.to_string(),
-            requirements_sha256: pins::REQUIREMENTS_LOCK_SHA256.to_string(),
-            torch_version: pins::TORCH_VERSION.to_string(),
-            torchvision_version: pins::TORCHVISION_VERSION.to_string(),
-            numpy_version: pins::NUMPY_VERSION.to_string(),
-            molscribe_commit: pins::MOLSCRIBE_COMMIT.to_string(),
-            molscribe_source_url: pins::MOLSCRIBE_SOURCE_URL.to_string(),
-            molscribe_source_sha256: pins::MOLSCRIBE_SOURCE_SHA256.to_string(),
-            model_revision: pins::MODEL_REVISION.to_string(),
-            model_url: pins::MODEL_URL.to_string(),
-            model_sha256: pins::MODEL_SHA256.to_string(),
-            model_bytes: pins::MODEL_BYTES,
-            installed_at: Utc::now().to_rfc3339(),
-            disk_bytes,
-        }
-    }
-
-    pub fn matches_pins(&self, platform: &dyn EnginePlatform) -> bool {
-        self.uv_version == pins::UV_VERSION
-            && self.uv_asset == platform.uv_asset()
-            && self.uv_sha256 == platform.uv_sha256()
-            && self.python_version == pins::PYTHON_VERSION
-            && self.requirements_sha256 == pins::REQUIREMENTS_LOCK_SHA256
-            && self.torch_version == pins::TORCH_VERSION
-            && self.torchvision_version == pins::TORCHVISION_VERSION
-            && self.numpy_version == pins::NUMPY_VERSION
-            && self.molscribe_commit == pins::MOLSCRIBE_COMMIT
-            && self.molscribe_source_url == pins::MOLSCRIBE_SOURCE_URL
-            && self.molscribe_source_sha256 == pins::MOLSCRIBE_SOURCE_SHA256
-            && self.model_revision == pins::MODEL_REVISION
-            && self.model_url == pins::MODEL_URL
-            && self.model_sha256 == pins::MODEL_SHA256
-            && self.model_bytes == pins::MODEL_BYTES
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct InstallPaths {
@@ -350,7 +285,7 @@ impl InstallIo for SystemInstallIo {
         args: &[OsString],
         env: &[(OsString, OsString)],
         cancel: &AtomicBool,
-        mut watch: Option<RunWatch<'_>>,
+        watch: Option<RunWatch<'_>>,
     ) -> Result<(), InstallError> {
         check_cancel(cancel)?;
         let mut command = Command::new(program);
@@ -365,16 +300,99 @@ impl InstallIo for SystemInstallIo {
         let mut child = command.spawn().map_err(|error| {
             InstallError::failed(format!("Could not run {}: {error}", program.display()))
         })?;
-        self.running.track(&child);
+        self.supervise(&mut child, program, cancel, watch, None)
+    }
+}
+
+/// Runs a program and returns what it wrote to stdout: the seam the in-place receipt upgrade uses
+/// to ask the installed uv and Python what they are.
+pub trait ProbeIo: Send + Sync {
+    fn output(
+        &self,
+        platform: &dyn EnginePlatform,
+        program: &Path,
+        args: &[OsString],
+        cancel: &AtomicBool,
+    ) -> Result<String, InstallError>;
+}
+
+/// A probe that has not answered in this long is killed; importing torch takes seconds.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(300);
+
+impl ProbeIo for SystemInstallIo {
+    fn output(
+        &self,
+        platform: &dyn EnginePlatform,
+        program: &Path,
+        args: &[OsString],
+        cancel: &AtomicBool,
+    ) -> Result<String, InstallError> {
+        check_cancel(cancel)?;
+        let mut command = Command::new(program);
+        scrub_environment(&mut command);
+        command
+            .args(args)
+            .env("UV_NO_CONFIG", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        platform.configure_child(&mut command);
+        let mut child = command.spawn().map_err(|error| {
+            InstallError::failed(format!("Could not run {}: {error}", program.display()))
+        })?;
+        // Drained on its own thread so a chatty child never blocks on a full pipe.
+        let reader = child.stdout.take().map(|mut stdout| {
+            std::thread::spawn(move || {
+                let mut text = Vec::new();
+                stdout.read_to_end(&mut text).map(|_| text)
+            })
+        });
+        let outcome = self.supervise(
+            &mut child,
+            program,
+            cancel,
+            None,
+            Some(Instant::now() + PROBE_TIMEOUT),
+        );
+        let text = reader
+            .map(|reader| reader.join().unwrap_or_else(|_| Ok(Vec::new())))
+            .transpose()
+            .map_err(InstallError::failed_io)?
+            .unwrap_or_default();
+        outcome?;
+        Ok(String::from_utf8_lossy(&text).into_owned())
+    }
+}
+
+impl SystemInstallIo {
+    /// Waits for `child`, killing its whole tree on cancel (or past `deadline`), and sampling a
+    /// step's progress estimate while it runs.
+    fn supervise(
+        &self,
+        child: &mut Child,
+        program: &Path,
+        cancel: &AtomicBool,
+        mut watch: Option<RunWatch<'_>>,
+        deadline: Option<Instant>,
+    ) -> Result<(), InstallError> {
+        self.running.track(child);
         let mut last_sample = Instant::now();
         loop {
-            if cancel.load(Ordering::SeqCst) {
+            let timed_out = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+            if cancel.load(Ordering::SeqCst) || timed_out {
                 self.running.kill_tree();
                 let _ = child.kill();
                 let _ = child.wait();
+                if timed_out && !cancel.load(Ordering::SeqCst) {
+                    return Err(InstallError::failed(format!(
+                        "{} did not finish within {} seconds.",
+                        program.display(),
+                        PROBE_TIMEOUT.as_secs()
+                    )));
+                }
                 return Err(InstallError::cancelled());
             }
-            match self.running.try_wait(&mut child) {
+            match self.running.try_wait(child) {
                 Ok(Some(status)) => {
                     // Killed by app exit, which raises the cancel flag first.
                     if cancel.load(Ordering::SeqCst) {
@@ -831,7 +849,8 @@ fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
 /// Whether `root` holds an install that matches this build's pins and layout, as
 /// `ocsr_engine_status` would report `installed`.
 pub fn is_healthy(root: &Path, platform: &dyn EnginePlatform) -> bool {
-    read_receipt(&root.join(RECEIPT_FILE)).is_ok_and(|receipt| receipt.matches_pins(platform))
+    read_current_receipt(&root.join(RECEIPT_FILE))
+        .is_some_and(|receipt| receipt.matches_pins(platform))
         && verify_layout(root, platform).is_ok()
 }
 
@@ -860,11 +879,6 @@ pub fn remove_stale_staging(paths: &InstallPaths, platform: &dyn EnginePlatform)
     removed
 }
 
-pub fn read_receipt(path: &Path) -> Result<InstallReceipt, String> {
-    let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&text).map_err(|error| error.to_string())
-}
-
 pub fn verify_layout(root: &Path, platform: &dyn EnginePlatform) -> Result<(), InstallError> {
     let uv = platform.uv_executable(root);
     let python = platform.venv_python(root);
@@ -885,15 +899,6 @@ pub fn verify_layout(root: &Path, platform: &dyn EnginePlatform) -> Result<(), I
         )));
     }
     Ok(())
-}
-
-fn write_receipt(path: &Path, receipt: &InstallReceipt) -> Result<(), InstallError> {
-    let bytes = serde_json::to_vec_pretty(receipt).map_err(|error| {
-        InstallError::failed(format!("Could not encode install receipt: {error}"))
-    })?;
-    let mut file = File::create(path).map_err(InstallError::failed_io)?;
-    file.write_all(&bytes).map_err(InstallError::failed_io)?;
-    file.sync_all().map_err(InstallError::failed_io)
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), InstallError> {
@@ -1304,7 +1309,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "chemdraft-ocsr-{label}-{}-{}",
             std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
         fs::create_dir_all(&root).expect("test root");
         root
@@ -1398,7 +1403,8 @@ mod tests {
         assert!(paths.final_dir().is_dir());
         assert_no_staging(&paths);
         assert!(receipt.matches_pins(&platform));
-        let round_trip = read_receipt(&paths.final_dir().join(RECEIPT_FILE)).expect("receipt");
+        let round_trip =
+            read_current_receipt(&paths.final_dir().join(RECEIPT_FILE)).expect("receipt");
         assert_eq!(receipt, round_trip);
         assert!(receipt.disk_bytes >= pins::MODEL_BYTES);
         let _ = fs::remove_dir_all(root);
@@ -1747,27 +1753,6 @@ mod tests {
         assert_eq!(error.code, InstallErrorCode::InsufficientDisk);
         assert!(io.steps.lock().expect("steps").is_empty());
         assert!(!paths.partial_dir().exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn receipt_round_trips_all_pins_and_detects_stale_ones() {
-        let root = temp_root("receipt");
-        let platform = MacPlatform::new(MacArchitecture::X86_64);
-        let receipt = InstallReceipt::pinned(&platform, 42);
-        let path = root.join(RECEIPT_FILE);
-        write_receipt(&path, &receipt).expect("write receipt");
-        let read = read_receipt(&path).expect("read receipt");
-        assert_eq!(read, receipt);
-        assert!(read.matches_pins(&platform));
-        assert!(!read.matches_pins(&MacPlatform::new(MacArchitecture::Aarch64)));
-        let stale = InstallReceipt {
-            model_sha256: "0".repeat(64),
-            ..receipt
-        };
-        assert!(!stale.matches_pins(&platform));
-        fs::write(&path, b"{not json").expect("corrupt receipt");
-        assert!(read_receipt(&path).is_err());
         let _ = fs::remove_dir_all(root);
     }
 

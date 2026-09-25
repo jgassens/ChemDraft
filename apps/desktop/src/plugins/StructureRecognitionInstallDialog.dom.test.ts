@@ -161,6 +161,24 @@ describe("StructureRecognitionInstallDialog", () => {
     );
   });
 
+  it("explains an engine that must be installed again in plain words and offers Install engine again", () => {
+    const callbacks = renderDialog(
+      request({
+        status: {
+          state: "broken",
+          requiredDiskBytes: 2 * gb,
+          freeDiskBytes: 3 * gb,
+          detail: "The recognition engine needs to be updated. Install the engine again to update it."
+        }
+      })
+    );
+
+    expect(document.body.textContent).toContain("The recognition engine needs to be updated.");
+    expect(document.body.textContent).not.toMatch(/missing field|line \d+ column|receipt/);
+    act(() => button("Install engine again").click());
+    expect(callbacks.onInstall).toHaveBeenCalledWith(7);
+  });
+
   it("maps Escape to decline before install and cancel during install", () => {
     const callbacks = renderDialog(request());
     act(() => button("Install").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));

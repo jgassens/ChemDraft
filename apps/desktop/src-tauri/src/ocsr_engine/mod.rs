@@ -4,6 +4,8 @@ mod platform;
 mod process;
 mod progress;
 mod protocol;
+mod receipt;
+mod upgrade;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,8 +22,11 @@ use tauri::ipc::Channel;
 use tauri::{Manager, Runtime};
 
 use install::{InstallPaths, RunningChild, SystemInstallIo};
+use platform::EnginePlatform;
 use process::{KillSwitch, LaunchPaths, ProcessError, ProcessManager};
 use protocol::{RecognitionAgreement, RecognizedAtom, RecognizedBond};
+use receipt::{LegacyReceiptV1, ReceiptRead};
+use upgrade::{ModelPin, UpgradeError};
 
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 static NEXT_TEMP_IMAGE: AtomicU64 = AtomicU64::new(1);
@@ -216,6 +221,10 @@ pub struct OcsrEngineState {
     process: Arc<Mutex<ProcessManager>>,
     /// Kills the sidecar without `process`'s lock; see `process::KillSwitch`.
     sidecar_kill: KillSwitch,
+    /// Set when the in-place receipt upgrade (`upgrade.rs`) refused the installed engine, so status
+    /// reports it without checking again: the check hashes a 1.1 GB model. Holds the plain text
+    /// the user sees. Cleared by an install or uninstall.
+    upgrade_refused: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for OcsrEngineState {
@@ -237,6 +246,7 @@ impl OcsrEngineState {
             request_gate: Arc::new(Mutex::new(())),
             sidecar_kill: manager.kill_switch(),
             process: Arc::new(Mutex::new(manager)),
+            upgrade_refused: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -392,7 +402,9 @@ pub async fn ocsr_engine_install<R: Runtime>(
     .await
     .map_err(|error| InstallError::failed(format!("Could not schedule installation: {error}")))?;
     result?;
-    Ok(status_impl(&app, &app.state::<OcsrEngineState>()))
+    let state = app.state::<OcsrEngineState>();
+    *lock_ignoring_poison(&state.upgrade_refused) = None;
+    Ok(status_impl(&app, &state))
 }
 
 #[tauri::command]
@@ -412,6 +424,7 @@ pub async fn ocsr_engine_uninstall<R: Runtime>(app: tauri::AppHandle<R>) -> Ocsr
     let staging = state.staging.clone();
     let process = state.process.clone();
     let sidecar_kill = state.sidecar_kill.clone();
+    let upgrade_refused = state.upgrade_refused.clone();
     // Waiting for the install, stopping the sidecar and deleting gigabytes all block, so none of
     // it runs on the async executor.
     // `Some(status)` names the directory that could not be removed.
@@ -421,6 +434,7 @@ pub async fn ocsr_engine_uninstall<R: Runtime>(app: tauri::AppHandle<R>) -> Ocsr
         }
         OcsrEngineState::stop_sidecar_blocking(&process, &sidecar_kill);
         let _staging = lock_ignoring_poison(&staging);
+        *lock_ignoring_poison(&upgrade_refused) = None;
         for path in [paths.final_dir(), paths.partial_dir(), paths.previous_dir()] {
             if path.exists() {
                 if let Err(error) = fs::remove_dir_all(&path) {
@@ -611,26 +625,54 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
             }
         }
     };
-    if state.installing.load(Ordering::SeqCst) {
-        let (progress, install_elapsed_ms) =
-            match lock_ignoring_poison(&state.install_snapshot).as_ref() {
-                Some(snapshot) => (
-                    snapshot.progress.clone(),
-                    Some(u64::try_from(snapshot.started.elapsed().as_millis()).unwrap_or(u64::MAX)),
-                ),
-                None => (None, None),
-            };
-        return OcsrEngineStatus {
-            state: EngineState::Installing,
-            installed: None,
-            required_disk_bytes: pins::REQUIRED_DISK_BYTES,
-            free_disk_bytes: free,
-            detail: None,
-            progress,
-            install_elapsed_ms,
-        };
-    }
     let root = paths.final_dir();
+    engine_status_at(&root, platform.as_ref(), free, state, |legacy| {
+        let requirements = paths.requirements.clone();
+        let upgrade_root = root.clone();
+        let install_child = state.install_child.clone();
+        begin_receipt_upgrade(state, move |cancel| {
+            // A status call that raced the end of an earlier check finds the receipt rewritten.
+            let receipt_path = upgrade_root.join(install::RECEIPT_FILE);
+            if matches!(
+                receipt::read_receipt(&receipt_path),
+                Ok(ReceiptRead::Current(_))
+            ) {
+                return Ok(());
+            }
+            let platform = platform::current().map_err(UpgradeError::Mismatch)?;
+            let requirements = fs::read(&requirements).map_err(|error| {
+                UpgradeError::Mismatch(format!("could not read the bundled lock: {error}"))
+            })?;
+            let io = SystemInstallIo::new(install_child)
+                .map_err(|error| UpgradeError::Mismatch(error.message))?;
+            upgrade::upgrade_legacy_receipt(
+                &upgrade_root,
+                platform.as_ref(),
+                &legacy,
+                &requirements,
+                &ModelPin::pinned(),
+                &io,
+                cancel,
+            )
+            .map(|_| ())
+        });
+    })
+}
+
+/// Status for the engine at `root`. A receipt from an older ChemDraft is handed to
+/// `start_upgrade`, once: while the check runs, status reports `installing` (phase `verifying`),
+/// and afterwards either the rewritten receipt or the remembered refusal answers without checking
+/// again.
+fn engine_status_at(
+    root: &Path,
+    platform: &dyn EnginePlatform,
+    free: u64,
+    state: &OcsrEngineState,
+    start_upgrade: impl FnOnce(LegacyReceiptV1),
+) -> OcsrEngineStatus {
+    if state.installing.load(Ordering::SeqCst) {
+        return installing_status(state, free);
+    }
     if !root.exists() {
         return OcsrEngineStatus {
             state: EngineState::NotInstalled,
@@ -642,22 +684,24 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
             install_elapsed_ms: None,
         };
     }
-    let receipt = match install::read_receipt(&root.join(install::RECEIPT_FILE)) {
-        Ok(receipt) => receipt,
+    let receipt = match receipt::read_receipt(&root.join(install::RECEIPT_FILE)) {
+        Ok(ReceiptRead::Current(receipt)) => receipt,
+        Ok(ReceiptRead::Legacy(legacy)) => {
+            if let Some(detail) = lock_ignoring_poison(&state.upgrade_refused).clone() {
+                return broken_status(free, detail);
+            }
+            start_upgrade(legacy);
+            return installing_status(state, free);
+        }
         Err(error) => {
-            return broken_status(
-                free,
-                format!("The OCSR install receipt is invalid: {error}"),
-            )
+            eprintln!("[chemdraft ocsr] {error}");
+            return broken_status(free, error.plain_message());
         }
     };
-    if !receipt.matches_pins(platform.as_ref()) {
-        return broken_status(
-            free,
-            "The installed OCSR dependency pins do not match this ChemDraft build.",
-        );
+    if !receipt.matches_pins(platform) {
+        return broken_status(free, upgrade::ENGINE_NEEDS_UPDATE);
     }
-    if let Err(error) = install::verify_layout(&root, platform.as_ref()) {
+    if let Err(error) = install::verify_layout(root, platform) {
         return broken_status(free, error.message);
     }
     OcsrEngineStatus {
@@ -676,6 +720,90 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
         progress: None,
         install_elapsed_ms: None,
     }
+}
+
+fn installing_status(state: &OcsrEngineState, free: u64) -> OcsrEngineStatus {
+    let (progress, install_elapsed_ms) =
+        match lock_ignoring_poison(&state.install_snapshot).as_ref() {
+            Some(snapshot) => (
+                snapshot.progress.clone(),
+                Some(u64::try_from(snapshot.started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            ),
+            None => (None, None),
+        };
+    OcsrEngineStatus {
+        state: EngineState::Installing,
+        installed: None,
+        required_disk_bytes: pins::REQUIRED_DISK_BYTES,
+        free_disk_bytes: free,
+        detail: None,
+        progress,
+        install_elapsed_ms,
+    }
+}
+
+const UPGRADE_CANCELLED: &str =
+    "The check of the recognition engine was stopped. Restart ChemDraft to check it again, or \
+     install the engine again.";
+
+/// Runs the in-place receipt upgrade on its own thread, as an install: it holds the `installing`
+/// flag (so status reports `installing`, a real install waits, and uninstall cancels it) and the
+/// staging lock. `status` runs on the main thread and must never wait for it. Returns whether it
+/// started; it does not when an install is already running.
+fn begin_receipt_upgrade<F>(state: &OcsrEngineState, job: F) -> bool
+where
+    F: FnOnce(&AtomicBool) -> Result<(), UpgradeError> + Send + 'static,
+{
+    if state
+        .installing
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    state.cancel_install.store(false, Ordering::SeqCst);
+    *lock_ignoring_poison(&state.install_snapshot) = Some(InstallSnapshot {
+        started: Instant::now(),
+        progress: Some(InstallProgress {
+            phase: InstallPhase::Verifying,
+            message: "Checking the installed recognition engine against this version of ChemDraft."
+                .to_string(),
+            bytes_done: None,
+            bytes_total: None,
+            estimated: false,
+        }),
+    });
+    let installing = state.installing.clone();
+    let snapshot = state.install_snapshot.clone();
+    let cancel = state.cancel_install.clone();
+    let staging = state.staging.clone();
+    let refused = state.upgrade_refused.clone();
+    std::thread::spawn(move || {
+        let _staging = lock_ignoring_poison(&staging);
+        let started = Instant::now();
+        let outcome = job(&cancel);
+        match &outcome {
+            Ok(()) => eprintln!(
+                "[chemdraft ocsr] upgraded the install receipt in place after verifying the engine ({:?})",
+                started.elapsed()
+            ),
+            Err(UpgradeError::Mismatch(detail)) => {
+                eprintln!("[chemdraft ocsr] the installed engine does not match this build: {detail}")
+            }
+            Err(UpgradeError::Cancelled) => {
+                eprintln!("[chemdraft ocsr] the engine check was cancelled")
+            }
+        }
+        // Remembered before `installing` clears, so no status call sees neither.
+        *lock_ignoring_poison(&refused) = match outcome {
+            Ok(()) => None,
+            Err(UpgradeError::Mismatch(_)) => Some(upgrade::ENGINE_NEEDS_UPDATE.to_string()),
+            Err(UpgradeError::Cancelled) => Some(UPGRADE_CANCELLED.to_string()),
+        };
+        *lock_ignoring_poison(&snapshot) = None;
+        installing.store(false, Ordering::SeqCst);
+    });
+    true
 }
 
 fn install_paths<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<InstallPaths, InstallError> {
@@ -905,6 +1033,145 @@ mod tests {
             }));
             Ok(Box::new(UntilKilledProcess(receiver)))
         }
+    }
+
+    fn wait_until_not_installing(state: &OcsrEngineState) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.installing.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the upgrade never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Status for `engine`, whose upgrade (if status starts one) runs against `probe` and the
+    /// stand-in model; `starts` counts how often status started it.
+    fn status_with_upgrade(
+        engine: &Path,
+        state: &OcsrEngineState,
+        probe: &Arc<upgrade::tests::FakeProbe>,
+        starts: &AtomicU64,
+    ) -> OcsrEngineStatus {
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        engine_status_at(engine, &platform, 7, state, |legacy| {
+            starts.fetch_add(1, Ordering::SeqCst);
+            let (engine, probe) = (engine.to_path_buf(), probe.clone());
+            assert!(begin_receipt_upgrade(state, move |cancel| {
+                upgrade::upgrade_legacy_receipt(
+                    &engine,
+                    &MacPlatform::new(MacArchitecture::Aarch64),
+                    &legacy,
+                    upgrade::tests::BUNDLED_REQUIREMENTS.as_bytes(),
+                    &upgrade::tests::fake_model_pin(),
+                    probe.as_ref(),
+                    cancel,
+                )
+                .map(|_| ())
+            }));
+        })
+    }
+
+    #[test]
+    fn a_legacy_receipt_is_upgraded_once_off_the_calling_thread_and_then_reads_installed() {
+        let root = upgrade::tests::temp_root("status");
+        let engine = upgrade::tests::fake_legacy_engine(&root);
+        let state = OcsrEngineState::default();
+        let probe = Arc::new(upgrade::tests::FakeProbe::matching());
+        let starts = AtomicU64::new(0);
+
+        let first = status_with_upgrade(&engine, &state, &probe, &starts);
+        assert_eq!(first.state, EngineState::Installing);
+        assert_eq!(
+            first.progress.as_ref().map(|progress| progress.phase),
+            Some(InstallPhase::Verifying)
+        );
+        wait_until_not_installing(&state);
+        // The check hashed a small stand-in; status's layout check wants the pinned size, which a
+        // sparse file gives without writing a gigabyte.
+        fs::File::options()
+            .write(true)
+            .open(engine.join(pins::MODEL_FILENAME))
+            .and_then(|model| model.set_len(pins::MODEL_BYTES))
+            .expect("pinned-size model");
+
+        for _ in 0..3 {
+            let status = status_with_upgrade(&engine, &state, &probe, &starts);
+            assert_eq!(status.state, EngineState::Installed, "{:?}", status.detail);
+            assert_eq!(
+                status
+                    .installed
+                    .as_ref()
+                    .map(|engine| engine.installed_at.as_str()),
+                Some("2026-09-24T21:32:08.676809+00:00")
+            );
+        }
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "the check ran once");
+        assert_eq!(
+            probe.call_count(),
+            2,
+            "no status call re-verified the engine"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_refused_upgrade_reads_broken_in_plain_words_without_checking_again() {
+        let root = upgrade::tests::temp_root("status-refused");
+        let engine = upgrade::tests::fake_legacy_engine(&root);
+        fs::write(
+            engine.join(pins::MODEL_FILENAME),
+            b"x".repeat(upgrade::tests::FAKE_MODEL.len()),
+        )
+        .expect("tampered model");
+        let state = OcsrEngineState::default();
+        let probe = Arc::new(upgrade::tests::FakeProbe::matching());
+        let starts = AtomicU64::new(0);
+
+        assert_eq!(
+            status_with_upgrade(&engine, &state, &probe, &starts).state,
+            EngineState::Installing
+        );
+        wait_until_not_installing(&state);
+        for _ in 0..3 {
+            let status = status_with_upgrade(&engine, &state, &probe, &starts);
+            assert_eq!(status.state, EngineState::Broken);
+            assert_eq!(status.detail.as_deref(), Some(upgrade::ENGINE_NEEDS_UPDATE));
+        }
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.call_count(), 2);
+        // The old receipt is untouched, so a reinstall (or a later build) can still read it.
+        assert!(matches!(
+            receipt::read_receipt(&engine.join(install::RECEIPT_FILE)),
+            Ok(ReceiptRead::Legacy(_))
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unreadable_receipt_is_reported_in_plain_words() {
+        let root = upgrade::tests::temp_root("status-malformed");
+        let engine = root.join("ocsr-engine");
+        fs::create_dir_all(&engine).expect("engine dir");
+        // What the owner saw: a version-2 receipt missing a field reached the dialog verbatim.
+        fs::write(
+            engine.join(install::RECEIPT_FILE),
+            r#"{"receiptVersion": 2, "uvVersion": "0.12.18"}"#,
+        )
+        .expect("receipt");
+        let state = OcsrEngineState::default();
+        let status = engine_status_at(
+            &engine,
+            &MacPlatform::new(MacArchitecture::Aarch64),
+            0,
+            &state,
+            |_| panic!("not a legacy receipt"),
+        );
+        assert_eq!(status.state, EngineState::Broken);
+        let detail = status.detail.expect("detail");
+        assert!(
+            !detail.contains("missing field") && !detail.contains("line"),
+            "{detail}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     /// Starts a recognition that holds the manager's lock until it is killed.
