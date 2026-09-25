@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkPluginBoundary, PLUGIN_SDK_PACKAGE } from "./checkBoundary";
+import { checkPluginBoundary, PLUGIN_SDK_PACKAGE, toPortablePath } from "./checkBoundary";
 
 /** Repository root, resolved from this file's location (`tools/plugin-extract/`). */
 export const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -89,7 +89,7 @@ export function assertRegularDistributionTree(
         continue;
       }
       const full = join(dir, entry.name);
-      const pluginRelative = relative(pluginRoot, full);
+      const pluginRelative = toPortablePath(relative(pluginRoot, full));
       const stat = lstatSync(full);
       if (stat.isSymbolicLink()) {
         throw error(`plugin contains a symbolic link, which cannot be distributed safely: ${pluginRelative}`);
@@ -123,7 +123,7 @@ export function readPluginGitState(
     throw error("plugin must belong to a Git repository so source provenance can be recorded");
   }
 
-  const pathspec = relative(repository, realpathSync(pluginRoot)) || ".";
+  const pathspec = toPortablePath(relative(repository, realpathSync(pluginRoot))) || ".";
   const status = run("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", pathspec], repository);
   if (status) {
     throw error(`plugin has uncommitted or untracked files; commit or clean them before distributing:\n${status}`);
@@ -271,7 +271,7 @@ export function findBundledDataPaths(pluginRoot: string): string[] {
         (insideDataDir && !CODE_FILE_EXTENSIONS.has(extname(entry).toLowerCase())) ||
         DATA_FILE_EXTENSIONS.has(extname(entry).toLowerCase())
       ) {
-        out.push(relative(pluginRoot, full));
+        out.push(toPortablePath(relative(pluginRoot, full)));
       }
     }
   };

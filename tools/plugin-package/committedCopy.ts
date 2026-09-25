@@ -47,7 +47,9 @@ export function createCommittedPluginCopy(pluginRoot: string, label = "chemdraft
 
   const dependencies = join(pluginRoot, "node_modules");
   if (existsSync(dependencies)) {
-    symlinkSync(dependencies, join(copy, "node_modules"), "dir");
+    // "junction": Windows creates directory junctions without Developer Mode or admin rights (a "dir"
+    // symlink needs one of them); the type is ignored on other platforms.
+    symlinkSync(dependencies, join(copy, "node_modules"), "junction");
   }
   // No trailing slash: this test helper intentionally uses a directory symlink, and Git's
   // directory-only `node_modules/` pattern does not match a symlink filesystem entry.

@@ -15,6 +15,22 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_WORKER_ENTRY, packagePlugin, parseCliArgs, PluginPackagingError } from "./package";
 
+// Windows refuses file symlinks without Developer Mode or admin rights. The refusal under test can
+// only be exercised where the fixture can be created; elsewhere the case is skipped, not faked.
+const canCreateFileSymlinks = (() => {
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "chemdraft-symlink-probe-"));
+    try {
+      symlinkSync(join(dir, "target"), join(dir, "link"));
+      return true;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+})();
+
 const temporaryRoots: string[] = [];
 
 afterEach(() => {
@@ -103,7 +119,7 @@ describe("plugin:package — fail-closed gates", () => {
     );
   });
 
-  it("refuses committed symlinks before the bundler can follow them", async () => {
+  it.skipIf(!canCreateFileSymlinks)("refuses committed symlinks before the bundler can follow them", async () => {
     const fixture = createPluginFixture();
     writeFileSync(join(fixture.caseRoot, "outside-secret.ts"), "export const secret = true;\n");
     symlinkSync(join(fixture.caseRoot, "outside-secret.ts"), join(fixture.pluginRoot, "src/local-secret.ts"));

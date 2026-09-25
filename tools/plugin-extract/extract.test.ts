@@ -7,6 +7,23 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { extractPlugin, parseCliArgs, PluginExtractionError, repositoryRoot } from "./extract";
+import { readZipEntryNames } from "./zip";
+
+// Windows refuses file symlinks without Developer Mode or admin rights. The refusal under test can
+// only be exercised where the fixture can be created; elsewhere the case is skipped, not faked.
+const canCreateFileSymlinks = (() => {
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "chemdraft-symlink-probe-"));
+    try {
+      symlinkSync(join(dir, "target"), join(dir, "link"));
+      return true;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+})();
 
 const temporaryRoots: string[] = [];
 
@@ -118,13 +135,11 @@ describe("plugin extraction integrity", () => {
       licenseFile: "LICENSE"
     });
 
-    const entries = execFileSync("unzip", ["-Z1", result.zipPath], { encoding: "utf8" });
+    // Reading decompresses every entry, so a corrupt archive throws here.
+    const entries = readZipEntryNames(result.zipPath).join("\n");
     expect(entries).toContain("plugin-fixture/LICENSE");
     expect(entries).toContain("plugin-fixture/EXTRACTED.md");
     expect(entries).not.toMatch(/(?:^|\/)tests(?:\/|$)|\.test\.tsx?$/m);
-    expect(execFileSync("unzip", ["-t", result.zipPath], { encoding: "utf8" })).toContain(
-      "No errors detected"
-    );
   });
 
   it("refuses a dirty plugin rather than attaching a misleading source commit", () => {
@@ -135,7 +150,7 @@ describe("plugin extraction integrity", () => {
     ).toThrow(/uncommitted or untracked files/);
   });
 
-  it("refuses a committed symlink rather than dereferencing local bytes into the archive", () => {
+  it.skipIf(!canCreateFileSymlinks)("refuses a committed symlink rather than dereferencing local bytes into the archive", () => {
     const fixture = createPluginFixture();
     writeFileSync(join(fixture.caseRoot, "outside-secret.txt"), "must not ship\n");
     symlinkSync(join(fixture.caseRoot, "outside-secret.txt"), join(fixture.pluginRoot, "src/local-secret.txt"));
@@ -175,7 +190,7 @@ describe("plugin extraction integrity", () => {
     const outDir = join(fixture.caseRoot, "out");
     const result = extractPlugin({ pluginRoot: fixture.pluginRoot, outDir });
     expect(existsSync(join(outDir, "plugin-fixture/src/private.mjs"))).toBe(false);
-    expect(execFileSync("unzip", ["-Z1", result.zipPath], { encoding: "utf8" })).not.toContain("private.mjs");
+    expect(readZipEntryNames(result.zipPath).join("\n")).not.toContain("private.mjs");
   });
 
   it("refuses to make a distributable archive without an explicit plugin license", () => {

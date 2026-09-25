@@ -14,7 +14,7 @@
  * it emits the **built**, installable package a user downloads and the app loads into a Worker. Both
  * remain supported; neither replaces the other.
  */
-import { execFileSync } from "node:child_process";
+import { writeZip } from "./zip";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
@@ -172,7 +172,7 @@ function extractCommittedPlugin(
   mkdirSync(outDir, { recursive: true });
   rmSync(zipPath, { force: true });
   rmSync(checksumPath, { force: true });
-  execFileSync("zip", ["-X", "-r", "-q", zipPath, name], { cwd: outDir });
+  writeZip(zipPath, outDir, [name]);
   const sha256 = createHash("sha256").update(readFileSync(zipPath)).digest("hex");
   writeFileSync(checksumPath, `${sha256}  ${basename(zipPath)}\n`);
 

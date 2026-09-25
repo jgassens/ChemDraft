@@ -47,8 +47,9 @@ jobs:
 
   rust:
     name: Rust fmt, clippy, tests
-    # macOS-only by necessity, not preference: the crate depends on objc2-app-kit / objc2-web-kit
-    # and the Sparkle updater plugin, none of which build elsewhere.
+    # macOS is the primary platform: it links objc2-app-kit / objc2-web-kit and the Sparkle updater
+    # plugin (all macOS-gated in Cargo.toml). The `windows` job below covers the other side of every
+    # cfg(target_os = "macos") gate.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +89,42 @@ jobs:
 
       # 52 tests that no automated gate has ever run. `--locked` fails on a stale Cargo.lock rather
       # than silently resolving new versions.
+      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  windows:
+    name: Windows types, tests, Rust
+    # The Windows port: every non-macOS side of the Rust cfg gates, plus the whole TS suite on a
+    # host where paths use backslashes, symlinks need privileges, and there is no bash or zip.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      - run: pnpm vitest run
+
+      # Also required by tauri_build (see the rust job). No Sparkle step: it is macOS-only.
+      - run: pnpm --filter @chemdraft/desktop build:web
+
+      - run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - run: cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
       - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   build-stamp:

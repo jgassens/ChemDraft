@@ -21,7 +21,7 @@ import { PluginHost } from "@chemdraft/plugin-host";
 import type { PluginPanelReport, PluginSelectionSnapshot, PluginWorkerHandle } from "@chemdraft/plugin-api";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker as NodeWorker } from "node:worker_threads";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -33,7 +33,7 @@ import {
 import { packagePlugin, type PackagePluginResult } from "../../../../tools/plugin-package/package";
 import { loadPackagedPlugin, PackagedPluginLoadError, packagedPluginEntryUrl } from "./loadPackagedPlugin";
 
-const repoRoot = new URL("../../../../", import.meta.url).pathname;
+const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const massPluginRoot = join(repoRoot, "examples/plugins/mass-fragment-demo");
 
 /**

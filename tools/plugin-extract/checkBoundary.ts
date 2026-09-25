@@ -101,6 +101,14 @@ export function listRuntimeSourceFiles(pluginRoot: string): string[] {
   return out;
 }
 
+/**
+ * A plugin-relative path in the portable form manifests, reports and archives use: `/`-separated on
+ * every platform. `path.relative` answers with the host separator, which on Windows is a backslash.
+ */
+export function toPortablePath(path: string): string {
+  return sep === "/" ? path : path.split(sep).join("/");
+}
+
 function escapesPluginSource(file: string, pluginRoot: string, specifier: string): boolean {
   if (isAbsolute(specifier) || specifier.startsWith("file:")) return true;
   if (!specifier.startsWith(".")) return false;
@@ -134,7 +142,7 @@ export function checkPluginBoundary(pluginRoot: string, sdkPackage: string = PLU
         isDisallowedChemDraftImport ||
         escapesPluginSource(file, pluginRoot, specifier)
       ) {
-        violations.push({ file: relative(pluginRoot, file), specifier });
+        violations.push({ file: toPortablePath(relative(pluginRoot, file)), specifier });
       }
     }
   }
