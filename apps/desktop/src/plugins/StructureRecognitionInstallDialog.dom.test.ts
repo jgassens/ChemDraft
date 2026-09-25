@@ -130,6 +130,23 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(button("Not now")).toBeDefined();
   });
 
+  it("shows the status detail for an unsupported computer, such as an Intel Mac", () => {
+    renderDialog(
+      request({
+        status: {
+          state: "unsupported",
+          requiredDiskBytes: 2 * gib,
+          freeDiskBytes: 3 * gib,
+          detail: "The recognition engine needs a Mac with Apple silicon."
+        }
+      })
+    );
+
+    expect(document.body.textContent).toContain(
+      "The recognition engine needs a Mac with Apple silicon."
+    );
+  });
+
   it("maps Escape to decline before install and cancel during install", () => {
     const callbacks = renderDialog(request());
     act(() => button("Install").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));

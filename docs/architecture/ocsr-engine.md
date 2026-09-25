@@ -166,8 +166,10 @@ archive and uv installs the local file with `--no-deps`.
 **Intel Macs are not installable at these pins.** PyTorch publishes no macOS x86_64 wheel for 2.14.0
 (its last Intel-Mac release was 2.2), so `--require-hashes` finds nothing to install and the packages
 step fails with uv's resolution error. This was already true of the earlier `~=2.14.0` constraint; the
-lock only makes it explicit. Supporting Intel Macs needs a deliberate decision — an older torch for
-that platform, or reporting it `unsupported` up front — not a silent fallback.
+lock only makes it explicit. Rather than let an Intel Mac download uv and Python only to fail at the
+packages step, `platform::current()` reports `unsupported` up front, before anything downloads (see
+[Platform seam](#platform-seam)). Genuinely supporting Intel Macs needs a deliberate decision — pinning
+an older torch build for that platform — not a silent fallback.
 
 The receipt records the lock's SHA-256, the exact torch/torchvision/numpy versions and the MolScribe
 archive's SHA-256; a receipt from before the lock does not match these pins and reads as `broken`, so
@@ -347,7 +349,7 @@ other per-OS function (`statvfs` on Unix, `GetDiskFreeSpaceExW` on Windows).
 | Target | uv asset | venv Python | Child processes | Status |
 | --- | --- | --- | --- | --- |
 | macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | default | implemented |
-| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | default | implemented |
+| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | default | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
 | Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW` | implemented, never run |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 

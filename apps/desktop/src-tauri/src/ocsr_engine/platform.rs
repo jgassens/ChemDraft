@@ -37,6 +37,19 @@ impl MacPlatform {
 }
 
 #[cfg(any(target_os = "macos", test))]
+impl MacArchitecture {
+    /// Whether `current()` should hand out a working platform for this architecture. Intel Macs
+    /// are seam-complete (asset pins, venv paths) but disabled because the hash-locked
+    /// requirements pin torch 2.14.0, which has no macOS x86_64 wheel; see `current()`.
+    fn is_installable(self) -> bool {
+        match self {
+            MacArchitecture::Aarch64 => true,
+            MacArchitecture::X86_64 => false,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
 impl EnginePlatform for MacPlatform {
     fn uv_asset(&self) -> &'static str {
         match self.architecture {
@@ -102,9 +115,15 @@ fn configure_windows_child(_command: &mut Command) {}
 
 pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return Ok(Box::new(MacPlatform::new(MacArchitecture::Aarch64)));
+    return mac_platform_or_unsupported(MacArchitecture::Aarch64);
+    // Intel Macs keep the `MacArchitecture::X86_64` seam (uv asset pins, venv paths) so a real
+    // build stays a data change away, but `is_installable()` reports `unsupported` up front
+    // rather than reaching it: the hash-locked requirements pin torch 2.14.0, which ships no
+    // macOS x86_64 wheel, so an install would download uv and Python and only then fail at the
+    // packages step. Re-enable by pinning a torch build for x86_64 macOS in pins.rs and flipping
+    // `MacArchitecture::X86_64` to `true` in `is_installable()`.
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return Ok(Box::new(MacPlatform::new(MacArchitecture::X86_64)));
+    return mac_platform_or_unsupported(MacArchitecture::X86_64);
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return Ok(Box::new(WindowsPlatform));
     #[cfg(not(any(
@@ -117,6 +136,17 @@ pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
         std::env::consts::OS,
         std::env::consts::ARCH
     ))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn mac_platform_or_unsupported(
+    architecture: MacArchitecture,
+) -> Result<Box<dyn EnginePlatform>, String> {
+    if architecture.is_installable() {
+        Ok(Box::new(MacPlatform::new(architecture)))
+    } else {
+        Err("The recognition engine needs a Mac with Apple silicon.".to_string())
+    }
 }
 
 pub fn free_disk_bytes(path: &Path) -> Result<u64, String> {
@@ -191,6 +221,11 @@ mod tests {
         let intel = MacPlatform::new(MacArchitecture::X86_64);
         assert_eq!(intel.uv_asset(), pins::UV_X86_64_APPLE_ASSET);
 
+        // The X86_64 seam stays intact (asset pins, venv paths above) even though it is
+        // disabled: see `is_installable()`.
+        assert!(MacArchitecture::Aarch64.is_installable());
+        assert!(!MacArchitecture::X86_64.is_installable());
+
         let windows = WindowsPlatform;
         assert_eq!(windows.uv_asset(), pins::UV_X86_64_WINDOWS_ASSET);
         assert_eq!(windows.uv_executable(root), root.join("uv.exe"));
@@ -198,6 +233,22 @@ mod tests {
             windows.venv_python(root),
             root.join("venv/Scripts/python.exe")
         );
+    }
+
+    #[test]
+    fn intel_mac_is_unsupported_before_any_download() {
+        let error = mac_platform_or_unsupported(MacArchitecture::X86_64)
+            .err()
+            .expect("Intel Macs must be reported unsupported, never given a platform");
+        assert_eq!(
+            error,
+            "The recognition engine needs a Mac with Apple silicon."
+        );
+    }
+
+    #[test]
+    fn apple_silicon_mac_gets_a_real_platform() {
+        assert!(mac_platform_or_unsupported(MacArchitecture::Aarch64).is_ok());
     }
 
     #[test]
