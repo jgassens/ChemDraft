@@ -62,6 +62,11 @@
         "contentTypes": ["com.cambridgesoft.cdxml", "public.xml"]
       }
     ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "macOS": {
       "frameworks": ["./Sparkle.framework"],
       "entitlements": "./chemdraft.entitlements"
