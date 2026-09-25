@@ -1,10 +1,10 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig, type Plugin } from "vite";
+import { appDataRoot, STABLE_BUNDLE_ID } from "../../scripts/app-data-root.mjs";
 import {
   INSTALLED_PLUGIN_URL_PREFIX,
   INSTALLED_PLUGIN_WORKER_CSP,
@@ -95,8 +95,11 @@ function serveInstalledPluginsInDev(): Plugin {
   // `installedPluginAssetPath.test.ts`, so dev and production cannot drift apart silently.
   const urlPrefix = INSTALLED_PLUGIN_URL_PREFIX;
   const installedPluginWorkerCsp = INSTALLED_PLUGIN_WORKER_CSP;
-  // Mirrors `installed_plugins::installed_plugins_root` and `tauri.conf.json`'s identifier.
-  const root = join(homedir(), "Library", "Application Support", "org.chemdraft.desktop", "installed-plugins");
+  // Mirrors `installed_plugins::installed_plugins_root`: app_data_dir() for the identifier the
+  // running app actually has. Under `pnpm dev` that is the per-worktree dev identifier the launcher
+  // exports, not the stable one from `tauri.conf.json`.
+  const bundleId = process.env.CHEMDRAFT_DEV_BUNDLE_ID || STABLE_BUNDLE_ID;
+  const root = join(appDataRoot(), bundleId, "installed-plugins");
 
   return {
     name: "chemdraft-serve-installed-plugins",
@@ -118,7 +121,9 @@ function serveInstalledPluginsInDev(): Plugin {
         }
 
         const file = join(root, ...segments);
-        if (!file.startsWith(root + "/") || !existsSync(file)) {
+        // Separator-agnostic containment (a `root + "/"` prefix test never matches on Windows).
+        const inside = relative(root, file);
+        if (!inside || inside.startsWith("..") || isAbsolute(inside) || !existsSync(file)) {
           response.statusCode = 404;
           response.end("Staged plugin asset not found");
           return;
@@ -173,6 +178,15 @@ export default defineConfig({
     }
   },
   server: {
+    // The dev launcher (run-app on macOS, scripts/dev.mjs elsewhere) picks a free port and exports
+    // it; read it here rather than via `--port ${VAR:-5173}`, which cmd.exe cannot expand.
+    port: Number(process.env.CHEMDRAFT_DEV_PORT || 5173),
+    // The frontend never imports from src-tauri, and its target/ holds cargo output. Watching it is
+    // wasted work everywhere and fatal on Windows: cargo holds .dll files locked while writing, and
+    // the watcher's EBUSY on one of them kills the dev server mid-build (Tauri's documented setting).
+    watch: {
+      ignored: ["**/src-tauri/**"]
+    },
     fs: {
       allow: [
         workspaceRoot,

@@ -705,8 +705,13 @@ struct ToolsetWindowGeometry {
     y: f64,
 }
 
+// Every command that creates a window is `async`, and must stay so. Synchronous commands run on the
+// main thread, and on Windows WebView2 creation needs that same thread: a sync command that builds a
+// window deadlocks, leaving the window with no webview and every later IPC call unanswered
+// (documented Tauri/wry limitation). Async commands build from a worker and Tauri marshals the
+// window creation to the main thread, which is equivalent on macOS.
 #[tauri::command]
-fn open_toolset_window(
+async fn open_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
     window: Option<ToolsetWindowGeometry>,
@@ -999,7 +1004,7 @@ struct OpenPluginPanelRequest {
 /// Plugin panel windows get the same floating-utility treatment as toolset palettes: they
 /// float above the document while the app is active and hide with it on deactivate.
 #[tauri::command]
-fn open_plugin_panel_window(
+async fn open_plugin_panel_window(
     app: tauri::AppHandle,
     request: OpenPluginPanelRequest,
 ) -> Result<(), String> {
@@ -1046,7 +1051,7 @@ fn open_plugin_panel_window(
 /// coordinates of the anchor (the palette computes them from its own window position + the
 /// swatch's client rect).
 #[tauri::command]
-fn open_toolset_popover(
+async fn open_toolset_popover(
     app: tauri::AppHandle,
     toolset_id: String,
     kind: String,
@@ -1082,7 +1087,7 @@ fn open_toolset_popover(
 /// user-visible open then takes the warm path (reposition + content push + self-reveal, a frame or
 /// two). The `prewarm=1` route param tells the webview to stay hidden until real content arrives.
 #[tauri::command]
-fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
+async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
     if app.get_webview_window(&label).is_some() {
         return Ok(());
@@ -1630,7 +1635,7 @@ fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Resul
 }
 
 #[tauri::command]
-fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(SPIN3D_DEBUGGER_WINDOW_LABEL) {
         if window.is_visible().unwrap_or(false) {
             return window.hide().map_err(|error| error.to_string());
@@ -1675,7 +1680,7 @@ fn spin3d_debugger_window_route() -> &'static str {
 }
 
 #[tauri::command]
-fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
         if window.is_visible().unwrap_or(false) {
             return window.hide().map_err(|error| error.to_string());
