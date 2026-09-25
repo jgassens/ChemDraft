@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import { booleanOption, numericOption, parseOptions, stringOption } from "../args";
 import { depictSmiles, svgToPng } from "../document";
+import { DEFAULT_TRUSTED_PLUGINS_PATH, importVerifiedPlugin, resolveTrustedPlugin } from "../pluginTrust";
 import {
   CliUsageError,
   cliExitCode,
@@ -29,6 +30,10 @@ import {
  * ~/programming/chemdraft-nmr-plugin) through an import whose specifier is a runtime string, so the
  * root `tsc` never sees the plugin's sources. The interfaces below describe only the part of the
  * plugin's public surface this command reads.
+ *
+ * The environment variable only CHOOSES a directory. Before anything in it is imported, the
+ * directory must be listed in the owner's plugin trust file and its manifest must pass
+ * `@chemdraft/plugin-host` validation (see ../pluginTrust.ts).
  */
 
 export type NmrNucleus = "1H" | "13C";
@@ -91,6 +96,7 @@ interface NmrPluginModule {
 }
 
 export const NMR_PLUGIN_DIR_ENV = "CHEMDRAFT_NMR_PLUGIN_DIR";
+export const NMR_PLUGIN_ID = "org.chemdraft.nmr.predictor";
 const DEFAULT_PLUGIN_DIR = "~/programming/chemdraft-nmr-plugin";
 const DEFAULT_PNG_WIDTH = 1280;
 const ALL_NUCLEI: readonly NmrNucleus[] = ["1H", "13C"];
@@ -136,6 +142,10 @@ Options:
 
 The predictor plugin is loaded from $${NMR_PLUGIN_DIR_ENV}
 (default: ${DEFAULT_PLUGIN_DIR}). It is a separate repository and is not bundled here.
+The directory must also be listed in the plugin trust file ${DEFAULT_TRUSTED_PLUGINS_PATH}:
+  {"version":1,"trustedPlugins":[{"id":"${NMR_PLUGIN_ID}","dir":"/absolute/path/to/chemdraft-nmr-plugin"}]}
+Setting $${NMR_PLUGIN_DIR_ENV} alone never makes an unlisted directory load. Edit that file by hand;
+the CLI never writes it.
 
 What the numbers are:
   - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
@@ -193,20 +203,30 @@ export function resolveNmrPluginDir(env: NodeJS.ProcessEnv = process.env): strin
 
 const pluginCache = new Map<string, Promise<NmrPluginModule>>();
 
-function loadNmrPlugin(pluginDir: string): Promise<NmrPluginModule> {
+async function loadNmrPlugin(pluginDir: string, trustConfigPath: string): Promise<NmrPluginModule> {
   const entry = join(pluginDir, "src", "index.ts");
-  let loading = pluginCache.get(entry);
+  if (!existsSync(entry)) {
+    throw new Error(
+      `NMR predictor plugin not found: expected ${entry}. Set ${NMR_PLUGIN_DIR_ENV} to a chemdraft-nmr-plugin checkout (default ${DEFAULT_PLUGIN_DIR}).`
+    );
+  }
+  // The allow-list is checked on every load, cached or not, and imports nothing.
+  const location = resolveTrustedPlugin({
+    pluginId: NMR_PLUGIN_ID,
+    pluginDir,
+    entryFile: join("src", "index.ts"),
+    manifestFile: join("src", "manifest.ts"),
+    manifestExport: "nmrPredictorManifest",
+    configPath: trustConfigPath
+  });
+  const cacheKey = `${location.configPath}\0${location.entryPath}`;
+  let loading = pluginCache.get(cacheKey);
   if (!loading) {
     loading = (async () => {
-      if (!existsSync(entry)) {
-        throw new Error(
-          `NMR predictor plugin not found: expected ${entry}. Set ${NMR_PLUGIN_DIR_ENV} to a chemdraft-nmr-plugin checkout (default ${DEFAULT_PLUGIN_DIR}).`
-        );
-      }
       // A runtime string keeps the plugin outside the workspace type graph; its own openchemlib
       // and zod resolve from its node_modules because Node resolves relative to the imported file.
-      const specifier: string = pathToFileURL(entry).href;
-      const loaded = await import(specifier) as Partial<NmrPluginModule>;
+      // The manifest is validated before the entry is imported.
+      const { module: loaded } = await importVerifiedPlugin(location) as { module: Partial<NmrPluginModule> };
       if (typeof loaded.OclHosePredictor !== "function" || typeof loaded.renderStickSpectrumSvg !== "function") {
         throw new Error(
           `The plugin at ${entry} does not export OclHosePredictor and renderStickSpectrumSvg; check ${NMR_PLUGIN_DIR_ENV}.`
@@ -214,9 +234,9 @@ function loadNmrPlugin(pluginDir: string): Promise<NmrPluginModule> {
       }
       return loaded as NmrPluginModule;
     })();
-    pluginCache.set(entry, loading);
+    pluginCache.set(cacheKey, loading);
     // A failed load is not cached, so a later run in the same process can pick up a fixed path.
-    loading.catch(() => pluginCache.delete(entry));
+    loading.catch(() => pluginCache.delete(cacheKey));
   }
   return loading;
 }
@@ -501,12 +521,18 @@ async function writeSpectra(
   return { files, warnings };
 }
 
-async function predictJob(job: NmrJob, args: ParsedArguments, pluginDir: string, io: CliIo): Promise<boolean> {
+async function predictJob(
+  job: NmrJob,
+  args: ParsedArguments,
+  pluginDir: string,
+  trustConfigPath: string,
+  io: CliIo
+): Promise<boolean> {
   writeProgress(io, `Predicting ${args.nuclei.join(", ")} shifts for ${job.name}…`);
   const smiles = job.smiles.trim();
   let stage: "plugin" | "structure" | "prediction" = "plugin";
   try {
-    const plugin = await loadNmrPlugin(pluginDir);
+    const plugin = await loadNmrPlugin(pluginDir, trustConfigPath);
 
     stage = "structure";
     const depicted = await depictSmiles(smiles);
@@ -592,10 +618,19 @@ async function predictJob(job: NmrJob, args: ParsedArguments, pluginDir: string,
   }
 }
 
+export interface NmrCommandOptions {
+  /**
+   * Plugin trust file (default ~/.config/chemdraft/trusted-plugins.json). A parameter for tests
+   * and embedding code only; deliberately not settable from the environment or the command line.
+   */
+  trustConfigPath?: string;
+}
+
 /** Run `chemdraft nmr`. */
 export async function runNmrCommand(
   argv: readonly string[],
-  io: CliIo = defaultCliIo
+  io: CliIo = defaultCliIo,
+  options: NmrCommandOptions = {}
 ): Promise<CliExitCode> {
   try {
     const parsed = parseArguments(argv);
@@ -608,7 +643,8 @@ export async function runNmrCommand(
 
     let allSucceeded = true;
     for (const job of jobs) {
-      if (!await predictJob(job, parsed, pluginDir, io)) allSucceeded = false;
+      const trustConfigPath = options.trustConfigPath ?? DEFAULT_TRUSTED_PLUGINS_PATH;
+      if (!await predictJob(job, parsed, pluginDir, trustConfigPath, io)) allSucceeded = false;
     }
     return resultExitCode(allSucceeded);
   } catch (error) {

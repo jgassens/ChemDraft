@@ -22,7 +22,7 @@ For Claude Desktop, add this stanza to `claude_desktop_config.json`:
 - `analyze_structure` — run the property and prediction suite with status-bearing summary values.
 - `name_to_structure` — convert a chemical name with OPSIN, optionally rendering it.
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.
-- `predict_nmr` — predict 1H/13C shifts and optional spectra.
+- `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
 
 Radicals and isotopes that ChemDraft cannot preserve are refused rather than silently changed. Analysis values retain their method contracts and reported pKa intervals; NMR J values and multiplicities are estimates.

@@ -261,6 +261,9 @@ importers:
       '@chemdraft/ocl-adapter':
         specifier: workspace:*
         version: link:../ocl-adapter
+      '@chemdraft/plugin-host':
+        specifier: workspace:*
+        version: link:../plugin-host
       '@chemdraft/rdkit-adapter':
         specifier: workspace:*
         version: link:../rdkit-adapter

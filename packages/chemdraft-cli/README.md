@@ -155,6 +155,44 @@ suffixes); --spectrum-dir <dir> (batch naming <dir>/<name>-<nucleus>.<format>);
 loaded from $CHEMDRAFT_NMR_PLUGIN_DIR (default: ~/programming/chemdraft-nmr-plugin). It is a
 separate repository and is not bundled here.
 
+### Plugin trust file
+
+The plugin is code from outside this repository, and it runs in-process with the CLI's full
+privileges (and inside the long-lived MCP server, which calls the same command). So the directory
+must also be listed in a trust file the owner edits by hand,
+`~/.config/chemdraft/trusted-plugins.json`:
+
+~~~json
+{
+  "version": 1,
+  "trustedPlugins": [
+    { "id": "org.chemdraft.nmr.predictor", "dir": "/Users/you/programming/chemdraft-nmr-plugin" }
+  ]
+}
+~~~
+
+Why the environment variable alone is not enough: anyone who can set `CHEMDRAFT_NMR_PLUGIN_DIR`
+could otherwise point the CLI at any directory and have its `src/index.ts` executed.
+`CHEMDRAFT_NMR_PLUGIN_DIR` now only chooses among trusted directories. For the same reason the trust
+file's location cannot be changed by an environment variable or a flag, and nothing in the CLI
+creates or edits it. When a directory is refused, the error names the trust file, the resolved
+directory, and the exact entry to add.
+
+Loading runs in this order (`src/pluginTrust.ts`), and each step stops the load before the next:
+
+1. **Allow-list**, before any plugin file is imported. The trust file is parsed strictly (an unknown
+   `version`, unknown keys, relative `dir`, or malformed JSON is refused). The requested directory
+   and each listed `dir` are compared by real path, so symlinks to a trusted checkout work; the
+   entry (`src/index.ts`) and manifest (`src/manifest.ts`) must also resolve inside the trusted
+   directory, so a symlinked file cannot escape it.
+2. **Manifest and permissions.** Only `src/manifest.ts` is imported, and its `nmrPredictorManifest`
+   export is validated by `@chemdraft/plugin-host`. Its id must be `org.chemdraft.nmr.predictor`,
+   and it must not declare any permission the CLI refuses (`document.write`, `filesystem.read`,
+   `filesystem.write`, `network.fetch`, `native.execute`, `model.load`, `model.download`,
+   `clipboard.read`, `clipboard.write`, `image.read`). This checks what the plugin declares, not what
+   its code does; the allow-list is what bounds execution.
+3. **Entry.** Only then is `src/index.ts` imported and its exports checked.
+
 What the numbers are:
   - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
     assignments. They are predictions, not measurements. source "hose-fragment" is a database
