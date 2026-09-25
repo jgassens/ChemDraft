@@ -21,9 +21,14 @@ export interface RecognitionProgressIndicatorProps {
  * the stage line is a live region; the elapsed time ticks every second and would otherwise be read
  * out every second.
  */
+/** No activity server-side; a fixed reference so repeated calls agree. */
+function getServerSnapshot(): RecognitionActivity | undefined {
+  return undefined;
+}
+
 export function RecognitionProgressIndicator({ source, onCancel, now = Date.now }: RecognitionProgressIndicatorProps) {
   const subscribe = useCallback((listener: () => void) => source.subscribeActivity(listener), [source]);
-  const activity = useSyncExternalStore(subscribe, () => source.getActiveRecognition());
+  const activity = useSyncExternalStore(subscribe, () => source.getActiveRecognition(), getServerSnapshot);
   const titleId = useId();
   if (!activity) return null;
   return <IndicatorCard key={activity.id} activity={activity} titleId={titleId} onCancel={onCancel} now={now} />;
