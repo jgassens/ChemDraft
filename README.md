@@ -38,6 +38,33 @@ browser-only preview.
 
 The `./run-app` helper builds and launches the generated macOS `ChemDraft.app` bundle using the same `org.chemdraft.desktop` app identity as dev mode. Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 
+## Windows
+
+The same commands work on Windows 10/11 (x64). `pnpm dev` and the desktop `build`/`tauri` scripts run
+through Node launchers (`scripts/dev.mjs`, `scripts/desktop-tauri.mjs`) that keep macOS on its exact
+existing path and skip the macOS-only steps (Sparkle, signing) elsewhere.
+
+Prerequisites: Node 24 + pnpm 10.12.1, Rust via rustup (the pinned toolchain installs itself), Visual
+Studio 2022 Build Tools with the C++ workload, and WebView2 (preinstalled on Windows 11). For the
+optional pieces: a JDK for the OPSIN runtime, CMake for the Engine 3D sidecar.
+
+```bash
+pnpm install
+pnpm dev
+node scripts/build-opsin-runtime.mjs
+pnpm --filter @chemdraft/desktop build --bundles nsis
+```
+
+- The build produces `apps/desktop/src-tauri/target/release/bundle/nsis/ChemDraft_<version>_x64-setup.exe`,
+  a per-user installer (no admin); it is unsigned, so SmartScreen will ask once.
+- The Windows sidecar binary is committed; rebuild it with
+  `cmake --preset windows-msvc && cmake --build --preset windows-msvc` in `native/avogadro3d-sidecar`
+  after fetching `_deps` as its README describes.
+- Keep the checkout outside OneDrive. Syncing `node_modules` and `target/` makes builds and the test
+  suite several times slower.
+- Debug builds are large (~9 GB of `target/debug` with full debuginfo); on a small disk set
+  `CARGO_PROFILE_DEV_DEBUG=0`.
+
 ## Architecture Rules
 
 Read `PLAN.md` and `AGENTS.md` before making changes. In short:

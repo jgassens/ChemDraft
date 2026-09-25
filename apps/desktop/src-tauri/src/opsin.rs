@@ -120,7 +120,24 @@ fn resource_path<R: Runtime>(app: &tauri::AppHandle<R>, relative: &str) -> Optio
     if cfg!(debug_assertions) {
         candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative));
     }
-    candidates.into_iter().find(|path| path.exists())
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .map(without_verbatim_drive_prefix)
+}
+
+/// On Windows an installed app's `resource_dir` is an extended-length path (`\\?\C:\…`). The JVM
+/// cannot load a jar through one — `java -jar \\?\C:\…\opsin-cli.jar` dies with "Could not find or
+/// load main class" while the same path without the prefix runs — so the JVM gets the ordinary drive
+/// path. Only the `\\?\X:` form is rewritten; UNC (`\\?\UNC\…`) is left alone, and other platforms
+/// never see the prefix.
+fn without_verbatim_drive_prefix(path: PathBuf) -> PathBuf {
+    if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+        if rest.as_bytes().get(1) == Some(&b':') {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
 
 fn java_binary<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
@@ -354,6 +371,24 @@ fn wait_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hands_the_jvm_plain_drive_paths() {
+        assert_eq!(
+            without_verbatim_drive_prefix(PathBuf::from(r"\\?\C:\Users\me\opsin.jar")),
+            PathBuf::from(r"C:\Users\me\opsin.jar")
+        );
+        for untouched in [
+            r"\\?\UNC\server\share\opsin.jar",
+            r"C:\opsin.jar",
+            "/opt/opsin.jar",
+        ] {
+            assert_eq!(
+                without_verbatim_drive_prefix(PathBuf::from(untouched)),
+                PathBuf::from(untouched)
+            );
+        }
+    }
 
     #[test]
     fn rejects_names_that_would_corrupt_the_protocol() {
