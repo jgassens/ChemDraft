@@ -18,10 +18,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+use tauri::menu::AboutMetadata;
 use tauri::{
-    menu::{
-        AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
-    },
+    menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu},
     webview::PageLoadEvent,
     Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -52,6 +52,11 @@ const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_LEAVE_EVENT: &str = "chemdraft://palette-pointer-leave";
+// Reached only from RunEvent::Opened (macOS/iOS/Android) until Windows/Linux file-open lands.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+    allow(dead_code)
+)]
 const OPEN_DOCUMENT_EVENT: &str = "chemdraft://open-document";
 const TOOLSET_WINDOW_STATE_EVENT: &str = "chemdraft://toolset-window-state";
 const TOOLSET_TOGGLE_PREFIX: &str = "view.toolset.toggle.";
@@ -448,6 +453,8 @@ pub fn run() {
             let app = app.handle();
             // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
             // window loads; Rust no longer parses the manifest or applies customization for it.
+            // Activation policy is a macOS Dock concept; other platforms have no equivalent.
+            #[cfg(target_os = "macos")]
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
             }
@@ -512,22 +519,29 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
-        .run(|app, event| match event {
-            RunEvent::ExitRequested { .. } => {
-                APP_QUITTING.store(true, Ordering::SeqCst);
-            }
-            RunEvent::Reopen { .. } => {
-                if let Err(error) = ensure_main_window_visible(app) {
-                    eprintln!("Could not reopen ChemDraft main window: {error}");
+        .run(|app, event| {
+            // Only the macOS/mobile arms below use `app`.
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            let _ = app;
+            match event {
+                RunEvent::ExitRequested { .. } => {
+                    APP_QUITTING.store(true, Ordering::SeqCst);
                 }
-            }
-            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
-            RunEvent::Opened { urls } => {
-                if let Err(error) = handle_opened_document_urls(app, urls) {
-                    eprintln!("Could not open ChemDraft document from OS event: {error}");
+                // Dock-icon click with no visible windows; a macOS-only event.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen { .. } => {
+                    if let Err(error) = ensure_main_window_visible(app) {
+                        eprintln!("Could not reopen ChemDraft main window: {error}");
+                    }
                 }
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+                RunEvent::Opened { urls } => {
+                    if let Err(error) = handle_opened_document_urls(app, urls) {
+                        eprintln!("Could not open ChemDraft document from OS event: {error}");
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         });
 }
 
@@ -1424,11 +1438,15 @@ fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextI
 /// WebKit's custom-pasteboard-data is a binary blob (length-prefixed origin + type + payload)
 /// that any WebKit view — Safari included — leaves behind on copy; "decoding" it produced the
 /// CJK-mojibake text objects users saw when pasting between two ChemDraft instances.
+// Platform-neutral decoding, but only the macOS pasteboard reader calls it until the Windows
+// clipboard reader lands.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const OPAQUE_CLIPBOARD_TYPES: [&str; 2] = [
     "com.apple.WebKit.custom-pasteboard-data",
     "org.webkit.custom-pasteboard-data",
 ];
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
     OPAQUE_CLIPBOARD_TYPES.contains(&pasteboard_type)
 }
@@ -1453,6 +1471,7 @@ fn clipboard_text_for_type(
     decode_clipboard_text_bytes(&data.to_vec())
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() {
         return None;
@@ -1476,6 +1495,7 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     decode_utf16_bytes(bytes)
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0xff, 0xfe]) {
         return true;
@@ -1489,6 +1509,7 @@ fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     null_count * 4 >= bytes.len()
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
     if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
         return decode_utf16_units(content, true);
@@ -1547,6 +1568,7 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
 /// contains private-use or noncharacter code points, while binary bytes and byte-swapped UTF-16
 /// frequently decode into exactly those ranges. (BOM'd and null-parity-detected payloads skip
 /// this — their encoding evidence is strong enough that PUA glyphs, e.g. icon fonts, pass.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     text.chars().all(|character| {
         let code_point = character as u32;
@@ -1559,6 +1581,7 @@ fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     })
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
     if content.len() < 2 || !content.len().is_multiple_of(2) {
         return None;
@@ -1582,6 +1605,7 @@ fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
 /// Rejects strings that only a mis-decode produces: control characters (beyond whitespace)
 /// and replacement characters never occur in text a user meant to paste, while every
 /// legitimate UTF-16 clipboard payload (molfiles, CDXML, SMILES, prose) is clean of them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn text_is_plausible_clipboard_text(text: &str) -> bool {
     text.chars().all(|character| {
         character == '\t'
@@ -2231,6 +2255,10 @@ fn open_document_payload_from_url(
     }))
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+    allow(dead_code)
+)]
 fn emit_open_document_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     payload: &NativeOpenDocumentPayload,
@@ -2945,6 +2973,7 @@ fn configure_toolset_utility_window<R: Runtime>(
 /// Local (top-left origin, logical px) pointer position inside a palette window. Tagged with the
 /// toolset id because a plain JS `listen()` receives events regardless of the emit target — each
 /// palette filters to its own id (the same pattern the popover-content events use).
+#[cfg(target_os = "macos")]
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PalettePointerPayload {
@@ -2953,6 +2982,7 @@ struct PalettePointerPayload {
     y: f64,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PalettePointerLeavePayload {
