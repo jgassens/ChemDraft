@@ -146,7 +146,9 @@ import {
   projectedPlaneTiltRadiansFromDrag,
   projectedPlaneTiltReadoutDegrees,
   projectedPlaneTiltReadoutLabel,
+  proposalReviewAfterOpen,
   proposalWindowLifecycle,
+  settleAnalysisWindowOpen,
   projectedPlaneTiltVectorFromDrag,
   rotationDeltaDegrees,
   rotationInputHomeDraftDegrees,
@@ -362,12 +364,45 @@ describe("ChemDraft desktop shell", () => {
     );
   });
 
+  it("focuses an analysis window only when the user asked for it", () => {
+    // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
+    expect(desktopNativeSource).toContain(".focused(request.focus)");
+    expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
+    expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
+    // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
+    expect(mainWindowSource).toContain("{ open: true, focus: true, width: 940, height: 660 }");
+    expect(mainWindowSource).toContain("showProposalReview(false);");
+    expect(mainWindowSource).toMatch(/title: panel\.report\.title \|\| panel\.title,\s*focus: false/);
+  });
+
   it("opens proposal review on arrival, updates it in place, and closes it when the queue empties", () => {
     expect(proposalWindowLifecycle(0, 0)).toBe("idle");
     expect(proposalWindowLifecycle(0, 1)).toBe("open");
     expect(proposalWindowLifecycle(1, 2)).toBe("open");
     expect(proposalWindowLifecycle(2, 1)).toBe("update");
     expect(proposalWindowLifecycle(1, 0)).toBe("close");
+  });
+
+  it("marks the proposal window open only after its native open succeeds", async () => {
+    const errors: string[] = [];
+    const opened = await settleAnalysisWindowOpen(
+      () => Promise.reject(new Error("window creation refused")),
+      (message) => errors.push(message)
+    );
+    expect(opened).toBe(false);
+    expect(errors).toEqual(["window creation refused"]);
+    // A failed open leaves the badge reachable: the window is not marked open.
+    expect(proposalReviewAfterOpen({ pending: 2, windowOpen: false }, opened)).toEqual({
+      pending: 2,
+      windowOpen: false
+    });
+    // It also clears a stale "open" left from an earlier window that is no longer showing.
+    expect(proposalReviewAfterOpen({ pending: 2, windowOpen: true }, false).windowOpen).toBe(false);
+
+    await expect(settleAnalysisWindowOpen(() => Promise.resolve(), () => undefined)).resolves.toBe(true);
+    expect(proposalReviewAfterOpen({ pending: 2, windowOpen: false }, true).windowOpen).toBe(true);
+    // Every proposal was handled while the open was in flight: nothing to show, nothing open.
+    expect(proposalReviewAfterOpen({ pending: 0, windowOpen: false }, true).windowOpen).toBe(false);
   });
 
   it("keeps paint containment off the transformed document board (WKWebView ghost pixels)", () => {

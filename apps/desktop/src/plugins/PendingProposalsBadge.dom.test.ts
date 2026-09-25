@@ -4,6 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { proposalReviewAfterOpen, settleAnalysisWindowOpen } from "../MainWindow";
 import { PendingProposalsBadge } from "./PatchReviewTray";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -49,5 +50,17 @@ describe("PendingProposalsBadge", () => {
   it("uses the singular for one proposal", () => {
     render({ count: 1, windowOpen: false, onReview: vi.fn() });
     expect(container!.textContent).toBe("1 plugin proposal");
+  });
+
+  it("stays reachable when the proposals window fails to open", async () => {
+    const onReview = vi.fn();
+    const opened = await settleAnalysisWindowOpen(
+      () => Promise.reject(new Error("no window")),
+      () => undefined
+    );
+    const state = proposalReviewAfterOpen({ pending: 3, windowOpen: false }, opened);
+    render({ count: state.pending, windowOpen: state.windowOpen, onReview });
+    const badge = container!.querySelector<HTMLButtonElement>("[data-pending-proposals-badge] button");
+    expect(badge?.textContent).toBe("3 plugin proposals");
   });
 });

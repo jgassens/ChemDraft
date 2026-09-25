@@ -5,7 +5,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createPhase4Document } from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
+import { ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowAction } from "./panelBridge";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
   RECOGNITION_FIXTURE_PANEL_ID
@@ -63,7 +65,40 @@ afterEach(() => {
   root = undefined;
   container = undefined;
   document.body.innerHTML = "";
+  window.history.replaceState(null, "", "/");
+  delete (window as Window & { __CHEMDRAFT_AGENT__?: unknown }).__CHEMDRAFT_AGENT__;
+  Reflect.deleteProperty(navigator, "clipboard");
+  vi.restoreAllMocks();
 });
+
+async function renderMainWindow(): Promise<void> {
+  installDomMocks();
+  container = document.createElement("div");
+  document.body.append(container);
+  await act(async () => {
+    root = createRoot(container!);
+    root.render(
+      createElement(MainWindow, {
+        initialDocument: createPhase4Document("Analysis Actions"),
+        initialPaletteMode: "hidden",
+        initialRulersVisible: false,
+        nativePalette: false
+      })
+    );
+    await Promise.resolve();
+  });
+}
+
+async function sendAnalysisWindowAction(action: AnalysisWindowAction): Promise<void> {
+  await act(async () => {
+    window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function statusText(): string {
+  return container!.querySelector('[role="status"]')?.textContent ?? "";
+}
 
 async function click(element: Element): Promise<void> {
   await act(async () => {
@@ -247,5 +282,59 @@ describe("MainWindow bundled plugin integration", () => {
     expect(container.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
     expect(container.textContent).toContain(massFragmentManifest.name);
     expect([...container.querySelectorAll("[data-plugin-id]")].some((node) => /nmr/i.test(node.getAttribute("data-plugin-id") ?? ""))).toBe(false);
+  });
+
+  it("registers the analysis-window action listener once, however often the document changes", async () => {
+    const addListener = vi.spyOn(window, "addEventListener");
+    const registrations = () =>
+      addListener.mock.calls.filter(([name]) => name === ANALYSIS_WINDOW_ACTION_EVENT).length;
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    await renderMainWindow();
+    expect(registrations()).toBe(1);
+
+    const bridge = (window as Window & { __CHEMDRAFT_AGENT__?: { command(id: string): Promise<unknown> } })
+      .__CHEMDRAFT_AGENT__;
+    expect(bridge).toBeDefined();
+    // A new document replaces the one the analysis handlers close over — which used to tear the
+    // listener down and re-register it (an async gap in which a window's action was dropped).
+    await act(async () => {
+      await bridge!.command("document.new");
+    });
+    expect(statusText()).toContain("Blank native document");
+    expect(registrations()).toBe(1);
+  });
+
+  it("reports a failed Molecular Inspector copy instead of claiming it was copied", async () => {
+    await renderMainWindow();
+    Reflect.deleteProperty(navigator, "clipboard");
+    await sendAnalysisWindowAction({ kind: "copyMolecularInspector", text: "C6H6" });
+    expect(statusText()).toContain("Could not copy the analysis to the clipboard");
+
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    await sendAnalysisWindowAction({ kind: "copyMolecularInspector", text: "C6H6" });
+    expect(writeText).toHaveBeenCalledWith("C6H6");
+    expect(statusText()).toContain("Analysis copied");
+  });
+
+  it("performs a report window's file save itself, with the main window's own permissions", async () => {
+    await renderMainWindow();
+    const downloads: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this.download);
+    });
+    URL.createObjectURL ??= () => "blob:test";
+    URL.revokeObjectURL ??= () => undefined;
+    await sendAnalysisWindowAction({
+      kind: "saveTextFile",
+      requestId: "save-1",
+      filename: "predicted-1H-nmr.jdx",
+      text: "##TITLE=x",
+      title: "Export spectrum (JCAMP-DX)",
+      formatLabel: "JCAMP-DX",
+      extensions: ["jdx", "dx"],
+      mimeType: "chemical/x-jcamp-dx"
+    });
+    expect(downloads).toEqual(["predicted-1H-nmr.jdx"]);
   });
 });

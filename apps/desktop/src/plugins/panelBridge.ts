@@ -1,6 +1,7 @@
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } from "@chemdraft/plugin-api";
 import { isDesktopRuntime } from "../window-manager";
+import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
@@ -10,6 +11,7 @@ export const PLUGIN_PANEL_RERUN_EVENT = "chemdraft://plugin-panel-rerun";
 export const PLUGIN_PANEL_CLOSED_EVENT = "chemdraft://plugin-panel-closed";
 export const ANALYSIS_WINDOW_SNAPSHOT_EVENT = "chemdraft://analysis-window-snapshot";
 export const ANALYSIS_WINDOW_ACTION_EVENT = "chemdraft://analysis-window-action";
+export const ANALYSIS_WINDOW_ACTION_RESULT_EVENT = "chemdraft://analysis-window-action-result";
 
 /** Core-owned identities deliberately use the existing plugin-panel window transport. */
 export const ANALYSIS_WINDOW_OWNER_ID = "core.analysis";
@@ -81,12 +83,22 @@ export type AnalysisWindowAction =
   | { kind: "copyMolecularInspector"; text: string }
   | { kind: "changeMolecularInterpretation"; interpretationId?: string }
   | { kind: "acceptPluginProposal"; proposalId: string }
-  | { kind: "rejectPluginProposal"; proposalId: string };
+  | { kind: "rejectPluginProposal"; proposalId: string }
+  | ({ kind: "saveTextFile"; requestId: string; filename: string; text: string } & SaveTextFileOptions);
+
+/** Main → window: how a `saveTextFile` action ended, keyed to the request that asked. */
+export interface AnalysisWindowSaveResult {
+  requestId: string;
+  result: SaveTextFileResult;
+}
 
 export interface OpenPluginPanelRequest extends PluginPanelIdentity {
   title: string;
   width?: number;
   height?: number;
+  /** True only when the user explicitly opened this window (menu command, click). Automatic shows
+   *  — a new proposal, a plugin pushing its report — pass false so the canvas keeps keyboard focus. */
+  focus: boolean;
 }
 
 export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Promise<void> {
@@ -103,9 +115,69 @@ export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Pr
       panelId: pluginPanelWindowId(request.pluginId, request.panelId),
       title: request.title,
       width: request.width,
-      height: request.height
+      height: request.height,
+      focus: request.focus
     }
   });
+}
+
+/** True inside a detached `plugin-panel-*` webview (the route Rust builds as `?window=pluginPanel`). */
+export function isPluginPanelWindowRoute(): boolean {
+  return new URLSearchParams(globalThis.location?.search ?? "").get("window") === "pluginPanel";
+}
+
+/**
+ * Window → main: save a text file through the main window, and resolve with how it ended.
+ *
+ * Report windows hold no dialog or filesystem permission (capabilities/plugin-panel.json) and must
+ * not gain one, so a save the user asks for there — the NMR figure's JCAMP-DX export — is performed
+ * by the main window with its own permissions. The listener is attached before the request is sent,
+ * so a fast answer cannot be missed.
+ */
+export async function requestSaveTextFileFromMain(
+  filename: string,
+  text: string,
+  options: SaveTextFileOptions
+): Promise<SaveTextFileResult> {
+  if (!isDesktopRuntime()) {
+    return "failed";
+  }
+  const requestId = `save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  try {
+    const { emit, listen } = await import("@tauri-apps/api/event");
+    let answer: (result: SaveTextFileResult) => void = () => undefined;
+    const answered = new Promise<SaveTextFileResult>((resolve) => {
+      answer = resolve;
+    });
+    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (isSaveResult(event.payload) && event.payload.requestId === requestId) {
+        answer(event.payload.result);
+      }
+    });
+    await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, {
+      kind: "saveTextFile",
+      requestId,
+      filename,
+      text,
+      ...options,
+      extensions: [...options.extensions]
+    });
+    return await answered;
+  } catch {
+    return "failed";
+  } finally {
+    unlisten?.();
+  }
+}
+
+/** Main → window: answer a `saveTextFile` action. */
+export async function respondToSaveTextFile(requestId: string, result: SaveTextFileResult): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
 }
 
 export async function broadcastPluginPanelReport(payload: PluginPanelReportPayload): Promise<void> {
@@ -435,7 +507,29 @@ function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowActi
     case "acceptPluginProposal":
     case "rejectPluginProposal":
       return typeof candidate.proposalId === "string";
+    case "saveTextFile":
+      return (
+        typeof candidate.requestId === "string" &&
+        typeof candidate.filename === "string" &&
+        typeof candidate.text === "string" &&
+        typeof candidate.title === "string" &&
+        typeof candidate.formatLabel === "string" &&
+        typeof candidate.mimeType === "string" &&
+        Array.isArray(candidate.extensions) &&
+        candidate.extensions.every((extension) => typeof extension === "string")
+      );
     default:
       return false;
   }
+}
+
+function isSaveResult(payload: unknown): payload is AnalysisWindowSaveResult {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowSaveResult>;
+  return (
+    typeof candidate.requestId === "string" &&
+    (candidate.result === "saved" || candidate.result === "cancelled" || candidate.result === "failed")
+  );
 }

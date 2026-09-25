@@ -1003,6 +1003,11 @@ struct OpenPluginPanelRequest {
     title: String,
     width: Option<f64>,
     height: Option<f64>,
+    /// True only when the user explicitly asked for this window (a menu command or a click). An
+    /// automatic show — a new proposal arriving, a plugin pushing its report — passes false so the
+    /// window appears without taking keyboard focus from the canvas. Missing means false.
+    #[serde(default)]
+    focus: bool,
 }
 
 /// The native window label for a panel id. Must be injective: `panel.a-b.c` and `panel.a.b-c` are
@@ -1016,7 +1021,18 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 
 #[cfg(test)]
 mod plugin_panel_label_tests {
-    use super::{is_valid_plugin_storage_id, plugin_panel_window_label};
+    use super::{is_valid_plugin_storage_id, plugin_panel_window_label, OpenPluginPanelRequest};
+
+    #[test]
+    fn open_requests_focus_only_when_the_app_asks() {
+        let automatic: OpenPluginPanelRequest =
+            serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals"}"#).unwrap();
+        assert!(!automatic.focus);
+        let explicit: OpenPluginPanelRequest =
+            serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals","focus":true}"#)
+                .unwrap();
+        assert!(explicit.focus);
+    }
 
     #[test]
     fn distinct_panel_ids_never_share_a_window_label() {
@@ -1065,8 +1081,13 @@ fn open_plugin_panel_window(
 
     let label = plugin_panel_window_label(&request.panel_id);
     if let Some(window) = app.get_webview_window(&label) {
-        window.show().map_err(|error| error.to_string())?;
-        configure_analysis_window(&window)?;
+        // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
+        // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
+        // the window front.
+        if request.focus || !cfg!(target_os = "macos") {
+            window.show().map_err(|error| error.to_string())?;
+        }
+        configure_analysis_window(&window, request.focus)?;
         return Ok(());
     }
 
@@ -1083,6 +1104,7 @@ fn open_plugin_panel_window(
     .min_inner_size(280.0, 200.0)
     .accept_first_mouse(true)
     .focusable(true)
+    .focused(request.focus)
     .resizable(true)
     .decorations(false)
     .shadow(false)
@@ -1095,7 +1117,7 @@ fn open_plugin_panel_window(
     }
     let window = builder.build().map_err(|error| error.to_string())?;
 
-    configure_analysis_window(&window)?;
+    configure_analysis_window(&window, request.focus)?;
     Ok(())
 }
 
@@ -1133,8 +1155,13 @@ fn analysis_window_initial_position<R: Runtime>(
     Some(tauri::LogicalPosition::new(x, y))
 }
 
+/// Always focusable, so the user can click into the window. It is focused only when `focus` is
+/// true: an automatic re-show must never take keyboard focus from the canvas mid-typing.
 #[cfg(target_os = "macos")]
-fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+fn configure_analysis_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    focus: bool,
+) -> Result<(), String> {
     let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
         return Err("Could not access native ChemDraft analysis window.".to_string());
@@ -1147,18 +1174,27 @@ fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Re
     ns_window.setIgnoresMouseEvents(false);
     window
         .set_focusable(true)
-        .and_then(|_| window.set_focus())
         .map_err(|error| error.to_string())?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    // orderFront shows the window without making it key, so this is also the unfocused show.
     ns_window.orderFront(None);
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+fn configure_analysis_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    focus: bool,
+) -> Result<(), String> {
     window
         .set_focusable(true)
-        .and_then(|_| window.set_focus())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Opens (or repositions + reshows) a small floating popover window for a palette — e.g. the

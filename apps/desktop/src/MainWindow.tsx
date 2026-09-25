@@ -119,11 +119,14 @@ import {
   listenForPluginPanelRequests,
   openPluginPanelWindow,
   pluginPanelIdentityKey,
+  respondToSaveTextFile,
+  type AnalysisWindowAction,
   type AnalysisWindowContent,
   type AnalysisWindowSnapshotPayload,
   type PluginPanelIdentity,
   type PluginPanelReportPayload
 } from "./plugins/panelBridge";
+import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
@@ -1388,7 +1391,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.24.22.55-opus";
+const CURRENT_BUILD_STAMP = "9.25.08.30-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1729,8 +1732,14 @@ export function MainWindow({
    */
   /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it. */
   const copyAnalysisText = useCallback((text: string) => {
-    void navigator.clipboard?.writeText(text);
-    setStatus("Analysis copied");
+    // The floating inspector's Copy reaches here over the event bridge, outside any user gesture in
+    // this document, so the web Clipboard API would be refused. The native clipboard command is not
+    // gesture-bound; the status reports what actually happened.
+    void writeClipboardTextItems([{ type: "text/plain", text }])
+      .catch(() => false)
+      .then((didWrite) => {
+        setStatus(didWrite ? "Analysis copied" : "Could not copy the analysis to the clipboard");
+      });
   }, []);
 
   const runMolecularProperties = useCallback(
@@ -7572,9 +7581,9 @@ export function MainWindow({
       windowId: string,
       title: string,
       content: AnalysisWindowContent,
-      options: { open?: boolean; width?: number; height?: number } = {}
-    ) => {
-      if (!isDesktopRuntime()) return;
+      options: { open?: boolean; focus?: boolean; width?: number; height?: number } = {}
+    ): Promise<boolean> => {
+      if (!isDesktopRuntime()) return Promise.resolve(false);
       const payload: AnalysisWindowSnapshotPayload = {
         pluginId: ANALYSIS_WINDOW_OWNER_ID,
         panelId: windowId,
@@ -7584,20 +7593,25 @@ export function MainWindow({
       const key = pluginPanelIdentityKey(ANALYSIS_WINDOW_OWNER_ID, windowId);
       analysisWindowSnapshotsRef.current.set(key, payload);
 
-      const opened = options.open
-        ? openPluginPanelWindow({
-            pluginId: ANALYSIS_WINDOW_OWNER_ID,
-            panelId: windowId,
-            title,
-            width: options.width,
-            height: options.height
-          })
-        : Promise.resolve();
-      void opened
-        .then(() => broadcastAnalysisWindowSnapshot(payload))
-        .catch((error: unknown) => {
-          setStatus(`Could not open ${title}: ${error instanceof Error ? error.message : String(error)}`);
-        });
+      // Resolves true once the window is up (or needed no opening), false when the native open
+      // failed — callers that track "the window is showing" must not assume it before then.
+      return settleAnalysisWindowOpen(
+        () =>
+          options.open
+            ? openPluginPanelWindow({
+                pluginId: ANALYSIS_WINDOW_OWNER_ID,
+                panelId: windowId,
+                title,
+                width: options.width,
+                height: options.height,
+                focus: options.focus ?? false
+              })
+            : Promise.resolve(),
+        (message) => setStatus(`Could not open ${title}: ${message}`)
+      ).then((opened) => {
+        if (opened) void broadcastAnalysisWindowSnapshot(payload).catch(() => undefined);
+        return opened;
+      });
     },
     []
   );
@@ -7694,7 +7708,7 @@ export function MainWindow({
                 busy: analysisBusy,
                 stale: analysisReportIsStale
               },
-              { open: true, width: 940, height: 660 }
+              { open: true, focus: true, width: 940, height: 660 }
             );
           } else if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
             await toggleToolset(molecularInspectorToolsetId);
@@ -7737,7 +7751,7 @@ export function MainWindow({
             VALIDATION_RESULT_WINDOW_ID,
             "Validation Result",
             { kind: "report", report: validationResultReport(analysis) },
-            { open: true, width: 500, height: 520 }
+            { open: true, focus: true, width: 500, height: 520 }
           );
 
           if (analysis.validation.valid) {
@@ -8390,10 +8404,13 @@ export function MainWindow({
       }
       if (isDesktopRuntime() && !openedPluginPanelWindowsRef.current.has(key)) {
         openedPluginPanelWindowsRef.current.add(key);
+        // Reports arrive asynchronously after the command that asked for them, so the window must
+        // appear without taking the keyboard from whatever the user moved on to.
         void openPluginPanelWindow({
           pluginId: panel.pluginId,
           panelId: panel.panelId,
-          title: panel.report.title || panel.title
+          title: panel.report.title || panel.title,
+          focus: false
         }).catch((error: unknown) => {
           openedPluginPanelWindowsRef.current.delete(key);
           pluginPanelReportsRef.current.delete(key);
@@ -8516,24 +8533,32 @@ export function MainWindow({
   // reopens the window after the user closes it with proposals still waiting.
   const [proposalReview, setProposalReview] = useState({ pending: 0, windowOpen: false });
   const publishProposalReview = useCallback(
-    (open: boolean) => {
+    (open: boolean, focus: boolean): Promise<boolean> => {
       const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
-      publishAnalysisWindow(
+      return publishAnalysisWindow(
         PATCH_REVIEW_WINDOW_ID,
         "Plugin Proposals",
         {
           kind: "patchReview",
           proposals: pending.map((proposal) => proposalReviewItem(pluginRuntime.runtime.host, proposal))
         },
-        { open, width: 420, height: 420 }
+        { open, focus, width: 420, height: 420 }
       );
     },
     [pluginRuntime.runtime, publishAnalysisWindow]
   );
-  const reopenProposalReview = useCallback(() => {
-    publishProposalReview(true);
-    setProposalReview((current) => ({ ...current, windowOpen: true }));
-  }, [publishProposalReview]);
+  /** Open the review window, and only once the native open has succeeded mark it open: on a
+   *  failure the badge must stay, or the pending proposals have no way back on desktop. */
+  const showProposalReview = useCallback(
+    (focus: boolean) => {
+      void publishProposalReview(true, focus).then((opened) => {
+        setProposalReview((current) => proposalReviewAfterOpen(current, opened));
+      });
+    },
+    [publishProposalReview]
+  );
+  // The badge is a click: the user asked for the window, so it takes focus.
+  const reopenProposalReview = useCallback(() => showProposalReview(true), [showProposalReview]);
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
@@ -8549,16 +8574,39 @@ export function MainWindow({
       setProposalReview({ pending: 0, windowOpen: false });
       return;
     }
-    publishProposalReview(transition === "open");
-    setProposalReview((current) => ({
-      pending: pending.length,
-      windowOpen: transition === "open" ? true : current.windowOpen
-    }));
-  }, [patchQueueVersion, pluginRuntime.runtime, publishProposalReview]);
+    setProposalReview((current) => ({ ...current, pending: pending.length }));
+    if (transition === "open") {
+      // A proposal arriving is not the user asking for the window: show it without focus, so
+      // typing on the canvas is never interrupted.
+      showProposalReview(false);
+    } else {
+      void publishProposalReview(false, false);
+    }
+  }, [patchQueueVersion, pluginRuntime.runtime, publishProposalReview, showProposalReview]);
 
+  // The action listener is registered ONCE. Its handlers close over live state and are redefined
+  // on every document change, so they are read through this ref: re-registering per render meant
+  // an async unlisten/listen gap in which a window's Accept, Reject, or Copy was dropped.
+  const analysisWindowActionHandlersRef = useRef({
+    acceptPluginProposal,
+    copyAnalysisText,
+    recomputeAnalysisFor,
+    rejectPluginProposal,
+    runtime: pluginRuntime.runtime
+  });
+  useEffect(() => {
+    analysisWindowActionHandlersRef.current = {
+      acceptPluginProposal,
+      copyAnalysisText,
+      recomputeAnalysisFor,
+      rejectPluginProposal,
+      runtime: pluginRuntime.runtime
+    };
+  }, [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]);
   useEffect(
     () =>
-      listenForAnalysisWindowActions((action) => {
+      listenForAnalysisWindowActions((action: AnalysisWindowAction) => {
+        const handlers = analysisWindowActionHandlersRef.current;
         switch (action.kind) {
           case "close":
             if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
@@ -8569,27 +8617,37 @@ export function MainWindow({
             }
             return;
           case "copyMolecularInspector":
-            copyAnalysisText(action.text);
+            handlers.copyAnalysisText(action.text);
             return;
           case "changeMolecularInterpretation":
-            recomputeAnalysisFor(action.interpretationId);
+            handlers.recomputeAnalysisFor(action.interpretationId);
             return;
           case "acceptPluginProposal": {
-            const proposal = pluginRuntime.runtime.host
+            const proposal = handlers.runtime.host
               .listProposedPatches("pending")
               .find((candidate) => candidate.id === action.proposalId);
-            if (proposal) acceptPluginProposal(proposal);
+            if (proposal) handlers.acceptPluginProposal(proposal);
             return;
           }
           case "rejectPluginProposal": {
-            const proposal = pluginRuntime.runtime.host
+            const proposal = handlers.runtime.host
               .listProposedPatches("pending")
               .find((candidate) => candidate.id === action.proposalId);
-            if (proposal) rejectPluginProposal(proposal);
+            if (proposal) handlers.rejectPluginProposal(proposal);
+            return;
+          }
+          case "saveTextFile": {
+            // A report window asked for a save it has no permission to perform itself (the NMR
+            // figure's JCAMP-DX export). Run it here and tell that window how it ended.
+            const { requestId, filename, text, title, formatLabel, extensions, mimeType } = action;
+            void saveTextFileHere(filename, text, { title, formatLabel, extensions, mimeType })
+              .catch(() => "failed" as const)
+              .then((result) => respondToSaveTextFile(requestId, result))
+              .catch(() => undefined);
           }
         }
       }),
-    [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]
+    []
   );
 
   const invoke = useCallback(async (commandId: string) => {
@@ -8640,7 +8698,7 @@ export function MainWindow({
             plugins: pluginRuntime.plugins,
             diagnostics: pluginRuntime.diagnostics
           },
-          { open: true, width: 500, height: 560 }
+          { open: true, focus: true, width: 500, height: 560 }
         );
       } else {
         setPluginDiagnosticsOpen((open) => !open);
@@ -27593,6 +27651,28 @@ function validationResultReport(analysis: StructureAnalysisResult): PluginPanelR
         : [{ kind: "text" as const, body: "No validation warnings or errors were reported." }])
     ]
   };
+}
+
+/** Proposal-window state once a native open settles: open only if it succeeded and work remains. */
+export function proposalReviewAfterOpen(
+  current: { pending: number; windowOpen: boolean },
+  opened: boolean
+): { pending: number; windowOpen: boolean } {
+  return { ...current, windowOpen: opened && current.pending > 0 };
+}
+
+/** Run a native window open; resolve whether it succeeded, reporting a failure through `onError`. */
+export async function settleAnalysisWindowOpen(
+  open: () => Promise<void>,
+  onError: (message: string) => void
+): Promise<boolean> {
+  try {
+    await open();
+    return true;
+  } catch (error) {
+    onError(error instanceof Error ? error.message : String(error));
+    return false;
+  }
 }
 
 export function proposalWindowLifecycle(

@@ -70,6 +70,37 @@ the main document window, not global always-on-top panels, and retain their
 session position when hidden and reopened. The in-app `PluginPanelSurface` and
 proposal tray are web-build fallbacks only.
 
+Analysis windows hold no dialog, filesystem, or clipboard permission
+(`capabilities/plugin-panel.json`), and must not gain one. Anything that needs
+one is performed by the main window on the window's behalf:
+
+- **File saves** (the NMR figure's JCAMP-DX export): `saveTextFile` detects the
+  `?window=pluginPanel` route and sends a `saveTextFile` analysis-window action;
+  the main window shows the save dialog, writes the file, and answers on
+  `chemdraft://analysis-window-action-result` with `saved` / `cancelled` /
+  `failed`, keyed by request id, so the button reports what really happened.
+- **Copy** from the floating Molecular Inspector goes through the native
+  clipboard command, because the web Clipboard API refuses a write that arrives
+  over the event bridge without a user gesture in the main document. A failed
+  write is reported as a failure.
+
+The main window registers its analysis-window action listener once and reads
+its live handlers through a ref, so no action can fall into a re-registration
+gap when the document changes.
+
+**Focus.** `openPluginPanelWindow` carries an explicit `focus` flag. Only a
+window the user asked for (an Analyze menu command, the pending-proposals
+badge) takes keyboard focus; automatic shows — a proposal arriving, a plugin
+pushing its report — order the window front without making it key, so typing on
+the canvas is never interrupted. The window stays focusable for a click. The
+proposal window is marked open only once its native open succeeds, so a failed
+open leaves the pending-proposals badge in place.
+
+**Escape.** A report window closes on a bubbling window-level Escape unless the
+event was already `defaultPrevented`. An inner overlay (the linked figure's
+Full size view) handles Escape in the capture phase and prevents the default,
+so the first Escape closes the overlay and only a second closes the window.
+
 ## Menu integration + drift test
 
 Plugin menu contributions become app-menu items via `pluginMenuModel`, tagged

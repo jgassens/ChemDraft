@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
+  ANALYSIS_WINDOW_ACTION_RESULT_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
   PATCH_REVIEW_WINDOW_ID,
@@ -27,6 +28,36 @@ import { PluginPanelWindow } from "./PluginPanelWindow";
 const tauriInvoke = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
+// A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
+// global emit does. `respond` lets a test stand in for the main window.
+const tauriEvents = vi.hoisted(() => {
+  const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
+  const emitted: { name: string; payload: unknown }[] = [];
+  let respond: ((name: string, payload: unknown) => void) | undefined;
+  return {
+    listeners,
+    emitted,
+    setResponder(next: typeof respond) {
+      respond = next;
+    },
+    listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+      const set = listeners.get(name) ?? new Set();
+      set.add(handler);
+      listeners.set(name, set);
+      return () => set.delete(handler);
+    },
+    emit: async (name: string, payload: unknown) => {
+      emitted.push({ name, payload });
+      for (const handler of [...(listeners.get(name) ?? [])]) handler({ payload });
+      respond?.(name, payload);
+    }
+  };
+});
+vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen, emit: tauriEvents.emit }));
+const nativeSave = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => undefined }) }));
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLElement | undefined;
@@ -41,6 +72,11 @@ afterEach(() => {
   container = undefined;
   delete (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__;
   tauriInvoke.mockClear();
+  nativeSave.mockReset();
+  tauriEvents.listeners.clear();
+  tauriEvents.emitted.length = 0;
+  tauriEvents.setResponder(undefined);
+  window.history.replaceState(null, "", "/");
 });
 
 const PANEL_ID = "panel.exampleAnalyzer.result";
@@ -97,7 +133,8 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       panelId: VALIDATION_RESULT_WINDOW_ID,
       title: "Validation Result",
       width: 500,
-      height: 520
+      height: 520,
+      focus: true
     });
 
     expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
@@ -105,9 +142,125 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
         panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, VALIDATION_RESULT_WINDOW_ID),
         title: "Validation Result",
         width: 500,
-        height: 520
+        height: 520,
+        focus: true
       }
     });
+  });
+
+  it("passes focus: false through for an automatic show so the canvas keeps the keyboard", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await openPluginPanelWindow({
+      pluginId: ANALYSIS_WINDOW_OWNER_ID,
+      panelId: PATCH_REVIEW_WINDOW_ID,
+      title: "Plugin Proposals",
+      focus: false
+    });
+
+    expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
+      request: expect.objectContaining({ focus: false })
+    });
+  });
+
+  it("closes Full size on the first Escape and the window only on the second", async () => {
+    await mountWindow();
+    const closes: string[] = [];
+    const onClosed = (event: Event) => {
+      const detail = (event as CustomEvent<{ panelId?: unknown }>).detail;
+      if (typeof detail?.panelId === "string") closes.push(detail.panelId);
+    };
+    window.addEventListener(PLUGIN_PANEL_CLOSED_EVENT, onClosed);
+    try {
+      await broadcast(reportPayload());
+      const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find(
+        (button) => button.textContent === "Full size"
+      )!;
+      await act(async () => {
+        fullSize.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(document.querySelector(".lf-modal")).not.toBeNull();
+
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+      expect(document.querySelector(".lf-modal")).toBeNull();
+      expect(closes).toEqual([]);
+
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        await Promise.resolve();
+      });
+      expect(closes).toEqual([PANEL_ID]);
+    } finally {
+      window.removeEventListener(PLUGIN_PANEL_CLOSED_EVENT, onClosed);
+    }
+  });
+
+  it("exports JCAMP-DX through the main window, which holds the save permission", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${WINDOW_ID}`);
+    // Stand in for the main window: answer a save request as saved.
+    tauriEvents.setResponder((name, payload) => {
+      const action = payload as { kind?: string; requestId?: string };
+      if (name === ANALYSIS_WINDOW_ACTION_EVENT && action.kind === "saveTextFile") {
+        void tauriEvents.emit(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId: action.requestId, result: "saved" });
+      }
+    });
+    await mountWindow();
+    await act(async () => {
+      await broadcastPluginPanelReport(reportPayload());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const exportButton = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find(
+      (button) => button.textContent === "Export"
+    )!;
+    expect(exportButton).toBeDefined();
+
+    await act(async () => {
+      exportButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const request = tauriEvents.emitted.find(
+      (event) =>
+        event.name === ANALYSIS_WINDOW_ACTION_EVENT && (event.payload as { kind?: string }).kind === "saveTextFile"
+    );
+    expect(request?.payload).toMatchObject({
+      kind: "saveTextFile",
+      filename: "predicted-1H-nmr.jdx",
+      formatLabel: "JCAMP-DX",
+      extensions: ["jdx", "dx"]
+    });
+    expect((request?.payload as { text: string }).text).toContain("##JCAMP-DX=");
+    // The report window never reached for a dialog of its own.
+    expect(nativeSave).not.toHaveBeenCalled();
+    expect(exportButton.textContent).toBe("Exported");
+  });
+
+  it("shows Export failed when the main window reports the save failed", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${WINDOW_ID}`);
+    tauriEvents.setResponder((name, payload) => {
+      const action = payload as { kind?: string; requestId?: string };
+      if (name === ANALYSIS_WINDOW_ACTION_EVENT && action.kind === "saveTextFile") {
+        void tauriEvents.emit(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId: action.requestId, result: "failed" });
+      }
+    });
+    await mountWindow();
+    await act(async () => {
+      await broadcastPluginPanelReport(reportPayload());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const exportButton = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find(
+      (button) => button.textContent === "Export"
+    )!;
+    await act(async () => {
+      exportButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(exportButton.textContent).toBe("Export failed");
   });
 
   it("returns listener cleanup synchronously so an immediate effect cleanup cannot leak", () => {

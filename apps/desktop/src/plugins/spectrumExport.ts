@@ -1,6 +1,7 @@
 import type { PluginLinkedFigurePeak, PluginLinkedFigureSpectrum } from "@chemdraft/plugin-api";
 
 import { isDesktopRuntime } from "../window-manager";
+import { isPluginPanelWindowRoute, requestSaveTextFileFromMain } from "./panelBridge";
 
 /**
  * Export helpers for the linked figure: a portable (self-contained) SVG string for copy-paste, and a
@@ -331,10 +332,31 @@ export function downloadTextFile(filename: string, text: string, mimeType: strin
  */
 export type SaveTextFileResult = "saved" | "cancelled" | "failed";
 
+export interface SaveTextFileOptions {
+  title: string;
+  formatLabel: string;
+  extensions: readonly string[];
+  mimeType: string;
+}
+
 export async function saveTextFile(
   filename: string,
   text: string,
-  options: { title: string; formatLabel: string; extensions: readonly string[]; mimeType: string }
+  options: SaveTextFileOptions
+): Promise<SaveTextFileResult> {
+  // A detached report window has no dialog or filesystem permission, by design. The main window
+  // shows the save dialog and writes the file for it (`saveTextFile` analysis-window action).
+  if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
+    return requestSaveTextFileFromMain(filename, text, options);
+  }
+  return saveTextFileHere(filename, text, options);
+}
+
+/** Save from THIS window with its own permissions. The main window uses it to serve report windows. */
+export async function saveTextFileHere(
+  filename: string,
+  text: string,
+  options: SaveTextFileOptions
 ): Promise<SaveTextFileResult> {
   if (isDesktopRuntime()) {
     try {
