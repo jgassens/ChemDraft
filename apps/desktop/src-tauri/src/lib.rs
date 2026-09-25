@@ -4101,22 +4101,19 @@ fn toolset_frame_is_transient<R: Runtime>(
     app: &tauri::AppHandle<R>,
     window: &tauri::Window<R>,
 ) -> bool {
-    if window.is_minimized().unwrap_or(false) {
-        return true;
-    }
-    // Only Windows ties palettes to the document's minimized state (owned windows are minimized and
-    // parked with their owner). A macOS palette stays visible and draggable while the document is
-    // in the Dock, and those moves are real user moves.
-    #[cfg(windows)]
-    {
-        app.get_webview_window(MAIN_WINDOW_LABEL)
-            .is_some_and(|main| main.is_minimized().unwrap_or(false))
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        false
-    }
+    let palette_minimized = window.is_minimized().unwrap_or(false);
+    let document_minimized = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_some_and(|main| main.is_minimized().unwrap_or(false));
+    toolset_frame_state_is_transient(palette_minimized, document_minimized)
+}
+
+/// The decision behind [`toolset_frame_is_transient`]. Only Windows ties palettes to the document's
+/// minimized state (owned windows are minimized and parked at (-16000, -16000) with their owner). A
+/// macOS palette stays visible and draggable while the document is in the Dock, and those moves are
+/// real user moves.
+fn toolset_frame_state_is_transient(palette_minimized: bool, document_minimized: bool) -> bool {
+    palette_minimized || (cfg!(windows) && document_minimized)
 }
 
 fn current_toolset_window_position<R: Runtime>(
@@ -4178,19 +4175,47 @@ fn persist_toolset_position<R: Runtime>(
     })
 }
 
-fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
-    // Fullscreen/minimized frames are transient OS states, not a user-chosen frame.
-    if window.is_fullscreen().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
-        return Ok(());
+/// What a main-window resize or move should persist.
+#[derive(Debug, PartialEq)]
+enum MainWindowGeometryUpdate {
+    /// Fullscreen or minimized: a transient OS state, not a user-chosen frame.
+    Skip,
+    /// Maximized: not the user's frame either (on Windows it even starts off-screen, at the
+    /// invisible border), so record only the flag and keep the saved normal frame.
+    MarkMaximized,
+    /// A normal frame: save it, clearing the maximized flag.
+    SaveFrame,
+}
+
+fn main_window_geometry_update(
+    fullscreen: bool,
+    minimized: bool,
+    maximized: bool,
+) -> MainWindowGeometryUpdate {
+    if fullscreen || minimized {
+        MainWindowGeometryUpdate::Skip
+    } else if maximized {
+        MainWindowGeometryUpdate::MarkMaximized
+    } else {
+        MainWindowGeometryUpdate::SaveFrame
     }
-    // A maximized frame isn't the user's frame either (on Windows it even starts off-screen, at
-    // the invisible border): record only the flag and keep the saved normal frame.
-    if window.is_maximized().unwrap_or(false) {
-        return update_toolset_layout_state(window.app_handle(), |layout_state| {
-            if let Some(geometry) = layout_state.main_window.as_mut() {
-                geometry.maximized = true;
-            }
-        });
+}
+
+fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
+    match main_window_geometry_update(
+        window.is_fullscreen().unwrap_or(false),
+        window.is_minimized().unwrap_or(false),
+        window.is_maximized().unwrap_or(false),
+    ) {
+        MainWindowGeometryUpdate::Skip => return Ok(()),
+        MainWindowGeometryUpdate::MarkMaximized => {
+            return update_toolset_layout_state(window.app_handle(), |layout_state| {
+                if let Some(geometry) = layout_state.main_window.as_mut() {
+                    geometry.maximized = true;
+                }
+            });
+        }
+        MainWindowGeometryUpdate::SaveFrame => {}
     }
     let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return Ok(());
@@ -4509,6 +4534,40 @@ mod tests {
         ] {
             assert!(!is_sidecar_placeholder(&binaries.join(real)), "{real}");
         }
+    }
+
+    #[test]
+    fn a_minimized_palette_or_document_frame_is_never_persisted_where_windows_parks_it() {
+        assert!(!toolset_frame_state_is_transient(false, false));
+        assert!(toolset_frame_state_is_transient(true, false));
+        assert!(toolset_frame_state_is_transient(true, true));
+        // Windows minimizes owned palettes with the document and parks them off-screen; macOS
+        // leaves them visible and draggable, so a move then is a real user move.
+        assert_eq!(toolset_frame_state_is_transient(false, true), cfg!(windows));
+    }
+
+    #[test]
+    fn a_maximized_main_window_records_the_flag_and_keeps_its_normal_frame() {
+        use MainWindowGeometryUpdate::*;
+        assert_eq!(main_window_geometry_update(false, false, false), SaveFrame);
+        assert_eq!(
+            main_window_geometry_update(false, false, true),
+            MarkMaximized
+        );
+        // Transient states win over maximized: a minimized maximized window saves nothing.
+        assert_eq!(main_window_geometry_update(false, true, true), Skip);
+        assert_eq!(main_window_geometry_update(true, false, true), Skip);
+        assert_eq!(main_window_geometry_update(true, false, false), Skip);
+
+        // Layout files written before the flag existed still parse, as not maximized.
+        let legacy: MainWindowGeometry =
+            serde_json::from_str(r#"{"x":10,"y":20,"width":800,"height":600}"#)
+                .expect("legacy geometry should parse");
+        assert!(!legacy.maximized);
+        let current: MainWindowGeometry =
+            serde_json::from_str(r#"{"x":10,"y":20,"width":800,"height":600,"maximized":true}"#)
+                .expect("current geometry should parse");
+        assert!(current.maximized);
     }
 
     #[test]
