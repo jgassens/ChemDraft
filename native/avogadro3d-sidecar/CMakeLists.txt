@@ -89,6 +89,11 @@ if(CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC)
   set(USE_SPGLIB OFF CACHE BOOL "Disable avogadrolibs spglib features" FORCE)
   set(SKBUILD ON CACHE BOOL "Skip avogadrolibs command/install extras in sidecar build" FORCE)
 
+  # Eigen is MPL-2.0 apart from a few LGPL-licensed modules. EIGEN_MPL2_ONLY makes including any of
+  # those a compile error, so a sidecar that builds provably contains only MPL-2.0 Eigen code (NOTICE,
+  # docs/architecture/dependency-inventory.md). Set before add_subdirectory so avogadrolibs gets it too.
+  add_compile_definitions(EIGEN_MPL2_ONLY)
+
   add_subdirectory("${_chemdraft_avogadro_source}" "${CMAKE_CURRENT_BINARY_DIR}/avogadrolibs" EXCLUDE_FROM_ALL)
   target_link_libraries(avogadro3d-sidecar PRIVATE Avogadro::Core Avogadro::Calc)
   target_compile_definitions(avogadro3d-sidecar PRIVATE CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC=1)

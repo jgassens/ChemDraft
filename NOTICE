@@ -73,8 +73,10 @@ avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
 Eigen 3.4.0 (header-only, compiled into the avogadro3d-sidecar executable)
   MPL-2.0. Source: https://gitlab.com/libeigen/eigen, tag 3.4.0. Unmodified.
   Source for the MPL-2.0 files is available at the URL above. Eigen also carries a
-  few LGPL-licensed modules; the build does not define EIGEN_MPL2_ONLY, so that
-  they are unused is RECORDED AS UNCONFIRMED in the dependency inventory.
+  few LGPL-licensed modules. The sidecar is built with EIGEN_MPL2_ONLY, which makes
+  including any of them a compile error, so the Windows binary contains none. The
+  macOS arm64 binary predates the flag and is RECORDED AS UNCONFIRMED in the
+  dependency inventory until it is rebuilt.
   Full licence text: native/avogadro3d-sidecar/licenses/Eigen-COPYING.MPL2.txt
 
 --------------------------------------------------------------------------------
