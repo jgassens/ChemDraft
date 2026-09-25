@@ -2625,7 +2625,12 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         true,
                         Some(match current_keybinding_scheme(app) {
                             KeybindingScheme::ChemDraft => "CmdOrCtrl+Shift+E",
+                            #[cfg(target_os = "macos")]
                             KeybindingScheme::ChemDraw => "Ctrl+Command+E",
+                            // "Command" is the Windows/Super key off macOS. The shortcut engine
+                            // folds Cmd into Ctrl there, so the ChemDraw scheme's chord is Ctrl+E.
+                            #[cfg(not(target_os = "macos"))]
+                            KeybindingScheme::ChemDraw => "CmdOrCtrl+E",
                         }),
                     )?,
                     &PredefinedMenuItem::separator(app)?,

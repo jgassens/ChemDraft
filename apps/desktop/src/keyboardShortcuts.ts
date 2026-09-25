@@ -1,5 +1,6 @@
 import {
   createShortcutRegistry,
+  detectShortcutPlatform,
   shortcutsFromCommands,
   type ShortcutPlatform,
   type ShortcutRegistry
@@ -28,12 +29,5 @@ export function createDesktopShortcutRegistry(
 }
 
 export function detectDesktopShortcutPlatform(): ShortcutPlatform {
-  const platform = globalThis.navigator?.platform.toLowerCase() ?? "";
-  if (platform.includes("mac")) {
-    return "macos";
-  }
-  if (platform.includes("win")) {
-    return "windows";
-  }
-  return "linux";
+  return detectShortcutPlatform();
 }

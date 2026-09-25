@@ -1,3 +1,6 @@
+import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { formatShortcutLabel } from "./toolsets";
+
 /**
  * Declarative model for the in-viewport application menu bar.
  *
@@ -109,9 +112,15 @@ export const PLUGIN_MANAGER_COMMAND_ID = "plugins.manage";
  * follow the mac convention (⌃⌥⇧⌘ then key). Kept pure (no `navigator`) so the model is
  * deterministic under SSR/tests; the app is mac-first, matching the native `CmdOrCtrl` accelerators.
  */
-export function formatMenuShortcut(accelerator: string | undefined): string | undefined {
+export function formatMenuShortcut(
+  accelerator: string | undefined,
+  platform: ShortcutPlatform = "macos"
+): string | undefined {
   if (!accelerator) {
     return undefined;
+  }
+  if (platform !== "macos") {
+    return formatShortcutLabel(accelerator, platform);
   }
   return accelerator
     .replace(/Cmd|Command|Mod|Meta/gi, "⌘")
@@ -137,7 +146,7 @@ function command(
     id: options.id ?? commandId,
     commandId,
     label,
-    shortcut: formatMenuShortcut(options.accelerator),
+    shortcut: formatMenuShortcut(options.accelerator, detectShortcutPlatform()),
     enabled: options.enabled ?? true,
     checked: options.checked,
     nativePredefined: options.nativePredefined

@@ -9,8 +9,37 @@ import {
   getToolsetItemGroups,
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
-  type DesktopToolsetRegistry
+  type DesktopToolsetRegistry,
+  compactMacShortcutLabel,
+  formatShortcutLabel,
+  platformShortcutLabel
 } from "./toolsets";
+import { formatMenuShortcut } from "./appMenu";
+
+describe("platform shortcut labels", () => {
+  it("keeps the macOS glyph labels exactly", () => {
+    for (const shortcut of ["Cmd+S", "Shift+Cmd+S", "Option+Shift+Cmd+L", "Ctrl+Cmd+E", "B", "+"]) {
+      expect(formatShortcutLabel(shortcut, "macos")).toBe(compactMacShortcutLabel(shortcut));
+    }
+    expect(formatMenuShortcut("Shift+Cmd+S", "macos")).toBe("⇧⌘S");
+  });
+
+  it("reads Ctrl+Alt+Shift+Key off macOS, with Cmd shown as Ctrl", () => {
+    expect(formatShortcutLabel("Cmd+S", "windows")).toBe("Ctrl+S");
+    expect(formatShortcutLabel("Shift+Cmd+S", "windows")).toBe("Ctrl+Shift+S");
+    expect(formatShortcutLabel("Option+Shift+Cmd+L", "windows")).toBe("Ctrl+Alt+Shift+L");
+    expect(formatShortcutLabel("Ctrl+Cmd+E", "windows")).toBe("Ctrl+E");
+    expect(formatShortcutLabel("B", "windows")).toBe("B");
+    expect(formatMenuShortcut("Shift+Cmd+S", "linux")).toBe("Ctrl+Shift+S");
+  });
+
+  it("drops hand-written Mac glyph labels off macOS only", () => {
+    expect(platformShortcutLabel("⌥⇧⌘L", "macos")).toBe("⌥⇧⌘L");
+    expect(platformShortcutLabel("⌥⇧⌘L", "windows")).toBeNull();
+    expect(platformShortcutLabel("Ctrl+E", "windows")).toBe("Ctrl+E");
+    expect(platformShortcutLabel("", "windows")).toBeNull();
+  });
+});
 
 const legacyToolset: ToolsetDefinition = {
   id: "core.legacy",

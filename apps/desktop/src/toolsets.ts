@@ -15,6 +15,7 @@ import {
   type ToolsetItemAddition,
   type ToolsetItemDefinition
 } from "@chemdraft/toolset-registry";
+import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import manifest from "./toolsets/desktop-toolsets.json";
 import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
@@ -571,9 +572,9 @@ export function toolsetItemToPaletteItem(
       description: liveCommand ? liveCommand.description ?? null : item.tooltip.description ?? null,
       shortcut: tooltipShortcut,
       shortcutLabel:
-        (liveCommand?.shortcutLabel || null)
-        ?? (primary.type === "command" ? primary.command.shortcutLabel || null : null)
-        ?? compactMacShortcutLabel(tooltipShortcut ?? undefined)
+        platformShortcutLabel(liveCommand?.shortcutLabel)
+        ?? (primary.type === "command" ? platformShortcutLabel(primary.command.shortcutLabel) : null)
+        ?? formatShortcutLabel(tooltipShortcut ?? undefined)
         ?? null
     },
     layout: item.layout,
@@ -644,7 +645,7 @@ function commandSpecFromManifest({
     icon: (icon ?? "palette") as IconName,
     assetName: assetName as ToolbarAssetName | undefined,
     shortcut: shortcutText,
-    shortcutLabel: compactMacShortcutLabel(shortcutText),
+    shortcutLabel: formatShortcutLabel(shortcutText),
     defaultShortcut: shortcutText,
     disabledReason,
     category,
@@ -679,6 +680,56 @@ function mergeToolsetCommandSpec(
     source: override.source,
     category: preferCommandPresentation ? override.category : override.category ?? base.category
   };
+}
+
+const MAC_SHORTCUT_GLYPHS = /[⌘⌥⇧⌃]/;
+
+/**
+ * Display label for a shortcut on the given platform. macOS keeps the compact glyph form
+ * (`compactMacShortcutLabel`, unchanged); elsewhere shortcuts read "Ctrl+Alt+Shift+Key", with the
+ * Mac-authored Cmd/Meta shown as Ctrl — the key the shortcut engine actually binds there.
+ */
+export function formatShortcutLabel(
+  shortcut: string | undefined,
+  platform: ShortcutPlatform = detectShortcutPlatform()
+): string | undefined {
+  if (platform === "macos") {
+    return compactMacShortcutLabel(shortcut);
+  }
+  if (!shortcut) {
+    return undefined;
+  }
+
+  const trimmed = shortcut.trim();
+  if (!trimmed.includes("+") || trimmed === "+") {
+    return trimmed;
+  }
+
+  const parts = trimmed.split("+").map((part) => part.trim()).filter((part) => part.length > 0);
+  const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
+  const key = parts.find((part) => !["cmd", "command", "ctrl", "control", "shift", "alt", "option", "meta"].includes(part.toLowerCase()));
+  const modifiers = [
+    ["ctrl", "control", "cmd", "command", "meta"].some((name) => lowerParts.has(name)) ? "Ctrl" : "",
+    lowerParts.has("alt") || lowerParts.has("option") ? "Alt" : "",
+    lowerParts.has("shift") ? "Shift" : ""
+  ].filter((modifier) => modifier.length > 0);
+
+  return modifiers.length > 0 && key ? [...modifiers, key].join("+") : trimmed;
+}
+
+/**
+ * An authored `shortcutLabel` as the platform should show it: macOS shows it as written; elsewhere a
+ * hand-written Mac glyph label ("⌥⇧⌘L") is dropped so the caller falls back to a label formatted
+ * from the shortcut itself.
+ */
+export function platformShortcutLabel(
+  label: string | null | undefined,
+  platform: ShortcutPlatform = detectShortcutPlatform()
+): string | null {
+  if (!label) {
+    return null;
+  }
+  return platform !== "macos" && MAC_SHORTCUT_GLYPHS.test(label) ? null : label;
 }
 
 export function compactMacShortcutLabel(shortcut: string | undefined): string | undefined {

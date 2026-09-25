@@ -219,8 +219,10 @@ export function detectShortcutPlatform(): ShortcutPlatform {
 
 function normalizeModifier(token: string, platform: ShortcutPlatform): ShortcutModifier | undefined {
   const value = token.trim().toLowerCase();
+  // Bindings are authored Mac-first ("Cmd+S"). Off macOS the Command key's role belongs to Ctrl —
+  // mapping it to Meta would demand the Windows/Super key and leave every shortcut dead.
   if (value === "cmd" || value === "command" || value === "meta") {
-    return "Meta";
+    return platform === "macos" ? "Meta" : "Ctrl";
   }
   if (value === "ctrl" || value === "control") {
     return "Ctrl";

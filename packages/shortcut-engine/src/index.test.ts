@@ -27,6 +27,23 @@ describe("shortcut-engine", () => {
     expect(shortcutChord(normalizeShortcut({ commandId: "tool.bond", keys: ["B"] }, "macos"))).toBe("b");
   });
 
+  it("binds Mac-authored Cmd shortcuts to Ctrl off macOS", () => {
+    expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "macos"))).toBe("Meta+s");
+    expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "windows"))).toBe("Ctrl+s");
+    expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "linux"))).toBe("Ctrl+s");
+    // The ChemDraw scheme's Ctrl+Cmd+E collapses to one Ctrl off macOS.
+    expect(shortcutChord(normalizeShortcut({ commandId: "export.open", keys: ["Ctrl", "Cmd", "E"] }, "windows"))).toBe("Ctrl+e");
+
+    const registry = createShortcutRegistry([
+      { commandId: "document.save", keys: ["Cmd", "S"] },
+      { commandId: "view.toggleCrosshairs", keys: ["Shift", "Cmd", "R"] }
+    ], { platform: "windows" });
+    expect(registry.resolve({ key: "s", ctrlKey: true })).toBe("document.save");
+    expect(registry.resolve({ key: "R", ctrlKey: true, shiftKey: true })).toBe("view.toggleCrosshairs");
+    // The Windows key does not stand in for Command.
+    expect(registry.resolve({ key: "s", metaKey: true })).toBeUndefined();
+  });
+
   it("builds shortcuts from enabled command definitions only", () => {
     const shortcuts = shortcutsFromCommands([
       { id: "tool.select", shortcut: "V" },

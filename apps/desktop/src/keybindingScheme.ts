@@ -26,7 +26,7 @@
 
 import { atomLabelCommandId, numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
 import type { KeybindingScheme } from "./keybindingSettings";
-import { compactMacShortcutLabel } from "./toolsets";
+import { formatShortcutLabel } from "./toolsets";
 
 /**
  * Registry-level overrides for the ChemDraw scheme. `null` unbinds a default
@@ -99,7 +99,7 @@ export function applyKeybindingSchemeToCommands(
       // and clears both fields the shortcut engine falls back through.
       shortcut: override ?? "",
       defaultShortcut: override ?? "",
-      shortcutLabel: override ? compactMacShortcutLabel(override) ?? override : ""
+      shortcutLabel: override ? formatShortcutLabel(override) ?? override : ""
     };
   });
 }

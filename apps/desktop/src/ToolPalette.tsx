@@ -132,7 +132,13 @@ import {
 } from "./commands";
 import { Icon } from "./icons";
 import { toolbarAsset } from "./toolbarAssets";
-import { PALETTE_GRID_METRIC_DEFAULTS, type ToolbarPaletteItemModel } from "./toolsets";
+import {
+  formatShortcutLabel,
+  PALETTE_GRID_METRIC_DEFAULTS,
+  platformShortcutLabel,
+  type ToolbarPaletteItemModel
+} from "./toolsets";
+import { detectShortcutPlatform } from "@chemdraft/shortcut-engine";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
@@ -625,7 +631,12 @@ function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPalet
       title: command.title ?? command.id,
       description: command.description ?? null,
       shortcut: command.shortcut || command.defaultShortcut || null,
-      shortcutLabel: command.shortcutLabel || command.shortcut || command.defaultShortcut || null
+      // macOS shows the raw shortcut as before; elsewhere Mac glyph labels give way to "Ctrl+…".
+      shortcutLabel: detectShortcutPlatform() === "macos"
+        ? command.shortcutLabel || command.shortcut || command.defaultShortcut || null
+        : platformShortcutLabel(command.shortcutLabel)
+          || formatShortcutLabel(command.shortcut || command.defaultShortcut || undefined)
+          || null
     },
     layout: { colSpan: 1, rowSpan: 1 },
     disabledReason: command.disabledReason,
