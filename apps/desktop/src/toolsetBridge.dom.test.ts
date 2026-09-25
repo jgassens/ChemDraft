@@ -2,7 +2,7 @@
 
 import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow, pruneNativeMoleculePart } from "./MainWindow";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
@@ -94,6 +94,16 @@ describe("toolset bridge interactions", () => {
         detail: { commandId }
       }));
     });
+  }
+
+  // The whole-molecule double-press detector reads Date.now() against a 400 ms window. Between the
+  // two presses these tests await a full React re-render, which a loaded full-suite run can stretch
+  // past 400 ms — the second press then reads as a new single click. A clock that steps 1 ms per read
+  // keeps the presses inside the window deterministically (and every read distinct).
+  function installSteppedClock() {
+    let now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => (now += 1));
+    onTestFinished(() => spy.mockRestore());
   }
 
   function expectRingsToolbarOpen() {
@@ -556,6 +566,7 @@ describe("toolset bridge interactions", () => {
   });
 
   it("shift double-clicking a molecule joins it to the existing selection instead of toggling off", async () => {
+    installSteppedClock();
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Shift double-click add"),
       { x: 220, y: 220 },
@@ -623,6 +634,7 @@ describe("toolset bridge interactions", () => {
   });
 
   it("shift double-clicking a molecule bond selects the whole molecule, not just the bond", async () => {
+    installSteppedClock();
     const initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Shift double-click whole molecule"),
       { x: 300, y: 300 },
@@ -669,6 +681,7 @@ describe("toolset bridge interactions", () => {
   });
 
   it("ordinary double-clicking a molecule bond selects the whole molecule", async () => {
+    installSteppedClock();
     const insertedDocument = insertNativeTemplateMolecule(
       createPhase4Document("Double-click whole molecule"),
       { x: 300, y: 300 },
@@ -718,6 +731,7 @@ describe("toolset bridge interactions", () => {
   });
 
   it("keeps a tight double-click whole-molecule gesture when the two presses resolve to adjacent parts", async () => {
+    installSteppedClock();
     const insertedDocument = insertNativeTemplateMolecule(
       createPhase4Document("Dense double-click whole molecule"),
       { x: 300, y: 300 },
@@ -834,6 +848,7 @@ describe("toolset bridge interactions", () => {
   });
 
   it("does not turn tight clicks on neighboring molecules into a whole-molecule double-click", async () => {
+    installSteppedClock();
     let document = insertNativeTemplateMolecule(
       createPhase4Document("Neighboring molecule clicks"),
       { x: 300, y: 300 },

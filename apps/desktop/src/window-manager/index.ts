@@ -557,6 +557,29 @@ export async function saveDocumentSession(state: unknown): Promise<void> {
   await invoke("save_document_session", { state }).catch(() => undefined);
 }
 
+/** Emitted by Rust to the document window when the app is about to quit (off macOS: closing the
+ *  document window, or File ▸ Exit). The listener flushes the pending session autosave and then
+ *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
+export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
+
+export async function listenForQuitFlushRequest(handler: () => Promise<void>): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return getCurrentWebviewWindow().listen(QUIT_FLUSH_REQUEST_EVENT, () => {
+    void handler().catch(() => undefined);
+  });
+}
+
+export async function confirmQuitAfterFlush(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("quit_after_flush").catch(() => undefined);
+}
+
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */
 export interface ToolbarMenuEntry {
   toolsetId: string;
@@ -716,13 +739,18 @@ export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosit
   return { x: position.x, y: position.y };
 }
 
+/** Move the calling window to `position` in global logical coordinates (the space
+ *  `currentWindowLogicalPosition` and `monitorLogicalBoundsAt` report in). Converted natively with
+ *  the scale of the monitor containing the point: `setPosition(new LogicalPosition(...))` converts
+ *  with the moving window's own scale, which on mixed-DPI setups put popovers and tooltips on the
+ *  wrong monitor. */
 export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
-  const { getCurrentWindow, LogicalPosition } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().setPosition(new LogicalPosition(position.x, position.y));
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_current_window_global_position", { x: position.x, y: position.y });
 }
 
 export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Promise<void> {

@@ -35,6 +35,8 @@
     "allow-prewarm-toolset-popover",
     "allow-show-toolset-tooltip-window",
     "allow-hide-toolset-tooltip-window",
+    "allow-set-current-window-global-position",
+    "allow-quit-after-flush",
     "allow-close-toolset-popover",
     "allow-set-toolset-window-focusable",
     "core:window:allow-show",

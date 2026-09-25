@@ -62,6 +62,21 @@ InChI (statically linked into the RDKit MinimalLib build above)
   dependency inventory and must be resolved, with the notice archived here, before
   any public redistribution.
 
+Avogadro libraries (avogadrolibs Core + Calc, statically linked into the
+avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
+  BSD-3-Clause. Copyright (c) 2011-2020, Kitware, Inc.
+  Source: https://github.com/OpenChemistry/avogadrolibs, commit
+  416651ddaef33a4e20392392e7c0b505d446491b. Built without Open Babel, GPL plugins,
+  or Python (guarded by pnpm audit:engine3d-sidecar).
+  Full licence text: native/avogadro3d-sidecar/licenses/avogadrolibs-LICENSE.txt
+
+Eigen 3.4.0 (header-only, compiled into the avogadro3d-sidecar executable)
+  MPL-2.0. Source: https://gitlab.com/libeigen/eigen, tag 3.4.0. Unmodified.
+  Source for the MPL-2.0 files is available at the URL above. Eigen also carries a
+  few LGPL-licensed modules; the build does not define EIGEN_MPL2_ONLY, so that
+  they are unused is RECORDED AS UNCONFIRMED in the dependency inventory.
+  Full licence text: native/avogadro3d-sidecar/licenses/Eigen-COPYING.MPL2.txt
+
 --------------------------------------------------------------------------------
 Data under separate terms
 --------------------------------------------------------------------------------

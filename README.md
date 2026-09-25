@@ -57,6 +57,14 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
 
 - The build produces `apps/desktop/src-tauri/target/release/bundle/nsis/ChemDraft_<version>_x64-setup.exe`,
   a per-user installer (no admin); it is unsigned, so SmartScreen will ask once.
+- Built from any branch but `main`, it is `ChemDraft (dev)` (`ChemDraft (dev)_<version>_x64-setup.exe`,
+  installed to `%LOCALAPPDATA%\ChemDraft (dev)`), with a per-worktree identifier — its own app data and
+  single-instance lock, so it installs beside the stable app rather than over it (AGENTS.md §21.2).
+  Release automation building a tagged commit sets `CHEMDRAFT_STABLE_BUILD=1`.
+- The Windows installer registers `.chemdraft` only (`tauri.windows.conf.json`). The macOS `.cdxml` entry
+  ranks ChemDraft as an Alternate handler, but NSIS ignores rank: a per-user install would write
+  `HKCU\Software\Classes\.cdxml`, which outranks ChemDraw's machine-wide registration and silently takes
+  over every `.cdxml` double-click. Open `.cdxml` files through File ▸ Open or Explorer's "Open with".
 - The Windows sidecar binary is committed; rebuild it with
   `cmake --preset windows-msvc && cmake --build --preset windows-msvc` in `native/avogadro3d-sidecar`
   after fetching `_deps` as its README describes.

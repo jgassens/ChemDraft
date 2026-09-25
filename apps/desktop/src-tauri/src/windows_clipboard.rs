@@ -33,8 +33,13 @@ const PNG_FORMAT: &str = "PNG";
 const CDX_FORMAT: &str = "ChemDraw Interchange Format";
 const MDLCT_FORMAT: &str = "MDLCT";
 
-/// Formats whose bytes are never text: list them as types, but do not try to decode them.
-const BINARY_FORMATS: [&str; 10] = [
+/// Formats whose bytes are never text a user meant to paste: list them as types, but do not fetch
+/// or decode them. Besides binary payloads this covers the shell's and OLE's bookkeeping formats —
+/// an Explorer file copy carries `DataObject` (a window handle), `Preferred DropEffect` (a DWORD)
+/// and `FileName` (an 8.3 path), which the text fallback used to turn into a junk text object — and
+/// the formats Office renders on demand: fetching those makes Excel/Word/PowerPoint serialize the
+/// whole selection again (WM_RENDERFORMAT) while ChemDraft's thread waits, for nothing it can use.
+const NON_TEXT_FORMATS: [&str; 39] = [
     PNG_FORMAT,
     CDX_FORMAT,
     "Embed Source",
@@ -45,6 +50,47 @@ const BINARY_FORMATS: [&str; 10] = [
     "OwnerLink",
     "ObjectLink",
     "Ole Private Data",
+    "DataObject",
+    "DataObjectAttributes",
+    "DataObjectAttributesRequiringElevation",
+    "Preferred DropEffect",
+    "Performed DropEffect",
+    "Paste Succeeded",
+    "Shell IDList Array",
+    "Shell Object Offsets",
+    "FileName",
+    "FileNameW",
+    "FileContents",
+    "FileGroupDescriptor",
+    "FileGroupDescriptorW",
+    "DragContext",
+    "DragImageBits",
+    "UsingDefaultDragImage",
+    "IsShowingLayered",
+    "IsShowingText",
+    "Chromium internal source URL",
+    "XML Spreadsheet",
+    "SYLK",
+    "DIF",
+    "Csv",
+    "Hyperlink",
+    "Link",
+    "JFIF",
+    "GIF",
+    "Link Preview Format",
+    "Rich Text Format Without Objects",
+];
+
+/// Name prefixes of the same kind: Excel's binary workbook formats, Office drawing formats, and the
+/// clipboard-history flags Windows attaches (`CanIncludeInClipboardHistory`, …).
+const NON_TEXT_FORMAT_PREFIXES: [&str; 7] = [
+    "Biff",
+    "Art::",
+    "Office Drawing",
+    "PowerPoint",
+    "CanInclude",
+    "CanUpload",
+    "ExcludeClipboardContent",
 ];
 
 /// The payload type a clipboard format is reported as, or `None` to leave it out entirely.
@@ -95,21 +141,49 @@ pub(crate) fn windows_target_for_payload_type(payload_type: &str) -> WindowsTarg
 
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn is_binary_windows_format(name: &str) -> bool {
-    BINARY_FORMATS.contains(&name) || name.starts_with("image/") && name != "image/svg+xml"
+    NON_TEXT_FORMATS.contains(&name)
+        || NON_TEXT_FORMAT_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        || name.starts_with("image/") && name != "image/svg+xml"
+}
+
+/// Accept decoded clipboard text only if it could be something a person copied: plausible (no
+/// stray control characters) and not just whitespace. The shared decoder's UTF-8 branch has no
+/// such check, which is how a DWORD like `05 00 00 00` came back as the text "\u{5}".
+fn accepted_text(text: &str) -> Option<String> {
+    (!text.trim().is_empty() && text_is_plausible_clipboard_text(text)).then(|| text.to_string())
 }
 
 /// Text from a registered format's bytes. Registered text formats are UTF-8 C strings by convention
 /// (and always, when ChemDraft wrote them), so UTF-8 is tried first. Going straight to the shared
 /// decoder would be wrong: a single trailing NUL is enough for its UTF-16 heuristics to read
-/// `"abc\0"` as two UTF-16 units. Only non-UTF-8 bytes fall through to it, minus any aligned UTF-16
-/// terminator (a trailing U+0000 would otherwise fail its plausibility check).
+/// `"abc\0"` as two UTF-16 units.
+///
+/// A block may also be larger than the string it holds (a writer is free to over-allocate, and
+/// `GlobalSize` reports the allocation), so after the whole-block attempt the text up to the first
+/// NUL is tried — unless the bytes look like UTF-16, whose ASCII has a NUL in every other byte. Only
+/// then does the shared UTF-16-aware decoder run, minus any aligned UTF-16 terminator, and its
+/// answer must pass the same plausibility check.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn decode_registered_text(bytes: &[u8]) -> Option<String> {
     let last = bytes.iter().rposition(|byte| *byte != 0)?;
     let without_nuls = &bytes[..=last];
     if let Ok(text) = std::str::from_utf8(without_nuls) {
-        if !text.contains('\0') && text_is_plausible_clipboard_text(text) {
-            return Some(text.to_string());
+        if !text.contains('\0') {
+            if let Some(text) = accepted_text(text) {
+                return Some(text);
+            }
+        }
+    }
+
+    if !crate::looks_like_utf16_bytes(bytes) {
+        if let Some(first_nul) = bytes.iter().position(|byte| *byte == 0) {
+            if let Ok(text) = std::str::from_utf8(&bytes[..first_nul]) {
+                if let Some(text) = accepted_text(text) {
+                    return Some(text);
+                }
+            }
         }
     }
 
@@ -117,21 +191,72 @@ pub(crate) fn decode_registered_text(bytes: &[u8]) -> Option<String> {
     while end >= 2 && bytes[end - 2] == 0 && bytes[end - 1] == 0 {
         end -= 2;
     }
-    decode_clipboard_text_bytes(&bytes[..end])
+    decode_clipboard_text_bytes(&bytes[..end]).and_then(|text| accepted_text(&text))
 }
 
 /// MDL "clip text": each molfile line is prefixed by one byte holding its length.
+///
+/// Lines are decoded as UTF-8, or as Latin-1 when they are not (ISIS/ChemDraw write the header and
+/// comment lines in the system code page, e.g. a `°` in a comment), so one non-ASCII byte no longer
+/// drops the whole molfile. Parsing stops at trailing zero padding, and a block that runs past its
+/// end after the molfile's `M  END` keeps the complete molfile it has already read.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn decode_mdlct(bytes: &[u8]) -> Option<String> {
-    let mut lines = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
+        if bytes[index..].iter().all(|byte| *byte == 0) {
+            break;
+        }
         let length = bytes[index] as usize;
-        let line = bytes.get(index + 1..index + 1 + length)?;
-        lines.push(std::str::from_utf8(line).ok()?);
+        let Some(line) = bytes.get(index + 1..index + 1 + length) else {
+            if lines.iter().any(|line| line.trim_end() == "M  END") {
+                break;
+            }
+            return None;
+        };
+        lines.push(match std::str::from_utf8(line) {
+            Ok(text) => text.to_string(),
+            Err(_) => line.iter().map(|byte| char::from(*byte)).collect(),
+        });
         index += 1 + length;
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// `text/plain` as Windows text: CF_TEXT's documented line ending is CR-LF (Windows synthesizes
+/// CF_TEXT/CF_OEMTEXT from what is written here), and classic multi-line EDIT controls show bare-LF
+/// text as a single line.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn windows_line_endings(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// The pixels-per-metre a PNG declares in its `pHYs` chunk (unit 1 = metre), if any. Copy As PNG
+/// stamps the real print density there (e.g. 384 dpi for its 4x render).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if !png.starts_with(SIGNATURE) {
+        return None;
+    }
+    let mut index = SIGNATURE.len();
+    while index + 8 <= png.len() {
+        let length = u32::from_be_bytes(png[index..index + 4].try_into().ok()?) as usize;
+        let kind = &png[index + 4..index + 8];
+        let data = png.get(index + 8..index + 8 + length)?;
+        if kind == b"pHYs" && length == 9 {
+            let x = u32::from_be_bytes(data[0..4].try_into().ok()?);
+            let y = u32::from_be_bytes(data[4..8].try_into().ok()?);
+            return (data[8] == 1 && x > 0 && y > 0).then_some((x, y));
+        }
+        if kind == b"IDAT" || kind == b"IEND" {
+            // pHYs must precede the image data.
+            return None;
+        }
+        index += 12 + length;
+    }
+    None
 }
 
 /// A PNG as a `CF_DIBV5` block: BITMAPV5HEADER + 32-bit BGRA pixels (bottom-up, alpha preserved),
@@ -143,11 +268,21 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     const LCS_SRGB: u32 = 0x7352_4742;
     const LCS_GM_IMAGES: u32 = 4;
 
+    // into_rgba8 reuses an already-RGBA8 buffer (to_rgba8 cloned it: one more full-size copy of a
+    // 4x render).
     let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
         .map_err(|error| format!("Could not decode PNG for the clipboard: {error}"))?
-        .to_rgba8();
+        .into_rgba8();
     let (width, height) = image.dimensions();
-    let size_image = width * height * 4;
+    let size_image = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .filter(|size| *size <= u32::MAX - HEADER_SIZE)
+        .ok_or_else(|| format!("Image too large for the clipboard: {width}x{height}"))?;
+    // Declare the PNG's own density: a hard-coded 72 dpi told bitmap-only readers that honor DIB
+    // resolution (older Office, WordPad) a 384 dpi Copy As PNG was 5.3x its real size.
+    let (pixels_per_meter_x, pixels_per_meter_y) =
+        png_pixels_per_meter(png).unwrap_or((2835, 2835));
 
     let mut dib = Vec::with_capacity((HEADER_SIZE + size_image) as usize);
     let push = |dib: &mut Vec<u8>, value: u32| dib.extend_from_slice(&value.to_le_bytes());
@@ -158,8 +293,8 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     dib.extend_from_slice(&32u16.to_le_bytes()); // bV5BitCount
     push(&mut dib, BI_BITFIELDS); // bV5Compression
     push(&mut dib, size_image); // bV5SizeImage
-    push(&mut dib, 2835); // bV5XPelsPerMeter (72 dpi)
-    push(&mut dib, 2835); // bV5YPelsPerMeter
+    push(&mut dib, pixels_per_meter_x); // bV5XPelsPerMeter (72 dpi when the PNG has no pHYs)
+    push(&mut dib, pixels_per_meter_y); // bV5YPelsPerMeter
     push(&mut dib, 0); // bV5ClrUsed
     push(&mut dib, 0); // bV5ClrImportant
     push(&mut dib, 0x00ff_0000); // bV5RedMask
@@ -263,9 +398,9 @@ pub(crate) mod native {
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .take_while(|unit| *unit != 0)
             .collect::<Vec<_>>();
-        String::from_utf16(&units)
-            .ok()
-            .filter(|text| !text.is_empty())
+        // Lossy: one unpaired surrogate (a truncated emoji) used to fail the whole decode, leaving
+        // `text/plain` listed with no text — and a paste that silently did nothing.
+        Some(String::from_utf16_lossy(&units)).filter(|text| !text.is_empty())
     }
 
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
@@ -357,7 +492,7 @@ pub(crate) mod native {
                 let written = match windows_target_for_payload_type(&item.r#type) {
                     WindowsTarget::Skip => true,
                     WindowsTarget::UnicodeText => {
-                        let units = wide(&item.text);
+                        let units = wide(&windows_line_endings(&item.text));
                         let bytes = units
                             .iter()
                             .flat_map(|unit| unit.to_le_bytes())
@@ -513,6 +648,91 @@ mod tests {
         );
         // A length running past the end is not MDLCT.
         assert_eq!(decode_mdlct(&[5, b'a']), None);
+    }
+
+    #[test]
+    fn shell_and_office_bookkeeping_formats_are_not_text() {
+        // An Explorer file copy: these used to decode into junk text objects on paste.
+        for name in [
+            "DataObject",
+            "Preferred DropEffect",
+            "FileName",
+            "FileNameW",
+            "Shell IDList Array",
+            "Chromium internal source URL",
+            "Biff12",
+            "Art::GVML ClipFormat",
+            "CanIncludeInClipboardHistory",
+        ] {
+            assert!(is_binary_windows_format(name), "{name}");
+        }
+        assert!(!is_binary_windows_format("HTML Format"));
+        assert!(!is_binary_windows_format("MDLCT"));
+    }
+
+    #[test]
+    fn binary_dwords_never_decode_as_text() {
+        assert_eq!(decode_registered_text(&[5, 0, 0, 0]), None);
+        assert_eq!(decode_registered_text(&[1, 0, 0, 0]), None);
+        assert_eq!(
+            decode_registered_text(&[0x74, 0x02, 0x07, 0x00, 0, 0, 0, 0]),
+            None
+        );
+    }
+
+    #[test]
+    fn registered_text_ignores_slack_after_its_terminator() {
+        assert_eq!(
+            decode_registered_text(b"CCO\0\x13\x7f").as_deref(),
+            Some("CCO")
+        );
+    }
+
+    #[test]
+    fn mdl_clip_text_survives_code_page_bytes_and_padding() {
+        let mut bytes = Vec::new();
+        for line in [b"".as_slice(), b"  25\xb0C sample", b"", b"M  END"] {
+            bytes.push(line.len() as u8);
+            bytes.extend_from_slice(line);
+        }
+        let mut padded = bytes.clone();
+        padded.extend_from_slice(&[0, 0, 0, 0]);
+        let decoded = decode_mdlct(&padded).expect("molfile");
+        assert_eq!(decoded, "\n  25\u{b0}C sample\n\nM  END");
+        // Garbage after a complete molfile keeps the molfile.
+        let mut trailing = bytes;
+        trailing.extend_from_slice(&[9, b'x']);
+        assert_eq!(decode_mdlct(&trailing).as_deref(), Some(decoded.as_str()));
+    }
+
+    #[test]
+    fn plain_text_is_written_with_windows_line_endings() {
+        assert_eq!(windows_line_endings("a\nb\r\nc"), "a\r\nb\r\nc");
+    }
+
+    #[test]
+    fn reads_the_density_a_png_declares() {
+        let mut image = image::RgbaImage::new(1, 1);
+        image.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode png");
+        assert_eq!(png_pixels_per_meter(&png), None);
+
+        // Insert a pHYs chunk (15118 px/m = 384 dpi) right after IHDR, as export.rs does.
+        let ihdr_end = 8 + 12 + 13;
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&9u32.to_be_bytes());
+        chunk.extend_from_slice(b"pHYs");
+        chunk.extend_from_slice(&15118u32.to_be_bytes());
+        chunk.extend_from_slice(&15118u32.to_be_bytes());
+        chunk.push(1);
+        chunk.extend_from_slice(&[0, 0, 0, 0]); // CRC is not checked by the reader
+        let mut stamped = png[..ihdr_end].to_vec();
+        stamped.extend_from_slice(&chunk);
+        stamped.extend_from_slice(&png[ihdr_end..]);
+        assert_eq!(png_pixels_per_meter(&stamped), Some((15118, 15118)));
     }
 
     #[test]

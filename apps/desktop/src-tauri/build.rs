@@ -27,6 +27,8 @@ fn main() {
             "prewarm_toolset_popover",
             "show_toolset_tooltip_window",
             "hide_toolset_tooltip_window",
+            "set_current_window_global_position",
+            "quit_after_flush",
             "close_toolset_popover",
             "set_toolset_window_focusable",
             "route_toolset_command",

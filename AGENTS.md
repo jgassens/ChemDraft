@@ -1337,6 +1337,19 @@ release outside the capture window must land exactly at the pointer; junction-pi
 holding the junction and attachment bond fixed; and switching the keybinding scheme live with the
 main window, detached palettes, and the native menu accelerators all following.
 
+Windows surfaces added since (the port on `windows-port`; `pnpm smoke:windows-menu-churn` automates
+the crash part): a second launch and a double-clicked `.chemdraft` file handed to the running app by
+single-instance, which then opens and can save that file; closing the document window (title-bar ✕,
+File > Exit, Alt+F4) quits the app after flushing the session, so a drawing made seconds earlier
+survives relaunch; F5 and Ctrl+R never reload the webview (a reload discards the document) while a
+Ctrl+R the app binds still runs; Ctrl+Y redo; the color picker's HEX field — six digits apply live,
+shorthand applies on Enter or blur, Escape abandons a half-typed value — and RGB/CMYK fields that
+settle a typed value once, on blur or Enter; palette, popover, and tooltip windows staying off the
+taskbar and never stealing focus from the document; palette toggles that bring a palette hidden
+behind the document to the front instead of hiding it; popovers and tooltips landing under their
+button across two monitors at different scale factors; a maximized window restored maximized; and
+the clipboard round trips (text, ChemDraft selection, SVG, PNG, and CDX/MDL paste from ChemDraw).
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

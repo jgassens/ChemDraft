@@ -10,6 +10,7 @@ import {
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
   type DesktopToolsetRegistry,
+  commandShortcutDisplay,
   compactMacShortcutLabel,
   formatShortcutLabel,
   platformShortcutLabel
@@ -31,6 +32,30 @@ describe("platform shortcut labels", () => {
     expect(formatShortcutLabel("Ctrl+Cmd+E", "windows")).toBe("Ctrl+E");
     expect(formatShortcutLabel("B", "windows")).toBe("B");
     expect(formatMenuShortcut("Shift+Cmd+S", "linux")).toBe("Ctrl+Shift+S");
+  });
+
+  it("reads a + or - key and the CmdOrCtrl/Mod aliases the way the shortcut engine binds them", () => {
+    expect(formatShortcutLabel("Cmd++", "windows")).toBe("Ctrl++");
+    expect(formatShortcutLabel("Cmd+-", "windows")).toBe("Ctrl+-");
+    expect(formatShortcutLabel("Cmd++", "macos")).toBe("⌘+");
+    expect(formatShortcutLabel("CmdOrCtrl+Shift+Z", "windows")).toBe("Ctrl+Shift+Z");
+    expect(formatShortcutLabel("Mod+K", "linux")).toBe("Ctrl+K");
+    expect(formatShortcutLabel("CmdOrCtrl+Shift+Z", "macos")).toBe("⇧⌘Z");
+    expect(formatShortcutLabel("+", "windows")).toBe("+");
+  });
+
+  it("shows a command's shortcut the same way on every palette surface", () => {
+    // An authored Mac glyph label gives way to the formatted shortcut off macOS.
+    expect(commandShortcutDisplay({ shortcutLabel: "⌥⇧⌘L", shortcut: "Option+Shift+Cmd+L" }, "windows")).toBe(
+      "Ctrl+Alt+Shift+L"
+    );
+    expect(commandShortcutDisplay({ shortcutLabel: "⌥⇧⌘L", shortcut: "Option+Shift+Cmd+L" }, "macos")).toBe("⌥⇧⌘L");
+    // No label: the raw shortcut is formatted off macOS and shown as-is on macOS, as before.
+    expect(commandShortcutDisplay({ shortcut: "Cmd+S" }, "windows")).toBe("Ctrl+S");
+    expect(commandShortcutDisplay({ shortcut: "Cmd+S" }, "macos")).toBe("Cmd+S");
+    // An empty string is the "unbound" sentinel and falls through to the default binding.
+    expect(commandShortcutDisplay({ shortcutLabel: "", shortcut: "", defaultShortcut: "Cmd+E" }, "windows")).toBe("Ctrl+E");
+    expect(commandShortcutDisplay({}, "windows")).toBeUndefined();
   });
 
   it("drops hand-written Mac glyph labels off macOS only", () => {

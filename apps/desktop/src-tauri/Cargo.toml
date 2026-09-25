@@ -27,7 +27,7 @@ tauri-plugin-http = "2.5.9"
 [target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
-# Already in the graph through tauri/tao; used directly for window ownership (and the clipboard).
+# Already in the graph through tauri/tao; used directly for window z-order checks and the clipboard.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",

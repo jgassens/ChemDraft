@@ -11,13 +11,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prependToPath, worktreeIdentity } from "./worktree-identity.mjs";
 
 const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = join(ROOT_DIR, "apps", "desktop");
 const DEV_HOST = "127.0.0.1";
-const STABLE_BUNDLE_ID = "org.chemdraft.desktop";
 const exe = process.platform === "win32" ? ".exe" : "";
 
 if (process.platform === "darwin") {
@@ -26,20 +26,6 @@ if (process.platform === "darwin") {
     stdio: "inherit"
   });
   process.exit(result.status ?? 1);
-}
-
-function git(...args) {
-  const result = spawnSync("git", ["-C", ROOT_DIR, ...args], { encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() : "";
-}
-
-// Same slug rule as run-app's RUN_APP_WORKTREE_SLUG.
-function worktreeSlug(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
 }
 
 function portIsFree(port) {
@@ -76,7 +62,7 @@ if (!existsSync(join(ROOT_DIR, "node_modules")) || !existsSync(join(APP_DIR, "no
 if (!onPath("cargo")) {
   const cargoBin = join(homedir(), ".cargo", "bin");
   if (existsSync(join(cargoBin, `cargo${exe}`))) {
-    env.PATH = `${cargoBin}${delimiter}${env.PATH ?? ""}`;
+    prependToPath(env, cargoBin);
   } else {
     console.error("ChemDraft launches through Tauri, but Rust/Cargo is not installed or not on PATH.");
     console.error("Install Rust from https://rustup.rs/, then run `pnpm dev` again.");
@@ -84,10 +70,9 @@ if (!onPath("cargo")) {
   }
 }
 
-const branch = git("rev-parse", "--abbrev-ref", "HEAD");
-const folder = basename(ROOT_DIR);
-env.CHEMDRAFT_WORKTREE_LABEL = `${folder}${branch ? ` [${branch}]` : ""}`;
-env.CHEMDRAFT_DEV_BUNDLE_ID = `${STABLE_BUNDLE_ID}.dev.${worktreeSlug(folder) || "worktree"}`;
+const identity = worktreeIdentity(ROOT_DIR);
+env.CHEMDRAFT_WORKTREE_LABEL = identity.label;
+env.CHEMDRAFT_DEV_BUNDLE_ID = identity.devBundleId;
 const port = await selectDevPort(Number(env.CHEMDRAFT_DEV_PORT ?? 5173));
 env.CHEMDRAFT_DEV_PORT = String(port);
 

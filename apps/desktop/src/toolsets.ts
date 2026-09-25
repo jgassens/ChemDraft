@@ -15,7 +15,7 @@ import {
   type ToolsetItemAddition,
   type ToolsetItemDefinition
 } from "@chemdraft/toolset-registry";
-import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import manifest from "./toolsets/desktop-toolsets.json";
 import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
@@ -696,25 +696,57 @@ export function formatShortcutLabel(
   if (platform === "macos") {
     return compactMacShortcutLabel(shortcut);
   }
-  if (!shortcut) {
-    return undefined;
+  const parsed = parseShortcutLabelParts(shortcut);
+  if (!parsed || parsed === "plain") {
+    return parsed === "plain" ? shortcut?.trim() : undefined;
   }
-
-  const trimmed = shortcut.trim();
-  if (!trimmed.includes("+") || trimmed === "+") {
-    return trimmed;
-  }
-
-  const parts = trimmed.split("+").map((part) => part.trim()).filter((part) => part.length > 0);
-  const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
-  const key = parts.find((part) => !["cmd", "command", "ctrl", "control", "shift", "alt", "option", "meta"].includes(part.toLowerCase()));
-  const modifiers = [
-    ["ctrl", "control", "cmd", "command", "meta"].some((name) => lowerParts.has(name)) ? "Ctrl" : "",
-    lowerParts.has("alt") || lowerParts.has("option") ? "Alt" : "",
-    lowerParts.has("shift") ? "Shift" : ""
+  const { modifiers, key } = parsed;
+  const labels = [
+    modifiers.has("ctrl") || modifiers.has("cmd") ? "Ctrl" : "",
+    modifiers.has("alt") ? "Alt" : "",
+    modifiers.has("shift") ? "Shift" : ""
   ].filter((modifier) => modifier.length > 0);
 
-  return modifiers.length > 0 && key ? [...modifiers, key].join("+") : trimmed;
+  return labels.length > 0 ? [...labels, key].join("+") : shortcut?.trim();
+}
+
+const SHORTCUT_MODIFIER_ALIASES: Readonly<Record<string, "ctrl" | "cmd" | "alt" | "shift">> = {
+  ctrl: "ctrl",
+  control: "ctrl",
+  cmd: "cmd",
+  command: "cmd",
+  meta: "cmd",
+  // The engine binds these to Command on macOS and Ctrl elsewhere (normalizeModifier).
+  cmdorctrl: "cmd",
+  mod: "cmd",
+  alt: "alt",
+  option: "alt",
+  shift: "shift"
+};
+
+/**
+ * A shortcut split the way the shortcut engine reads it (`parseShortcutDisplay`), so "Cmd++" is Cmd
+ * plus the `+` key rather than a bare "Cmd". "plain" is a lone key, or text with no modifier and
+ * one key, which both label functions show as written.
+ */
+function parseShortcutLabelParts(
+  shortcut: string | undefined
+): { modifiers: Set<"ctrl" | "cmd" | "alt" | "shift">; key: string } | "plain" | undefined {
+  if (!shortcut || !shortcut.trim()) {
+    return undefined;
+  }
+  const parts = parseShortcutDisplay(shortcut).map((part) => part.trim()).filter((part) => part.length > 0);
+  const modifiers = new Set<"ctrl" | "cmd" | "alt" | "shift">();
+  const keys: string[] = [];
+  for (const part of parts) {
+    const modifier = SHORTCUT_MODIFIER_ALIASES[part.toLowerCase()];
+    if (modifier) {
+      modifiers.add(modifier);
+    } else {
+      keys.push(part);
+    }
+  }
+  return modifiers.size > 0 && keys.length === 1 ? { modifiers, key: keys[0] } : "plain";
 }
 
 /**
@@ -732,28 +764,39 @@ export function platformShortcutLabel(
   return platform !== "macos" && MAC_SHORTCUT_GLYPHS.test(label) ? null : label;
 }
 
+/**
+ * The shortcut text to show for a command, wherever a command is displayed: its authored label when
+ * the platform can show it, else its shortcut formatted for the platform. macOS keeps the raw
+ * shortcut as its fallback, as it always has. `||` rather than `??`: an empty string is the
+ * keybinding scheme's "unbound" sentinel and must fall through.
+ */
+export function commandShortcutDisplay(
+  command: { shortcutLabel?: string | null; shortcut?: string | null; defaultShortcut?: string | null },
+  platform: ShortcutPlatform = detectShortcutPlatform()
+): string | undefined {
+  const label = platformShortcutLabel(command.shortcutLabel || null, platform);
+  if (label) {
+    return label;
+  }
+  const raw = command.shortcut || command.defaultShortcut || undefined;
+  return (platform === "macos" ? raw : formatShortcutLabel(raw, platform)) || undefined;
+}
+
 export function compactMacShortcutLabel(shortcut: string | undefined): string | undefined {
-  if (!shortcut) {
-    return undefined;
+  const parsed = parseShortcutLabelParts(shortcut);
+  if (!parsed || parsed === "plain") {
+    return parsed === "plain" ? shortcut?.trim() : undefined;
   }
-
-  const trimmed = shortcut.trim();
-  if (!trimmed.includes("+") || trimmed === "+") {
-    return trimmed;
-  }
-
-  const parts = trimmed.split("+").map((part) => part.trim()).filter((part) => part.length > 0);
-  const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
-  const key = parts.find((part) => !["cmd", "command", "ctrl", "control", "shift", "alt", "option", "meta"].includes(part.toLowerCase()));
+  const { modifiers, key } = parsed;
   // Mac convention orders modifiers ⌃⌥⇧⌘.
   const modifierLabel = [
-    lowerParts.has("ctrl") || lowerParts.has("control") ? "⌃" : "",
-    lowerParts.has("alt") || lowerParts.has("option") ? "⌥" : "",
-    lowerParts.has("shift") ? "⇧" : "",
-    lowerParts.has("cmd") || lowerParts.has("command") || lowerParts.has("meta") ? "⌘" : ""
+    modifiers.has("ctrl") ? "⌃" : "",
+    modifiers.has("alt") ? "⌥" : "",
+    modifiers.has("shift") ? "⇧" : "",
+    modifiers.has("cmd") ? "⌘" : ""
   ].join("");
 
-  return modifierLabel.length > 0 && key ? `${modifierLabel}${key}` : trimmed;
+  return `${modifierLabel}${key}`;
 }
 
 function dedupeCommands(commands: CommandSpec[]): CommandSpec[] {

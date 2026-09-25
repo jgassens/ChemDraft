@@ -271,9 +271,11 @@ export function PalettePopoverWindow({
     return () => unlisten?.();
   }, []);
 
+  // Both refuse once the popover is dismissed: hiding it blurs whichever field had focus, and a blur
+  // that settles a half-typed value would otherwise apply a colour the user just walked away from.
   const previewColor = (color: string) => {
     const normalized = normalizeHexColor(color);
-    if (!normalized) {
+    if (!normalized || dismissedRef.current) {
       return;
     }
     setDraft(normalized);
@@ -282,7 +284,7 @@ export function PalettePopoverWindow({
 
   const commitColor = (color: string) => {
     const normalized = normalizeHexColor(color);
-    if (!normalized) {
+    if (!normalized || dismissedRef.current) {
       return;
     }
     setDraft(normalized);

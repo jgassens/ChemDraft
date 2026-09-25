@@ -54,7 +54,7 @@
       },
       {
         "ext": ["cdxml"],
-        "name": "ChemDraw CDXML Document",
+        "name": "CDXML Document",
         "description": "Chemical Markup Language document",
         "mimeType": "chemical/x-cdxml",
         "role": "Editor",

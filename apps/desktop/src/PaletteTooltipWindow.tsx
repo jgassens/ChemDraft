@@ -3,7 +3,6 @@ import {
   listenForPaletteTooltipHide,
   listenForPaletteTooltipShow,
   monitorLogicalBoundsAt,
-  setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   type MonitorLogicalBounds,
   type PaletteTooltipPayload
@@ -29,11 +28,12 @@ function hideTooltipWindow() {
     .catch(() => undefined);
 }
 
-function showTooltipWindow() {
-  // Rust orders the panel front — the same path that displays the palettes. Tauri's JS show()
-  // resolved without error here but never actually displayed this focusable(false) panel.
+function showTooltipWindow(position: { x: number; y: number }) {
+  // Rust places (in global logical coordinates, converted with the anchor monitor's scale) and
+  // orders the panel front in one call — the same path that displays the palettes. Tauri's JS
+  // show() resolved without error here but never actually displayed this focusable(false) panel.
   void import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("show_toolset_tooltip_window"))
+    .then(({ invoke }) => invoke("show_toolset_tooltip_window", { x: position.x, y: position.y }))
     .catch(() => undefined);
 }
 
@@ -70,6 +70,10 @@ export function placePaletteTooltip(input: {
 export function PaletteTooltipWindow() {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const [payload, setPayload] = useState<PaletteTooltipPayload | undefined>();
+  // Bumped SYNCHRONOUSLY by every show/hide broadcast. The layout effect's `cancelled` flag only
+  // flips when React commits the new payload — a later scheduler task — so a hide arriving while a
+  // show was awaiting its IPC could still be followed by that show, stranding an empty tooltip.
+  const generationRef = useRef(0);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-tooltip-window-html");
@@ -83,12 +87,16 @@ export function PaletteTooltipWindow() {
   useEffect(() => {
     let unlistenShow: (() => void) | undefined;
     let unlistenHide: (() => void) | undefined;
-    void listenForPaletteTooltipShow(setPayload)
+    void listenForPaletteTooltipShow((next) => {
+      generationRef.current += 1;
+      setPayload(next);
+    })
       .then((cleanup) => {
         unlistenShow = cleanup;
       })
       .catch(() => undefined);
     void listenForPaletteTooltipHide(() => {
+      generationRef.current += 1;
       setPayload(undefined);
       hideTooltipWindow();
     })
@@ -117,15 +125,21 @@ export function PaletteTooltipWindow() {
     const width = Math.ceil(rect.width);
     const height = Math.ceil(rect.height);
     let cancelled = false;
+    const generation = generationRef.current;
+    const superseded = () => cancelled || generationRef.current !== generation;
     void (async () => {
       // Clamp against the monitor that contains the ANCHOR (the hovered button), not
       // whichever display this floating window is currently on — see placePaletteTooltip.
+      // The monitor query and the resize are independent, so they run together; placement and
+      // reveal are then one command (see show_toolset_tooltip_window).
       const anchorProbeY = (payload.aboveY + payload.belowY) / 2;
-      const bounds = await monitorLogicalBoundsAt(payload.anchorCenterX, anchorProbeY);
-      // Superseded while awaiting the monitor query: writing this placement now would drag the
-      // (already re-placed, visible) window back to the previous button's anchor while it shows the
-      // new button's text. Every write below is guarded, not just the reveal.
-      if (cancelled) {
+      const [bounds] = await Promise.all([
+        monitorLogicalBoundsAt(payload.anchorCenterX, anchorProbeY),
+        setCurrentWindowLogicalSize({ width, height })
+      ]);
+      // Superseded while awaiting: placing now would drag the (already re-placed, visible) window
+      // back to the previous button's anchor, or re-show a tooltip the pointer already left.
+      if (superseded()) {
         return;
       }
       const { x, y } = placePaletteTooltip({
@@ -136,14 +150,7 @@ export function PaletteTooltipWindow() {
         height,
         bounds
       });
-      await setCurrentWindowLogicalSize({ width, height });
-      if (cancelled) {
-        return;
-      }
-      await setCurrentWindowLogicalPosition({ x, y });
-      if (!cancelled) {
-        showTooltipWindow();
-      }
+      showTooltipWindow({ x, y });
     })().catch(() => undefined);
     return () => {
       cancelled = true;

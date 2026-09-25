@@ -167,7 +167,7 @@ function resolveWorkerEntry(pluginRoot: string, entry: string | undefined): stri
   if (!existsSync(candidate)) {
     if (entry) throw new PluginPackagingError(`worker entry "${entry}" does not exist`);
   } else {
-    const realEntry = realpathSync(candidate);
+    const realEntry = realpathSync.native(candidate);
     if (!contains(join(pluginRoot, "src"), realEntry)) {
       throw new PluginPackagingError("worker entry must be a file inside the plugin's src directory");
     }
@@ -264,7 +264,7 @@ function collectFiles(dir: string, prefix = ""): PackagedFile[] {
 
 export async function packagePlugin(options: PackagePluginOptions): Promise<PackagePluginResult> {
   const repoRoot = resolve(options.repoRoot ?? repositoryRoot);
-  const sourcePluginRoot = realpathSync(resolve(options.pluginRoot));
+  const sourcePluginRoot = realpathSync.native(resolve(options.pluginRoot));
   const outDir = canonicalPath(options.outDir ?? join(repoRoot, DEFAULT_OUT_DIR));
 
   // Resolve only the plugin-relative name here. The committed snapshot below is where existence,
@@ -288,7 +288,7 @@ export async function packagePlugin(options: PackagePluginOptions): Promise<Pack
     const snapshotDependencies = join(snapshot.pluginRoot, "node_modules");
     if (existsSync(liveDependencies) && !existsSync(snapshotDependencies)) {
       // "junction": no Developer Mode/admin needed on Windows; ignored elsewhere (see committedCopy).
-      symlinkSync(realpathSync(liveDependencies), snapshotDependencies, "junction");
+      symlinkSync(realpathSync.native(liveDependencies), snapshotDependencies, "junction");
     }
     return await packageCommittedPlugin(
       snapshot.pluginRoot,

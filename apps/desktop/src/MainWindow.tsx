@@ -603,6 +603,8 @@ import {
   saveToolsetLayoutState,
   loadDocumentSession,
   saveDocumentSession,
+  listenForQuitFlushRequest,
+  confirmQuitAfterFlush,
   sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
@@ -643,7 +645,7 @@ import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
 import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
-import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { createDesktopShortcutRegistry, isBrowserReloadChord } from "./keyboardShortcuts";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
@@ -1371,7 +1373,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.25.10.05-opus";
+const CURRENT_BUILD_STAMP = "9.25.12.43-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -7353,33 +7355,64 @@ export function MainWindow({
     };
   }, [openDocumentContents]);
 
-  // Autosave the working document + file association (debounced) so a relaunch — or a crash —
-  // resumes the last edited state with no explicit save. Gated on hydration so the startup blank
-  // can't clobber the previous session before the restore above has read it.
+  // Write the working document + file association to the session file now. Reads refs only, so it
+  // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
+  // so the startup blank can't clobber the previous session before the restore above has read it.
+  const writeDocumentSessionNow = useCallback(async () => {
+    if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
+      return;
+    }
+    try {
+      const payload = createNativeSavePayload(documentRef.current);
+      const path = fileStateRef.current.path;
+      const envelope = buildDocumentSessionEnvelope(
+        payload,
+        fileStateRef.current,
+        path ? nativePathBasename(path) : payload.filename,
+        documentIsBlank(documentRef.current)
+      );
+      await saveDocumentSession(envelope);
+    } catch {
+      // Serialization or the write must never break editing (or block a quit); the previous
+      // autosave stays.
+    }
+  }, []);
+
+  // Autosave (debounced) so a relaunch — or a crash — resumes the last edited state with no
+  // explicit save.
   useEffect(() => {
     if (!isDesktopRuntime()) {
       return undefined;
     }
     const handle = window.setTimeout(() => {
-      if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
-        return;
-      }
-      try {
-        const payload = createNativeSavePayload(documentRef.current);
-        const path = fileStateRef.current.path;
-        const envelope = buildDocumentSessionEnvelope(
-          payload,
-          fileStateRef.current,
-          path ? nativePathBasename(path) : payload.filename,
-          documentIsBlank(documentRef.current)
-        );
-        void saveDocumentSession(envelope).catch(() => undefined);
-      } catch {
-        // Serialization must never break editing; the previous autosave stays.
-      }
+      void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState]);
+  }, [document, fileState, writeDocumentSessionNow]);
+
+  // Off macOS, closing the document window (or File ▸ Exit) quits the app. Rust asks for the pending
+  // autosave first: without this, an edit made inside the debounce window was lost on relaunch.
+  useEffect(() => {
+    if (!isDesktopRuntime()) {
+      return undefined;
+    }
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listenForQuitFlushRequest(async () => {
+      await writeDocumentSessionNow();
+      await confirmQuitAfterFlush();
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [writeDocumentSessionNow]);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
     const payload = createNativeSavePayload(documentRef.current);
@@ -9182,6 +9215,13 @@ export function MainWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Before the text-field early return, so typing in an editor can't reload the page either.
+      // `resolve` is undefined there (and for any chord no command claims), which is exactly when
+      // the webview's own reload would otherwise run.
+      if (isBrowserReloadChord(event) && !event.defaultPrevented && !shortcutRegistry.resolve(event)) {
+        event.preventDefault();
+      }
+
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
         return;
       }

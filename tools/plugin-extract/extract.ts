@@ -87,7 +87,7 @@ function assertSafeDistributionPaths(pluginRoot: string, staging: string, zipPat
 
 export function extractPlugin(options: ExtractPluginOptions): ExtractionResult {
   const repoRoot = resolve(options.repoRoot ?? repositoryRoot);
-  const sourcePluginRoot = realpathSync(resolve(options.pluginRoot));
+  const sourcePluginRoot = realpathSync.native(resolve(options.pluginRoot));
   const outDir = canonicalPath(options.outDir ?? join(repoRoot, "dist/plugins"));
 
   const gitState = readPluginGitState(sourcePluginRoot, gateError);

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-quit-after-flush"
+description = "Enables the quit_after_flush command without any pre-configured scope."
+commands.allow = ["quit_after_flush"]
+
+[[permission]]
+identifier = "deny-quit-after-flush"
+description = "Denies the quit_after_flush command without any pre-configured scope."
+commands.deny = ["quit_after_flush"]

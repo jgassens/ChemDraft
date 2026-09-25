@@ -99,6 +99,12 @@ const JAR_RELATIVE: &str = "resources/opsin/opsin-cli-2.9.0.jar";
 const RUNTIME_RELATIVE: &str = "resources/opsin/jre";
 /// The launcher inside the runtime's `bin/`. A jlink image built on Windows names it `java.exe`.
 const JAVA_EXECUTABLE: &str = if cfg!(windows) { "java.exe" } else { "java" };
+/// How to build the runtime on this platform: cmd.exe and PowerShell can't run the `.sh` wrapper.
+const REBUILD_RUNTIME_COMMAND: &str = if cfg!(windows) {
+    "node scripts/build-opsin-runtime.mjs"
+} else {
+    "scripts/build-opsin-runtime.sh"
+};
 
 /// Resolve a bundled resource, trying the packaged app first and then the dev tree.
 ///
@@ -215,11 +221,10 @@ pub fn opsin_status<R: Runtime>(app: tauri::AppHandle<R>) -> OpsinStatus {
     let reason = match (jar_present, runtime_present) {
         (true, true) => None,
         (false, _) => Some("The OPSIN engine is not present in this build.".to_string()),
-        (true, false) => Some(
+        (true, false) => Some(format!(
             "The bundled Java runtime is not present in this build, so names cannot be converted. \
-             Build it with scripts/build-opsin-runtime.sh."
-                .to_string(),
-        ),
+             Build it with {REBUILD_RUNTIME_COMMAND}."
+        )),
     };
     OpsinStatus {
         available: jar_present && runtime_present,
@@ -283,9 +288,20 @@ pub fn convert_with(
     // this line is the engine, and a failure there says nothing about the name.
     let name = validate_name(name).map_err(OpsinError::invalid_name)?;
 
-    let mut child = Command::new(java)
+    // The jar is passed relative to its own directory (the child's working directory): the Windows
+    // Java launcher reads its command line in the system ANSI code page, so an absolute path under a
+    // profile folder with characters outside it (C:\Users\Łukasz\…) reached the JVM as '?'s.
+    let (jar_dir, jar_arg) = match (jar.parent(), jar.file_name()) {
+        (Some(dir), Some(file)) if !dir.as_os_str().is_empty() => (Some(dir), file.to_os_string()),
+        _ => (None, jar.as_os_str().to_os_string()),
+    };
+    let mut command = Command::new(java);
+    if let Some(dir) = jar_dir {
+        command.current_dir(dir);
+    }
+    let mut child = command
         .arg("-jar")
-        .arg(jar)
+        .arg(jar_arg)
         .args(["-o", "smi", "-n"])
         // The child inherits the app's environment, and these three change how the JVM starts. Two
         // reasons to drop them. They can alter behaviour we have pinned (GC logging goes to STDOUT and
@@ -319,12 +335,26 @@ pub fn convert_with(
     let output =
         wait_with_timeout(child, OPSIN_TIMEOUT_SECS).map_err(OpsinError::engine_failure)?;
 
-    // Deliberately NOT checked: OPSIN exits 0 whether or not the name parsed (BUILD.md). Reading
-    // success from the status code would report every unparsable name as a success with no structure.
+    // OPSIN exits 0 whether or not the name parsed (BUILD.md), so a zero status says nothing about
+    // the name and success is read from the output. A NON-zero status with no result line is the
+    // JVM failing to run at all (a missing jar, an unloadable runtime) — an engine failure, which
+    // used to be reported to the user as "this name could not be interpreted".
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = stdout.lines().find_map(parse_output_line);
+    if result.is_none() && !output.status.success() {
+        let detail = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("no diagnostic output");
+        return Err(OpsinError::engine_failure(format!(
+            "The name parser could not run ({}): {detail}",
+            output.status
+        )));
+    }
 
-    match stdout.lines().find_map(parse_output_line) {
+    match result {
         Some(smiles) => Ok(OpsinConversion {
             smiles: Some(smiles),
             failure_reason: None,
@@ -371,6 +401,21 @@ fn wait_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launcher_that_cannot_run_is_an_engine_failure_not_a_bad_name() {
+        // Stand-in for a JVM that fails to start: the test binary rejects `-jar …` and exits
+        // non-zero without printing a result line — exactly what "Unable to access jarfile" does.
+        let launcher = std::env::current_exe().expect("test executable");
+        let jar = std::env::temp_dir().join("chemdraft-missing-opsin.jar");
+        let error = convert_with(&launcher, &jar, "benzene").expect_err("must not read as a name");
+        assert_eq!(
+            error.kind,
+            OpsinErrorKind::EngineFailure,
+            "{}",
+            error.message
+        );
+    }
 
     #[test]
     fn hands_the_jvm_plain_drive_paths() {

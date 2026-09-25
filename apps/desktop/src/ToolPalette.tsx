@@ -133,12 +133,10 @@ import {
 import { Icon } from "./icons";
 import { toolbarAsset } from "./toolbarAssets";
 import {
-  formatShortcutLabel,
+  commandShortcutDisplay,
   PALETTE_GRID_METRIC_DEFAULTS,
-  platformShortcutLabel,
   type ToolbarPaletteItemModel
 } from "./toolsets";
-import { detectShortcutPlatform } from "@chemdraft/shortcut-engine";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
@@ -632,11 +630,7 @@ function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPalet
       description: command.description ?? null,
       shortcut: command.shortcut || command.defaultShortcut || null,
       // macOS shows the raw shortcut as before; elsewhere Mac glyph labels give way to "Ctrl+…".
-      shortcutLabel: detectShortcutPlatform() === "macos"
-        ? command.shortcutLabel || command.shortcut || command.defaultShortcut || null
-        : platformShortcutLabel(command.shortcutLabel)
-          || formatShortcutLabel(command.shortcut || command.defaultShortcut || undefined)
-          || null
+      shortcutLabel: commandShortcutDisplay(command) ?? null
     },
     layout: { colSpan: 1, rowSpan: 1 },
     disabledReason: command.disabledReason,
@@ -3022,18 +3016,28 @@ export function ColorPickerPopoverBody({
   };
 
   const updateRgbChannel = (channel: keyof RgbColor, channelValue: string) => {
-    applyAndCommitColor(rgbToHexColor({
+    const next = rgbToHexColor({
       ...draftRgb,
       [channel]: clampColorChannel(channelValue)
-    }));
+    });
+    if (next !== normalizedValue) {
+      applyAndCommitColor(next);
+    }
   };
 
   const updateCmykChannel = (channel: keyof CmykColor, channelValue: string) => {
-    applyAndCommitColor(rgbToHexColor(cmykToRgbColor({
+    const next = rgbToHexColor(cmykToRgbColor({
       ...draftCmyk,
       [channel]: clampPercentChannel(channelValue)
-    })));
+    }));
+    if (next !== normalizedValue) {
+      applyAndCommitColor(next);
+    }
   };
+
+  // Set by Escape in the HEX field so the blur that follows (the popover hiding, or focus moving)
+  // does not settle a half-typed value — Escape abandons the edit; it must never commit it.
+  const discardHexOnBlurRef = useRef(false);
 
   // Live-apply only a complete six-digit value. normalizeHexColor also accepts #RGB shorthand, so
   // applying on every keystroke committed "#1E8" as #11EE88 mid-way through typing "#1E88E5" and
@@ -3048,6 +3052,11 @@ export function ColorPickerPopoverBody({
   };
 
   const settleHexInput = () => {
+    if (discardHexOnBlurRef.current) {
+      discardHexOnBlurRef.current = false;
+      setHexInput(normalizedValue.toUpperCase());
+      return;
+    }
     const normalized = normalizeHexColor(hexInput);
     if (!normalized) {
       setHexInput(normalizedValue.toUpperCase());
@@ -3109,12 +3118,10 @@ export function ColorPickerPopoverBody({
               {(["r", "g", "b"] as const).map((channel) => (
                 <label key={channel}>
                   <span>{channel.toUpperCase()}</span>
-                  <input
-                    type="number"
-                    min={0}
+                  <ColorChannelInput
                     max={255}
                     value={draftRgb[channel]}
-                    onChange={(event) => updateRgbChannel(channel, event.currentTarget.value)}
+                    onSettle={(channelValue) => updateRgbChannel(channel, channelValue)}
                   />
                 </label>
               ))}
@@ -3123,12 +3130,10 @@ export function ColorPickerPopoverBody({
               {(["c", "m", "y", "k"] as const).map((channel) => (
                 <label key={channel}>
                   <span>{channel.toUpperCase()}</span>
-                  <input
-                    type="number"
-                    min={0}
+                  <ColorChannelInput
                     max={100}
                     value={draftCmyk[channel]}
-                    onChange={(event) => updateCmykChannel(channel, event.currentTarget.value)}
+                    onSettle={(channelValue) => updateCmykChannel(channel, channelValue)}
                   />
                 </label>
               ))}
@@ -3141,9 +3146,15 @@ export function ColorPickerPopoverBody({
                 spellCheck={false}
                 onChange={(event) => updateHexInput(event.currentTarget.value)}
                 onBlur={settleHexInput}
+                onFocus={() => {
+                  discardHexOnBlurRef.current = false;
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     settleHexInput();
+                  } else if (event.key === "Escape") {
+                    discardHexOnBlurRef.current = true;
+                    setHexInput(normalizedValue.toUpperCase());
                   }
                 }}
               />
@@ -3172,6 +3183,65 @@ export function ColorPickerPopoverBody({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * One RGB/CMYK channel box. Typing edits a local draft that settles on Enter or blur, so entering
+ * "200" applies one colour instead of 2, then 20, then 200 — three document changes and three undo
+ * entries, the middle two colours the user never asked for. A step (spinner, arrow keys, wheel)
+ * carries no typing `inputType` and still applies at once. Escape abandons the draft.
+ */
+function ColorChannelInput({
+  max,
+  value,
+  onSettle
+}: {
+  max: number;
+  value: number;
+  onSettle: (channelValue: string) => void;
+}) {
+  const [draft, setDraftState] = useState<string | undefined>();
+  // Mirrors `draft` synchronously: Escape followed at once by the blur of a hiding popover would
+  // otherwise read the pre-Escape draft from a stale render and settle it anyway.
+  const draftRef = useRef<string | undefined>(undefined);
+  const setDraft = (next: string | undefined) => {
+    draftRef.current = next;
+    setDraftState(next);
+  };
+  const settle = (channelValue: string) => {
+    setDraft(undefined);
+    if (channelValue.trim() !== "" && channelValue !== String(value)) {
+      onSettle(channelValue);
+    }
+  };
+  return (
+    <input
+      type="number"
+      min={0}
+      max={max}
+      value={draft ?? value}
+      onChange={(event) => {
+        const inputType = (event.nativeEvent as InputEvent).inputType;
+        if (typeof inputType === "string" && inputType !== "") {
+          setDraft(event.currentTarget.value);
+        } else {
+          settle(event.currentTarget.value);
+        }
+      }}
+      onBlur={() => {
+        if (draftRef.current !== undefined) {
+          settle(draftRef.current);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && draftRef.current !== undefined) {
+          settle(draftRef.current);
+        } else if (event.key === "Escape") {
+          setDraft(undefined);
+        }
+      }}
+    />
   );
 }
 
@@ -3486,8 +3556,7 @@ function ToolbarPaletteItem({
             enabled: command.enabled !== false,
             active: command.id === activeTool,
             disabledReason: command.disabledReason,
-            // `||` (not `??`): an empty string is the keybinding scheme's "unbound" sentinel.
-            shortcutLabel: command.shortcutLabel || command.shortcut || command.defaultShortcut || undefined
+            shortcutLabel: commandShortcutDisplay(command)
           }))
         }
       });
@@ -3784,8 +3853,7 @@ function ToolbarPaletteItem({
         >
           {submenuCommands.map((command) => {
             const disabled = command.enabled === false;
-            // `||` (not `??`): an empty string is the keybinding scheme's "unbound" sentinel.
-            const itemShortcut = command.shortcutLabel || command.shortcut || command.defaultShortcut || undefined;
+            const itemShortcut = commandShortcutDisplay(command);
             const itemText = disabled
               ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
               : command.title;
@@ -3955,7 +4023,7 @@ function toolbarTooltipText(item: ToolbarPaletteItemModel, primaryCommand: Comma
     const holdHint = hasSubmenuChoices ? "; hold for choices" : "";
     return `${item.tooltip.title}: ${primaryCommand.disabledReason ?? "unavailable"}${holdHint}`;
   }
-  const shortcut = item.tooltip.shortcutLabel ?? item.tooltip.shortcut ?? primaryCommand?.shortcutLabel ?? primaryCommand?.shortcut;
+  const shortcut = item.tooltip.shortcutLabel ?? (primaryCommand ? commandShortcutDisplay(primaryCommand) : undefined);
   const shortcutText = !shortcut ? "" : ` (${shortcut})`;
   const description = item.tooltip.description ? `: ${item.tooltip.description}` : "";
   // A flyout with no manifest description of its own (e.g. a plugin item) still needs to signal it
@@ -4007,9 +4075,7 @@ export function CommandIconButton({
   }
 
   const activeState = active && !disabled;
-  const shortcut = command.shortcut ?? command.defaultShortcut;
-  const shortcutLabel = command.shortcutLabel ?? shortcut;
-  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const visibleShortcutLabel = commandShortcutDisplay(command) ?? "No shortcut";
   const shortcutText = disabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";
   const tooltipText = `${command.title}${shortcutText}${stateText}`;
@@ -4145,9 +4211,7 @@ function DistributeCommandIconButton({
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
   const activeState = active && !disabled;
-  const shortcut = command.shortcut ?? command.defaultShortcut;
-  const shortcutLabel = command.shortcutLabel ?? shortcut;
-  const visibleShortcutLabel = shortcutLabel ?? "No shortcut";
+  const visibleShortcutLabel = commandShortcutDisplay(command) ?? "No shortcut";
   const modeLabel = distributeMode === "spacing" ? "equal gaps" : "centers";
   const shortcutText = disabled ? "" : ` (${visibleShortcutLabel})`;
   const stateText = disabled ? `: ${command.disabledReason ?? "unavailable"}` : "";

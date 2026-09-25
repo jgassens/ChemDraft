@@ -52,16 +52,44 @@ function findJlink() {
     candidates.push("/opt/homebrew/opt/openjdk/bin/jlink", "/usr/local/opt/openjdk/bin/jlink");
   }
   if (process.platform === "win32") {
-    // Installers put JDKs here without necessarily exporting JAVA_HOME; newest first.
+    // Installers put JDKs here without necessarily exporting JAVA_HOME. Pick the newest across every
+    // vendor, by numeric version: a string sort ranks "jdk-8" above "jdk-21", and a per-vendor walk
+    // would take an old Adoptium JDK over a newer Microsoft one. Only JDK 21+ qualifies, because the
+    // `--compress=zip-9` form below does not exist before it.
+    const installed = [];
     for (const vendor of ["Eclipse Adoptium", "Java", "Microsoft", "Zulu"]) {
       const base = join(process.env.ProgramFiles ?? "C:\\Program Files", vendor);
       if (!existsSync(base)) continue;
-      for (const jdk of readdirSync(base).filter((name) => /^(jdk|zulu)/i.test(name)).sort().reverse()) {
-        candidates.push(join(base, jdk, "bin", "jlink.exe"));
+      for (const name of readdirSync(base).filter((entry) => /^(jdk|zulu)/i.test(entry))) {
+        const version = jdkVersion(name);
+        if (version && version[0] >= MIN_JDK_MAJOR) {
+          installed.push({ version, jlink: join(base, name, "bin", "jlink.exe") });
+        }
       }
     }
+    installed.sort((a, b) => compareVersions(b.version, a.version));
+    candidates.push(...installed.map((jdk) => jdk.jlink));
   }
   return candidates.find((candidate) => existsSync(candidate));
+}
+
+const MIN_JDK_MAJOR = 21;
+
+// The version in a JDK install directory's name, as numbers: "jdk-21.0.4.7-hotspot" → [21, 0, 4, 7],
+// "zulu21.36.17-ca-jdk21.0.4-win_x64" → [21, 36, 17], and the legacy "jdk1.8.0_392" → [8, 0, 392].
+function jdkVersion(name) {
+  const match = /(\d+(?:[._]\d+)*)/.exec(name);
+  if (!match) return undefined;
+  const parts = match[1].split(/[._]/).map(Number);
+  return parts[0] === 1 && parts.length > 1 ? parts.slice(1) : parts;
+}
+
+function compareVersions(a, b) {
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 // jlink emits its legal/ notices read-only, and Tauri's resource copier overwrites rather than
