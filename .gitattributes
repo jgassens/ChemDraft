@@ -1,3 +1,14 @@
+# Line endings: LF everywhere, in the index AND the working tree, regardless of a machine's
+# core.autocrlf. Git for Windows defaults autocrlf=true, which checked out every text file as CRLF —
+# that breaks bash on `run-app` and every `*.sh` (`$'\r': command not found`) and puts stray `\r` into
+# tests that read source or fixtures and split on "\n". Binary files are still auto-detected.
+* text=auto eol=lf
+# Windows-native scripts must stay CRLF; cmd.exe mis-parses LF-only batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# Vendored third-party text kept byte-for-byte as upstream shipped it (CRLF).
+apps/desktop/src-tauri/resources/opsin/OPSIN-LICENSE.txt -text
+
 *.patch whitespace=-blank-at-eol
 
 # Generated model artifacts and audit records. Marked `-diff` so git treats them as opaque: they are
