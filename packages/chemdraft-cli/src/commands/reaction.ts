@@ -10,6 +10,11 @@ import {
 } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
+import {
+  insertNativeReactionArrow,
+  insertNativeTextObject,
+  nativeTextObjectSizeForText
+} from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
 import {
@@ -35,11 +40,6 @@ import {
   type CliExitCode,
   type CliIo
 } from "../output";
-import {
-  insertNativeReactionArrow,
-  insertNativeTextObject,
-  nativeTextObjectSizeForText
-} from "../../../../apps/desktop/src/documentWorkflow";
 
 export type ReactionArrowKind = ArrowObject["arrowKind"];
 type ReactionOutputFormat = "png" | "svg";

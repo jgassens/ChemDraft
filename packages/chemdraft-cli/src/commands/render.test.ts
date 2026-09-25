@@ -15,8 +15,8 @@ import {
 } from "@chemdraft/rdkit-adapter";
 import * as rdkitAdapter from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
+import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 
-import { stereoPerceptionMolfile } from "../../../../apps/desktop/src/documentWorkflow";
 import { buildSmilesDocument, renderSmilesToAssets, type RenderedSmiles } from "../document";
 import { renderHelp, runRenderCommand as runCli } from "./render";
 

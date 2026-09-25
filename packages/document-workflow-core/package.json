@@ -1,0 +1,19 @@
+{
+  "name": "@chemdraft/document-workflow-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/clipboard-adapter": "workspace:*",
+    "@chemdraft/export-engine": "workspace:*",
+    "@chemdraft/layout-engine": "workspace:*",
+    "@chemdraft/rdkit-adapter": "workspace:*"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

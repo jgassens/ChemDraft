@@ -9,8 +9,7 @@ import {
 } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
-
-import { moleculeSmiles } from "../../../../apps/desktop/src/moleculeSmiles";
+import { moleculeSmiles } from "@chemdraft/document-workflow-core";
 
 import { parseOptions, stringOption } from "../args";
 import {

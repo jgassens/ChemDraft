@@ -121,8 +121,8 @@ The one still cited from code:
 
 - **§5.7 "Do not silently degrade chemistry"** now lives in §10 (Chemistry invariants) and §14
   (Error handling rules). An operation that cannot preserve chemical meaning must warn or fail —
-  never degrade quietly. Cited from `packages/ocl-adapter/src/index.ts` and
-  `apps/desktop/src/documentWorkflow.ts`.
+  never degrade quietly. Cited from `packages/ocl-adapter/src/index.ts`,
+  `apps/desktop/src/documentWorkflow.ts`, and `packages/document-workflow-core/src/molecule.ts`.
 
 ### 5.26 Do not duplicate layout-engine rendering math
 
@@ -671,6 +671,32 @@ Not allowed:
 Its abundance set is **convention-dependent** and must be disclosed wherever a number derived from it
 is shown: ¹³C is 0.82% above the commonly quoted CIAAW representative value. Treat it the way
 `includeSandP` is treated, not as an implementation detail.
+
+### 6.28 `document-workflow-core`
+
+The pure document-building functions shared by the desktop app and the headless CLI: SMILES/molfile
+depiction to native molecule, target bond length, text object and reaction arrow insertion, atom
+validation and valence, and the native SMILES writer. Moved out of `apps/desktop/src/documentWorkflow.ts`
+and `moleculeSmiles.ts`, which re-export every moved name. Consumed by `documentWorkflow`,
+`chemdraft-cli`, and through it `chemdraft-mcp`.
+
+Allowed:
+
+- Pure functions from document data to document data, applied through `chem-core` patches
+- Element tables, valence and charge rules, atom validation, and the native SMILES writer
+- Dependencies on `chem-core`, `layout-engine`, `clipboard-adapter`, and type-only `export-engine` and
+  `rdkit-adapter`
+
+Not allowed:
+
+- React, `@tauri-apps/*`, DOM access at call time, or anything under `apps/`
+- App state: selection, viewport, undo, tool mode, preferences
+- Plugin loading (`plugin-host`, `plugin-api`) or the 3D engine (`engine3d-api`)
+- Loading a chemistry engine; callers inject it, as `moleculeSmiles` takes `computeStructureIdentifiers`
+- Copying layout-engine rendering math (§5.26)
+- A second copy of any function moved here. `packages/chemdraft-cli` and `packages/chemdraft-mcp`
+  must import it from this package, never from `apps/`; `importBoundary.test.ts` enforces that, and
+  this package's `boundary.test.ts` enforces its own purity
 
 ## 7. Plugin API rules
 

@@ -62,6 +62,9 @@ importers:
       '@chemdraft/clipboard-adapter':
         specifier: workspace:*
         version: link:../../packages/clipboard-adapter
+      '@chemdraft/document-workflow-core':
+        specifier: workspace:*
+        version: link:../../packages/document-workflow-core
       '@chemdraft/editor-adapter':
         specifier: workspace:*
         version: link:../../packages/editor-adapter
@@ -246,6 +249,9 @@ importers:
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core
+      '@chemdraft/document-workflow-core':
+        specifier: workspace:*
+        version: link:../document-workflow-core
       '@chemdraft/export-engine':
         specifier: workspace:*
         version: link:../export-engine
@@ -280,6 +286,24 @@ importers:
   packages/chemistry-adapter: {}
 
   packages/clipboard-adapter: {}
+
+  packages/document-workflow-core:
+    dependencies:
+      '@chemdraft/chem-core':
+        specifier: workspace:*
+        version: link:../chem-core
+      '@chemdraft/clipboard-adapter':
+        specifier: workspace:*
+        version: link:../clipboard-adapter
+      '@chemdraft/export-engine':
+        specifier: workspace:*
+        version: link:../export-engine
+      '@chemdraft/layout-engine':
+        specifier: workspace:*
+        version: link:../layout-engine
+      '@chemdraft/rdkit-adapter':
+        specifier: workspace:*
+        version: link:../rdkit-adapter
 
   packages/editor-adapter:
     dependencies:

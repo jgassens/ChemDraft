@@ -23,14 +23,13 @@ import {
   RdkitNotConfiguredError
 } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
-
 import {
   applyMoleculeTargetBondLength,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   smilesPasteBondLengthPx,
   type PastedStructureDepiction
-} from "../../../apps/desktop/src/documentWorkflow";
+} from "@chemdraft/document-workflow-core";
 
 import { installNodeEngines } from "./engine";
 
