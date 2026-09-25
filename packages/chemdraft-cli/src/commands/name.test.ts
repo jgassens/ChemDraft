@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -16,7 +16,12 @@ let outputDirectory: string;
 const enginePaths = defaultOpsinPaths();
 const fakeJavaPath = fileURLToPath(new URL("./__fixtures__/fake-java.sh", import.meta.url));
 const fakeJarPath = fileURLToPath(new URL("./__fixtures__/fake-opsin.jar", import.meta.url));
-const runtimeAvailable = existsSync(dirname(dirname(enginePaths.javaPath)));
+// The executable, not the jre/ directory: build.rs creates an empty jre/ when the runtime is absent.
+const runtimeAvailable = existsSync(enginePaths.javaPath);
+// The fake engine is a POSIX shell script spawned directly as "java"; Windows can only spawn real
+// executables that way (and Node refuses .cmd/.bat without a shell). The protocol these cases pin is
+// platform-neutral and runs on macOS/Linux; on Windows the real-engine cases cover the path.
+const fakeJavaRuns = process.platform !== "win32";
 
 if (!runtimeAvailable) {
   console.warn("skipping real OPSIN tests: run scripts/build-opsin-runtime.sh to build the bundled JRE");
@@ -63,10 +68,10 @@ describe("headless ChemDraft name conversion", () => {
     await expect(convertNameWithOpsin("benzene", {
       ...enginePaths,
       javaPath: join(outputDirectory, "missing-jre", "bin", "java")
-    })).rejects.toThrow("scripts/build-opsin-runtime.sh");
+    })).rejects.toThrow("scripts/build-opsin-runtime");
   }, 60_000);
 
-  it("exercises the OPSIN line protocol with a fake Java process", async () => {
+  it.skipIf(!fakeJavaRuns)("exercises the OPSIN line protocol with a fake Java process", async () => {
     const paths = { javaPath: fakeJavaPath, jarPath: fakeJarPath };
     await expect(convertNameWithOpsin("ethanol", paths)).resolves.toEqual({ smiles: "CCO", warnings: [] });
     await expect(convertNameWithOpsin("parse-failure", paths)).resolves.toEqual({
@@ -76,7 +81,7 @@ describe("headless ChemDraft name conversion", () => {
     await expect(convertNameWithOpsin("non-zero", paths)).rejects.toThrow(/exit 7.*simulated JVM failure/);
   }, 60_000);
 
-  it("refuses OPSIN ambiguity diagnostics unless explicitly allowed", async () => {
+  it.skipIf(!fakeJavaRuns)("refuses OPSIN ambiguity diagnostics unless explicitly allowed", async () => {
     const capture = capturedIo();
     const paths = { javaPath: fakeJavaPath, jarPath: fakeJarPath };
     expect(await runNameCommand(["--name", "ambiguous"], capture.io, { opsinPaths: paths })).toBe(1);
@@ -97,7 +102,7 @@ describe("headless ChemDraft name conversion", () => {
     });
   }, 60_000);
 
-  it("escalates an OPSIN timeout and reports it without rebuild advice", async () => {
+  it.skipIf(!fakeJavaRuns)("escalates an OPSIN timeout and reports it without rebuild advice", async () => {
     let childExited = false;
     const failure = await convertNameWithOpsin("timeout", {
       javaPath: fakeJavaPath,
@@ -114,7 +119,7 @@ describe("headless ChemDraft name conversion", () => {
     expect(childExited).toBe(true);
   }, 60_000);
 
-  it("passes depiction warnings through a rendered name result", async () => {
+  it.skipIf(!fakeJavaRuns)("passes depiction warnings through a rendered name result", async () => {
     const png = join(outputDirectory, "warning.png");
     const capture = capturedIo();
     const renderSmiles = async () => ({

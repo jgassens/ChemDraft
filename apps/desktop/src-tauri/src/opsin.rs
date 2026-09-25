@@ -97,6 +97,8 @@ pub const OPSIN_VERSION: &str = "2.9.0";
 
 const JAR_RELATIVE: &str = "resources/opsin/opsin-cli-2.9.0.jar";
 const RUNTIME_RELATIVE: &str = "resources/opsin/jre";
+/// The launcher inside the runtime's `bin/`. A jlink image built on Windows names it `java.exe`.
+const JAVA_EXECUTABLE: &str = if cfg!(windows) { "java.exe" } else { "java" };
 
 /// Resolve a bundled resource, trying the packaged app first and then the dev tree.
 ///
@@ -123,7 +125,7 @@ fn resource_path<R: Runtime>(app: &tauri::AppHandle<R>, relative: &str) -> Optio
 
 fn java_binary<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     let runtime = resource_path(app, RUNTIME_RELATIVE)?;
-    let java = runtime.join("bin").join("java");
+    let java = runtime.join("bin").join(JAVA_EXECUTABLE);
     is_executable(&java).then_some(java)
 }
 
@@ -435,7 +437,10 @@ mod tests {
     fn real_engine() -> Option<(PathBuf, PathBuf)> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let jar = root.join(JAR_RELATIVE);
-        let java = root.join(RUNTIME_RELATIVE).join("bin").join("java");
+        let java = root
+            .join(RUNTIME_RELATIVE)
+            .join("bin")
+            .join(JAVA_EXECUTABLE);
         (jar.exists() && java.exists()).then_some((java, jar))
     }
 

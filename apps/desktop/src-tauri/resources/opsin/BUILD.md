@@ -79,6 +79,12 @@ is not worth a runtime that might fail on OPSIN's CML or InChI paths.
 OPSIN parses anything. Dropping to `java.base,java.xml,java.logging` gives a 35 MB runtime that does
 not work.
 
+**Per platform.** A jlink image runs only on the OS it was built on, so each installer carries a
+runtime built on that OS: `scripts/build-opsin-runtime.mjs` (the `.sh` delegates to it) finds a JDK via
+`JAVA_HOME`, `PATH`, Homebrew's keg, or the standard Windows JDK install locations, and the launcher is
+`bin/java` on macOS/Linux and `bin/java.exe` on Windows. First Windows build: Temurin 21.0.12 →
+48 MB, smoke-tested `benzene → C1=CC=CC=C1`.
+
 ## The CLI protocol, measured
 
 Names on stdin, newline-delimited; one output line per input line. `-n` makes it correlatable:
