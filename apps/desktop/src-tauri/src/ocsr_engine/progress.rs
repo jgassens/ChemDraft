@@ -13,6 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::process::RecognitionProgress;
 use super::{InstallPhase, InstallProgress};
 
 /// Expected growth of the uv cache and managed-Python directories during `uv python install`.
@@ -150,10 +151,76 @@ impl ProgressThrottle {
     }
 }
 
+/// The same limit for a recognition's progress. A new stage, and a change in how many readings are
+/// planned, always pass; readings within one plan pass at most once per `interval`. A skipped
+/// reading only delays the count until the next one, and the answer ends the display anyway.
+pub struct RecognitionThrottle {
+    interval: Duration,
+    last: Option<(RecognitionProgress, Instant)>,
+}
+
+impl RecognitionThrottle {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    pub fn admit(&mut self, progress: RecognitionProgress, now: Instant) -> bool {
+        let boundary = match (self.last.map(|(last, _)| last), progress) {
+            (None, _) => true,
+            (
+                Some(RecognitionProgress::Reading {
+                    runs_planned: before,
+                    ..
+                }),
+                RecognitionProgress::Reading { runs_planned, .. },
+            ) => before != runs_planned,
+            (Some(last), next) => std::mem::discriminant(&last) != std::mem::discriminant(&next),
+        };
+        let due = self
+            .last
+            .is_none_or(|(_, at)| now.saturating_duration_since(at) >= self.interval);
+        if boundary || due {
+            self.last = Some((progress, now));
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn recognition_progress_is_limited_to_a_few_events_a_second() {
+        let start = Instant::now();
+        let reading = |run, runs_planned| RecognitionProgress::Reading { run, runs_planned };
+        let mut throttle = RecognitionThrottle::new(EMIT_INTERVAL);
+        assert!(throttle.admit(RecognitionProgress::Starting, start));
+        // A new stage passes at once, however soon.
+        assert!(throttle.admit(reading(1, 5), start + Duration::from_millis(1)));
+        // Readings within one plan are rate-limited...
+        assert!(!throttle.admit(reading(2, 5), start + Duration::from_millis(100)));
+        assert!(throttle.admit(reading(3, 5), start + Duration::from_millis(300)));
+        // ...but a widened vote is news and passes at once.
+        assert!(throttle.admit(reading(6, 15), start + Duration::from_millis(301)));
+        // A burst of 15 readings in one second produces at most five events.
+        let mut burst = RecognitionThrottle::new(EMIT_INTERVAL);
+        let admitted = (1..=15)
+            .filter(|run| {
+                burst.admit(
+                    reading(*run, 15),
+                    start + Duration::from_millis(u64::from(*run) * 66),
+                )
+            })
+            .count();
+        assert!(admitted <= 5, "{admitted} events in a second");
+    }
 
     fn temp_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(

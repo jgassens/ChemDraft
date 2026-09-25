@@ -124,6 +124,8 @@ export interface PluginRuntimeView {
   startRecognitionEngineInstall: () => Promise<boolean>;
   cancelRunningRecognitionEngineInstall: () => Promise<void>;
   uninstallRecognitionEngine: () => Promise<void>;
+  /** Cancel on the recognition progress indicator, which reads `runtime.recognition` itself. */
+  cancelRecognition: (id: number) => void;
 }
 
 /**
@@ -187,7 +189,9 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       bumpVersion();
     });
     const disconnectProgress = recognitionInstallProgressStore.connect(runtime.recognition);
-    // MainWindow renders the install dialog from this hook's `openRecognitionInstall`.
+    // MainWindow renders the install dialog from this hook's `openRecognitionInstall`. Recognition
+    // progress never passes through here: the indicator subscribes to the controller's activity
+    // itself, so a reading does not re-render MainWindow.
     const detachInstallPresenter = runtime.recognition.attachInstallPresenter();
     return () => {
       detachInstallPresenter();
@@ -464,6 +468,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const uninstallRecognitionEngine = useCallback(async () => {
     await runtime.recognition.uninstall();
   }, [runtime]);
+  const cancelRecognition = useCallback((id: number) => runtime.recognition.cancelRecognition(id), [runtime]);
 
   return {
     runtime,
@@ -509,7 +514,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     refreshRecognitionEngineStatus,
     startRecognitionEngineInstall,
     cancelRunningRecognitionEngineInstall,
-    uninstallRecognitionEngine
+    uninstallRecognitionEngine,
+    cancelRecognition
   };
 }
 

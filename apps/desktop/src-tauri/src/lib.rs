@@ -516,6 +516,7 @@ pub fn run() {
             ocsr_engine::ocsr_engine_cancel_install,
             ocsr_engine::ocsr_engine_uninstall,
             ocsr_engine::ocsr_recognize_image,
+            ocsr_engine::ocsr_recognize_cancel,
             screen_capture::screen_capture_available,
             screen_capture::screen_capture_permission_status,
             screen_capture::request_screen_capture_permission,

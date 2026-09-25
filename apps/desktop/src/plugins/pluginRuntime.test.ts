@@ -290,7 +290,12 @@ describe("desktop plugin runtime", () => {
     expect(JSON.stringify(outcome)).not.toContain(document.pages[0]!.id);
     expect(JSON.stringify(outcome)).not.toContain("mol_ocsr_");
 
-    expect(engine.recognizeImage).toHaveBeenCalledWith({ mediaType: "image/png", bytes: new Uint8Array([1, 2, 3]) });
+    expect(engine.recognizeImage).toHaveBeenCalledWith(
+      { mediaType: "image/png", bytes: new Uint8Array([1, 2, 3]) },
+      expect.any(Function)
+    );
+    // The progress indicator ended with the recognition.
+    expect(runtime.recognition.getActiveRecognition()).toBeUndefined();
     expect(validator).toHaveBeenCalledWith({ format: "molfile-v2000", value: carbonMonoxideMolfile });
     const proposals = runtime.host.listProposedPatches();
     expect(proposals).toHaveLength(1);
@@ -303,6 +308,40 @@ describe("desktop plugin runtime", () => {
       }
     });
     expect(runtime.panels.getOpenPanel()).toBeUndefined();
+  });
+
+  it("shows the recognizing plugin's progress, and a Cancel ends its command silently", async () => {
+    let answer: ((outcome: StructureRecognitionOutcome) => void) | undefined;
+    const engine = installedEngine(
+      (_input, onProgress) =>
+        new Promise<StructureRecognitionOutcome>((resolve) => {
+          answer = resolve;
+          onProgress?.({ stage: "reading", run: 3, runsPlanned: 5 });
+        })
+    );
+    engine.cancelRecognition = vi.fn(async () => answer?.({ status: "cancelled" }));
+    const runtime = makeRuntime({ structureRecognitionEngine: engine });
+    registerWithRecognitionFixture(runtime);
+
+    const invocation = runtime.host.invokeCommand(RECOGNITION_FIXTURE_COMMAND_ID);
+    await vi.waitFor(() => expect(runtime.images.getOpenRequest()).toBeDefined());
+    await runtime.images.acquire(runtime.images.getOpenRequest()!.id, "file");
+    await vi.waitFor(() =>
+      expect(runtime.recognition.getActiveRecognition()).toMatchObject({
+        pluginId: recognitionFixtureManifest.id,
+        pluginName: recognitionFixtureManifest.name,
+        stage: "reading",
+        reading: { run: 3, runsPlanned: 5 }
+      })
+    );
+
+    runtime.recognition.cancelRecognition(runtime.recognition.getActiveRecognition()!.id);
+    await expect(invocation).resolves.toEqual({ status: "cancelled" });
+    expect(engine.cancelRecognition).toHaveBeenCalledOnce();
+    expect(runtime.recognition.getActiveRecognition()).toBeUndefined();
+    // Silent: no report panel, no proposal.
+    expect(runtime.panels.getOpenPanel()).toBeUndefined();
+    expect(runtime.host.listProposedPatches()).toHaveLength(0);
   });
 
   it("reports a failed recognition in the plugin panel and proposes nothing", async () => {

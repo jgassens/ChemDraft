@@ -18,12 +18,12 @@ use std::borrow::Cow;
 use base64::Engine;
 use image::ImageFormat;
 use serde::Serialize;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, JavaScriptChannelId};
 use tauri::{Manager, Runtime};
 
 use install::{InstallPaths, RunningChild, SystemInstallIo};
 use platform::EnginePlatform;
-use process::{KillSwitch, LaunchPaths, ProcessError, ProcessManager};
+use process::{KillSwitch, LaunchPaths, ProcessError, ProcessManager, RecognitionProgress};
 use protocol::{RecognitionAgreement, RecognizedAtom, RecognizedBond};
 use receipt::{LegacyReceiptV1, ReceiptRead};
 use upgrade::{ModelPin, UpgradeError};
@@ -69,6 +69,11 @@ pub struct OcsrEngineStatus {
     /// While `installing`: milliseconds since the install started.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub install_elapsed_ms: Option<u64>,
+    /// While `installing`: true when what runs is the one-time check of an engine that is already
+    /// on disk (`begin_receipt_upgrade`), not a download. A recognition waits for it with its own
+    /// progress indicator instead of opening the install dialog. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub engine_check: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -197,12 +202,17 @@ pub enum RecognitionResponse {
         code: RecognitionErrorCode,
         message: String,
     },
+    /// The user cancelled this recognition (`ocsr_recognize_cancel`). Never sent for a stop the
+    /// app made itself (exit, install, uninstall), which stays an `engineCrashed` failure.
+    Cancelled,
 }
 
 /// The running install's start time and latest progress, read by `ocsr_engine_status`.
 struct InstallSnapshot {
     started: Instant,
     progress: Option<InstallProgress>,
+    /// The one-time in-place check of an installed engine, not a download.
+    engine_check: bool,
 }
 
 pub struct OcsrEngineState {
@@ -221,6 +231,9 @@ pub struct OcsrEngineState {
     process: Arc<Mutex<ProcessManager>>,
     /// Kills the sidecar without `process`'s lock; see `process::KillSwitch`.
     sidecar_kill: KillSwitch,
+    /// Bumped by every `ocsr_recognize_cancel`. A recognition reads it when it starts; a different
+    /// value later means the user cancelled that recognition (see `cancel_recognition`).
+    recognition_cancels: Arc<AtomicU64>,
     /// Set when the in-place receipt upgrade (`upgrade.rs`) refused the installed engine, so status
     /// reports it without checking again: the check hashes a 1.1 GB model. Holds the plain text
     /// the user sees. Cleared by an install or uninstall.
@@ -245,6 +258,7 @@ impl OcsrEngineState {
             shut_down: AtomicBool::new(false),
             request_gate: Arc::new(Mutex::new(())),
             sidecar_kill: manager.kill_switch(),
+            recognition_cancels: Arc::new(AtomicU64::new(0)),
             process: Arc::new(Mutex::new(manager)),
             upgrade_refused: Arc::new(Mutex::new(None)),
         }
@@ -366,6 +380,7 @@ pub async fn ocsr_engine_install<R: Runtime>(
     *lock_ignoring_poison(&snapshot) = Some(InstallSnapshot {
         started: Instant::now(),
         progress: None,
+        engine_check: false,
     });
     let installing = state.installing.clone();
     let cancel = state.cancel_install.clone();
@@ -455,13 +470,23 @@ pub async fn ocsr_engine_uninstall<R: Runtime>(app: tauri::AppHandle<R>) -> Ocsr
     }
 }
 
+/// `on_progress` is optional so a caller that shows no progress need not create a channel (a
+/// `Channel` argument cannot be optional itself, so the raw channel id is taken and bound to the
+/// calling webview). It hears `starting` when the sidecar has to be launched and each reading the
+/// sidecar announces, at most about four a second; the returned response is unchanged by it.
 #[tauri::command]
 pub async fn ocsr_recognize_image<R: Runtime>(
     app: tauri::AppHandle<R>,
+    webview: tauri::Webview<R>,
     media_type: String,
     bytes_base64: String,
+    on_progress: Option<JavaScriptChannelId>,
 ) -> RecognitionResponse {
     let state = app.state::<OcsrEngineState>();
+    // Read before anything else, so a Cancel pressed at any point after the call was made counts.
+    let cancels_at_start = state.recognition_cancels.load(Ordering::SeqCst);
+    let on_progress: Option<Channel<RecognitionProgress>> =
+        on_progress.map(|id| id.channel_on(webview));
     let status = status_impl(&app, &state);
     match status.state {
         // An unsupported platform has no engine installed; the status command says why.
@@ -526,6 +551,7 @@ pub async fn ocsr_recognize_image<R: Runtime>(
         .unwrap_or_else(|_| std::env::temp_dir());
     let request_gate = state.request_gate.clone();
     let manager = state.process.clone();
+    let cancels = state.recognition_cancels.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let Some(_request) = enter_request(&request_gate) else {
             return failed(
@@ -556,45 +582,23 @@ pub async fn ocsr_recognize_image<R: Runtime>(
             sidecar,
             root.join(pins::MODEL_FILENAME),
         );
-        let mut process = manager
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match process.recognize(
+        let throttle = Mutex::new(progress::RecognitionThrottle::new(progress::EMIT_INTERVAL));
+        let report = |event: RecognitionProgress| {
+            if let Some(channel) = &on_progress {
+                if lock_ignoring_poison(&throttle).admit(event, Instant::now()) {
+                    let _ = channel.send(event);
+                }
+            }
+        };
+        run_recognition(
+            &manager,
             platform.as_ref(),
             &launch,
             temp.path(),
-            process::REQUEST_TIMEOUT,
-        ) {
-            Ok(payload) => RecognitionResponse::Recognized {
-                smiles: payload.smiles,
-                molfile: payload.molfile,
-                confidence: payload.confidence,
-                atoms: payload.atoms,
-                bonds: payload.bonds,
-                agreement: payload.agreement,
-                elapsed_ms: payload.elapsed_ms,
-                engine: RecognitionEngine {
-                    name: "MolScribe",
-                    molscribe_commit: pins::MOLSCRIBE_COMMIT,
-                    model_sha256: pins::MODEL_SHA256,
-                },
-            },
-            Err(ProcessError::InvalidImage(message)) => {
-                failed(RecognitionErrorCode::InvalidImage, message)
-            }
-            Err(ProcessError::RecognitionFailed(message)) => {
-                failed(RecognitionErrorCode::RecognitionFailed, message)
-            }
-            Err(ProcessError::Crashed(message)) => {
-                failed(RecognitionErrorCode::EngineCrashed, message)
-            }
-            Err(ProcessError::Timeout) => failed(RecognitionErrorCode::Timeout, timeout_message()),
-            Err(ProcessError::Cancelled) => failed(
-                RecognitionErrorCode::EngineCrashed,
-                "MolScribe was stopped before it finished, because the app is quitting or the \
-                 engine is being reinstalled or removed.",
-            ),
-        }
+            &cancels,
+            cancels_at_start,
+            &report,
+        )
     })
     .await
     .unwrap_or_else(|error| {
@@ -603,6 +607,78 @@ pub async fn ocsr_recognize_image<R: Runtime>(
             format!("Could not schedule recognition: {error}"),
         )
     })
+}
+
+/// Stops the running recognition at once: its sidecar is killed (and started again lazily by the
+/// next recognition) and it answers `cancelled`. Main window only, like every OCSR command. A
+/// Cancel with nothing running does nothing, and never touches an install or the one-time engine
+/// check.
+#[tauri::command]
+pub fn ocsr_recognize_cancel(state: tauri::State<'_, OcsrEngineState>) {
+    cancel_recognition(&state.recognition_cancels, &state.sidecar_kill);
+}
+
+/// The bump comes first: a recognition that has not yet begun its request finds the new value when
+/// it does, and one already running is killed through the switch. Between them no request can slip
+/// through (see `ProcessManager::recognize_with`).
+fn cancel_recognition(cancels: &AtomicU64, kill: &KillSwitch) {
+    cancels.fetch_add(1, Ordering::SeqCst);
+    kill.cancel_request();
+}
+
+/// One recognition on the blocking pool, after the request gate: the part of
+/// `ocsr_recognize_image` that tests drive with a fake sidecar.
+fn run_recognition(
+    manager: &Mutex<ProcessManager>,
+    platform: &dyn EnginePlatform,
+    launch: &LaunchPaths,
+    image: &Path,
+    cancels: &AtomicU64,
+    cancels_at_start: u64,
+    report: &dyn Fn(RecognitionProgress),
+) -> RecognitionResponse {
+    let cancelled = || cancels.load(Ordering::SeqCst) != cancels_at_start;
+    if cancelled() {
+        return RecognitionResponse::Cancelled;
+    }
+    let mut process = lock_ignoring_poison(manager);
+    match process.recognize_with(
+        platform,
+        launch,
+        image,
+        process::REQUEST_TIMEOUT,
+        report,
+        &cancelled,
+    ) {
+        Ok(payload) => RecognitionResponse::Recognized {
+            smiles: payload.smiles,
+            molfile: payload.molfile,
+            confidence: payload.confidence,
+            atoms: payload.atoms,
+            bonds: payload.bonds,
+            agreement: payload.agreement,
+            elapsed_ms: payload.elapsed_ms,
+            engine: RecognitionEngine {
+                name: "MolScribe",
+                molscribe_commit: pins::MOLSCRIBE_COMMIT,
+                model_sha256: pins::MODEL_SHA256,
+            },
+        },
+        Err(ProcessError::InvalidImage(message)) => {
+            failed(RecognitionErrorCode::InvalidImage, message)
+        }
+        Err(ProcessError::RecognitionFailed(message)) => {
+            failed(RecognitionErrorCode::RecognitionFailed, message)
+        }
+        Err(ProcessError::Crashed(message)) => failed(RecognitionErrorCode::EngineCrashed, message),
+        Err(ProcessError::Timeout) => failed(RecognitionErrorCode::Timeout, timeout_message()),
+        Err(ProcessError::Cancelled) if cancelled() => RecognitionResponse::Cancelled,
+        Err(ProcessError::Cancelled) => failed(
+            RecognitionErrorCode::EngineCrashed,
+            "MolScribe was stopped before it finished, because the app is quitting or the \
+                 engine is being reinstalled or removed.",
+        ),
+    }
 }
 
 fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -> OcsrEngineStatus {
@@ -622,6 +698,7 @@ fn status_impl<R: Runtime>(app: &tauri::AppHandle<R>, state: &OcsrEngineState) -
                 detail: Some(detail),
                 progress: None,
                 install_elapsed_ms: None,
+                engine_check: false,
             }
         }
     };
@@ -682,6 +759,7 @@ fn engine_status_at(
             detail: None,
             progress: None,
             install_elapsed_ms: None,
+            engine_check: false,
         };
     }
     let receipt = match receipt::read_receipt(&root.join(install::RECEIPT_FILE)) {
@@ -719,17 +797,19 @@ fn engine_status_at(
         detail: None,
         progress: None,
         install_elapsed_ms: None,
+        engine_check: false,
     }
 }
 
 fn installing_status(state: &OcsrEngineState, free: u64) -> OcsrEngineStatus {
-    let (progress, install_elapsed_ms) =
+    let (progress, install_elapsed_ms, engine_check) =
         match lock_ignoring_poison(&state.install_snapshot).as_ref() {
             Some(snapshot) => (
                 snapshot.progress.clone(),
                 Some(u64::try_from(snapshot.started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+                snapshot.engine_check,
             ),
-            None => (None, None),
+            None => (None, None, false),
         };
     OcsrEngineStatus {
         state: EngineState::Installing,
@@ -739,6 +819,7 @@ fn installing_status(state: &OcsrEngineState, free: u64) -> OcsrEngineStatus {
         detail: None,
         progress,
         install_elapsed_ms,
+        engine_check,
     }
 }
 
@@ -772,6 +853,7 @@ where
             bytes_total: None,
             estimated: false,
         }),
+        engine_check: true,
     });
     let installing = state.installing.clone();
     let snapshot = state.install_snapshot.clone();
@@ -878,6 +960,7 @@ fn broken_status(free_disk_bytes: u64, detail: impl Into<String>) -> OcsrEngineS
         detail: Some(detail.into()),
         progress: None,
         install_elapsed_ms: None,
+        engine_check: false,
     }
 }
 
@@ -1009,7 +1092,12 @@ mod tests {
             _request_id: &str,
             _image_path: &Path,
             timeout: Duration,
+            progress: &dyn Fn(RecognitionProgress),
         ) -> Result<RecognitionPayload, ProcessError> {
+            progress(RecognitionProgress::Reading {
+                run: 1,
+                runs_planned: 5,
+            });
             match self.0.recv_timeout(timeout) {
                 Err(mpsc::RecvTimeoutError::Timeout) => Err(ProcessError::Timeout),
                 _ => Err(ProcessError::Crashed("killed".to_string())),
@@ -1195,6 +1283,145 @@ mod tests {
         worker
     }
 
+    /// Runs `run_recognition` on its own thread against `state`'s manager, collecting progress, and
+    /// returns once the recognition holds the manager (so it is past its first cancel check).
+    fn start_observed_recognition(
+        state: &OcsrEngineState,
+    ) -> (
+        std::thread::JoinHandle<RecognitionResponse>,
+        mpsc::Receiver<RecognitionProgress>,
+    ) {
+        let process = state.process.clone();
+        let cancels = state.recognition_cancels.clone();
+        let at_start = cancels.load(Ordering::SeqCst);
+        let (events, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let events = Mutex::new(events);
+            let launch =
+                LaunchPaths::for_engine("python".into(), "sidecar.py".into(), "model.pth".into());
+            run_recognition(
+                &process,
+                &MacPlatform::new(MacArchitecture::Aarch64),
+                &launch,
+                Path::new("image.png"),
+                &cancels,
+                at_start,
+                &|event| {
+                    let _ = lock_ignoring_poison(&events).send(event);
+                },
+            )
+        });
+        (worker, received)
+    }
+
+    #[test]
+    fn progress_reaches_the_caller_and_cancel_answers_cancelled_at_once() {
+        let state = OcsrEngineState::with_process_manager(ProcessManager::new(Arc::new(
+            UntilKilledSpawner,
+        )));
+        let (worker, events) = start_observed_recognition(&state);
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Ok(RecognitionProgress::Starting)
+        );
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Ok(RecognitionProgress::Reading {
+                run: 1,
+                runs_planned: 5
+            })
+        );
+        let started = Instant::now();
+        cancel_recognition(&state.recognition_cancels, &state.sidecar_kill);
+        let response = worker.join().expect("recognition thread");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            matches!(response, RecognitionResponse::Cancelled),
+            "{response:?}"
+        );
+        // The manager was released and holds no dead sidecar: the next recognition starts one.
+        let (worker, events) = start_observed_recognition(&state);
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Ok(RecognitionProgress::Starting)
+        );
+        cancel_recognition(&state.recognition_cancels, &state.sidecar_kill);
+        assert!(matches!(
+            worker.join().expect("recognition thread"),
+            RecognitionResponse::Cancelled
+        ));
+    }
+
+    #[test]
+    fn a_cancel_before_the_recognition_starts_work_answers_cancelled_without_starting_the_engine() {
+        let state = OcsrEngineState::with_process_manager(ProcessManager::new(Arc::new(
+            UntilKilledSpawner,
+        )));
+        let at_start = state.recognition_cancels.load(Ordering::SeqCst);
+        // Nothing is running yet, so this only bumps the count the recognition compares against.
+        cancel_recognition(&state.recognition_cancels, &state.sidecar_kill);
+        let launch =
+            LaunchPaths::for_engine("python".into(), "sidecar.py".into(), "model.pth".into());
+        let events = Mutex::new(Vec::new());
+        let response = run_recognition(
+            &state.process,
+            &MacPlatform::new(MacArchitecture::Aarch64),
+            &launch,
+            Path::new("image.png"),
+            &state.recognition_cancels,
+            at_start,
+            &|event| lock_ignoring_poison(&events).push(event),
+        );
+        assert!(matches!(response, RecognitionResponse::Cancelled));
+        assert!(
+            lock_ignoring_poison(&events).is_empty(),
+            "no engine started"
+        );
+    }
+
+    #[test]
+    fn a_stop_the_app_made_is_still_an_engine_failure_not_a_cancel() {
+        let state = OcsrEngineState::with_process_manager(ProcessManager::new(Arc::new(
+            UntilKilledSpawner,
+        )));
+        let (worker, events) = start_observed_recognition(&state);
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)),
+            Ok(RecognitionProgress::Starting)
+        );
+        // Install and uninstall stop the sidecar this way; the user did not cancel.
+        OcsrEngineState::stop_sidecar_blocking(&state.process, &state.sidecar_kill);
+        assert!(matches!(
+            worker.join().expect("recognition thread"),
+            RecognitionResponse::Failed {
+                code: RecognitionErrorCode::EngineCrashed,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_one_time_engine_check_is_marked_on_status_and_a_cancel_leaves_it_running() {
+        let root = upgrade::tests::temp_root("status-check-flag");
+        let engine = upgrade::tests::fake_legacy_engine(&root);
+        let state = OcsrEngineState::default();
+        let probe = Arc::new(upgrade::tests::FakeProbe::matching());
+        let starts = AtomicU64::new(0);
+        let status = status_with_upgrade(&engine, &state, &probe, &starts);
+        assert_eq!(status.state, EngineState::Installing);
+        assert!(status.engine_check);
+        assert_eq!(
+            serde_json::to_value(&status).expect("status")["engineCheck"],
+            serde_json::json!(true)
+        );
+        // A recognition Cancel is not an install cancel: the check carries on to its own answer.
+        cancel_recognition(&state.recognition_cancels, &state.sidecar_kill);
+        assert!(!state.cancel_install.load(Ordering::SeqCst));
+        wait_until_not_installing(&state);
+        assert!(lock_ignoring_poison(&state.upgrade_refused).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn app_exit_cancels_the_install_and_never_waits_for_a_recognition() {
         let state = OcsrEngineState::with_process_manager(ProcessManager::new(Arc::new(
@@ -1287,6 +1514,10 @@ mod tests {
         );
         assert_eq!(value["confidence"], serde_json::Value::Null);
         assert_eq!(value["engine"]["name"], "MolScribe");
+        assert_eq!(
+            serde_json::to_value(RecognitionResponse::Cancelled).expect("cancelled"),
+            serde_json::json!({"status": "cancelled"})
+        );
     }
 
     #[test]
@@ -1299,6 +1530,7 @@ mod tests {
             detail: None,
             progress: None,
             install_elapsed_ms: None,
+            engine_check: false,
         };
         assert_eq!(
             serde_json::to_value(&status).expect("status"),
@@ -1373,6 +1605,7 @@ mod tests {
             detail: None,
             progress: Some(estimate),
             install_elapsed_ms: Some(1_500),
+            engine_check: false,
         };
         assert_eq!(
             serde_json::to_value(&installing).expect("installing status"),
@@ -1568,6 +1801,7 @@ mod tests {
             "allow-ocsr-engine-cancel-install",
             "allow-ocsr-engine-uninstall",
             "allow-ocsr-recognize-image",
+            "allow-ocsr-recognize-cancel",
         ] {
             assert!(
                 permissions.iter().any(|item| item == permission),

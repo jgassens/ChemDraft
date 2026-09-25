@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use super::pins;
 
 pub const MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
+/// The most readings one request may announce. The sidecar plans at most 15 (its whole size grid,
+/// plus the original size for a small image); anything far beyond that is a broken sidecar.
+pub const MAX_RUNS_PLANNED: u32 = 64;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -40,6 +43,15 @@ pub enum SidecarMessage {
         id: Option<String>,
         code: SidecarErrorCode,
         message: String,
+    },
+    /// Sent before each reading of a request, and always before that request's result or error.
+    /// Added within protocol 2: the final line is unchanged, so progress is purely additive.
+    Progress {
+        id: String,
+        stage: SidecarProgressStage,
+        run: u32,
+        #[serde(rename = "runsPlanned")]
+        runs_planned: u32,
     },
     Fatal {
         code: String,
@@ -100,6 +112,54 @@ impl RecognitionAgreement {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SidecarProgressStage {
+    Reading,
+}
+
+/// A reading has started: `run` counts from 1 and `runs_planned` is the vote's current size, which
+/// grows once (usually 5 to 15) when the first pass disagrees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadingProgress {
+    pub run: u32,
+    pub runs_planned: u32,
+}
+
+/// One line read while a request is pending: a progress report, or the request's final answer.
+#[derive(Debug, PartialEq)]
+pub enum RequestLine {
+    Progress(ReadingProgress),
+    Final(Result<RecognitionPayload, ProtocolResultError>),
+}
+
+/// Sorts a line read while `expected_id` is pending. Progress is accepted strictly: only for the
+/// pending request, and only with a count that makes sense; anything else ends the request as a
+/// crash, like a result for the wrong request does.
+pub fn classify_for_id(message: SidecarMessage, expected_id: &str) -> RequestLine {
+    match message {
+        SidecarMessage::Progress {
+            id,
+            stage: SidecarProgressStage::Reading,
+            run,
+            runs_planned,
+        } => {
+            if id != expected_id {
+                return RequestLine::Final(Err(ProtocolResultError::Crashed(format!(
+                    "The OCSR sidecar reported progress for request {id} while waiting for {expected_id}."
+                ))));
+            }
+            if run == 0 || run > runs_planned || runs_planned > MAX_RUNS_PLANNED {
+                return RequestLine::Final(Err(ProtocolResultError::Crashed(format!(
+                    "The OCSR sidecar reported an inconsistent progress (reading {run} of {runs_planned})."
+                ))));
+            }
+            RequestLine::Progress(ReadingProgress { run, runs_planned })
+        }
+        other => RequestLine::Final(result_for_id(other, expected_id)),
     }
 }
 
@@ -320,6 +380,61 @@ mod tests {
                 "{agreement} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn progress_is_accepted_only_for_the_pending_request_and_with_a_sane_count() {
+        let line = |id: &str, run: u32, planned: u32| {
+            parse_line(&format!(
+                r#"{{"id":"{id}","type":"progress","stage":"reading","run":{run},"runsPlanned":{planned}}}"#
+            ))
+            .expect("progress JSON")
+        };
+        assert_eq!(
+            classify_for_id(line("r1", 1, 5), "r1"),
+            RequestLine::Progress(ReadingProgress {
+                run: 1,
+                runs_planned: 5
+            })
+        );
+        assert_eq!(
+            classify_for_id(line("r1", 6, 15), "r1"),
+            RequestLine::Progress(ReadingProgress {
+                run: 6,
+                runs_planned: 15
+            })
+        );
+        assert!(matches!(
+            classify_for_id(line("r0", 1, 5), "r1"),
+            RequestLine::Final(Err(ProtocolResultError::Crashed(message))) if message.contains("request r0")
+        ));
+        for (run, planned) in [(0, 5), (6, 5), (1, MAX_RUNS_PLANNED + 1)] {
+            assert!(
+                matches!(
+                    classify_for_id(line("r1", run, planned), "r1"),
+                    RequestLine::Final(Err(ProtocolResultError::Crashed(message))) if message.contains("inconsistent progress")
+                ),
+                "reading {run} of {planned} must be refused"
+            );
+        }
+        // An unknown stage, or a progress line without an id, is malformed rather than ignored.
+        assert!(parse_line(
+            r#"{"id":"r1","type":"progress","stage":"dreaming","run":1,"runsPlanned":5}"#
+        )
+        .is_err());
+        assert!(
+            parse_line(r#"{"type":"progress","stage":"reading","run":1,"runsPlanned":5}"#).is_err()
+        );
+        // Progress is not a ready message, and the final line still classifies as before.
+        assert!(validate_ready(line("r1", 1, 5)).is_err());
+        let result = parse_line(
+            r#"{"id":"r1","type":"result","smiles":"C","molfile":"m","confidence":null,"atoms":[],"bonds":[],"agreement":{"runs":1,"agreeing":1,"scalesPx":[800]},"elapsedMs":1}"#,
+        )
+        .expect("result JSON");
+        assert!(matches!(
+            classify_for_id(result, "r1"),
+            RequestLine::Final(Ok(payload)) if payload.smiles == "C"
+        ));
     }
 
     #[test]

@@ -12,6 +12,13 @@ black and the drawing becomes noise. Each image is then recognized at several
 sizes and the answers are compared by canonical SMILES, because a single run's
 answer and its confidence both swing with the image size.
 
+While a request runs, the sidecar sends one progress line per reading, before
+that reading starts and always before the request's final result or error line:
+{"id", "type": "progress", "stage": "reading", "run": N, "runsPlanned": M}. M is
+the first-pass count (usually 5) and grows to the full vote (usually 15) when the
+first pass disagrees. Progress lines were added within protocol 2; a host that
+does not read them is not affected, because the final line is unchanged.
+
 Stdout is reserved for the protocol. Before any heavy import, file descriptor 1
 is pointed at stderr, so a stray print() from MolScribe, torch or a C extension
 lands in the log instead of corrupting a protocol line.
@@ -216,13 +223,16 @@ def rdkit_canonical_smiles(smiles):
     return Chem.MolToSmiles(molecule, isomericSmiles=True)
 
 
-def recognize_consensus(predict, canonicalize, image_path):
+def recognize_consensus(predict, canonicalize, image_path, on_progress=None):
     """Recognize one image file at the consensus sizes and return (prediction, agreement).
 
     `predict` takes an RGB Pillow image and returns MolScribe's prediction dict. The first-pass sizes
     run first; the rest run only when fewer than ADAPTIVE_STOP_AGREEING first-pass runs agree on one
     valid structure. Raises InvalidImage for an undecodable file, re-raises the last model error if
     every run raised, and raises NoValidStructure if runs answered but none of them parsed.
+
+    `on_progress(run, runs_planned)`, when given, is called just before each run starts: `run`
+    counts from 1, and `runs_planned` is the first pass's size until the vote widens to every size.
     """
     image = load_flattened(image_path)
     first_pass, rest = consensus_long_sides(*image.size)
@@ -232,9 +242,11 @@ def recognize_consensus(predict, canonicalize, image_path):
     confidences = []
     last_problem = None
 
-    def run(size):
+    def run(size, runs_planned):
         nonlocal last_problem
         sizes.append(size)
+        if on_progress is not None:
+            on_progress(len(sizes), runs_planned)
         try:
             prediction = predict(resize_to_long_side(image, size))
             if not isinstance(prediction, dict):
@@ -255,10 +267,10 @@ def recognize_consensus(predict, canonicalize, image_path):
         confidences.append(optional_number(prediction.get("confidence")))
 
     for size in first_pass:
-        run(size)
+        run(size, len(first_pass))
     if top_valid_count(keys) < ADAPTIVE_STOP_AGREEING:
         for size in rest:
-            run(size)
+            run(size, len(first_pass) + len(rest))
     order = sorted(range(len(sizes)), key=lambda index: sizes[index])
     sizes = [sizes[index] for index in order]
     predictions = [predictions[index] for index in order]
@@ -340,8 +352,14 @@ def error(request_id, code, message):
     return {"id": request_id, "type": "error", "code": code, "message": message}
 
 
+def progress(request_id, run, runs_planned):
+    return {"id": request_id, "type": "progress", "stage": "reading", "run": int(run),
+            "runsPlanned": int(runs_planned)}
+
+
 def handle_line(recognize, line):
-    """Answer one request line. `recognize(path)` returns (prediction, agreement).
+    """Answer one request line. `recognize(path, on_progress)` returns (prediction, agreement) and
+    calls `on_progress(run, runs_planned)` before each reading; each call becomes a progress line.
 
     Returns False when the sidecar should exit.
     """
@@ -368,7 +386,8 @@ def handle_line(recognize, line):
         return True
     started = time.monotonic()
     try:
-        prediction, agreement = recognize(image_path)
+        prediction, agreement = recognize(
+            image_path, lambda run, runs_planned: emit(progress(request_id, run, runs_planned)))
         emit(map_prediction(request_id, prediction, agreement, round((time.monotonic() - started) * 1000)))
     except InvalidImage as problem:
         emit(error(request_id, "invalid_image", "The image could not be decoded: {}".format(problem)))
@@ -523,6 +542,36 @@ def _selftest_rdkit():
     return True
 
 
+def _selftest_progress_lines(captured):
+    """Progress lines: one per reading, numbered from 1, each before its request's final line.
+
+    `captured` is every line the self-test's requests emitted, in order.
+    """
+    by_request = {}
+    finished = set()
+    for message in captured:
+        request_id = message.get("id")
+        if message.get("type") == "progress":
+            assert request_id not in finished, "progress after the final line of " + str(request_id)
+            assert message["stage"] == "reading", message
+            assert set(message) == {"id", "type", "stage", "run", "runsPlanned"}, message
+            by_request.setdefault(request_id, []).append((message["run"], message["runsPlanned"]))
+        else:
+            finished.add(request_id)
+    first, every = 5, 15
+    # r1 stops after the first pass; r2 widens to the full vote after reading 5 of 5.
+    assert by_request["r1"] == [(run, first) for run in range(1, first + 1)], by_request["r1"]
+    assert by_request["r2"] == ([(run, first) for run in range(1, first + 1)]
+                                + [(run, every) for run in range(first + 1, every + 1)]), by_request["r2"]
+    # Every run is announced, including the ones that raise (r5) or do not parse (r3, r4).
+    for request_id in ("r3", "r4", "r5"):
+        assert [run for run, _ in by_request[request_id]] == list(range(1, every + 1)), request_id
+    # A request refused before any reading (bad path, undecodable image) sends no progress at all.
+    for request_id in ("r6", "r7", None):
+        assert request_id not in by_request, request_id
+    assert [run for run, _ in by_request["r8"]] == list(range(1, first + 1))
+
+
 def selftest():
     """Drive preprocessing, voting and the protocol with a fake model; prints one line per response."""
     from PIL import Image
@@ -550,8 +599,8 @@ def selftest():
             "bonds": [{"bond_type": "single", "endpoint_atoms": (0, 1), "confidence": 0.98}],
         }
 
-    def recognize(path):
-        return recognize_consensus(fake_predict, _selftest_canonicalize, path)
+    def recognize(path, on_progress):
+        return recognize_consensus(fake_predict, _selftest_canonicalize, path, on_progress)
 
     def ask(request_id, path, answers, default=("CO", 0.93)):
         size_answers.clear()
@@ -624,6 +673,9 @@ def selftest():
         emit = real_emit
 
     assert status == 0
+    _selftest_progress_lines(captured)
+    progress_lines = [message for message in captured if message.get("type") == "progress"]
+    captured = [message for message in captured if message.get("type") != "progress"]
     assert len(captured) == 9, captured  # nothing after shutdown
     stopped = captured[0]
     assert stopped["type"] == "result" and stopped["id"] == "r1", stopped
@@ -654,7 +706,7 @@ def selftest():
     assert unanimous["id"] == "r8" and unanimous["agreement"]["agreeing"] == 5
     assert unanimous["agreement"]["runs"] == 5 and unanimous["agreement"]["invalidRuns"] == 0
     assert unanimous["confidence"] == 0.93 and unanimous["molfile"] == "fixture-800"
-    for message in captured:
+    for message in progress_lines + captured:
         line = json.dumps(message, separators=(",", ":"), ensure_ascii=False)
         assert "\n" not in line and json.loads(line) == message
         emit(message)
@@ -699,8 +751,8 @@ def main():
         # after cv2.imread + BGR->RGB; handing it the flattened image skips the lossy OpenCV read.
         return model.predict_image(numpy.asarray(image), return_atoms_bonds=True, return_confidence=True)
 
-    def recognize(path):
-        return recognize_consensus(predict, rdkit_canonical_smiles, path)
+    def recognize(path, on_progress):
+        return recognize_consensus(predict, rdkit_canonical_smiles, path, on_progress)
 
     emit({
         "type": "ready",

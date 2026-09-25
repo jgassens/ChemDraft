@@ -666,6 +666,7 @@ import {
   StructureRecognitionInstallDialog,
   isRecognitionInstallKeyboardEvent
 } from "./plugins/StructureRecognitionInstallDialog";
+import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1412,7 +1413,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.25.14.40-opus";
+const CURRENT_BUILD_STAMP = "9.25.17.40-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -16480,6 +16481,11 @@ export function MainWindow({
           onDecline={pluginRuntime.declineRecognitionEngineInstall}
         />
       ) : null}
+      {/* Not a dialog: a corner card that leaves the canvas usable while an image is recognized. */}
+      <RecognitionProgressIndicator
+        source={pluginRuntime.runtime.recognition}
+        onCancel={pluginRuntime.cancelRecognition}
+      />
 
       {!isDesktopRuntime() ? (
         <PluginPanelSurface

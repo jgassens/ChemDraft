@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   TauriStructureRecognitionEngine,
+  UnsupportedStructureRecognitionEngine,
   type ProgressChannel,
-  type StructureRecognitionInstallProgress
+  type StructureRecognitionEngine,
+  type StructureRecognitionInstallProgress,
+  type StructureRecognitionProgress
 } from "./structureRecognitionEngine";
 
 describe("TauriStructureRecognitionEngine", () => {
@@ -104,5 +107,66 @@ describe("TauriStructureRecognitionEngine", () => {
       mediaType: "image/png",
       bytesBase64: "AAH/"
     });
+  });
+
+  it("sends recognition progress through a Channel under onProgress, only when asked for", async () => {
+    let channel: ProgressChannel<StructureRecognitionProgress> | undefined;
+    const createChannel = vi.fn(<T>(): ProgressChannel<T> => {
+      channel = { onmessage: () => undefined } as ProgressChannel<StructureRecognitionProgress>;
+      return channel as ProgressChannel<T>;
+    });
+    const invoke = vi.fn(async (_command: string, args?: Record<string, unknown>) => {
+      const sink = args?.onProgress as ProgressChannel<StructureRecognitionProgress> | undefined;
+      sink?.onmessage({ stage: "starting" });
+      sink?.onmessage({ stage: "reading", run: 1, runsPlanned: 5 });
+      return { status: "cancelled" as const };
+    });
+    const engine = new TauriStructureRecognitionEngine(
+      invoke as unknown as ConstructorParameters<typeof TauriStructureRecognitionEngine>[0],
+      createChannel
+    );
+    const progress = vi.fn();
+
+    await expect(engine.recognizeImage({ mediaType: "image/png", bytes: new Uint8Array([0, 1, 255]) }, progress)).resolves.toEqual({
+      status: "cancelled"
+    });
+    expect(invoke).toHaveBeenCalledWith("ocsr_recognize_image", {
+      mediaType: "image/png",
+      bytesBase64: "AAH/",
+      onProgress: channel
+    });
+    expect(progress.mock.calls).toEqual([[{ stage: "starting" }], [{ stage: "reading", run: 1, runsPlanned: 5 }]]);
+
+    // Without a listener no channel is made and the arguments are exactly the old ones.
+    createChannel.mockClear();
+    await engine.recognizeImage({ mediaType: "image/png", bytes: new Uint8Array([0]) });
+    expect(createChannel).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenLastCalledWith("ocsr_recognize_image", { mediaType: "image/png", bytesBase64: "AA==" });
+  });
+
+  it("cancels a recognition through the exact cancel command", async () => {
+    // Rust's ocsr_recognize_cancel returns `()`, which Tauri delivers as null.
+    const invoke = vi.fn(async () => null);
+    const engine = new TauriStructureRecognitionEngine(
+      invoke as unknown as ConstructorParameters<typeof TauriStructureRecognitionEngine>[0]
+    );
+    await expect(engine.cancelRecognition()).resolves.toBeUndefined();
+    expect(invoke.mock.calls).toEqual([["ocsr_recognize_cancel"]]);
+  });
+});
+
+describe("UnsupportedStructureRecognitionEngine", () => {
+  it("reports no progress and has nothing to cancel", async () => {
+    const engine = new UnsupportedStructureRecognitionEngine();
+    const progress = vi.fn();
+    await expect(engine.recognizeImage()).resolves.toEqual({ status: "notInstalled" });
+    await expect(
+      (engine as StructureRecognitionEngine).recognizeImage(
+        { mediaType: "image/png", bytes: new Uint8Array([1]) },
+        progress
+      )
+    ).resolves.toEqual({ status: "notInstalled" });
+    expect(progress).not.toHaveBeenCalled();
+    await expect(engine.cancelRecognition()).resolves.toBeUndefined();
   });
 });

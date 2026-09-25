@@ -7,9 +7,11 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 use super::platform::{self, EnginePlatform};
 use super::protocol::{
-    self, ProtocolResultError, RecognitionPayload, SidecarErrorCode, SidecarRequest,
+    self, ProtocolResultError, RecognitionPayload, RequestLine, SidecarErrorCode, SidecarRequest,
 };
 
 /// Covers the first request's model load plus a full consensus vote: up to 15 recognitions (the
@@ -41,14 +43,29 @@ impl LaunchPaths {
     }
 }
 
+/// Where a recognition is, as the host shows it. `Starting` covers launching the sidecar and loading
+/// the model (the sidecar says nothing until both are done); `Reading` is one reading of the vote.
+/// Serialized for the webview as `{"stage":"starting"}` or
+/// `{"stage":"reading","run":1,"runsPlanned":5}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "stage",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecognitionProgress {
+    Starting,
+    Reading { run: u32, runs_planned: u32 },
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ProcessError {
     InvalidImage(String),
     RecognitionFailed(String),
     Crashed(String),
     Timeout,
-    /// The sidecar was killed through its [`KillSwitch`] (app exit, install or uninstall) while
-    /// this request was running. Never retried.
+    /// The sidecar was killed through its [`KillSwitch`] (app exit, install, uninstall, or the
+    /// user's Cancel) while this request was running. Never retried.
     Cancelled,
 }
 
@@ -61,8 +78,11 @@ pub struct KillSwitch(Arc<Mutex<KillState>>);
 
 #[derive(Default)]
 struct KillState {
-    /// Set by `kill_now`, cleared when the next request begins.
+    /// Set by `kill_now` (or `cancel_request` while a request runs), cleared when the next request
+    /// begins.
     requested: bool,
+    /// True from the start of a request until it returns; `cancel_request` acts only then.
+    active: bool,
     /// Kills the current child; present from spawn until the manager stops it.
     kill: Option<Box<dyn FnMut() + Send>>,
 }
@@ -81,6 +101,25 @@ impl KillSwitch {
         }
     }
 
+    /// The user's Cancel: kills the child only while a request is running, so a click that lands
+    /// between recognitions leaves a warm idle sidecar alone. Returns whether a request was running.
+    /// A cancel that lands just before a request begins is caught by the manager's `cancelled`
+    /// check instead, which runs after `begin`.
+    pub fn cancel_request(&self) -> bool {
+        let kill = {
+            let mut state = self.state();
+            if !state.active {
+                return false;
+            }
+            state.requested = true;
+            state.kill.take()
+        };
+        if let Some(mut kill) = kill {
+            kill();
+        }
+        true
+    }
+
     /// Called by a spawner as soon as its child exists, before the (possibly long) model load.
     /// A kill requested while the spawn was starting takes effect immediately.
     pub fn arm(&self, mut kill: Box<dyn FnMut() + Send>) {
@@ -94,7 +133,16 @@ impl KillSwitch {
     }
 
     fn begin(&self) {
-        self.state().requested = false;
+        let mut state = self.state();
+        state.requested = false;
+        state.active = true;
+    }
+
+    /// Ends a request; returns whether a kill was requested at any point during it.
+    fn finish(&self) -> bool {
+        let mut state = self.state();
+        state.active = false;
+        state.requested
     }
 
     fn requested(&self) -> bool {
@@ -113,11 +161,13 @@ impl KillSwitch {
 }
 
 pub trait EngineProcess: Send {
+    /// `progress` receives each reading the sidecar announces, before the final answer.
     fn recognize(
         &mut self,
         request_id: &str,
         image_path: &Path,
         timeout: Duration,
+        progress: &dyn Fn(RecognitionProgress),
     ) -> Result<RecognitionPayload, ProcessError>;
     fn shutdown(&mut self);
 }
@@ -160,9 +210,8 @@ impl ProcessManager {
         self.kill_switch.clone()
     }
 
-    /// A crashed child is discarded and the request is retried against one fresh process. A timeout
-    /// is not retried because the first inference may still have consumed the entire user budget,
-    /// and a kill through the [`KillSwitch`] is not retried because someone asked for it.
+    /// [`Self::recognize_with`] without progress or a cancel check.
+    #[cfg(test)]
     pub fn recognize(
         &mut self,
         platform: &dyn EnginePlatform,
@@ -170,9 +219,51 @@ impl ProcessManager {
         image_path: &Path,
         timeout: Duration,
     ) -> Result<RecognitionPayload, ProcessError> {
+        self.recognize_with(platform, paths, image_path, timeout, &|_| {}, &|| false)
+    }
+
+    /// A crashed child is discarded and the request is retried against one fresh process. A timeout
+    /// is not retried because the first inference may still have consumed the entire user budget,
+    /// and a kill through the [`KillSwitch`] is not retried because someone asked for it.
+    ///
+    /// `progress` hears `Starting` before each spawn and every reading the sidecar announces.
+    /// `cancelled` is the caller's own cancel flag, read once the request has begun: a
+    /// [`KillSwitch::cancel_request`] that raced ahead of `begin` found no request to kill, so the
+    /// caller's flag is what stops this one before it starts work.
+    pub fn recognize_with(
+        &mut self,
+        platform: &dyn EnginePlatform,
+        paths: &LaunchPaths,
+        image_path: &Path,
+        timeout: Duration,
+        progress: &dyn Fn(RecognitionProgress),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<RecognitionPayload, ProcessError> {
+        self.kill_switch.begin();
+        let result = if cancelled() {
+            Err(ProcessError::Cancelled)
+        } else {
+            self.attempts(platform, paths, image_path, timeout, progress)
+        };
+        if self.kill_switch.finish() {
+            // A kill landed after the attempts last looked (or during them): the child may be dead
+            // while still held here, so drop it and let the next request start a fresh one.
+            self.stop();
+            return result.map_err(|_| ProcessError::Cancelled);
+        }
+        result
+    }
+
+    fn attempts(
+        &mut self,
+        platform: &dyn EnginePlatform,
+        paths: &LaunchPaths,
+        image_path: &Path,
+        timeout: Duration,
+        progress: &dyn Fn(RecognitionProgress),
+    ) -> Result<RecognitionPayload, ProcessError> {
         let deadline = Instant::now() + timeout;
         let request_id = format!("ocsr-{}", NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed));
-        self.kill_switch.begin();
         for attempt in 0..=1 {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -180,6 +271,7 @@ impl ProcessManager {
                 return Err(ProcessError::Timeout);
             }
             if self.process.is_none() {
+                progress(RecognitionProgress::Starting);
                 match self
                     .spawner
                     .spawn(platform, paths, remaining, &self.kill_switch)
@@ -200,7 +292,7 @@ impl ProcessManager {
                 .process
                 .as_mut()
                 .expect("process was initialized")
-                .recognize(&request_id, image_path, remaining);
+                .recognize(&request_id, image_path, remaining, progress);
             self.last_used = Some(Instant::now());
             if self.kill_switch.requested() {
                 // The child is dead or dying; an answer that arrived first still stands.
@@ -390,7 +482,9 @@ impl EngineProcess for SystemProcess {
         request_id: &str,
         image_path: &Path,
         timeout: Duration,
+        progress: &dyn Fn(RecognitionProgress),
     ) -> Result<RecognitionPayload, ProcessError> {
+        let deadline = Instant::now() + timeout;
         if lock_child(&self.child)
             .try_wait()
             .map_err(|error| ProcessError::Crashed(format!("Could not inspect OCSR: {error}")))?
@@ -413,9 +507,20 @@ impl EngineProcess for SystemProcess {
             .map_err(|error| {
                 ProcessError::Crashed(format!("Could not send the image to OCSR: {error}"))
             })?;
-        let response = self.receive_line(timeout)?;
-        let message = protocol::parse_line(response.trim_end()).map_err(ProcessError::Crashed)?;
-        match protocol::result_for_id(message, request_id) {
+        // Progress lines come first, one per reading; the whole request shares one deadline.
+        let answer = loop {
+            let response = self.receive_line(deadline.saturating_duration_since(Instant::now()))?;
+            let message =
+                protocol::parse_line(response.trim_end()).map_err(ProcessError::Crashed)?;
+            match protocol::classify_for_id(message, request_id) {
+                RequestLine::Progress(reading) => progress(RecognitionProgress::Reading {
+                    run: reading.run,
+                    runs_planned: reading.runs_planned,
+                }),
+                RequestLine::Final(answer) => break answer,
+            }
+        };
+        match answer {
             Ok(payload) => Ok(payload),
             Err(ProtocolResultError::Recognition { code, message }) => match code {
                 SidecarErrorCode::InvalidImage => Err(ProcessError::InvalidImage(message)),
@@ -466,6 +571,7 @@ mod tests {
             _request_id: &str,
             _image_path: &Path,
             _timeout: Duration,
+            _progress: &dyn Fn(RecognitionProgress),
         ) -> Result<RecognitionPayload, ProcessError> {
             self.outcome.take().expect("one request per fake process")
         }
@@ -717,6 +823,19 @@ while IFS= read -r line; do
     *missing*)
       printf '{"id":"%s","type":"error","code":"invalid_image","message":"unreadable"}\n' "$id"
       continue ;;
+    *stray-progress*)
+      echo '{"id":"someone-else","type":"progress","stage":"reading","run":1,"runsPlanned":5}'
+      continue ;;
+    *widening*)
+      for run in 1 2 3 4 5; do
+        printf '{"id":"%s","type":"progress","stage":"reading","run":%s,"runsPlanned":5}\n' "$id" "$run"
+      done
+      for run in 6 7 8 9 10 11 12 13 14 15; do
+        printf '{"id":"%s","type":"progress","stage":"reading","run":%s,"runsPlanned":15}\n' "$id" "$run"
+      done ;;
+    *one-reading-then-wait*)
+      printf '{"id":"%s","type":"progress","stage":"reading","run":1,"runsPlanned":5}\n' "$id"
+      sleep 3 ;;
   esac
   printf '{"id":"%s","type":"result","smiles":"C","molfile":"m","confidence":0.5,"atoms":[],"bonds":[],"agreement":{"runs":3,"agreeing":3,"invalidRuns":0,"scalesPx":[800,1000,1200]},"elapsedMs":1}\n' "$id"
 done
@@ -760,6 +879,27 @@ done
                 timeout,
             )
         }
+
+        /// Recognizes `image`, returning the answer and every progress event, in order.
+        fn recognize_observed(
+            &self,
+            manager: &mut ProcessManager,
+            image: &str,
+        ) -> (
+            Result<RecognitionPayload, ProcessError>,
+            Vec<RecognitionProgress>,
+        ) {
+            let events = Mutex::new(Vec::new());
+            let result = manager.recognize_with(
+                &MacPlatform::new(MacArchitecture::Aarch64),
+                &self.paths,
+                &self.root.join(image),
+                Duration::from_secs(10),
+                &|event| events.lock().expect("events").push(event),
+                &|| false,
+            );
+            (result, events.into_inner().expect("events"))
+        }
     }
 
     #[cfg(unix)]
@@ -789,6 +929,163 @@ done
         );
         manager.stop();
         assert!(manager.process.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_lines_are_forwarded_in_order_before_the_answer() {
+        let sidecar = ShellSidecar::new("progress", "model");
+        let mut manager = ProcessManager::system();
+        let (result, events) = sidecar.recognize_observed(&mut manager, "widening.png");
+        assert_eq!(result.expect("recognized").smiles, "C");
+        let mut expected = vec![RecognitionProgress::Starting];
+        expected.extend((1..=5).map(|run| RecognitionProgress::Reading {
+            run,
+            runs_planned: 5,
+        }));
+        expected.extend((6..=15).map(|run| RecognitionProgress::Reading {
+            run,
+            runs_planned: 15,
+        }));
+        assert_eq!(events, expected);
+
+        // A warm sidecar is not started again, so the next request reports only its readings.
+        let (result, events) = sidecar.recognize_observed(&mut manager, "widening.png");
+        assert!(result.is_ok());
+        assert_eq!(
+            events.first(),
+            Some(&RecognitionProgress::Reading {
+                run: 1,
+                runs_planned: 5
+            })
+        );
+        assert_eq!(events.len(), 15);
+
+        // A sidecar that sends no progress at all (an older one) still answers as before.
+        let (result, events) = sidecar.recognize_observed(&mut manager, "image.png");
+        assert!(result.is_ok());
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn progress_serializes_the_exact_webview_contract() {
+        assert_eq!(
+            serde_json::to_value(RecognitionProgress::Starting).expect("json"),
+            serde_json::json!({"stage": "starting"})
+        );
+        assert_eq!(
+            serde_json::to_value(RecognitionProgress::Reading {
+                run: 2,
+                runs_planned: 5
+            })
+            .expect("json"),
+            serde_json::json!({"stage": "reading", "run": 2, "runsPlanned": 5})
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_for_another_request_is_a_crash() {
+        let sidecar = ShellSidecar::new("stray", "model");
+        let mut manager = ProcessManager::system();
+        let (result, _) = sidecar.recognize_observed(&mut manager, "stray-progress.png");
+        assert!(
+            matches!(&result, Err(ProcessError::Crashed(message)) if message.contains("someone-else")),
+            "{result:?}"
+        );
+    }
+
+    /// The user's Cancel: the running request's sidecar dies at once, the request reports
+    /// `Cancelled`, and the next request starts a fresh sidecar.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_request_stops_a_running_recognition_immediately() {
+        let sidecar = Arc::new(ShellSidecar::new("user-cancel", "model"));
+        let manager = Arc::new(Mutex::new(ProcessManager::system()));
+        let kill_switch = manager.lock().expect("manager").kill_switch();
+        let (reading_tx, reading_rx) = mpsc::channel();
+        let worker = {
+            let (manager, sidecar) = (manager.clone(), sidecar.clone());
+            thread::spawn(move || {
+                let reading_tx = Mutex::new(reading_tx);
+                let mut manager = manager.lock().expect("manager");
+                manager.recognize_with(
+                    &MacPlatform::new(MacArchitecture::Aarch64),
+                    &sidecar.paths,
+                    &sidecar.root.join("one-reading-then-wait.png"),
+                    Duration::from_secs(30),
+                    &|event| {
+                        let _ = reading_tx.lock().expect("sender").send(event);
+                    },
+                    &|| false,
+                )
+            })
+        };
+        // Wait until the sidecar has announced its first reading, then cancel mid-reading.
+        loop {
+            let event = reading_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("progress before the answer");
+            if matches!(event, RecognitionProgress::Reading { .. }) {
+                break;
+            }
+        }
+        let cancelled_at = Instant::now();
+        assert!(kill_switch.cancel_request(), "a request was running");
+        assert_eq!(
+            worker.join().expect("request thread"),
+            Err(ProcessError::Cancelled)
+        );
+        assert!(cancelled_at.elapsed() < Duration::from_millis(2_500));
+        let mut manager = manager.lock().expect("manager");
+        assert!(manager.process.is_none());
+        sidecar
+            .recognize(&mut manager, "image.png", Duration::from_secs(10))
+            .expect("the next request starts a fresh process");
+    }
+
+    /// A Cancel between recognitions has nothing to stop, and must not kill the warm sidecar.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_request_between_recognitions_leaves_the_warm_sidecar_alone() {
+        let sidecar = ShellSidecar::new("idle-cancel", "model");
+        let mut manager = ProcessManager::system();
+        let kill_switch = manager.kill_switch();
+        sidecar
+            .recognize(&mut manager, "image.png", Duration::from_secs(10))
+            .expect("warm process");
+        assert!(!kill_switch.cancel_request());
+        let (result, events) = sidecar.recognize_observed(&mut manager, "image.png");
+        assert!(result.is_ok());
+        assert!(
+            !events.contains(&RecognitionProgress::Starting),
+            "the warm sidecar was reused"
+        );
+    }
+
+    /// A Cancel that raced ahead of the request (so `cancel_request` found nothing running) is
+    /// caught by the caller's flag before any process is started.
+    #[test]
+    fn a_cancel_flag_set_before_the_request_begins_stops_it_without_a_spawn() {
+        let spawner = Arc::new(FakeSpawner {
+            outcomes: Mutex::new(VecDeque::from([Ok(payload())])),
+            spawns: AtomicUsize::new(0),
+        });
+        let mut manager = ProcessManager::new(spawner.clone());
+        let started = Mutex::new(0);
+        assert_eq!(
+            manager.recognize_with(
+                &MacPlatform::new(MacArchitecture::Aarch64),
+                &paths(),
+                Path::new("image.png"),
+                Duration::from_secs(1),
+                &|_| *started.lock().expect("count") += 1,
+                &|| true,
+            ),
+            Err(ProcessError::Cancelled)
+        );
+        assert_eq!(spawner.spawns.load(Ordering::Relaxed), 0);
+        assert_eq!(*started.lock().expect("count"), 0);
     }
 
     #[cfg(unix)]

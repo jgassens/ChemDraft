@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ocsr-recognize-cancel"
+description = "Enables the ocsr_recognize_cancel command without any pre-configured scope."
+commands.allow = ["ocsr_recognize_cancel"]
+
+[[permission]]
+identifier = "deny-ocsr-recognize-cancel"
+description = "Denies the ocsr_recognize_cancel command without any pre-configured scope."
+commands.deny = ["ocsr_recognize_cancel"]

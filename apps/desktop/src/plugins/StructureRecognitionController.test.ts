@@ -6,7 +6,8 @@ import type {
   StructureRecognitionEngine,
   StructureRecognitionEngineStatus,
   StructureRecognitionInstallProgress,
-  StructureRecognitionOutcome
+  StructureRecognitionOutcome,
+  StructureRecognitionProgress
 } from "./structureRecognitionEngine";
 
 const installed: StructureRecognitionEngineStatus = {
@@ -87,7 +88,7 @@ describe("StructureRecognitionController", () => {
     await expect(
       controller.recognize({ id: "plugin", name: "Plugin" }, image, new AbortController().signal)
     ).resolves.toEqual(prepared);
-    expect(engine.recognizeImage).toHaveBeenCalledWith({ mediaType: "image/png", bytes: image.bytes });
+    expect(engine.recognizeImage).toHaveBeenCalledWith({ mediaType: "image/png", bytes: image.bytes }, expect.any(Function));
     expect(prepare).toHaveBeenCalledWith(recognized, image);
   });
 
@@ -510,5 +511,333 @@ describe("StructureRecognitionController", () => {
       code: "unsupported",
       message: "Intel Macs are not supported."
     });
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+async function flush(): Promise<void> {
+  for (let step = 0; step < 12; step += 1) await Promise.resolve();
+}
+
+const checkingEngine: StructureRecognitionEngineStatus = {
+  ...notInstalled,
+  state: "installing",
+  engineCheck: true,
+  progress: { phase: "verifying", message: "Checking the installed recognition engine." },
+  installElapsedMs: 2_000
+};
+
+/** An installed engine whose recognition the test drives by hand: progress, then the answer. */
+function drivenSetup(options: { statuses?: StructureRecognitionEngineStatus[]; followIntervalMs?: number } = {}) {
+  const calls: Array<{
+    report: (progress: StructureRecognitionProgress) => void;
+    answer: (outcome: StructureRecognitionOutcome) => void;
+  }> = [];
+  const statuses = [...(options.statuses ?? [])];
+  const engine: StructureRecognitionEngine = {
+    status: vi.fn(async () => statuses.shift() ?? installed),
+    install: vi.fn(async () => installed),
+    cancelInstall: vi.fn(async () => undefined),
+    uninstall: vi.fn(async () => notInstalled),
+    recognizeImage: vi.fn((_input, onProgress) => {
+      const answer = deferred<StructureRecognitionOutcome>();
+      calls.push({ report: (progress) => onProgress?.(progress), answer: answer.resolve });
+      return answer.promise;
+    }),
+    cancelRecognition: vi.fn(async () => {
+      // Like the host: the running call then answers `cancelled`.
+      calls.at(-1)?.answer({ status: "cancelled" });
+    })
+  };
+  const prepared: PluginRecognitionResult = {
+    status: "recognized",
+    result: {
+      sourceImageRef: "data:image/png;base64,iVBORw==",
+      proposedMolfile: "mol",
+      confidence: 0.92,
+      atomConfidence: [],
+      bondConfidence: [],
+      warnings: []
+    }
+  };
+  const preparing = deferred<PluginRecognitionResult>();
+  const prepare = vi.fn(() => preparing.promise);
+  const controller = new StructureRecognitionController(engine, prepare, {
+    now: () => 5_000,
+    followIntervalMs: options.followIntervalMs ?? 500
+  });
+  controller.attachInstallPresenter();
+  return { controller, engine, calls, prepare, prepared, finishPreparing: () => preparing.resolve(prepared) };
+}
+
+const plugin = { id: "org.chemdraft.ocsr.molscribe", name: "MolScribe OCSR" };
+
+describe("StructureRecognitionController recognition progress", () => {
+  it("reports each stage, in order, from the moment the image is handed over until the result", async () => {
+    const { controller, calls, prepare, prepared, finishPreparing } = drivenSetup();
+    // What the indicator would render after each notification, repeats collapsed: listeners also
+    // hear general notifications, which leave the snapshot unchanged.
+    const seen: string[] = [];
+    controller.subscribeActivity(() => {
+      const activity = controller.getActiveRecognition();
+      const label = activity
+        ? `${activity.stage}${activity.reading ? ` ${activity.reading.run}/${activity.reading.runsPlanned}` : ""}`
+        : "none";
+      if (seen.at(-1) !== label) seen.push(label);
+    });
+
+    const pending = controller.recognize(plugin, image, new AbortController().signal);
+    // Visible at once, before the engine has even been asked for its status.
+    expect(controller.getActiveRecognition()).toEqual({
+      id: expect.any(Number),
+      pluginId: plugin.id,
+      pluginName: "MolScribe OCSR",
+      stage: "checking",
+      startedAt: 5_000
+    });
+    await flush();
+    expect(calls).toHaveLength(1);
+
+    calls[0].report({ stage: "starting" });
+    expect(controller.getActiveRecognition()?.stage).toBe("starting");
+    for (let run = 1; run <= 5; run += 1) calls[0].report({ stage: "reading", run, runsPlanned: 5 });
+    expect(controller.getActiveRecognition()?.reading).toEqual({ run: 5, runsPlanned: 5 });
+    // The first pass disagreed: the vote widens to fifteen readings.
+    calls[0].report({ stage: "reading", run: 6, runsPlanned: 15 });
+    expect(controller.getActiveRecognition()).toMatchObject({ stage: "reading", reading: { run: 6, runsPlanned: 15 } });
+
+    calls[0].answer(recognized);
+    await flush();
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(controller.getActiveRecognition()).toMatchObject({ stage: "validating" });
+    expect(controller.getActiveRecognition()?.reading).toBeUndefined();
+
+    finishPreparing();
+    await expect(pending).resolves.toEqual(prepared);
+    expect(controller.getActiveRecognition()).toBeUndefined();
+    expect(seen).toEqual([
+      "checking",
+      "starting",
+      "reading 1/5",
+      "reading 2/5",
+      "reading 3/5",
+      "reading 4/5",
+      "reading 5/5",
+      "reading 6/15",
+      "validating",
+      "none"
+    ]);
+  });
+
+  it("keeps the same snapshot object until something changes", async () => {
+    const { controller, calls } = drivenSetup();
+    void controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    const first = controller.getActiveRecognition();
+    expect(controller.getActiveRecognition()).toBe(first);
+    calls[0].report({ stage: "reading", run: 1, runsPlanned: 5 });
+    expect(controller.getActiveRecognition()).not.toBe(first);
+  });
+
+  it("ignores a reading count that makes no sense instead of showing it", async () => {
+    const { controller, calls } = drivenSetup();
+    void controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    calls[0].report({ stage: "reading", run: 7, runsPlanned: 5 });
+    expect(controller.getActiveRecognition()).toMatchObject({ stage: "reading" });
+    expect(controller.getActiveRecognition()?.reading).toBeUndefined();
+  });
+
+  it("Cancel settles the plugin's request as cancelled at once and stops the engine", async () => {
+    const { controller, engine, calls, prepare } = drivenSetup();
+    const pending = controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    calls[0].report({ stage: "reading", run: 2, runsPlanned: 5 });
+
+    controller.cancelRecognition(controller.getActiveRecognition()!.id);
+    // The indicator goes at once, without waiting for the engine.
+    expect(controller.getActiveRecognition()).toBeUndefined();
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+    expect(engine.cancelRecognition).toHaveBeenCalledOnce();
+    expect(prepare).not.toHaveBeenCalled();
+    // A late reading from the cancelled call changes nothing.
+    calls[0].report({ stage: "reading", run: 3, runsPlanned: 5 });
+    expect(controller.getActiveRecognition()).toBeUndefined();
+  });
+
+  it("Cancel for a recognition that already ended does nothing", async () => {
+    const { controller, engine, calls, finishPreparing } = drivenSetup();
+    const pending = controller.recognize(plugin, image, new AbortController().signal);
+    const id = controller.getActiveRecognition()!.id;
+    await flush();
+    calls[0].answer(recognized);
+    finishPreparing();
+    await pending;
+    controller.cancelRecognition(id);
+    expect(engine.cancelRecognition).not.toHaveBeenCalled();
+  });
+
+  it("an engine that answers cancelled (stopped elsewhere) is a silent cancel for the plugin", async () => {
+    const { controller, calls } = drivenSetup();
+    const pending = controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    calls[0].answer({ status: "cancelled" });
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+    expect(controller.getActiveRecognition()).toBeUndefined();
+  });
+
+  it("the indicator disappears when recognition fails", async () => {
+    const { controller, calls } = drivenSetup();
+    const pending = controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    calls[0].answer({ status: "failed", code: "recognitionFailed", message: "No structure found." });
+    await expect(pending).resolves.toMatchObject({ status: "failed", code: "recognitionFailed" });
+    expect(controller.getActiveRecognition()).toBeUndefined();
+  });
+
+  it("an abandoned invocation stops the engine the same way Cancel does", async () => {
+    const { controller, engine } = drivenSetup();
+    const invocation = new AbortController();
+    const pending = controller.recognize(plugin, image, invocation.signal);
+    await flush();
+    invocation.abort();
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+    expect(engine.cancelRecognition).toHaveBeenCalledOnce();
+    expect(controller.getActiveRecognition()).toBeUndefined();
+  });
+
+  it("an engine that cannot cancel is simply no longer waited for", async () => {
+    const { controller, engine } = drivenSetup();
+    delete (engine as { cancelRecognition?: unknown }).cancelRecognition;
+    const pending = controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    controller.cancelRecognition(controller.getActiveRecognition()!.id);
+    await expect(pending).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("refuses a second recognition while one runs, without disturbing the first", async () => {
+    const { controller, calls } = drivenSetup();
+    void controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    const first = controller.getActiveRecognition();
+    await expect(controller.recognize(plugin, image, new AbortController().signal)).resolves.toMatchObject({
+      status: "failed",
+      code: "busy"
+    });
+    expect(controller.getActiveRecognition()).toBe(first);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a recognition after a cancel waits for the cancelled engine call to end before starting", async () => {
+    const { controller, engine, calls } = drivenSetup();
+    // This engine's cancel does not answer the call at once.
+    vi.mocked(engine.cancelRecognition!).mockImplementation(async () => undefined);
+    const first = controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    controller.cancelRecognition(controller.getActiveRecognition()!.id);
+    await expect(first).resolves.toEqual({ status: "cancelled" });
+
+    void controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(controller.getActiveRecognition()?.stage).toBe("checking");
+    calls[0].answer({ status: "cancelled" });
+    await flush();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("hides behind the install dialog, and returns when the install finishes", async () => {
+    const { controller, calls } = drivenSetup({ statuses: [notInstalled] });
+    void controller.recognize(plugin, image, new AbortController().signal);
+    await flush();
+    const open = controller.getOpenInstall();
+    expect(open).toBeDefined();
+    expect(controller.getActiveRecognition()).toBeUndefined();
+
+    await controller.install(open!.id);
+    await flush();
+    expect(controller.getOpenInstall()).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(controller.getActiveRecognition()).toMatchObject({ pluginName: "MolScribe OCSR", stage: "checking" });
+  });
+
+  it("waits for the one-time engine check under the indicator instead of opening the install dialog", async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, engine, calls } = drivenSetup({ statuses: [checkingEngine, checkingEngine, installed] });
+      void controller.recognize(plugin, image, new AbortController().signal);
+      await flush();
+      expect(controller.getOpenInstall()).toBeUndefined();
+      expect(controller.getActiveRecognition()?.stage).toBe("checking");
+      expect(calls).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(controller.getActiveRecognition()?.stage).toBe("checking");
+      await vi.advanceTimersByTimeAsync(500);
+      await flush();
+      expect(calls).toHaveLength(1);
+      expect(engine.install).not.toHaveBeenCalled();
+      calls[0].report({ stage: "starting" });
+      expect(controller.getActiveRecognition()?.stage).toBe("starting");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Cancel during the one-time check stops waiting but leaves the check to finish", async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, engine, calls } = drivenSetup({
+        statuses: [checkingEngine, checkingEngine, checkingEngine, installed]
+      });
+      const pending = controller.recognize(plugin, image, new AbortController().signal);
+      await flush();
+      controller.cancelRecognition(controller.getActiveRecognition()!.id);
+      await expect(pending).resolves.toEqual({ status: "cancelled" });
+      expect(controller.getActiveRecognition()).toBeUndefined();
+      // Neither the check nor any recognition was told to stop: nothing was recognizing yet.
+      expect(engine.cancelInstall).not.toHaveBeenCalled();
+      expect(engine.cancelRecognition).not.toHaveBeenCalled();
+      expect(controller.getInstallRun()?.running).toBe(true);
+
+      // The check still reaches its own answer, and the next recognition goes straight to work.
+      await vi.advanceTimersByTimeAsync(1_500);
+      await flush();
+      expect(controller.getInstallRun()).toBeUndefined();
+      expect(controller.getStatus()?.state).toBe("installed");
+      void controller.recognize(plugin, image, new AbortController().signal);
+      await flush();
+      expect(calls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an engine check that finds the engine out of date opens the install dialog as before", async () => {
+    vi.useFakeTimers();
+    try {
+      const broken: StructureRecognitionEngineStatus = {
+        ...notInstalled,
+        state: "broken",
+        detail: "The recognition engine needs to be updated."
+      };
+      const { controller, calls } = drivenSetup({ statuses: [checkingEngine, broken, broken] });
+      void controller.recognize(plugin, image, new AbortController().signal);
+      await flush();
+      await vi.advanceTimersByTimeAsync(500);
+      await flush();
+      expect(controller.getOpenInstall()).toMatchObject({ status: { state: "broken" } });
+      expect(controller.getActiveRecognition()).toBeUndefined();
+      expect(calls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

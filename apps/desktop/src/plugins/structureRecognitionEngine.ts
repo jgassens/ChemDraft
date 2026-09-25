@@ -27,6 +27,10 @@ export interface StructureRecognitionEngineStatus {
   progress?: StructureRecognitionInstallProgress;
   /** While `installing`: milliseconds since the install started. */
   installElapsedMs?: number;
+  /** While `installing`: what runs is the one-time check of an engine already on disk (after an app
+   *  update), not a download. Recognition waits for it behind its progress indicator instead of
+   *  opening the install dialog. Absent when false. */
+  engineCheck?: boolean;
 }
 
 export type StructureRecognitionInstallPhase =
@@ -100,11 +104,26 @@ export type StructureRecognitionOutcome =
       engine: { name: "MolScribe"; molscribeCommit: string; modelSha256: string };
     }
   | { status: "notInstalled" }
+  /** The user cancelled this recognition through `cancelRecognition`. */
+  | { status: "cancelled" }
   | {
       status: "failed";
       code: "invalidImage" | "recognitionFailed" | "engineCrashed" | "timeout" | "busy";
       message: string;
     };
+
+/**
+ * Where a running recognition is, as the engine reports it. Engine-neutral: any engine or platform
+ * may report these stages, and one that reports nothing is still correct — the host then shows the
+ * stage it knows itself.
+ *
+ * - `starting`: the engine is being launched and its model loaded.
+ * - `reading`: reading `run` (from 1) of `runsPlanned` has started. `runsPlanned` may grow once
+ *   during a request, when the engine widens its vote (MolScribe: 5, then 15).
+ */
+export type StructureRecognitionProgress =
+  | { stage: "starting" }
+  | { stage: "reading"; run: number; runsPlanned: number };
 
 /** The only desktop seam that knows the Tauri command names. UI, plugin-host wiring, and tests depend
  * on this interface so a future engine/platform can be added without changing their callers. */
@@ -115,7 +134,14 @@ export interface StructureRecognitionEngine {
    *  returns `()`); the install's own settlement and `status()` report what was left. */
   cancelInstall(): Promise<void>;
   uninstall(): Promise<StructureRecognitionEngineStatus>;
-  recognizeImage(input: { mediaType: string; bytes: Uint8Array }): Promise<StructureRecognitionOutcome>;
+  /** `onProgress`, when given, hears the stages the engine reports while it works. */
+  recognizeImage(
+    input: { mediaType: string; bytes: Uint8Array },
+    onProgress?: (progress: StructureRecognitionProgress) => void
+  ): Promise<StructureRecognitionOutcome>;
+  /** Stops the running recognition, which then settles as `cancelled`. Optional: an engine that
+   *  cannot stop one leaves it running, and the host stops waiting for it all the same. */
+  cancelRecognition?(): Promise<void>;
 }
 
 type InvokeCommand = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -154,11 +180,24 @@ export class TauriStructureRecognitionEngine implements StructureRecognitionEngi
     return this.invokeCommand("ocsr_engine_uninstall");
   }
 
-  recognizeImage(input: { mediaType: string; bytes: Uint8Array }): Promise<StructureRecognitionOutcome> {
-    return this.invokeCommand("ocsr_recognize_image", {
+  recognizeImage(
+    input: { mediaType: string; bytes: Uint8Array },
+    onProgress?: (progress: StructureRecognitionProgress) => void
+  ): Promise<StructureRecognitionOutcome> {
+    const args: Record<string, unknown> = {
       mediaType: input.mediaType,
       bytesBase64: bytesToBase64(input.bytes)
-    });
+    };
+    if (onProgress) {
+      const channel = this.createChannel<StructureRecognitionProgress>();
+      channel.onmessage = onProgress;
+      args.onProgress = channel;
+    }
+    return this.invokeCommand("ocsr_recognize_image", args);
+  }
+
+  async cancelRecognition(): Promise<void> {
+    await this.invokeCommand<void>("ocsr_recognize_cancel");
   }
 }
 
@@ -187,8 +226,12 @@ export class UnsupportedStructureRecognitionEngine implements StructureRecogniti
   async uninstall(): Promise<StructureRecognitionEngineStatus> {
     return this.unsupported;
   }
+  /** Reports no progress: nothing ever runs here. */
   async recognizeImage(): Promise<StructureRecognitionOutcome> {
     return { status: "notInstalled" };
+  }
+  async cancelRecognition(): Promise<void> {
+    // Nothing is ever recognizing here.
   }
 }
 

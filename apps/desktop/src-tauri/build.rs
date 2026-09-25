@@ -47,6 +47,7 @@ fn main() {
             "ocsr_engine_cancel_install",
             "ocsr_engine_uninstall",
             "ocsr_recognize_image",
+            "ocsr_recognize_cancel",
             "screen_capture_available",
             "screen_capture_permission_status",
             "request_screen_capture_permission",

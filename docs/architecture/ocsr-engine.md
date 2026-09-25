@@ -278,6 +278,7 @@ for protocol output, so a stray `print` from a library cannot corrupt a protocol
 {"type":"ready","protocol":2,"molscribeVersion":"…","torchVersion":"…"}
 {"type":"fatal","code":"model_load_failed","message":"…"}
 {"id":"ocsr-1","type":"recognize","imagePath":"/absolute/temporary/image.png"}
+{"id":"ocsr-1","type":"progress","stage":"reading","run":1,"runsPlanned":5}
 {"id":"ocsr-1","type":"result","smiles":"…","molfile":"…","confidence":0.97,"atoms":[{"index":0,"symbol":"C","x":0.41,"y":0.2,"confidence":0.99}],"bonds":[{"begin":0,"end":1,"bondType":"single","confidence":0.98}],"agreement":{"runs":5,"agreeing":5,"invalidRuns":0,"scalesPx":[800,900,1000,1100,1200]},"elapsedMs":9500}
 {"id":"ocsr-1","type":"error","code":"invalid_image","message":"…"}
 {"type":"shutdown"}
@@ -295,6 +296,16 @@ exits 0. The host refuses a protocol-1 result (no `agreement`), an unknown `agre
 inconsistent one (`agreeing` outside `1..=runs`, `agreeing + invalidRuns > runs`, or `scalesPx` not
 one entry per run). `invalidRuns` was added within protocol 2; the host reads a result without it as
 reporting none.
+
+**Progress lines** were also added within protocol 2, and are purely additive: the final `result` or
+`error` line is unchanged, and a sidecar that sends none is still read correctly. Before each reading
+the sidecar sends `{"id", "type": "progress", "stage": "reading", "run", "runsPlanned"}`, always before
+that request's final line. `run` counts from 1; `runsPlanned` is the first pass's size (usually 5)
+and becomes the full vote's size (usually 15) from the first reading after the first pass disagreed.
+A request refused before any reading (bad path, undecodable image) sends none. Rust reads progress
+strictly (`protocol::classify_for_id`): a progress line for another request id, with `run` outside
+`1..=runsPlanned`, with `runsPlanned` above 64, or with an unknown `stage` ends the request as a crash,
+exactly like a result for the wrong request.
 
 ### Preprocessing: flatten onto white
 
@@ -373,7 +384,9 @@ runs never winning); and the whole request loop with a stubbed model — the ada
 a full 15-run vote, 11 confident unparsable runs losing to 3 valid ones, every run unparsable
 (`recognition_failed` with the plain message), a model exception at every size, result mapping with
 `agreement`, missing confidences, a malformed line, a bad path, an undecodable image, and nothing
-answered after shutdown. Where RDKit is importable (the engine venv) it also checks the canonical-SMILES key.
+answered after shutdown. It also checks the progress lines: one per reading numbered from 1, 5 of 5
+then 6 to 15 of 15 when the vote widens, one per run even when the run raises or does not parse, none
+for a request refused before reading, and never one after that request's final line. Where RDKit is importable (the engine venv) it also checks the canonical-SMILES key.
 
 `pnpm test:ocsr-real` is the opt-in accuracy check against a real installed engine and the fixtures
 in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
@@ -402,6 +415,14 @@ in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
   close and fails with `engineCrashed` ("MolScribe was stopped before it finished…"); it is not
   retried. Install and uninstall then take the lock on a blocking worker thread; exit, on the main
   thread, only tries the lock: it stops an idle sidecar gracefully and kills a busy one.
+- **The user's Cancel** (`ocsr_recognize_cancel`) uses the same switch, but only for a request that is
+  running (`KillSwitch::cancel_request`): a Cancel between recognitions leaves the warm sidecar alone.
+  The request answers `{status: "cancelled"}` rather than `engineCrashed`, and the next recognition
+  starts a fresh sidecar lazily. A Cancel can land before the request has begun (the command is still
+  reading the image, say), when there is nothing yet to kill; so every Cancel also bumps a counter the
+  recognition read when its command started, and the request checks it once it has begun, before it
+  starts or talks to a sidecar. The bump comes before the kill, and the check after `begin`, so no
+  request slips between them.
 - **Poisoned locks.** A panic during a recognition must not disable recognition for the session: the
   request gate and the process manager recover a poisoned lock (the idle reaper included) instead of
   failing every later request.
@@ -429,16 +450,75 @@ Python and packages.
 
 | Command | Arguments | Returns |
 | --- | --- | --- |
-| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}`; `progress` (the latest `InstallProgress`) and `installElapsedMs` are present only while `installing`, which includes the check of an engine with an older receipt (phase `verifying`) |
+| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?, engineCheck?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}`; `progress` (the latest `InstallProgress`) and `installElapsedMs` are present only while `installing`, which includes the check of an engine with an older receipt (phase `verifying`); `engineCheck: true` marks that check (it is omitted for a real install) |
 | `ocsr_engine_install` | `onProgress: Channel<InstallProgress>` | status, or `Err({code, message})` with `insufficientDisk`, `network`, `checksumMismatch`, `cancelled`, `unsupported` or `failed`. One install at a time; a second call fails with `failed`. |
 | `ocsr_engine_cancel_install` | — | `()` |
 | `ocsr_engine_uninstall` | — | status. Cancels a running install and waits for it, stops the sidecar, then removes the three `ocsr-engine*` directories. |
-| `ocsr_recognize_image` | `{mediaType, bytesBase64}` | `{status: "recognized", smiles, molfile, confidence, atoms, bonds, agreement: {runs, agreeing, invalidRuns, scalesPx}, elapsedMs, engine: {name: "MolScribe", molscribeCommit, modelSha256}}`, `{status: "notInstalled"}` (also while installing or on an unsupported platform), or `{status: "failed", code, message}` with `invalidImage`, `recognitionFailed`, `engineCrashed` (including a `broken` install), `timeout` or `busy` |
+| `ocsr_recognize_image` | `{mediaType, bytesBase64, onProgress?: Channel<RecognitionProgress>}` | `{status: "recognized", smiles, molfile, confidence, atoms, bonds, agreement: {runs, agreeing, invalidRuns, scalesPx}, elapsedMs, engine: {name: "MolScribe", molscribeCommit, modelSha256}}`, `{status: "notInstalled"}` (also while installing or on an unsupported platform), `{status: "cancelled"}` (the user's Cancel only), or `{status: "failed", code, message}` with `invalidImage`, `recognitionFailed`, `engineCrashed` (including a `broken` install, and a stop for exit, install or uninstall), `timeout` or `busy` |
+| `ocsr_recognize_cancel` | — | `()`. Stops the running recognition at once (see Process lifetime); does nothing when none is running, and never touches an install or the engine check. |
 
 `InstallProgress` is `{phase, message, bytesDone?, bytesTotal?, estimated?}` with `phase` one of
 `checkingDisk`, `downloadingUv`, `installingPython`, `installingPackages`, `downloadingModel`,
 `verifying`, `done`. `estimated: true` marks byte counts derived from directory growth (see Install
 progress); it is omitted otherwise.
+
+`RecognitionProgress` is `{stage: "starting"}` (Rust is launching the sidecar, which includes the
+model load: the sidecar says nothing until it is ready) or `{stage: "reading", run, runsPlanned}`
+(forwarded from the sidecar's progress line). The `onProgress` channel is optional — a Tauri
+`Channel` argument cannot itself be optional, so Rust takes the raw channel id and binds it to the
+calling webview. Events are rate-limited to about four a second (`progress::RecognitionThrottle`); a
+new stage, or a change in `runsPlanned`, always passes.
+
+## Recognition progress
+
+The first recognition after an app update can take a minute or more: the one-time engine check
+(about a minute; see Receipt versions), the model load (about 10 s), then up to 15 readings (about
+2 s each). The host shows that it is working, without blocking the drawing.
+
+**The indicator** (`apps/desktop/src/plugins/RecognitionProgressIndicator.tsx`, mounted once in
+`MainWindow`) is a small card in the bottom-right corner of the main window, not a dialog: it takes
+no focus, traps nothing, and covers only its corner, so the user keeps drawing. It names the plugin
+that asked, the stage in plain words, a bar and the elapsed time, and offers **Cancel**. Only the
+stage line is a live region (`role="status"`, `aria-live="polite"`); the clock ticks every second and
+is kept out of it. It is shown from the moment a plugin hands an image to recognition until the
+result is ready, the recognition fails, or it is cancelled — except while the install dialog is open,
+which is the feedback then.
+
+| Stage | Text | Bar |
+| --- | --- | --- |
+| `checking` — reading the engine status, or waiting for the one-time engine check | Checking the recognition engine… | indeterminate |
+| `starting` — sidecar launch and model load | Starting the recognition engine… | indeterminate |
+| `reading` — a reading of the vote | Reading the structure… (reading *N* of *M*) | *N − 1* of *M* done |
+| `validating` — RDKit validation and the proposal | Checking the result… | indeterminate |
+
+*M* is 5 for the first pass and becomes 15 if the first pass disagrees. An engine that reports no
+readings leaves the text at "Reading the structure…" rather than going blank.
+
+**The one-time engine check** is no longer shown as an install. When `ocsr_engine_status` answers
+`installing` with `engineCheck: true`, `StructureRecognitionController.recognize` waits for it under
+the indicator (following the host's status as it already does for an install it did not start) and
+then recognizes; if the check refuses the engine, the install dialog opens with "Install engine
+again", as before. Cancel during the check stops the waiting only: the check runs on to its own
+result, which the next recognition uses.
+
+**Cancel** settles the plugin's `recognizeStructure` as `{status: "cancelled"}` at once (plugins stay
+silent on it) and hides the card; if the engine was already recognizing, the controller also calls
+`cancelRecognition`, which kills the sidecar through `ocsr_recognize_cancel`. An abandoned plugin
+invocation cancels the same way. A recognition started right after a cancel waits (up to 10 s) for
+the cancelled engine call to settle, so it is not refused as `busy`. One recognition runs at a time:
+a second request while one is shown is answered `busy` without disturbing the first.
+
+**Engine-neutral.** Stages travel through `StructureRecognitionEngine` —
+`recognizeImage(input, onProgress?)` and an optional `cancelRecognition()` — as
+`StructureRecognitionProgress`, so another engine or platform reports the same way.
+`UnsupportedStructureRecognitionEngine` reports nothing. The controller shows the stages it knows
+itself (`checking`, `validating`) whatever the engine reports, and its progress reaches only the
+indicator's own subscription (`subscribeActivity`), so a reading never re-renders `MainWindow`.
+
+**Permissions.** `ocsr_recognize_cancel` is granted to the main window only, in
+`capabilities/ocsr-engine.json`. Its permission is defined by hand in
+`permissions/ocsr-recognize-cancel.toml`, because `build.rs`'s command list (which generates the files
+in `permissions/autogenerated/`) does not name it; tauri-build reads every file under `permissions/`.
 
 ## Platform seam
 
