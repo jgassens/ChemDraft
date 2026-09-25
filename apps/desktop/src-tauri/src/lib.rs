@@ -1932,7 +1932,7 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
     // Development / explicit override: an absolute path to a locally built sidecar wins.
     if let Some(path) = env_override {
         let candidate = PathBuf::from(path.trim());
-        if candidate.is_file() {
+        if is_runnable_sidecar(&candidate) {
             return Some(candidate);
         }
     }
@@ -1947,11 +1947,41 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
         "avogadro3d-sidecar"
     };
     let bundled = executable_dir.join(sidecar_name);
-    if bundled.is_file() {
+    if is_runnable_sidecar(&bundled) {
         Some(bundled)
     } else {
         None
     }
+}
+
+/// A file that can actually be started as the sidecar. On Windows that means a PE image: the
+/// `binaries/` placeholders are text, which `is_file` accepted — status then said "bundled" and the
+/// first session failed with OS error 193. Elsewhere this is `is_file`, as before.
+fn is_runnable_sidecar(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        is_pe_image(path)
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// `MZ` DOS header whose e_lfanew (offset 0x3C) points at a `PE\0\0` signature.
+#[cfg(windows)]
+fn is_pe_image(path: &Path) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    if bytes.len() < 0x40 || &bytes[..2] != b"MZ" {
+        return false;
+    }
+    let offset = u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
+    bytes.get(offset..offset + 4) == Some(b"PE\0\0".as_slice())
 }
 
 fn start_engine3d_sidecar_session_from_path(
@@ -3810,6 +3840,30 @@ mod tests {
 
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_placeholders_are_not_runnable_on_windows() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-sidecar-pe-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let placeholder = dir.join("placeholder.exe");
+        fs::write(&placeholder, "ChemDraft avogadro3d-sidecar placeholder.").expect("placeholder");
+        let mut pe = vec![0u8; 0x80];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3c] = 0x40;
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let image = dir.join("image.exe");
+        fs::write(&image, &pe).expect("image");
+
+        assert!(!is_runnable_sidecar(&placeholder));
+        assert!(is_runnable_sidecar(&image));
+        assert!(!is_runnable_sidecar(&dir.join("missing.exe")));
+        assert!(is_runnable_sidecar(
+            &std::env::current_exe().expect("test exe")
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn openable_document_paths_are_existing_chemdraft_or_cdxml_files() {
         let dir = std::env::temp_dir().join(format!("chemdraft-open-args-{}", std::process::id()));
@@ -4391,9 +4445,17 @@ mod tests {
 
     #[test]
     fn engine3d_sidecar_status_tracks_env_override_without_running_shell() {
-        let path =
-            std::env::temp_dir().join(format!("chemdraft-engine3d-status-{}", std::process::id()));
-        fs::write(&path, "").expect("fixture should write");
+        // Windows accepts only a real PE image as the sidecar (see is_runnable_sidecar); the running
+        // test binary is one, and it is never written or removed here.
+        #[cfg(windows)]
+        let (path, owned) = (std::env::current_exe().expect("test executable"), false);
+        #[cfg(not(windows))]
+        let (path, owned) = {
+            let path = std::env::temp_dir()
+                .join(format!("chemdraft-engine3d-status-{}", std::process::id()));
+            fs::write(&path, "").expect("fixture should write");
+            (path, true)
+        };
 
         let status = engine3d_sidecar_status_from(Some(path.to_string_lossy().to_string()));
 
@@ -4405,7 +4467,9 @@ mod tests {
             status.resolved_path,
         );
 
-        let _ = fs::remove_file(path);
+        if owned {
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

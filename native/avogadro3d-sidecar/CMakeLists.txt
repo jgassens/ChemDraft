@@ -36,6 +36,16 @@ if(CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT)
   message(STATUS "Dev-only diagnostic Qt viewport is enabled; this must not be shipped as product UI.")
 endif()
 
+# MSVC (the windows-msvc preset). Set before add_subdirectory so avogadrolibs compiles the same way:
+# M_PI & co. need _USE_MATH_DEFINES, <windows.h>'s min/max macros break std::min/max, Eigen's
+# templates overflow the default object-section limit, and sources are UTF-8. The static runtime
+# (/MT, via CMAKE_MSVC_RUNTIME_LIBRARY in the preset) makes the sidecar one self-contained .exe, which
+# is all Tauri's externalBin ships.
+if(MSVC)
+  add_compile_definitions(_USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  add_compile_options(/bigobj /utf-8 /EHsc)
+endif()
+
 add_executable(avogadro3d-sidecar src/main.cpp)
 target_compile_definitions(avogadro3d-sidecar PRIVATE
   CHEMDRAFT_AVOGADRO3D_AVOGADRO_COMMIT="${CHEMDRAFT_AVOGADRO3D_AVOGADRO_COMMIT}"

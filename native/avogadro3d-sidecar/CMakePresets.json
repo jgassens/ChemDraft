@@ -21,12 +21,34 @@
         "CHEMDRAFT_AVOGADRO3D_ENABLE_LIBMSYM": "OFF",
         "CHEMDRAFT_AVOGADRO3D_ENABLE_SPGLIB": "OFF"
       }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Protocol scout (Windows, MSVC, static)",
+      "inherits": "protocol-scout",
+      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
     }
   ],
   "buildPresets": [
     {
       "name": "protocol-scout",
       "configurePreset": "protocol-scout"
+    },
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "configuration": "Release"
     }
   ]
 }

@@ -3,6 +3,8 @@
 # that breaks bash on `run-app` and every `*.sh` (`$'\r': command not found`) and puts stray `\r` into
 # tests that read source or fixtures and split on "\n". Binary files are still auto-detected.
 * text=auto eol=lf
+# Executables are binary whatever their bytes look like (the sidecar placeholders were text).
+*.exe binary
 # Windows-native scripts must stay CRLF; cmd.exe mis-parses LF-only batch files.
 *.bat text eol=crlf
 *.cmd text eol=crlf
