@@ -116,6 +116,24 @@ function typeOnlyViolations(source: string): string[] {
   return violations;
 }
 
+const packageJsonPath = join(packageSrc, "..", "package.json");
+
+function declaredDependencyNames(): string[] {
+  const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+    dependencies?: Record<string, string>;
+  };
+  return Object.keys(pkg.dependencies ?? {});
+}
+
+function undeclaredPackageSpecifier(specifier: string, declared: string[]): string | undefined {
+  if (specifier.startsWith(".") || specifier.startsWith("/")) return undefined;
+  if (specifier.startsWith("node:")) return undefined;
+  const declaredMatch = declared.some(
+    (name) => specifier === name || specifier.startsWith(`${name}/`)
+  );
+  return declaredMatch ? undefined : specifier;
+}
+
 describe("document-workflow-core purity", () => {
   it("recognises every specifier form it scans for", () => {
     const source = [
@@ -206,6 +224,22 @@ describe("document-workflow-core purity", () => {
         ? [`${relative(repoRoot, file)} has ${count} non-literal dynamic import()/require() call(s)`]
         : [];
     });
+    expect(violations).toEqual([]);
+  });
+
+  it("only imports package.json dependencies or Node builtins", () => {
+    const declared = declaredDependencyNames();
+    expect(declared.length).toBeGreaterThan(0);
+
+    const files = sourceFiles(packageSrc).filter((file) => file !== thisFile);
+    const violations = files.flatMap((file) =>
+      extractSpecifiers(readFileSync(file, "utf8")).flatMap((specifier) => {
+        const undeclared = undeclaredPackageSpecifier(specifier, declared);
+        return undeclared
+          ? [`${relative(repoRoot, file)} imports ${undeclared} (not in package.json dependencies)`]
+          : [];
+      })
+    );
     expect(violations).toEqual([]);
   });
 });
