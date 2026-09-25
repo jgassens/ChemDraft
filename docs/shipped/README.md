@@ -10,10 +10,9 @@ the superseding entry says so — read the newest entry that touches a subsystem
 **Superseded decisions, at a glance:**
 
 - *Toolbar Wiring and Honesty* decided that the four tool-drawn arrows would be semantic
-  `reaction-arrow` objects rather than art graphics. That decision **still stands on `main`** and is
-  being reversed by agreement on `codex/toolbar-bug-fixes`, where all four families become art
-  arrows tagged for CDXML interop. Until that branch merges, `main`'s arrows are semantic objects;
-  see `PLANS.md` for the incoming design.
+  `reaction-arrow` objects rather than art graphics. That decision was reversed by the "Toolbar,
+  palette, and arrow bug fixes" slice below (2026-08-02, PR #26, merge `2fa4c21`): all four
+  families are art arrows tagged for CDXML interop, on `main` since that merge.
 
 **Slices with their own file:**
 
@@ -32,6 +31,72 @@ the superseding entry says so — read the newest entry that touches a subsystem
   resolver with atom→bond→ring precedence, uniform additive behavior across click/marquee/lasso, and
   cross-molecule part storage. All phases landed; kept separate because its design section still
   documents how selection works today.
+
+---
+
+## Tester feedback fixes + 0.3.5 (2026-09-25, PR #47 merge `60cc59e`, release PR #48 merge `e107b23`)
+
+Two tester-reported problems, fixed and released same day.
+
+Atom-label typing was leaking into canvas hotkeys: when the label input lost focus mid-edit, the
+edited atom stayed selected, so the rest of a typed label (or a subsequent keypress) hit canvas
+hotkeys instead — `e` armed the eraser, an element letter overwrote the label with a naked atom,
+Backspace stripped it. The pre-edit selection is now restored whenever a label edit closes by any
+path other than Enter/Tab/Escape (including a tool picked from a palette mid-edit); the label box
+shares the text editor's focus-hardening; Tab now finishes the edit like Enter; and a blur caused
+only by the window losing key status (a palette taking focus) keeps the edit open rather than
+closing it.
+
+Edit ▸ Undo/Redo were AppKit's predefined menu items, which sent `undo:`/`redo:` to the web view's
+native text-undo manager and never reached the drawing's own history — ⌘Z only worked through the
+JS shortcut handler, never through the menu. They are now routed `edit.undo`/`edit.redo` commands
+(still ⌘Z/⇧⌘Z) delivered to the key window: a focused text-entry field gets native text undo,
+otherwise the drawing's history is undone; secondary windows (palettes) forward to the main window
+with a marker that forces drawing-history undo rather than whatever text field last had focus
+there. No toolbar button was added — an owner decision.
+
+Open: a tester report of "benzene needs several clicks to draw" has no confirmed cause from code
+reading alone; it needs the tester's own answer (did the ring flash and vanish, or never appear at
+all?) before it can be reproduced.
+
+---
+
+## ChemDraft agent toolkit: CLI, render CLI, and MCP server (2026-09-24, PR #41 + PR #45, merge `dbd3974`)
+
+A headless `pnpm chemdraft <subcommand>` CLI and a stdio MCP server exposing the same operations, so
+an AI agent can do chemistry through the app's own chemistry stack instead of guessing at structures
+or numbers. Eight subcommands: `render` (SMILES → cropped SVG/PNG; PR #41 shipped this alone first as
+`pnpm render`, then PR #45 superseded it inside the full toolkit), `grid` (many SMILES → one labelled
+multiple-choice image), `reaction` (reaction SMILES or explicit reactant/agent/product → a scheme with
+plus signs, arrow, and charged formula labels), `analyze` (properties, pKa with intervals and source
+atoms, m/z table, provenance report), `name` (IUPAC/trivial name → SMILES via the vendored OPSIN,
+refusing ambiguous names unless overridden), `stereo` (R/S centres, E/Z bonds, unspecified and
+unrepresentable stereo), `nmr` (¹H/¹³C shifts and a stick spectrum via the NMR predictor plugin,
+loaded at run time from its separate repo), and `export` (cdxml/pdf/sdf/mol/smi). `packages/chemdraft-mcp`
+wraps all eight as MCP tools; each call gets its own output directory and calls run one at a time.
+
+Every chemical-file export compares the RDKit canonical SMILES (with stereo) of what was written
+against the input, and fails the job rather than writing a file that silently changed identity.
+Dative bonds, unspecified E/Z, radicals, isotopes, and oversized/empty input are refused or preserved
+rather than guessed at; `analyze` fields carry `{value, status}` so a declined computation and one
+never requested cannot look the same (AGENTS.md §8b). Reviewed by Fable, then Kimi, then a max-effort
+astra pass across ~50 adversarial inputs that returned "do not merge" on 13 findings — all fixed
+except two, deferred with tracked follow-ups: the NMR plugin loads without the app's permission gates
+(it is the owner's local checkout; proper isolation is a separate design), and the CLI imports desktop
+modules directly (extracting a shared workflow package is a larger refactor).
+
+---
+
+## Download site (2026-09-23, PR #42 + PR #43 + PR #44)
+
+A static download page at `site/`, deployed to GitHub Pages (`https://jgassens.github.io/ChemDraft/`)
+on pushes to `main` touching `site/**`. The download button asks the GitHub API for the latest
+release and links to its `.dmg`; with JavaScript disabled it falls back to `/releases/latest`. PR #43
+added a "What it does" feature section — five groups of bullets (Draw, Inspect, Predict, Spin 3D,
+Open), each checked against the shipped code — with real screenshots (a Suzuki coupling, the
+Molecular Inspector's isotope envelope and pKa view) and a looping GIF of Spin 3D turning a helicene.
+PR #44 swapped the pKa screenshot for one taken in the packaged Mac app rather than the browser
+preview build, and the intro text now says which images come from which build.
 
 ---
 
@@ -215,6 +280,187 @@ rather than assuming the newest source has reached every open window.
 
 ---
 
+## Movable charge marks, mechanism-arrow tools, and Copy As (2026-08-12, PR #32 merge `a4477da`; charge-mark follow-up PR #33 merge `4c88848`)
+
+Three independent pieces landed together.
+
+**Charge marks became proximity-associated objects instead of a raw formal-charge flag on the atom.**
+Dragging a charge mark away from its atom reverts that atom to its neutral valence — no more a mark
+stuck on an atom that can no longer support it, and no more a spurious `(!)` warning. The full
+charge/electron-mark palette (8 symbol tools: circled and plain charges, radical cation, radical
+anion, plain radical, lone pair) sits behind one dropdown, matching the reference corpus. A same-day
+follow-up (PR #33) fixed anchored charge marks not carrying through molecule rotate/scale/flip.
+
+**Mechanism arrows became real, atom-anchored objects.** `packages/chem-core/src/schemas.ts` gained
+a `MechanismArrowObject` (`type: "mechanism-arrow"`) with one or two Bézier handles depending on
+length, anchored to an atom or a charge mark. `tool.mechanismArrow` (full-headed) and
+`tool.mechanismFishhook` (half-headed) are live tools built on this type — this **resolves** the
+toolbar/palette/arrow-bug-fixes slice's open item that `tool.mechanismArrow` was retired and
+`packages/mechanism-tools` a stub. `packages/mechanism-tools` itself is still only shared types
+(`MechanismToolKind`, `MechanismToolDefinition`); the working implementation lives in `chem-core`,
+`documentWorkflow.ts`, and `layout-engine`, not in that package. The renamed-command map
+(`apps/desktop/src/renamedCommands.ts`) redirects the old stamp-style curved/fishhook *art* arrow
+ids (`tool.art.curvedArrow90`, `tool.art.curvedArrow180`, `tool.art.fishhookArrow`,
+`tool.art.fishhookCurved`) to these real tools; the art geometry itself survives only for CDX-imported
+documents that already used it.
+
+**Copy As** joined Cut/Copy/Paste in the Edit menu and the object right-click menu: SMILES, InChI,
+InChI Key, CDXML, MOL text (V2000/V3000), SVG, PNG. Its scope expands to anchored charge marks and
+mechanism arrows tied to a selected molecule, rather than only the literally-selected objects — a
+prior gap that dropped charges and mechanism arrows from Copy As ▸ PNG/SVG. `moveDocumentObject`
+gained a branch for mechanism-arrow objects (their Bézier control points previously never moved with
+the object, which also fixes dragging one in the editor). Bundled fixes: desktop clipboard paste
+between two app instances producing garbled/CJK text (native pasteboard byte-decoding), double-click
+relabel not opening the text editor in dev builds, a right-click on an object inside a multi-selection
+collapsing the selection to just that object, Copy As ▸ SVG pasting as literal markup instead of
+vector art in Illustrator (missing `public.svg-image` clipboard flavor; `paint-order` and
+`dominant-baseline`, both silently ignored by Illustrator, replaced with a stroked-under-fill halo and
+a `dy` baseline offset), and low-resolution PNG pastes (now 4x oversampled with embedded 288dpi
+density metadata).
+
+---
+
+## Toolbar, palette, and arrow bug fixes (2026-08-02) — on `main` (PR #26, merge `2fa4c21`)
+
+Branch `codex/toolbar-bug-fixes`, opened 2026-07-26, 26 commits. Two independent threads that
+touched different files and were reviewed separately: Thread A hardened the native
+toolbar/palette window system after a Claude + Codex review; Thread B rebuilt the arrow family on
+the art pipeline. A third, smaller thread (C) made the Main Toolbar's style widget
+selection-aware.
+
+### Thread A — Native toolbars, palettes, and popover flyouts
+
+- **Customization could break commands app-wide** (`ad98d4f9`). `toolCommandSpecs`'s generic
+  binding loop ran *after* the domain-handler loops with last-wins semantics, so dragging Undo,
+  Save, or a hovered-atom edit onto any toolbar re-registered that id as a no-op — breaking it in
+  menus and shortcuts too, since the registry is shared. The generic loop now skips ids an earlier
+  handler has claimed. Landed alongside it: dead gallery commands removed, mojibake labels
+  repaired repo-wide, the Distribute button stopped invoking on Enter/Space while disabled, and
+  `toolbarAsset()` guarded at its three direct-render sites against an unknown/IPC-sourced value.
+- **Plugin palette windows rendered as the Main toolbar** (`17dcbde3`). A native palette webview
+  ships only the core toolset manifest; plugin toolsets are contributed at runtime in the main
+  window, and nothing carried their definitions to detached palette webviews — so a plugin
+  toolset's window fell back to `core.main` and rendered the Main toolbar under the plugin's
+  title, with a close button targeting the real Main window. A toolset-definitions IPC channel now
+  mirrors the command-specs channel; the `core.main` fallback is replaced by an empty placeholder
+  carrying the window's real id.
+- **Palette reconciliation was open-only** (`3ff9a5de`). The startup reconciler opened toolsets
+  that should be visible but never closed any, and substituted defaults whenever the desired set
+  was empty — so a toolbar saved hidden but OS-restored open stayed open, and "hide everything"
+  was silently overridden. `reconcileNativePaletteWindows` now converges toward the desired set,
+  closing known windows that are open but undesired and honoring an empty desired set as hide-all,
+  while deliberately leaving unknown/orphan windows (a plugin still loading or uninstalling)
+  alone.
+- **Two data-loss traps in Rust persistence** (`13067a1b`). Reads swallowed every error as "file
+  absent," so a transient/permission read miss looked like "no saved state" and the next write
+  overwrote the real file with defaults — `read_optional_file` now returns `Ok(None)` only for
+  `NotFound`. Writes used plain truncate-then-rewrite, so a crash mid-write could strand the user
+  in the fallback with customization gone — `write_file_atomic` now writes a pid-namespaced temp
+  sibling and `rename(2)`s it over the target. Rewired: toolset customization state, document
+  session autosave, internal toolset layout state, and plugin storage.
+- **Flyouts that never appeared** (`eb6612d9`, `f247e922`, `68e7d920`, `6239db8a`). Four fixes in
+  sequence, the last of which was the actual root cause: hold delay cut 420→150 ms; a
+  prewarm-and-content-acknowledged reveal replaced building the popover webview at press time; the
+  content-acknowledged reveal was made synchronous after `requestAnimationFrame` turned out to be
+  *suspended in a hidden webview* (a deadlock — the reveal waited for a frame that couldn't arrive
+  until the reveal happened); and finally, the popover's Tauri capability granted
+  `core:window:allow-hide` but never `core:window:allow-show`, so every reveal had been silently
+  denied since the popover was built. That single denial explains the whole bug history: warm
+  reuse used to work because Rust showed the window directly on that path, and the prewarm rework
+  removed that — the only show that was ever permitted — so no flyout could appear at all.
+  **Standing lesson:** a missing Tauri capability fails silently through swallowed JS rejections
+  and presents as intermittent UI, not as an error; check `capabilities/default.json` and the
+  window server before rewriting the JS.
+
+### Thread B — Arrows become art objects
+
+This reverses a decision from *Toolbar Wiring and Honesty* below — see that entry's superseded-note
+— by agreement with the project owner (`49d4de52`: "per the design we agreed on"). All four
+families (reaction, resonance, equilibrium, retrosynthesis) became art `GraphicObject`s tagged with
+`artToolId` (`packages/chem-core/src/schemas.ts`), gaining the editing mechanics the semantic
+object never had: draggable endpoints, arc, arrowhead sizing, hover dot handles, drag-to-move,
+hover-delete, drag-to-draw. `insertNativeReactionArrow` and the `reaction-arrow` schema type
+survive for older documents and for arrows CDXML imports as `unknown`.
+
+**CDXML interop.** Export re-emits the standard spellings (`<graphic GraphicType="Line"
+ArrowType="FullHead"|"Resonance"|"Equilibrium"|"RetroSynthetic">`), so other programs still read
+these as reaction arrows; exact geometry round-trips internally through the embedded native
+payload. Import turns a foreign arrow of any of the four kinds back into an editable tagged art
+arrow (`importReactionArrowAsArtArrow` in `packages/cdx-compat/src/index.ts`) — so tool-drawn and
+imported arrows became the same object type after import, answering the original objection to the
+art route, at the cost of `unknown` arrows remaining legacy objects. Bold/dashed reaction variants
+also export as `FullHead`; fishhook stays a generic graphic with no `ArrowType` mapping.
+
+**Geometry.** New `dualShaft` graphic data: equilibrium is two parallel half-shafts straddling the
+axis pointing opposite ways with independent per-shaft length handles; retrosynthetic is
+`dualShaftParallel`, both shafts the same way under one open head with no per-shaft handles. A
+shared `dualShaftGapPx` middle knob resizes the whole arrow (gap, harpoons, seats together) instead
+of bending the axis into a curve.
+
+**Interaction rules.** Nothing paints on the initial press for any arrow family — it appears on
+pointer move or release. Arrow mode doubles as an arrow-editing mode (hover reveals grabbable dot
+handles); select mode uses the same small dots for line-family arrows. Arrowhead size snaps to 4 px
+steps, default head 16 px (was 10 px). Body drag moves the arrow; hover-delete removes the hovered
+one in arrow mode.
+
+**Per-tool arrow style defaults** (`5b5c08a2`). Right-clicking any arrow offers "Set as Default
+Arrow Style," capturing its reusable look (head sizes, dual-shaft heft/half-lengths, arc sweep,
+stroke color/width/dash — a curved default's bow is stored as a signed length fraction) into a
+per-tool session registry persisted through localStorage, consulted by both drag-drawn and
+click-placed creation paths. The gesture's own geometry (endpoints, length, angle) is never
+captured.
+
+**The curated flyout** (`c2567d8e`, `12718cc5`). An 11-item grid covering the arrow families
+rather than the full ~56-cell wall, as pure data over the existing art pipeline: bold/dashed
+reaction arrows, `curvedArrow90`/`curvedArrow180` electron-pushing curves, `fishhookArrow`/
+`fishhookCurved` using a new `half-arrow` marker kind, and `noReactionArrow` using a new
+`shaftMark: "cross"` field. (The curved/fishhook stamp-style art tools were themselves later
+superseded by real atom-anchored mechanism-arrow objects — see "Movable charge marks,
+mechanism-arrow tools, and Copy As" above.)
+
+### Thread C — Selection-aware Main Toolbar style widget
+
+The Main Toolbar's style widget (`widget.core.mainStyleControls`) swaps layout by selection: text
+(the prior widget, also the fallback for empty/mixed selections and customize mode), molecule
+(bond width, double-bond spacing, atom-label font/size, H/terminal-C toggles), shape
+(fill/stroke target, paint type, width/dash/corners, swap), and arrow (head kind/size, tail
+toggle, width/dash, set-as-default, flip) — one widget id, one 12×2 grid slot, every layout
+budgeted to 11 cells per row so no variant can resize the toolbar.
+
+Command ids introduced: `object.marker.end.kind.*` / `object.marker.start.kind.*` (8 static head
+presets per end), `object.marker.size:<n>` (dynamic head size, 4–96 px steps), and
+`arrow.setDefaultStyle` promoted from a context-menu-local string into a real `invoke` handler
+(`applyArrowStyleDefaultCommand`) so the style widget's button can capture the single selected
+arrow. Retro arrows are excluded from marker commands (their head is path geometry, not markers).
+
+### Verification
+
+`pnpm vitest run` across `App.test.ts`, `toolsets.test.ts`, `documentWorkflow.test.ts`,
+`graphicPathEdit.dom.test.ts`, `PaletteWindow.pluginToolset.dom.test.ts`,
+`toolbars/reconcileNativePalettes.test.ts`, `packages/art-engine`, `packages/cdx-compat`, plus
+`pnpm lint`/`test`/`build`, `git diff --check`, and the Rust fmt/test checks (native code changed:
+`build.rs`, `capabilities/default.json`, a new `prewarm_toolset_popover` permission, `src/lib.rs`).
+Manual stress covered each arrow family by click and drag, head resize stepping, independent
+equilibrium half-shaft drag, the middle-knob resize behavior, arrow body move/hover-delete, every
+palette flyout cold/warm/idle, hide-all-and-relaunch, and a plugin toolset window rendering its own
+tools under its own title.
+
+### What was still open at the time of shipping
+
+Three items were carried into `PLANS.md` as open work. Two remain open; one has since been fixed —
+see [Known open items](../../PLANS.md#known-open-items-not-in-flight) in `PLANS.md` for current
+status:
+
+1. Art inspector still styles only graphics and molecules (`ArtInspectorStyleObject`) — **still
+   open**.
+2. Electron-pushing arrows were art, not mechanism annotations, and `tool.mechanismArrow` was
+   retired — **fixed** 2026-08-12 by PR #32; see "Movable charge marks, mechanism-arrow tools, and
+   Copy As" above.
+3. A stale comment in the CDXML importer claiming equilibrium/retrosynthesis "stay the legacy
+   `reaction-arrow` object until migrated" — **still open** (one-line fix).
+
+---
+
 ## Toolbar Wiring and Honesty (2026-07-25) — on `main` (PR #21, merge `a7c88a69`)
 
 Status: all eight phases implemented and hardened across two review rounds, landed together with the
@@ -314,9 +560,9 @@ rendered UI (PLAN.md 6.15 sanctions it explicitly — "may exist only as disable
 
 ### Design decisions
 
-- **Arrows are semantic objects.** *(Still true on `main`. Being superseded on
-  `codex/toolbar-bug-fixes`, where the four families become art arrows tagged for CDXML interop —
-  see `PLANS.md`.)* The four wired arrow tools create `reaction-arrow`
+- **Arrows are semantic objects.** *(Reversed 2026-08-02 by the "Toolbar, palette, and arrow bug
+  fixes" slice earlier in this file: the four families became art arrows tagged for CDXML
+  interop.)* The four wired arrow tools create `reaction-arrow`
   document objects (`packages/chem-core`), not art graphics: the semantic type already has canvas
   rendering, selection/move/transform support, SVG export, and CDXML export+import. Art-route
   arrows would make tool-drawn and CDXML-imported arrows different object types. `arrowKind` gains
@@ -401,7 +647,7 @@ Definition of done, as met:
   action.
 - The Customize gallery cannot produce a decorative disabled button.
 - Reaction, resonance, equilibrium, and retrosynthesis arrows are semantic objects that round-trip
-  CDXML. *(Being superseded on `codex/toolbar-bug-fixes`: art arrows that round-trip CDXML.)*
+  CDXML. *(Reversed 2026-08-02, PR #26: art arrows that round-trip CDXML — see below.)*
 - Orbitals, brackets, symbols, chain, and formula text create real document objects with undo/redo,
   save/reopen, and SVG export parity.
 - AGENTS.md, PLAN.md, and the plans file describe the shipped state; build stamps updated.
