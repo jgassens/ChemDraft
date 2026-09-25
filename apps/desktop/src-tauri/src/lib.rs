@@ -5,7 +5,7 @@ mod opsin;
 mod windows_clipboard;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -369,6 +369,7 @@ pub fn run() {
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
         .manage(KeybindingSchemeState::default())
+        .manage(RetainedAppMenus::default())
         // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
         // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
         // handler rather than adding a scheme — a new scheme would be a new origin, and M35 measured
@@ -384,8 +385,13 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_sparkle_updater::init());
 
+    // Only macOS has an app-wide menu bar. Elsewhere an app-wide Tauri menu is attached to EVERY
+    // window, which subclasses each palette/popover with muda's menu proc; see `install_app_menu`
+    // for why that crashed. There the menu is attached to the document window in `setup` instead.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(create_app_menu);
+
     builder
-        .menu(create_app_menu)
         .on_page_load(|webview, payload| {
             if webview.label() == MAIN_WINDOW_LABEL
                 && matches!(payload.event(), PageLoadEvent::Finished)
@@ -464,6 +470,11 @@ pub fn run() {
             };
 
             match event {
+                // Minimizing the document minimizes its owned palettes too, and Windows parks a
+                // minimized window far off-screen and reports that as a Moved. Persisting it saved
+                // the palettes at (-16000, -16000), so the next launch clamped them to the screen
+                // corner. Like persist_main_window_geometry, minimized frames are not user frames.
+                WindowEvent::Moved(_) if toolset_frame_is_transient(app, window) => {}
                 WindowEvent::Moved(position) => {
                     let logical_position = logical_toolset_position_from_physical(
                         position.x as f64,
@@ -503,6 +514,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
+                eprintln!("Could not install the ChemDraft menu: {error}");
             }
 
             if let Err(error) = ensure_main_window_visible(app) {
@@ -553,6 +569,7 @@ pub fn run() {
             open_toolset_popover,
             prewarm_toolset_popover,
             show_toolset_tooltip_window,
+            hide_toolset_tooltip_window,
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,
@@ -1291,11 +1308,59 @@ fn show_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
             ns_window.orderFront(None);
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    // Tauri's show() is ShowWindow(SW_SHOW) on Windows, which ACTIVATES the window despite
+    // focusable(false) / WS_EX_NOACTIVATE: every hover then stole activation from the document
+    // (title bar greyed, keystrokes went to the tooltip). orderFront's analog is a raise-and-show
+    // with SWP_NOACTIVATE — ShowWindow(SW_SHOWNOACTIVATE) alone keeps the hidden window's old
+    // z-order, which left the tooltip behind the palette it describes.
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        };
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        unsafe {
+            SetWindowPos(
+                hwnd.0 as _,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         window.show().map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// Hide the tooltip window. Deliberately a sync command like `show_toolset_tooltip_window`: both
+/// run on the main thread in the order the tooltip webview sent them. Hiding through the JS window
+/// API instead took a different IPC path, so a hide sent right after a show could land first and
+/// strand the tooltip visible over the palette.
+#[tauri::command]
+fn hide_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    // Windows shows this window with a raw SetWindowPos (see show_toolset_tooltip_window), so tao's
+    // cached VISIBLE flag still reads false and its hide() is a no-op diff — the tooltip stayed up,
+    // emptied of text. Hide it the same raw way.
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        unsafe {
+            ShowWindow(hwnd.0 as _, SW_HIDE);
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    window.hide().map_err(|error| error.to_string())
 }
 
 /// Pre-build the single shared floating tooltip window, hidden. Palettes can't paint a tooltip
@@ -1739,12 +1804,22 @@ fn write_clipboard_text_items_impl(
 #[tauri::command]
 async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(SPIN3D_DEBUGGER_WINDOW_LABEL) {
-        if window.is_visible().unwrap_or(false) {
+        if toggle_should_hide(&window) {
             return window.hide().map_err(|error| error.to_string());
         }
     }
 
     ensure_spin3d_debugger_window(&app).map(|_| ())
+}
+
+/// A toggle hides its window only when the user is looking at it: visible, not minimized, and
+/// focused. A window that is open but buried behind the document (or minimized) is brought forward
+/// instead — hiding it made Ctrl+, look like it did nothing, with Preferences still "open" out of
+/// sight and the next press needed to actually show it.
+fn toggle_should_hide<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    window.is_visible().unwrap_or(false)
+        && !window.is_minimized().unwrap_or(false)
+        && window.is_focused().unwrap_or(false)
 }
 
 fn ensure_spin3d_debugger_window<R: Runtime>(
@@ -1785,7 +1860,7 @@ fn spin3d_debugger_window_route() -> &'static str {
 #[tauri::command]
 async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        if window.is_visible().unwrap_or(false) {
+        if toggle_should_hide(&window) {
             return window.hide().map_err(|error| error.to_string());
         }
     }
@@ -2538,17 +2613,58 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
     Ok(())
 }
 
-/// Install a rebuilt app menu. Off macOS `AppHandle::set_menu` attaches the bar to every open
-/// window, so strip it again from all but the document window (see `without_app_menu_bar`).
+/// Install a (re)built app menu.
+///
+/// macOS has one app-wide menu bar. Elsewhere the menu belongs to the document window alone, and
+/// is set on that window rather than app-wide, for two reasons that together crashed the app:
+///
+/// - Attaching a muda menu to a Win32 window subclasses it with `menu_subclass_proc`, whose
+///   `dwrefdata` points at the `Menu`. `remove_menu` clears the bar but never removes that
+///   subclass, and muda's `Drop` only unsubclasses windows still attached. An app-wide menu was
+///   attached to (then stripped from) every palette, popover, and the tooltip, so each one kept a
+///   pointer to whichever menu was current when it was last stripped.
+/// - Tauri queues every attach/detach through `run_on_main_thread` and frees a replaced menu once
+///   nothing uses it. Between `remove(old)` and `init(new, palette)` the palettes pointed at a freed
+///   menu, and the next WM_NCACTIVATE/WM_NCPAINT read it: an access violation in
+///   `menu_subclass_proc` at startup (several rebuilds race palette creation) and in GDI32 at exit.
+///
+/// A window-only menu keeps auxiliary windows unsubclassed. The document window still has the
+/// remove→init gap on each rebuild, so the last few menus are kept alive (`RetainedAppMenus`).
 fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
     app.set_menu(menu)?;
     #[cfg(not(target_os = "macos"))]
-    for (label, window) in app.webview_windows() {
-        if label != MAIN_WINDOW_LABEL {
-            window.remove_menu()?;
+    {
+        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            return Ok(());
+        };
+        if let Some(retained) = app.try_state::<RetainedAppMenus>() {
+            retained.retain(menu.clone());
         }
+        window.set_menu(menu)?;
     }
     Ok(())
+}
+
+/// Recently installed menus, held so a menu the document window is still subclassed to is never
+/// freed mid-rebuild (see `install_app_menu`). Bounded: the window is re-pointed at the newest menu
+/// within one rebuild, so older generations are unreferenced and each menu holds USER handles.
+#[derive(Default)]
+struct RetainedAppMenus(Mutex<VecDeque<Box<dyn std::any::Any + Send + Sync>>>);
+
+impl RetainedAppMenus {
+    const DEPTH: usize = 4;
+
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn retain<T: Send + Sync + 'static>(&self, menu: T) {
+        let Ok(mut menus) = self.0.lock() else {
+            return;
+        };
+        menus.push_back(Box::new(menu));
+        while menus.len() > Self::DEPTH {
+            menus.pop_front();
+        }
+    }
 }
 
 fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
@@ -3558,9 +3674,24 @@ fn persisted_toolset_position<R: Runtime>(
     })
 }
 
+/// Whether a palette's current frame is a transient OS state (it or the document window it belongs
+/// to is minimized) that must not be persisted as the palette's position.
+fn toolset_frame_is_transient<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    window: &tauri::Window<R>,
+) -> bool {
+    window.is_minimized().unwrap_or(false)
+        || app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .is_some_and(|main| main.is_minimized().unwrap_or(false))
+}
+
 fn current_toolset_window_position<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Option<ToolsetWindowPosition> {
+    if window.is_minimized().unwrap_or(false) {
+        return None;
+    }
     let position = window.outer_position().ok()?;
     Some(logical_toolset_position(
         window,
@@ -3840,7 +3971,14 @@ fn set_check_menu_item_checked_now<R: Runtime>(
     command_id: &str,
     checked: bool,
 ) -> Result<(), String> {
-    let Some(menu) = app.menu() else {
+    // Off macOS the menu lives on the document window, not the app (see `install_app_menu`).
+    #[cfg(target_os = "macos")]
+    let menu = app.menu();
+    #[cfg(not(target_os = "macos"))]
+    let menu = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.menu());
+    let Some(menu) = menu else {
         return Ok(());
     };
     let Some(item) = find_menu_item_by_id(menu.items().unwrap_or_default(), command_id) else {

@@ -339,6 +339,53 @@ describe("ToolPalette art color popover", () => {
     expect(onCommit).toHaveBeenCalledWith(objectCustomColorCommandId("#ed0a3f"));
   });
 
+  it("types a full hex code without expanding a three-digit prefix mid-way", () => {
+    const { onCommit } = renderPalette();
+    const popover = openPicker();
+    const hexInput = popover.querySelector<HTMLInputElement>(".color-hex-field input");
+    if (!hexInput) {
+      throw new Error("Expected hex input.");
+    }
+
+    // One keystroke at a time, the way a user types "#1E88E5".
+    for (const prefix of ["#", "#1", "#1E", "#1E8", "#1E88", "#1E88E", "#1E88E5"]) {
+      act(() => {
+        changeRangeValue(hexInput, prefix);
+      });
+      expect(hexInput.value).toBe(prefix);
+    }
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenLastCalledWith(objectCustomColorCommandId("#1e88e5"));
+  });
+
+  it("accepts three-digit hex shorthand on Enter and restores an invalid entry on blur", () => {
+    const { onCommit } = renderPalette();
+    const popover = openPicker();
+    const hexInput = popover.querySelector<HTMLInputElement>(".color-hex-field input");
+    if (!hexInput) {
+      throw new Error("Expected hex input.");
+    }
+
+    act(() => {
+      changeRangeValue(hexInput, "#1E8");
+    });
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => {
+      hexInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onCommit).toHaveBeenLastCalledWith(objectCustomColorCommandId("#11ee88"));
+
+    const committedValue = hexInput.value;
+    act(() => {
+      changeRangeValue(hexInput, "#12");
+    });
+    act(() => {
+      hexInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(hexInput.value).toBe(committedValue);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
   it("invokes native paint type commands from the art style selector", () => {
     const { onInvoke } = renderPalette();
     const fillSelect = container.querySelector<HTMLSelectElement>('[data-art-paint-type-select="fill"]');

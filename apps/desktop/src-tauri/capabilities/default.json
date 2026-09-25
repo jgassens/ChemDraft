@@ -34,6 +34,7 @@
     "allow-open-toolset-popover",
     "allow-prewarm-toolset-popover",
     "allow-show-toolset-tooltip-window",
+    "allow-hide-toolset-tooltip-window",
     "allow-close-toolset-popover",
     "allow-set-toolset-window-focusable",
     "core:window:allow-show",

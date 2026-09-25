@@ -21,8 +21,11 @@ import {
  * below), and shows. A hide broadcast (pointer left the button) hides it again.
  */
 function hideTooltipWindow() {
-  void import("@tauri-apps/api/window")
-    .then(({ getCurrentWindow }) => getCurrentWindow().hide())
+  // Through Rust, like show: both sync commands run on the main thread in send order. The JS
+  // window API's hide took a separate IPC path that could overtake a just-sent show and leave the
+  // tooltip stranded visible (seen on Windows once showing stopped stealing activation).
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("hide_toolset_tooltip_window"))
     .catch(() => undefined);
 }
 

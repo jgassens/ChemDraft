@@ -1976,6 +1976,22 @@ describe("ChemDraft desktop shell", () => {
     expect(enabledRegistry.conflicts()).toEqual([]);
   });
 
+  it("binds Ctrl+Y to redo off macOS, where the native Redo item sends it", () => {
+    const document = createPhase4Document();
+    const quickActions = createQuickActions(document, undefined, { canUndo: true, canRedo: true });
+    const windowsRegistry = createDesktopShortcutRegistry(quickActions, "windows");
+    const linuxRegistry = createDesktopShortcutRegistry(quickActions, "linux");
+    const macRegistry = createDesktopShortcutRegistry(quickActions, "macos");
+    const disabledRegistry = createDesktopShortcutRegistry(createQuickActions(document, undefined), "windows");
+
+    expect(windowsRegistry.resolve({ key: "y", ctrlKey: true })).toBe("edit.redo");
+    expect(windowsRegistry.resolve({ key: "z", ctrlKey: true, shiftKey: true })).toBe("edit.redo");
+    expect(linuxRegistry.resolve({ key: "y", ctrlKey: true })).toBe("edit.redo");
+    expect(macRegistry.resolve({ key: "y", metaKey: true })).toBeUndefined();
+    expect(disabledRegistry.resolve({ key: "y", ctrlKey: true })).toBeUndefined();
+    expect(windowsRegistry.conflicts()).toEqual([]);
+  });
+
   it("defines View menu commands for optional canvas scaffolding", () => {
     expect(viewActions).toEqual(
       expect.arrayContaining([

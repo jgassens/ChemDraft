@@ -3035,13 +3035,28 @@ export function ColorPickerPopoverBody({
     })));
   };
 
+  // Live-apply only a complete six-digit value. normalizeHexColor also accepts #RGB shorthand, so
+  // applying on every keystroke committed "#1E8" as #11EE88 mid-way through typing "#1E88E5" and
+  // rewrote the field under the caret. Shorthand is still honoured, on Enter or blur.
   const updateHexInput = (nextValue: string) => {
     const cleaned = nextValue.replace(/[^0-9a-f]/gi, "").slice(0, 6);
     const displayValue = `#${cleaned}`.toUpperCase();
     setHexInput(displayValue);
-    const normalized = normalizeHexColor(displayValue);
-    if (normalized) {
+    if (cleaned.length === 6) {
+      applyAndCommitColor(displayValue);
+    }
+  };
+
+  const settleHexInput = () => {
+    const normalized = normalizeHexColor(hexInput);
+    if (!normalized) {
+      setHexInput(normalizedValue.toUpperCase());
+      return;
+    }
+    if (normalized !== normalizedValue) {
       applyAndCommitColor(normalized);
+    } else {
+      setHexInput(normalized.toUpperCase());
     }
   };
 
@@ -3125,6 +3140,12 @@ export function ColorPickerPopoverBody({
                 value={hexInput}
                 spellCheck={false}
                 onChange={(event) => updateHexInput(event.currentTarget.value)}
+                onBlur={settleHexInput}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    settleHexInput();
+                  }
+                }}
               />
             </label>
           </div>
