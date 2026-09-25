@@ -2,6 +2,7 @@ mod export;
 mod fonts;
 mod installed_plugins;
 mod opsin;
+mod windows_clipboard;
 
 use std::{
     collections::HashMap,
@@ -1371,21 +1372,34 @@ fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
 }
 
 #[tauri::command]
-fn write_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
-    write_clipboard_text_items_impl(normalize_clipboard_write_text_items(items)?)
+fn write_clipboard_text_items(
+    app: tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
 }
 
 /// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
 #[tauri::command]
-fn write_clipboard_image(png_bytes: Vec<u8>) -> Result<(), String> {
+fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
     if png_bytes.is_empty() {
         return Err("Empty PNG payload.".to_string());
     }
-    write_clipboard_image_impl(&png_bytes)
+    write_clipboard_image_impl(&app, &png_bytes)
+}
+
+/// The window that owns clipboard writes on Windows. EmptyClipboard with no owner leaves the
+/// clipboard ownerless, and every SetClipboardData after it fails.
+#[cfg(windows)]
+fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundation::HWND {
+    app.get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as windows_sys::Win32::Foundation::HWND)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 #[cfg(target_os = "macos")]
-fn write_clipboard_image_impl(png_bytes: &[u8]) -> Result<(), String> {
+fn write_clipboard_image_impl(_app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
     use objc2_foundation::NSData;
 
     let pasteboard = NSPasteboard::generalPasteboard();
@@ -1398,9 +1412,14 @@ fn write_clipboard_image_impl(png_bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn write_clipboard_image_impl(_png_bytes: &[u8]) -> Result<(), String> {
-    Err("Native clipboard image writes are only implemented for macOS.".to_string())
+#[cfg(windows)]
+fn write_clipboard_image_impl(app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
+    windows_clipboard::native::write_png(clipboard_owner_window(app), png_bytes)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn write_clipboard_image_impl(_app: &tauri::AppHandle, _png_bytes: &[u8]) -> Result<(), String> {
+    Err("Native clipboard image writes are only implemented for macOS and Windows.".to_string())
 }
 
 fn normalize_clipboard_write_text_items(
@@ -1464,7 +1483,10 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn write_clipboard_text_items_impl(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+fn write_clipboard_text_items_impl(
+    _app: &tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
 
@@ -1504,15 +1526,18 @@ fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextI
 /// WebKit's custom-pasteboard-data is a binary blob (length-prefixed origin + type + payload)
 /// that any WebKit view — Safari included — leaves behind on copy; "decoding" it produced the
 /// CJK-mojibake text objects users saw when pasting between two ChemDraft instances.
-// Platform-neutral decoding, but only the macOS pasteboard reader calls it until the Windows
-// clipboard reader lands.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const OPAQUE_CLIPBOARD_TYPES: [&str; 2] = [
+// Platform-neutral decoding, shared by the macOS pasteboard reader and the Windows clipboard reader.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+const OPAQUE_CLIPBOARD_TYPES: [&str; 4] = [
     "com.apple.WebKit.custom-pasteboard-data",
     "org.webkit.custom-pasteboard-data",
+    // Chromium's (WebView2's) equivalents on Windows: a pickled map of custom MIME data, and a
+    // frame token.
+    "Chromium Web Custom MIME Data Format",
+    "Chromium internal source RFH token",
 ];
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
     OPAQUE_CLIPBOARD_TYPES.contains(&pasteboard_type)
 }
@@ -1537,7 +1562,7 @@ fn clipboard_text_for_type(
     decode_clipboard_text_bytes(&data.to_vec())
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() {
         return None;
@@ -1561,7 +1586,7 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     decode_utf16_bytes(bytes)
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0xff, 0xfe]) {
         return true;
@@ -1575,7 +1600,7 @@ fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     null_count * 4 >= bytes.len()
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
     if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
         return decode_utf16_units(content, true);
@@ -1634,7 +1659,7 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
 /// contains private-use or noncharacter code points, while binary bytes and byte-swapped UTF-16
 /// frequently decode into exactly those ranges. (BOM'd and null-parity-detected payloads skip
 /// this — their encoding evidence is strong enough that PUA glyphs, e.g. icon fonts, pass.)
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     text.chars().all(|character| {
         let code_point = character as u32;
@@ -1647,7 +1672,7 @@ fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     })
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
     if content.len() < 2 || !content.len().is_multiple_of(2) {
         return None;
@@ -1671,7 +1696,7 @@ fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
 /// Rejects strings that only a mis-decode produces: control characters (beyond whitespace)
 /// and replacement characters never occur in text a user meant to paste, while every
 /// legitimate UTF-16 clipboard payload (molfiles, CDXML, SMILES, prose) is clean of them.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn text_is_plausible_clipboard_text(text: &str) -> bool {
     text.chars().all(|character| {
         character == '\t'
@@ -1682,7 +1707,20 @@ fn text_is_plausible_clipboard_text(text: &str) -> bool {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
+    windows_clipboard::native::read_payload()
+}
+
+#[cfg(windows)]
+fn write_clipboard_text_items_impl(
+    app: &tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    windows_clipboard::native::write_text_items(clipboard_owner_window(app), &items)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     Ok(ClipboardReadPayload {
         types: Vec::new(),
@@ -1690,9 +1728,12 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
-    Err("Native clipboard writes are only implemented for macOS.".to_string())
+#[cfg(not(any(target_os = "macos", windows)))]
+fn write_clipboard_text_items_impl(
+    _app: &tauri::AppHandle,
+    _items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    Err("Native clipboard writes are only implemented for macOS and Windows.".to_string())
 }
 
 #[tauri::command]
