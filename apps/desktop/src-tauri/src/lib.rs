@@ -451,8 +451,9 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
-            app.state::<ocsr_engine::OcsrEngineState>()
-                .start_idle_reaper();
+            let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
+            ocsr.start_idle_reaper();
+            ocsr.remove_stale_staging(app);
             // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
             // window loads; Rust no longer parses the manifest or applies customization for it.
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
@@ -531,7 +532,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
-            RunEvent::ExitRequested { .. } => {
+            // Cmd+Q on macOS ends the event loop without ExitRequested and only Exit arrives, so
+            // both shut the engine down (shutdown is idempotent); otherwise a quit during an
+            // install would leave uv running and writing into the staging tree.
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }

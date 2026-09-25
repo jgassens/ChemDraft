@@ -42,7 +42,12 @@ install ends.
 Every phase shows **Step N of 5**, an overall bar, the elapsed time, and for the current step either a
 byte bar ("X MB of Y MB") or, when a step reports no bytes, how long it usually takes. The overall bar
 weights steps by size: uv ≈ 20 MB, Python ≈ 40 MB, packages ≈ 1.2 GB, model 1.13 GB, verify small
-(`structureRecognitionInstallProgress.ts`).
+(`structureRecognitionInstallProgress.ts`). The overall bar must never move backwards, which a Rust
+test checks by replaying a scripted install through the same weights. That is why the ~5.7 MB
+MolScribe source download, which runs inside the packages step, reports its progress as text only
+("Downloaded 2.1 of 5.7 MB.") with no byte counts: the UI reads bytes in a step as that step's
+fraction, so a finished 5.7 MB download would put the bar at ~52% before the 1.2 GB package estimate
+pulled it back to ~3%.
 
 uv prints no byte counts when not attached to a terminal, so the two uv steps are **estimated** in Rust
 (`progress.rs`): while `uv python install` runs, the growth of `python/` and the uv cache is measured
@@ -75,6 +80,12 @@ ocsr-engine/
 Only three names are ever touched, all siblings in the app-data directory: `ocsr-engine/`,
 `ocsr-engine.partial/` (staging) and `ocsr-engine.previous/` (a working install set aside during a
 reinstall).
+
+A quit or crash mid-install leaves `ocsr-engine.partial/` behind (it can be gigabytes). At launch a
+background thread removes it, and removes `ocsr-engine.previous/` too when `ocsr-engine/` is a healthy
+install (receipt matches the pins, layout verifies); beside a missing or broken install the set-aside
+tree may be the only working engine, so it is left alone. An install or uninstall started meanwhile
+waits for the sweep: all three take one staging lock before touching these directories.
 
 ## Install transaction
 
@@ -115,8 +126,20 @@ Every child process runs with inherited `UV_*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV
 variables removed and `UV_NO_CONFIG=1`, so ambient configuration cannot redirect the reviewed install
 to another index, mirror or interpreter. uv's cache, temporary, state and executable-link directories
 are all redirected into the staging tree. Cancellation is a flag checked between download chunks and
-every 50 ms while a uv child runs (which is then killed). The HTTP client's 60-second timeout applies
-to each read, not the whole transfer: a slow link finishes, a dead one fails with `network`.
+every 50 ms while a uv child runs, which is then killed **with everything it started**: each child
+runs in its own process group on Unix, and the whole group gets SIGKILL (on Windows, `taskkill /T /F`
+with `CREATE_NEW_PROCESS_GROUP`; unverified, see Adding Windows). Killing uv alone would leave the
+Python it runs for the MolScribe sdist build writing into the staging tree. The HTTP client's
+60-second timeout applies to each read, not the whole transfer: a slow link finishes, a dead one
+fails with `network`.
+
+**App exit during an install.** The install thread never gets to check its flag when the app is
+exiting, so exit does the killing itself: it raises the cancel flag and kills the running uv child's
+process tree directly (the child's id is tracked in `RunningChild`, cleared under the same lock that
+reaps it, so a recycled process id is never signalled). The staging tree it leaves is swept at the
+next launch (above). Exit is handled on both `RunEvent::ExitRequested` and `RunEvent::Exit` — Cmd+Q on
+macOS ends the event loop with only `Exit` — as well as main-window destruction; the shutdown is
+idempotent.
 
 `ocsr_engine_status` re-reads the receipt on every call. A missing or malformed receipt, a receipt
 whose pins differ from this build's, a missing uv/interpreter/model, or a model of the wrong size is
@@ -293,7 +316,8 @@ in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
 - **Lazy.** The sidecar starts on the first recognition, not at app start, and is reused afterwards.
 - **One request at a time.** A second request while one is running is **rejected** with `busy`
   immediately; there is no queue.
-- **Timeout.** 300 s per request, measured from the command. It must cover the first request's model
+- **Timeout.** 300 s per request (`process::REQUEST_TIMEOUT`, which the timeout message also quotes),
+  measured from the command. It must cover the first request's model
   load plus a full 15-run vote. Measured 2026-09-24 on an M1 Pro while the machine was heavily loaded
   (load average 30–90): 2.1–2.3 s per recognition of brevetoxin A, a 2.6–7.6 s model load, 9.3 s for
   a vote that stopped after 5 runs and 26–33 s for a full 15-run vote. 300 s is about 8× the slowest
@@ -304,6 +328,16 @@ in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
   `engineCrashed`.
 - **Idle and exit.** A reaper thread stops the sidecar after 10 idle minutes. It is also stopped at app
   exit, before an install (which may replace its files), and before an uninstall.
+- **Stopping never waits for a recognition.** A recognition holds the process manager's lock for its
+  whole length (up to 300 s), so exit, install and uninstall do not queue on that lock. They kill the
+  sidecar through its `KillSwitch`, a handle held outside the lock and armed as soon as the child
+  exists (so it also works during the model load). The request in flight sees the sidecar's output
+  close and fails with `engineCrashed` ("MolScribe was stopped before it finished…"); it is not
+  retried. Install and uninstall then take the lock on a blocking worker thread; exit, on the main
+  thread, only tries the lock: it stops an idle sidecar gracefully and kills a busy one.
+- **Poisoned locks.** A panic during a recognition must not disable recognition for the session: the
+  request gate and the process manager recover a poisoned lock (the idle reaper included) instead of
+  failing every later request.
 
 Image bytes cross IPC as base64, are capped at 25 MB decoded, and are decoded in Rust first, so a
 corrupt or mislabelled image fails as `invalidImage` before the engine starts. The format is taken
@@ -343,14 +377,15 @@ progress); it is omitted otherwise.
 
 `EnginePlatform` (`platform.rs`) owns everything that differs by OS: the uv asset and checksum, the uv
 and venv interpreter paths, and child-process flags. `platform::current()` picks one with `#[cfg]`;
-nothing else in the installer or process manager branches on the OS. Free-disk queries are the one
-other per-OS function (`statvfs` on Unix, `GetDiskFreeSpaceExW` on Windows).
+nothing else in the installer or process manager branches on the OS. Free-disk queries and
+`kill_process_tree` are the other per-OS functions (`statvfs` and `killpg` on Unix,
+`GetDiskFreeSpaceExW` and `taskkill /T /F` on Windows).
 
 | Target | uv asset | venv Python | Child processes | Status |
 | --- | --- | --- | --- | --- |
-| macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | default | implemented |
-| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | default | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
-| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW` | implemented, never run |
+| macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
+| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
+| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | implemented, never run |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 
 ## Adding Windows
@@ -359,7 +394,10 @@ The Windows implementation compiles in the seam but has never been built or run 
 runs Rust checks only on macOS. Before calling it release-ready:
 
 - Build and run `cargo clippy --all-targets -- -D warnings` and `cargo test` on Windows.
-- Run a real clean install and uninstall, including cancellation during each external step.
+- Run a real clean install and uninstall, including cancellation during each external step, and quit
+  the app mid-install: no `uv.exe` or `python.exe` may survive. `taskkill /T` cannot reach a
+  descendant whose parent has already exited; a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+  would, and would also cover ChemDraft crashing, so it is the stronger fix once this can be tested.
 - **Relocation is the open question.** On Windows, uv links the managed Python's minor-version
   directory with a junction, and the venv's `python.exe` is a launcher that reads `pyvenv.cfg`. The
   `pyvenv.cfg` rewrite should be enough for the venv, but `std` cannot create junctions, and recreating

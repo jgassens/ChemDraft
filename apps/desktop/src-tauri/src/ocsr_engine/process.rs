@@ -3,11 +3,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::platform::EnginePlatform;
+use super::platform::{self, EnginePlatform};
 use super::protocol::{
     self, ProtocolResultError, RecognitionPayload, SidecarErrorCode, SidecarRequest,
 };
@@ -47,6 +47,69 @@ pub enum ProcessError {
     RecognitionFailed(String),
     Crashed(String),
     Timeout,
+    /// The sidecar was killed through its [`KillSwitch`] (app exit, install or uninstall) while
+    /// this request was running. Never retried.
+    Cancelled,
+}
+
+/// Kills the running sidecar from any thread, without the [`ProcessManager`] lock that a
+/// recognition holds for its whole length (up to [`REQUEST_TIMEOUT`]). Exit, install and
+/// uninstall use it so none of them waits for a recognition to finish: the child dies, the
+/// request in flight sees its output close and reports [`ProcessError::Cancelled`].
+#[derive(Clone, Default)]
+pub struct KillSwitch(Arc<Mutex<KillState>>);
+
+#[derive(Default)]
+struct KillState {
+    /// Set by `kill_now`, cleared when the next request begins.
+    requested: bool,
+    /// Kills the current child; present from spawn until the manager stops it.
+    kill: Option<Box<dyn FnMut() + Send>>,
+}
+
+impl KillSwitch {
+    /// Kills the current child, if any, and marks the request in flight as cancelled. Returns at
+    /// once; nothing here waits for the child to exit.
+    pub fn kill_now(&self) {
+        let kill = {
+            let mut state = self.state();
+            state.requested = true;
+            state.kill.take()
+        };
+        if let Some(mut kill) = kill {
+            kill();
+        }
+    }
+
+    /// Called by a spawner as soon as its child exists, before the (possibly long) model load.
+    /// A kill requested while the spawn was starting takes effect immediately.
+    pub fn arm(&self, mut kill: Box<dyn FnMut() + Send>) {
+        let mut state = self.state();
+        if state.requested {
+            drop(state);
+            kill();
+        } else {
+            state.kill = Some(kill);
+        }
+    }
+
+    fn begin(&self) {
+        self.state().requested = false;
+    }
+
+    fn requested(&self) -> bool {
+        self.state().requested
+    }
+
+    fn disarm(&self) {
+        self.state().kill = None;
+    }
+
+    fn state(&self) -> MutexGuard<'_, KillState> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 pub trait EngineProcess: Send {
@@ -60,11 +123,14 @@ pub trait EngineProcess: Send {
 }
 
 pub trait ProcessSpawner: Send + Sync {
+    /// Starts a child and waits for it to be ready. The child must be armed on `kill_switch` as
+    /// soon as it exists, so a kill during the model load does not wait for the load.
     fn spawn(
         &self,
         platform: &dyn EnginePlatform,
         paths: &LaunchPaths,
         timeout: Duration,
+        kill_switch: &KillSwitch,
     ) -> Result<Box<dyn EngineProcess>, ProcessError>;
 }
 
@@ -72,6 +138,7 @@ pub struct ProcessManager {
     spawner: Arc<dyn ProcessSpawner>,
     process: Option<Box<dyn EngineProcess>>,
     last_used: Option<Instant>,
+    kill_switch: KillSwitch,
 }
 
 impl ProcessManager {
@@ -84,11 +151,18 @@ impl ProcessManager {
             spawner,
             process: None,
             last_used: None,
+            kill_switch: KillSwitch::default(),
         }
     }
 
+    /// A handle that kills this manager's child without taking the manager's lock.
+    pub fn kill_switch(&self) -> KillSwitch {
+        self.kill_switch.clone()
+    }
+
     /// A crashed child is discarded and the request is retried against one fresh process. A timeout
-    /// is not retried because the first inference may still have consumed the entire user budget.
+    /// is not retried because the first inference may still have consumed the entire user budget,
+    /// and a kill through the [`KillSwitch`] is not retried because someone asked for it.
     pub fn recognize(
         &mut self,
         platform: &dyn EnginePlatform,
@@ -98,6 +172,7 @@ impl ProcessManager {
     ) -> Result<RecognitionPayload, ProcessError> {
         let deadline = Instant::now() + timeout;
         let request_id = format!("ocsr-{}", NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed));
+        self.kill_switch.begin();
         for attempt in 0..=1 {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -105,7 +180,20 @@ impl ProcessManager {
                 return Err(ProcessError::Timeout);
             }
             if self.process.is_none() {
-                self.process = Some(self.spawner.spawn(platform, paths, remaining)?);
+                match self
+                    .spawner
+                    .spawn(platform, paths, remaining, &self.kill_switch)
+                {
+                    Ok(process) => self.process = Some(process),
+                    Err(error) => {
+                        self.kill_switch.disarm();
+                        return Err(if self.kill_switch.requested() {
+                            ProcessError::Cancelled
+                        } else {
+                            error
+                        });
+                    }
+                }
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let result = self
@@ -114,6 +202,11 @@ impl ProcessManager {
                 .expect("process was initialized")
                 .recognize(&request_id, image_path, remaining);
             self.last_used = Some(Instant::now());
+            if self.kill_switch.requested() {
+                // The child is dead or dying; an answer that arrived first still stands.
+                self.stop();
+                return result.map_err(|_| ProcessError::Cancelled);
+            }
             match result {
                 Err(ProcessError::Crashed(message)) => {
                     self.stop();
@@ -147,6 +240,7 @@ impl ProcessManager {
     }
 
     pub fn stop(&mut self) {
+        self.kill_switch.disarm();
         if let Some(mut process) = self.process.take() {
             process.shutdown();
         }
@@ -168,6 +262,7 @@ impl ProcessSpawner for SystemSpawner {
         platform: &dyn EnginePlatform,
         paths: &LaunchPaths,
         timeout: Duration,
+        kill_switch: &KillSwitch,
     ) -> Result<Box<dyn EngineProcess>, ProcessError> {
         let mut command = Command::new(&paths.python);
         command
@@ -200,6 +295,16 @@ impl ProcessSpawner for SystemSpawner {
         let stderr = child.stderr.take().ok_or_else(|| {
             ProcessError::Crashed("Could not open the OCSR engine log.".to_string())
         })?;
+        let child = Arc::new(Mutex::new(child));
+        let killable = child.clone();
+        kill_switch.arm(Box::new(move || {
+            // Holding the child's lock rules out a concurrent reap, so the id cannot be reused.
+            let mut child = lock_child(&killable);
+            if matches!(child.try_wait(), Ok(None)) {
+                platform::kill_process_tree(child.id());
+            }
+            let _ = child.kill();
+        }));
         let (lines_tx, lines_rx) = mpsc::channel();
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -250,9 +355,16 @@ impl ProcessSpawner for SystemSpawner {
 }
 
 struct SystemProcess {
-    child: Child,
+    /// Shared with the [`KillSwitch`], which kills it from another thread.
+    child: Arc<Mutex<Child>>,
     stdin: ChildStdin,
     lines: mpsc::Receiver<String>,
+}
+
+fn lock_child(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
+    child
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl SystemProcess {
@@ -261,7 +373,7 @@ impl SystemProcess {
             Ok(line) => Ok(line),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(ProcessError::Timeout),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let detail = match self.child.try_wait() {
+                let detail = match lock_child(&self.child).try_wait() {
                     Ok(Some(status)) => format!("The OCSR engine exited with {status}."),
                     Ok(None) => "The OCSR engine closed its output unexpectedly.".to_string(),
                     Err(error) => format!("Could not inspect the OCSR engine: {error}"),
@@ -279,8 +391,7 @@ impl EngineProcess for SystemProcess {
         image_path: &Path,
         timeout: Duration,
     ) -> Result<RecognitionPayload, ProcessError> {
-        if self
-            .child
+        if lock_child(&self.child)
             .try_wait()
             .map_err(|error| ProcessError::Crashed(format!("Could not inspect OCSR: {error}")))?
             .is_some()
@@ -323,14 +434,16 @@ impl EngineProcess for SystemProcess {
         }
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
-            match self.child.try_wait() {
+            let exited = lock_child(&self.child).try_wait();
+            match exited {
                 Ok(Some(_)) => return,
                 Ok(None) => thread::sleep(Duration::from_millis(20)),
                 Err(_) => break,
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = lock_child(&self.child);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -371,6 +484,7 @@ mod tests {
             _platform: &dyn EnginePlatform,
             _paths: &LaunchPaths,
             _timeout: Duration,
+            _kill_switch: &KillSwitch,
         ) -> Result<Box<dyn EngineProcess>, ProcessError> {
             self.spawns.fetch_add(1, Ordering::Relaxed);
             Ok(Box::new(FakeProcess {
@@ -504,6 +618,55 @@ mod tests {
             manager.process.is_some(),
             "the process stays up after a bad image"
         );
+    }
+
+    /// A spawner whose child is asked to stop while it is still loading: the kill lands before the
+    /// spawner arms the switch, so arming must kill at once.
+    struct KilledWhileLoadingSpawner {
+        spawns: AtomicUsize,
+    }
+
+    impl ProcessSpawner for KilledWhileLoadingSpawner {
+        fn spawn(
+            &self,
+            _platform: &dyn EnginePlatform,
+            _paths: &LaunchPaths,
+            _timeout: Duration,
+            kill_switch: &KillSwitch,
+        ) -> Result<Box<dyn EngineProcess>, ProcessError> {
+            self.spawns.fetch_add(1, Ordering::Relaxed);
+            kill_switch.kill_now();
+            let killed = Arc::new(AtomicUsize::new(0));
+            let flag = killed.clone();
+            kill_switch.arm(Box::new(move || {
+                flag.fetch_add(1, Ordering::Relaxed);
+            }));
+            assert_eq!(
+                killed.load(Ordering::Relaxed),
+                1,
+                "arming after a kill kills"
+            );
+            Err(ProcessError::Crashed("killed while loading".to_string()))
+        }
+    }
+
+    #[test]
+    fn a_kill_during_the_model_load_is_cancelled_and_not_retried() {
+        let spawner = Arc::new(KilledWhileLoadingSpawner {
+            spawns: AtomicUsize::new(0),
+        });
+        let mut manager = ProcessManager::new(spawner.clone());
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        assert_eq!(
+            manager.recognize(
+                &platform,
+                &paths(),
+                Path::new("image.png"),
+                Duration::from_secs(1)
+            ),
+            Err(ProcessError::Cancelled)
+        );
+        assert_eq!(spawner.spawns.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -672,6 +835,47 @@ done
         sidecar
             .recognize(&mut manager, "image.png", Duration::from_secs(10))
             .expect("fresh process");
+    }
+
+    /// The request lock is held for the whole recognition; the kill switch must not need it.
+    #[cfg(unix)]
+    #[test]
+    fn kill_switch_cancels_a_running_request_without_the_manager_lock() {
+        let sidecar = Arc::new(ShellSidecar::new("kill", "model"));
+        let manager = Arc::new(Mutex::new(ProcessManager::system()));
+        let kill_switch = manager.lock().expect("manager").kill_switch();
+        sidecar
+            .recognize(
+                &mut manager.lock().expect("manager"),
+                "image.png",
+                Duration::from_secs(10),
+            )
+            .expect("warm process");
+        let started = Instant::now();
+        let worker = {
+            let manager = manager.clone();
+            let sidecar = sidecar.clone();
+            thread::spawn(move || {
+                let mut manager = manager.lock().expect("manager");
+                sidecar.recognize(&mut manager, "slow.png", Duration::from_secs(30))
+            })
+        };
+        while manager.try_lock().is_ok() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        thread::sleep(Duration::from_millis(200));
+        kill_switch.kill_now();
+        assert_eq!(
+            worker.join().expect("request thread"),
+            Err(ProcessError::Cancelled)
+        );
+        // The sidecar's `sleep 3` runs in its process group, so the whole tree died, not only sh.
+        assert!(started.elapsed() < Duration::from_millis(2_500));
+        let mut manager = manager.lock().expect("manager");
+        assert!(manager.process.is_none());
+        sidecar
+            .recognize(&mut manager, "image.png", Duration::from_secs(10))
+            .expect("the next request starts a fresh process");
     }
 
     #[cfg(unix)]

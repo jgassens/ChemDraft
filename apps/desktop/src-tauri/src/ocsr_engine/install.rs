@@ -2,8 +2,9 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -174,13 +175,55 @@ pub trait InstallIo: Send + Sync {
     ) -> Result<(), InstallError>;
 }
 
+/// The uv child an install is running, if any, so app exit can kill it and everything it started
+/// without waiting for the install thread to notice its cancel flag: a process that is exiting
+/// never gets back to that thread, and an orphaned uv would keep writing gigabytes into the
+/// staging tree after ChemDraft has quit.
+#[derive(Default)]
+pub struct RunningChild {
+    pid: Mutex<Option<u32>>,
+}
+
+impl RunningChild {
+    /// Kills the running child's whole process tree, if a child is running. Returns at once.
+    pub fn kill_tree(&self) {
+        if let Some(pid) = self.slot().take() {
+            platform::kill_process_tree(pid);
+        }
+    }
+
+    fn track(&self, child: &Child) {
+        *self.slot() = Some(child.id());
+    }
+
+    /// `try_wait` under the slot's lock, clearing the slot once the child is reaped: `kill_tree`
+    /// then never signals an id the system may already have handed to another process.
+    fn try_wait(&self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        let mut slot = self.slot();
+        let result = child.try_wait();
+        if !matches!(result, Ok(None)) {
+            *slot = None;
+        }
+        result
+    }
+
+    fn slot(&self) -> MutexGuard<'_, Option<u32>> {
+        self.pid
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 pub struct SystemInstallIo {
     client: reqwest::blocking::Client,
+    running: Arc<RunningChild>,
 }
 
 impl SystemInstallIo {
-    pub fn new() -> Result<Self, InstallError> {
-        Self::from_builder(reqwest::blocking::Client::builder())
+    pub fn new(running: Arc<RunningChild>) -> Result<Self, InstallError> {
+        let mut io = Self::from_builder(reqwest::blocking::Client::builder())?;
+        io.running = running;
+        Ok(io)
     }
 
     fn from_builder(builder: reqwest::blocking::ClientBuilder) -> Result<Self, InstallError> {
@@ -196,7 +239,10 @@ impl SystemInstallIo {
             .map_err(|error| {
                 InstallError::network(format!("Could not prepare downloads: {error}"))
             })?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            running: Arc::default(),
+        })
     }
 }
 
@@ -319,15 +365,21 @@ impl InstallIo for SystemInstallIo {
         let mut child = command.spawn().map_err(|error| {
             InstallError::failed(format!("Could not run {}: {error}", program.display()))
         })?;
+        self.running.track(&child);
         let mut last_sample = Instant::now();
         loop {
             if cancel.load(Ordering::SeqCst) {
+                self.running.kill_tree();
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(InstallError::cancelled());
             }
-            match child.try_wait() {
+            match self.running.try_wait(&mut child) {
                 Ok(Some(status)) => {
+                    // Killed by app exit, which raises the cancel flag first.
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(InstallError::cancelled());
+                    }
                     if status.success() {
                         if let Some(watch) = watch.as_mut() {
                             watch.progress.report(watch.estimator.finished());
@@ -484,7 +536,16 @@ pub fn install(
     ));
     // Verified before anything is installed: a tampered archive fails in seconds, not after the
     // PyTorch download. A requirements file cannot hash-lock a URL, so the check is done here.
+    //
+    // Its byte counts are withheld: the UI reads bytes in `installingPackages` as the fraction of
+    // that whole ~1.2 GB phase, so a finished 5.7 MB download would put the overall bar near the
+    // end of the phase, and the package estimate that follows would pull it back to the start.
     let molscribe_source = partial.join(pins::MOLSCRIBE_SOURCE_FILENAME);
+    let without_byte_counts = |mut event: InstallProgress| {
+        event.bytes_done = None;
+        event.bytes_total = None;
+        progress.report(event);
+    };
     io.download(
         Download {
             url: pins::MOLSCRIBE_SOURCE_URL,
@@ -494,7 +555,7 @@ pub fn install(
         },
         &molscribe_source,
         cancel,
-        progress,
+        &without_byte_counts,
     )?;
 
     progress.report(message(
@@ -765,6 +826,38 @@ fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
         io::ErrorKind::Unsupported,
         "symlinks are unsupported on this platform",
     ))
+}
+
+/// Whether `root` holds an install that matches this build's pins and layout, as
+/// `ocsr_engine_status` would report `installed`.
+pub fn is_healthy(root: &Path, platform: &dyn EnginePlatform) -> bool {
+    read_receipt(&root.join(RECEIPT_FILE)).is_ok_and(|receipt| receipt.matches_pins(platform))
+        && verify_layout(root, platform).is_ok()
+}
+
+/// Removes staging trees an interrupted install left behind: `ocsr-engine.partial/` always (the
+/// caller guarantees no install is running), and `ocsr-engine.previous/` only when
+/// `ocsr-engine/` is a healthy install — otherwise the set-aside tree may be the only working
+/// engine, and it is left for the user's next install or uninstall. Returns what was removed.
+pub fn remove_stale_staging(paths: &InstallPaths, platform: &dyn EnginePlatform) -> Vec<PathBuf> {
+    let mut stale = vec![paths.partial_dir()];
+    if is_healthy(&paths.final_dir(), platform) {
+        stale.push(paths.previous_dir());
+    }
+    let mut removed = Vec::new();
+    for path in stale {
+        if !path.exists() {
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(()) => removed.push(path),
+            Err(error) => eprintln!(
+                "[chemdraft ocsr] could not remove the stale {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    removed
 }
 
 pub fn read_receipt(path: &Path) -> Result<InstallReceipt, String> {
@@ -1117,8 +1210,12 @@ mod tests {
             spec: Download<'_>,
             destination: &Path,
             cancel: &AtomicBool,
-            _progress: &dyn ProgressReporter,
+            progress: &dyn ProgressReporter,
         ) -> Result<(), InstallError> {
+            // Mimic `SystemInstallIo`: byte progress part-way and at the end.
+            let size = spec.size.unwrap_or(8);
+            progress.report(download_progress(spec.phase, size / 2, Some(size)));
+            progress.report(download_progress(spec.phase, size, Some(size)));
             let name = match spec.phase {
                 InstallPhase::DownloadingUv => "uv",
                 _ if spec.url == pins::MOLSCRIBE_SOURCE_URL => "molscribe-source",
@@ -1304,6 +1401,153 @@ mod tests {
         let round_trip = read_receipt(&paths.final_dir().join(RECEIPT_FILE)).expect("receipt");
         assert_eq!(receipt, round_trip);
         assert!(receipt.disk_bytes >= pins::MODEL_BYTES);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// The overall bar in structureRecognitionInstallProgress.ts: each phase weighted by roughly
+    /// what it moves, and a phase's byte counts read as the fraction of that phase. A step without
+    /// byte counts is taken at its start, since a scripted install spends no time in it.
+    fn overall_fraction(event: &InstallProgress) -> f64 {
+        const WEIGHTS: [(InstallPhase, f64); 6] = [
+            (InstallPhase::CheckingDisk, 0.0),
+            (InstallPhase::DownloadingUv, 20e6),
+            (InstallPhase::InstallingPython, 40e6),
+            (InstallPhase::InstallingPackages, 1.2e9),
+            (InstallPhase::DownloadingModel, 1.13e9),
+            (InstallPhase::Verifying, 10e6),
+        ];
+        if event.phase == InstallPhase::Done {
+            return 1.0;
+        }
+        let index = WEIGHTS
+            .iter()
+            .position(|(phase, _)| *phase == event.phase)
+            .expect("weighted phase");
+        let total: f64 = WEIGHTS.iter().map(|(_, weight)| weight).sum();
+        let before: f64 = WEIGHTS[..index].iter().map(|(_, weight)| weight).sum();
+        let fraction = match (event.bytes_done, event.bytes_total) {
+            (Some(done), Some(total)) if total > 0 => (done as f64 / total as f64).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        (before + WEIGHTS[index].1 * fraction) / total
+    }
+
+    #[test]
+    fn overall_install_progress_never_moves_backwards() {
+        let root = temp_root("monotonic");
+        let paths = test_paths(&root);
+        let reported = Mutex::new(Vec::<InstallProgress>::new());
+        let reporter =
+            |progress: InstallProgress| reported.lock().expect("reported").push(progress);
+        install(
+            &paths,
+            &MacPlatform::new(MacArchitecture::Aarch64),
+            &FakeIo::new(None),
+            &AtomicBool::new(false),
+            &reporter,
+            pins::REQUIRED_DISK_BYTES,
+        )
+        .expect("fake install");
+        let events = reported.lock().expect("reported");
+        let overall: Vec<f64> = events.iter().map(overall_fraction).collect();
+        for (index, pair) in overall.windows(2).enumerate() {
+            assert!(
+                pair[1] >= pair[0],
+                "overall progress fell from {:.3} to {:.3} at {:?} then {:?}",
+                pair[0],
+                pair[1],
+                events[index],
+                events[index + 1]
+            );
+        }
+        assert_eq!(overall.last().copied(), Some(1.0));
+        // The source download still reports, as text, without the byte counts that moved the bar.
+        assert!(events
+            .iter()
+            .any(|event| event.phase == InstallPhase::InstallingPackages
+                && event.bytes_total.is_none()
+                && event.message.starts_with("Downloaded")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_staging_is_removed_and_a_set_aside_engine_only_beside_a_healthy_one() {
+        let root = temp_root("stale");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        let stage = |dir: &Path| {
+            fs::create_dir_all(dir.join("venv")).expect("stale dir");
+            fs::write(dir.join("venv").join("leftover"), b"x").expect("stale file");
+        };
+
+        // No working install: the staging tree goes, the set-aside tree may be the only engine.
+        stage(&paths.partial_dir());
+        stage(&paths.previous_dir());
+        assert_eq!(
+            remove_stale_staging(&paths, &platform),
+            vec![paths.partial_dir()]
+        );
+        assert!(!paths.partial_dir().exists());
+        assert!(paths.previous_dir().exists());
+
+        // Beside a healthy install, both go and the install is untouched.
+        run_install(&paths, &FakeIo::new(None)).expect("fake install");
+        stage(&paths.partial_dir());
+        stage(&paths.previous_dir());
+        assert_eq!(
+            remove_stale_staging(&paths, &platform),
+            vec![paths.partial_dir(), paths.previous_dir()]
+        );
+        assert_no_staging(&paths);
+        assert!(is_healthy(&paths.final_dir(), &platform));
+        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// App exit kills the uv child from another thread through `RunningChild`, and must take down
+    /// what uv started too; a grandchild left running would keep writing into the staging tree.
+    #[cfg(unix)]
+    #[test]
+    fn killing_the_running_child_takes_down_its_whole_process_tree() {
+        let root = temp_root("kill-tree");
+        let grandchild_file = root.join("grandchild.pid");
+        let running = Arc::new(RunningChild::default());
+        let mut io = loopback_io();
+        io.running = running.clone();
+        let script = format!("sleep 30 & echo $! > '{}'; wait", grandchild_file.display());
+        let started = Instant::now();
+        let worker = std::thread::spawn(move || {
+            io.run(
+                &MacPlatform::new(MacArchitecture::Aarch64),
+                RunStep::InstallPackages,
+                Path::new("/bin/sh"),
+                &[OsString::from("-c"), OsString::from(script)],
+                &[],
+                &AtomicBool::new(false),
+                None,
+            )
+        });
+        let grandchild = loop {
+            if let Some(pid) = fs::read_to_string(&grandchild_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
+            {
+                break pid;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "no grandchild");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        running.kill_tree();
+        let error = worker.join().expect("run thread").expect_err("killed");
+        assert_eq!(error.code, InstallErrorCode::Failed);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // SAFETY: signal 0 only checks whether the process still exists.
+        let alive = || unsafe { libc::kill(grandchild, 0) } == 0;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "uv's own child survived the kill");
         let _ = fs::remove_dir_all(root);
     }
 

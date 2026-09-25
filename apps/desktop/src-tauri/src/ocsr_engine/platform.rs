@@ -12,6 +12,8 @@ pub trait EnginePlatform: Send + Sync {
     fn uv_sha256(&self) -> &'static str;
     fn uv_executable(&self, root: &Path) -> PathBuf;
     fn venv_python(&self, root: &Path) -> PathBuf;
+    /// Prepares a child the engine starts (uv, the sidecar) so that [`kill_process_tree`] can
+    /// take down it and everything it started.
     fn configure_child(&self, command: &mut Command);
 }
 
@@ -73,7 +75,16 @@ impl EnginePlatform for MacPlatform {
         root.join("venv").join("bin").join("python")
     }
 
-    fn configure_child(&self, _command: &mut Command) {}
+    /// Its own process group (pgid = its pid), which `kill_process_tree` signals as a whole.
+    fn configure_child(&self, command: &mut Command) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(not(unix))]
+        let _ = command;
+    }
 }
 
 #[derive(Debug)]
@@ -103,15 +114,61 @@ impl EnginePlatform for WindowsPlatform {
     }
 }
 
+/// No console window, and a new process group so the child does not share the app's console
+/// control events. Unverified: no Windows build has run yet (see docs/architecture/ocsr-engine.md).
 #[cfg(target_os = "windows")]
 fn configure_windows_child(command: &mut Command) {
     use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-    command.creation_flags(CREATE_NO_WINDOW);
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 }
 
 #[cfg(all(not(target_os = "windows"), test))]
 fn configure_windows_child(_command: &mut Command) {}
+
+/// Kills a child started with [`EnginePlatform::configure_child`] and every process it started,
+/// without waiting for them to exit. uv runs Python (the MolScribe sdist build, interpreter
+/// checks); killing uv alone would leave those writing into the staging tree after ChemDraft quits.
+///
+/// Callers pass only the id of a child they have not reaped yet (they hold the lock that reaps
+/// it), so the id cannot have been reused by an unrelated process.
+///
+/// Unix: SIGKILL to the process group the child leads (`MacPlatform::configure_child` makes it a
+/// group leader), and to the child itself in case it is not one.
+#[cfg(unix)]
+pub fn kill_process_tree(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    if pid <= 1 {
+        return;
+    }
+    // SAFETY: plain signal delivery to a child this process still owns; failures (ESRCH once the
+    // group is gone) are harmless and ignored.
+    unsafe {
+        libc::killpg(pid, libc::SIGKILL);
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+/// Windows: `taskkill /T /F` ends the process and every descendant. A job object with
+/// KILL_ON_JOB_CLOSE would also cover a crash of ChemDraft itself and is the stronger fix once a
+/// Windows build can be tested. Unverified: no Windows build has run yet.
+#[cfg(windows)]
+pub fn kill_process_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn kill_process_tree(_pid: u32) {}
 
 pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

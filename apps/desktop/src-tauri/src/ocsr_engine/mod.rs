@@ -19,8 +19,8 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{Manager, Runtime};
 
-use install::{InstallPaths, SystemInstallIo};
-use process::{LaunchPaths, ProcessError, ProcessManager};
+use install::{InstallPaths, RunningChild, SystemInstallIo};
+use process::{KillSwitch, LaunchPaths, ProcessError, ProcessManager};
 use protocol::{RecognitionAgreement, RecognizedAtom, RecognizedBond};
 
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
@@ -204,49 +204,117 @@ pub struct OcsrEngineState {
     installing: Arc<AtomicBool>,
     cancel_install: Arc<AtomicBool>,
     install_snapshot: Arc<Mutex<Option<InstallSnapshot>>>,
+    /// The uv child a running install is waiting on, killed as a tree at app exit.
+    install_child: Arc<RunningChild>,
+    /// Held while anything creates or deletes the `ocsr-engine*` trees (an install, an uninstall,
+    /// the startup sweep of stale staging), so none of them deletes what another is writing.
+    staging: Arc<Mutex<()>>,
     stop_reaper: Arc<AtomicBool>,
+    shut_down: AtomicBool,
     request_gate: Arc<Mutex<()>>,
+    /// Held by a recognition for its whole length (up to `process::REQUEST_TIMEOUT`).
     process: Arc<Mutex<ProcessManager>>,
+    /// Kills the sidecar without `process`'s lock; see `process::KillSwitch`.
+    sidecar_kill: KillSwitch,
 }
 
 impl Default for OcsrEngineState {
     fn default() -> Self {
-        Self {
-            installing: Arc::new(AtomicBool::new(false)),
-            cancel_install: Arc::new(AtomicBool::new(false)),
-            install_snapshot: Arc::new(Mutex::new(None)),
-            stop_reaper: Arc::new(AtomicBool::new(false)),
-            request_gate: Arc::new(Mutex::new(())),
-            process: Arc::new(Mutex::new(ProcessManager::system())),
-        }
+        Self::with_process_manager(ProcessManager::system())
     }
 }
 
 impl OcsrEngineState {
+    fn with_process_manager(manager: ProcessManager) -> Self {
+        Self {
+            installing: Arc::new(AtomicBool::new(false)),
+            cancel_install: Arc::new(AtomicBool::new(false)),
+            install_snapshot: Arc::new(Mutex::new(None)),
+            install_child: Arc::default(),
+            staging: Arc::new(Mutex::new(())),
+            stop_reaper: Arc::new(AtomicBool::new(false)),
+            shut_down: AtomicBool::new(false),
+            request_gate: Arc::new(Mutex::new(())),
+            sidecar_kill: manager.kill_switch(),
+            process: Arc::new(Mutex::new(manager)),
+        }
+    }
+
     pub fn start_idle_reaper(&self) {
         let stop = self.stop_reaper.clone();
         let process = self.process.clone();
         std::thread::spawn(move || {
             while !stop.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(30));
-                if let Ok(mut manager) = process.try_lock() {
+                let manager = match process.try_lock() {
+                    Ok(manager) => Some(manager),
+                    Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                    Err(TryLockError::WouldBlock) => None,
+                };
+                if let Some(mut manager) = manager {
                     manager.stop_if_idle(Instant::now());
                 }
             }
         });
     }
 
-    pub fn shutdown(&self) {
-        self.stop_reaper.store(true, Ordering::SeqCst);
-        self.stop_sidecar();
+    /// Removes the staging trees a quit or crash mid-install left behind (see
+    /// `install::remove_stale_staging`), on a background thread: a partial tree can be gigabytes.
+    /// An install or uninstall started meanwhile waits for it on the staging lock.
+    pub fn remove_stale_staging<R: Runtime>(&self, app: &tauri::AppHandle<R>) {
+        let (Ok(paths), Ok(platform)) = (install_paths(app), platform::current()) else {
+            return;
+        };
+        let staging = self.staging.clone();
+        let installing = self.installing.clone();
+        std::thread::spawn(move || {
+            let _staging = lock_ignoring_poison(&staging);
+            // An install that has started but not yet reached the staging lock is about to
+            // replace the staging tree itself; leave the disk to it.
+            if installing.load(Ordering::SeqCst) {
+                return;
+            }
+            for path in install::remove_stale_staging(&paths, platform.as_ref()) {
+                eprintln!(
+                    "[chemdraft ocsr] removed {} left by an interrupted install",
+                    path.display()
+                );
+            }
+        });
     }
 
-    pub fn stop_sidecar(&self) {
-        let mut process = self
-            .process
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        process.stop();
+    /// App exit. Runs on the main thread from several teardown events, so it is idempotent and
+    /// never waits for a recognition or an install: it raises the install's cancel flag, kills
+    /// the install's uv process tree, and kills the sidecar (stopping it gracefully only when no
+    /// recognition holds it). The staging tree an install leaves is removed at the next launch.
+    pub fn shutdown(&self) {
+        if self.shut_down.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.stop_reaper.store(true, Ordering::SeqCst);
+        self.cancel_install.store(true, Ordering::SeqCst);
+        self.install_child.kill_tree();
+        match self.process.try_lock() {
+            Ok(mut manager) => manager.stop(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().stop(),
+            Err(TryLockError::WouldBlock) => self.sidecar_kill.kill_now(),
+        }
+    }
+
+    /// Stops the sidecar before its files are replaced or deleted. Blocking, but never on a
+    /// recognition: a running one is killed, which releases the manager within milliseconds.
+    /// Call it off the main thread.
+    fn stop_sidecar_blocking(process: &Mutex<ProcessManager>, kill: &KillSwitch) {
+        loop {
+            match process.try_lock() {
+                Ok(mut manager) => return manager.stop(),
+                Err(TryLockError::Poisoned(poisoned)) => return poisoned.into_inner().stop(),
+                Err(TryLockError::WouldBlock) => {
+                    kill.kill_now();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
     }
 }
 
@@ -289,11 +357,12 @@ pub async fn ocsr_engine_install<R: Runtime>(
         started: Instant::now(),
         progress: None,
     });
-    // A reinstall replaces the files a running sidecar was started from; recognition reports
-    // `notInstalled` while `installing` is set, so nothing restarts it until the install ends.
-    state.stop_sidecar();
     let installing = state.installing.clone();
     let cancel = state.cancel_install.clone();
+    let install_child = state.install_child.clone();
+    let staging = state.staging.clone();
+    let process = state.process.clone();
+    let sidecar_kill = state.sidecar_kill.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         struct ResetInstall(Arc<AtomicBool>, Arc<Mutex<Option<InstallSnapshot>>>);
         impl Drop for ResetInstall {
@@ -303,7 +372,11 @@ pub async fn ocsr_engine_install<R: Runtime>(
             }
         }
         let _reset = ResetInstall(installing, snapshot.clone());
-        let io = SystemInstallIo::new()?;
+        // A reinstall replaces the files a running sidecar was started from; recognition reports
+        // `notInstalled` while `installing` is set, so nothing restarts it until the install ends.
+        OcsrEngineState::stop_sidecar_blocking(&process, &sidecar_kill);
+        let _staging = lock_ignoring_poison(&staging);
+        let io = SystemInstallIo::new(install_child)?;
         // Every event updates the snapshot; the channel gets at most about four a second.
         let throttle = Mutex::new(progress::ProgressThrottle::new(progress::EMIT_INTERVAL));
         let reporter = move |progress: InstallProgress| {
@@ -331,33 +404,41 @@ pub fn ocsr_engine_cancel_install(state: tauri::State<'_, OcsrEngineState>) {
 pub async fn ocsr_engine_uninstall<R: Runtime>(app: tauri::AppHandle<R>) -> OcsrEngineStatus {
     let state = app.state::<OcsrEngineState>();
     state.cancel_install.store(true, Ordering::SeqCst);
-    let installing = state.installing.clone();
-    let process = state.process.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        while installing.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    })
-    .await;
-    process
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .stop();
     let paths = match install_paths(&app) {
         Ok(paths) => paths,
         Err(error) => return broken_status(0, error.message),
     };
-    for path in [paths.final_dir(), paths.partial_dir(), paths.previous_dir()] {
-        if path.exists() {
-            if let Err(error) = fs::remove_dir_all(&path) {
-                return broken_status(
-                    free_disk_for(&paths.app_data),
-                    format!("Could not remove {}: {error}", path.display()),
-                );
+    let installing = state.installing.clone();
+    let staging = state.staging.clone();
+    let process = state.process.clone();
+    let sidecar_kill = state.sidecar_kill.clone();
+    // Waiting for the install, stopping the sidecar and deleting gigabytes all block, so none of
+    // it runs on the async executor.
+    // `Some(status)` names the directory that could not be removed.
+    let failure = tauri::async_runtime::spawn_blocking(move || {
+        while installing.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        OcsrEngineState::stop_sidecar_blocking(&process, &sidecar_kill);
+        let _staging = lock_ignoring_poison(&staging);
+        for path in [paths.final_dir(), paths.partial_dir(), paths.previous_dir()] {
+            if path.exists() {
+                if let Err(error) = fs::remove_dir_all(&path) {
+                    return Some(broken_status(
+                        free_disk_for(&paths.app_data),
+                        format!("Could not remove {}: {error}", path.display()),
+                    ));
+                }
             }
         }
+        None
+    })
+    .await;
+    match failure {
+        Ok(None) => status_impl(&app, &app.state::<OcsrEngineState>()),
+        Ok(Some(status)) => status,
+        Err(error) => broken_status(0, format!("Could not schedule removal: {error}")),
     }
-    status_impl(&app, &app.state::<OcsrEngineState>())
 }
 
 #[tauri::command]
@@ -432,20 +513,11 @@ pub async fn ocsr_recognize_image<R: Runtime>(
     let request_gate = state.request_gate.clone();
     let manager = state.process.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _request = match request_gate.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::WouldBlock) => {
-                return failed(
-                    RecognitionErrorCode::Busy,
-                    "MolScribe is already recognizing another image.",
-                )
-            }
-            Err(TryLockError::Poisoned(_)) => {
-                return failed(
-                    RecognitionErrorCode::EngineCrashed,
-                    "The MolScribe request queue is unavailable.",
-                )
-            }
+        let Some(_request) = enter_request(&request_gate) else {
+            return failed(
+                RecognitionErrorCode::Busy,
+                "MolScribe is already recognizing another image.",
+            );
         };
         let (extension, bytes) = match prepare_image(&bytes) {
             Ok(prepared) => prepared,
@@ -502,9 +574,11 @@ pub async fn ocsr_recognize_image<R: Runtime>(
             Err(ProcessError::Crashed(message)) => {
                 failed(RecognitionErrorCode::EngineCrashed, message)
             }
-            Err(ProcessError::Timeout) => failed(
-                RecognitionErrorCode::Timeout,
-                "MolScribe did not finish within 120 seconds.",
+            Err(ProcessError::Timeout) => failed(RecognitionErrorCode::Timeout, timeout_message()),
+            Err(ProcessError::Cancelled) => failed(
+                RecognitionErrorCode::EngineCrashed,
+                "MolScribe was stopped before it finished, because the app is quitting or the \
+                 engine is being reinstalled or removed.",
             ),
         }
     })
@@ -626,6 +700,24 @@ fn resource_path<R: Runtime>(app: &tauri::AppHandle<R>, relative: &str) -> Optio
         candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative));
     }
     candidates.into_iter().find(|path| path.is_file())
+}
+
+/// One recognition at a time; `None` while another is running. A panic in an earlier
+/// recognition poisons the gate, which guards no data, so the next request proceeds rather than
+/// recognition being disabled for the rest of the session.
+fn enter_request(gate: &Mutex<()>) -> Option<std::sync::MutexGuard<'_, ()>> {
+    match gate.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+fn timeout_message() -> String {
+    format!(
+        "MolScribe did not finish within {} seconds.",
+        process::REQUEST_TIMEOUT.as_secs()
+    )
 }
 
 fn free_disk_for(path: &Path) -> u64 {
@@ -773,6 +865,130 @@ impl Drop for TempImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use platform::{EnginePlatform, MacArchitecture, MacPlatform};
+    use process::{EngineProcess, ProcessSpawner};
+    use protocol::RecognitionPayload;
+    use std::sync::mpsc;
+
+    /// A sidecar whose request never answers: it ends only when its kill switch fires.
+    struct UntilKilledSpawner;
+
+    struct UntilKilledProcess(mpsc::Receiver<()>);
+
+    impl EngineProcess for UntilKilledProcess {
+        fn recognize(
+            &mut self,
+            _request_id: &str,
+            _image_path: &Path,
+            timeout: Duration,
+        ) -> Result<RecognitionPayload, ProcessError> {
+            match self.0.recv_timeout(timeout) {
+                Err(mpsc::RecvTimeoutError::Timeout) => Err(ProcessError::Timeout),
+                _ => Err(ProcessError::Crashed("killed".to_string())),
+            }
+        }
+
+        fn shutdown(&mut self) {}
+    }
+
+    impl ProcessSpawner for UntilKilledSpawner {
+        fn spawn(
+            &self,
+            _platform: &dyn EnginePlatform,
+            _paths: &LaunchPaths,
+            _timeout: Duration,
+            kill_switch: &KillSwitch,
+        ) -> Result<Box<dyn EngineProcess>, ProcessError> {
+            let (killed, receiver) = mpsc::channel();
+            kill_switch.arm(Box::new(move || {
+                let _ = killed.send(());
+            }));
+            Ok(Box::new(UntilKilledProcess(receiver)))
+        }
+    }
+
+    /// Starts a recognition that holds the manager's lock until it is killed.
+    fn start_stuck_recognition(
+        state: &OcsrEngineState,
+    ) -> std::thread::JoinHandle<Result<RecognitionPayload, ProcessError>> {
+        let process = state.process.clone();
+        let worker = std::thread::spawn(move || {
+            let launch =
+                LaunchPaths::for_engine("python".into(), "sidecar.py".into(), "model.pth".into());
+            lock_ignoring_poison(&process).recognize(
+                &MacPlatform::new(MacArchitecture::Aarch64),
+                &launch,
+                Path::new("image.png"),
+                Duration::from_secs(60),
+            )
+        });
+        while state.process.try_lock().is_ok() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        worker
+    }
+
+    #[test]
+    fn app_exit_cancels_the_install_and_never_waits_for_a_recognition() {
+        let state = OcsrEngineState::with_process_manager(ProcessManager::new(Arc::new(
+            UntilKilledSpawner,
+        )));
+        let worker = start_stuck_recognition(&state);
+        let started = Instant::now();
+        state.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(state.cancel_install.load(Ordering::SeqCst));
+        assert!(state.stop_reaper.load(Ordering::SeqCst));
+        assert_eq!(
+            worker.join().expect("recognition thread"),
+            Err(ProcessError::Cancelled)
+        );
+        // Exit and ExitRequested (and window teardown, and Drop) may all call it.
+        state.shutdown();
+    }
+
+    #[test]
+    fn install_and_uninstall_stop_a_running_recognition_instead_of_waiting() {
+        let state = OcsrEngineState::with_process_manager(ProcessManager::new(Arc::new(
+            UntilKilledSpawner,
+        )));
+        let worker = start_stuck_recognition(&state);
+        let started = Instant::now();
+        OcsrEngineState::stop_sidecar_blocking(&state.process, &state.sidecar_kill);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            worker.join().expect("recognition thread"),
+            Err(ProcessError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn a_poisoned_request_gate_does_not_disable_recognition() {
+        let gate = Arc::new(Mutex::new(()));
+        let poisoner = gate.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().expect("gate");
+            panic!("a recognition panicked");
+        })
+        .join();
+        assert!(gate.is_poisoned());
+        let guard = enter_request(&gate).expect("a poisoned gate still admits a request");
+        assert!(enter_request(&gate).is_none(), "and still admits only one");
+        drop(guard);
+        assert!(enter_request(&gate).is_some());
+    }
+
+    #[test]
+    fn the_timeout_message_states_the_real_timeout() {
+        assert_eq!(
+            timeout_message(),
+            format!(
+                "MolScribe did not finish within {} seconds.",
+                process::REQUEST_TIMEOUT.as_secs()
+            )
+        );
+        assert!(timeout_message().contains("300"));
+    }
 
     #[test]
     fn recognition_contract_serializes_exact_camel_case_shape() {

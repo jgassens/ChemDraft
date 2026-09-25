@@ -472,8 +472,10 @@ select_dev_sign_identity() {
     # Select by SHA-1 hash, not by the common name: this machine has several identities all named
     # "Apple Development: ...", and signing by name lets codesign pick an unpredictable one of them.
     local hash
+    # `|| true`: with no Apple Development identity grep exits 1, and under `set -euo pipefail`
+    # the failed assignment would end the script here instead of reaching the ad-hoc fallback.
     hash="$(security find-identity -v -p codesigning 2>/dev/null \
-      | grep '"Apple Development:' | head -n1 | awk '{print $2}')"
+      | grep '"Apple Development:' | head -n1 | awk '{print $2}' || true)"
     if [ -n "$hash" ]; then
       RUN_APP_SIGN_IDENTITY="$hash"
       RUN_APP_SIGN_IDENTITY_DESC="$hash (Apple Development, from keychain)"
