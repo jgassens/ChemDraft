@@ -198,6 +198,10 @@ export function resolveNmrPluginDir(env: NodeJS.ProcessEnv = process.env): strin
 
 const pluginCache = new Map<string, Promise<NmrPluginModule>>();
 
+function quotePosixShellArgument(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function loadNmrPlugin(pluginDir: string): Promise<NmrPluginModule> {
   const entry = join(pluginDir, "src", "index.ts");
   let loading = pluginCache.get(entry);
@@ -224,7 +228,8 @@ function loadNmrPlugin(pluginDir: string): Promise<NmrPluginModule> {
       if (missingCapabilities.length > 0) {
         throw new Error(
           `NMR predictor plugin at ${pluginDir} is missing required capabilities: ${missingCapabilities.join(", ")}. ` +
-          `Update that checkout (cd ${pluginDir} && git pull) or point ${NMR_PLUGIN_DIR_ENV} at a current chemdraft-nmr-plugin checkout.`
+          `Update that checkout (cd ${quotePosixShellArgument(pluginDir)} && git pull) or point ${NMR_PLUGIN_DIR_ENV} at a current chemdraft-nmr-plugin checkout. ` +
+          "If a ChemDraft MCP server is running, restart it after updating; the CLI picks up the updated checkout on its next run."
         );
       }
       return loaded as NmrPluginModule;

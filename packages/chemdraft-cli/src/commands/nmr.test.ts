@@ -104,22 +104,57 @@ describe("chemdraft nmr without the plugin", () => {
     expect(lines[0]!.error).toContain(join(missing, "src", "index.ts"));
   });
 
-  it("refuses a plugin checkout missing the required capabilities", async () => {
-    const oldPluginDir = join(outputDirectory, "old-nmr-plugin");
+  it("refuses a plugin checkout missing one required capability and gives safe update guidance", async () => {
+    const oldPluginDir = join(outputDirectory, "old plugin's checkout");
     await mkdir(join(oldPluginDir, "src"), { recursive: true });
     await writeFile(
       join(oldPluginDir, "src", "index.ts"),
+      "export const NMR_PLUGIN_CAPABILITIES = ['constitutional-equivalence-grouping', 'diastereotopic-disclosure'];\n" +
       "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
     );
     const { code, lines } = await withPluginDir(oldPluginDir, () => run(["--smiles", "CCO"]));
     expect(code).toBe(1);
     expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(lines[0]!.error).toContain("truthful-spectrum-caption");
+    expect(lines[0]!.error).toContain(oldPluginDir);
+    expect(lines[0]!.error).toContain(`cd '${oldPluginDir.replace(/'/g, "'\\''")}' && git pull`);
+    expect(lines[0]!.error).toContain(NMR_PLUGIN_DIR_ENV);
+    expect(lines[0]!.error).toContain("restart");
+    expect(lines[0]!.error).toContain("CLI picks up");
+  });
+
+  it("refuses a plugin whose capabilities export is not an array", async () => {
+    const invalidPluginDir = join(outputDirectory, "non-array-capabilities-plugin");
+    await mkdir(join(invalidPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(invalidPluginDir, "src", "index.ts"),
+      "export const NMR_PLUGIN_CAPABILITIES = 'constitutional-equivalence-grouping';\n" +
+      "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
+    );
+    const { code, lines } = await withPluginDir(invalidPluginDir, () => run(["--smiles", "CCO"]));
+    expect(code).toBe(1);
+    expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
     expect(lines[0]!.error).toContain("constitutional-equivalence-grouping");
     expect(lines[0]!.error).toContain("diastereotopic-disclosure");
     expect(lines[0]!.error).toContain("truthful-spectrum-caption");
-    expect(lines[0]!.error).toContain(oldPluginDir);
-    expect(lines[0]!.error).toContain("git pull");
-    expect(lines[0]!.error).toContain(NMR_PLUGIN_DIR_ENV);
+  });
+
+  it("retries a failed plugin load after the plugin directory is switched", async () => {
+    const rejectedPluginDir = join(outputDirectory, "rejected-plugin");
+    await mkdir(join(rejectedPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(rejectedPluginDir, "src", "index.ts"),
+      "export const NMR_PLUGIN_CAPABILITIES = [];\n" +
+      "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
+    );
+
+    const failed = await withPluginDir(rejectedPluginDir, () => run(["--smiles", "CCO"]));
+    expect(failed.code).toBe(1);
+    expect(failed.lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+
+    const retried = await withPluginDir(fixturePluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"]));
+    expect(retried.code).toBe(0);
+    expect(retried.lines[0]).toMatchObject({ ok: true, smiles: "CCO" });
   });
 
   it("expands ~ in the plugin directory", () => {
