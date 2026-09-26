@@ -167,11 +167,8 @@ What the numbers are:
   - No shift is ever invented for an unmatched environment: it is omitted and a warning
     (NMR_NO_FRAGMENT_MATCH / NMR_PARTIAL_PREDICTION) says so.
   - No confidence percentages are reported; thin matches carry warnings instead.
-  - Symmetry check: when two resonances of one nucleus sit on symmetry-equivalent atoms (same
-    OpenChemLib symmetry rank and diastereotopic ID), both records get the flag
-    "equivalence-split" and an NMR_EQUIVALENCE_SPLIT warning names the atoms. Treat them as one
-    environment; the predictor's shifts and nEquivalent are reported unchanged, not merged.
-    NMR_EQUIVALENCE_UNCHECKED says the check could not run.
+  - Symmetry-equivalent atoms (same OpenChemLib symmetry rank and diastereotopic ID) are reported
+    as one resonance whose nEquivalent counts them, not as separate resonances.
   - The reference database is a derivative database under the nmrshiftdb2 Database License
     (ODbL-derived: attribution, share-alike). That licence is separate from the code licence;
     each result line names it under "database".

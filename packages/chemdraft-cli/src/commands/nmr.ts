@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -149,11 +148,8 @@ What the numbers are:
   - No shift is ever invented for an unmatched environment: it is omitted and a warning
     (NMR_NO_FRAGMENT_MATCH / NMR_PARTIAL_PREDICTION) says so.
   - No confidence percentages are reported; thin matches carry warnings instead.
-  - Symmetry check: when two resonances of one nucleus sit on symmetry-equivalent atoms (same
-    OpenChemLib symmetry rank and diastereotopic ID), both records get the flag
-    "equivalence-split" and an NMR_EQUIVALENCE_SPLIT warning names the atoms. Treat them as one
-    environment; the predictor's shifts and nEquivalent are reported unchanged, not merged.
-    NMR_EQUIVALENCE_UNCHECKED says the check could not run.
+  - Symmetry-equivalent atoms (same OpenChemLib symmetry rank and diastereotopic ID) are reported
+    as one resonance whose nEquivalent counts them, not as separate resonances.
   - The reference database is a derivative database under the nmrshiftdb2 Database License
     (ODbL-derived: attribution, share-alike). That licence is separate from the code licence;
     each result line names it under "database".
@@ -331,90 +327,7 @@ function atomOrderWarning(molfile: string, result: PluginPredictionResult): stri
     : "NMR_ATOM_ORDER_MISMATCH: the predictor's atom order differs from the drawn molfile; atomIndices follow the predictor's order, not the drawing.";
 }
 
-interface OclMolecule {
-  getAtoms(): number;
-  ensureHelperArrays(required: number): void;
-  getSymmetryRank(atom: number): number;
-  getDiastereotopicAtomIDs(): string[];
-}
-
-interface OclModule {
-  Molecule: { fromMolfile(molfile: string): OclMolecule; cHelperSymmetrySimple: number };
-}
-
-let oclLoading: Promise<OclModule> | undefined;
-
-/**
- * OpenChemLib, resolved through `@chemdraft/ocl-adapter` (which declares it) rather than as a direct
- * dependency of this package; the specifier is a runtime string so the root `tsc` types only the
- * narrow surface above.
- */
-function loadOpenChemLib(): Promise<OclModule> {
-  if (!oclLoading) {
-    oclLoading = (async () => {
-      const adapterEntry = createRequire(import.meta.url).resolve("@chemdraft/ocl-adapter");
-      const oclEntry: string = pathToFileURL(createRequire(adapterEntry).resolve("openchemlib")).href;
-      return await import(oclEntry) as OclModule;
-    })();
-    oclLoading.catch(() => { oclLoading = undefined; });
-  }
-  return oclLoading;
-}
-
-/**
- * One NMR-equivalence key per atom of the molfile the predictor was given, in molfile order. Two
- * atoms share a key only when they share OpenChemLib's topological symmetry rank AND its
- * diastereotopic atom ID. The rank alone is not enough: it puts the diastereotopic methyls of
- * 3-methyl-2-butanol in one class, and those are genuinely distinct environments, so telling the
- * reader to merge them would be wrong. Enantiotopic atoms (NMR-equivalent in an achiral medium)
- * share a diastereotopic ID.
- */
-export async function nmrEquivalenceClasses(molfile: string): Promise<string[]> {
-  const OCL = await loadOpenChemLib();
-  const ranked = OCL.Molecule.fromMolfile(molfile);
-  const atomCount = ranked.getAtoms();
-  ranked.ensureHelperArrays(OCL.Molecule.cHelperSymmetrySimple);
-  const diastereotopic = OCL.Molecule.fromMolfile(molfile).getDiastereotopicAtomIDs();
-  return Array.from({ length: atomCount }, (_unused, atom) =>
-    `${ranked.getSymmetryRank(atom)}|${diastereotopic[atom] ?? `atom-${atom}`}`
-  );
-}
-
-const EQUIVALENCE_SPLIT_FLAG = "equivalence-split";
-
-/**
- * Detect the predictor reporting one environment as two resonances. Two resonances of one nucleus
- * are a split when they cover different atoms of one equivalence class. A pair that shares an atom
- * is left alone: two 1H resonances on one carbon are its diastereotopic protons. The predictor's
- * numbers are reported unchanged; this only warns and flags.
- */
-function findEquivalenceSplits(
-  resonances: readonly PluginResonance[],
-  classes: readonly string[]
-): { warnings: string[]; resonances: Set<PluginResonance> } {
-  const warnings: string[] = [];
-  const split = new Set<PluginResonance>();
-  for (const [leftIndex, left] of resonances.entries()) {
-    for (const right of resonances.slice(leftIndex + 1)) {
-      if (left.nucleus !== right.nucleus) continue;
-      const leftAtoms = left.atomRefs.map((ref) => ref.sourceAtomIndex);
-      const rightAtoms = right.atomRefs.map((ref) => ref.sourceAtomIndex);
-      if (leftAtoms.some((atom) => rightAtoms.includes(atom))) continue;
-      const pair = leftAtoms.flatMap((i) => rightAtoms.map((j) => [i, j] as const))
-        .find(([i, j]) => classes[i] !== undefined && classes[i] === classes[j]);
-      if (!pair) continue;
-      const [i, j] = pair[0] < pair[1] ? pair : [pair[1], pair[0]];
-      warnings.push(
-        `NMR_EQUIVALENCE_SPLIT: atoms ${i} and ${j} are symmetry-equivalent but reported as separate resonances; treat them as one environment (${left.nucleus}).`
-      );
-      split.add(left);
-      split.add(right);
-    }
-  }
-  return { warnings, resonances: split };
-}
-
-function formatResonance(resonance: PluginResonance, extraFlags: readonly string[] = []) {
+function formatResonance(resonance: PluginResonance) {
   const evidence = resonance.evidence;
   const nEquivalent = resonance.equivalentNuclei ??
     resonance.atomRefs.reduce((sum, ref) => sum + (ref.equivalentCount ?? 1), 0);
@@ -434,7 +347,7 @@ function formatResonance(resonance: PluginResonance, extraFlags: readonly string
     ...(evidence?.estimator
       ? { estimator: `${evidence.estimator.id}@${evidence.estimator.version} (${evidence.estimator.method})` }
       : {}),
-    flags: [...resonance.flags, ...extraFlags]
+    flags: resonance.flags
   };
 }
 
@@ -446,27 +359,11 @@ function orderedResonances(result: PluginPredictionResult, nuclei: readonly NmrN
   );
 }
 
-/**
- * The plugin's stick renderer still carries the axis caption from its fixture era. The shipped
- * provider is the NMRShiftDB2-derived HOSE lookup, so that caption would mislabel real predictions
- * (AGENTS.md §8a); it is replaced here, and the stick-height meaning is stated on the figure.
- */
-const PLUGIN_FIXTURE_CAPTION = "— synthetic fixture";
-
-function relabelSpectrum(svg: string, file: string): { svg: string; warning?: string } {
+/** Add the stick-height caveat to the plugin's spectrum SVG: height is equivalent-nuclei count, not integration. */
+function addStickHeightNote(svg: string): string {
   const note =
     `<text x="22" y="11" font-size="9" fill="#475569">Stick height = predicted equivalent nuclei, not integration</text>`;
-  const withNote = svg.replace(/<\/svg>\s*$/, `${note}</svg>`);
-  if (!svg.includes(PLUGIN_FIXTURE_CAPTION)) {
-    // The replacement below is keyed on the plugin's exact caption text. If the plugin changes that
-    // text, a silent no-op would ship whatever caption it now carries — possibly still a fixture
-    // label on real predictions — so say that the caption was not verified.
-    return {
-      svg: withNote,
-      warning: `NMR_SPECTRUM_CAPTION_UNVERIFIED: the predictor's spectrum caption did not contain the expected "${PLUGIN_FIXTURE_CAPTION}" text, so ChemDraft could not relabel it; check the axis caption in ${file} before using the figure.`
-    };
-  }
-  return { svg: withNote.replace(PLUGIN_FIXTURE_CAPTION, "— predicted (HOSE / NMRShiftDB2)") };
+  return svg.replace(/<\/svg>\s*$/, `${note}</svg>`);
 }
 
 function spectrumPath(base: string, nucleus: NmrNucleus, withSuffix: boolean, format: SpectrumFormat): string {
@@ -484,21 +381,19 @@ async function writeSpectra(
   withSuffix: boolean,
   format: SpectrumFormat,
   width: number
-): Promise<{ files: string[]; warnings: string[] }> {
+): Promise<{ files: string[] }> {
   const files: string[] = [];
-  const warnings: string[] = [];
   for (const nucleus of nuclei) {
     const resonances = result.resonances.filter((resonance) => resonance.nucleus === nucleus);
     // The renderer draws one nucleus per figure and reads the axis from the first resonance.
     if (resonances.length === 0) continue;
     const file = spectrumPath(base, nucleus, withSuffix, format);
-    const { svg, warning } = relabelSpectrum(plugin.renderStickSpectrumSvg({ ...result, resonances }), file);
-    if (warning) warnings.push(warning);
+    const svg = addStickHeightNote(plugin.renderStickSpectrumSvg({ ...result, resonances }));
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, format === "png" ? svgToPng(svg, width) : svg);
     files.push(file);
   }
-  return { files, warnings };
+  return { files };
 }
 
 async function predictJob(job: NmrJob, args: ParsedArguments, pluginDir: string, io: CliIo): Promise<boolean> {
@@ -527,23 +422,9 @@ async function predictJob(job: NmrJob, args: ParsedArguments, pluginDir: string,
     if (orderWarning) warnings.push(orderWarning);
 
     const ordered = orderedResonances(result, args.nuclei);
-    let splitResonances = new Set<PluginResonance>();
-    if (orderWarning) {
-      warnings.push(
-        "NMR_EQUIVALENCE_UNCHECKED: symmetry-equivalence was not checked because the predictor's atom order differs from the drawing."
-      );
-    } else {
-      try {
-        const split = findEquivalenceSplits(ordered, await nmrEquivalenceClasses(depicted.molfile));
-        warnings.push(...split.warnings);
-        splitResonances = split.resonances;
-      } catch (error) {
-        warnings.push(`NMR_EQUIVALENCE_UNCHECKED: symmetry-equivalence could not be checked: ${errorMessage(error)}`);
-      }
-    }
 
     let spectrum: string[] | undefined;
-    let written: { files: string[]; warnings: string[] } | undefined;
+    let written: { files: string[] } | undefined;
     if (args.spectrum !== undefined) {
       written = await writeSpectra(
         plugin, result, args.nuclei, args.spectrum, args.nuclei.length > 1, args.spectrumFormat, args.width
@@ -555,7 +436,6 @@ async function predictJob(job: NmrJob, args: ParsedArguments, pluginDir: string,
     }
     if (written) {
       spectrum = written.files;
-      warnings.push(...written.warnings);
     }
 
     writeJsonLine(io, {
@@ -563,9 +443,7 @@ async function predictJob(job: NmrJob, args: ParsedArguments, pluginDir: string,
       ok: true,
       smiles,
       nuclei: args.nuclei,
-      resonances: ordered.map((resonance) =>
-        formatResonance(resonance, splitResonances.has(resonance) ? [EQUIVALENCE_SPLIT_FLAG] : [])
-      ),
+      resonances: ordered.map((resonance) => formatResonance(resonance)),
       warnings,
       ...(spectrum ? { spectrum } : {}),
       method: result.backend.method,

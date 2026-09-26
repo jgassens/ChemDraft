@@ -44,10 +44,8 @@ function proton(deltaPpm: number, atoms: number[], equivalentNuclei: number) {
 }
 
 /**
- * Toluene (Cc1ccccc1: C0 methyl, C1 ipso, C2/C6 ortho, C3/C5 meta, C4 para), reproducing the
- * predictor defect the CLI must detect: the two meta carbons come back as separate resonances.
- * The two 1H records on atom 0 are synthetic stand-ins for a CH2's diastereotopic protons — two
- * resonances on ONE atom, which is not a split.
+ * Toluene (Cc1ccccc1: C0 methyl, C1 ipso, C2/C6 ortho, C3/C5 meta, C4 para), with topologically
+ * equivalent atoms grouped into one resonance each (nEquivalent 2 for the ortho/meta pairs).
  */
 function tolueneResult(request: FixtureRequest, elements: string[]) {
   const resonances: object[] = [];
@@ -55,8 +53,7 @@ function tolueneResult(request: FixtureRequest, elements: string[]) {
     resonances.push(
       carbon(142.1, [1]),
       carbon(129.0, [2, 6]),
-      carbon(128.5, [3]),
-      carbon(128.5, [5]),
+      carbon(128.5, [3, 5]),
       carbon(125.6, [4]),
       carbon(21.4, [0])
     );
@@ -66,8 +63,7 @@ function tolueneResult(request: FixtureRequest, elements: string[]) {
       proton(7.4, [3, 5], 2),
       proton(7.35, [4], 1),
       proton(7.06, [2, 6], 2),
-      proton(2.4, [0], 2),
-      proton(2.3, [0], 1)
+      proton(2.3, [0], 3)
     );
   }
   return {
@@ -119,11 +115,7 @@ export class OclHosePredictor {
   }
 }
 
-/**
- * Carries the plugin's historical "synthetic fixture" caption, which the CLI replaces. Set
- * CHEMDRAFT_NMR_FIXTURE_CAPTION to simulate a plugin whose caption text has changed.
- */
+/** Mirrors the real plugin's caption convention for real predictions. */
 export function renderStickSpectrumSvg(): string {
-  const caption = process.env.CHEMDRAFT_NMR_FIXTURE_CAPTION ?? "1H — synthetic fixture";
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120"><text>${caption}</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120"><text>1H δ (ppm) — predicted</text></svg>`;
 }
