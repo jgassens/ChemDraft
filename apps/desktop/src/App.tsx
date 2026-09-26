@@ -1,3 +1,4 @@
+import { useEffect, type ReactElement } from "react";
 import { MainWindow } from "./MainWindow";
 import { PaletteWindow } from "./PaletteWindow";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
@@ -8,11 +9,36 @@ import { PreferencesWindow } from "./PreferencesWindow";
 import { SPIN3D_DEBUGGER_WINDOW_KIND } from "./conformerDebug";
 import {
   PREFERENCES_WINDOW_KIND,
+  routeToolsetCommand,
   TOOLSET_POPOVER_WINDOW_KIND,
   TOOLSET_TOOLTIP_WINDOW_KIND
 } from "./window-manager";
+import { installSecondaryWindowEditHistory } from "./editHistoryRouting";
 
 export function App() {
+  const secondaryWindow = secondaryWindowContent();
+  if (secondaryWindow) {
+    return (
+      <>
+        <SecondaryWindowEditHistory />
+        {secondaryWindow}
+      </>
+    );
+  }
+
+  return <MainWindow />;
+}
+
+/**
+ * Edit ▸ Undo / Redo reach whichever window is key. Here that is a secondary window: undo its own
+ * focused text field, or hand the command to the main window's document history.
+ */
+function SecondaryWindowEditHistory(): null {
+  useEffect(() => installSecondaryWindowEditHistory({ forwardToMain: routeToolsetCommand }), []);
+  return null;
+}
+
+function secondaryWindowContent(): ReactElement | undefined {
   if (isSpin3dDebuggerRoute()) {
     return <Spin3dDebuggerWindow />;
   }
@@ -46,7 +72,7 @@ export function App() {
     return <PluginPanelWindow panelId={pluginPanelId} />;
   }
 
-  return <MainWindow />;
+  return undefined;
 }
 
 function pluginPanelRouteId(): string | undefined {

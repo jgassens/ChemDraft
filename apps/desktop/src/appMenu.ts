@@ -35,7 +35,7 @@ export interface AppMenuCommand {
   /** When defined the item renders a checkmark slot reflecting current state. */
   checked?: boolean;
   /**
-   * True when the native menu implements this via an OS `PredefinedMenuItem` (undo/redo/clipboard)
+   * True when the native menu implements this via an OS `PredefinedMenuItem` (cut/copy/paste)
    * rather than a routed `MENU_COMMAND_IDS` entry. The web bar routes it to an explicit command id
    * instead, so the native-sync test excludes these from its `MENU_COMMAND_IDS` comparison.
    */
@@ -235,8 +235,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       id: "edit",
       label: "Edit",
       items: [
-        command("edit.undo", "Undo", { accelerator: "Cmd+Z", enabled: context.canUndo, nativePredefined: true }),
-        command("edit.redo", "Redo", { accelerator: "Shift+Cmd+Z", enabled: context.canRedo, nativePredefined: true }),
+        // Routed, not OS-predefined: AppKit's undo: selector only reaches the webview's text undo
+        // manager, never the document history. `editHistoryRouting.ts` sends a focused text field's
+        // undo back to the field.
+        command("edit.undo", "Undo", { accelerator: "Cmd+Z", enabled: context.canUndo }),
+        command("edit.redo", "Redo", { accelerator: "Shift+Cmd+Z", enabled: context.canRedo }),
         separator(),
         command("clipboard.cut", "Cut", { accelerator: "Cmd+X", enabled: context.hasSelection, nativePredefined: true }),
         command("clipboard.copy", "Copy", { accelerator: "Cmd+C", enabled: context.hasSelection, nativePredefined: true }),

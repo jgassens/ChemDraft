@@ -1350,6 +1350,12 @@ behind the document to the front instead of hiding it; popovers and tooltips lan
 button across two monitors at different scale factors; a maximized window restored maximized; and
 the clipboard round trips (text, ChemDraft selection, SVG, PNG, and CDX/MDL paste from ChemDraw).
 
+Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
+on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a
+palette search box, a text object) undoes that field's own text instead; and typing half an atom
+label, clicking a palette, clicking back into the label box, and finishing the label leaves it
+intact rather than reverting or duplicating characters.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

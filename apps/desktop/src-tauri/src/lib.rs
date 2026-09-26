@@ -149,6 +149,8 @@ const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
+    "edit.undo",
+    "edit.redo",
     "clipboard.copyAs.smiles",
     "clipboard.copyAs.inchi",
     "clipboard.copyAs.inchiKey",
@@ -472,7 +474,7 @@ pub fn run() {
                 return;
             }
             if is_routed_menu_command(command_id) {
-                if let Err(error) = emit_command_to_main(app, command_id) {
+                if let Err(error) = emit_menu_command(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
                 }
             }
@@ -2739,6 +2741,82 @@ fn take_pending_open_document(
     Ok(pending.take())
 }
 
+/// A routed Edit-menu history item: command id, label, and accelerator.
+struct EditHistoryMenuItem {
+    command_id: &'static str,
+    label: &'static str,
+    accelerator: &'static str,
+}
+
+/// Edit ▸ Undo / Redo, in menu order. Routed rather than AppKit-predefined: the predefined items send
+/// undo: to the webview's text undo manager, which never reaches the drawing's history.
+const EDIT_HISTORY_MENU_ITEMS: [EditHistoryMenuItem; 2] = [
+    EditHistoryMenuItem {
+        command_id: "edit.undo",
+        label: "Undo",
+        accelerator: "CmdOrCtrl+Z",
+    },
+    EditHistoryMenuItem {
+        command_id: "edit.redo",
+        label: "Redo",
+        accelerator: "CmdOrCtrl+Shift+Z",
+    },
+];
+
+fn edit_history_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    item: &EditHistoryMenuItem,
+) -> tauri::Result<MenuItem<R>> {
+    MenuItem::with_id(
+        app,
+        item.command_id,
+        item.label,
+        true,
+        Some(item.accelerator),
+    )
+}
+
+fn is_edit_history_command(command_id: &str) -> bool {
+    EDIT_HISTORY_MENU_ITEMS
+        .iter()
+        .any(|item| item.command_id == command_id)
+}
+
+/// Which window a routed menu command is delivered to. Everything goes to the main document window,
+/// except Undo / Redo: those follow the key window, as AppKit's predefined items did, so ⌘Z in a
+/// palette's text field undoes that text. The secondary window forwards to the main window itself
+/// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
+fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
+    match focused_label {
+        Some(label) if is_edit_history_command(command_id) => label,
+        _ => MAIN_WINDOW_LABEL,
+    }
+}
+
+fn emit_menu_command<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    command_id: &str,
+) -> Result<(), String> {
+    let focused_label = app
+        .webview_windows()
+        .into_iter()
+        .find(|(_, window)| window.is_focused().unwrap_or(false))
+        .map(|(label, _)| label);
+    let target_label = menu_command_target_label(command_id, focused_label.as_deref());
+    if target_label == MAIN_WINDOW_LABEL {
+        return emit_command_to_main(app, command_id);
+    }
+    let target = app
+        .get_webview_window(target_label)
+        .ok_or_else(|| format!("Window {target_label} is not available."))?;
+    dispatch_dom_command_event(
+        &target,
+        &ToolsetCommandPayload {
+            command_id: command_id.to_string(),
+        },
+    )
+}
+
 fn emit_command_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
@@ -3222,8 +3300,11 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 "Edit",
                 true,
                 &[
-                    &PredefinedMenuItem::undo(app, None)?,
-                    &PredefinedMenuItem::redo(app, None)?,
+                    // Routed, not predefined: AppKit's undo:/redo: selectors reach only the
+                    // webview's text undo manager, never the drawing's history. The webview sends
+                    // a focused text field's undo back to the field (editHistoryRouting.ts).
+                    &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[0])?,
+                    &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[1])?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
@@ -5037,6 +5118,58 @@ mod tests {
     #[test]
     fn plugin_manager_menu_command_is_routed() {
         expect_true(is_routed_menu_command("plugins.manage"));
+    }
+
+    /// Edit ▸ Undo/Redo must reach the drawing's history. AppKit's predefined items send undo: to
+    /// the webview's text undo manager instead, which knows nothing about document changes.
+    #[test]
+    fn undo_redo_edit_menu_commands_are_routed_with_mac_shortcuts() {
+        let items: Vec<(&str, &str, &str)> = EDIT_HISTORY_MENU_ITEMS
+            .iter()
+            .map(|item| (item.command_id, item.label, item.accelerator))
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                ("edit.undo", "Undo", "CmdOrCtrl+Z"),
+                ("edit.redo", "Redo", "CmdOrCtrl+Shift+Z"),
+            ]
+        );
+        for item in &EDIT_HISTORY_MENU_ITEMS {
+            expect_true(is_routed_menu_command(item.command_id));
+            expect_true(is_edit_history_command(item.command_id));
+        }
+        expect_false(is_edit_history_command("edit.selectAll"));
+    }
+
+    /// ⌘Z in a palette's text field must undo that text, not the drawing: Undo / Redo follow the key
+    /// window, while every other routed command still goes to the document window.
+    #[test]
+    fn undo_redo_follow_the_key_window_and_other_commands_go_to_main() {
+        assert_eq!(
+            menu_command_target_label("edit.undo", Some("toolset-core-main")),
+            "toolset-core-main"
+        );
+        assert_eq!(
+            menu_command_target_label("edit.redo", Some("preferences")),
+            "preferences"
+        );
+        assert_eq!(
+            menu_command_target_label("edit.undo", Some(MAIN_WINDOW_LABEL)),
+            MAIN_WINDOW_LABEL
+        );
+        assert_eq!(
+            menu_command_target_label("edit.undo", None),
+            MAIN_WINDOW_LABEL
+        );
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", Some("toolset-core-main")),
+            MAIN_WINDOW_LABEL
+        );
+        assert_eq!(
+            menu_command_target_label("clipboard.copyAs.smiles", Some("preferences")),
+            MAIN_WINDOW_LABEL
+        );
     }
 
     #[test]
