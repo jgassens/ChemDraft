@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 import { keepFocusInsideDialog, trapDialogTab } from "./PluginImageRequestDialog";
+import { EXPERIMENTAL_PLUGIN_NOTICE } from "./pluginUpdates";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import type { StructureRecognitionInstallError } from "./structureRecognitionEngine";
@@ -88,6 +89,7 @@ export function StructureRecognitionInstallDialog({
                 {formatDiskBytes(request.status.freeDiskBytes)}.
               </p>
               <p>It runs entirely on this computer. Images never leave it.</p>
+              <p data-testid="recognition-install-experimental-note">{EXPERIMENTAL_PLUGIN_NOTICE}</p>
             </>
           )}
           {request.status.detail ? <p>{request.status.detail}</p> : null}

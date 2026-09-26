@@ -891,6 +891,29 @@ describe("PluginManagerDialog", () => {
     ).toBe("Install");
   });
 
+  it("badges only the MolScribe catalog entry as Experimental, not NMR or OPSIN", () => {
+    const runtime = createRuntime();
+    applyEnabledPlugins(runtime, new Set(), descriptors);
+    mount(
+      createElement(OfficialCatalogHarness, {
+        runtime,
+        prepare: vi.fn(async () => preparedOfficialInstall())
+      })
+    );
+
+    const available = document.querySelector('[aria-label="Available official plugins"]');
+    const molscribeRow = available?.querySelector('[data-plugin-id="org.chemdraft.ocsr.molscribe"]');
+    expect(molscribeRow?.querySelector('[data-testid="plugin-experimental-badge"]')).not.toBeNull();
+    expect(molscribeRow?.querySelector('[data-testid="plugin-experimental-note"]')?.textContent).toContain(
+      "Experimental"
+    );
+
+    const nmrRow = available?.querySelector(`[data-plugin-id="${officialNmrPluginId}"]`);
+    const opsinRow = available?.querySelector(`[data-plugin-id="${officialOpsinPluginId}"]`);
+    expect(nmrRow?.querySelector('[data-testid="plugin-experimental-badge"]')).toBeNull();
+    expect(opsinRow?.querySelector('[data-testid="plugin-experimental-badge"]')).toBeNull();
+  });
+
   it("downloads an official plugin, reviews it, installs it, and returns it to Available after uninstall", async () => {
     const runtime = createRuntime();
     const prepared = deferred<PreparedOfficialPluginInstall>();
@@ -1673,6 +1696,19 @@ describe("PluginManagerDialog one-click engine install", () => {
 
   const stepText = () => document.querySelector('[data-testid="recognition-install-step"]')?.textContent;
   const engineRow = () => document.querySelector('[data-testid="molscribe-engine-row"]');
+
+  it("shows the Experimental badge and caveat in the MolScribe install review", async () => {
+    const fake = fakeEngine();
+    const runtime = runtimeWith(fake.engine);
+    mount(createElement(CatalogFlow, { runtime, onInstall: vi.fn() }));
+
+    await reviewAndConfirmMolscribe();
+    const review = document.querySelector('[data-testid="plugin-package-review"]');
+    expect(review?.querySelector('[data-testid="plugin-experimental-badge"]')).not.toBeNull();
+    expect(review?.querySelector('[data-testid="plugin-experimental-note"]')?.textContent).toContain(
+      "Experimental"
+    );
+  });
 
   it("states the engine in the review, then installs the plugin and the engine from one Install", async () => {
     const fake = fakeEngine();

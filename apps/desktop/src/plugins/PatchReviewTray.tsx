@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { PluginHost, QueuedProposedPatch } from "@chemdraft/plugin-host";
 import type { PluginProposalReviewItem } from "./panelBridge";
+import { EXPERIMENTAL_RECOGNITION_REVIEW_NOTICE } from "./pluginUpdates";
 import { reviewedRecognition } from "./recognitionAgreement";
 import { recognitionStructurePreview } from "./recognitionPreview";
 
@@ -143,6 +144,9 @@ export function PatchReviewList({
                 ) : (
                   <p>Recognized structure: MOL structure ready for review</p>
                 )}
+                <p className="patch-review-experimental-note" data-testid="recognition-experimental-note">
+                  {EXPERIMENTAL_RECOGNITION_REVIEW_NOTICE}
+                </p>
               </div>
             </div>
           ) : null}

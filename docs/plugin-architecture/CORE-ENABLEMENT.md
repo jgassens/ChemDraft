@@ -64,6 +64,10 @@ route desktop reports through `openPluginPanelWindow` and the snapshot/event bri
 `PluginPanelSurface` only for the web fallback, render `PluginManagerDialog`, register the
 `plugins.manage` command, and sync plugin menu items into the native menu via effect.
 
+The MolScribe catalog entry carries `experimental: true` (`pluginUpdates.ts`); the Plugin Manager,
+the engine install dialog, and recognition proposal review each show an Experimental badge or caveat
+derived from that one flag, never a hard-coded plugin id.
+
 The MolScribe manager row and recognition request both open the same host-owned install controller.
 The dialog names the requesting plugin, reports required/free disk space and local-only processing,
 and streams install progress. The native layer owns network and filesystem work; no TypeScript module

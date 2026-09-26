@@ -31,6 +31,10 @@ export interface OfficialPluginCatalogEntry {
   /** A host-managed engine the plugin cannot work without. Installing the plugin from the catalog
    *  also installs it, in the same flow, after saying so in the review. */
   requiresEngine?: "structureRecognition";
+  /** Marks a catalog entry whose recognition quality is not yet reliable enough for general use.
+   *  Surfaces must show the experimental caveat wherever the entry, its install, or its output
+   *  is shown to the user. */
+  experimental?: true;
 }
 
 /**
@@ -59,13 +63,29 @@ export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
       "Recognize a drawn structure from an image or screenshot. Installing it also downloads a local recognition engine (about 2.5 GB).",
     repository: "jgassens/ChemDraft-MolScribe-Plugin",
     assetStem: "molscribe-ocsr",
-    requiresEngine: "structureRecognition"
+    requiresEngine: "structureRecognition",
+    experimental: true
   }
 ];
 
 const OFFICIAL_PLUGIN_SOURCES = new Map(
   OFFICIAL_PLUGIN_CATALOG.map((entry) => [entry.pluginId, entry] as const)
 );
+
+/** One sentence shown wherever an `experimental` catalog entry, its install, or its recognition
+ *  output is surfaced to the user. Kept here so every surface quotes the same wording. */
+export const EXPERIMENTAL_PLUGIN_NOTICE =
+  "Experimental: works best on clean, computer-drawn structures; hand-drawn, sketch-style or " +
+  "colour-filled drawings and images with grid lines are often misread. Check every result " +
+  "before inserting.";
+
+/** Compact form of the notice for space-constrained surfaces such as a proposal review row. */
+export const EXPERIMENTAL_RECOGNITION_REVIEW_NOTICE =
+  "Experimental recognition — check every atom and bond before inserting.";
+
+export function isOfficialPluginExperimental(pluginId: string): boolean {
+  return OFFICIAL_PLUGIN_SOURCES.get(pluginId)?.experimental === true;
+}
 
 interface HostFetchInit extends RequestInit {
   /** Tauri HTTP client option. Zero prevents Rust/reqwest from following an unchecked target. */

@@ -18,7 +18,7 @@ import type {
   PluginUpdateOffer,
   PreparedPluginUpdate
 } from "./pluginUpdates";
-import { OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { EXPERIMENTAL_PLUGIN_NOTICE, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";
@@ -508,9 +508,19 @@ export function PluginManagerDialog({
                       {updateResult?.status === "available" ? (
                         <span className="plugin-manager-badge is-update">Update available</span>
                       ) : null}
+                      {isOfficialPluginExperimental(manifest.id) ? (
+                        <span className="plugin-manager-badge is-experimental" data-testid="plugin-experimental-badge">
+                          Experimental
+                        </span>
+                      ) : null}
                     </div>
                     <div className="plugin-manager-id">{manifest.id}</div>
                     {manifest.description ? <p>{manifest.description}</p> : null}
+                    {isOfficialPluginExperimental(manifest.id) ? (
+                      <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
+                        {EXPERIMENTAL_PLUGIN_NOTICE}
+                      </p>
+                    ) : null}
                     {installed ? <PermissionList permissions={manifest.permissions} /> : null}
                     {!installed ? (
                       <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
@@ -587,9 +597,21 @@ export function PluginManagerDialog({
                   return (
                     <li className="plugin-manager-item" data-plugin-id={entry.pluginId} key={entry.pluginId}>
                       <div className="plugin-manager-details">
-                        <div className="plugin-manager-name">{entry.displayName}</div>
+                        <div className="plugin-manager-name">
+                          {entry.displayName}
+                          {entry.experimental ? (
+                            <span className="plugin-manager-badge is-experimental" data-testid="plugin-experimental-badge">
+                              Experimental
+                            </span>
+                          ) : null}
+                        </div>
                         <div className="plugin-manager-id">{entry.pluginId}</div>
                         <p>{entry.description}</p>
+                        {entry.experimental ? (
+                          <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
+                            {EXPERIMENTAL_PLUGIN_NOTICE}
+                          </p>
+                        ) : null}
                         {rowError ? (
                           <p
                             className="plugin-manager-update-status is-error"
@@ -894,11 +916,17 @@ function PackageReview({
 }) {
   const { manifest, provenance, unpackedBytes, sourceChecksum } = subject.inspection;
   const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+  const experimental = isOfficialPluginExperimental(manifest.id);
   return (
     <footer className="plugin-manager-review" data-testid="plugin-package-review">
       <div className="plugin-manager-review-body">
         <div className="plugin-manager-name">
           {manifest.name} <span>v{manifest.version}</span>
+          {experimental ? (
+            <span className="plugin-manager-badge is-experimental" data-testid="plugin-experimental-badge">
+              Experimental
+            </span>
+          ) : null}
         </div>
         {mode === "update" && currentVersion ? (
           <p className="plugin-manager-update-version" data-testid="plugin-update-version">
@@ -907,6 +935,11 @@ function PackageReview({
         ) : null}
         <div className="plugin-manager-id">{manifest.id}</div>
         {manifest.description ? <p data-testid="plugin-package-description">{manifest.description}</p> : null}
+        {experimental ? (
+          <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
+            {EXPERIMENTAL_PLUGIN_NOTICE}
+          </p>
+        ) : null}
 
         <PermissionList permissions={manifest.permissions} />
 

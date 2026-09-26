@@ -80,6 +80,9 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(document.body.textContent).toContain("a private Python, PyTorch and a 1.1 GB model");
     expect(document.body.textContent).toContain("Space needed: 2 GB. Free space: 3 GB.");
     expect(document.body.textContent).toContain("Images never leave it.");
+    expect(document.querySelector('[data-testid="recognition-install-experimental-note"]')?.textContent).toContain(
+      "Experimental"
+    );
 
     act(() => button("Install").click());
     expect(callbacks.onInstall).toHaveBeenCalledWith(7);

@@ -9,6 +9,7 @@ import {
   checkForPluginUpdates,
   GITHUB_RELEASE_ASSET_HOST,
   GITHUB_RELEASE_ASSET_PATH_PREFIX,
+  isOfficialPluginExperimental,
   OFFICIAL_PLUGIN_CATALOG,
   prepareOfficialPluginInstall,
   preparePluginUpdate,
@@ -142,7 +143,8 @@ describe("host-managed plugin update catalog", () => {
           "Recognize a drawn structure from an image or screenshot. Installing it also downloads a local recognition engine (about 2.5 GB).",
         repository: "jgassens/ChemDraft-MolScribe-Plugin",
         assetStem: "molscribe-ocsr",
-        requiresEngine: "structureRecognition"
+        requiresEngine: "structureRecognition",
+        experimental: true
       }
     ]);
   });
@@ -458,5 +460,19 @@ describe("host-managed plugin update catalog", () => {
           )
       })
     ).rejects.toThrow(/exceeded.*limit/i);
+  });
+});
+
+describe("isOfficialPluginExperimental", () => {
+  it("is true only for the MolScribe OCSR catalog entry", () => {
+    expect(isOfficialPluginExperimental("org.chemdraft.ocsr.molscribe")).toBe(true);
+    expect(isOfficialPluginExperimental("org.chemdraft.nmr.predictor")).toBe(false);
+    expect(isOfficialPluginExperimental("org.chemdraft.opsin.nameToStructure")).toBe(false);
+    expect(isOfficialPluginExperimental("org.chemdraft.unknown.plugin")).toBe(false);
+  });
+
+  it("matches the flag recorded on the catalog entry itself", () => {
+    const molscribe = OFFICIAL_PLUGIN_CATALOG.find((entry) => entry.pluginId === "org.chemdraft.ocsr.molscribe");
+    expect(molscribe?.experimental).toBe(true);
   });
 });
