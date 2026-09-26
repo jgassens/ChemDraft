@@ -654,6 +654,7 @@ import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugin
 import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform, isBrowserReloadChord } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
+import { boundedHistoryPast } from "./documentHistoryBudget";
 import {
   APP_CHECK_FOR_UPDATES_COMMAND_ID,
   AUTO_CHECK_DELAY_MS,
@@ -1406,8 +1407,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.25.23.52-opus";
+const CURRENT_BUILD_STAMP = "9.26.00.32-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2577,7 +2577,7 @@ export function MainWindow({
     }
 
     installDocumentHistory({
-      past: [...currentHistory.past, currentHistory.present].slice(-DOCUMENT_HISTORY_LIMIT),
+      past: boundedHistoryPast([...currentHistory.past, currentHistory.present]),
       present: reconcileNativeChargeMarks(nextDocument),
       future: []
     });
@@ -2597,7 +2597,7 @@ export function MainWindow({
   ) => {
     const currentHistory = documentHistoryRef.current;
     installDocumentHistory({
-      past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      past: boundedHistoryPast([...currentHistory.past, startDocument]),
       present: reconcileNativeChargeMarks(nextDocument),
       future: []
     });
@@ -2666,7 +2666,7 @@ export function MainWindow({
     }
 
     installDocumentHistory({
-      past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+      past: boundedHistoryPast([...currentHistory.past, startDocument]),
       present: currentHistory.present,
       future: []
     });
@@ -16548,6 +16548,17 @@ export function MainWindow({
                   const groupProjectedPlaneTiltObjectIds = rawGroupSelectionBounds
                     ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, resolvedSelectionObjectIds)
                     : [];
+                  // Per-render lookups, built once: the loop below runs for every object, and
+                  // `includes`/`find` over the selection there made a select-all render of a
+                  // 5,000-object page 25 million comparisons, twice.
+                  const selectedObjectIdSet = new Set(document.selection.objectIds);
+                  const resolvedSelectionIdSet = new Set(resolvedSelectionObjectIds);
+                  const selectedPartByObjectId = new Map<string, (typeof selectedNativeMoleculeParts)[number]>();
+                  for (const part of selectedNativeMoleculeParts) {
+                    if (!selectedPartByObjectId.has(part.objectId)) {
+                      selectedPartByObjectId.set(part.objectId, part);
+                    }
+                  }
                   return (
                   <>
                 {document.pages[0].objects.map((object, layerIndex) => {
@@ -16555,15 +16566,15 @@ export function MainWindow({
                   // Phase 7: each selected molecule renders its own part highlight, so shift/marquee
                   // selections that span several molecules all light up (not just the primary).
                   const selectedPart = selectionChromeActive
-                    ? selectedNativeMoleculeParts.find((part) => part.objectId === object.id)
+                    ? selectedPartByObjectId.get(object.id)
                     : undefined;
                   const selected = selectionChromeActive &&
-                    document.selection.objectIds.includes(object.id) &&
+                    selectedObjectIdSet.has(object.id) &&
                     selectedPart === undefined;
                   // While a multi-selection group is active, individual members defer their
                   // own resize/rotate handles to the single group overlay.
                   const inGroupSelection = groupSelectionBounds !== undefined &&
-                    resolvedSelectionObjectIds.includes(object.id);
+                    resolvedSelectionIdSet.has(object.id);
                   // While this molecule is being spun in 3D, its real 2D drawing is faded
                   // to a faint ghost (the live overlay paints on top). The selection box
                   // and rotate handle are separate chrome and stay fully visible.
@@ -18739,7 +18750,7 @@ export function projectedPlaneTiltCommitHistory(
   nextDocument: ChemDraftDocument
 ): DocumentHistory {
   return {
-    past: [...currentHistory.past, startDocument].slice(-DOCUMENT_HISTORY_LIMIT),
+    past: boundedHistoryPast([...currentHistory.past, startDocument]),
     present: nextDocument,
     future: []
   };

@@ -180,9 +180,11 @@ export function exportDocumentToCdxml(
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
   const contents = buildCdxmlEnvelope(creationProgram, envelopePages);
-  const finalVisibleHash = visibleHashForCdxml(contents);
-
-  if (finalVisibleHash !== visibleCdxmlHash) {
+  // The envelope is the visible envelope plus one metadata insertion, so "the visible layer did not
+  // change" is checked textually: removing that exact insertion must give the visible envelope back
+  // (at least as strict as comparing hashes). Re-parsing and re-hashing the whole finished envelope
+  // — payload included — to prove the same thing cost a full XML parse of megabytes on every save.
+  if (contents.replace(metadata, "") !== visibleEnvelope) {
     warnings.push({
       code: "cdxml.visible_hash_internal_mismatch",
       message: "ChemDraft generated a CDXML envelope whose visible hash changed after metadata insertion."

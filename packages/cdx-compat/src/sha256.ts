@@ -28,6 +28,18 @@ export function utf8String(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
+const roundConstantsInt32 = new Int32Array(roundConstants.buffer);
+
+/**
+ * SHA-256 (FIPS 180-4), synchronous, in plain JavaScript — the CDXML envelope hashes are computed
+ * inside synchronous export paths, where WebCrypto's async digest cannot reach.
+ *
+ * The hot loop is inline 32-bit arithmetic on locals: a sum of up to five int32s is exact in a double
+ * and `| 0` wraps it mod 2^32. The previous version added through a rest-parameter helper, which
+ * allocated an array five times per round — every save of a large drawing (four hashes over ~25 MB
+ * for a 5,000-molecule page) spent seconds mostly in garbage collection. The output is bit-for-bit
+ * the same; the tests check it against node:crypto.
+ */
 export function sha256Hex(bytes: Uint8Array): string {
   const bitLength = bytes.length * 8;
   const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
@@ -36,73 +48,66 @@ export function sha256Hex(bytes: Uint8Array): string {
   padded[bytes.length] = 0x80;
 
   const view = new DataView(padded.buffer);
-  const high = Math.floor(bitLength / 0x100000000);
-  const low = bitLength >>> 0;
-  view.setUint32(paddedLength - 8, high, false);
-  view.setUint32(paddedLength - 4, low, false);
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000), false);
+  view.setUint32(paddedLength - 4, bitLength >>> 0, false);
 
-  const hash = new Uint32Array(initialHash);
-  const schedule = new Uint32Array(64);
+  let h0 = initialHash[0] | 0;
+  let h1 = initialHash[1] | 0;
+  let h2 = initialHash[2] | 0;
+  let h3 = initialHash[3] | 0;
+  let h4 = initialHash[4] | 0;
+  let h5 = initialHash[5] | 0;
+  let h6 = initialHash[6] | 0;
+  let h7 = initialHash[7] | 0;
+  const w = new Int32Array(64);
+  const k = roundConstantsInt32;
 
   for (let offset = 0; offset < paddedLength; offset += 64) {
     for (let index = 0; index < 16; index += 1) {
-      schedule[index] = view.getUint32(offset + index * 4, false);
+      const byte = offset + index * 4;
+      w[index] = (padded[byte] << 24) | (padded[byte + 1] << 16) | (padded[byte + 2] << 8) | padded[byte + 3];
     }
-
     for (let index = 16; index < 64; index += 1) {
-      const s0 = rotateRight(schedule[index - 15], 7) ^ rotateRight(schedule[index - 15], 18) ^ (schedule[index - 15] >>> 3);
-      const s1 = rotateRight(schedule[index - 2], 17) ^ rotateRight(schedule[index - 2], 19) ^ (schedule[index - 2] >>> 10);
-      schedule[index] = add32(schedule[index - 16], s0, schedule[index - 7], s1);
+      const x = w[index - 15];
+      const y = w[index - 2];
+      const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+      const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+      w[index] = (w[index - 16] + s0 + w[index - 7] + s1) | 0;
     }
 
-    let a = hash[0];
-    let b = hash[1];
-    let c = hash[2];
-    let d = hash[3];
-    let e = hash[4];
-    let f = hash[5];
-    let g = hash[6];
-    let h = hash[7];
-
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
     for (let index = 0; index < 64; index += 1) {
-      const s1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+      const s1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
       const ch = (e & f) ^ (~e & g);
-      const temp1 = add32(h, s1, ch, roundConstants[index], schedule[index]);
-      const s0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+      const temp1 = (h + s1 + ch + k[index] + w[index]) | 0;
+      const s0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
       const maj = (a & b) ^ (a & c) ^ (b & c);
-      const temp2 = add32(s0, maj);
-
+      const temp2 = (s0 + maj) | 0;
       h = g;
       g = f;
       f = e;
-      e = add32(d, temp1);
+      e = (d + temp1) | 0;
       d = c;
       c = b;
       b = a;
-      a = add32(temp1, temp2);
+      a = (temp1 + temp2) | 0;
     }
-
-    hash[0] = add32(hash[0], a);
-    hash[1] = add32(hash[1], b);
-    hash[2] = add32(hash[2], c);
-    hash[3] = add32(hash[3], d);
-    hash[4] = add32(hash[4], e);
-    hash[5] = add32(hash[5], f);
-    hash[6] = add32(hash[6], g);
-    hash[7] = add32(hash[7], h);
+    h0 = (h0 + a) | 0;
+    h1 = (h1 + b) | 0;
+    h2 = (h2 + c) | 0;
+    h3 = (h3 + d) | 0;
+    h4 = (h4 + e) | 0;
+    h5 = (h5 + f) | 0;
+    h6 = (h6 + g) | 0;
+    h7 = (h7 + h) | 0;
   }
 
-  return Array.from(hash, (part) => part.toString(16).padStart(8, "0")).join("");
-}
-
-function rotateRight(value: number, bits: number): number {
-  return (value >>> bits) | (value << (32 - bits));
-}
-
-function add32(...values: number[]): number {
-  let total = 0;
-  for (const value of values) {
-    total = (total + value) >>> 0;
-  }
-  return total;
+  return [h0, h1, h2, h3, h4, h5, h6, h7].map((part) => (part >>> 0).toString(16).padStart(8, "0")).join("");
 }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   ChemDraftDocumentSchema,
@@ -243,6 +244,24 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(sha256Hex(utf8Bytes("abc"))).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
+  });
+
+  it("agrees with node:crypto on every length around the block and padding boundaries, and on large input", () => {
+    // Stored in every saved file, so the fast implementation must match the standard bit for bit —
+    // including the lengths where padding spills into an extra block (55, 56, 63, 64, 119, 120 …).
+    const bytes = new Uint8Array(300);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = (index * 131 + 7) & 0xff;
+    }
+    for (let length = 0; length <= bytes.length; length += 1) {
+      const slice = bytes.subarray(0, length);
+      expect(sha256Hex(slice)).toBe(createHash("sha256").update(slice).digest("hex"));
+    }
+    const large = new Uint8Array(3 * 1024 * 1024 + 17);
+    for (let index = 0; index < large.length; index += 1) {
+      large[index] = (index * 2654435761) >>> 24;
+    }
+    expect(sha256Hex(large)).toBe(createHash("sha256").update(large).digest("hex"));
   });
 
   it("exports a deterministic CDXML envelope with hidden native payload metadata", () => {
