@@ -1034,11 +1034,14 @@ impl TempImage {
                 "chemdraft-ocsr-{}-{id}.{extension}",
                 std::process::id()
             ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
                 Ok(mut file) => {
                     use std::io::Write;
                     file.write_all(bytes)?;
@@ -1783,6 +1786,22 @@ mod tests {
         assert!(path.exists());
         drop(temp);
         assert!(!path.exists());
+        let _ = fs::remove_dir(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_images_are_created_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "chemdraft-ocsr-temp-perm-test-{}",
+            std::process::id()
+        ));
+        let temp = TempImage::write(&root, "png", b"fixture").expect("temp image");
+        let metadata = fs::metadata(temp.path()).expect("temp image metadata");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        drop(temp);
         let _ = fs::remove_dir(root);
     }
 
