@@ -134,7 +134,8 @@ fn configure_windows_child(_command: &mut Command) {}
 /// it), so the id cannot have been reused by an unrelated process.
 ///
 /// Unix: SIGKILL to the process group the child leads (`MacPlatform::configure_child` makes it a
-/// group leader), and to the child itself in case it is not one.
+/// group leader), and to the child itself in case it is not one. A child forked at the moment of
+/// the kill can escape it; [`sweep_exited_process_group`] catches it before the leader is reaped.
 #[cfg(unix)]
 pub fn kill_process_tree(pid: u32) {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
@@ -169,6 +170,49 @@ pub fn kill_process_tree(pid: u32) {
 
 #[cfg(not(any(unix, windows)))]
 pub fn kill_process_tree(_pid: u32) {}
+
+/// Reports whether the unreaped child `pid` has exited, without reaping it, and if it has, kills
+/// whatever is left of the process group it led. `block` waits for the exit instead of returning
+/// `Ok(false)` while it is still running.
+///
+/// [`kill_process_tree`] alone is not enough on macOS: a group kill that lands while the leader is
+/// forking misses the new child, which joins the group just after the signal went out and lives
+/// on, holding the leader's stdout open (measured: a killed `sh` lost its `sleep` in 11 of 15 runs
+/// when the kill landed ~100 µs into the fork). Once the leader has exited it cannot fork again,
+/// and until it is reaped its pid, and so the group id, cannot be reused, so this second kill
+/// reaches every survivor and nothing else. Callers reap (`Child::try_wait`/`wait`) only after it.
+#[cfg(unix)]
+pub fn sweep_exited_process_group(pid: u32, block: bool) -> std::io::Result<bool> {
+    let id = libc::id_t::try_from(pid).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    let mut flags = libc::WEXITED | libc::WNOWAIT;
+    if !block {
+        flags |= libc::WNOHANG;
+    }
+    loop {
+        // SAFETY: an all-zero siginfo_t is valid, and zero is what `si_pid` must read when
+        // WNOHANG finds the child still running.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a valid out-pointer; WNOWAIT leaves the child for `Child` to reap.
+        if unsafe { libc::waitid(libc::P_PID, id, &mut info, flags) } == 0 {
+            // SAFETY: waitid filled `info` for a child state change, or left it zeroed.
+            if unsafe { info.si_pid() } == 0 {
+                return Ok(false);
+            }
+            kill_process_tree(pid);
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// No process groups to sweep; callers fall back to reaping the child directly.
+#[cfg(not(unix))]
+pub fn sweep_exited_process_group(_pid: u32, _block: bool) -> std::io::Result<bool> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
 
 pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

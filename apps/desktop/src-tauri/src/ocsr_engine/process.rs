@@ -1,7 +1,7 @@
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
@@ -71,8 +71,9 @@ pub enum ProcessError {
 
 /// Kills the running sidecar from any thread, without the [`ProcessManager`] lock that a
 /// recognition holds for its whole length (up to [`REQUEST_TIMEOUT`]). Exit, install and
-/// uninstall use it so none of them waits for a recognition to finish: the child dies, the
-/// request in flight sees its output close and reports [`ProcessError::Cancelled`].
+/// uninstall use it so none of them waits for a recognition to finish: the child dies, and the
+/// request in flight is woken at once and reports [`ProcessError::Cancelled`] (it does not wait for
+/// the child's output to close, which a grandchild still holding it open would delay).
 #[derive(Clone, Default)]
 pub struct KillSwitch(Arc<Mutex<KillState>>);
 
@@ -300,6 +301,15 @@ impl ProcessManager {
                 return result.map_err(|_| ProcessError::Cancelled);
             }
             match result {
+                // Killed before this request began (it asked for nothing): a dead child, as below.
+                Err(ProcessError::Cancelled) => {
+                    self.stop();
+                    if attempt == 1 {
+                        return Err(ProcessError::Crashed(
+                            "The OCSR engine was stopped while recognizing the image.".to_string(),
+                        ));
+                    }
+                }
                 Err(ProcessError::Crashed(message)) => {
                     self.stop();
                     if attempt == 1 {
@@ -387,17 +397,24 @@ impl ProcessSpawner for SystemSpawner {
         let stderr = child.stderr.take().ok_or_else(|| {
             ProcessError::Crashed("Could not open the OCSR engine log.".to_string())
         })?;
-        let child = Arc::new(Mutex::new(child));
-        let killable = child.clone();
-        kill_switch.arm(Box::new(move || {
-            // Holding the child's lock rules out a concurrent reap, so the id cannot be reused.
-            let mut child = lock_child(&killable);
-            if matches!(child.try_wait(), Ok(None)) {
-                platform::kill_process_tree(child.id());
-            }
-            let _ = child.kill();
+        let child = Arc::new(Mutex::new(Sidecar {
+            child,
+            reaped: false,
         }));
         let (lines_tx, lines_rx) = mpsc::channel();
+        let killable = child.clone();
+        let killed_tx = lines_tx.clone();
+        kill_switch.arm(Box::new(move || {
+            // Holding the child's lock rules out a concurrent reap, so the id cannot be reused.
+            let mut sidecar = lock_child(&killable);
+            if !sidecar.reaped {
+                platform::kill_process_tree(sidecar.child.id());
+            }
+            let _ = sidecar.child.kill();
+            drop(sidecar);
+            // Wakes the request now, rather than when the output closes.
+            let _ = killed_tx.send(SidecarOutput::Killed);
+        }));
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -405,8 +422,8 @@ impl ProcessSpawner for SystemSpawner {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        if lines_tx.send(line).is_err() {
-                            break;
+                        if lines_tx.send(SidecarOutput::Line(line)).is_err() {
+                            return;
                         }
                     }
                     Err(error) => {
@@ -415,6 +432,8 @@ impl ProcessSpawner for SystemSpawner {
                     }
                 }
             }
+            // Said explicitly: the kill switch's sender keeps the channel connected.
+            let _ = lines_tx.send(SidecarOutput::Closed);
         });
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
@@ -448,12 +467,53 @@ impl ProcessSpawner for SystemSpawner {
 
 struct SystemProcess {
     /// Shared with the [`KillSwitch`], which kills it from another thread.
-    child: Arc<Mutex<Child>>,
+    child: Arc<Mutex<Sidecar>>,
     stdin: ChildStdin,
-    lines: mpsc::Receiver<String>,
+    lines: mpsc::Receiver<SidecarOutput>,
 }
 
-fn lock_child(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
+enum SidecarOutput {
+    Line(String),
+    /// The sidecar's stdout reached its end.
+    Closed,
+    /// The [`KillSwitch`] killed the sidecar.
+    Killed,
+}
+
+/// The sidecar's child. Every reap goes through here, so the process group is swept first (see
+/// [`platform::sweep_exited_process_group`]), and `reaped` records when its pid stops being ours.
+struct Sidecar {
+    child: Child,
+    reaped: bool,
+}
+
+impl Sidecar {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        if !self.reaped
+            && matches!(
+                platform::sweep_exited_process_group(self.child.id(), false),
+                Ok(false)
+            )
+        {
+            return Ok(None);
+        }
+        let status = self.child.try_wait()?;
+        self.reaped |= status.is_some();
+        Ok(status)
+    }
+
+    fn kill_and_wait(&mut self) {
+        if !self.reaped {
+            platform::kill_process_tree(self.child.id());
+            let _ = self.child.kill();
+            let _ = platform::sweep_exited_process_group(self.child.id(), true);
+        }
+        let _ = self.child.wait();
+        self.reaped = true;
+    }
+}
+
+fn lock_child(child: &Mutex<Sidecar>) -> MutexGuard<'_, Sidecar> {
     child
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -462,9 +522,10 @@ fn lock_child(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
 impl SystemProcess {
     fn receive_line(&mut self, timeout: Duration) -> Result<String, ProcessError> {
         match self.lines.recv_timeout(timeout) {
-            Ok(line) => Ok(line),
+            Ok(SidecarOutput::Line(line)) => Ok(line),
+            Ok(SidecarOutput::Killed) => Err(ProcessError::Cancelled),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(ProcessError::Timeout),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Ok(SidecarOutput::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let detail = match lock_child(&self.child).try_wait() {
                     Ok(Some(status)) => format!("The OCSR engine exited with {status}."),
                     Ok(None) => "The OCSR engine closed its output unexpectedly.".to_string(),
@@ -546,9 +607,7 @@ impl EngineProcess for SystemProcess {
                 Err(_) => break,
             }
         }
-        let mut child = lock_child(&self.child);
-        let _ = child.kill();
-        let _ = child.wait();
+        lock_child(&self.child).kill_and_wait();
     }
 }
 
