@@ -313,6 +313,11 @@ export class PluginHost {
   /** Real recognition insertions withheld from plugins without `document.read`, per invocation, keyed
    *  by the opaque `ref` the plugin was handed instead (see `HostHeldRecognitionPatchOp`). */
   private readonly heldRecognitionPatches = new Map<symbol, Map<string, NormalizedProposedDocumentPatch>>();
+  /** The host's own copy of the screen capture a pending recognition proposal was made from, keyed by
+   *  proposal id. A screen capture exists nowhere else once its proposal leaves the queue, so the app
+   *  reads it here before accepting (AGENTS.md §8: the source stays available). Image files the user
+   *  chose are not kept: they are still on disk. Never exposed to plugins. */
+  private readonly recognitionSources = new Map<string, PluginProvidedImage>();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
@@ -669,8 +674,9 @@ export class PluginHost {
     this.requirePermission(pluginId, "document.proposePatch");
     let parsedProposal = ProposedDocumentPatchSchema.parse(proposal);
     const hostHeld = isHostHeldRecognitionPatch(parsedProposal.patch);
+    const heldRef = hostHeld ? (parsedProposal.patch as unknown as { ref?: unknown }).ref : undefined;
     if (hostHeld) {
-      const ref = (parsedProposal.patch as unknown as { ref?: unknown }).ref;
+      const ref = heldRef;
       const held = invocationToken ? this.heldRecognitionPatches.get(invocationToken) : undefined;
       const heldPatch = typeof ref === "string" ? held?.get(ref) : undefined;
       if (
@@ -698,6 +704,8 @@ export class PluginHost {
     // Snapshot BEFORE enqueueing: if a proposal cannot be cloned/frozen at all, it must never reach
     // the queue, or the tray's next render throws on an entry the user has no way to dismiss.
     const snapshot = snapshotProposal(queued);
+    const screenSource = this.screenCaptureSourceFor(invocationToken, parsedProposal, heldRef);
+    if (screenSource) this.recognitionSources.set(queued.id, screenSource);
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
     return { snapshot, hostHeld };
@@ -745,6 +753,16 @@ export class PluginHost {
     return AppliedPatchReceiptSchema.parse(receipt);
   }
 
+  /**
+   * The screen capture a pending recognition proposal was made from, as the host captured it, or
+   * `undefined` when the source was an image file (still on disk) or the proposal is not a recognition.
+   * For the app, never a plugin: read it before `acceptProposedPatch`, which drops the host's copy.
+   */
+  recognitionScreenCaptureOf(proposalId: string): PluginProvidedImage | undefined {
+    const image = this.recognitionSources.get(proposalId);
+    return image ? { ...image, bytes: new Uint8Array(image.bytes) } : undefined;
+  }
+
   listProposedPatches(status?: ProposedPatchStatus): QueuedProposedPatch[] {
     return Array.from(this.proposedPatches.values())
       .filter((proposal) => (status ? proposal.status === status : true))
@@ -775,6 +793,7 @@ export class PluginHost {
     // Resolved proposals leave the queue: a recognition proposal carries its whole source image as a
     // data URI (up to ~35 MB), and nothing reads a resolved entry back.
     this.proposedPatches.delete(proposalId);
+    this.recognitionSources.delete(proposalId);
     this.onProposedPatchesChanged?.();
     return updated;
   }
@@ -785,6 +804,7 @@ export class PluginHost {
     queued.resolvedAt = this.timestamp();
     const snapshot = snapshotProposal(queued);
     this.proposedPatches.delete(proposalId);
+    this.recognitionSources.delete(proposalId);
     this.onProposedPatchesChanged?.();
     return snapshot;
   }
@@ -847,7 +867,8 @@ export class PluginHost {
               commandId: command.id,
               commandTitle: command.title,
               documentKey: this.getActiveDocumentKey?.(),
-              recognized: false
+              recognized: false,
+              recognizedImages: []
             });
             try {
               return await handler(this.createCommandContext(manifest.id, invocationToken));
@@ -1095,12 +1116,16 @@ export class PluginHost {
       const invocation = this.activeCommandInvocations.get(invocationToken);
       if (invocation) invocation.recognized = true;
       const proposedPatch = parsed.result.proposedPatch;
-      if (!proposedPatch || this.hasPermission(pluginId, "document.read")) return parsed;
+      if (!proposedPatch || this.hasPermission(pluginId, "document.read")) {
+        invocation?.recognizedImages.push({ image: heldImage });
+        return parsed;
+      }
       // No `document.read`: keep the document-derived insertion host-side and hand out an opaque
       // reference that `documents.proposePatch` resolves during this invocation.
       // An invocation that already ended can never propose, so nothing is held for it.
       const ref = `recognition_${this.createId()}`;
       if (invocation) {
+        invocation.recognizedImages.push({ image: heldImage, ref });
         const held = this.heldRecognitionPatches.get(invocationToken) ?? new Map<string, NormalizedProposedDocumentPatch>();
         held.set(ref, proposedPatch);
         this.heldRecognitionPatches.set(invocationToken, held);
@@ -1119,6 +1144,30 @@ export class PluginHost {
       requests.delete(abortController);
       if (requests.size === 0) this.openRecognitionRequests.delete(invocationToken);
     }
+  }
+
+  /** Which recognized screen capture a proposal carries. A host-held insertion names its image by
+   *  `ref`; a plugin with `document.read` proposes the real patch, and its review preview must be the
+   *  very bytes the host recognized. Anything else is not tied to a capture, and nothing is kept. */
+  private screenCaptureSourceFor(
+    invocationToken: symbol | undefined,
+    proposal: NormalizedProposedDocumentPatch,
+    heldRef: unknown
+  ): PluginProvidedImage | undefined {
+    const recognized = invocationToken
+      ? this.activeCommandInvocations.get(invocationToken)?.recognizedImages
+      : undefined;
+    if (!recognized?.length) return undefined;
+    let match: PluginProvidedImage | undefined;
+    if (typeof heldRef === "string") {
+      match = recognized.find((entry) => entry.ref === heldRef)?.image;
+    } else if (proposal.recognition) {
+      const previewBytes = dataUriBytes(proposal.recognition.sourceImageRef);
+      match = previewBytes
+        ? recognized.find((entry) => bytesEqual(entry.image.bytes, previewBytes))?.image
+        : undefined;
+    }
+    return match?.source === "screenRegion" ? { ...match, bytes: new Uint8Array(match.bytes) } : undefined;
   }
 
   private finishCommandInvocation(invocationToken: symbol): void {
@@ -1196,6 +1245,9 @@ interface ActiveCommandInvocation {
   documentKey: string | undefined;
   /** Set once recognition returned a structure in this invocation; `applyPatch` is then refused. */
   recognized: boolean;
+  /** The host-held images recognition returned a structure for in this invocation, with the opaque
+   *  `ref` handed out in place of the insertion when the plugin lacks `document.read`. */
+  recognizedImages: { image: PluginProvidedImage; ref?: string }[];
 }
 
 function isHostHeldRecognitionPatch(patch: NormalizedProposedDocumentPatch["patch"]): boolean {
@@ -1238,15 +1290,33 @@ function providedImagesEqual(left: PluginProvidedImage, right: PluginProvidedIma
     left.width !== right.width ||
     left.height !== right.height ||
     left.source !== right.source ||
-    left.fileName !== right.fileName ||
-    left.bytes.byteLength !== right.bytes.byteLength
+    left.fileName !== right.fileName
   ) {
     return false;
   }
-  for (let index = 0; index < left.bytes.byteLength; index += 1) {
-    if (left.bytes[index] !== right.bytes[index]) return false;
+  return bytesEqual(left.bytes, right.bytes);
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
   }
   return true;
+}
+
+/** The bytes of a base64 `data:` URI, or `undefined` when it is not one. */
+function dataUriBytes(uri: string): Uint8Array | undefined {
+  const comma = uri.indexOf(",");
+  if (!uri.startsWith("data:") || comma < 0 || !uri.slice(0, comma).endsWith(";base64")) return undefined;
+  try {
+    const binary = atob(uri.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  } catch {
+    return undefined;
+  }
 }
 
 class ScopedPluginStorage implements PluginStorage {

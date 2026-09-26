@@ -69,6 +69,8 @@ export interface PluginManagerDialogProps {
   onInstallRecognitionEngine?: () => Promise<boolean>;
   onCancelRecognitionEngineInstall?: () => Promise<void>;
   onUninstallRecognitionEngine?: () => Promise<void>;
+  /** Opens the folder of screen captures kept behind accepted recognitions (AGENTS.md §8). */
+  onShowRecognitionScreenCaptures?: () => Promise<void>;
   onClose: () => void;
   onPluginsChanged?: () => void;
 }
@@ -135,6 +137,7 @@ export function PluginManagerDialog({
   onInstallRecognitionEngine,
   onCancelRecognitionEngineInstall,
   onUninstallRecognitionEngine,
+  onShowRecognitionScreenCaptures,
   onClose,
   onPluginsChanged
 }: PluginManagerDialogProps) {
@@ -535,6 +538,7 @@ export function PluginManagerDialog({
                         onInstall={onInstallRecognitionEngine}
                         onCancel={onCancelRecognitionEngineInstall}
                         onUninstall={onUninstallRecognitionEngine}
+                        onShowScreenCaptures={onShowRecognitionScreenCaptures}
                       />
                     ) : null}
                   </div>
@@ -715,7 +719,8 @@ function RecognitionEngineRow({
   onRefresh,
   onInstall,
   onCancel,
-  onUninstall
+  onUninstall,
+  onShowScreenCaptures
 }: {
   status?: StructureRecognitionEngineStatus | null;
   run?: StructureRecognitionInstallRun;
@@ -724,6 +729,7 @@ function RecognitionEngineRow({
   onInstall?: () => Promise<boolean>;
   onCancel?: () => Promise<void>;
   onUninstall?: () => Promise<void>;
+  onShowScreenCaptures?: () => Promise<void>;
 }) {
   const [working, setWorking] = useState(false);
   /** Install was clicked and the run has not shown up yet. Only this — never the whole install — keeps
@@ -840,6 +846,19 @@ function RecognitionEngineRow({
             type="button"
           >
             {runError || status?.state === "broken" ? "Install engine again" : "Install engine"}
+          </button>
+        ) : null}
+        {/* Independent of the engine: captures kept from earlier recognitions stay reachable after the
+            engine is removed, until the user deletes them. */}
+        {onShowScreenCaptures ? (
+          <button
+            className="plugin-manager-button"
+            data-action="show-recognition-screen-captures"
+            disabled={working}
+            onClick={() => perform(onShowScreenCaptures, "The saved screen captures could not be shown")}
+            type="button"
+          >
+            Show saved screen captures
           </button>
         ) : null}
       </div>

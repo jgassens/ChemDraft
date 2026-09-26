@@ -177,6 +177,152 @@ fn capture_to_response(
     }
 }
 
+/// Accepted screen-capture recognitions keep their source here (AGENTS.md §8: the source image stays
+/// available unless the user deletes it). A capture exists nowhere else once its proposal is accepted:
+/// the temporary file above is gone and the document stores only the structure. Image files the user
+/// chose are never copied here — they are still where the user keeps them.
+const RECOGNITION_SOURCES_DIR: &str = "recognition-sources";
+/// Matches the host's `PluginImageMaxBytes`: nothing larger was ever handed to recognition.
+const MAX_RETAINED_CAPTURE_BYTES: usize = 25 * 1024 * 1024;
+
+fn recognition_sources_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(RECOGNITION_SOURCES_DIR))
+        .map_err(|error| format!("Could not resolve the app data directory: {error}"))
+}
+
+/// Keeps one accepted screen capture: `bytes_base64` must be a PNG no larger than the host's image
+/// limit. Returns the saved file's path.
+#[tauri::command]
+pub(crate) fn retain_recognition_screen_capture(
+    app: AppHandle,
+    bytes_base64: String,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64.as_bytes())
+        .map_err(|error| format!("The screen capture was not valid base64: {error}"))?;
+    let path = retain_capture_in(&recognition_sources_dir(&app)?, &bytes)?;
+    Ok(path.display().to_string())
+}
+
+/// Opens the folder of kept screen captures in the system file manager, creating it (private and
+/// empty) when nothing has been kept yet, so the button always leads somewhere.
+#[tauri::command]
+pub(crate) fn reveal_recognition_screen_captures(app: AppHandle) -> Result<(), String> {
+    let directory = recognition_sources_dir(&app)?;
+    ensure_private_dir(&directory).map_err(|error| {
+        format!(
+            "Could not create the screen-capture folder {}: {error}",
+            directory.display()
+        )
+    })?;
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("/usr/bin/open");
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(&directory)
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("Could not open {}: {error}", directory.display()))
+}
+
+fn retain_capture_in(directory: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    if bytes.is_empty() || bytes.len() > MAX_RETAINED_CAPTURE_BYTES {
+        return Err(format!(
+            "A kept screen capture must be between 1 byte and {MAX_RETAINED_CAPTURE_BYTES} bytes; this one is {}.",
+            bytes.len()
+        ));
+    }
+    if image::guess_format(bytes).ok() != Some(image::ImageFormat::Png) {
+        return Err("A kept screen capture must be a PNG image.".into());
+    }
+    ensure_private_dir(directory).map_err(|error| {
+        format!(
+            "Could not create the screen-capture folder {}: {error}",
+            directory.display()
+        )
+    })?;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let mut last_error = None;
+    for _ in 0..8 {
+        let path = directory.join(format!(
+            "screen-capture-{seconds}-{}.png",
+            &unguessable_token()[..12]
+        ));
+        match write_private_file(&path, bytes) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_error = Some(error);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not keep the screen capture at {}: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Err(format!(
+        "Could not find an unused name for the screen capture: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+    ))
+}
+
+/// Creates the directory 0700 if it is missing and tightens it to 0700 if it exists. A symlink in its
+/// place is refused rather than followed.
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match create_private_dir(path) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "a non-directory is in the way",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Writes a new file exclusively, 0600 on Unix; a partial write is removed.
+fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Where a capture lands: `region.png` inside a directory created for this capture alone.
 ///
 /// A shared temporary directory (`/tmp` on Linux, sometimes on macOS) lets another local user
@@ -479,6 +625,69 @@ fn platform_region_capture() -> Box<dyn RegionCapture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn one_pixel_png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode png");
+        bytes
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("chemdraft-{name}-{}", unguessable_token()));
+        std::fs::create_dir_all(&base).expect("scratch dir");
+        base
+    }
+
+    #[test]
+    fn keeps_an_accepted_capture_privately_and_refuses_anything_but_a_png() {
+        let base = scratch_dir("recognition-sources");
+        let directory = base.join("recognition-sources");
+        let png = one_pixel_png();
+
+        let first = retain_capture_in(&directory, &png).expect("kept");
+        let second = retain_capture_in(&directory, &png).expect("kept again");
+        assert_ne!(first, second, "each accepted capture gets its own file");
+        assert_eq!(std::fs::read(&first).expect("read back"), png);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&directory), 0o700);
+            assert_eq!(mode(&first), 0o600);
+        }
+
+        assert!(retain_capture_in(&directory, b"not a png").is_err());
+        assert!(retain_capture_in(&directory, &[]).is_err());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tightens_an_existing_folder_and_refuses_a_symlink_in_its_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = scratch_dir("recognition-sources-perms");
+        let loose = base.join("loose");
+        std::fs::create_dir(&loose).unwrap();
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_private_dir(&loose).expect("tightened");
+        assert_eq!(
+            std::fs::metadata(&loose).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let target = base.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(ensure_private_dir(&link).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     struct FakeCapture(Result<CaptureOutcome, CaptureError>);
 

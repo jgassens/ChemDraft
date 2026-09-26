@@ -1704,6 +1704,60 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     expect(queued.proposal).toMatchObject({ reason: "Review me", patch: documentDerivedPatch });
   });
 
+  it("keeps a recognized screen capture for the app until the proposal is accepted, and never a chosen file", async () => {
+    const capture: PluginProvidedImage = { ...image, source: "screenRegion" };
+    const review = { sourceImageRef: "data:image/png;base64,AQID", proposedMolfile: "M  END", confidenceTier: "high" as const };
+    const proposeAll = async (context: PluginCommandContext) => {
+      const result = await recognize(context);
+      await context.documents.proposePatch({ ...result.result.proposedPatch!, recognition: review });
+    };
+
+    // Host-held insertion (no document.read): the source is found through the opaque ref.
+    const held = recognitionHost({ requestImage: async () => ({ status: "provided", image: capture }) });
+    register(held.host, [...recognitionPermissions, "document.proposePatch"], { "plugin.recognizer.run": proposeAll });
+    await held.host.invokeCommand("plugin.recognizer.run");
+    const [heldProposal] = held.host.listProposedPatches("pending");
+    const kept = held.host.recognitionScreenCaptureOf(heldProposal!.id);
+    expect(kept).toMatchObject({ source: "screenRegion", mediaType: "image/png", width: 20, height: 10 });
+    expect(Array.from(kept!.bytes)).toEqual([1, 2, 3]);
+    held.host.acceptProposedPatch(heldProposal!.id, createEmptyDocument({ now: timestamp }), {
+      apply: (document) => document
+    });
+    // Accepting drops the host's copy: the app must have read it first.
+    expect(held.host.recognitionScreenCaptureOf(heldProposal!.id)).toBeUndefined();
+
+    // Real patch (document.read): the source is the recognized image whose bytes the preview carries.
+    const direct = recognitionHost({ requestImage: async () => ({ status: "provided", image: capture }) });
+    register(direct.host, [...recognitionPermissions, "document.read", "document.proposePatch"], {
+      "plugin.recognizer.run": proposeAll
+    });
+    await direct.host.invokeCommand("plugin.recognizer.run");
+    const [directProposal] = direct.host.listProposedPatches("pending");
+    expect(direct.host.recognitionScreenCaptureOf(directProposal!.id)?.source).toBe("screenRegion");
+    direct.host.rejectProposedPatch(directProposal!.id);
+    expect(direct.host.recognitionScreenCaptureOf(directProposal!.id)).toBeUndefined();
+
+    // A preview that is not the recognized image is not tied to it.
+    const forged = recognitionHost({ requestImage: async () => ({ status: "provided", image: capture }) });
+    register(forged.host, [...recognitionPermissions, "document.read", "document.proposePatch"], {
+      "plugin.recognizer.run": async (context) => {
+        const result = await recognize(context);
+        await context.documents.proposePatch({
+          ...result.result.proposedPatch!,
+          recognition: { ...review, sourceImageRef: "data:image/png;base64,BAUG" }
+        });
+      }
+    });
+    await forged.host.invokeCommand("plugin.recognizer.run");
+    expect(forged.host.recognitionScreenCaptureOf(forged.host.listProposedPatches("pending")[0]!.id)).toBeUndefined();
+
+    // A user-chosen file is still on disk; the host keeps no copy of it.
+    const file = recognitionHost();
+    register(file.host, [...recognitionPermissions, "document.proposePatch"], { "plugin.recognizer.run": proposeAll });
+    await file.host.invokeCommand("plugin.recognizer.run");
+    expect(file.host.recognitionScreenCaptureOf(file.host.listProposedPatches("pending")[0]!.id)).toBeUndefined();
+  });
+
   it("lets the user accept a held recognition proposal that the plugin itself may never apply", async () => {
     // The document key has moved on since the command ran, as it does after any New/Open: acceptance is
     // the user's own action on the document in front of them and must not be refused for it.

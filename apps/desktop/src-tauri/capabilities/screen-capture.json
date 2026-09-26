@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "screen-capture",
-  "description": "Allow only the main document window to query and invoke host-owned screen-region capture.",
+  "description": "Allow only the main document window to query and invoke host-owned screen-region capture, and to keep and show the captures behind accepted recognitions.",
   "windows": ["main"],
   "permissions": [
     "allow-screen-capture-available",
@@ -9,6 +9,8 @@
     "allow-request-screen-capture-permission",
     "allow-open-screen-capture-settings",
     "allow-capture-screen-region",
-    "allow-relaunch-app"
+    "allow-relaunch-app",
+    "allow-retain-recognition-screen-capture",
+    "allow-reveal-recognition-screen-captures"
   ]
 }

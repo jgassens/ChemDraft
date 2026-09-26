@@ -1,3 +1,4 @@
+import { PluginRecognitionResultSchema } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
@@ -60,6 +61,37 @@ describe("preparePluginStructureRecognition", () => {
         style: { source: "molscribe-ocsr" }
       }
     });
+  });
+
+  it("omits missing atom and bond scores instead of rejecting the result, and says they are missing", async () => {
+    const validate = vi.fn(async () => ({ valid: true, errors: [], warnings: [] }));
+    const partial: typeof outcome = {
+      ...outcome,
+      confidence: null,
+      atoms: [
+        { index: 0, symbol: "C", x: null, y: null, confidence: null },
+        { index: 1, symbol: "O", x: 0.75, y: 0, confidence: 0.92 }
+      ],
+      bonds: [{ begin: 0, end: 1, bondType: "double", confidence: null }]
+    };
+
+    const prepared = await preparePluginStructureRecognition(partial, image, createPhase4Document(), validate);
+
+    if (prepared.status !== "recognized") throw new Error("expected recognized result");
+    // The SDK's own schema is what the host parses the result with; it must accept this one.
+    expect(PluginRecognitionResultSchema.safeParse(prepared).success).toBe(true);
+    expect(prepared.result.atomConfidence).toEqual([{ id: "1", confidence: 0.92 }]);
+    expect(prepared.result.bondConfidence).toEqual([]);
+    const missing = prepared.result.warnings.find((warning) => warning.code === "recognition.missing_confidence");
+    expect(missing?.message).toContain("2 of 3");
+    expect(prepared.result.proposedPatch?.warnings).toContainEqual(missing);
+  });
+
+  it("adds no missing-confidence warning when every atom and bond is scored", async () => {
+    const validate = vi.fn(async () => ({ valid: true, errors: [], warnings: [] }));
+    const prepared = await preparePluginStructureRecognition(outcome, image, createPhase4Document(), validate);
+    if (prepared.status !== "recognized") throw new Error("expected recognized result");
+    expect(prepared.result.warnings.map((warning) => warning.code)).not.toContain("recognition.missing_confidence");
   });
 
   it("tells the reviewer about radicals and isotope labels the native drawing cannot show", async () => {

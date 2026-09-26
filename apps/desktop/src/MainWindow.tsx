@@ -104,6 +104,7 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { applyPluginDocumentPatch, describePatchFailure } from "./plugins/applyPluginDocumentPatch";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
+  ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
   PATCH_REVIEW_WINDOW_ID,
@@ -115,6 +116,7 @@ import {
   hidePluginPanelWindow,
   listenForAnalysisWindowActions,
   listenForPluginPanelCloses,
+  listenForNativePanelWindowCloses,
   listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
@@ -662,6 +664,10 @@ import {
   stripForcedDocumentHistorySuffix
 } from "./editHistoryRouting";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
+import {
+  retainRecognitionScreenCapture,
+  revealRecognitionScreenCaptures
+} from "./plugins/recognitionScreenCaptures";
 import { PluginPromptTextDialog, isPluginPromptKeyboardEvent } from "./plugins/PluginPromptTextDialog";
 import { PluginImageRequestDialog, isPluginImageKeyboardEvent } from "./plugins/PluginImageRequestDialog";
 import {
@@ -8588,6 +8594,22 @@ export function MainWindow({
     });
   }, [pluginRuntime.runtime]);
 
+  // The same close, reached through the OS instead of the window's own control (Window ▸ Close Window,
+  // ⌘W): the host hid the window rather than destroying it. A plugin report gets its close signal and,
+  // leaving the detached set, is re-shown by its next report; a core analysis window takes its own
+  // "close" action, exactly as its close button sends it.
+  useEffect(() => {
+    const runtime = pluginRuntime.runtime;
+    return listenForNativePanelWindowCloses(({ pluginId, panelId }) => {
+      if (pluginId === ANALYSIS_WINDOW_OWNER_ID) {
+        const action: AnalysisWindowAction = { kind: "close", windowId: panelId };
+        window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+        return;
+      }
+      runtime.panels.closeDetachedPanel(pluginId, panelId);
+    });
+  }, [pluginRuntime.runtime]);
+
   // Run again from a detached window executes in THIS window (the plugin runtime lives here). The
   // command id is resolved from the live detached entry, not trusted from the message.
   useEffect(() => {
@@ -8631,6 +8653,10 @@ export function MainWindow({
       const host = pluginRuntime.runtime.host;
       const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
       const recognized = proposal.proposal.recognition !== undefined;
+      // A screen capture exists only in the proposal; read the host's copy before accepting drops it,
+      // and keep it once the insertion lands (AGENTS.md §8). Image files are still on disk, and only
+      // the native provider produces screen captures, so no desktop check is needed here.
+      const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
         const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
           apply: (current, proposed, options) => applyPluginDocumentPatch(current, proposed, options).document
@@ -8642,6 +8668,20 @@ export function MainWindow({
         setSelectedNativeMoleculePart(undefined);
         const message = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
         setStatus(message);
+        if (screenCapture) {
+          void retainRecognitionScreenCapture(screenCapture).then(
+            () =>
+              setStatus(
+                `${message}; its screen capture is kept (Add or Remove Plugins › Show saved screen captures)`
+              ),
+            (error: unknown) =>
+              setStatus(
+                `${message}, but its screen capture could not be kept: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              )
+          );
+        }
         return { ok: true, message };
       } catch (error) {
         const message = `Could not insert the proposal: ${describePatchFailure(error)}`;
@@ -16476,6 +16516,7 @@ export function MainWindow({
           onInstallRecognitionEngine={pluginRuntime.startRecognitionEngineInstall}
           onCancelRecognitionEngineInstall={pluginRuntime.cancelRunningRecognitionEngineInstall}
           onUninstallRecognitionEngine={pluginRuntime.uninstallRecognitionEngine}
+          onShowRecognitionScreenCaptures={isDesktopRuntime() ? revealRecognitionScreenCaptures : undefined}
           onClose={() => setPluginManagerOpen(false)}
           onPluginsChanged={() => setStatus("Plugin settings updated")}
         />

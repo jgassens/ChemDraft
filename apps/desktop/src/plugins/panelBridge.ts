@@ -9,6 +9,9 @@ export const PLUGIN_PANEL_REQUEST_EVENT = "chemdraft://plugin-panel-request";
 export const PLUGIN_PANEL_STALENESS_EVENT = "chemdraft://plugin-panel-staleness";
 export const PLUGIN_PANEL_RERUN_EVENT = "chemdraft://plugin-panel-rerun";
 export const PLUGIN_PANEL_CLOSED_EVENT = "chemdraft://plugin-panel-closed";
+/** Native → main: the closed window's label. Mirrors `PLUGIN_PANEL_WINDOW_CLOSED_EVENT` in lib.rs. */
+export const PLUGIN_PANEL_WINDOW_CLOSED_EVENT = "chemdraft://plugin-panel-window-closed";
+const PLUGIN_PANEL_WINDOW_LABEL_PREFIX = "plugin-panel-";
 export const ANALYSIS_WINDOW_SNAPSHOT_EVENT = "chemdraft://analysis-window-snapshot";
 export const ANALYSIS_WINDOW_ACTION_EVENT = "chemdraft://analysis-window-action";
 export const ANALYSIS_WINDOW_ACTION_RESULT_EVENT = "chemdraft://analysis-window-action-result";
@@ -413,7 +416,9 @@ export async function hidePluginPanelWindow(pluginId: string, panelId: string): 
   }
 
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const window = await WebviewWindow.getByLabel(`plugin-panel-${pluginPanelWindowId(pluginId, panelId)}`);
+  const window = await WebviewWindow.getByLabel(
+    `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(pluginId, panelId)}`
+  );
   await window?.hide();
 }
 
@@ -468,6 +473,36 @@ export async function notifyPluginPanelClosed(identity: PluginPanelIdentity): Pr
 
 export function listenForPluginPanelCloses(handler: (identity: PluginPanelIdentity) => void): () => void {
   return listenForPanelIdentityEvent(PLUGIN_PANEL_CLOSED_EVENT, handler);
+}
+
+/**
+ * Native → main: a panel window was closed through the OS — Window ▸ Close Window or ⌘W — rather than
+ * its own close control. The host hides it instead of destroying it and sends its label; the handler
+ * gets the panel, so the main window can take the same close path as the window's own button.
+ */
+export function listenForNativePanelWindowCloses(handler: (identity: PluginPanelIdentity) => void): () => void {
+  const deliver = (label: string): void => {
+    const identity = pluginPanelIdentityFromWindowLabel(label);
+    if (identity) handler(identity);
+  };
+  const domListener = (event: Event) => {
+    const label = (event as CustomEvent<unknown>).detail;
+    if (typeof label === "string") deliver(label);
+  };
+  window.addEventListener(PLUGIN_PANEL_WINDOW_CLOSED_EVENT, domListener);
+  return attachTauriListener(
+    PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+    domListener,
+    (payload): payload is string => typeof payload === "string",
+    deliver
+  );
+}
+
+/** The panel behind a native `plugin-panel-<windowId>` label, for the app's own encoded ids only. */
+export function pluginPanelIdentityFromWindowLabel(label: string): PluginPanelIdentity | undefined {
+  return label.startsWith(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
+    ? parsePluginPanelWindowId(label.slice(PLUGIN_PANEL_WINDOW_LABEL_PREFIX.length))
+    : undefined;
 }
 
 /** Shared listener plumbing for the `{ pluginId, panelId }` messages (request/rerun/closed). */

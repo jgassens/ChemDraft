@@ -54,6 +54,8 @@ fn main() {
             "open_screen_capture_settings",
             "capture_screen_region",
             "relaunch_app",
+            "retain_recognition_screen_capture",
+            "reveal_recognition_screen_captures",
             "agent_bridge_status",
             "window_logical_position",
             "take_pending_open_document",

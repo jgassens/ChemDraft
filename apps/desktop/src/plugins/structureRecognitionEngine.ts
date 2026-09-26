@@ -65,19 +65,21 @@ export interface StructureRecognitionInstallError {
   message: string;
 }
 
+/** Mirrors Rust `RecognizedAtom`: MolScribe may omit a position or a score, and the host sends
+ *  `null` rather than a filled-in default. */
 export interface StructureRecognitionAtom {
   index: number;
   symbol: string;
-  x: number;
-  y: number;
-  confidence: number;
+  x: number | null;
+  y: number | null;
+  confidence: number | null;
 }
 
 export interface StructureRecognitionBond {
   begin: number;
   end: number;
   bondType: string;
-  confidence: number;
+  confidence: number | null;
 }
 
 /** How far the engine's runs agreed: the image is recognized once per size in `scalesPx` (the longer

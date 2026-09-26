@@ -119,6 +119,7 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onInstallRecognitionEngine?: () => Promise<boolean>;
   onCancelRecognitionEngineInstall?: () => Promise<void>;
   onUninstallRecognitionEngine?: () => Promise<void>;
+  onShowRecognitionScreenCaptures?: () => Promise<void>;
 }) {
   const [, refresh] = useReducer((version: number) => version + 1, 0);
   useEffect(() => runtime.host.subscribe(refresh), [runtime]);
@@ -357,6 +358,28 @@ describe("PluginManagerDialog", () => {
       })
     );
     expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
+  });
+
+  it("lets the user open the screen captures kept behind accepted recognitions from the MolScribe row", async () => {
+    const onShowRecognitionScreenCaptures = vi.fn(async () => undefined);
+    mount(
+      createElement(Harness, {
+        runtime: createRuntime(),
+        installedPlugins: [molscribeInstalled],
+        recognitionEngineStatus: installedEngineStatus,
+        onShowRecognitionScreenCaptures,
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    const button = document.querySelector<HTMLButtonElement>(
+      '[data-testid="molscribe-engine-row"] [data-action="show-recognition-screen-captures"]'
+    );
+    expect(button?.textContent).toBe("Show saved screen captures");
+    await act(async () => {
+      button!.click();
+    });
+    expect(onShowRecognitionScreenCaptures).toHaveBeenCalledOnce();
   });
 
   it.each([

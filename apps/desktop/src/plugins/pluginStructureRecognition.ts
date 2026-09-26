@@ -93,8 +93,27 @@ export async function preparePluginStructureRecognition(
   const agreementWarning = recognitionAgreementWarning(outcome.agreement);
   const agreementWarnings: RecognitionWarning[] = agreementWarning ? [agreementWarning] : [];
   rememberRecognitionAgreement(outcome.molfile, outcome.agreement);
+  // MolScribe may omit a per-atom or per-bond score. A missing score is not a low one, and the SDK
+  // schema accepts only real scores, so the points are left out and the reviewer is told (AGENTS.md §8).
+  const atomConfidence = confidencePoints(outcome.atoms.map((atom) => [String(atom.index), atom.confidence]));
+  const bondConfidence = confidencePoints(
+    outcome.bonds.map((bond, index) => [`${bond.begin}-${bond.end}-${index}`, bond.confidence])
+  );
+  const missingConfidence = atomConfidence.missing + bondConfidence.missing;
+  const confidenceWarnings: RecognitionWarning[] =
+    missingConfidence > 0
+      ? [
+          {
+            code: "recognition.missing_confidence",
+            message: `The recognition engine gave no confidence score for ${missingConfidence} of ${
+              outcome.atoms.length + outcome.bonds.length
+            } atoms and bonds; check those parts of the structure yourself.`
+          }
+        ]
+      : [];
   const validationWarnings: RecognitionWarning[] = [
     ...agreementWarnings,
+    ...confidenceWarnings,
     ...validation.warnings.map((warning) => ({
       code: `validation.${warning.code}`,
       message: warning.message
@@ -109,11 +128,8 @@ export async function preparePluginStructureRecognition(
       proposedSmiles: outcome.smiles,
       proposedMolfile: outcome.molfile,
       confidence: outcome.confidence,
-      atomConfidence: outcome.atoms.map((atom) => ({ id: String(atom.index), confidence: atom.confidence })),
-      bondConfidence: outcome.bonds.map((bond, index) => ({
-        id: `${bond.begin}-${bond.end}-${index}`,
-        confidence: bond.confidence
-      })),
+      atomConfidence: atomConfidence.points,
+      bondConfidence: bondConfidence.points,
       warnings: validationWarnings,
       proposedPatch: {
         patch: { op: "addObject", pageId: document.pages[0].id, object },
@@ -125,6 +141,19 @@ export async function preparePluginStructureRecognition(
       elapsedMs: outcome.elapsedMs
     }
   };
+}
+
+function confidencePoints(entries: readonly (readonly [string, number | null])[]): {
+  points: { id: string; confidence: number }[];
+  missing: number;
+} {
+  const points: { id: string; confidence: number }[] = [];
+  let missing = 0;
+  for (const [id, confidence] of entries) {
+    if (typeof confidence === "number" && Number.isFinite(confidence)) points.push({ id, confidence });
+    else missing += 1;
+  }
+  return { points, missing };
 }
 
 function recognitionObject(document: ChemDraftDocument, source: MoleculeObject): MoleculeObject {

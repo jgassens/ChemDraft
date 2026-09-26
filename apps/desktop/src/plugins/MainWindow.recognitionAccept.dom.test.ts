@@ -7,10 +7,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSnapshot } from "../agentBridge";
 import { createPhase4Document } from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
-import { RECOGNITION_FIXTURE_COMMAND_ID } from "../testSupport/recognitionFixturePlugin";
+import {
+  RECOGNITION_FIXTURE_COMMAND_ID,
+  RECOGNITION_FIXTURE_PANEL_ID,
+  RECOGNITION_FIXTURE_PLUGIN_ID
+} from "../testSupport/recognitionFixturePlugin";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
 import { ImageSourceRegistry } from "./ImageSourceProvider";
-import { ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowAction } from "./panelBridge";
+import {
+  ANALYSIS_WINDOW_ACTION_EVENT,
+  PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+  pluginPanelWindowId,
+  type AnalysisWindowAction
+} from "./panelBridge";
 import type { StructureRecognitionEngine, StructureRecognitionOutcome } from "./structureRecognitionEngine";
 
 const carbonMonoxideMolfile = [
@@ -42,7 +51,16 @@ const recognized: StructureRecognitionOutcome = {
 // The only stand-ins are the machine edges: the image the user picks and the native engine that reads
 // it. Everything between — the installed-plugin-shaped fixture, the host's held-patch substitution,
 // the proposal queue, the window action listener, and MainWindow's accept handler — is the real code.
-const harness = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined }));
+const harness = vi.hoisted(() => ({
+  runtime: undefined as DesktopPluginRuntime | undefined,
+  retainScreenCapture: undefined as unknown as import("vitest").Mock
+}));
+vi.mock("./recognitionScreenCaptures", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./recognitionScreenCaptures")>();
+  const { vi: hoistedVi } = await import("vitest");
+  harness.retainScreenCapture = hoistedVi.fn(async () => "/app-data/recognition-sources/screen-capture-1.png");
+  return { ...actual, retainRecognitionScreenCapture: harness.retainScreenCapture };
+});
 vi.mock("./registerBundledPlugins", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./registerBundledPlugins")>();
   const { recognitionFixtureDescriptor } = await import("../testSupport/recognitionFixturePlugin");
@@ -209,6 +227,31 @@ describe("accepting a recognition proposal from the review window", () => {
     expect(moleculeIds(bridge)).toEqual(before);
   });
 
+  it("keeps a screen capture's source once its recognition is accepted, and never a chosen file", async () => {
+    const bridge = await renderMainWindow();
+    harness.retainScreenCapture.mockClear();
+    // The fixture picks an image file: accepted, nothing is copied — the file is still on disk.
+    const fromFile = await recognizeIntoProposal(bridge);
+    await sendAction({ kind: "acceptPluginProposal", proposalId: fromFile.id });
+    expect(harness.retainScreenCapture).not.toHaveBeenCalled();
+
+    const capture = {
+      mediaType: "image/png" as const,
+      bytes: new Uint8Array([137, 80, 78, 71]),
+      width: 2,
+      height: 2,
+      source: "screenRegion" as const
+    };
+    const fromScreen = await recognizeIntoProposal(bridge);
+    vi.spyOn(harness.runtime!.host, "recognitionScreenCaptureOf").mockImplementation((id) =>
+      id === fromScreen.id ? capture : undefined
+    );
+    await sendAction({ kind: "acceptPluginProposal", proposalId: fromScreen.id });
+
+    expect(harness.retainScreenCapture).toHaveBeenCalledWith(capture);
+    await vi.waitFor(() => expect(statusText()).toContain("its screen capture is kept"));
+  });
+
   it("reports an accept that fails instead of leaving the proposal silently pending", async () => {
     const bridge = await renderMainWindow();
     const proposal = await recognizeIntoProposal(bridge);
@@ -225,5 +268,40 @@ describe("accepting a recognition proposal from the review window", () => {
     await renderMainWindow();
     await sendAction({ kind: "acceptPluginProposal", proposalId: "proposal_404" });
     expect(statusText()).toContain("That proposal was already resolved");
+  });
+});
+
+describe("closing a report window through the OS (Window > Close Window, Cmd+W)", () => {
+  it("is a real panel close: the plugin is told and the panel leaves the detached set", async () => {
+    await renderMainWindow();
+    const runtime = harness.runtime!;
+    const closed = vi.spyOn(runtime.host, "notifyPanelClosed");
+    await act(async () => {
+      runtime.panels.showReport(RECOGNITION_FIXTURE_PLUGIN_ID, RECOGNITION_FIXTURE_PANEL_ID, {
+        title: "Recognizing…",
+        sections: []
+      });
+      runtime.panels.detachPanel(RECOGNITION_FIXTURE_PLUGIN_ID, RECOGNITION_FIXTURE_PANEL_ID);
+    });
+    expect(runtime.panels.getDetachedPanels()).toHaveLength(1);
+
+    // What lib.rs sends after hiding the window instead of destroying it: the window's label.
+    // Another window's label (a toolset palette) is not a panel and changes nothing.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_WINDOW_CLOSED_EVENT, { detail: "toolset-core-main" }));
+    });
+    expect(closed).not.toHaveBeenCalled();
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(PLUGIN_PANEL_WINDOW_CLOSED_EVENT, {
+          detail: `plugin-panel-${pluginPanelWindowId(RECOGNITION_FIXTURE_PLUGIN_ID, RECOGNITION_FIXTURE_PANEL_ID)}`
+        })
+      );
+    });
+
+    expect(closed).toHaveBeenCalledWith(RECOGNITION_FIXTURE_PLUGIN_ID, RECOGNITION_FIXTURE_PANEL_ID);
+    // Out of the detached set, the next report takes the open-a-window path again instead of being
+    // pushed at a window the main document still believed was open.
+    expect(runtime.panels.getDetachedPanels()).toHaveLength(0);
   });
 });

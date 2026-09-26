@@ -414,6 +414,36 @@ pub fn run() {
                 return;
             }
 
+            // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
+            // the same path as its own close control: hidden, not destroyed, and the main document
+            // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
+            // window. Destroying it left the main window believing it was still open.
+            if is_plugin_panel_window_label(window.label()) {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    if APP_QUITTING.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        eprintln!(
+                            "Could not hide ChemDraft panel window {}: {error}",
+                            window.label()
+                        );
+                    }
+                    if let Err(error) = window.app_handle().emit_to(
+                        MAIN_WINDOW_LABEL,
+                        PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+                        window.label(),
+                    ) {
+                        eprintln!(
+                            "Could not report the closed panel window {}: {error}",
+                            window.label()
+                        );
+                    }
+                }
+                return;
+            }
+
             let app = window.app_handle();
             let Some(toolset_id) = toolset_id_for_window_label(app, window.label()) else {
                 return;
@@ -523,6 +553,8 @@ pub fn run() {
             screen_capture::open_screen_capture_settings,
             screen_capture::capture_screen_region,
             screen_capture::relaunch_app,
+            screen_capture::retain_recognition_screen_capture,
+            screen_capture::reveal_recognition_screen_captures,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
             engine3d_sidecar_send_session,
@@ -1019,14 +1051,27 @@ struct OpenPluginPanelRequest {
 /// for `:` loses nothing. The app's hex-encoded ids (`pluginPanelWindowId` in panelBridge.ts)
 /// contain neither and pass through unchanged, which `hidePluginPanelWindow` relies on.
 fn plugin_panel_window_label(panel_id: &str) -> String {
-    format!("plugin-panel-{}", panel_id.replace('.', ":"))
+    format!(
+        "{PLUGIN_PANEL_WINDOW_LABEL_PREFIX}{}",
+        panel_id.replace('.', ":")
+    )
+}
+
+const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
+/// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
+/// panelBridge.ts decodes it back to the panel.
+const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
+
+fn is_plugin_panel_window_label(label: &str) -> bool {
+    label.len() > PLUGIN_PANEL_WINDOW_LABEL_PREFIX.len()
+        && label.starts_with(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
 }
 
 #[cfg(test)]
 mod plugin_panel_label_tests {
     use super::{
-        choose_analysis_window_position, is_valid_plugin_storage_id, plugin_panel_window_label,
-        OpenPluginPanelRequest, ScreenRect,
+        choose_analysis_window_position, is_plugin_panel_window_label, is_valid_plugin_storage_id,
+        plugin_panel_window_label, OpenPluginPanelRequest, ScreenRect,
     };
 
     #[test]
@@ -1038,6 +1083,25 @@ mod plugin_panel_label_tests {
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals","focus":true}"#)
                 .unwrap();
         assert!(explicit.focus);
+    }
+
+    #[test]
+    fn native_close_interception_covers_every_panel_window_and_nothing_else() {
+        assert!(is_plugin_panel_window_label(&plugin_panel_window_label(
+            "v1x6f7267x70616e656c"
+        )));
+        assert!(is_plugin_panel_window_label(&plugin_panel_window_label(
+            "panel.a.b"
+        )));
+        for other in [
+            "main",
+            "toolset-core-main",
+            "plugin-panel-",
+            "palette-popover",
+            "plugin-panels",
+        ] {
+            assert!(!is_plugin_panel_window_label(other), "{other}");
+        }
     }
 
     #[test]
