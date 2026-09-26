@@ -139,20 +139,22 @@ describe("chemdraft nmr without the plugin", () => {
     expect(lines[0]!.error).toContain("truthful-spectrum-caption");
   });
 
-  it("retries a failed plugin load after the plugin directory is switched", async () => {
-    const rejectedPluginDir = join(outputDirectory, "rejected-plugin");
-    await mkdir(join(rejectedPluginDir, "src"), { recursive: true });
-    await writeFile(
-      join(rejectedPluginDir, "src", "index.ts"),
-      "export const NMR_PLUGIN_CAPABILITIES = [];\n" +
-      "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
-    );
+  it("retries a failed plugin load after its entry is created at the same path", async () => {
+    const retriedPluginDir = join(outputDirectory, "retry-plugin");
 
-    const failed = await withPluginDir(rejectedPluginDir, () => run(["--smiles", "CCO"]));
+    const failed = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO"]));
     expect(failed.code).toBe(1);
     expect(failed.lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
 
-    const retried = await withPluginDir(fixturePluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"]));
+    // The initial failure happens before import: Node may cache a module at a stable file URL.
+    // Writing the valid fixture afterward proves the rejected cache key is retried at this path.
+    await mkdir(join(retriedPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(retriedPluginDir, "src", "index.ts"),
+      await readFile(join(fixturePluginDir, "src", "index.ts"), "utf8")
+    );
+
+    const retried = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"]));
     expect(retried.code).toBe(0);
     expect(retried.lines[0]).toMatchObject({ ok: true, smiles: "CCO" });
   });
