@@ -87,12 +87,18 @@ interface NmrPluginModule {
     predict(request: PluginPredictionRequest): Promise<PluginPredictionResult>;
   };
   renderStickSpectrumSvg(result: PluginPredictionResult, options?: { width?: number; height?: number }): string;
+  NMR_PLUGIN_CAPABILITIES: readonly string[];
 }
 
 export const NMR_PLUGIN_DIR_ENV = "CHEMDRAFT_NMR_PLUGIN_DIR";
 const DEFAULT_PLUGIN_DIR = "~/programming/chemdraft-nmr-plugin";
 const DEFAULT_PNG_WIDTH = 1280;
 const ALL_NUCLEI: readonly NmrNucleus[] = ["1H", "13C"];
+const REQUIRED_NMR_PLUGIN_CAPABILITIES = [
+  "constitutional-equivalence-grouping",
+  "diastereotopic-disclosure",
+  "truthful-spectrum-caption"
+] as const;
 
 type SpectrumFormat = "svg" | "png";
 
@@ -209,6 +215,16 @@ function loadNmrPlugin(pluginDir: string): Promise<NmrPluginModule> {
       if (typeof loaded.OclHosePredictor !== "function" || typeof loaded.renderStickSpectrumSvg !== "function") {
         throw new Error(
           `The plugin at ${entry} does not export OclHosePredictor and renderStickSpectrumSvg; check ${NMR_PLUGIN_DIR_ENV}.`
+        );
+      }
+      const capabilities = loaded.NMR_PLUGIN_CAPABILITIES;
+      const missingCapabilities = REQUIRED_NMR_PLUGIN_CAPABILITIES.filter(
+        (capability) => !Array.isArray(capabilities) || !capabilities.includes(capability)
+      );
+      if (missingCapabilities.length > 0) {
+        throw new Error(
+          `NMR predictor plugin at ${pluginDir} is missing required capabilities: ${missingCapabilities.join(", ")}. ` +
+          `Update that checkout (cd ${pluginDir} && git pull) or point ${NMR_PLUGIN_DIR_ENV} at a current chemdraft-nmr-plugin checkout.`
         );
       }
       return loaded as NmrPluginModule;

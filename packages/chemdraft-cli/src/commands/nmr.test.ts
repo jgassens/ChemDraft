@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,24 @@ describe("chemdraft nmr without the plugin", () => {
     expect(lines[0]!.error).toContain(join(missing, "src", "index.ts"));
   });
 
+  it("refuses a plugin checkout missing the required capabilities", async () => {
+    const oldPluginDir = join(outputDirectory, "old-nmr-plugin");
+    await mkdir(join(oldPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(oldPluginDir, "src", "index.ts"),
+      "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
+    );
+    const { code, lines } = await withPluginDir(oldPluginDir, () => run(["--smiles", "CCO"]));
+    expect(code).toBe(1);
+    expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(lines[0]!.error).toContain("constitutional-equivalence-grouping");
+    expect(lines[0]!.error).toContain("diastereotopic-disclosure");
+    expect(lines[0]!.error).toContain("truthful-spectrum-caption");
+    expect(lines[0]!.error).toContain(oldPluginDir);
+    expect(lines[0]!.error).toContain("git pull");
+    expect(lines[0]!.error).toContain(NMR_PLUGIN_DIR_ENV);
+  });
+
   it("expands ~ in the plugin directory", () => {
     expect(resolveNmrPluginDir({ [NMR_PLUGIN_DIR_ENV]: "~/somewhere" })).not.toContain("~");
   });
@@ -143,6 +161,19 @@ describe("chemdraft nmr with the CI fixture plugin", () => {
     // The plugin's own caption passes through unchanged; the CLI only adds the stick-height note.
     expect(svg).toContain("1H δ (ppm) — predicted");
     expect(svg).toContain("not integration");
+  });
+
+  it("passes grouped toluene 13C resonances through unchanged", async () => {
+    const { code, lines } = await withPluginDir(fixturePluginDir, () => run([
+      "--smiles", "Cc1ccccc1", "--nuclei", "13C"
+    ]));
+    expect(code).toBe(0);
+    const resonances = lines[0]!.resonances!;
+    expect(resonances).toHaveLength(5);
+    const byFirstAtom = [...resonances].sort((left, right) => left.atomIndices[0]! - right.atomIndices[0]!);
+    expect(byFirstAtom.map((resonance) => resonance.nEquivalent)).toEqual([1, 1, 2, 2, 1]);
+    expect(byFirstAtom[2]!.atomIndices).toEqual([2, 6]);
+    expect(byFirstAtom[3]!.atomIndices).toEqual([3, 5]);
   });
 });
 
@@ -228,9 +259,12 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     const { code, lines } = await run(["--smiles", "CCO", "--spectrum", base]);
     expect(code).toBe(0);
     expect(lines[0]!.spectrum).toEqual([join(outputDirectory, "ethanol-1H.svg"), join(outputDirectory, "ethanol-13C.svg")]);
-    const svg = await readFile(join(outputDirectory, "ethanol-1H.svg"), "utf8");
-    expect(svg.startsWith("<svg")).toBe(true);
-    expect(svg).toContain("not integration");
+    for (const nucleus of ["1H", "13C"] as const) {
+      const svg = await readFile(join(outputDirectory, `ethanol-${nucleus}.svg`), "utf8");
+      expect(svg.startsWith("<svg")).toBe(true);
+      expect(svg).toContain("δ (ppm) — predicted");
+      expect(svg.match(/Stick height = predicted equivalent nuclei, not integration/g)).toHaveLength(1);
+    }
   }, 60_000);
 
   it("runs a batch with a PNG spectrum directory", async () => {

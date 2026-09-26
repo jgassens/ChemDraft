@@ -155,6 +155,10 @@ suffixes); --spectrum-dir <dir> (batch naming <dir>/<name>-<nucleus>.<format>);
 loaded from $CHEMDRAFT_NMR_PLUGIN_DIR (default: ~/programming/chemdraft-nmr-plugin). It is a
 separate repository and is not bundled here.
 
+The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivalence-grouping`,
+`diastereotopic-disclosure`, and `truthful-spectrum-caption`. Older checkouts are refused; update
+the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.
+
 What the numbers are:
   - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
     assignments. They are predictions, not measurements. source "hose-fragment" is a database

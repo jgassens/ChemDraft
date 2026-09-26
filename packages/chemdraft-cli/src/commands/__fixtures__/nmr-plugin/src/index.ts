@@ -3,6 +3,12 @@ interface FixtureRequest {
   nuclei: readonly ("1H" | "13C")[];
 }
 
+export const NMR_PLUGIN_CAPABILITIES = [
+  "constitutional-equivalence-grouping",
+  "diastereotopic-disclosure",
+  "truthful-spectrum-caption"
+] as const;
+
 /** Element symbols from a V2000 atom block, so the fixture can recognise the structure it was given. */
 function molfileElements(molfile: string): string[] {
   const lines = molfile.split(/\r?\n/);
