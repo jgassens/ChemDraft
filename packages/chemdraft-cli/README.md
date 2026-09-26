@@ -167,8 +167,11 @@ What the numbers are:
   - No shift is ever invented for an unmatched environment: it is omitted and a warning
     (NMR_NO_FRAGMENT_MATCH / NMR_PARTIAL_PREDICTION) says so.
   - No confidence percentages are reported; thin matches carry warnings instead.
-  - Symmetry-equivalent atoms (same OpenChemLib symmetry rank and diastereotopic ID) are reported
-    as one resonance whose nEquivalent counts them, not as separate resonances.
+  - Atoms the predictor finds equivalent by constitution are reported as one resonance;
+    nEquivalent counts them. Where such atoms may still differ because the molecule has a
+    stereocenter (the two H of a CH2, or two methyls on one carbon), they stay one resonance
+    with one shift and an NMR_POTENTIALLY_DIASTEREOTOPIC_HYDROGENS or
+    NMR_POTENTIALLY_DIASTEREOTOPIC_METHYLS warning says so.
   - The reference database is a derivative database under the nmrshiftdb2 Database License
     (ODbL-derived: attribution, share-alike). That licence is separate from the code licence;
     each result line names it under "database".
