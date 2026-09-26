@@ -30,6 +30,11 @@ describe("decodeDocumentBytes", () => {
     expect(decodeDocumentBytes(utf16(xml, "be"))).toBe(xml);
   });
 
+  it("drops a dangling odd byte after UTF-16, as the Rust decoder does", () => {
+    const truncated = new Uint8Array([...utf16(xml, "le"), 0x41]);
+    expect(decodeDocumentBytes(truncated)).toBe(xml);
+  });
+
   it("never throws on binary input, and keeps an ASCII signature readable", () => {
     const cdx = new Uint8Array([...new TextEncoder().encode("VjCD0100"), 0x04, 0x03, 0x02, 0x01, 0xff, 0x00, 0x80]);
     const text = decodeDocumentBytes(cdx);

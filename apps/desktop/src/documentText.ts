@@ -9,11 +9,15 @@
  * the read with a bare "invalid UTF-8".
  */
 export function decodeDocumentBytes(bytes: Uint8Array): string {
+  // A dangling odd byte after UTF-16 is dropped, as Rust's `chunks_exact(2)` drops it: decoded, it
+  // becomes a trailing U+FFFD that the XML validator refuses, so the same truncated file opened
+  // from Explorer and failed from File ▸ Open.
+  const utf16Units = (from: number) => bytes.subarray(from, from + ((bytes.length - from) & ~1));
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
-    return new TextDecoder("utf-16le").decode(bytes.subarray(2));
+    return new TextDecoder("utf-16le").decode(utf16Units(2));
   }
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
-    return new TextDecoder("utf-16be").decode(bytes.subarray(2));
+    return new TextDecoder("utf-16be").decode(utf16Units(2));
   }
   if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
     return new TextDecoder("utf-8").decode(bytes.subarray(3));

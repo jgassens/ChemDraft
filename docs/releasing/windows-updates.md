@@ -43,9 +43,10 @@ by the installer. They are there on the next launch, as on macOS.
     Sparkle key.
   - Override its location with `CHEMDRAFT_UPDATER_KEY_PATH`. `TAURI_SIGNING_PRIVATE_KEY`, if set,
     wins over both.
-- **Permission:** the document window alone gets `updater:default`, granted in code by
-  `app_update_capability()` in `lib.rs`. A capability JSON file would name a permission that does
-  not exist in macOS builds, which would break them.
+- **Permission:** the document window alone gets `updater:default`, from
+  `capabilities/app-updates.json`. That capability is marked `"platforms": ["windows"]`: the
+  updater plugin exists only in Windows builds, and Tauri skips a capability for another platform
+  before it resolves any permission name, so macOS builds never look `updater:default` up.
 
 **Back up the private key.** Put the key file in your password manager, or another store you trust.
 Without it, installed copies can never be updated again, and every user would have to download the

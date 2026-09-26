@@ -963,35 +963,33 @@ function resolvePageBondCrossings(
   const overrides = page.crossings;
 
   forEachCandidatePairOverlappingInX(candidates, (leftIndex, rightIndex) => {
-    {
-      const left = candidates[leftIndex];
-      const right = candidates[rightIndex];
-      if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
-        return;
-      }
-      const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
-      if (!intersection) {
-        return;
-      }
-      const depth = compareBondDepth(left, right, { overrides });
-      const frontCandidate = depth >= 0 ? left : right;
-      const backCandidate = depth >= 0 ? right : left;
-      const key = crossingPairKey([left.ref, right.ref]);
-      const override = overrides.find((candidate) => crossingPairKey(candidate.bonds) === key);
-      const clearancePx = crossingClearancePx(frontCandidate, backCandidate, intersection.angleSin, override);
-      resolved.push({
-        key,
-        bonds: canonicalBondRefs([left.ref, right.ref]),
-        front: frontCandidate.ref,
-        back: backCandidate.ref,
-        point: intersection.point,
-        backLocalPoint: inverseTransformPointForObject(backCandidate.object, intersection.point),
-        clearancePx,
-        hasOverride: override !== undefined,
-        frontCandidate,
-        backCandidate
-      });
+    const left = candidates[leftIndex];
+    const right = candidates[rightIndex];
+    if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
+      return;
     }
+    const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
+    if (!intersection) {
+      return;
+    }
+    const depth = compareBondDepth(left, right, { overrides });
+    const frontCandidate = depth >= 0 ? left : right;
+    const backCandidate = depth >= 0 ? right : left;
+    const key = crossingPairKey([left.ref, right.ref]);
+    const override = overrides.find((candidate) => crossingPairKey(candidate.bonds) === key);
+    const clearancePx = crossingClearancePx(frontCandidate, backCandidate, intersection.angleSin, override);
+    resolved.push({
+      key,
+      bonds: canonicalBondRefs([left.ref, right.ref]),
+      front: frontCandidate.ref,
+      back: backCandidate.ref,
+      point: intersection.point,
+      backLocalPoint: inverseTransformPointForObject(backCandidate.object, intersection.point),
+      clearancePx,
+      hasOverride: override !== undefined,
+      frontCandidate,
+      backCandidate
+    });
   });
 
   warnForDepthCycles(resolved, warnings);
@@ -1014,8 +1012,10 @@ function forEachCandidatePairOverlappingInX(
   const spans = candidates.flatMap((candidate, index) => {
     const minX = Math.min(candidate.start.x, candidate.end.x);
     const maxX = Math.max(candidate.start.x, candidate.end.x);
-    return Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(candidate.start.y) && Number.isFinite(candidate.end.y)
-      ? [{ index, minX, maxX }]
+    const minY = Math.min(candidate.start.y, candidate.end.y);
+    const maxY = Math.max(candidate.start.y, candidate.end.y);
+    return Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)
+      ? [{ index, minX, maxX, minY, maxY }]
       : [];
   });
   spans.sort((left, right) => left.minX - right.minX || left.index - right.index);
@@ -1023,6 +1023,12 @@ function forEachCandidatePairOverlappingInX(
     const current = spans[i]!;
     for (let j = i + 1; j < spans.length && spans[j]!.minX <= current.maxX; j += 1) {
       const other = spans[j]!;
+      // Disjoint in y too: `shouldSkipCrossingCandidatePair` would skip the pair on the same test,
+      // so rejecting it here changes nothing but the cost. On a tall page most x-overlapping pairs
+      // are rows apart.
+      if (other.minY > current.maxY || other.maxY < current.minY) {
+        continue;
+      }
       visit(Math.min(current.index, other.index), Math.max(current.index, other.index));
     }
   }
@@ -1249,15 +1255,78 @@ export function planPageSvgRender(
     return byBond;
   }, new Map());
   const crossingHitTargets = crossings.map((crossing) => crossingHitTargetFragment(crossing));
+  const objectIdsWithGaps = new Set(crossings.map((crossing) => crossing.back.objectId));
 
   return {
     fragments: page.objects.flatMap((object, layerIndex) => {
+      if (object.type === "molecule") {
+        return plannedMoleculeFragments(object, layerIndex, gapsByBondKey, objectIdsWithGaps);
+      }
       const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page);
       return fragment ? flattenDocumentObjectSvg(fragment) : [];
     }).concat(crossingHitTargets),
     crossings,
     warnings
   };
+}
+
+/**
+ * A molecule's plan is a pure function of the object, its layer index, and the crossing gaps on its
+ * own bonds, so it is cached per object. The patch engine shares unchanged objects between document
+ * versions, so an edit to one molecule of a 5,000-molecule page re-plans that one: re-planning every
+ * molecule cost ~60 ms per edit. Planned fragments are treated as immutable by every consumer.
+ *
+ * Keyed by object id and layer index, one entry each, and checked against the object's identity: a
+ * WeakMap keyed by the object kept a plan alive for every molecule version an undo snapshot still
+ * held, which grew the heap by hundreds of megabytes on a large page. The layer index is in the key
+ * because the editor plans a filtered page and the full page each render, where one molecule sits at
+ * two depths and would evict itself on every plan. Ids of deleted objects linger, so the map is
+ * dropped whenever it outgrows `MOLECULE_PLAN_CACHE_LIMIT`.
+ */
+const MOLECULE_PLAN_CACHE_LIMIT = 50_000;
+const moleculePlanCache = new Map<
+  string,
+  { object: MoleculeObject; gaps: string; fragments: readonly PageSvgElementFragment[] }
+>();
+
+function plannedMoleculeFragments(
+  object: MoleculeObject,
+  layerIndex: number,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
+  objectIdsWithGaps: ReadonlySet<string>
+): readonly PageSvgElementFragment[] {
+  const key = `${layerIndex}:${object.id}`;
+  // Only a molecule some crossing cuts has gaps to sign; the rest skip a walk over their bonds.
+  const gaps = objectIdsWithGaps.has(object.id) ? moleculeGapSignature(object, gapsByBondKey) : "";
+  const cached = moleculePlanCache.get(key);
+  if (cached && cached.object === object && cached.gaps === gaps) {
+    return cached.fragments;
+  }
+  const fragments = flattenDocumentObjectSvg(planMoleculeObjectSvg(object, layerIndex, gapsByBondKey));
+  if (moleculePlanCache.size >= MOLECULE_PLAN_CACHE_LIMIT && !moleculePlanCache.has(key)) {
+    moleculePlanCache.clear();
+  }
+  moleculePlanCache.set(key, { object, gaps, fragments });
+  return fragments;
+}
+
+function moleculeGapSignature(
+  object: MoleculeObject,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+): string {
+  if (gapsByBondKey.size === 0) {
+    return "";
+  }
+  let signature = "";
+  for (const bond of object.bonds) {
+    const gaps = gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id }));
+    if (gaps) {
+      for (const gap of gaps) {
+        signature += `${bond.id}@${gap.point.x},${gap.point.y},${gap.clearancePx};`;
+      }
+    }
+  }
+  return signature;
 }
 
 function flattenDocumentObjectSvg(fragment: PageSvgElementFragment): PageSvgElementFragment[] {

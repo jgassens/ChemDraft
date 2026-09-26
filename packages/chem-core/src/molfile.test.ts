@@ -418,6 +418,24 @@ describe("non-element atom labels", () => {
     ]
   );
 
+  it("writes a label spellLabel spells as its element, with a valence carrying the stated hydrogens", () => {
+    const warnings: string[] = [];
+    const spellLabel = (label: string) => (label === "CH3" ? { element: "C", hydrogens: 3 } : undefined);
+    const lines = moleculeToMolfileV2000(condensed, { warnings, spellLabel }).split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const [, methyl, acid] = lines.slice(countsLine + 1, countsLine + 4);
+    // Two bonds plus three hydrogens: a valence of 5, in the vvv columns 49–51.
+    expect(methyl!.slice(31, 34).trim()).toBe("C");
+    expect(methyl!.slice(48, 51).trim()).toBe("5");
+    // A label spellLabel does not spell still falls back, with its warning.
+    expect(acid!.slice(31, 34).trim()).toBe("*");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"CO2H"');
+
+    const v3000 = moleculeToMolfileV3000(condensed, { spellLabel });
+    expect(v3000).toMatch(/M {2}V30 2 C [^\n]* VAL=5/);
+  });
+
   it("V2000 writes a dummy atom with a warning instead of an invalid element symbol", () => {
     const warnings: string[] = [];
     const mf = moleculeToMolfileV2000(condensed, { warnings });

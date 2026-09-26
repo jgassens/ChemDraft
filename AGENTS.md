@@ -1351,7 +1351,11 @@ button across two monitors at different scale factors; a maximized window restor
 the clipboard round trips (text, ChemDraft selection, SVG, PNG, and CDX/MDL paste from ChemDraw); and the app
 updater — an older signed build offered the newer one by the launch check and by File ▸ Check for
 Updates…, the document saved before the passive installer runs and restored after it relaunches, and
-a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`).
+a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`); an update
+accepted while autosave is off (the last session unreadable) refusing to install over unsaved work; and
+opening from Explorer a `.cdx` (the app says it is a ChemDraw binary, including at a cold start that
+then restores the last session), a UTF-16 `.cdxml`, and a CDXML file whose molecules sit inside `<group>`
+elements (they open grouped).
 
 Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
 on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a

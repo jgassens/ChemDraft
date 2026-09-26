@@ -64,6 +64,14 @@ export interface MolfileWriteOptions {
    * Either way the group itself is not represented, and the writer warns.
    */
   abbreviations?: "dummy" | "rgroup";
+  /**
+   * Spells a condensed label as one element carrying a stated number of hydrogens ("OH" → O with
+   * one, "NH2" → N with two), or returns undefined. A spelled atom is written as that element with
+   * an explicit valence of its bond-order sum plus those hydrogens, so a reader counts exactly the
+   * hydrogens the label names — never a placeholder, never its own default valence. Label parsing
+   * lives with the caller (the app's condensed-label grammar is above this package).
+   */
+  spellLabel?: (label: string) => { element: string; hydrogens: number } | undefined;
 }
 
 const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
@@ -141,11 +149,16 @@ function literalAtomValences(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[],
   format: "V2000" | "V3000",
-  warnings?: string[]
+  warnings?: string[],
+  spelledHydrogens: ReadonlyMap<string, number> = new Map()
 ): Map<string, number> {
   const valences = new Map(atoms
     .filter((atom) => atom.labelLiteral === true && atom.element !== "*" && MOLFILE_ATOM_SYMBOLS.has(atom.element))
     .map((atom) => [atom.id, 0]));
+  // A spelled condensed label starts from the hydrogens it names; its bonds are added below.
+  for (const [id, hydrogens] of spelledHydrogens) {
+    valences.set(id, hydrogens);
+  }
   if (valences.size === 0) return valences;
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
   for (const bond of bonds) {
@@ -182,17 +195,34 @@ function literalAtomValences(
  * R-group numbered per distinct label so readers keep the labels apart (see the option).
  */
 function molfileAtomSymbols(
-  atoms: readonly { element: string }[],
+  atoms: readonly { id: string; element: string }[],
   options: MolfileWriteOptions
-): { symbols: string[]; rgroups: { atomNumber: number; rgroup: number }[] } {
+): {
+  symbols: string[];
+  rgroups: { atomNumber: number; rgroup: number }[];
+  /** Hydrogens stated by each atom `spellLabel` spelled, keyed by atom id. */
+  spelledHydrogens: Map<string, number>;
+} {
   const rgroupByLabel = new Map<string, number>();
   const rgroups: { atomNumber: number; rgroup: number }[] = [];
+  const spelledHydrogens = new Map<string, number>();
   const symbols = atoms.map((atom, index) => {
     // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
     // must not pass through: OpenChemLib reads "*" as a carbon, which is exactly the misranking
     // this mode exists to prevent. It is a group the file does not spell, like any other label.
     if (MOLFILE_ATOM_SYMBOLS.has(atom.element) && !(options.abbreviations === "rgroup" && atom.element === "*")) {
       return atom.element;
+    }
+    const spelled = options.spellLabel?.(atom.element);
+    if (
+      spelled &&
+      spelled.element !== "*" &&
+      MOLFILE_ATOM_SYMBOLS.has(spelled.element) &&
+      Number.isInteger(spelled.hydrogens) &&
+      spelled.hydrogens >= 0
+    ) {
+      spelledHydrogens.set(atom.id, spelled.hydrogens);
+      return spelled.element;
     }
     if (options.abbreviations === "rgroup") {
       let rgroup = rgroupByLabel.get(atom.element);
@@ -211,7 +241,7 @@ function molfileAtomSymbols(
     );
     return "*";
   });
-  return { symbols, rgroups };
+  return { symbols, rgroups, spelledHydrogens };
 }
 
 function f10_4(value: number): string {
@@ -300,8 +330,8 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const lines: string[] = ["", "  ChemDraft", ""];
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
-  const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings);
+  const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, options);
+  const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings, spelledHydrogens);
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
@@ -375,8 +405,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     "M  V30 BEGIN ATOM"
   ];
 
-  const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings);
+  const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, options);
+  const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings, spelledHydrogens);
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";

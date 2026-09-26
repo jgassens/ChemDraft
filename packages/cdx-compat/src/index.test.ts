@@ -54,7 +54,7 @@ describe("CDXML groups", () => {
     `<fragment id="${id}"><n id="${id}a" p="${x} 0"/><n id="${id}b" p="${x + 14} 0"/><b id="${id}c" B="${id}a" E="${id}b"/></fragment>`;
 
   it("imports the molecules inside a group and ties them with a native group", () => {
-    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g1">${fragment("m1", 0)}${fragment("m2", 40)}</group></page></CDXML>`);
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g1" Z="7" Integral="yes">${fragment("m1", 0)}${fragment("m2", 40)}</group></page></CDXML>`);
     const objects = opened.document?.pages[0].objects ?? [];
     const molecules = objects.filter((object) => object.type === "molecule");
     const groups = objects.filter((object): object is GroupObject => object.type === "group");
@@ -62,6 +62,8 @@ describe("CDXML groups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].childObjectIds).toEqual(molecules.map((molecule) => molecule.id));
     expect(opened.warnings?.some(({ message }) => message.includes('"group"'))).toBe(false);
+    // The group element's own attributes, which have no native field, are kept rather than dropped.
+    expect(groups[0].compatibility?.unknown).toEqual({ attributes: { Z: "7", Integral: "yes" } });
     // The group encloses its members.
     for (const molecule of molecules) {
       expect(molecule.x).toBeGreaterThanOrEqual(groups[0].x);
@@ -84,7 +86,16 @@ describe("CDXML groups", () => {
     const lone = openChemDraftPayload(`<CDXML><page id="1"><group id="g">${fragment("m1", 0)}</group></page></CDXML>`);
     const loneObjects = lone.document?.pages[0].objects ?? [];
     expect(loneObjects.map((object) => object.type)).toEqual(["molecule"]);
+    expect(lone.warnings?.map(({ code }) => code)).toContain("cdxml.group_not_preserved");
   });
+
+  it("imports a group of a hundred thousand members without overflowing", () => {
+    const members = Array.from({ length: 100_000 }, (_, index) => `<t id="t${index}" p="${index % 500} ${Math.floor(index / 500)}"><s>x</s></t>`).join("");
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g">${members}</group></page></CDXML>`);
+    const groups = (opened.document?.pages[0].objects ?? []).filter((object): object is GroupObject => object.type === "group");
+    expect(groups).toHaveLength(1);
+    expect(groups[0].childObjectIds).toHaveLength(100_000);
+  }, 60_000);
 });
 
 describe("hostile CDXML", () => {
@@ -137,6 +148,25 @@ describe("large documents", () => {
     expect(reopened.source).toBe("native-payload");
     expect(reopened.document?.pages[0].objects).toHaveLength(3000);
   });
+
+  it("reopens a large save whose captions hold raw quotes", () => {
+    // Text is written with quotes unescaped, so a caption like n ='3 puts a lone apostrophe ahead of
+    // the payload attribute. A scan that read quotes outside tags paired it with the next one and
+    // left the payload unshortened: the app refused to reopen its own save.
+    const fragments = Array.from({ length: 3000 }, (_, index) => {
+      const x = (index % 60) * 30;
+      const y = Math.floor(index / 60) * 30 + 60;
+      return `<fragment id="f${index}"><n id="a${index}" p="${x} ${y}"/><n id="b${index}" p="${x + 14} ${y}"/><b id="c${index}" B="a${index}" E="b${index}"/></fragment>`;
+    }).join("");
+    const captions = `<t id="t1" p="10 10"><s>n ='3</s></t><t id="t2" p="10 30"><s>pH = "7</s></t>`;
+    const opened = openChemDraftPayload(`<CDXML><page id="1">${captions}${fragments}</page></CDXML>`);
+    expect(opened.document?.pages[0].objects).toHaveLength(3002);
+    const exported = exportDocumentToCdxml(opened.document!).contents;
+    const reopened = openChemDraftPayload(exported);
+    expect(reopened.warnings?.map(({ code }) => code) ?? []).not.toContain("cdxml.malformed_xml");
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.document?.pages[0].objects).toHaveLength(3002);
+  });
 });
 
 describe("CDXML dative bonds", () => {
@@ -150,6 +180,29 @@ describe("CDXML dative bonds", () => {
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
     expect(molecule.bonds[0]).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
     expect(opened.warnings?.some(({ code }) => code === "cdxml.bond_order_import_unsupported")).toBe(false);
+  });
+
+  it("says so when it reads a ChemDraw dashed single bond as dative", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="o" p="0 0" Element="8"/><n id="h" p="14 0" Element="1"/>
+      <b id="b" B="o" E="h" Display="Dash"/>
+    </fragment></page></CDXML>`);
+    const bond = (opened.document?.pages[0].objects[0] as MoleculeObject).bonds[0];
+    expect(bond).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+    expect(opened.warnings?.map(({ code }) => code)).toContain("cdxml.dashed_single_read_as_dative");
+    // A bond written as dative needs no such note: it is what it says.
+    expect(openChemDraftPayload(dativeCdxml).warnings?.map(({ code }) => code) ?? []).not.toContain("cdxml.dashed_single_read_as_dative");
+  });
+
+  it("keeps a dative bond's donor-to-acceptor direction when its display was a wedge", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="n" p="0 0" Element="7"/><n id="m" p="14 0" Element="29"/>
+      <b id="b" B="n" E="m" Order="dative" Display="WedgeEnd"/>
+    </fragment></page></CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    const nitrogen = molecule.atoms.find((atom) => atom.element === "N")!;
+    expect(molecule.bonds[0]).toMatchObject({ fromAtomId: nitrogen.id, display: { bondStyle: "dashed" } });
+    expect(opened.warnings?.some(({ code, message }) => code === "cdxml.bond_display_unsupported" && message.includes("WedgeEnd"))).toBe(true);
   });
 
   it("writes a native dative bond back as Order=\"dative\"", () => {

@@ -108,3 +108,25 @@ export function parseDocumentSessionEnvelope(raw: unknown): DocumentSessionEnvel
 export function shouldRestoreDocumentSession(envelope: DocumentSessionEnvelope): boolean {
   return envelope.path !== undefined || envelope.dirty || !envelope.blank;
 }
+
+/**
+ * Why a flush that must not silently skip (the app updater's, whose installer ends the process)
+ * cannot run now, or undefined when it can proceed — either because saving is open, or because
+ * skipping it loses nothing (a blank canvas, or a file saved with no edits since).
+ */
+export function strictSessionFlushRefusal(state: {
+  hydrated: boolean;
+  saveEnabled: boolean;
+  blank: boolean;
+  fileState: { path?: string; dirty: boolean };
+}): string | undefined {
+  if (state.hydrated && state.saveEnabled) {
+    return undefined;
+  }
+  if (state.blank || (state.fileState.path !== undefined && !state.fileState.dirty)) {
+    return undefined;
+  }
+  return state.hydrated
+    ? "autosave is off for this session, so the drawing could not be saved automatically. Save it with File ▸ Save, then check for updates again."
+    : "the last session is still loading. Try again in a moment.";
+}

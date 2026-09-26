@@ -595,11 +595,6 @@ pub fn run() {
                 eprintln!("Could not install the ChemDraft menu: {error}");
             }
 
-            #[cfg(windows)]
-            if let Err(error) = app.add_capability(app_update_capability()) {
-                eprintln!("Could not grant the update check to the document window: {error}");
-            }
-
             if let Err(error) = ensure_main_window_visible(app) {
                 eprintln!("Could not show ChemDraft main window: {error}");
             }
@@ -1575,18 +1570,6 @@ fn set_window_global_logical_position<R: Runtime>(
             physical_y.round() as i32,
         ))
         .map_err(|error| error.to_string())
-}
-
-/// The update check's permissions: granted in code rather than in capabilities/*.json because the
-/// updater plugin exists only in Windows builds, and a JSON capability naming `updater:default` would
-/// fail every other platform's build. Main window only — like the plugin-update transport, no palette,
-/// popover, or plugin panel can reach it. `dialog:allow-message` is for "up to date" and failures.
-#[cfg(windows)]
-fn app_update_capability() -> tauri::ipc::CapabilityBuilder {
-    tauri::ipc::CapabilityBuilder::new("app-updates")
-        .window(MAIN_WINDOW_LABEL)
-        .permission("updater:default")
-        .permission("dialog:allow-message")
 }
 
 /// Move the calling window to a point in global logical coordinates (see
@@ -4850,16 +4833,19 @@ mod tests {
     }
 
     #[test]
-    fn openable_document_paths_are_existing_chemdraft_or_cdxml_files() {
+    fn openable_document_paths_are_existing_chemdraft_cdxml_or_cdx_files() {
         let dir = std::env::temp_dir().join(format!("chemdraft-open-args-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("temp dir");
-        for name in ["a.chemdraft", "b.CDXML", "c.txt"] {
+        for name in ["a.chemdraft", "b.CDXML", "c.txt", "d.Cdx"] {
             fs::write(dir.join(name), "<CDXML/>").expect("fixture");
         }
 
         assert!(is_openable_document_path(&dir.join("a.chemdraft")));
         assert!(is_openable_document_path(&dir.join("b.CDXML")));
         assert!(!is_openable_document_path(&dir.join("c.txt")));
+        // A ChemDraw binary reaches the opener, which says what it is; filtering it out here made
+        // "Open with ChemDraft" on a .cdx do nothing at all.
+        assert!(is_openable_document_path(&dir.join("d.Cdx")));
         assert!(!is_openable_document_path(&dir.join("missing.cdxml")));
         assert!(!is_openable_document_path(&dir));
 

@@ -125,11 +125,20 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
     return "up-to-date";
   }
 
-  const accepted = await deps.confirm(updatePromptText(update), {
-    title: DIALOG_TITLE,
-    okLabel: "Install and Restart",
-    cancelLabel: "Later"
-  });
+  let accepted: boolean;
+  try {
+    accepted = await deps.confirm(updatePromptText(update), {
+      title: DIALOG_TITLE,
+      okLabel: "Install and Restart",
+      cancelLabel: "Later"
+    });
+  } catch (error) {
+    // The prompt itself failed (dialog plugin error, window closing). Nothing was installed; release
+    // the native update handle, which nothing else would, and let the next check ask again.
+    console.warn("Update prompt failed:", error);
+    await update.close().catch(() => undefined);
+    return "check-failed";
+  }
   if (!accepted) {
     await update.close().catch(() => undefined);
     return "declined";

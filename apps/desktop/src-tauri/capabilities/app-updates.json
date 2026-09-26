@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "app-updates",
+  "description": "Allow only the main ChemDraft window to check for, download, and install app updates, and to report the result. Windows only: the updater plugin exists only in Windows builds, and Tauri skips a capability for another platform before resolving its permissions, so no other build ever looks up updater:default.",
+  "windows": ["main"],
+  "platforms": ["windows"],
+  "permissions": ["updater:default", "dialog:allow-message"]
+}

@@ -4,7 +4,8 @@ import {
   DOCUMENT_HISTORY_LIMIT,
   DOCUMENT_HISTORY_MIN_STEPS,
   boundedHistoryPast,
-  documentHistoryWeight
+  documentHistoryWeight,
+  exclusiveHistoryWeight
 } from "./documentHistoryBudget";
 
 function documentWithMolecules(count: number, atomsEach = 2): ChemDraftDocument {
@@ -38,9 +39,9 @@ describe("undo history budget", () => {
     expect(kept[kept.length - 1]).toBe(past[past.length - 1]);
   });
 
-  it("drops the oldest steps of a huge drawing to stay within the budget", () => {
-    const huge = documentWithMolecules(5000);
-    const past = Array.from({ length: 60 }, () => ({ ...huge }));
+  it("drops the oldest steps of a huge drawing whose snapshots share nothing", () => {
+    // Every step rewrote every object (a rotate of everything): nothing is shared.
+    const past = Array.from({ length: 60 }, () => documentWithMolecules(5000));
     const kept = boundedHistoryPast(past);
     expect(kept.length).toBeLessThan(60);
     expect(kept.length).toBeGreaterThanOrEqual(DOCUMENT_HISTORY_MIN_STEPS);
@@ -49,9 +50,40 @@ describe("undo history budget", () => {
     expect(weight).toBeLessThanOrEqual(450_000);
   });
 
+  it("counts objects shared between snapshots once, so small edits to a huge drawing keep every step", () => {
+    // What structural sharing produces: each step replaces one object and shares the rest.
+    const first = documentWithMolecules(5000);
+    const past: ChemDraftDocument[] = [first];
+    for (let step = 1; step < 60; step += 1) {
+      const previous = past[past.length - 1]!;
+      const objects = [...previous.pages[0]!.objects];
+      objects[step] = { ...objects[step]!, x: step };
+      past.push({ ...previous, pages: [{ ...previous.pages[0]!, objects }] });
+    }
+    expect(exclusiveHistoryWeight(past[0]!, past[1]!)).toBe(documentHistoryWeight(documentWithMolecules(1)));
+    expect(boundedHistoryPast(past)).toHaveLength(60);
+  });
+
+  it("keeps every small edit of a drawing heavier than the whole budget, given the present", () => {
+    // 5,000 molecules of 100 atoms and one bond: 510,000 units, over the 450,000 budget on its own.
+    const first = documentWithMolecules(5000, 100);
+    expect(documentHistoryWeight(first)).toBeGreaterThan(450_000);
+    const snapshots: ChemDraftDocument[] = [first];
+    for (let step = 1; step <= 30; step += 1) {
+      const previous = snapshots[snapshots.length - 1]!;
+      const objects = [...previous.pages[0]!.objects];
+      objects[step] = { ...objects[step]!, x: step };
+      snapshots.push({ ...previous, pages: [{ ...previous.pages[0]!, objects }] });
+    }
+    const present = snapshots.pop()!;
+    expect(boundedHistoryPast(snapshots, present)).toHaveLength(30);
+    // Without the present, the newest entry is charged in full and only the floor survives.
+    expect(boundedHistoryPast(snapshots)).toHaveLength(DOCUMENT_HISTORY_MIN_STEPS);
+  });
+
   it("always keeps a few undo steps, however large the drawing", () => {
-    const giant = documentWithMolecules(1, 400_000);
-    const past = Array.from({ length: 20 }, () => ({ ...giant }));
+    // Two of these already exceed the budget; the floor still keeps five.
+    const past = Array.from({ length: 7 }, () => documentWithMolecules(1, 200_000));
     expect(boundedHistoryPast(past)).toHaveLength(DOCUMENT_HISTORY_MIN_STEPS);
   });
 });

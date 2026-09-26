@@ -34,6 +34,32 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Windows port: updater, CDXML robustness, large drawings (2026-09-26, branch `windows-port`, not yet merged)
+
+On top of the Windows build itself (installer, single-instance open, menu, clipboard; see AGENTS §20's
+Windows surfaces), this branch shipped four slices.
+
+- **App updater.** `tauri-plugin-updater` on Windows only, the counterpart of Sparkle: a signed
+  `latest.json` feed on `main`, a daily launch check plus File ▸ Check for Updates…, and the document
+  saved before the passive installer ends the process. A save that cannot happen (autosave off, the
+  restore still running) stops the update unless skipping it loses nothing. The permission is
+  `capabilities/app-updates.json`, marked Windows-only. Procedure: `docs/releasing/windows-updates.md`.
+- **CDXML robustness.** Groups import as native groups (their own attributes kept on the group; a
+  one-member group imports ungrouped, with a warning). `Order="dative"` reads and writes as the native
+  dative bond, and a ChemDraw dashed single bond is said to be read as dative, since that is the only
+  dashed single bond ChemDraft has. Hostile files fail with a message: bonds to missing atoms are
+  skipped with a warning, out-of-range numbers are refused, a 100,000-member group imports. `.cdx` opened
+  from Explorer reaches the opener, which says what it is, and UTF-16 files open by their BOM.
+- **Large drawings.** The patch engine shares unchanged objects between document versions instead of
+  deep-copying the document per patch, so a one-object edit costs the object, not the page; derived
+  documents (charge-mark reconciliation) are re-admitted with `adoptDerivedDocument`. Object views are
+  memoized, with handlers routed through `useStableCallbacks`, and molecule SVG plans are cached per
+  object. Undo is bounded by retained size, counting shared objects once. On a 5,000-molecule page a
+  single-object edit went from about 1 s to about 180 ms, and the heap no longer grows with each edit.
+- **Molecular Inspector reads the drawing.** Properties analyse a V3000 molfile of the live atom and
+  bond graph instead of the object's `structure` string, which was empty for imported molecules and a
+  lossy SMILES for fused rings. Condensed labels such as OH and NH2 are spelled with their hydrogens.
+
 ## Tester feedback fixes + 0.3.5 (2026-09-25, PR #47 merge `60cc59e`, release PR #48 merge `e107b23`)
 
 Two tester-reported problems, fixed and released same day.

@@ -1,5 +1,6 @@
 import {
   createElement,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -97,7 +98,8 @@ import {
   buildDocumentSessionEnvelope,
   documentIsBlank,
   parseDocumentSessionEnvelope,
-  shouldRestoreDocumentSession
+  shouldRestoreDocumentSession,
+  strictSessionFlushRefusal
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import { PatchReviewTray } from "./plugins/PatchReviewTray";
@@ -347,6 +349,8 @@ import {
   applyNativeMoleculePartsDelete,
   applyEditorSaveResultToSelectedMolecule,
   applyAnalysisToSelectedMolecule,
+  analysisFacingStructure,
+  analysisSubjectKey,
   nativeMoleculeUnspellableLabels,
   applyFreeformSingleBondToolAtPoint,
   applyNativeTemplateToolAtTarget,
@@ -1407,7 +1411,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "9.26.00.32-opus";
+const CURRENT_BUILD_STAMP = "9.26.10.55-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1753,12 +1757,13 @@ export function MainWindow({
   }, []);
 
   const runMolecularProperties = useCallback(
-    async (
-      format: string,
-      structure: string,
-      interpretationOverride: string | undefined,
-      unspellableLabels: readonly string[] = []
-    ): Promise<void> => {
+    async (molecule: MoleculeObject, interpretationOverride: string | undefined): Promise<void> => {
+      // The live atom/bond graph, not the object's `structure` string: that string is empty for an
+      // imported molecule ("The structure input is empty.") and a lossy SMILES for a drawn fused ring
+      // system, which analysed a different molecule than the one on the page.
+      const { structureFormat: format, structure } = analysisFacingStructure(molecule);
+      const subjectKey = analysisSubjectKey(molecule);
+      const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
       const client = analysisClient();
       if (!client) {
         setStatus("Analysis is unavailable in this runtime");
@@ -1788,7 +1793,7 @@ export function MainWindow({
         const report = buildAnalysisReport(run);
         setAnalysisReport(report);
         // What these numbers describe, so the pane can say when they stop describing it.
-        setAnalysisSubject(structure);
+        setAnalysisSubject(subjectKey);
         setAnalysisInterpretation(interpretationOverride);
         const placeholderNote = nativePlaceholderAtomStatus(unspellableLabels);
         setStatus(`${formatAnalysisRunStatus(run)}${placeholderNote ? `; ${placeholderNote}` : ""}`);
@@ -2004,6 +2009,8 @@ export function MainWindow({
   const documentSessionHydratedRef = useRef(false);
   // Autosave writes the session file only after a clean read of it. A failed read leaves this false
   // so the blank startup document can never replace a session we merely failed to decode.
+  /** A shell open that failed before the session restore ran; the restore's status repeats it. */
+  const shellOpenFailureRef = useRef<string | undefined>(undefined);
   const documentSessionSaveEnabledRef = useRef(false);
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
@@ -2129,7 +2136,7 @@ export function MainWindow({
   const analysisReportIsStale =
     analysisReport !== undefined &&
     analysisSubject !== undefined &&
-    selectedMolecule?.structure !== analysisSubject;
+    (selectedMolecule ? analysisSubjectKey(selectedMolecule) : undefined) !== analysisSubject;
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -2245,12 +2252,7 @@ export function MainWindow({
     (interpretationId: string | undefined) => {
       const molecule = getSelectedMolecule(document);
       if (!molecule) return;
-      void runMolecularProperties(
-        molecule.structureFormat,
-        molecule.structure,
-        interpretationId,
-        nativeMoleculeUnspellableLabels(molecule)
-      );
+      void runMolecularProperties(molecule, interpretationId);
     },
     [document, runMolecularProperties]
   );
@@ -2378,8 +2380,15 @@ export function MainWindow({
   }, [plannedDisplayPage]);
   const pageSvgRenderPlan = useMemo(() =>
     markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage, { anchorResolutionPage: plannedDisplayPage })), [editorSvgDisplayPage, plannedDisplayPage]);
-  const nativeMoleculeOverlayFragments = useMemo(() =>
-    markFrame("planNativeMoleculeOverlayRender", () => nativeMoleculeOverlayFragmentsByObjectId(plannedDisplayPage)), [plannedDisplayPage]);
+  const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
+  const nativeMoleculeOverlayFragments = useMemo(() => {
+    const next = reuseUnchangedFragments(
+      previousOverlayFragmentsRef.current,
+      markFrame("planNativeMoleculeOverlayRender", () => nativeMoleculeOverlayFragmentsByObjectId(plannedDisplayPage))
+    );
+    previousOverlayFragmentsRef.current = next;
+    return next;
+  }, [plannedDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
@@ -2576,9 +2585,10 @@ export function MainWindow({
       return false;
     }
 
+    const present = reconcileNativeChargeMarks(nextDocument);
     installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, currentHistory.present]),
-      present: reconcileNativeChargeMarks(nextDocument),
+      past: boundedHistoryPast([...currentHistory.past, currentHistory.present], present),
+      present,
       future: []
     });
     setFileState((current) => {
@@ -2596,9 +2606,10 @@ export function MainWindow({
     nextDocument: ChemDraftDocument
   ) => {
     const currentHistory = documentHistoryRef.current;
+    const present = reconcileNativeChargeMarks(nextDocument);
     installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, startDocument]),
-      present: reconcileNativeChargeMarks(nextDocument),
+      past: boundedHistoryPast([...currentHistory.past, startDocument], present),
+      present,
       future: []
     });
     setFileState((current) => {
@@ -2666,7 +2677,7 @@ export function MainWindow({
     }
 
     installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, startDocument]),
+      past: boundedHistoryPast([...currentHistory.past, startDocument], currentHistory.present),
       present: currentHistory.present,
       future: []
     });
@@ -7401,7 +7412,14 @@ export function MainWindow({
       try {
         openDocumentContents(payload.contents, payload.displayName, payload.path);
       } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+        const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
+        setStatus(failure);
+        // At a cold start the session restore lands next and replaces the status line, which made a
+        // double-clicked .cdx look like it did nothing. The restore still runs (skipping it would let
+        // autosave overwrite the previous session with a blank page) and repeats this message.
+        if (!documentSessionHydratedRef.current) {
+          shellOpenFailureRef.current = failure;
+        }
       }
     };
 
@@ -7469,10 +7487,12 @@ export function MainWindow({
         if (!pristine) {
           return;
         }
+        const shellOpenFailure = shellOpenFailureRef.current;
+        shellOpenFailureRef.current = undefined;
         try {
           openDocumentContents(envelope.contents, envelope.displayName, envelope.path, {
             dirty: envelope.dirty,
-            statusOverride: `Restored last session — ${envelope.displayName}${envelope.dirty ? " (unsaved changes)" : ""}`
+            statusOverride: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${envelope.displayName}${envelope.dirty ? " (unsaved changes)" : ""}`
           });
         } catch {
           // Never block startup on a bad autosave; the next edit overwrites it.
@@ -7500,8 +7520,21 @@ export function MainWindow({
   // so the startup blank can't clobber the previous session before the restore above has read it.
   // `strict` rethrows a failed write. The app updater needs it: its installer ends the process, so
   // "the previous autosave stays" is not good enough there — a failed save must stop the update.
+  // That includes the gate: with autosave off (the last session could not be read) or the restore
+  // still running, nothing is written, and resolving would let the installer discard the drawing.
   const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean }) => {
     if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
+      const refusal = options?.strict
+        ? strictSessionFlushRefusal({
+            hydrated: documentSessionHydratedRef.current,
+            saveEnabled: documentSessionSaveEnabledRef.current,
+            blank: documentIsBlank(documentRef.current),
+            fileState: fileStateRef.current
+          })
+        : undefined;
+      if (refusal) {
+        throw new Error(refusal);
+      }
       return;
     }
     try {
@@ -7865,12 +7898,7 @@ export function MainWindow({
             setStatus("Molecular Inspector opened — select a structure to analyse it");
             return;
           }
-          await runMolecularProperties(
-            molecule.structureFormat,
-            molecule.structure,
-            analysisInterpretation,
-            nativeMoleculeUnspellableLabels(molecule)
-          );
+          await runMolecularProperties(molecule, analysisInterpretation);
           return;
         }
         if (action.id === "chemistry.validateSelection") {
@@ -16208,6 +16236,50 @@ export function MainWindow({
     ]
   );
 
+  // Handlers every object view receives. Most of them close over the document, so their identities
+  // change on every edit, which forced all of a page's object views to re-render: 5,000 molecules
+  // cost ~450 ms per single-object edit. Routed through stable wrappers, `DocumentObjectView`'s memo
+  // can skip every object whose own props did not change.
+  const objectViewHandlers = useStableCallbacks({
+    onMechanismHandlePointerDown: startMechanismHandleDrag,
+    onMechanismHandlePointerMove: moveMechanismHandleDrag,
+    onMechanismHandlePointerUp: endMechanismHandleDrag,
+    onMechanismHandlePointerCancel: endMechanismHandleDrag,
+    onPointerDown: handleObjectPointerDown,
+    onPointerMove: handleObjectPointerMove,
+    onPointerUp: handleObjectPointerUp,
+    onPointerCancel: handleObjectPointerCancel,
+    onPointerLeave: handleObjectPointerLeave,
+    onRotatePointerDown: handleObjectRotatePointerDown,
+    onRotateDoubleClick: handleObjectRotateDoubleClick,
+    onProjectedPlaneTiltPointerDown: handleProjectedPlaneTiltPointerDown,
+    onProjectedPlaneTiltDoubleClick: handleProjectedPlaneTiltDoubleClick,
+    onGraphicCornerRadiusPointerDown: handleGraphicCornerRadiusPointerDown,
+    onGraphicCornerRadiusDoubleClick: handleGraphicCornerRadiusDoubleClick,
+    onGraphicPathEditPointerDown: handleGraphicPathEditPointerDown,
+    onGraphicMarkerPointerDown: handleGraphicMarkerPointerDown,
+    onGraphicGradientPointerDown: handleGraphicGradientPointerDown,
+    onRotationInputChange: handleRotationInputChange,
+    onRotationInputKeep: handleRotationInputKeep,
+    onRotationInputHome: handleRotationInputHome,
+    onRotationInputCancel: handleRotationInputCancel,
+    onObjectResizePointerDown: handleObjectResizePointerDown,
+    onObjectResizeDoubleClick: handleObjectResizeDoubleClick,
+    onObjectResizeInputChange: handleObjectResizeInputChange,
+    onObjectResizeInputKeep: handleObjectResizeInputKeep,
+    onObjectResizeInputHome: handleObjectResizeInputHome,
+    onObjectResizeInputCancel: handleObjectResizeInputCancel,
+    onContextMenu: handleObjectContextMenu,
+    onTextChange: updateTextObjectContent,
+    onTextEditStart: startTextObjectEdit,
+    onTextEditFinish: finishActiveNativeTextEdit,
+    onTextSelectionChange: recordTextSelection,
+    onTextResizeStart: startTextResize,
+    onAtomLabelChange: updateAtomLabelDraft,
+    onAtomLabelCancel: cancelAtomLabelEdit,
+    onAtomLabelFinish: finishAtomLabelEdit
+  });
+
   return (
     <main
       className={[
@@ -16553,6 +16625,9 @@ export function MainWindow({
                   // 5,000-object page 25 million comparisons, twice.
                   const selectedObjectIdSet = new Set(document.selection.objectIds);
                   const resolvedSelectionIdSet = new Set(resolvedSelectionObjectIds);
+                  // The transform preview re-renders every animation frame during a group rotate or
+                  // resize, so its membership test must not scan the preview's ids per object either.
+                  const transformPreviewIdSet = new Set(objectTransformPreview?.objectIds ?? []);
                   const selectedPartByObjectId = new Map<string, (typeof selectedNativeMoleculeParts)[number]>();
                   for (const part of selectedNativeMoleculeParts) {
                     if (!selectedPartByObjectId.has(part.objectId)) {
@@ -16586,6 +16661,7 @@ export function MainWindow({
                   return (
                     <DocumentObjectView
                       key={objectRenderKey}
+                      {...objectViewHandlers}
                       object={object}
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
@@ -16605,7 +16681,7 @@ export function MainWindow({
                       graphicEyedropperTargetActive={
                         activeToolState.activeCommandId === "tool.art.eyedropper" &&
                         object.type === "graphic" &&
-                        document.selection.objectIds.includes(object.id)
+                        selectedObjectIdSet.has(object.id)
                       }
                       activeArtPaintTarget={effectiveArtPaintTarget}
                       selectedGraphicPathNodeIndex={
@@ -16623,12 +16699,8 @@ export function MainWindow({
                       freeformPreview={freeformNativeBond?.objectId === object.id ? freeformNativeBond : undefined}
                       mechanismHandlesVisible={
                         (selectionChromeActive || activeMechanismArrowKind !== undefined) &&
-                        document.selection.objectIds.includes(object.id)
+                        selectedObjectIdSet.has(object.id)
                       }
-                      onMechanismHandlePointerDown={startMechanismHandleDrag}
-                      onMechanismHandlePointerMove={moveMechanismHandleDrag}
-                      onMechanismHandlePointerUp={endMechanismHandleDrag}
-                      onMechanismHandlePointerCancel={endMechanismHandleDrag}
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
@@ -16642,44 +16714,11 @@ export function MainWindow({
                       resizeReadout={objectResizeReadout?.objectId === object.id ? objectResizeReadout : undefined}
                       resizeInput={objectResizeInput?.objectId === object.id ? objectResizeInput : undefined}
                       objectTransformPreview={
-                        objectTransformPreview?.objectIds.includes(object.id) ? objectTransformPreview : undefined
+                        transformPreviewIdSet.has(object.id) ? objectTransformPreview : undefined
                       }
                       graphicCornerRadiusReadout={
                         graphicCornerRadiusReadout?.objectId === object.id ? graphicCornerRadiusReadout : undefined
                       }
-                      onPointerDown={handleObjectPointerDown}
-                      onPointerMove={handleObjectPointerMove}
-                      onPointerUp={handleObjectPointerUp}
-                      onPointerCancel={handleObjectPointerCancel}
-                      onPointerLeave={handleObjectPointerLeave}
-                      onRotatePointerDown={handleObjectRotatePointerDown}
-                      onRotateDoubleClick={handleObjectRotateDoubleClick}
-                      onProjectedPlaneTiltPointerDown={handleProjectedPlaneTiltPointerDown}
-                      onProjectedPlaneTiltDoubleClick={handleProjectedPlaneTiltDoubleClick}
-                      onGraphicCornerRadiusPointerDown={handleGraphicCornerRadiusPointerDown}
-                      onGraphicCornerRadiusDoubleClick={handleGraphicCornerRadiusDoubleClick}
-                      onGraphicPathEditPointerDown={handleGraphicPathEditPointerDown}
-                      onGraphicMarkerPointerDown={handleGraphicMarkerPointerDown}
-                      onGraphicGradientPointerDown={handleGraphicGradientPointerDown}
-                      onRotationInputChange={handleRotationInputChange}
-                      onRotationInputKeep={handleRotationInputKeep}
-                      onRotationInputHome={handleRotationInputHome}
-                      onRotationInputCancel={handleRotationInputCancel}
-                      onObjectResizePointerDown={handleObjectResizePointerDown}
-                      onObjectResizeDoubleClick={handleObjectResizeDoubleClick}
-                      onObjectResizeInputChange={handleObjectResizeInputChange}
-                      onObjectResizeInputKeep={handleObjectResizeInputKeep}
-                      onObjectResizeInputHome={handleObjectResizeInputHome}
-                      onObjectResizeInputCancel={handleObjectResizeInputCancel}
-                      onContextMenu={handleObjectContextMenu}
-                      onTextChange={updateTextObjectContent}
-                      onTextEditStart={startTextObjectEdit}
-                      onTextEditFinish={finishActiveNativeTextEdit}
-                      onTextSelectionChange={recordTextSelection}
-                      onTextResizeStart={startTextResize}
-                      onAtomLabelChange={updateAtomLabelDraft}
-                      onAtomLabelCancel={cancelAtomLabelEdit}
-                      onAtomLabelFinish={finishAtomLabelEdit}
                     />
                   );
                 })}
@@ -18750,7 +18789,7 @@ export function projectedPlaneTiltCommitHistory(
   nextDocument: ChemDraftDocument
 ): DocumentHistory {
   return {
-    past: boundedHistoryPast([...currentHistory.past, startDocument]),
+    past: boundedHistoryPast([...currentHistory.past, startDocument], nextDocument),
     present: nextDocument,
     future: []
   };
@@ -22395,6 +22434,64 @@ function nativeMoleculeOverlayFragmentsByObjectId(page: DocumentPage): ReadonlyM
   return byObjectId;
 }
 
+/**
+ * `next`, with each object's fragments replaced by the previous array when the two are structurally
+ * identical. The page is planned as a whole (a bond crossing gaps the bond beneath it, so a molecule's
+ * drawing depends on its neighbours) and every plan yields new arrays; without this, every molecule's
+ * memoized view saw a changed prop on every edit and re-rendered.
+ */
+function reuseUnchangedFragments(
+  previous: ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined,
+  next: ReadonlyMap<string, readonly PageSvgElementFragment[]>
+): ReadonlyMap<string, readonly PageSvgElementFragment[]> {
+  if (!previous || previous.size === 0) {
+    return next;
+  }
+  const result = new Map<string, readonly PageSvgElementFragment[]>();
+  for (const [objectId, fragments] of next) {
+    const before = previous.get(objectId);
+    result.set(objectId, before && pageSvgFragmentListsEqual(before, fragments) ? before : fragments);
+  }
+  return result;
+}
+
+function pageSvgFragmentListsEqual(a: readonly PageSvgFragment[], b: readonly PageSvgFragment[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let index = 0; index < a.length; index += 1) {
+    if (!pageSvgFragmentsEqual(a[index]!, b[index]!)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function pageSvgFragmentsEqual(a: PageSvgFragment, b: PageSvgFragment): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a.kind !== b.kind || a.key !== b.key) {
+    return false;
+  }
+  if (a.kind === "text" || b.kind === "text") {
+    return a.kind === "text" && b.kind === "text" && a.text === b.text;
+  }
+  if (a.tag !== b.tag) {
+    return false;
+  }
+  const names = Object.keys(a.attrs);
+  if (names.length !== Object.keys(b.attrs).length) {
+    return false;
+  }
+  for (const name of names) {
+    if (a.attrs[name] !== b.attrs[name]) {
+      return false;
+    }
+  }
+  return pageSvgFragmentListsEqual(a.children, b.children);
+}
+
 function renderPageSvgFragment(
   fragment: PageSvgFragment,
   handlers: {
@@ -22514,7 +22611,30 @@ function reactSvgAttributeName(name: string): string {
   }[name] ?? name;
 }
 
-function DocumentObjectView({
+/**
+ * Stable wrappers around `callbacks`: each keeps its identity for the component's lifetime and calls
+ * whichever callback the latest render supplied, so a memoized child is not re-rendered just because
+ * a handler closed over new state. For event handlers only; the ref is written during render (child
+ * layout effects run before the parent's), so a call from an event always sees the committed render.
+ */
+function useStableCallbacks<T extends Record<string, (...args: never[]) => unknown>>(callbacks: T): T {
+  const latest = useRef(callbacks);
+  latest.current = callbacks;
+  const [stable] = useState(() => {
+    const wrappers: Record<string, (...args: unknown[]) => unknown> = {};
+    for (const key of Object.keys(callbacks)) {
+      wrappers[key] = (...args) => (latest.current[key] as (...args: unknown[]) => unknown)(...args);
+    }
+    return wrappers as unknown as T;
+  });
+  return stable;
+}
+
+// Memoized: an edit to one object of a large page re-renders that object's view, not every view.
+// Every function prop must arrive through `useStableCallbacks` or the memo never hits.
+const DocumentObjectView = memo(DocumentObjectViewContent);
+
+function DocumentObjectViewContent({
   object,
   layerIndex,
   pageWidth,

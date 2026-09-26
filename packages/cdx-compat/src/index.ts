@@ -180,16 +180,12 @@ export function exportDocumentToCdxml(
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
   const contents = buildCdxmlEnvelope(creationProgram, envelopePages);
-  // The envelope is the visible envelope plus one metadata insertion, so "the visible layer did not
-  // change" is checked textually: removing that exact insertion must give the visible envelope back
-  // (at least as strict as comparing hashes). Re-parsing and re-hashing the whole finished envelope
-  // — payload included — to prove the same thing cost a full XML parse of megabytes on every save.
-  if (contents.replace(metadata, "") !== visibleEnvelope) {
-    warnings.push({
-      code: "cdxml.visible_hash_internal_mismatch",
-      message: "ChemDraft generated a CDXML envelope whose visible hash changed after metadata insertion."
-    });
-  }
+  // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
+  // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
+  // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
+  // visible envelope plus exactly this insertion. What must hold is that the reader strips the
+  // metadata back to the same visible hash; the round-trip tests (a save reopens as its native
+  // payload, not as an externally edited file) are what enforce it.
 
   return { contents, warnings };
 }
@@ -1519,11 +1515,21 @@ function importPageObjects(
       memberRootIds.push(...imported.rootIds);
     }
     // A native group needs two members to mean anything (the app's own Group command requires two);
-    // with fewer, the lone member simply stands on the page.
-    const bounds = memberRootIds.length >= 2 ? unionObjectBounds(members.filter((object) => memberRootIds.includes(object.id))) : undefined;
+    // with fewer, the lone member simply stands on the page — said, not done silently (§11).
+    const rootIdSet = new Set(memberRootIds);
+    const bounds = memberRootIds.length >= 2 ? unionObjectBounds(members.filter((object) => rootIdSet.has(object.id))) : undefined;
     if (!bounds) {
+      if (memberRootIds.length > 0) {
+        warnings.push({
+          code: "cdxml.group_not_preserved",
+          message: `CDXML group${groupElement.attributes.id ? ` ${groupElement.attributes.id}` : ""} has fewer than two placeable members; its contents were imported ungrouped.`
+        });
+      }
       return { objects: members, rootIds: memberRootIds };
     }
+    // The group's own attributes (Z order, bounding box, visibility, vendor data) have no native
+    // field; kept on the group rather than discarded.
+    const { id: _originalId, ...groupAttributes } = groupElement.attributes;
     const group: GroupObject = {
       id: `cdxml_group_${pageIndex + 1}_${objectIndex}`,
       type: "group",
@@ -1535,7 +1541,7 @@ function importPageObjects(
         sourceFormat: "cdxml",
         originalId: groupElement.attributes.id,
         warnings: [],
-        unknown: {}
+        unknown: Object.keys(groupAttributes).length > 0 ? { attributes: groupAttributes } : {}
       }
     };
     objectIndex += 1;
@@ -1838,6 +1844,8 @@ function importFragment(
   const atomByCdxmlId = new Map<string, MoleculeAtom>(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
   );
+  const cdxmlIdByBondId = new Map<string, string>();
+  let dashedSingleBondCount = 0;
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
     const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId);
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
@@ -1850,6 +1858,7 @@ function importFragment(
     const cdxmlBondId = bondElement.attributes.id ?? bondId;
     const ref = { objectId, bondId };
     context.bondRefsByCdxmlId.set(cdxmlBondId, ref);
+    cdxmlIdByBondId.set(bondId, cdxmlBondId);
     const z = parseInteger(bondElement.attributes.Z);
     if (z !== undefined) {
       context.zByRefKey.set(bondRefKey(ref), z);
@@ -1867,8 +1876,24 @@ function importFragment(
     if (doubleBondSide) {
       bond.display = { ...(bond.display ?? {}), doubleBondSide };
     }
+    const dative = isCdxmlDativeOrder(bondElement.attributes.Order);
     const bondDisplay = cdxmlBondDisplay(bondElement.attributes.Display);
-    if (bondDisplay) {
+    if (dative) {
+      // A dative bond is drawn dashed (`isDativeBond`), whatever Display said. A wedge, hash or bold
+      // display cannot also be kept, and must not swap the endpoints either: CDXML writes a dative
+      // bond donor (B) to acceptor (E).
+      if (bondDisplay && bondDisplay.bondStyle !== "dashed") {
+        warnings.push({
+          code: "cdxml.bond_display_unsupported",
+          message: `CDXML dative bond display "${bondElement.attributes.Display}" was replaced by the dashed style ChemDraft draws dative bonds with.`,
+          sourceObjectId: objectId
+        });
+      }
+      bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
+    } else if (bondDisplay) {
+      if (bondDisplay.bondStyle === "dashed" && order === "single") {
+        dashedSingleBondCount += 1;
+      }
       bond.display = { ...(bond.display ?? {}), bondStyle: bondDisplay.bondStyle };
       if (bondDisplay.narrowAtEnd) {
         // CDXML WedgeEnd/WedgedHashEnd put the narrow (stereocenter) end at E; ChemDraft
@@ -1884,11 +1909,18 @@ function importFragment(
         sourceObjectId: objectId
       });
     }
-    if (isCdxmlDativeOrder(bondElement.attributes.Order)) {
-      bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
-    }
     return bond;
   });
+  if (dashedSingleBondCount > 0) {
+    // ChemDraw draws hydrogen and partial (forming/breaking) bonds as dashed singles too; ChemDraft
+    // has one dashed single bond, the coordination bond, and every writer treats it as one (V3000
+    // bond type 9, CDXML Order="dative"). Said at the door rather than discovered in an export.
+    warnings.push({
+      code: "cdxml.dashed_single_read_as_dative",
+      message: `${dashedSingleBondCount} dashed single bond${dashedSingleBondCount === 1 ? " was" : "s were"} read as dative (coordination) bond${dashedSingleBondCount === 1 ? "" : "s"}, the only dashed single bond ChemDraft has; a hydrogen or partial bond drawn this way is exported as dative.`,
+      sourceObjectId: objectId
+    });
+  }
   // A bond must join two different atoms of this fragment. One naming a missing atom used to keep
   // the raw CDXML id as its endpoint — a bond to nothing that every later consumer (renderer, SMILES,
   // valence) had to survive — and one from an atom to itself is no bond at all.
@@ -1898,9 +1930,12 @@ function importFragment(
   );
   if (joinedBonds.length !== bonds.length) {
     // Crossing hints resolve CDXML bond ids through this map; a skipped bond must not stay reachable.
+    // Only this fragment's skipped bonds, by the ids recorded while mapping: scanning the whole map
+    // per fragment made a damaged file with thousands of such fragments quadratic to open.
     const keptBondIds = new Set(joinedBonds.map((bond) => bond.id));
-    for (const [cdxmlBondId, ref] of context.bondRefsByCdxmlId) {
-      if (ref.objectId === objectId && !keptBondIds.has(ref.bondId)) {
+    for (const bond of bonds) {
+      const cdxmlBondId = cdxmlIdByBondId.get(bond.id);
+      if (!keptBondIds.has(bond.id) && cdxmlBondId !== undefined && context.bondRefsByCdxmlId.get(cdxmlBondId)?.bondId === bond.id) {
         context.bondRefsByCdxmlId.delete(cdxmlBondId);
       }
     }
@@ -2800,16 +2835,24 @@ function cdxmlCornerRadiusToCssPx(value: string | undefined): number {
 function unionObjectBounds(
   objects: readonly DocumentObject[]
 ): { x: number; y: number; width: number; height: number } | undefined {
-  const finite = objects.filter((object) =>
-    [object.x, object.y, object.width, object.height].every((value) => Number.isFinite(value))
-  );
-  if (finite.length === 0) {
+  // A loop, not `Math.min(...values)`: spreading a hostile file's 150,000-member group overflows the
+  // argument stack and threw out of the open instead of failing safely.
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const object of objects) {
+    if (![object.x, object.y, object.width, object.height].every((value) => Number.isFinite(value))) {
+      continue;
+    }
+    left = Math.min(left, object.x);
+    top = Math.min(top, object.y);
+    right = Math.max(right, object.x + object.width);
+    bottom = Math.max(bottom, object.y + object.height);
+  }
+  if (left === Infinity) {
     return undefined;
   }
-  const left = Math.min(...finite.map((object) => object.x));
-  const top = Math.min(...finite.map((object) => object.y));
-  const right = Math.max(...finite.map((object) => object.x + object.width));
-  const bottom = Math.max(...finite.map((object) => object.y + object.height));
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
@@ -2847,30 +2890,55 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
 const VALIDATION_ATTRIBUTE_VALUE_LIMIT = 4096;
 
 // A linear scan, not a regular expression: even `"[^"<]{4096,}"` keeps backtracking state per
-// character in V8 and overflows on a multi-megabyte match.
+// character in V8 and overflows on a multi-megabyte match. It reads quotes only inside markup —
+// never in text, comments, or CDATA. Text may hold a raw quote (the writer escapes only `&`, `<`
+// and `>` there), and a scan keyed on every `=` took `pH = "7` in a caption for an attribute: the
+// quote paired with a later one, the payload after it went unshortened, and the app refused to
+// reopen its own file.
 function withLongAttributeValuesShortened(xml: string): string {
   let result = "";
   let copiedUpTo = 0;
-  let cursor = xml.indexOf("=", 0);
-  while (cursor !== -1) {
-    let open = cursor + 1;
-    while (open < xml.length && (xml[open] === " " || xml[open] === "\t" || xml[open] === "\n" || xml[open] === "\r")) {
-      open += 1;
+  let cursor = 0;
+  for (;;) {
+    const open = xml.indexOf("<", cursor);
+    if (open === -1) {
+      break;
     }
-    const quote = xml[open];
-    if (quote === '"' || quote === "'") {
-      const close = xml.indexOf(quote, open + 1);
-      if (close === -1) {
+    const skipTo = xml.startsWith("<!--", open)
+      ? xml.indexOf("-->", open + 4)
+      : xml.startsWith("<![CDATA[", open)
+        ? xml.indexOf("]]>", open + 9)
+        : undefined;
+    if (skipTo !== undefined) {
+      if (skipTo === -1) {
         break;
       }
-      if (close - open - 1 >= VALIDATION_ATTRIBUTE_VALUE_LIMIT && !xml.slice(open + 1, close).includes("<")) {
-        result += `${xml.slice(copiedUpTo, open + 1)}…`;
+      cursor = skipTo + 3;
+      continue;
+    }
+    // A tag (or `<?…?>`, `<!DOCTYPE …>`): quoted values until the `>` outside them.
+    let index = open + 1;
+    for (; index < xml.length; index += 1) {
+      const character = xml[index];
+      if (character === ">") {
+        break;
+      }
+      if (character !== '"' && character !== "'") {
+        continue;
+      }
+      const close = xml.indexOf(character, index + 1);
+      if (close === -1) {
+        // Unterminated: nothing to shorten, and the validator reports the real error.
+        return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
+      }
+      const lessThan = xml.indexOf("<", index + 1);
+      if (close - index - 1 >= VALIDATION_ATTRIBUTE_VALUE_LIMIT && (lessThan === -1 || lessThan > close)) {
+        result += `${xml.slice(copiedUpTo, index + 1)}…`;
         copiedUpTo = close;
       }
-      cursor = xml.indexOf("=", close + 1);
-    } else {
-      cursor = xml.indexOf("=", cursor + 1);
+      index = close;
     }
+    cursor = index + 1;
   }
   return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
 }

@@ -4,7 +4,8 @@ import {
   buildDocumentSessionEnvelope,
   documentIsBlank,
   parseDocumentSessionEnvelope,
-  shouldRestoreDocumentSession
+  shouldRestoreDocumentSession,
+  strictSessionFlushRefusal
 } from "./documentSession";
 
 const payload = {
@@ -98,5 +99,29 @@ describe("shouldRestoreDocumentSession", () => {
 
   it("restores any non-blank document", () => {
     expect(shouldRestoreDocumentSession(base)).toBe(true);
+  });
+});
+
+describe("strict session flush (before the updater's installer ends the process)", () => {
+  const open = { hydrated: true, saveEnabled: true, blank: false, fileState: { dirty: true } };
+
+  it("proceeds when saving is open", () => {
+    expect(strictSessionFlushRefusal(open)).toBeUndefined();
+  });
+
+  it("refuses when autosave is off and the drawing has unsaved work", () => {
+    expect(strictSessionFlushRefusal({ ...open, saveEnabled: false })).toMatch(/autosave is off/);
+    expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, fileState: { path: "C:/a.cdxml", dirty: true } }))
+      .toMatch(/File ▸ Save/);
+  });
+
+  it("refuses while the last session is still loading", () => {
+    expect(strictSessionFlushRefusal({ ...open, hydrated: false, saveEnabled: false })).toMatch(/still loading/);
+  });
+
+  it("proceeds when skipping the write loses nothing: a blank canvas, or a saved file with no edits", () => {
+    expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, blank: true })).toBeUndefined();
+    expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, fileState: { path: "C:/a.cdxml", dirty: false } }))
+      .toBeUndefined();
   });
 });

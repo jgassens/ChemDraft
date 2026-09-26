@@ -67,7 +67,9 @@ if (isBranchBuild) {
 if (args[0] === "build" && !isBranchBuild && process.platform === "win32") {
   const keyPath = env.CHEMDRAFT_UPDATER_KEY_PATH ?? join(homedir(), ".tauri", "chemdraft-updater.key");
   if (env.TAURI_SIGNING_PRIVATE_KEY || existsSync(keyPath)) {
-    env.TAURI_SIGNING_PRIVATE_KEY ??= readFileSync(keyPath, "utf8");
+    // Trimmed (which also strips a BOM, whitespace to trim()): a key restored from a password manager
+    // through an editor or PowerShell gains a trailing newline, and the CLI then fails to decode it.
+    env.TAURI_SIGNING_PRIVATE_KEY ??= readFileSync(keyPath, "utf8").trim();
     env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ??= "";
     args.splice(1, 0, "--config", JSON.stringify({ bundle: { createUpdaterArtifacts: true } }));
     console.log("Stable build: signing the installer for the in-app updater.");

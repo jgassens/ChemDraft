@@ -157,6 +157,19 @@ describe("runUpdateFlow", () => {
     expect(declined.flushSession).not.toHaveBeenCalled();
   });
 
+  it("releases the update and installs nothing when the prompt itself fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const update = fakeUpdate();
+    const flow = deps({
+      check: vi.fn(async () => update),
+      confirm: vi.fn(() => Promise.reject(new Error("dialog unavailable")))
+    });
+    expect(await runUpdateFlow("automatic", flow)).toBe("check-failed");
+    expect(update.calls).toEqual(["close"]);
+    expect(flow.flushSession).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("downloads, then saves the document, then installs — in that order", async () => {
     const order: string[] = [];
     const update = fakeUpdate();

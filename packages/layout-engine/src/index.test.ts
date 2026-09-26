@@ -874,6 +874,43 @@ describe("layout-engine page SVG planner", () => {
     expect(backHoverDecorators).toHaveLength(2);
   });
 
+  it("re-plans a molecule only when it, its layer, or the crossing gaps on its bonds change", () => {
+    const horizontal = moleculeObject({
+      id: "mol_back",
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y: 180, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 220, y: 180, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const vertical = (x: number) => moleculeObject({
+      id: "mol_front",
+      atoms: [
+        { id: "atom_001", element: "C", x, y: 140, formalCharge: 0 },
+        { id: "atom_002", element: "C", x, y: 220, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const backFragments = (page: DocumentPage) =>
+      planPageSvgRender(page).fragments.filter((fragment) => fragment.attrs["data-object-id"] === "mol_back");
+    const front = vertical(180);
+    const first = backFragments(pageWithObjects([horizontal, front]));
+
+    // The same objects again: the planned fragments are reused, not rebuilt.
+    const again = backFragments(pageWithObjects([horizontal, front]));
+    expect(again).toHaveLength(first.length);
+    again.forEach((fragment, index) => expect(fragment).toBe(first[index]));
+
+    // The molecule in front moves, so the gap it cuts in this one moves: re-planned, and different.
+    const shifted = backFragments(pageWithObjects([horizontal, vertical(200)]));
+    expect(shifted[0]).not.toBe(first[0]);
+    expect(shifted).not.toEqual(first);
+
+    // A new layer index re-plans too (the index is written into the fragments).
+    const reordered = backFragments(pageWithObjects([front, horizontal]));
+    expect(reordered[0]).not.toBe(first[0]);
+  });
+
   it("uses explicit crossing overrides to flip the local gap", () => {
     const back = moleculeObject({
       id: "mol_back",

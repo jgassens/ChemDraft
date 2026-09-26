@@ -32,6 +32,7 @@ import {
   type VisualEffectKind
 } from "@chemdraft/art-engine";
 import {
+  adoptDerivedDocument,
   applyPatch,
   applyPatches,
   ChemDraftSyntheticStylePreset,
@@ -8095,7 +8096,10 @@ export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDra
     }
     return nextPage;
   });
-  return changed ? { ...document, pages } : document;
+  // Re-admitted to the patch engine's sharing: a plain spread is a document the engine never saw,
+  // so the next edit would deep-copy all of it and every per-object cache (undo sharing, render
+  // plans, memoized views) would miss at once. Charge-mark edits are ordinary edits.
+  return changed ? adoptDerivedDocument(document, { ...document, pages }) : document;
 }
 
 function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
@@ -11932,15 +11936,6 @@ function rotateNativeMoleculeGeometryAroundPointPatches(
 
   return [{ op: "updateObject", objectId, changes: nextMolecule }, ...markPatches];
 }
-function rotateNativeMoleculeGeometryAroundPoint(
-  document: ChemDraftDocument,
-  objectId: string,
-  center: PagePoint,
-  angleDegrees: number
-): ChemDraftDocument {
-  const patches = rotateNativeMoleculeGeometryAroundPointPatches(document, objectId, center, angleDegrees);
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
-}
 
 
 function wrapProjectedPlaneTiltValue(value: number, period: number): number {
@@ -12507,7 +12502,15 @@ const objectByIdIndexes = new WeakMap<
 function objectByIdIndex(objects: readonly DocumentObject[]): ReadonlyMap<string, DocumentObject> {
   let index = objectByIdIndexes.get(objects);
   if (!index || index.length !== objects.length || index.last !== objects[objects.length - 1]) {
-    index = { length: objects.length, last: objects[objects.length - 1], byId: new Map(objects.map((object) => [object.id, object] as const)) };
+    // First occurrence wins, as `objects.find` did and as the patch engine resolves an id: a page
+    // with duplicate ids (the schema allows them) must not read one object and write another.
+    const byId = new Map<string, DocumentObject>();
+    for (const object of objects) {
+      if (!byId.has(object.id)) {
+        byId.set(object.id, object);
+      }
+    }
+    index = { length: objects.length, last: objects[objects.length - 1], byId };
     objectByIdIndexes.set(objects, index);
   }
   return index.byId;
@@ -12883,24 +12886,6 @@ function translateDocumentObjectByPatches(
 
   return [{ op: "moveObject", objectId, x: nextX, y: nextY }];
 }
-function translateDocumentObjectBy(
-  document: ChemDraftDocument,
-  objectId: string,
-  dx: number,
-  dy: number,
-  options: {
-    /**
-     * A fully atom/object-anchored mechanism arrow normally no-ops here (its endpoints resolve
-     * dynamically, so shifting only its controls warps the curve). When the group being moved
-     * ALSO contains everything the arrow anchors to, the endpoints move by this same delta and
-     * the controls must ride along — the group caller detects that case and opts in.
-     */
-    translateAnchoredGeometry?: boolean;
-  } = {}
-): ChemDraftDocument {
-  const patches = translateDocumentObjectByPatches(document, objectId, dx, dy, options);
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
-}
 
 
 /**
@@ -13029,7 +13014,7 @@ function anchoredElectronMarkTransformPatches(
     }
     if (frame.flipAxis !== undefined) {
       // The mirror of a glyph at angle θ sits at 180−θ (horizontal axis) or −θ (vertical) — the
-      // same rule flipOtherObjectAroundPoint applies to a directly-flipped mark.
+      // same rule flipOtherObjectAroundPointPatches applies to a directly-flipped mark.
       changes.rotation = normalizeDegrees(frame.flipAxis === "horizontal" ? 180 - mark.rotation : -mark.rotation);
     } else if (frame.rotationDeltaDegrees !== undefined && Math.abs(frame.rotationDeltaDegrees) >= 0.05) {
       changes.rotation = normalizeDegrees(mark.rotation + frame.rotationDeltaDegrees);
@@ -13795,16 +13780,6 @@ function scaleNativeMoleculeObjectAroundPointPatches(
 
   return [{ op: "updateObject", objectId, changes: resized }, ...markPatches];
 }
-function scaleNativeMoleculeObjectAroundPoint(
-  document: ChemDraftDocument,
-  objectId: string,
-  center: PagePoint,
-  scaleX: number,
-  scaleY: number
-): ChemDraftDocument {
-  const patches = scaleNativeMoleculeObjectAroundPointPatches(document, objectId, center, scaleX, scaleY);
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
-}
 
 
 /** Reposition a non-molecule object's center about `center`, applying rotation/scale to its own box. */
@@ -13887,15 +13862,6 @@ function transformOtherObjectAroundPointPatches(
   }
 
   return [{ op: "updateObject", objectId, changes: changes as Partial<DocumentObject> }];
-}
-function transformOtherObjectAroundPoint(
-  document: ChemDraftDocument,
-  objectId: string,
-  center: PagePoint,
-  options: { degrees?: number; scaleX?: number; scaleY?: number }
-): ChemDraftDocument {
-  const patches = transformOtherObjectAroundPointPatches(document, objectId, center, options);
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
 
@@ -14054,15 +14020,6 @@ function flipNativeMoleculeObjectAroundPointPatches(
 
   return [{ op: "updateObject", objectId, changes: flipped }, ...markPatches];
 }
-function flipNativeMoleculeObjectAroundPoint(
-  document: ChemDraftDocument,
-  objectId: string,
-  center: PagePoint,
-  axis: DocumentFlipAxis
-): ChemDraftDocument {
-  const patches = flipNativeMoleculeObjectAroundPointPatches(document, objectId, center, axis);
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
-}
 
 
 function flipOtherObjectAroundPointPatches(
@@ -14125,15 +14082,6 @@ function flipOtherObjectAroundPointPatches(
   }
 
   return [{ op: "updateObject", objectId, changes: changes as Partial<DocumentObject> }];
-}
-function flipOtherObjectAroundPoint(
-  document: ChemDraftDocument,
-  objectId: string,
-  center: PagePoint,
-  axis: DocumentFlipAxis
-): ChemDraftDocument {
-  const patches = flipOtherObjectAroundPointPatches(document, objectId, center, axis);
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
 
@@ -17923,6 +17871,44 @@ export function copyAsMergedMolecule(
 }
 
 /** Labels whose native atoms have to become dummy `[*]` atoms in SMILES. */
+/**
+ * What the property analysis reads for `molecule`: a V3000 molfile of the live atom/bond graph.
+ *
+ * Not `molecule.structure` — empty for an imported molecule and a lossy SMILES for a drawn fused ring
+ * system — and not the plugins' V2000 form either: V3000 has no 999-atom ceiling (a V2000 overflow
+ * fell back to that lossy string, silently), and a condensed label the label grammar spells as one
+ * element with stated hydrogens ("OH", "NH2", "CH3") is written as that element with that many
+ * hydrogens. The plugins' writer turns such labels into R-group placeholders, which would make
+ * ethanol drawn as C–C–OH lose its formula and mass. Only labels that grammar cannot spell ("Ph",
+ * "OMe") stay placeholders, and `nativeMoleculeUnspellableLabels` names exactly those.
+ */
+export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string } {
+  if (molecule.atoms.length === 0) {
+    return { structureFormat: molecule.structureFormat, structure: molecule.structure };
+  }
+  return {
+    structureFormat: "molfile-v3000",
+    structure: moleculeToMolfileV3000(molecule, {
+      fromDocFrame: true,
+      abbreviations: "rgroup",
+      spellLabel: nativeSingleHeavyElementLabelValence
+    })
+  };
+}
+
+/**
+ * A coordinate-free identity for what an analysis of `molecule` describes: its atoms and bonds with
+ * positions left out, so moving or rotating the molecule never reads as a stale report, while any
+ * change to its chemistry (an element, a charge, a bond order, a label) does.
+ */
+export function analysisSubjectKey(molecule: MoleculeObject): string {
+  return JSON.stringify([
+    molecule.id,
+    molecule.atoms.map(({ x: _x, y: _y, z: _z, ...atom }) => atom),
+    molecule.bonds
+  ]);
+}
+
 export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): string[] {
   return [...new Set(molecule.atoms
     .filter((atom) =>

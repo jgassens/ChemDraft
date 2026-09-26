@@ -46,18 +46,31 @@ export function applyPatch(
   patch: DocumentPatch,
   options: ApplyPatchOptions = {}
 ): ChemDraftDocument {
-  const next = cloneDocument(document);
-  applyPatchInPlace(next, patch);
-  next.updatedAt = toIsoTimestamp(options.now ?? new Date());
-  return ChemDraftDocumentSchema.parse(next);
+  return applyPatches(document, [patch], options);
 }
 
 /**
+ * Documents this engine produced. Their every object was validated when it entered, so a later
+ * patch need only validate what it changes. Anything else — a document built by hand, or taken from
+ * elsewhere — is deep-copied and fully validated first, exactly as every patch used to be.
+ */
+const engineDocuments = new WeakSet<ChemDraftDocument>();
+
+/**
  * Apply `patches` in order; each sees the result of the ones before it, and any that fails throws
- * with nothing applied. The document is cloned and validated once for the batch, not once per patch:
- * a clone is a full JSON round trip plus a schema parse, and multi-object edits (rotate, move, align,
- * distribute, delete, paste) emit one patch per object — so per-patch validation made them quadratic.
- * Rotating 1,000 selected molecules took 54 s; 5,000 would have taken about 20 minutes.
+ * with nothing applied.
+ *
+ * The result shares every object, page field, and array the patches did not touch with `document`
+ * (structural sharing). Each patch used to start from a full deep copy — a JSON round trip plus a
+ * schema parse of the whole document — and end with another full parse, so an edit to one object
+ * of a 5,000-molecule page cost about a second, and every undo snapshot was an independent
+ * multi-megabyte copy. Now an edit costs roughly the size of what it changes, and snapshots share
+ * their unchanged objects. What changes is still validated: added and updated objects through
+ * `DocumentObjectSchema` as before, and every page's shell (layout, margins, crossings) and the
+ * document's own fields through the full schemas.
+ *
+ * Sharing makes in-place mutation of a returned document unsafe: it would reach every snapshot that
+ * shares the object. Under test, results are therefore deep-frozen, so any such mutation throws.
  */
 export function applyPatches(
   document: ChemDraftDocument,
@@ -67,15 +80,107 @@ export function applyPatches(
   if (patches.length === 0) {
     return document;
   }
-  if (patches.length === 1) {
-    return applyPatch(document, patches[0]!, options);
-  }
-  const next = cloneDocument(document);
+  const base = engineDocuments.has(document) ? document : cloneDocument(document);
+  const draft = createDraft(base);
   for (const patch of patches) {
-    applyPatchInPlace(next, patch);
+    applyPatchInPlace(draft, patch);
   }
-  next.updatedAt = toIsoTimestamp(options.now ?? new Date());
-  return ChemDraftDocumentSchema.parse(next);
+  draft.updatedAt = toIsoTimestamp(options.now ?? new Date());
+  const next = validateDraft(draft);
+  engineDocuments.add(next);
+  if (freezeResults) {
+    deepFreezeNew(next);
+  }
+  return next;
+}
+
+/**
+ * `next`, re-admitted to the engine's structural sharing. For a document the app derived from an
+ * engine result by replacing whole objects — a normalization pass such as charge-mark reconciliation
+ * — without going through a patch. A derived document is otherwise unknown to the engine, so the
+ * next patch deep-copied and re-parsed all of it and gave every object a new identity: the undo
+ * history stopped sharing, and every per-object render cache missed at once.
+ *
+ * Objects `next` shares with `base` were validated when `base` was produced; only the others are
+ * parsed, and the document and page shells are validated as a patch result's are. Throws, like a
+ * patch, when a replaced object is invalid. A `base` the engine did not produce gains nothing, and
+ * `next` comes back unchanged.
+ */
+export function adoptDerivedDocument(base: ChemDraftDocument, next: ChemDraftDocument): ChemDraftDocument {
+  if (next === base || !engineDocuments.has(base) || engineDocuments.has(next)) {
+    return next;
+  }
+  const validated = new Set<DocumentObject>();
+  for (const page of base.pages) {
+    for (const object of page.objects) {
+      validated.add(object);
+    }
+  }
+  const adopted = validateDraft({
+    ...next,
+    selection: { ...next.selection, objectIds: [...next.selection.objectIds] },
+    pages: next.pages.map((page) => ({
+      ...page,
+      objects: page.objects.map((object) => (validated.has(object) ? object : DocumentObjectSchema.parse(object))),
+      crossings: [...page.crossings]
+    }))
+  });
+  engineDocuments.add(adopted);
+  if (freezeResults) {
+    deepFreezeNew(adopted);
+  }
+  return adopted;
+}
+
+/** Fresh containers for everything a patch can write: the document, its selection, each page, and
+ *  each page's objects and crossings arrays. Objects and every other field are shared. */
+function createDraft(document: ChemDraftDocument): ChemDraftDocument {
+  return {
+    ...document,
+    selection: { ...document.selection, objectIds: [...document.selection.objectIds] },
+    pages: document.pages.map((page) => ({ ...page, objects: [...page.objects], crossings: [...page.crossings] }))
+  };
+}
+
+/**
+ * Validate a draft without re-parsing its objects: they were either validated when the base was
+ * produced, or on entry through addObject/updateObject. The document and page schemas (strictness,
+ * defaults, the page-layout and crossing refinements) run on the draft with object arrays emptied,
+ * and the real arrays go back afterwards.
+ */
+function validateDraft(draft: ChemDraftDocument): ChemDraftDocument {
+  // No patch writes the compatibility warnings, styles, or plugin data, and the base had them
+  // validated, so they pass through by reference. Re-parsing them re-created every warning object
+  // on every edit — an imported page can carry thousands — and each undo step kept its own copy.
+  const shell = ChemDraftDocumentSchema.parse({
+    ...draft,
+    compatibility: { warnings: [] },
+    styles: {},
+    plugins: {},
+    pages: draft.pages.map((page) => ({ ...page, objects: [] }))
+  });
+  return {
+    ...shell,
+    compatibility: draft.compatibility,
+    styles: draft.styles,
+    plugins: draft.plugins,
+    pages: shell.pages.map((page, index) => ({ ...page, objects: draft.pages[index]!.objects }))
+  };
+}
+
+const freezeResults =
+  typeof process !== "undefined" && typeof process.env === "object" && process.env.VITEST !== undefined;
+
+/** Freeze everything reachable that is not frozen yet. Shared subtrees are already frozen, so the
+ *  cost is proportional to what the batch created. */
+function deepFreezeNew(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return;
+  }
+  Object.freeze(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeNew(child);
+  }
 }
 
 function applyPatchInPlace(next: ChemDraftDocument, patch: DocumentPatch): void {
@@ -175,7 +280,9 @@ function setSelection(document: ChemDraftDocument, pageId: string | undefined, o
     throw new DocumentPatchError(`Cannot set selection: page "${targetPageId}" does not exist.`);
   }
 
-  const missingObjectId = objectIds.find((objectId) => !page.objects.some((object) => object.id === objectId));
+  // A set, not `some` per id: selecting all of a 5,000-object page was 25 million comparisons.
+  const pageObjectIds = new Set(page.objects.map((object) => object.id));
+  const missingObjectId = objectIds.find((objectId) => !pageObjectIds.has(objectId));
   if (missingObjectId) {
     throw new DocumentPatchError(`Cannot set selection: object "${missingObjectId}" does not exist on page "${page.id}".`);
   }

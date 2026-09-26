@@ -2710,9 +2710,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-rotation-input-kind={input.kind}");
     expect(mainWindowSource).toContain("onDoubleClick={handleRotateDoubleClick}");
     expect(mainWindowSource).toContain("onDoubleClick={handleProjectedPlaneTiltDoubleClick}");
-    expect(mainWindowSource).toContain("onRotationInputChange={handleRotationInputChange}");
-    expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
-    expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
+    expect(mainWindowSource).toContain("onRotationInputChange: handleRotationInputChange,");
+    expect(mainWindowSource).toContain("onRotationInputHome: handleRotationInputHome,");
+    expect(mainWindowSource).toContain("onRotationInputKeep: handleRotationInputKeep,");
     expect(mainWindowSource).toContain("aria-label={input.kind === \"z\" ? \"Set Z rotation to 0 degrees\" : \"Set X/Y rotation to 0 degrees\"}");
     expect(mainWindowSource).toContain("title={input.kind === \"z\" ? \"Set Z rotation to 0 degrees\" : \"Set X/Y rotation to 0 degrees\"}");
     expect(mainWindowSource).toContain('rotationInputHomeDraftDegrees("z")');
@@ -2800,9 +2800,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-scale-input-popover=\"true\"");
     expect(mainWindowSource).toContain("data-scale-input-corner={input.corner}");
     expect(mainWindowSource).toContain("onDoubleClick={onResizeDoubleClick(corner)}");
-    expect(mainWindowSource).toContain("onObjectResizeInputChange={handleObjectResizeInputChange}");
-    expect(mainWindowSource).toContain("onObjectResizeInputHome={handleObjectResizeInputHome}");
-    expect(mainWindowSource).toContain("onObjectResizeInputKeep={handleObjectResizeInputKeep}");
+    expect(mainWindowSource).toContain("onObjectResizeInputChange: handleObjectResizeInputChange,");
+    expect(mainWindowSource).toContain("onObjectResizeInputHome: handleObjectResizeInputHome,");
+    expect(mainWindowSource).toContain("onObjectResizeInputKeep: handleObjectResizeInputKeep,");
     expect(mainWindowSource).toContain("aria-label=\"Restore stretch home\"");
     expect(mainWindowSource).toContain("aria-label=\"X stretch percent\"");
     expect(mainWindowSource).toContain("aria-label=\"Y stretch percent\"");
