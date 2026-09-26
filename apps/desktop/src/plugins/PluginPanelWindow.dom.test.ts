@@ -20,6 +20,7 @@ import {
   openPluginPanelWindow,
   PLUGIN_PANEL_CLOSED_EVENT,
   PLUGIN_PANEL_RERUN_EVENT,
+  PROPOSAL_DECISION_TIMEOUT_MS,
   parsePluginPanelWindowId,
   pluginPanelWindowId,
   type PluginPanelReportPayload
@@ -630,5 +631,93 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     });
     expect(container!.querySelector('[data-testid="plugin-diagnostics"]')).not.toBeNull();
     expect(container!.textContent).toContain("No bundled plugins are registered.");
+  });
+
+  describe("proposal review over the desktop bridge", () => {
+    const reviewWindowId = pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID);
+
+    async function mountReview(): Promise<void> {
+      (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+      window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${reviewWindowId}`);
+      await mountWindow(reviewWindowId);
+      await act(async () => {
+        await broadcastAnalysisWindowSnapshot({
+          pluginId: ANALYSIS_WINDOW_OWNER_ID,
+          panelId: PATCH_REVIEW_WINDOW_ID,
+          revision: 1,
+          content: {
+            kind: "patchReview",
+            proposals: [
+              {
+                id: "proposal_1",
+                pluginId: "org.chemdraft.ocsr.molscribe",
+                pluginName: "Structure from Image (MolScribe)",
+                reason: "Insert the locally recognized structure (medium confidence) after review.",
+                warnings: []
+              }
+            ]
+          }
+        });
+      });
+    }
+
+    function acceptButton(): HTMLButtonElement {
+      return [...container!.querySelectorAll<HTMLButtonElement>(".patch-review-actions button")].find(
+        (button) => button.textContent === "Accept"
+      )!;
+    }
+
+    it("shows the main window's reason on the proposal when an Accept is refused", async () => {
+      tauriEvents.setResponder((name, payload) => {
+        const action = payload as { kind?: string; requestId?: string };
+        if (name === ANALYSIS_WINDOW_ACTION_EVENT && action.kind === "acceptPluginProposal") {
+          void tauriEvents.emit(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, {
+            requestId: action.requestId,
+            proposal: { ok: false, message: "Could not insert the proposal: page page_1 does not exist" }
+          });
+        }
+      });
+      await mountReview();
+
+      await act(async () => {
+        acceptButton().click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const request = tauriEvents.emitted.find((event) => event.name === ANALYSIS_WINDOW_ACTION_EVENT);
+      expect(request?.payload).toMatchObject({
+        kind: "acceptPluginProposal",
+        proposalId: "proposal_1",
+        requestId: expect.any(String)
+      });
+      expect(container!.querySelector('[role="alert"]')?.textContent).toBe(
+        "Could not insert the proposal: page page_1 does not exist"
+      );
+      expect(acceptButton().disabled).toBe(false);
+    });
+
+    it("says so when the main window never answers an Accept, instead of doing nothing", async () => {
+      vi.useFakeTimers();
+      try {
+        await mountReview();
+        await act(async () => {
+          acceptButton().click();
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        // Waiting for the answer: a second click cannot queue a duplicate Accept.
+        expect(acceptButton().disabled).toBe(true);
+        expect(container!.querySelector('[role="alert"]')).toBeNull();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PROPOSAL_DECISION_TIMEOUT_MS);
+        });
+        expect(container!.querySelector('[role="alert"]')?.textContent).toContain(
+          "The document window did not answer the Accept"
+        );
+        expect(acceptButton().disabled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -5583,6 +5583,28 @@ textarea:focus-visible,
   cursor: pointer;
 }
 
+.patch-review-actions button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/* Why the last Accept/Reject did not go through, shown on the proposal the user clicked. */
+.patch-review-error {
+  margin: 4px 0 6px;
+  font-size: 11px;
+  color: var(--cd-danger-strong);
+  overflow-wrap: anywhere;
+}
+
+/* A floating report window is undecorated, so its title strip is the only way to move it: give it a
+   real title bar's height and weight rather than the compact palette strip. */
+.plugin-panel-shell > .palette-title {
+  flex: none;
+  height: 28px;
+  font-size: 11px;
+  line-height: 27px;
+}
+
 /* Plugin panel windows (declarative report surface) */
 .plugin-panel-shell {
   display: flex;

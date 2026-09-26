@@ -101,7 +101,7 @@ import {
   shouldRestoreDocumentSession
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
-import { applyPluginDocumentPatch } from "./plugins/applyPluginDocumentPatch";
+import { applyPluginDocumentPatch, describePatchFailure } from "./plugins/applyPluginDocumentPatch";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
@@ -120,12 +120,14 @@ import {
   openPluginPanelWindow,
   pluginPanelIdentityKey,
   respondToCopyMolecularInspector,
+  respondToProposalDecision,
   respondToSaveTextFile,
   type AnalysisWindowAction,
   type AnalysisWindowContent,
   type AnalysisWindowSnapshotPayload,
   type PluginPanelIdentity,
-  type PluginPanelReportPayload
+  type PluginPanelReportPayload,
+  type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
@@ -1413,7 +1415,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.25.17.40-opus";
+const CURRENT_BUILD_STAMP = "9.25.22.10-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -8620,26 +8622,46 @@ export function MainWindow({
     previouslyDetachedPanelsRef.current = current;
   }, [pluginRuntime.detachedPanels]);
 
+  // The user accepting a proposal is the review step itself, so it goes through the host's user path
+  // (`acceptProposedPatch`), never the plugin-gated `documents.applyPatch`. What was inserted is
+  // selected in the same history entry, and every outcome — success included — is reported: the
+  // status line here, and the review window through the returned outcome.
   const acceptPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch) => {
+    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
+      const host = pluginRuntime.runtime.host;
+      const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
+      const recognized = proposal.proposal.recognition !== undefined;
       try {
-        const updated = pluginRuntime.runtime.host.acceptProposedPatch(proposal.id, documentRef.current);
-        commitDocumentChange(updated);
-        setStatus("Applied plugin proposal");
+        const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
+          apply: (current, proposed, options) => applyPluginDocumentPatch(current, proposed, options).document
+        });
+        commitDocumentChange(
+          updated,
+          `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`
+        );
+        setSelectedNativeMoleculePart(undefined);
+        const message = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
+        setStatus(message);
+        return { ok: true, message };
       } catch (error) {
-        setStatus(`Plugin proposal failed: ${error instanceof Error ? error.message : String(error)}`);
+        const message = `Could not insert the proposal: ${describePatchFailure(error)}`;
+        setStatus(message);
+        return { ok: false, message };
       }
     },
     [commitDocumentChange, pluginRuntime.runtime]
   );
 
   const rejectPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch) => {
+    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
       try {
         pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
         setStatus("Rejected plugin proposal");
+        return { ok: true, message: "Rejected plugin proposal" };
       } catch {
-        setStatus("Plugin proposal was already resolved");
+        const message = "That proposal was already resolved, so nothing changed.";
+        setStatus(message);
+        return { ok: false, message };
       }
     },
     [pluginRuntime.runtime]
@@ -8768,18 +8790,25 @@ export function MainWindow({
           case "changeMolecularInterpretation":
             handlers.recomputeAnalysisFor(action.interpretationId);
             return;
-          case "acceptPluginProposal": {
-            const proposal = handlers.runtime.host
-              .listProposedPatches("pending")
-              .find((candidate) => candidate.id === action.proposalId);
-            if (proposal) handlers.acceptPluginProposal(proposal);
-            return;
-          }
+          case "acceptPluginProposal":
           case "rejectPluginProposal": {
             const proposal = handlers.runtime.host
               .listProposedPatches("pending")
               .find((candidate) => candidate.id === action.proposalId);
-            if (proposal) handlers.rejectPluginProposal(proposal);
+            let outcome: ProposalDecisionOutcome;
+            if (!proposal) {
+              // Never a silent no-op: an Accept for a proposal the queue no longer holds used to
+              // return here without a word, which is indistinguishable from a dead button.
+              outcome = { ok: false, message: "That proposal was already resolved, so nothing changed." };
+              setStatus(outcome.message);
+            } else if (action.kind === "acceptPluginProposal") {
+              outcome = handlers.acceptPluginProposal(proposal);
+            } else {
+              outcome = handlers.rejectPluginProposal(proposal);
+            }
+            if (action.requestId) {
+              void respondToProposalDecision(action.requestId, outcome).catch(() => undefined);
+            }
             return;
           }
           case "saveTextFile": {

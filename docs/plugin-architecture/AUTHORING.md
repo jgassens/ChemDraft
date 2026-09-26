@@ -228,6 +228,16 @@ an accept or reject is carried by its return value and the `onProposedPatchesCha
 Pending proposals survive unregistering the plugin — an update or disable must not discard review the
 user has not done yet.
 
+**Accepting is the user's action, not the plugin's.** `acceptProposedPatch` is the review step the
+recognition rule above waits for, so none of `applyPatch`'s refusals reach it: not the recognition
+rule, not the invocation binding (the command finished long ago), and not the document key (the user
+is accepting into the document in front of them). The desktop inserts an accepted proposal as one
+undo entry, selects what it inserted, and reports the result in the status line. A proposal whose
+patch cannot be applied stays pending, and the reason is shown both in the status line and on the
+proposal in the review window, so the user can retry or reject it. The review window waits for the
+main window's answer to every Accept and Reject and says so if none arrives — an Accept is never a
+button that silently does nothing.
+
 ## Worker entry
 
 A plugin that ships as an **installable package** also exports a worker entry at `src/workerEntry.ts`.

@@ -197,6 +197,17 @@ export interface QueuedProposedPatch extends ProposedPatchReceipt {
   proposal: NormalizedProposedDocumentPatch;
 }
 
+/** Options for the USER accepting a queued proposal (never a plugin call; see `acceptProposedPatch`). */
+export interface AcceptProposedPatchOptions extends ApplyPatchOptions {
+  /** How the accepted proposal reaches the document. Defaults to chem-core `applyPatch`; the desktop
+   *  passes one that also selects what was inserted, so acceptance stays a single undo entry. */
+  apply?: (
+    document: ChemDraftDocument,
+    proposal: NormalizedProposedDocumentPatch,
+    options: ApplyPatchOptions
+  ) => ChemDraftDocument;
+}
+
 /** Host-owned transaction metadata for one command-scoped direct document write. */
 export interface PluginPatchApplicationRequest {
   plugin: { id: string; name: string; version: string };
@@ -740,13 +751,24 @@ export class PluginHost {
       .map(snapshotProposal);
   }
 
+  /**
+   * The USER accepted a queued proposal. This is the review step a recognition proposal exists for, so
+   * none of `documents.applyPatch`'s refusals apply here: not the recognition rule (the review is what
+   * that rule waits for), not the invocation binding (the command finished long ago), and not the
+   * document key (the user is accepting into the document in front of them). A proposal whose patch
+   * cannot be applied throws and stays pending, so the caller can report it and the user can retry or
+   * reject it.
+   */
   acceptProposedPatch(
     proposalId: string,
     document: ChemDraftDocument,
-    options: ApplyPatchOptions = {}
+    options: AcceptProposedPatchOptions = {}
   ): ChemDraftDocument {
     const queued = this.requirePendingProposal(proposalId);
-    const updated = applyPatch(document, queued.proposal.patch, options);
+    const { apply, ...applyOptions } = options;
+    const updated = apply
+      ? apply(document, queued.proposal, applyOptions)
+      : applyPatch(document, queued.proposal.patch, applyOptions);
 
     queued.status = "accepted";
     queued.resolvedAt = this.timestamp();

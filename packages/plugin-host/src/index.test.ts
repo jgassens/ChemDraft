@@ -1,4 +1,4 @@
-import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { PluginApiVersion } from "@chemdraft/plugin-api";
 import type {
   PluginCommandContext,
@@ -1702,6 +1702,63 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     });
     const [queued] = host.listProposedPatches("pending");
     expect(queued.proposal).toMatchObject({ reason: "Review me", patch: documentDerivedPatch });
+  });
+
+  it("lets the user accept a held recognition proposal that the plugin itself may never apply", async () => {
+    // The document key has moved on since the command ran, as it does after any New/Open: acceptance is
+    // the user's own action on the document in front of them and must not be refused for it.
+    let activeKey = "document-a";
+    const { host, applyDocumentPatch } = recognitionHost({ getActiveDocumentKey: () => activeKey });
+    register(host, [...recognitionPermissions, "document.write", "document.proposePatch"], {
+      "plugin.recognizer.run": async (context) => {
+        const result = await recognize(context);
+        await expect(context.documents.applyPatch!(result.result.proposedPatch!)).rejects.toThrow(
+          /must go through documents\.proposePatch for review/
+        );
+        await context.documents.proposePatch({
+          ...result.result.proposedPatch!,
+          recognition: {
+            sourceImageRef: result.result.sourceImageRef,
+            proposedMolfile: result.result.proposedMolfile!,
+            confidenceTier: "medium"
+          }
+        });
+      }
+    });
+    await host.invokeCommand("plugin.recognizer.run");
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+    activeKey = "document-b";
+
+    const [queued] = host.listProposedPatches("pending");
+    const document = createEmptyDocument({ now: timestamp });
+    document.pages[0]!.id = "page_secret";
+    const apply = vi.fn((current: typeof document, proposal: typeof queued.proposal) =>
+      applyPatch(current, proposal.patch, { now: timestamp })
+    );
+    const updated = host.acceptProposedPatch(queued.id, document, { now: timestamp, apply });
+
+    expect(apply).toHaveBeenCalledWith(document, expect.objectContaining({ patch: documentDerivedPatch }), {
+      now: timestamp
+    });
+    expect(updated.pages[0]!.objects.map((object) => object.id)).toEqual(["mol_ocsr_042"]);
+    expect(host.listProposedPatches("pending")).toEqual([]);
+  });
+
+  it("keeps a proposal pending when accepting it fails, so the user can see why and retry or reject", async () => {
+    const { host } = recognitionHost();
+    register(host, [...recognitionPermissions, "document.proposePatch"], {
+      "plugin.recognizer.run": async (context) => {
+        await context.documents.proposePatch((await recognize(context)).result.proposedPatch!);
+      }
+    });
+    await host.invokeCommand("plugin.recognizer.run");
+    const [queued] = host.listProposedPatches("pending");
+
+    // The empty document has no `page_secret`, so the insertion cannot land.
+    expect(() => host.acceptProposedPatch(queued.id, createEmptyDocument({ now: timestamp }))).toThrow(
+      /page "page_secret" does not exist/
+    );
+    expect(host.listProposedPatches("pending").map((proposal) => proposal.id)).toEqual([queued.id]);
   });
 
   it("hands a plugin holding document.read the insertion itself", async () => {

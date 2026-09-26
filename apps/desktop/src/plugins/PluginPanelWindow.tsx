@@ -12,8 +12,10 @@ import {
   requestCopyMolecularInspectorText,
   requestPluginPanelRerun,
   requestPluginPanelReport,
+  requestProposalDecision,
   type AnalysisWindowSnapshotPayload,
-  type PluginPanelReportPayload
+  type PluginPanelReportPayload,
+  type PluginProposalReviewItem
 } from "./panelBridge";
 import { PluginReportRenderer } from "./PluginReportRenderer";
 import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
@@ -212,16 +214,40 @@ function AnalysisWindowContent({ payload }: { payload: AnalysisWindowSnapshotPay
     case "pluginDiagnostics":
       return <PluginDiagnosticsPanel plugins={content.plugins} diagnostics={content.diagnostics} />;
     case "patchReview":
-      return (
-        <PatchReviewList
-          proposals={content.proposals}
-          onAccept={(proposalId) => {
-            void requestAnalysisWindowAction({ kind: "acceptPluginProposal", proposalId }).catch(() => undefined);
-          }}
-          onReject={(proposalId) => {
-            void requestAnalysisWindowAction({ kind: "rejectPluginProposal", proposalId }).catch(() => undefined);
-          }}
-        />
-      );
+      return <ProposalReviewContent proposals={content.proposals} />;
   }
+}
+
+/**
+ * The review window's proposals, with each Accept/Reject waiting for the main window's answer. A
+ * success needs no message here: the proposal leaves the list and the window closes with the last
+ * one. A failure — refused insertion, an already-resolved proposal, or no answer at all — is shown on
+ * the proposal itself, where the user just clicked, rather than only in a status line that another
+ * window may be covering.
+ */
+function ProposalReviewContent({ proposals }: { proposals: readonly PluginProposalReviewItem[] }) {
+  const [notices, setNotices] = useState<Readonly<Record<string, string>>>({});
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const decide = (decision: "accept" | "reject", proposalId: string): void => {
+    if (pending.has(proposalId)) return;
+    setPending((current) => new Set(current).add(proposalId));
+    setNotices(({ [proposalId]: _cleared, ...rest }) => rest);
+    void requestProposalDecision(decision, proposalId).then((outcome) => {
+      setPending((current) => {
+        const next = new Set(current);
+        next.delete(proposalId);
+        return next;
+      });
+      if (!outcome.ok) setNotices((current) => ({ ...current, [proposalId]: outcome.message }));
+    });
+  };
+  return (
+    <PatchReviewList
+      proposals={proposals}
+      notices={notices}
+      busyIds={pending}
+      onAccept={(proposalId) => decide("accept", proposalId)}
+      onReject={(proposalId) => decide("reject", proposalId)}
+    />
+  );
 }

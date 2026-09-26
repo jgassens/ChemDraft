@@ -82,14 +82,27 @@ export type AnalysisWindowAction =
   | { kind: "close"; windowId: string }
   | { kind: "copyMolecularInspector"; requestId?: string; text: string }
   | { kind: "changeMolecularInterpretation"; interpretationId?: string }
-  | { kind: "acceptPluginProposal"; proposalId: string }
-  | { kind: "rejectPluginProposal"; proposalId: string }
+  | { kind: "acceptPluginProposal"; proposalId: string; requestId?: string }
+  | { kind: "rejectPluginProposal"; proposalId: string; requestId?: string }
   | ({ kind: "saveTextFile"; requestId: string; filename: string; text: string } & SaveTextFileOptions);
 
 /** Main → window: how a `saveTextFile` action ended, keyed to the request that asked. */
 export interface AnalysisWindowSaveResult {
   requestId: string;
   result: SaveTextFileResult;
+}
+
+/** How the main window handled one Accept or Reject from the review window. `message` is plain text
+ *  for the user: what was inserted, or why nothing was. */
+export interface ProposalDecisionOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/** Main → window: the outcome of an `acceptPluginProposal`/`rejectPluginProposal` action. */
+export interface AnalysisWindowProposalResult {
+  requestId: string;
+  proposal: ProposalDecisionOutcome;
 }
 
 /** Main → window: whether a `copyMolecularInspector` action actually reached the clipboard. */
@@ -184,6 +197,74 @@ export async function respondToSaveTextFile(requestId: string, result: SaveTextF
   }
   const { emit } = await import("@tauri-apps/api/event");
   await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
+}
+
+/** How long the review window waits for the main window to answer an Accept or Reject. */
+export const PROPOSAL_DECISION_TIMEOUT_MS = 10_000;
+
+/**
+ * Window → main: accept or reject a queued proposal, and resolve with what the main window did.
+ *
+ * The review window used to fire the action and forget it, so an Accept that never reached the main
+ * window, or reached it and failed, looked exactly like a button that does nothing. Every outcome now
+ * comes back — inserted, refused with a reason, already resolved — and silence becomes a message too.
+ */
+export async function requestProposalDecision(
+  decision: "accept" | "reject",
+  proposalId: string,
+  timeoutMs: number = PROPOSAL_DECISION_TIMEOUT_MS
+): Promise<ProposalDecisionOutcome> {
+  const kind = decision === "accept" ? "acceptPluginProposal" : "rejectPluginProposal";
+  if (!isDesktopRuntime()) {
+    // The in-app build: the document lives in this same window and reports in its own status line.
+    window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: { kind, proposalId } }));
+    return { ok: true, message: "" };
+  }
+  const requestId = `proposal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const { emit, listen } = await import("@tauri-apps/api/event");
+    let answer: (outcome: ProposalDecisionOutcome) => void = () => undefined;
+    const answered = new Promise<ProposalDecisionOutcome>((resolve) => {
+      answer = resolve;
+    });
+    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (isProposalResult(event.payload) && event.payload.requestId === requestId) {
+        answer(event.payload.proposal);
+      }
+    });
+    timer = setTimeout(
+      () =>
+        answer({
+          ok: false,
+          message: `The document window did not answer the ${decision === "accept" ? "Accept" : "Reject"}. Nothing has changed yet; try again.`
+        }),
+      timeoutMs
+    );
+    await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, { kind, proposalId, requestId });
+    return await answered;
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Could not reach the document window: ${error instanceof Error ? error.message : String(error)}`
+    };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    unlisten?.();
+  }
+}
+
+/** Main → window: answer an `acceptPluginProposal`/`rejectPluginProposal` action. */
+export async function respondToProposalDecision(requestId: string, outcome: ProposalDecisionOutcome): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowProposalResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, {
+    requestId,
+    proposal: { ok: outcome.ok, message: outcome.message }
+  });
 }
 
 /**
@@ -558,7 +639,10 @@ function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowActi
       return candidate.interpretationId === undefined || typeof candidate.interpretationId === "string";
     case "acceptPluginProposal":
     case "rejectPluginProposal":
-      return typeof candidate.proposalId === "string";
+      return (
+        typeof candidate.proposalId === "string" &&
+        (candidate.requestId === undefined || typeof candidate.requestId === "string")
+      );
     case "saveTextFile":
       return (
         typeof candidate.requestId === "string" &&
@@ -593,4 +677,19 @@ function isCopyResult(payload: unknown): payload is AnalysisWindowCopyResult {
   }
   const candidate = payload as Partial<AnalysisWindowCopyResult>;
   return typeof candidate.requestId === "string" && typeof candidate.ok === "boolean";
+}
+
+/** Distinguished from save and copy results by its `proposal` object on the same shared result event. */
+function isProposalResult(payload: unknown): payload is AnalysisWindowProposalResult {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowProposalResult>;
+  return (
+    typeof candidate.requestId === "string" &&
+    typeof candidate.proposal === "object" &&
+    candidate.proposal !== null &&
+    typeof candidate.proposal.ok === "boolean" &&
+    typeof candidate.proposal.message === "string"
+  );
 }

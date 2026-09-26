@@ -1024,7 +1024,10 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 
 #[cfg(test)]
 mod plugin_panel_label_tests {
-    use super::{is_valid_plugin_storage_id, plugin_panel_window_label, OpenPluginPanelRequest};
+    use super::{
+        choose_analysis_window_position, is_valid_plugin_storage_id, plugin_panel_window_label,
+        OpenPluginPanelRequest, ScreenRect,
+    };
 
     #[test]
     fn open_requests_focus_only_when_the_app_asks() {
@@ -1059,6 +1062,44 @@ mod plugin_panel_label_tests {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_')));
         assert!(is_valid_plugin_storage_id("org.chemdraft.nmr_v2-panel"));
+    }
+
+    #[test]
+    fn analysis_windows_open_beside_the_main_window_when_the_screen_has_room() {
+        let monitor = ScreenRect::new(0.0, 0.0, 2560.0, 1440.0);
+        let main = ScreenRect::new(401.0, 134.0, 1280.0, 820.0);
+        assert_eq!(
+            choose_analysis_window_position(main, monitor, 420.0, 420.0, &[]),
+            (1697.0, 182.0)
+        );
+    }
+
+    #[test]
+    fn analysis_windows_inside_the_main_window_avoid_the_floating_palettes() {
+        // The live-test layout: a 1728-wide screen leaves no room beside the main window, and the
+        // Main and Art palettes sit over its top-left, where the old fallback opened the window.
+        let monitor = ScreenRect::new(0.0, 0.0, 1728.0, 1117.0);
+        let main = ScreenRect::new(401.0, 134.0, 1280.0, 820.0);
+        let palettes = [
+            ScreenRect::new(88.0, 176.0, 420.0, 64.0),
+            ScreenRect::new(608.0, 262.0, 360.0, 240.0),
+        ];
+        let (x, y) = choose_analysis_window_position(main, monitor, 420.0, 420.0, &palettes);
+        let frame = ScreenRect::new(x, y, 420.0, 420.0);
+        assert!(palettes
+            .iter()
+            .all(|palette| frame.overlap_area(palette) == 0.0));
+        assert_eq!((x, y), (1245.0, 182.0));
+    }
+
+    #[test]
+    fn analysis_windows_take_the_least_covered_corner_when_none_is_clear() {
+        let monitor = ScreenRect::new(0.0, 0.0, 1440.0, 900.0);
+        let main = ScreenRect::new(0.0, 25.0, 1440.0, 875.0);
+        // A wide palette strip over the whole top of the window; only the bottom corners are clear.
+        let palettes = [ScreenRect::new(0.0, 60.0, 1440.0, 120.0)];
+        let (x, y) = choose_analysis_window_position(main, monitor, 420.0, 420.0, &palettes);
+        assert_eq!((x, y), (1004.0, 464.0));
     }
 
     #[test]
@@ -1137,25 +1178,140 @@ fn analysis_window_initial_position<R: Runtime>(
     let monitor_scale = monitor.scale_factor();
     let monitor_position = monitor.position().to_logical::<f64>(monitor_scale);
     let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
-    let left = monitor_position.x;
-    let top = monitor_position.y;
-    let right = left + monitor_size.width;
-    let bottom = top + monitor_size.height;
-    let gap = 16.0;
-
-    let right_of_main = main_position.x + main_size.width + gap;
-    let left_of_main = main_position.x - width - gap;
-    let max_x = (right - width).max(left);
-    let x = if right_of_main + width <= right {
-        right_of_main
-    } else if left_of_main >= left {
-        left_of_main
-    } else {
-        (main_position.x + 32.0).clamp(left, max_x)
-    };
-    let max_y = (bottom - height).max(top);
-    let y = (main_position.y + 48.0).clamp(top, max_y);
+    // The floating palettes sit at a higher window level than this window, so wherever they are is
+    // somewhere the new window would open underneath them, title bar and all.
+    let palettes: Vec<ScreenRect> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, window)| {
+            label.starts_with("toolset-") && window.is_visible().unwrap_or(false)
+        })
+        .filter_map(|(_, window)| {
+            let window_scale = window.scale_factor().ok()?;
+            let position = window
+                .outer_position()
+                .ok()?
+                .to_logical::<f64>(window_scale);
+            let size = window.outer_size().ok()?.to_logical::<f64>(window_scale);
+            Some(ScreenRect::new(
+                position.x,
+                position.y,
+                size.width,
+                size.height,
+            ))
+        })
+        .collect();
+    let (x, y) = choose_analysis_window_position(
+        ScreenRect::new(
+            main_position.x,
+            main_position.y,
+            main_size.width,
+            main_size.height,
+        ),
+        ScreenRect::new(
+            monitor_position.x,
+            monitor_position.y,
+            monitor_size.width,
+            monitor_size.height,
+        ),
+        width,
+        height,
+        &palettes,
+    );
     Some(tauri::LogicalPosition::new(x, y))
+}
+
+/// A window frame in logical screen coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScreenRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl ScreenRect {
+    fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn overlap_area(&self, other: &ScreenRect) -> f64 {
+        let width = (self.x + self.width).min(other.x + other.width) - self.x.max(other.x);
+        let height = (self.y + self.height).min(other.y + other.height) - self.y.max(other.y);
+        if width <= 0.0 || height <= 0.0 {
+            0.0
+        } else {
+            width * height
+        }
+    }
+}
+
+/// Where a new analysis window opens: beside the main window when the screen has room, otherwise
+/// inside the main window's frame — in whichever corner the floating palettes cover least, so the
+/// window (and the title strip it is dragged by) does not open underneath them. Every candidate is
+/// clamped to the monitor; among equally clear candidates the earlier one wins.
+fn choose_analysis_window_position(
+    main: ScreenRect,
+    monitor: ScreenRect,
+    width: f64,
+    height: f64,
+    palettes: &[ScreenRect],
+) -> (f64, f64) {
+    let gap = 16.0;
+    // Below the main window's own title bar.
+    let top_inset = 48.0;
+    let monitor_right = monitor.x + monitor.width;
+    let monitor_bottom = monitor.y + monitor.height;
+    let max_x = (monitor_right - width).max(monitor.x);
+    let max_y = (monitor_bottom - height).max(monitor.y);
+    let clamp = |x: f64, y: f64| (x.clamp(monitor.x, max_x), y.clamp(monitor.y, max_y));
+
+    let top = main.y + top_inset;
+    let bottom = main.y + main.height - height - gap;
+    let right_of_main = main.x + main.width + gap;
+    let left_of_main = main.x - width - gap;
+    let mut candidates = Vec::new();
+    if right_of_main + width <= monitor_right {
+        candidates.push((right_of_main, top));
+    }
+    if left_of_main >= monitor.x {
+        candidates.push((left_of_main, top));
+    }
+    let inner_right = main.x + main.width - width - gap;
+    let inner_left = main.x + gap;
+    candidates.extend([
+        (inner_right, top),
+        (inner_right, bottom),
+        (inner_left, bottom),
+        (inner_left, top),
+    ]);
+
+    let covered = |(x, y): (f64, f64)| {
+        let frame = ScreenRect::new(x, y, width, height);
+        palettes
+            .iter()
+            .map(|palette| frame.overlap_area(palette))
+            .sum::<f64>()
+    };
+    let mut best = clamp(candidates[0].0, candidates[0].1);
+    let mut best_covered = covered(best);
+    for &(x, y) in &candidates[1..] {
+        if best_covered == 0.0 {
+            break;
+        }
+        let candidate = clamp(x, y);
+        let candidate_covered = covered(candidate);
+        if candidate_covered < best_covered {
+            best = candidate;
+            best_covered = candidate_covered;
+        }
+    }
+    best
 }
 
 /// Always focusable, so the user can click into the window. It is focused only when `focus` is

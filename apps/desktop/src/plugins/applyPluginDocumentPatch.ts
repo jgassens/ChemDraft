@@ -46,3 +46,20 @@ export function applyPluginDocumentPatch(
     receipt: AppliedPatchReceiptSchema.parse({ applied: true, objectIds })
   };
 }
+
+/**
+ * One plain sentence for why a plugin patch could not be applied. A schema failure arrives as a Zod
+ * error whose message is its whole issue list in JSON — unreadable in a one-line status — so name the
+ * first issue by its path instead.
+ */
+export function describePatchFailure(error: unknown): string {
+  const issues = (error as { issues?: unknown } | null)?.issues;
+  if (Array.isArray(issues) && issues.length > 0) {
+    const [first] = issues as { path?: unknown; message?: unknown }[];
+    const path = Array.isArray(first?.path) ? first.path.join(".") : "";
+    const detail = typeof first?.message === "string" ? first.message : "invalid value";
+    return `the proposed structure is not valid (${path ? `${path}: ` : ""}${detail})`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split("\n")[0]!.replace(/\.$/, "") || "unknown error";
+}

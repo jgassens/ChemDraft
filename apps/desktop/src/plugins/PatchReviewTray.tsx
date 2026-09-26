@@ -100,10 +100,16 @@ export function PendingProposalsBadge({
 /** Shared proposal body used by the browser tray and the desktop analysis window. */
 export function PatchReviewList({
   proposals,
+  notices,
+  busyIds,
   onAccept,
   onReject
 }: {
   proposals: readonly PluginProposalReviewItem[];
+  /** Why the last Accept/Reject on a proposal did not go through, keyed by proposal id. */
+  notices?: Readonly<Record<string, string>>;
+  /** Proposals whose Accept/Reject is still waiting for an answer. */
+  busyIds?: ReadonlySet<string>;
   onAccept(proposalId: string): void;
   onReject(proposalId: string): void;
 }) {
@@ -147,11 +153,16 @@ export function PatchReviewList({
               ))}
             </ul>
           ) : null}
+          {notices?.[proposal.id] ? (
+            <p className="patch-review-error" role="alert">
+              {notices[proposal.id]}
+            </p>
+          ) : null}
           <div className="patch-review-actions">
-            <button type="button" onClick={() => onAccept(proposal.id)}>
+            <button type="button" disabled={busyIds?.has(proposal.id)} onClick={() => onAccept(proposal.id)}>
               Accept
             </button>
-            <button type="button" onClick={() => onReject(proposal.id)}>
+            <button type="button" disabled={busyIds?.has(proposal.id)} onClick={() => onReject(proposal.id)}>
               Reject
             </button>
           </div>
