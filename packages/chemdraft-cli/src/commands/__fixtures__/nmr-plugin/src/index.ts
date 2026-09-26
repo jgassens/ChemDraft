@@ -121,7 +121,7 @@ export class OclHosePredictor {
   }
 }
 
-/** Mirrors the real plugin's caption convention for real predictions. */
+/** Identifies this fixture-generated spectrum as synthetic test data. */
 export function renderStickSpectrumSvg(): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120"><text>1H δ (ppm) — predicted</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120"><text>1H δ (ppm) — synthetic fixture</text></svg>`;
 }

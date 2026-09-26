@@ -159,7 +159,7 @@ describe("chemdraft nmr with the CI fixture plugin", () => {
     expect(lines[0]!.spectrum).toEqual([spectrum]);
     const svg = await readFile(spectrum, "utf8");
     // The plugin's own caption passes through unchanged; the CLI only adds the stick-height note.
-    expect(svg).toContain("1H δ (ppm) — predicted");
+    expect(svg).toContain("1H δ (ppm) — synthetic fixture");
     expect(svg).toContain("not integration");
   });
 
