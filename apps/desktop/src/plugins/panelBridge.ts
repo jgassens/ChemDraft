@@ -1,11 +1,27 @@
-import type { PluginPanelReport } from "@chemdraft/plugin-api";
+import type { AnalysisReport } from "@chemdraft/analysis-core";
+import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } from "@chemdraft/plugin-api";
 import { isDesktopRuntime } from "../window-manager";
+import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
+import type { PluginDiagnostic } from "./types";
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
 export const PLUGIN_PANEL_REQUEST_EVENT = "chemdraft://plugin-panel-request";
 export const PLUGIN_PANEL_STALENESS_EVENT = "chemdraft://plugin-panel-staleness";
 export const PLUGIN_PANEL_RERUN_EVENT = "chemdraft://plugin-panel-rerun";
 export const PLUGIN_PANEL_CLOSED_EVENT = "chemdraft://plugin-panel-closed";
+/** Native → main: the closed window's label. Mirrors `PLUGIN_PANEL_WINDOW_CLOSED_EVENT` in lib.rs. */
+export const PLUGIN_PANEL_WINDOW_CLOSED_EVENT = "chemdraft://plugin-panel-window-closed";
+const PLUGIN_PANEL_WINDOW_LABEL_PREFIX = "plugin-panel-";
+export const ANALYSIS_WINDOW_SNAPSHOT_EVENT = "chemdraft://analysis-window-snapshot";
+export const ANALYSIS_WINDOW_ACTION_EVENT = "chemdraft://analysis-window-action";
+export const ANALYSIS_WINDOW_ACTION_RESULT_EVENT = "chemdraft://analysis-window-action-result";
+
+/** Core-owned identities deliberately use the existing plugin-panel window transport. */
+export const ANALYSIS_WINDOW_OWNER_ID = "core.analysis";
+export const MOLECULAR_INSPECTOR_WINDOW_ID = "molecular-inspector";
+export const VALIDATION_RESULT_WINDOW_ID = "validation-result";
+export const PLUGIN_DIAGNOSTICS_WINDOW_ID = "plugin-diagnostics";
+export const PATCH_REVIEW_WINDOW_ID = "plugin-proposals";
 
 export interface PluginPanelIdentity {
   panelId: string;
@@ -28,10 +44,83 @@ export interface PluginPanelStalenessPayload extends PluginPanelIdentity {
   revision: number;
 }
 
+export interface PluginProposalReviewItem {
+  id: string;
+  pluginId: string;
+  pluginName: string;
+  reason: string;
+  warnings: readonly { code: string; message: string }[];
+  recognition?: RecognitionProposalReview;
+  /** Host-drawn `image/svg+xml` data URI of the molecule the proposal would insert. */
+  structurePreview?: string;
+}
+
+export type AnalysisWindowContent =
+  | {
+      kind: "molecularInspector";
+      report?: AnalysisReport;
+      busy: boolean;
+      stale: boolean;
+    }
+  | {
+      kind: "report";
+      report: PluginPanelReport;
+    }
+  | {
+      kind: "pluginDiagnostics";
+      plugins: readonly PluginManifest[];
+      diagnostics: readonly PluginDiagnostic[];
+    }
+  | {
+      kind: "patchReview";
+      proposals: readonly PluginProposalReviewItem[];
+    };
+
+export interface AnalysisWindowSnapshotPayload extends PluginPanelIdentity {
+  content: AnalysisWindowContent;
+  revision: number;
+}
+
+export type AnalysisWindowAction =
+  | { kind: "close"; windowId: string }
+  | { kind: "copyMolecularInspector"; requestId?: string; text: string }
+  | { kind: "changeMolecularInterpretation"; interpretationId?: string }
+  | { kind: "acceptPluginProposal"; proposalId: string; requestId?: string }
+  | { kind: "rejectPluginProposal"; proposalId: string; requestId?: string }
+  | ({ kind: "saveTextFile"; requestId: string; filename: string; text: string } & SaveTextFileOptions);
+
+/** Main → window: how a `saveTextFile` action ended, keyed to the request that asked. */
+export interface AnalysisWindowSaveResult {
+  requestId: string;
+  result: SaveTextFileResult;
+}
+
+/** How the main window handled one Accept or Reject from the review window. `message` is plain text
+ *  for the user: what was inserted, or why nothing was. */
+export interface ProposalDecisionOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/** Main → window: the outcome of an `acceptPluginProposal`/`rejectPluginProposal` action. */
+export interface AnalysisWindowProposalResult {
+  requestId: string;
+  proposal: ProposalDecisionOutcome;
+}
+
+/** Main → window: whether a `copyMolecularInspector` action actually reached the clipboard. */
+export interface AnalysisWindowCopyResult {
+  requestId: string;
+  ok: boolean;
+}
+
 export interface OpenPluginPanelRequest extends PluginPanelIdentity {
   title: string;
   width?: number;
   height?: number;
+  /** True only when the user explicitly opened this window (menu command, click). Automatic shows
+   *  — a new proposal, a plugin pushing its report — pass false so the canvas keeps keyboard focus. */
+  focus: boolean;
 }
 
 export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Promise<void> {
@@ -48,9 +137,180 @@ export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Pr
       panelId: pluginPanelWindowId(request.pluginId, request.panelId),
       title: request.title,
       width: request.width,
-      height: request.height
+      height: request.height,
+      focus: request.focus
     }
   });
+}
+
+/** True inside a detached `plugin-panel-*` webview (the route Rust builds as `?window=pluginPanel`). */
+export function isPluginPanelWindowRoute(): boolean {
+  return new URLSearchParams(globalThis.location?.search ?? "").get("window") === "pluginPanel";
+}
+
+/**
+ * Window → main: save a text file through the main window, and resolve with how it ended.
+ *
+ * Report windows hold no dialog or filesystem permission (capabilities/plugin-panel.json) and must
+ * not gain one, so a save the user asks for there — the NMR figure's JCAMP-DX export — is performed
+ * by the main window with its own permissions. The listener is attached before the request is sent,
+ * so a fast answer cannot be missed.
+ */
+export async function requestSaveTextFileFromMain(
+  filename: string,
+  text: string,
+  options: SaveTextFileOptions
+): Promise<SaveTextFileResult> {
+  if (!isDesktopRuntime()) {
+    return "failed";
+  }
+  const requestId = `save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  try {
+    const { emit, listen } = await import("@tauri-apps/api/event");
+    let answer: (result: SaveTextFileResult) => void = () => undefined;
+    const answered = new Promise<SaveTextFileResult>((resolve) => {
+      answer = resolve;
+    });
+    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (isSaveResult(event.payload) && event.payload.requestId === requestId) {
+        answer(event.payload.result);
+      }
+    });
+    await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, {
+      kind: "saveTextFile",
+      requestId,
+      filename,
+      text,
+      ...options,
+      extensions: [...options.extensions]
+    });
+    return await answered;
+  } catch {
+    return "failed";
+  } finally {
+    unlisten?.();
+  }
+}
+
+/** Main → window: answer a `saveTextFile` action. */
+export async function respondToSaveTextFile(requestId: string, result: SaveTextFileResult): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
+}
+
+/** How long the review window waits for the main window to answer an Accept or Reject. */
+export const PROPOSAL_DECISION_TIMEOUT_MS = 10_000;
+
+/**
+ * Window → main: accept or reject a queued proposal, and resolve with what the main window did.
+ *
+ * The review window used to fire the action and forget it, so an Accept that never reached the main
+ * window, or reached it and failed, looked exactly like a button that does nothing. Every outcome now
+ * comes back — inserted, refused with a reason, already resolved — and silence becomes a message too.
+ */
+export async function requestProposalDecision(
+  decision: "accept" | "reject",
+  proposalId: string,
+  timeoutMs: number = PROPOSAL_DECISION_TIMEOUT_MS
+): Promise<ProposalDecisionOutcome> {
+  const kind = decision === "accept" ? "acceptPluginProposal" : "rejectPluginProposal";
+  if (!isDesktopRuntime()) {
+    // The in-app build: the document lives in this same window and reports in its own status line.
+    window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: { kind, proposalId } }));
+    return { ok: true, message: "" };
+  }
+  const requestId = `proposal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const { emit, listen } = await import("@tauri-apps/api/event");
+    let answer: (outcome: ProposalDecisionOutcome) => void = () => undefined;
+    const answered = new Promise<ProposalDecisionOutcome>((resolve) => {
+      answer = resolve;
+    });
+    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (isProposalResult(event.payload) && event.payload.requestId === requestId) {
+        answer(event.payload.proposal);
+      }
+    });
+    timer = setTimeout(
+      () =>
+        answer({
+          ok: false,
+          message: `The document window did not answer the ${decision === "accept" ? "Accept" : "Reject"}. Nothing has changed yet; try again.`
+        }),
+      timeoutMs
+    );
+    await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, { kind, proposalId, requestId });
+    return await answered;
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Could not reach the document window: ${error instanceof Error ? error.message : String(error)}`
+    };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    unlisten?.();
+  }
+}
+
+/** Main → window: answer an `acceptPluginProposal`/`rejectPluginProposal` action. */
+export async function respondToProposalDecision(requestId: string, outcome: ProposalDecisionOutcome): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowProposalResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, {
+    requestId,
+    proposal: { ok: outcome.ok, message: outcome.message }
+  });
+}
+
+/**
+ * Window → main: copy Molecular Inspector text through the main window's native clipboard, and
+ * resolve with whether it actually landed.
+ *
+ * Report windows hold no clipboard permission of their own; the main window performs the write and
+ * this returns its real outcome, so the floating window's "Copied" label can say "Copy failed"
+ * instead of claiming success regardless (mirrors `requestSaveTextFileFromMain`).
+ */
+export async function requestCopyMolecularInspectorText(text: string): Promise<boolean> {
+  if (!isDesktopRuntime()) {
+    return false;
+  }
+  const requestId = `copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  try {
+    const { emit, listen } = await import("@tauri-apps/api/event");
+    let answer: (ok: boolean) => void = () => undefined;
+    const answered = new Promise<boolean>((resolve) => {
+      answer = resolve;
+    });
+    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (isCopyResult(event.payload) && event.payload.requestId === requestId) {
+        answer(event.payload.ok);
+      }
+    });
+    await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, { kind: "copyMolecularInspector", requestId, text });
+    return await answered;
+  } catch {
+    return false;
+  } finally {
+    unlisten?.();
+  }
+}
+
+/** Main → window: answer a `copyMolecularInspector` action. */
+export async function respondToCopyMolecularInspector(requestId: string, ok: boolean): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowCopyResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, ok });
 }
 
 export async function broadcastPluginPanelReport(payload: PluginPanelReportPayload): Promise<void> {
@@ -61,6 +321,55 @@ export async function broadcastPluginPanelReport(payload: PluginPanelReportPaylo
 
   const { emit } = await import("@tauri-apps/api/event");
   await emit<PluginPanelReportPayload>(PLUGIN_PANEL_REPORT_EVENT, payload);
+}
+
+export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSnapshotPayload): Promise<void> {
+  window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_SNAPSHOT_EVENT, { detail: payload }));
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowSnapshotPayload>(ANALYSIS_WINDOW_SNAPSHOT_EVENT, payload);
+}
+
+export function listenForAnalysisWindowSnapshots(
+  handler: (payload: AnalysisWindowSnapshotPayload) => void
+): () => void {
+  const domListener = (event: Event) => {
+    const payload = (event as CustomEvent<unknown>).detail;
+    if (isAnalysisWindowSnapshotPayload(payload)) {
+      handler(payload);
+    }
+  };
+  window.addEventListener(ANALYSIS_WINDOW_SNAPSHOT_EVENT, domListener);
+  return attachTauriListener(
+    ANALYSIS_WINDOW_SNAPSHOT_EVENT,
+    domListener,
+    isAnalysisWindowSnapshotPayload,
+    handler
+  );
+}
+
+export async function requestAnalysisWindowAction(action: AnalysisWindowAction): Promise<void> {
+  window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, action);
+}
+
+export function listenForAnalysisWindowActions(handler: (action: AnalysisWindowAction) => void): () => void {
+  const domListener = (event: Event) => {
+    const payload = (event as CustomEvent<unknown>).detail;
+    if (isAnalysisWindowAction(payload)) {
+      handler(payload);
+    }
+  };
+  window.addEventListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener);
+  return attachTauriListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener, isAnalysisWindowAction, handler);
 }
 
 export function listenForPluginPanelReports(
@@ -107,7 +416,9 @@ export async function hidePluginPanelWindow(pluginId: string, panelId: string): 
   }
 
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const window = await WebviewWindow.getByLabel(`plugin-panel-${pluginPanelWindowId(pluginId, panelId)}`);
+  const window = await WebviewWindow.getByLabel(
+    `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(pluginId, panelId)}`
+  );
   await window?.hide();
 }
 
@@ -162,6 +473,36 @@ export async function notifyPluginPanelClosed(identity: PluginPanelIdentity): Pr
 
 export function listenForPluginPanelCloses(handler: (identity: PluginPanelIdentity) => void): () => void {
   return listenForPanelIdentityEvent(PLUGIN_PANEL_CLOSED_EVENT, handler);
+}
+
+/**
+ * Native → main: a panel window was closed through the OS — Window ▸ Close Window or ⌘W — rather than
+ * its own close control. The host hides it instead of destroying it and sends its label; the handler
+ * gets the panel, so the main window can take the same close path as the window's own button.
+ */
+export function listenForNativePanelWindowCloses(handler: (identity: PluginPanelIdentity) => void): () => void {
+  const deliver = (label: string): void => {
+    const identity = pluginPanelIdentityFromWindowLabel(label);
+    if (identity) handler(identity);
+  };
+  const domListener = (event: Event) => {
+    const label = (event as CustomEvent<unknown>).detail;
+    if (typeof label === "string") deliver(label);
+  };
+  window.addEventListener(PLUGIN_PANEL_WINDOW_CLOSED_EVENT, domListener);
+  return attachTauriListener(
+    PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+    domListener,
+    (payload): payload is string => typeof payload === "string",
+    deliver
+  );
+}
+
+/** The panel behind a native `plugin-panel-<windowId>` label, for the app's own encoded ids only. */
+export function pluginPanelIdentityFromWindowLabel(label: string): PluginPanelIdentity | undefined {
+  return label.startsWith(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
+    ? parsePluginPanelWindowId(label.slice(PLUGIN_PANEL_WINDOW_LABEL_PREFIX.length))
+    : undefined;
 }
 
 /** Shared listener plumbing for the `{ pluginId, panelId }` messages (request/rerun/closed). */
@@ -298,5 +639,92 @@ function isStalenessPayload(payload: unknown): payload is PluginPanelStalenessPa
     typeof candidate.panelId === "string" &&
     typeof candidate.stale === "boolean" &&
     typeof candidate.revision === "number"
+  );
+}
+
+function isAnalysisWindowSnapshotPayload(payload: unknown): payload is AnalysisWindowSnapshotPayload {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowSnapshotPayload>;
+  return (
+    typeof candidate.pluginId === "string" &&
+    typeof candidate.panelId === "string" &&
+    typeof candidate.revision === "number" &&
+    typeof candidate.content === "object" &&
+    candidate.content !== null &&
+    typeof (candidate.content as { kind?: unknown }).kind === "string"
+  );
+}
+
+function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowAction {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as { kind?: unknown; [key: string]: unknown };
+  switch (candidate.kind) {
+    case "close":
+      return typeof candidate.windowId === "string";
+    case "copyMolecularInspector":
+      return (
+        (candidate.requestId === undefined || typeof candidate.requestId === "string") &&
+        typeof candidate.text === "string"
+      );
+    case "changeMolecularInterpretation":
+      return candidate.interpretationId === undefined || typeof candidate.interpretationId === "string";
+    case "acceptPluginProposal":
+    case "rejectPluginProposal":
+      return (
+        typeof candidate.proposalId === "string" &&
+        (candidate.requestId === undefined || typeof candidate.requestId === "string")
+      );
+    case "saveTextFile":
+      return (
+        typeof candidate.requestId === "string" &&
+        typeof candidate.filename === "string" &&
+        typeof candidate.text === "string" &&
+        typeof candidate.title === "string" &&
+        typeof candidate.formatLabel === "string" &&
+        typeof candidate.mimeType === "string" &&
+        Array.isArray(candidate.extensions) &&
+        candidate.extensions.every((extension) => typeof extension === "string")
+      );
+    default:
+      return false;
+  }
+}
+
+function isSaveResult(payload: unknown): payload is AnalysisWindowSaveResult {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowSaveResult>;
+  return (
+    typeof candidate.requestId === "string" &&
+    (candidate.result === "saved" || candidate.result === "cancelled" || candidate.result === "failed")
+  );
+}
+
+/** Distinguished from a save result by shape (`ok` vs. `result`) on the same shared result event. */
+function isCopyResult(payload: unknown): payload is AnalysisWindowCopyResult {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowCopyResult>;
+  return typeof candidate.requestId === "string" && typeof candidate.ok === "boolean";
+}
+
+/** Distinguished from save and copy results by its `proposal` object on the same shared result event. */
+function isProposalResult(payload: unknown): payload is AnalysisWindowProposalResult {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const candidate = payload as Partial<AnalysisWindowProposalResult>;
+  return (
+    typeof candidate.requestId === "string" &&
+    typeof candidate.proposal === "object" &&
+    candidate.proposal !== null &&
+    typeof candidate.proposal.ok === "boolean" &&
+    typeof candidate.proposal.message === "string"
   );
 }

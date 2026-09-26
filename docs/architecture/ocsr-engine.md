@@ -1,0 +1,558 @@
+# Local MolScribe OCSR Engine
+
+ChemDraft's MolScribe integration is an optional, host-managed local engine. It is the native half of
+image-to-structure recognition; the TypeScript half (the recognizer plugin and its review flow) calls
+the commands below. Nothing is downloaded or started at application startup. The main window must
+first obtain explicit user confirmation and invoke `ocsr_engine_install`; recognition remains
+proposal-only in the plugin workflow (AGENTS.md §7, §8).
+
+The recognizer plugin itself is not bundled: it is the official MolScribe OCSR plugin, installed from
+`jgassens/ChemDraft-MolScribe-Plugin` through Add or Remove Plugins. The engine outlives the plugin —
+uninstalling the plugin while the engine is installed asks once whether to remove the engine too, and
+the manager's engine row is shown only while the plugin is installed.
+
+## One-click install from the catalog
+
+A catalog entry that needs the engine says so as data — `requiresEngine: "structureRecognition"` in
+`OFFICIAL_PLUGIN_CATALOG` (`pluginUpdates.ts`) — and the plugin manager keys only on that, never on a
+plugin id. For such an entry the single **Install** button does both installs:
+
+1. The package review states, before the user confirms, that the local recognition engine comes too:
+   about 2.5 GB to download, the free space it needs, and the free space now (status is re-read when
+   the review opens). It warns if space is short; it says so instead when the engine is already
+   installed or the computer is unsupported.
+2. Confirming installs the plugin, then immediately starts the engine install in the plugin's row,
+   with the same progress display as the first-use dialog.
+3. If the engine install fails or is cancelled, the plugin stays installed. The row names the error in
+   plain words and offers **Install engine again** as a full-size button. The engine row never uses a
+   text link: **Install engine**, **Cancel install** and **Remove engine** are all ordinary buttons.
+
+The first-use dialog (opened when recognition runs without an engine) remains the fallback path, and
+shares the same install: if one is already running it shows that one and continues when it finishes.
+
+## Install progress
+
+The install belongs to `StructureRecognitionController`, which lives as long as the plugin runtime —
+not to whichever window started it. Closing and reopening Add or Remove Plugins therefore shows the
+same install still running (`getInstallRun()`), never a second Install. If the webview itself lost that
+state (a reload), `ocsr_engine_status` still reports `installing` with the host's latest `progress`
+event and `installElapsedMs`, and the controller follows it by polling status every 500 ms until the
+install ends.
+
+Every phase shows **Step N of 5**, an overall bar, the elapsed time, and for the current step either a
+byte bar ("X MB of Y MB") or, when a step reports no bytes, how long it usually takes. The overall bar
+weights steps by size: uv ≈ 20 MB, Python ≈ 40 MB, packages ≈ 1.2 GB, model 1.13 GB, verify small
+(`structureRecognitionInstallProgress.ts`). The overall bar must never move backwards, which a Rust
+test checks by replaying a scripted install through the same weights. That is why the ~5.7 MB
+MolScribe source download, which runs inside the packages step, reports its progress as text only
+("Downloaded 2.1 of 5.7 MB.") with no byte counts: the UI reads bytes in a step as that step's
+fraction, so a finished 5.7 MB download would put the bar at ~52% before the 1.2 GB package estimate
+pulled it back to ~3%.
+
+uv prints no byte counts when not attached to a terminal, so the two uv steps are **estimated** in Rust
+(`progress.rs`): while `uv python install` runs, the growth of `python/` and the uv cache is measured
+every 500 ms against about 75 MB; while `uv pip install` runs, the growth of the uv cache and the venv
+against about 1.2 GB. The estimate is monotonic, is capped at 99% while the step runs, and only the
+step's successful exit reports 100%; such events carry `estimated: true` and the UI labels them
+"(estimated)". The expected totals come from one macOS arm64 install and only drive the bar. Events
+reach the webview at most about four times a second (a new phase or a completed byte count always
+passes); the status snapshot sees every event.
+
+Code: `apps/desktop/src-tauri/src/ocsr_engine/` — `mod.rs` (commands and state), `install.rs`
+(installer), `progress.rs` (install progress estimates), `process.rs` (sidecar lifetime), `protocol.rs` (JSON Lines), `platform.rs` (per-OS seam),
+`pins.rs` (every supply-chain pin), `receipt.rs` (the install receipt and its versions), `upgrade.rs`
+(in-place receipt upgrade). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.
+
+## Installed layout
+
+The engine lives under the platform application-data directory:
+
+```text
+ocsr-engine/
+  uv | uv.exe                pinned uv, extracted from its verified archive
+  python/                    uv-managed Python 3.10 (UV_PYTHON_INSTALL_DIR)
+  python-bin/, uv-state/     uv's executable links and state, kept inside the tree
+  venv/                      isolated MolScribe environment
+  requirements.txt           the hash-locked package set (copied from resources/ocsr/)
+  swin_base_char_aux_1m.pth  pinned model
+  install.json               receipt: schema version, every pin, install date and size
+```
+
+Only three names are ever touched, all siblings in the app-data directory: `ocsr-engine/`,
+`ocsr-engine.partial/` (staging) and `ocsr-engine.previous/` (a working install set aside during a
+reinstall).
+
+A quit or crash mid-install leaves `ocsr-engine.partial/` behind (it can be gigabytes). At launch a
+background thread removes it, and removes `ocsr-engine.previous/` too when `ocsr-engine/` is a healthy
+install (receipt matches the pins, layout verifies); beside a missing or broken install the set-aside
+tree may be the only working engine, so it is left alone. An install or uninstall started meanwhile
+waits for the sweep: all three take one staging lock before touching these directories.
+
+## Install transaction
+
+1. **Check disk.** At least 3.0 GB free on the app-data volume, or `insufficientDisk` before anything
+   is created.
+2. **Stage.** A stale `ocsr-engine.partial/` is removed and a fresh one created. From here on, any
+   failure or cancellation deletes it.
+3. **uv.** The platform's uv archive is streamed from the GitHub release, SHA-256 verified, and only
+   then opened; only the `uv`/`uv.exe` entry is extracted. A `uv` on `PATH` is never used.
+4. **Python.** `uv python install 3.10`, then `uv venv --python 3.10 --python-preference only-managed
+   --relocatable`.
+5. **Packages.** First the MolScribe source archive (GitHub, at the pinned commit; no Git needed) is
+   streamed to the staging tree by Rust with the same client, stall timeout and size cut-off as the
+   model, and its byte count and SHA-256 must match the pin — so a tampered archive fails in seconds,
+   before PyTorch is downloaded. Then the bundled requirements file is checked against its pinned
+   SHA-256 and installed with `uv pip install --require-hashes --requirement requirements.txt`: every
+   package, transitive ones included, is an exact `==` pin with its archive hashes, and uv refuses
+   anything unpinned, unhashed or mismatched. Last, MolScribe is installed from the verified local
+   archive with `--no-deps --no-index --no-build-isolation`: its dependencies are the locked set, nothing
+   is fetched, and the sdist builds with the venv's hash-locked setuptools rather than an unverified
+   build environment. The archive is deleted afterwards.
+6. **Model.** Streamed to disk with throttled progress (about one event per MB); the byte count and
+   SHA-256 must both match the pin, and a response that runs past the pinned size is cut off.
+7. **Receipt.** The download cache, temporary directory and uv archive are removed, the layout is
+   checked, and `install.json` is written with the measured size.
+8. **Swap and relocate.** An existing `ocsr-engine/` is renamed to `ocsr-engine.previous/`, and the
+   staging tree is renamed to `ocsr-engine/`. uv writes the interpreter's location as an absolute path
+   — the venv's `python` link, `pyvenv.cfg`'s `home`, and the managed Python's minor-version link —
+   so those paths still point into the staging directory, which no longer exists. The installer
+   rewrites every symlink under the tree whose target lies in the staging prefix, and the `home` line,
+   onto the final prefix (both the path as given and its canonical spelling).
+9. **Prove it.** `python -c "import cv2, molscribe, numpy, torch, torchvision"` runs from the final
+   location. This is the only check that the relocation worked, so it runs after the swap, not before.
+   If it fails or is cancelled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
+   a failed reinstall never costs the user a working engine. On success the previous tree is removed.
+
+Every child process runs with inherited `UV_*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV*` and `CONDA*`
+variables removed and `UV_NO_CONFIG=1`, so ambient configuration cannot redirect the reviewed install
+to another index, mirror or interpreter. uv's cache, temporary, state and executable-link directories
+are all redirected into the staging tree. Cancellation is a flag checked between download chunks and
+every 50 ms while a uv child runs, which is then killed **with everything it started**: each child
+runs in its own process group on Unix, and the whole group gets SIGKILL (on Windows, `taskkill /T /F`
+with `CREATE_NEW_PROCESS_GROUP`; unverified, see Adding Windows). Killing uv alone would leave the
+Python it runs for the MolScribe sdist build writing into the staging tree. The HTTP client's
+60-second timeout applies to each read, not the whole transfer: a slow link finishes, a dead one
+fails with `network`.
+
+**App exit during an install.** The install thread never gets to check its flag when the app is
+exiting, so exit does the killing itself: it raises the cancel flag and kills the running uv child's
+process tree directly (the child's id is tracked in `RunningChild`, cleared under the same lock that
+reaps it, so a recycled process id is never signalled). The staging tree it leaves is swept at the
+next launch (above). Exit is handled on both `RunEvent::ExitRequested` and `RunEvent::Exit` — Cmd+Q on
+macOS ends the event loop with only `Exit` — as well as main-window destruction; the shutdown is
+idempotent.
+
+`ocsr_engine_status` re-reads the receipt on every call. A missing or malformed receipt, a receipt
+whose pins differ from this build's, a missing uv/interpreter/model, or a model of the wrong size is
+reported as `broken` with a `detail`, never accepted silently. Status checks sizes, not hashes: hashing
+1.1 GB on every status call would be too slow, and the hash was verified before the file was kept.
+A receipt from an older ChemDraft is the exception: it is checked once, in full, and upgraded in place
+(see [Receipt versions](#receipt-versions-and-in-place-upgrade)).
+
+`detail` is shown to the user as it is, so it is always plain words. A receipt that cannot be read
+says "The recognition engine’s installation record is damaged. Install the engine again."; an engine
+that does not match this build says "The recognition engine needs to be updated. Install the engine
+again to update it." The parser's own message (`missing field … at line 17 column 1`) goes to the app
+log only. The plugin manager's engine row shows a broken engine as "needs to be installed again" with
+the `detail` beneath it and **Install engine again**; the first-use dialog shows the `detail` and the
+same button label.
+
+## Receipt versions and in-place upgrade
+
+`install.json` carries `receiptVersion`. Each version is parsed by its own struct (`receipt.rs`), so an
+older receipt is read, not rejected:
+
+| Version | Written by | Shape |
+| --- | --- | --- |
+| 1 | installs before the hash lock (before 6635f42) | range constraints (`torchConstraint` …), no `requirementsSha256`, no `receiptVersion` |
+| 2 | 6635f42 on | exact versions and the lock's SHA-256; `receiptVersion: 2` (6635f42 itself wrote no version field and is recognized by `requirementsSha256`); `upgradedInPlace: {fromReceiptVersion, upgradedAt}` when rewritten by the upgrade below |
+
+A version newer than the build understands reads as `broken` ("installed by a newer version of
+ChemDraft").
+
+A version-1 engine may be exactly what a fresh install makes today; rejecting it, as 6635f42 did,
+costs every existing user a 2.4 GB re-download. Instead, the first status call that finds one starts a check
+on its own thread and reports `installing` with phase `verifying` ("Checking the installation") while
+it runs; the check never runs on the main thread (a synchronous Tauri command does) and never runs
+twice. It takes the install's `installing` flag and staging lock, so a real install waits, uninstall
+cancels it, and the startup sweep leaves the tree alone. Nothing is downloaded, and nothing is written
+except the new receipt. In order, cheapest first (`upgrade.rs`):
+
+1. The old receipt's uv, Python, MolScribe and model pins equal the current ones.
+2. The bundled requirements file is the reviewed lock (`REQUIREMENTS_LOCK_SHA256`).
+3. The installed `uv --version` is the pinned version.
+4. `venv/bin/python -I -B -c …` imports `cv2, molscribe, numpy, torch, torchvision` (as the post-install
+   check does), then prints its PEP 508 marker environment; its Python must be the pinned minor
+   version. `-B` keeps it from writing bytecode into the engine.
+5. The venv's packages, read from each `*.dist-info/METADATA`, equal the lock by `name==version`
+   exactly: every lock entry whose marker holds for that environment is installed at its version, and
+   nothing else is installed except MolScribe. A marker, variable or requirement form the evaluator
+   does not understand fails the check rather than being guessed. An `.egg-info` fails it too.
+6. MolScribe's `direct_url.json` names the pinned archive URL (or, for the current installer, the
+   verified local archive).
+7. The model's size and SHA-256 equal the pin — hashed last, since it is the slow step.
+
+Name-and-version equality is enough for step 5 because PyPI never lets a published file be replaced:
+the same version on the same platform is the same wheel the lock hashes. On success the receipt is
+rewritten in the current format, keeping the original `installedAt` and `diskBytes`, with
+`upgradedInPlace`, written to `install.json.tmp` and renamed over the old one. On failure the old
+receipt is left as it was, status reports `broken` with the plain `detail` above, the technical reason
+goes to the log, and the refusal is remembered for the session (cleared by an install or uninstall), so
+status does not hash the model again. Cancelling the check (Cancel install, or uninstall) is remembered
+the same way with its own message; a restart checks again.
+
+The first real engine checked this way, a macOS arm64 install from 2026-09-24 with the owner's version-1
+receipt, passed every step (89 distributions: the 88 lock entries that apply on that platform, plus
+MolScribe) in 56 s in a debug build, most of it the model hash. To repeat that check read-only against
+any installed engine:
+
+```bash
+cd apps/desktop/src-tauri
+CHEMDRAFT_OCSR_ENGINE_DIR="$HOME/Library/Application Support/<bundle id>/ocsr-engine" \
+  cargo test --lib ocsr_engine::upgrade::tests::real_engine -- --ignored --nocapture
+```
+
+## Pins
+
+All pins live in `src/ocsr_engine/pins.rs`. Changing any of them is a deliberate, reviewed
+supply-chain change that must update `resources/ocsr/requirements.txt`, NOTICE, the dependency
+inventory, and this document together. Tests assert that the requirements file's SHA-256 is
+`REQUIREMENTS_LOCK_SHA256`, that every entry in it is an exact pin followed by hashes, and that it
+pins the torch, torchvision and numpy versions in `pins.rs`.
+
+| What | Pin |
+| --- | --- |
+| uv | 0.12.18, per-platform archive SHA-256 |
+| Python | 3.10 (uv-managed) |
+| Python packages | `resources/ocsr/requirements.txt`: 109 exact pins with SHA-256 hashes (torch 2.14.0, torchvision 0.29.0, numpy 1.26.4, and the rest of MolScribe's dependency tree); the file itself is pinned by SHA-256 |
+| MolScribe | `thomas0809/MolScribe` archive at `7296a30413eb55436702011efdff78131f66d162`, 5,727,892 bytes, SHA-256 `8e323f47…e2d6` |
+| Model | `yujieq/MolScribe` revision `a0189776…`, `swin_base_char_aux_1m.pth`, 1,134,940,406 bytes, SHA-256 `6f0df56f…ea1d` |
+| Free disk | 3.0 GB |
+
+### The requirements lock
+
+`resources/ocsr/requirements.in` lists what the engine needs — torch, torchvision and numpy at the
+reviewed versions, MolScribe's own `install_requires` (read from its `setup.py` at the pinned commit),
+and setuptools to build it. `requirements.txt` is generated from it by
+
+```bash
+uv pip compile requirements.in --universal --python-version 3.10 --generate-hashes -o requirements.txt
+```
+
+`--universal` writes one file for every platform, with environment markers on the packages only some
+need (`colorama` on Windows, `uvloop` off Windows, and CUDA packages marked Linux-only, which no
+supported target installs). It was first resolved on 2026-09-24 constrained to exactly what a real
+macOS arm64 install had produced, so the lock reproduces that install: a fresh venv installed from it
+with `--require-hashes`, plus MolScribe from the verified archive, matched the real engine's
+`uv pip freeze` package for package and passed the import check. uv keeps the versions already in
+`requirements.txt` when it re-locks, so re-running the command changes nothing unless `requirements.in`
+changes or `--upgrade` is passed. After any re-lock, update `REQUIREMENTS_LOCK_SHA256` (taken with line
+endings normalized to LF, so a CRLF checkout on Windows still matches).
+
+A tarball cannot be hash-locked by URL, which is why MolScribe is not in the lock: Rust verifies the
+archive and uv installs the local file with `--no-deps`.
+
+**Intel Macs are not installable at these pins.** PyTorch publishes no macOS x86_64 wheel for 2.14.0
+(its last Intel-Mac release was 2.2), so `--require-hashes` finds nothing to install and the packages
+step fails with uv's resolution error. This was already true of the earlier `~=2.14.0` constraint; the
+lock only makes it explicit. Rather than let an Intel Mac download uv and Python only to fail at the
+packages step, `platform::current()` reports `unsupported` up front, before anything downloads (see
+[Platform seam](#platform-seam)). Genuinely supporting Intel Macs needs a deliberate decision — pinning
+an older torch build for that platform — not a silent fallback.
+
+The receipt records the lock's SHA-256, the exact torch/torchvision/numpy versions and the MolScribe
+archive's SHA-256. An install from before the lock is checked against the lock in place and keeps
+working if it matches; only one that differs has to be installed again (see
+[Receipt versions](#receipt-versions-and-in-place-upgrade)).
+
+## Sidecar protocol (version 2)
+
+`resources/ocsr/molscribe_sidecar.py` is bundled with the app; its heavy imports come from the
+user-installed venv. It is started as `venv/bin/python -I molscribe_sidecar.py --checkpoint <model>`
+(isolated mode) with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, in the engine directory. Stdin
+and stdout carry one JSON object per line; stderr is log only and is copied to the app log. Before
+importing anything heavy the sidecar points file descriptor 1 at stderr and keeps a private handle
+for protocol output, so a stray `print` from a library cannot corrupt a protocol line.
+
+```json
+{"type":"ready","protocol":2,"molscribeVersion":"…","torchVersion":"…"}
+{"type":"fatal","code":"model_load_failed","message":"…"}
+{"id":"ocsr-1","type":"recognize","imagePath":"/absolute/temporary/image.png"}
+{"id":"ocsr-1","type":"progress","stage":"reading","run":1,"runsPlanned":5}
+{"id":"ocsr-1","type":"result","smiles":"…","molfile":"…","confidence":0.97,"atoms":[{"index":0,"symbol":"C","x":0.41,"y":0.2,"confidence":0.99}],"bonds":[{"begin":0,"end":1,"bondType":"single","confidence":0.98}],"agreement":{"runs":5,"agreeing":5,"invalidRuns":0,"scalesPx":[800,900,1000,1100,1200]},"elapsedMs":9500}
+{"id":"ocsr-1","type":"error","code":"invalid_image","message":"…"}
+{"type":"shutdown"}
+```
+
+The result maps MolScribe's own output keys one-to-one: `atoms[].atom_symbol` → `symbol`, `x`/`y`
+(fractions of image width and height), `bonds[].endpoint_atoms` → `begin`/`end`, `bond_type` →
+`bondType` (`single`, `double`, `triple`, `aromatic`, `solid wedge`, `dashed wedge`), and each
+`confidence` as given. A value MolScribe did not return is `null`; nothing is filled in. An image that
+Pillow cannot decode is `invalid_image`. When every run raised, the model's own error is returned as
+`recognition_failed`; when runs answered but none of their SMILES parsed, `recognition_failed` carries
+the plain message "The engine could not read a valid structure from this image. Try a larger or
+sharper image." A malformed request line gets an `error` with `id: null`. `shutdown` or EOF on stdin
+exits 0. The host refuses a protocol-1 result (no `agreement`), an unknown `agreement` field, and an
+inconsistent one (`agreeing` outside `1..=runs`, `agreeing + invalidRuns > runs`, or `scalesPx` not
+one entry per run). `invalidRuns` was added within protocol 2; the host reads a result without it as
+reporting none.
+
+**Progress lines** were also added within protocol 2, and are purely additive: the final `result` or
+`error` line is unchanged, and a sidecar that sends none is still read correctly. Before each reading
+the sidecar sends `{"id", "type": "progress", "stage": "reading", "run", "runsPlanned"}`, always before
+that request's final line. `run` counts from 1; `runsPlanned` is the first pass's size (usually 5)
+and becomes the full vote's size (usually 15) from the first reading after the first pass disagreed.
+A request refused before any reading (bad path, undecodable image) sends none. Rust reads progress
+strictly (`protocol::classify_for_id`): a progress line for another request id, with `run` outside
+`1..=runsPlanned`, with `runsPlanned` above 64, or with an unknown `stage` ends the request as a crash,
+exactly like a result for the wrong request.
+
+### Preprocessing: flatten onto white
+
+Every image, whatever its source, is decoded with Pillow and flattened onto white before
+recognition: alpha (RGBA, LA, PA) and palette transparency are composited over white, 16-bit gray is
+scaled into 8 bits rather than clipped, EXIF orientation is applied, and the result is RGB. MolScribe
+reads files with OpenCV, which drops the alpha channel, so a transparent background became black:
+Wikimedia's gray + alpha PNG of brevetoxin A came back as a nonsense molecule at confidence 0.087,
+and the same image on white was read correctly. The flattened image is handed to MolScribe's
+`predict_image` as an RGB array, so OpenCV never reads the file.
+
+### Multi-scale consensus
+
+MolScribe crops the white border and then squashes every image to 384 × 384 with bilinear
+resizing. For a large drawing that shrink skips pixels, so the answer depends on the exact input
+size — and the confidence does not reveal it. Brevetoxin A on white, resized to width W: 500 wrong
+(0.774), 600 right (0.500), 700 wrong (0.336), 800–1200 right (0.33–0.76), 1400–1920 wrong
+(0.60–0.72). Even a one-pixel change matters: 800 × 287 was right (0.762) and 800 × 288 unparsable
+(0.39).
+
+A single run is therefore chaotic on a large molecule, and the fix is more votes rather than better
+tuned sizes. Each image is recognized at many sizes, rescaled (LANCZOS, aspect kept) so its longer side
+is the given size:
+
+1. **First pass:** 800, 900, 1000, 1100 and 1200 px. If at least 4 of these 5 give the same valid
+   structure, the vote stops here.
+2. **Otherwise:** also 760 to 1240 px in steps of 40 (the grid's other ten sizes; 900 and 1100 are
+   not on it), so a full vote is **15 runs**.
+
+A size that would enlarge the image more than 2× is skipped; when any are skipped, the original size
+votes as well, and an image too small for every size is recognized once as it is.
+
+The answers are compared by RDKit canonical isomeric SMILES. A run whose SMILES does not parse (for
+example a pentavalent carbon) or that raised is **invalid**: it never wins and never agrees with
+anything, however confident. The winner is the most frequent valid structure; a tie goes to the one
+with the higher mean confidence. The most confident run of the winner is returned. `agreement`
+reports `{runs, agreeing, invalidRuns, scalesPx}`: `runs` counts every run, invalid ones included,
+and `agreeing` the runs that gave the returned structure. Atom `x`/`y` are fractions of the image, so
+they do not depend on the size the returned run used. Each request also writes one
+`vote {"image", "runs": [{px, key, confidence}]}` line to the log, which the real-engine check reads.
+
+The review uses it (`apps/desktop/src/plugins/recognitionAgreement.ts`): the plugin picks a tier from
+the confidence, and the host caps it by how many of **all** runs agreed:
+
+| Runs agreeing | Review tier | Warning |
+| --- | --- | --- |
+| all (unanimous) | the plugin's tier | none |
+| at least two thirds | at most **medium** | yes |
+| fewer | **low** | yes |
+
+The warning reads "Recognition gave different answers at different image sizes; check the structure
+carefully. Only *k* of *n* readings agreed." The cap is applied where the host builds every review
+item (`proposalReviewItem`), keyed by the molfile the host produced, so it holds even if a plugin
+drops the warning. A high tier is never shown for a non-unanimous result; an early stop at 4 of 5 is
+therefore at most medium.
+
+Measured with the installed engine on brevetoxin A (`pnpm test:ocsr-real`, 2026-09-24; Y the right
+structure, x unparsable, - not run):
+
+| Case | 800 900 1000 1100 1200 (first pass) | Result |
+| --- | --- | --- |
+| 1920 px file, transparent | x Y Y Y Y — stopped | right, 4/5, at most medium |
+| Retina screenshot, long side 1400 | Y Y Y Y Y — stopped | right, 5/5, plugin's tier |
+| 1x screenshot, long side 700 + 20 px margin | x x x x x — all 15 run | right, 1/15 (14 unparsable), low |
+
+The 1x case is a resolution limit, not a pipeline one: recognizing directly at 740 or 900 px from the
+full-resolution source was right.
+
+### Checks
+
+`python3 apps/desktop/src-tauri/resources/ocsr/molscribe_sidecar.py --selftest` runs without torch,
+MolScribe or a model (Pillow is required): flattening of gray + alpha, RGBA, palette transparency,
+opaque and 16-bit images; an undecodable file; the choice of sizes, including small images; the vote
+(unanimous, majority beating a more confident outlier, plurality, ties by mean confidence, invalid
+runs never winning); and the whole request loop with a stubbed model — the adaptive stop after 4 of 5,
+a full 15-run vote, 11 confident unparsable runs losing to 3 valid ones, every run unparsable
+(`recognition_failed` with the plain message), a model exception at every size, result mapping with
+`agreement`, missing confidences, a malformed line, a bad path, an undecodable image, and nothing
+answered after shutdown. It also checks the progress lines: one per reading numbered from 1, 5 of 5
+then 6 to 15 of 15 when the vote widens, one per run even when the run raises or does not parse, none
+for a request refused before reading, and never one after that request's final line. Where RDKit is importable (the engine venv) it also checks the canonical-SMILES key.
+
+`pnpm test:ocsr-real` is the opt-in accuracy check against a real installed engine and the fixtures
+in `packages/fixtures/ocsr/` (see its README). It is not part of `pnpm test`.
+
+## Process lifetime
+
+- **Lazy.** The sidecar starts on the first recognition, not at app start, and is reused afterwards.
+- **One request at a time.** A second request while one is running is **rejected** with `busy`
+  immediately; there is no queue.
+- **Timeout.** 300 s per request (`process::REQUEST_TIMEOUT`, which the timeout message also quotes),
+  measured from the command. It must cover the first request's model
+  load plus a full 15-run vote. Measured 2026-09-24 on an M1 Pro while the machine was heavily loaded
+  (load average 30–90): 2.1–2.3 s per recognition of brevetoxin A, a 2.6–7.6 s model load, 9.3 s for
+  a vote that stopped after 5 runs and 26–33 s for a full 15-run vote. 300 s is about 8× the slowest
+  full vote measured, for slower CPUs and a cold first load. On timeout the process is killed; the
+  timeout is not retried, and the next request starts a fresh process.
+- **Crash.** If the process has died (while idle or mid-request) or writes a malformed line, it is
+  discarded and the request is retried once against a fresh process. A second failure is reported as
+  `engineCrashed`.
+- **Idle and exit.** A reaper thread stops the sidecar after 10 idle minutes. It is also stopped at app
+  exit, before an install (which may replace its files), and before an uninstall.
+- **Stopping never waits for a recognition.** A recognition holds the process manager's lock for its
+  whole length (up to 300 s), so exit, install and uninstall do not queue on that lock. They kill the
+  sidecar through its `KillSwitch`, a handle held outside the lock and armed as soon as the child
+  exists (so it also works during the model load). The request in flight sees the sidecar's output
+  close and fails with `engineCrashed` ("MolScribe was stopped before it finished…"); it is not
+  retried. Install and uninstall then take the lock on a blocking worker thread; exit, on the main
+  thread, only tries the lock: it stops an idle sidecar gracefully and kills a busy one.
+- **The user's Cancel** (`ocsr_recognize_cancel`) uses the same switch, but only for a request that is
+  running (`KillSwitch::cancel_request`): a Cancel between recognitions leaves the warm sidecar alone.
+  The request answers `{status: "cancelled"}` rather than `engineCrashed`, and the next recognition
+  starts a fresh sidecar lazily. A Cancel can land before the request has begun (the command is still
+  reading the image, say), when there is nothing yet to kill; so every Cancel also bumps a counter the
+  recognition read when its command started, and the request checks it once it has begun, before it
+  starts or talks to a sidecar. The bump comes before the kill, and the check after `begin`, so no
+  request slips between them.
+- **Poisoned locks.** A panic during a recognition must not disable recognition for the session: the
+  request gate and the process manager recover a poisoned lock (the idle reaper included) instead of
+  failing every later request.
+
+Image bytes cross IPC as base64, are capped at 25 MB decoded, and are decoded in Rust first, so a
+corrupt or mislabelled image fails as `invalidImage` before the engine starts. The format is taken
+from the bytes, not the declared media type. PNG, JPEG, BMP and TIFF are passed through unchanged;
+GIF is re-encoded as PNG in Rust (it once had to be, for OpenCV; the sidecar now decodes with Pillow).
+WebP is the one format not decoded in Rust — the app's `image` crate is built without a WebP decoder —
+so it passes through by its signature and Pillow decodes it in the sidecar, which reports
+`invalid_image` if it cannot (the sidecar self-test round-trips a transparent WebP). The bytes go to
+a uniquely named file in the app temp directory, which an RAII guard deletes on every path.
+
+The engine accepts exactly the media types a host hands a plugin — PNG, JPEG, TIFF and WebP
+(`PluginImageMediaTypes` in `packages/plugin-api`, `SUPPORTED_MEDIA_TYPES` in `mod.rs`). A Rust test
+reads the TypeScript list and fails if the two differ, so an image the host accepts is never refused
+by the engine.
+
+## Tauri commands
+
+Registered in `lib.rs`; granted only to the `main` window by `capabilities/ocsr-engine.json` (a test
+asserts that). No other window, plugin panel or webview HTTP scope gains access, and the webview makes
+no network requests for the engine: Rust downloads uv and the model, and the pinned uv fetches the
+Python and packages.
+
+| Command | Arguments | Returns |
+| --- | --- | --- |
+| `ocsr_engine_status` | — | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?, engineCheck?}`; `state` is `notInstalled`, `installing`, `installed`, `broken` or `unsupported`; `installed` is `{uvVersion, pythonVersion, molscribeCommit, modelSha256, installedAt, diskBytes}`; `progress` (the latest `InstallProgress`) and `installElapsedMs` are present only while `installing`, which includes the check of an engine with an older receipt (phase `verifying`); `engineCheck: true` marks that check (it is omitted for a real install) |
+| `ocsr_engine_install` | `onProgress: Channel<InstallProgress>` | status, or `Err({code, message})` with `insufficientDisk`, `network`, `checksumMismatch`, `cancelled`, `unsupported` or `failed`. One install at a time; a second call fails with `failed`. |
+| `ocsr_engine_cancel_install` | — | `()` |
+| `ocsr_engine_uninstall` | — | status. Cancels a running install and waits for it, stops the sidecar, then removes the three `ocsr-engine*` directories. |
+| `ocsr_recognize_image` | `{mediaType, bytesBase64, onProgress?: Channel<RecognitionProgress>}` | `{status: "recognized", smiles, molfile, confidence, atoms, bonds, agreement: {runs, agreeing, invalidRuns, scalesPx}, elapsedMs, engine: {name: "MolScribe", molscribeCommit, modelSha256}}`, `{status: "notInstalled"}` (also while installing or on an unsupported platform), `{status: "cancelled"}` (the user's Cancel only), or `{status: "failed", code, message}` with `invalidImage`, `recognitionFailed`, `engineCrashed` (including a `broken` install, and a stop for exit, install or uninstall), `timeout` or `busy` |
+| `ocsr_recognize_cancel` | — | `()`. Stops the running recognition at once (see Process lifetime); does nothing when none is running, and never touches an install or the engine check. |
+
+`InstallProgress` is `{phase, message, bytesDone?, bytesTotal?, estimated?}` with `phase` one of
+`checkingDisk`, `downloadingUv`, `installingPython`, `installingPackages`, `downloadingModel`,
+`verifying`, `done`. `estimated: true` marks byte counts derived from directory growth (see Install
+progress); it is omitted otherwise.
+
+`RecognitionProgress` is `{stage: "starting"}` (Rust is launching the sidecar, which includes the
+model load: the sidecar says nothing until it is ready) or `{stage: "reading", run, runsPlanned}`
+(forwarded from the sidecar's progress line). The `onProgress` channel is optional — a Tauri
+`Channel` argument cannot itself be optional, so Rust takes the raw channel id and binds it to the
+calling webview. Events are rate-limited to about four a second (`progress::RecognitionThrottle`); a
+new stage, or a change in `runsPlanned`, always passes.
+
+## Recognition progress
+
+The first recognition after an app update can take a minute or more: the one-time engine check
+(about a minute; see Receipt versions), the model load (about 10 s), then up to 15 readings (about
+2 s each). The host shows that it is working, without blocking the drawing.
+
+**The indicator** (`apps/desktop/src/plugins/RecognitionProgressIndicator.tsx`, mounted once in
+`MainWindow`) is a small card in the bottom-right corner of the main window, not a dialog: it takes
+no focus, traps nothing, and covers only its corner, so the user keeps drawing. It names the plugin
+that asked, the stage in plain words, a bar and the elapsed time, and offers **Cancel**. Only the
+stage line is a live region (`role="status"`, `aria-live="polite"`); the clock ticks every second and
+is kept out of it. It is shown from the moment a plugin hands an image to recognition until the
+result is ready, the recognition fails, or it is cancelled — except while the install dialog is open,
+which is the feedback then.
+
+| Stage | Text | Bar |
+| --- | --- | --- |
+| `checking` — reading the engine status, or waiting for the one-time engine check | Checking the recognition engine… | indeterminate |
+| `starting` — sidecar launch and model load | Starting the recognition engine… | indeterminate |
+| `reading` — a reading of the vote | Reading the structure… (reading *N* of *M*) | *N − 1* of *M* done |
+| `validating` — RDKit validation and the proposal | Checking the result… | indeterminate |
+
+*M* is 5 for the first pass and becomes 15 if the first pass disagrees. An engine that reports no
+readings leaves the text at "Reading the structure…" rather than going blank.
+
+**The one-time engine check** is no longer shown as an install. When `ocsr_engine_status` answers
+`installing` with `engineCheck: true`, `StructureRecognitionController.recognize` waits for it under
+the indicator (following the host's status as it already does for an install it did not start) and
+then recognizes; if the check refuses the engine, the install dialog opens with "Install engine
+again", as before. Cancel during the check stops the waiting only: the check runs on to its own
+result, which the next recognition uses.
+
+**Cancel** settles the plugin's `recognizeStructure` as `{status: "cancelled"}` at once (plugins stay
+silent on it) and hides the card; if the engine was already recognizing, the controller also calls
+`cancelRecognition`, which kills the sidecar through `ocsr_recognize_cancel`. An abandoned plugin
+invocation cancels the same way. A recognition started right after a cancel waits (up to 10 s) for
+the cancelled engine call to settle, so it is not refused as `busy`. One recognition runs at a time:
+a second request while one is shown is answered `busy` without disturbing the first.
+
+**Engine-neutral.** Stages travel through `StructureRecognitionEngine` —
+`recognizeImage(input, onProgress?)` and an optional `cancelRecognition()` — as
+`StructureRecognitionProgress`, so another engine or platform reports the same way.
+`UnsupportedStructureRecognitionEngine` reports nothing. The controller shows the stages it knows
+itself (`checking`, `validating`) whatever the engine reports, and its progress reaches only the
+indicator's own subscription (`subscribeActivity`), so a reading never re-renders `MainWindow`.
+
+**Permissions.** `ocsr_recognize_cancel` is granted to the main window only, in
+`capabilities/ocsr-engine.json`. Its permission is defined by hand in
+`permissions/ocsr-recognize-cancel.toml`, because `build.rs`'s command list (which generates the files
+in `permissions/autogenerated/`) does not name it; tauri-build reads every file under `permissions/`.
+
+## Platform seam
+
+`EnginePlatform` (`platform.rs`) owns everything that differs by OS: the uv asset and checksum, the uv
+and venv interpreter paths, and child-process flags. `platform::current()` picks one with `#[cfg]`;
+nothing else in the installer or process manager branches on the OS. Free-disk queries and
+`kill_process_tree` are the other per-OS functions (`statvfs` and `killpg` on Unix,
+`GetDiskFreeSpaceExW` and `taskkill /T /F` on Windows).
+
+| Target | uv asset | venv Python | Child processes | Status |
+| --- | --- | --- | --- | --- |
+| macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
+| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
+| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | implemented, never run |
+| anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
+
+## Adding Windows
+
+The Windows implementation compiles in the seam but has never been built or run on Windows, and CI
+runs Rust checks only on macOS. Before calling it release-ready:
+
+- Build and run `cargo clippy --all-targets -- -D warnings` and `cargo test` on Windows.
+- Run a real clean install and uninstall, including cancellation during each external step, and quit
+  the app mid-install: no `uv.exe` or `python.exe` may survive. `taskkill /T` cannot reach a
+  descendant whose parent has already exited; a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+  would, and would also cover ChemDraft crashing, so it is the stronger fix once this can be tested.
+- **Relocation is the open question.** On Windows, uv links the managed Python's minor-version
+  directory with a junction, and the venv's `python.exe` is a launcher that reads `pyvenv.cfg`. The
+  `pyvenv.cfg` rewrite should be enough for the venv, but `std` cannot create junctions, and recreating
+  a link with `symlink_dir` needs Developer Mode or elevation, so a junction pointing into the staging
+  directory may fail to relocate. If it does, the post-swap import check fails and the install rolls
+  back cleanly rather than leaving a broken engine. The likely fixes are to create the junction through
+  the Win32 API, or to install with `UV_PYTHON_INSTALL_DIR` outside the renamed tree.
+- Check torch wheel resolution for Python 3.10 on Windows, and paths with spaces and non-ASCII
+  characters (the sidecar's image path must be valid Unicode).
+- A new architecture (e.g. Windows arm64) needs an upstream uv asset and a reviewed checksum in
+  `pins.rs` and a new `EnginePlatform` implementation. Never fall back to a system uv or Python.

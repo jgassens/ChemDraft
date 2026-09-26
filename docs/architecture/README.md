@@ -18,3 +18,4 @@ Key architecture notes:
 - `spin3d-performance-handoff.md`
 - `toolbars-and-toolsets.md`
 - `viewport-and-rulers.md`
+- `image-acquisition.md`

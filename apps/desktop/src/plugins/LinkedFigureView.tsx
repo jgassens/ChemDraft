@@ -271,11 +271,16 @@ export function LinkedFigureView({
   const [showFull, setShowFull] = useState(false);
   useEffect(() => {
     if (!showFull) return undefined;
+    // Capture phase + preventDefault: the innermost overlay owns Escape. A floating report window
+    // closes itself on a bubbling window-level Escape that it skips once defaultPrevented, so this
+    // Escape dismisses only "Full size" and a second one closes the window.
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setShowFull(false);
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      setShowFull(false);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [showFull]);
 
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);

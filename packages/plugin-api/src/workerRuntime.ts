@@ -21,7 +21,10 @@ import type {
   PluginChemistryAPI,
   PluginCommandContext,
   PluginCommandHandler,
+  PluginDialogsAPI,
   PluginDocumentAPI,
+  PluginImagesAPI,
+  PluginRecognitionAPI,
   PluginManifest,
   PluginPanelAPI,
   PluginPermission,
@@ -154,7 +157,13 @@ export function runPluginWorker(
 
     const documents: PluginDocumentAPI = {
       getActiveDocument: () => call("documents", "getActiveDocument", []) as ReturnType<PluginDocumentAPI["getActiveDocument"]>,
-      proposePatch: (proposal) => call("documents", "proposePatch", [proposal]) as ReturnType<PluginDocumentAPI["proposePatch"]>
+      proposePatch: (proposal) => call("documents", "proposePatch", [proposal]) as ReturnType<PluginDocumentAPI["proposePatch"]>,
+      ...(has("document.write")
+        ? {
+            applyPatch: (patch: Parameters<NonNullable<PluginDocumentAPI["applyPatch"]>>[0]) =>
+              call("documents", "applyPatch", [patch]) as ReturnType<NonNullable<PluginDocumentAPI["applyPatch"]>>
+          }
+        : {})
     };
 
     // The capability objects are transport stubs: each method forwards to the boundary and resolves on
@@ -177,6 +186,33 @@ export function runPluginWorker(
     const panels: PluginPanelAPI | undefined = has("ui.panel")
       ? { showReport: (panelId, report) => call("panels", "showReport", [panelId, report]) as ReturnType<PluginPanelAPI["showReport"]> }
       : undefined;
+
+    const dialogs: PluginDialogsAPI | undefined = has("ui.panel")
+      ? {
+          // Keep this stub on the same typed capability map as the host bridge. Text prompting is
+          // primarily for installed plugins, whose handlers always run here without DOM access; a
+          // missing map entry would therefore make the API dead on arrival despite working in-process.
+          promptText: (request) =>
+            call("dialogs", "promptText", [request]) as ReturnType<PluginDialogsAPI["promptText"]>
+        }
+      : undefined;
+
+    const images: PluginImagesAPI | undefined = has("image.read")
+      ? {
+          requestImage: (request) =>
+            call("images", "requestImage", [request]) as ReturnType<PluginImagesAPI["requestImage"]>
+        }
+      : undefined;
+
+    const recognition: PluginRecognitionAPI | undefined =
+      has("image.read") && has("ml.inference") && has("model.load") && has("native.execute")
+        ? {
+            recognizeStructure: (image) =>
+              call("recognition", "recognizeStructure", [image]) as ReturnType<
+                PluginRecognitionAPI["recognizeStructure"]
+              >
+          }
+        : undefined;
 
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
@@ -233,6 +269,9 @@ export function runPluginWorker(
       storage,
       selection,
       panels,
+      dialogs,
+      images,
+      recognition,
       analysis,
       chemistry,
       hasPermission: has,

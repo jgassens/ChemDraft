@@ -10,6 +10,7 @@ import { MemoryStorage } from "../testSupport/memoryStorage";
 const hookMocks = vi.hoisted(() => ({
   stagingFs: {},
   loadInstalledPlugins: vi.fn(),
+  installPluginPackage: vi.fn(),
   updateInstalledPluginPackage: vi.fn()
 }));
 
@@ -27,11 +28,13 @@ vi.mock("./installPluginPackage", async (importOriginal) => {
   return {
     ...actual,
     loadInstalledPlugins: hookMocks.loadInstalledPlugins,
+    installPluginPackage: hookMocks.installPluginPackage,
     updateInstalledPluginPackage: hookMocks.updateInstalledPluginPackage
   };
 });
 
 import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
+import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import type { PreparedPluginUpdate } from "./pluginUpdates";
 import { usePluginRuntime, type PluginRuntimeView } from "./usePluginRuntime";
 
@@ -119,6 +122,7 @@ let root: Root | undefined;
 
 beforeEach(() => {
   hookMocks.loadInstalledPlugins.mockReset();
+  hookMocks.installPluginPackage.mockReset();
   hookMocks.updateInstalledPluginPackage.mockReset();
   vi.stubGlobal("localStorage", new MemoryStorage());
 });
@@ -207,5 +211,41 @@ describe("usePluginRuntime installed catalog readiness", () => {
     );
     expect(view?.installedPlugins.map((entry) => entry.record.version)).toEqual(["2.0.0"]);
     expect(view?.installedPlugins[0]?.manifest).toBe(updated.manifest);
+  });
+
+  it("clears a stale disabled preference for the id a fresh install takes", async () => {
+    // Left by the removed bundled canary that used the same id as the catalog plugin.
+    saveDisabledPluginIds(new Set([pluginId, "org.chemdraft.other"]));
+    hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [], failures: [] });
+    const installed = catalogEntry("1.0.0", "c".repeat(64));
+    hookMocks.installPluginPackage.mockResolvedValue({
+      record: installed.record,
+      descriptor: { manifest: installed.manifest, options: { commandHandlers: {} } }
+    });
+
+    let view: PluginRuntimeView | undefined;
+    function Probe() {
+      view = usePluginRuntime({
+        getActiveDocument: () => undefined,
+        getSelection: () => ({ objectIds: [], molecules: [] })
+      });
+      return null;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(Probe));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await view!.installPackage!(preparedUpdate().inspection);
+    });
+
+    expect(hookMocks.installPluginPackage).toHaveBeenCalledOnce();
+    // After a restart, loadInstalledPlugins reads this set: the new install must load enabled.
+    expect([...loadDisabledPluginIds()]).toEqual(["org.chemdraft.other"]);
+    expect(view?.installedPlugins.map((entry) => entry.record.id)).toEqual([pluginId]);
   });
 });

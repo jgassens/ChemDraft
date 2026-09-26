@@ -116,6 +116,32 @@
       ]
     },
     {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
+      ]
+    },
+    {
       "identifier": "fs:allow-write-text-file",
       "allow": [
         {

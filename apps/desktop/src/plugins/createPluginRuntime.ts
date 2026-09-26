@@ -1,5 +1,6 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
+  AppliedPatchReceipt,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -16,11 +17,23 @@ import {
   PluginHost,
   validateTrustedPluginManifest,
   type CommandRegistry,
+  type PluginPatchApplicationRequest,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
+import { PluginPromptTextController } from "./PluginPromptTextController";
+import { createDefaultImageSourceRegistry, type ImageSourceRegistry } from "./ImageSourceProvider";
+import { PluginImageRequestController } from "./PluginImageRequestController";
+import { StructureRecognitionController } from "./StructureRecognitionController";
+import {
+  TauriStructureRecognitionEngine,
+  UnsupportedStructureRecognitionEngine,
+  type StructureRecognitionEngine
+} from "./structureRecognitionEngine";
+import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
+import { isTauriHost } from "./pluginStagingFs";
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
@@ -45,6 +58,14 @@ export type DesktopStructureFromSmilesProvider = (
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
   getActiveDocument: () => ChemDraftDocument | undefined;
+  /**
+   * Identifies the working document so a plugin's `documents.applyPatch` lands only in the document its
+   * command was invoked on (see `PluginHostOptions.getActiveDocumentKey`). It must stay the same across
+   * edits and undo and change on File > New/Open or a switch to another document. The embedding window
+   * knows that best — e.g. a counter it bumps whenever it replaces the document history rather than
+   * pushing onto it. Without one, the runtime falls back to {@link documentIdentityKey}.
+   */
+  getActiveDocumentKey?: () => string | undefined;
   /** Builds an immutable selection snapshot from current desktop state. */
   getSelection?: () => PluginSelectionSnapshot | undefined;
   /**
@@ -58,6 +79,12 @@ export interface DesktopPluginRuntimeOptions {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
+  /** Desktop routes every report straight to its native window; web keeps the in-app fallback. */
+  defaultPanelSurface?: "inApp" | "window";
   /**
    * Serves `chemistry.compute`. Defaults to the real engine-backed implementation; injectable so tests
    * can drive the capability without standing up an analysis worker. Passing `null` withholds it, which
@@ -68,6 +95,12 @@ export interface DesktopPluginRuntimeOptions {
   convertNameToStructure?: DesktopNameToStructureProvider | null;
   /** Serves 2D layout under the same permission and the same null-withholds rule. */
   buildStructureFromSmiles?: DesktopStructureFromSmilesProvider | null;
+  /** Image-provider registry; injectable for tests and future platform/provider additions. */
+  imageSourceRegistry?: ImageSourceRegistry;
+  /** Local OCSR engine port; injectable for tests and future platform engines. */
+  structureRecognitionEngine?: StructureRecognitionEngine;
+  /** Chemistry validation seam used after recognition and before a proposal is built. */
+  recognitionStructureValidator?: RecognitionStructureValidator;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
   now?: () => Date | string;
 }
@@ -114,6 +147,9 @@ function assertDesktopPluginPermissionsAvailable(manifest: PluginManifest): void
 export interface DesktopPluginRuntime {
   host: PluginHost;
   panels: PluginPanelController;
+  prompts: PluginPromptTextController;
+  images: PluginImageRequestController;
+  recognition: StructureRecognitionController;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -152,21 +188,44 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // controller, and the controller reads manifests back off the host. Close the loop with a
   // late-bound reference so neither construction depends on the other existing first.
   let controller: PluginPanelController | undefined;
+  const prompts = new PluginPromptTextController();
+  const images = new PluginImageRequestController(
+    options.imageSourceRegistry ?? createDefaultImageSourceRegistry()
+  );
+  const recognitionEngine =
+    options.structureRecognitionEngine ??
+    (isTauriHost() ? new TauriStructureRecognitionEngine() : new UnsupportedStructureRecognitionEngine());
+  const recognition = new StructureRecognitionController(recognitionEngine, (outcome, image) =>
+    options.recognitionStructureValidator
+      ? preparePluginStructureRecognition(
+          outcome,
+          image,
+          options.getActiveDocument(),
+          options.recognitionStructureValidator
+        )
+      : preparePluginStructureRecognition(outcome, image, options.getActiveDocument())
+  );
   const host = new PluginHost({
     commandRegistry: options.commandRegistry,
     getActiveDocument: options.getActiveDocument,
+    getActiveDocumentKey:
+      options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
     getSelection: options.getSelection,
     createStorage: options.createStorage,
     onProposedPatchesChanged: options.onProposedPatchesChanged,
+    applyDocumentPatch: options.applyDocumentPatch,
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
     },
+    promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
+    requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
+    recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
     now
   });
-  controller = new PluginPanelController(host, nowIso);
+  controller = new PluginPanelController(host, nowIso, options.defaultPanelSurface);
 
   const toolsetsByPluginId = new Map<string, DesktopToolsetDefinition[]>();
   const pluginIdByToolsetId = new Map<string, string>();
@@ -177,6 +236,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const runtime: DesktopPluginRuntime = {
     host,
     panels: controller,
+    prompts,
+    images,
+    recognition,
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered
@@ -239,6 +301,16 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   };
   return runtime;
+}
+
+/**
+ * Fallback document identity: the document's own id and creation time, both of which edits and undo
+ * leave alone. It tells an opened file from the document it replaced, but NOT two documents created by
+ * File > New in one session — those share `doc_001` and a fixed creation stamp — which is why an
+ * embedder that can tell documents apart should pass `getActiveDocumentKey` instead.
+ */
+export function documentIdentityKey(document: ChemDraftDocument | undefined): string | undefined {
+  return document === undefined ? undefined : `${document.id}\u0000${document.createdAt}`;
 }
 
 function pluginToolsetToDefinition(contribution: PluginToolsetContribution): DesktopToolsetDefinition {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useReducer, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { dangerousPluginPermissions, type PluginPermission } from "@chemdraft/plugin-api";
@@ -9,14 +9,36 @@ import {
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
 import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
+import { keepFocusInsideDialog } from "./PluginImageRequestDialog";
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import type {
+  PreparedOfficialPluginInstall,
   PluginUpdateCheckResult,
   PluginUpdateOffer,
   PreparedPluginUpdate
 } from "./pluginUpdates";
+import { EXPERIMENTAL_PLUGIN_NOTICE, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
+import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";
+import {
+  formatDiskBytes,
+  isRecognitionInstallKeyboardEvent,
+  recognitionInstallErrorMessage
+} from "./StructureRecognitionInstallDialog";
+import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
+
+/** Whether the official catalog says this plugin needs the host-managed recognition engine. The
+ *  catalog entry is the only authority; nothing here keys on a particular plugin id. */
+function requiresRecognitionEngine(pluginId: string | undefined): boolean {
+  return (
+    pluginId !== undefined &&
+    OFFICIAL_PLUGIN_CATALOG.some(
+      (entry) => entry.pluginId === pluginId && entry.requiresEngine === "structureRecognition"
+    )
+  );
+}
 
 export interface PluginManagerDialogProps {
   runtime: DesktopPluginRuntime;
@@ -30,11 +52,25 @@ export interface PluginManagerDialogProps {
   onPickPackage?: () => Promise<PickedPluginPackage | undefined>;
   /** Stage, load and register a described package. */
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
+  /** Download and inspect one entry from the host-owned official catalog. */
+  onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
   /** Host-owned update operations. All are absent outside the Tauri desktop. */
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
+  recognitionEngineStatus?: StructureRecognitionEngineStatus;
+  /** The engine install in progress, or the last one that stopped without installing. It outlives
+   *  this dialog, so reopening the dialog shows the same install rather than offering another. */
+  recognitionEngineInstall?: StructureRecognitionInstallRun;
+  /** Asked once when the dialog opens; the engine status is never read at app startup. */
+  onRefreshRecognitionEngineStatus?: () => Promise<void>;
+  /** Installs the engine in place; progress arrives through `recognitionEngineInstall`. */
+  onInstallRecognitionEngine?: () => Promise<boolean>;
+  onCancelRecognitionEngineInstall?: () => Promise<void>;
+  onUninstallRecognitionEngine?: () => Promise<void>;
+  /** Opens the folder of screen captures kept behind accepted recognitions (AGENTS.md §8). */
+  onShowRecognitionScreenCaptures?: () => Promise<void>;
   onClose: () => void;
   onPluginsChanged?: () => void;
 }
@@ -42,7 +78,9 @@ export interface PluginManagerDialogProps {
 type PluginManagerBusyOperation =
   | { kind: "pickPackage" }
   | { kind: "installPackage" }
+  | { kind: "prepareOfficialInstall"; pluginId: string; pluginName: string }
   | { kind: "uninstallPlugin"; pluginId: string; pluginName: string }
+  | { kind: "removeRecognitionEngine" }
   | { kind: "checkUpdates" }
   | { kind: "prepareUpdate"; pluginId: string; pluginName: string }
   | { kind: "applyUpdate"; pluginName: string };
@@ -88,10 +126,18 @@ export function PluginManagerDialog({
   installedPluginCatalogReady = true,
   onPickPackage,
   onInstallPackage,
+  onPrepareOfficialPluginInstall,
   onUninstallPlugin,
   onCheckPluginUpdates,
   onPreparePluginUpdate,
   onUpdatePlugin,
+  recognitionEngineStatus,
+  recognitionEngineInstall,
+  onRefreshRecognitionEngineStatus,
+  onInstallRecognitionEngine,
+  onCancelRecognitionEngineInstall,
+  onUninstallRecognitionEngine,
+  onShowRecognitionScreenCaptures,
   onClose,
   onPluginsChanged
 }: PluginManagerDialogProps) {
@@ -99,13 +145,19 @@ export function PluginManagerDialog({
   const packageNoteId = useId();
   const [, refreshFromHost] = useReducer((version: number) => version + 1, 0);
   const [error, setError] = useState<string | undefined>(undefined);
-  const [pending, setPending] = useState<PickedPluginPackage | undefined>(undefined);
+  const [pending, setPending] = useState<PickedPluginPackage | PreparedOfficialPluginInstall | undefined>(undefined);
+  const [pendingOfficialPluginId, setPendingOfficialPluginId] = useState<string | undefined>(undefined);
+  const [officialInstallErrors, setOfficialInstallErrors] = useState<ReadonlyMap<string, string>>(new Map());
   const [pendingUpdateState, setPendingUpdateState] = useState<CatalogBoundPreparedUpdate | undefined>(undefined);
   const [updateResultsState, setUpdateResultsState] = useState<CatalogBoundUpdateResults | undefined>(undefined);
   const [noticeState, setNoticeState] = useState<PluginManagerNotice | undefined>(undefined);
   const [busyOperation, setBusyOperation] = useState<PluginManagerBusyOperation | undefined>(undefined);
+  /** Disk size of the recognition engine the user may also want gone, asked once after MolScribe's
+   *  plugin is uninstalled. The engine is host-owned and outlives the plugin unless the user says so. */
+  const [engineRemovalOfferBytes, setEngineRemovalOfferBytes] = useState<number | undefined>(undefined);
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
+  const dialogRef = useRef<HTMLElement>(null);
 
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =
@@ -124,12 +176,18 @@ export function PluginManagerDialog({
   // Keep the checkboxes truthful even when a registration changes outside this dialog.
   useEffect(() => runtime.host.subscribe(refreshFromHost), [runtime]);
 
+  // A row's button swaps label mid-operation (Install -> Downloading…, Install engine -> Cancel
+  // install, Uninstall -> Removing…) by becoming disabled; keep the keyboard on this dialog instead
+  // of letting it drop to <body>, from where Escape and the canvas shortcuts behind the modal take over.
+  useLayoutEffect(() => keepFocusInsideDialog(dialogRef.current));
+
   useEffect(() => {
     // Escape works even while an operation runs. A trusted-update download is allowed two minutes,
     // and the operation is owned by the install machinery rather than by this dialog — closing does
     // not abandon it, it just stops holding the user hostage to a progress line.
     const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
+      // The engine install dialog opens over this one and owns its own Escape (decline or cancel).
+      if (event.key === "Escape" && !isRecognitionInstallKeyboardEvent(event)) {
         onClose();
       }
     };
@@ -146,6 +204,7 @@ export function PluginManagerDialog({
   // the ordinary case — the **installed copy shadows the bundled one**, matching what the host actually
   // has registered. Listing both would show two rows for one live plugin and let the toggle fight itself.
   const installedIds = new Set(installedPlugins.map((entry) => entry.record.id));
+  const availableOfficialPlugins = OFFICIAL_PLUGIN_CATALOG.filter((entry) => !installedIds.has(entry.pluginId));
   const catalog: readonly BundledPluginDescriptor[] = [
     ...bundledPlugins.filter((descriptor) => !installedIds.has(descriptor.manifest.id)),
     ...installedPlugins.map(
@@ -155,11 +214,14 @@ export function PluginManagerDialog({
   ];
   const enabledIds = new Set(runtime.host.listPlugins().map((manifest) => manifest.id));
   const installSupported = onPickPackage !== undefined && onInstallPackage !== undefined;
+  const officialInstallSupported =
+    onPrepareOfficialPluginInstall !== undefined && onInstallPackage !== undefined;
   const updateSupported =
     onCheckPluginUpdates !== undefined &&
     onPreparePluginUpdate !== undefined &&
     onUpdatePlugin !== undefined;
   const canInstall = installedPluginCatalogReady && installSupported;
+  const canInstallOfficial = installedPluginCatalogReady && officialInstallSupported;
   const canUpdate = installedPluginCatalogReady && updateSupported;
 
   const togglePlugin = (pluginId: string): void => {
@@ -218,18 +280,57 @@ export function PluginManagerDialog({
       // A cancelled picker is not a failure; leave the dialog exactly as it was.
       if (picked) {
         setPendingUpdateState(undefined);
+        setPendingOfficialPluginId(undefined);
         setPending(picked);
         setNoticeState(undefined);
       }
     });
+
+  const engineInstalling =
+    recognitionEngineInstall?.running === true || recognitionEngineStatus?.state === "installing";
+  const pendingNeedsEngine = requiresRecognitionEngine(pendingOfficialPluginId);
 
   const installPending = (): Promise<void> =>
     run({ kind: "installPackage" }, async () => {
       if (!pending) return;
       await onInstallPackage!(pending.inspection);
       setPending(undefined);
+      if (pendingOfficialPluginId) {
+        setOfficialInstallErrors((current) => withoutMapKey(current, pendingOfficialPluginId));
+      }
+      setPendingOfficialPluginId(undefined);
       onPluginsChanged?.();
+      // One click: the review already said the engine comes too, so start it now. Its progress
+      // shows in the plugin's row; a failure leaves the plugin installed with an Install engine
+      // button, because the plugin itself installed fine.
+      if (
+        pendingNeedsEngine &&
+        onInstallRecognitionEngine &&
+        recognitionEngineStatus?.state !== "installed" &&
+        recognitionEngineStatus?.state !== "unsupported"
+      ) {
+        void onInstallRecognitionEngine();
+      }
     });
+
+  const prepareOfficialInstall = (pluginId: string, pluginName: string): Promise<void> => {
+    setBusyOperation({ kind: "prepareOfficialInstall", pluginId, pluginName });
+    setError(undefined);
+    setNoticeState(undefined);
+    setOfficialInstallErrors((current) => withoutMapKey(current, pluginId));
+    return onPrepareOfficialPluginInstall!(pluginId)
+      .then((prepared) => {
+        setPendingUpdateState(undefined);
+        setPendingOfficialPluginId(pluginId);
+        setPending(prepared);
+        // The review states the engine's size against the free space now, so read it fresh.
+        if (requiresRecognitionEngine(pluginId)) onRefreshRecognitionEngineStatus?.().catch(() => undefined);
+      })
+      .catch((cause: unknown) => {
+        setOfficialInstallErrors((current) => new Map(current).set(pluginId, messageOf(cause)));
+      })
+      .finally(() => setBusyOperation(undefined));
+  };
 
   const uninstall = (pluginId: string): Promise<void> =>
     run(
@@ -241,8 +342,22 @@ export function PluginManagerDialog({
       async () => {
         await onUninstallPlugin!(pluginId);
         onPluginsChanged?.();
+        if (
+          requiresRecognitionEngine(pluginId) &&
+          recognitionEngineStatus?.state === "installed" &&
+          onUninstallRecognitionEngine
+        ) {
+          setEngineRemovalOfferBytes(recognitionEngineStatus.installed?.diskBytes ?? 0);
+        }
       }
     );
+
+  const removeRecognitionEngineAfterUninstall = (): Promise<void> =>
+    run({ kind: "removeRecognitionEngine" }, async () => {
+      setEngineRemovalOfferBytes(undefined);
+      await onUninstallRecognitionEngine!();
+      setNoticeState({ text: "Recognition engine removed." });
+    });
 
   const checkForUpdates = (): Promise<void> =>
     run({ kind: "checkUpdates" }, async () => {
@@ -301,12 +416,14 @@ export function PluginManagerDialog({
       }}
     >
       <section
+        ref={dialogRef}
         aria-busy={busy}
         aria-labelledby={titleId}
         aria-modal="true"
         className="plugin-manager-dialog"
         data-testid="plugin-manager-dialog"
         role="dialog"
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="plugin-manager-header">
@@ -341,80 +458,195 @@ export function PluginManagerDialog({
           </div>
         ) : null}
 
-        <ul className="plugin-manager-list" aria-label="Plugins">
-          {catalog.map((descriptor) => {
-            const manifest = descriptor.manifest;
-            const enabled = enabledIds.has(manifest.id);
-            const installed = installedIds.has(manifest.id);
-            const installedEntry = installedPlugins.find((entry) => entry.record.id === manifest.id);
-            const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
-            const unavailable =
-              installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0);
-            const updateResult = updateResults.get(manifest.id);
-            return (
-              <li className="plugin-manager-item" data-plugin-id={manifest.id} key={manifest.id}>
-                <div className="plugin-manager-details">
-                  <div className="plugin-manager-name">
-                    {manifest.name} <span>v{manifest.version}</span>
-                    {installed ? <span className="plugin-manager-badge">Installed</span> : null}
-                    {updateResult?.status === "available" ? (
-                      <span className="plugin-manager-badge is-update">Update available</span>
+        {engineRemovalOfferBytes !== undefined ? (
+          <div
+            aria-labelledby={`${titleId}-engine-offer`}
+            className="plugin-manager-notice"
+            data-testid="recognition-engine-removal-offer"
+            role="group"
+          >
+            <p id={`${titleId}-engine-offer`}>
+              Also remove the recognition engine ({formatDiskBytes(engineRemovalOfferBytes)})?
+            </p>
+            <div className="plugin-manager-package-actions">
+              <button
+                className="plugin-manager-button"
+                data-action="confirm-remove-recognition-engine"
+                disabled={busy}
+                onClick={() => void removeRecognitionEngineAfterUninstall()}
+                type="button"
+              >
+                Remove
+              </button>
+              <button
+                className="plugin-manager-button"
+                data-action="keep-recognition-engine"
+                disabled={busy}
+                onClick={() => setEngineRemovalOfferBytes(undefined)}
+                type="button"
+              >
+                Keep
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="plugin-manager-catalog">
+          <ul className="plugin-manager-list" aria-label="Plugins">
+            {catalog.map((descriptor) => {
+              const manifest = descriptor.manifest;
+              const enabled = enabledIds.has(manifest.id);
+              const installed = installedIds.has(manifest.id);
+              const installedEntry = installedPlugins.find((entry) => entry.record.id === manifest.id);
+              const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+              const unavailable =
+                installed && (installedEntry?.descriptor === undefined || unavailablePermissions.length > 0);
+              const updateResult = updateResults.get(manifest.id);
+              return (
+                <li className="plugin-manager-item" data-plugin-id={manifest.id} key={manifest.id}>
+                  <div className="plugin-manager-details">
+                    <div className="plugin-manager-name">
+                      {manifest.name} <span>v{manifest.version}</span>
+                      {installed ? <span className="plugin-manager-badge">Installed</span> : null}
+                      {updateResult?.status === "available" ? (
+                        <span className="plugin-manager-badge is-update">Update available</span>
+                      ) : null}
+                      {isOfficialPluginExperimental(manifest.id) ? (
+                        <span className="plugin-manager-badge is-experimental" data-testid="plugin-experimental-badge">
+                          Experimental
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="plugin-manager-id">{manifest.id}</div>
+                    {manifest.description ? <p>{manifest.description}</p> : null}
+                    {isOfficialPluginExperimental(manifest.id) ? (
+                      <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
+                        {EXPERIMENTAL_PLUGIN_NOTICE}
+                      </p>
+                    ) : null}
+                    {installed ? <PermissionList permissions={manifest.permissions} /> : null}
+                    {!installed ? (
+                      <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
+                    ) : null}
+                    {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
+                    {installed && requiresRecognitionEngine(manifest.id) ? (
+                      <RecognitionEngineRow
+                        status={recognitionEngineStatus}
+                        run={recognitionEngineInstall}
+                        onRefresh={onRefreshRecognitionEngineStatus}
+                        disabled={busy}
+                        onInstall={onInstallRecognitionEngine}
+                        onCancel={onCancelRecognitionEngineInstall}
+                        onUninstall={onUninstallRecognitionEngine}
+                        onShowScreenCaptures={onShowRecognitionScreenCaptures}
+                      />
                     ) : null}
                   </div>
-                  <div className="plugin-manager-id">{manifest.id}</div>
-                  {manifest.description ? <p>{manifest.description}</p> : null}
-                  {installed ? <PermissionList permissions={manifest.permissions} /> : null}
-                  {!installed ? (
-                    <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
-                  ) : null}
-                  {installed && updateResult ? <PluginUpdateStatus result={updateResult} /> : null}
-                </div>
-                <div className="plugin-manager-actions">
-                  <label className="plugin-manager-toggle">
-                    <input
-                      type="checkbox"
-                      aria-label={`Enable ${manifest.name}`}
-                      checked={enabled}
-                      disabled={busy || unavailable}
-                      onChange={() => togglePlugin(manifest.id)}
-                    />
-                    <span>{unavailable ? "Unavailable" : enabled ? "Enabled" : "Disabled"}</span>
-                  </label>
-                  {installed && updateResult?.status === "available" ? (
-                    <button
-                      className="plugin-manager-button"
-                      data-action="review-plugin-update"
-                      data-plugin-id={manifest.id}
-                      disabled={busy || !canUpdate}
-                      onClick={() => void reviewUpdate(updateResult.offer)}
-                      type="button"
-                    >
-                      {busyOperation?.kind === "prepareUpdate" &&
-                      busyOperation.pluginId === manifest.id
-                        ? "Downloading update…"
-                        : "Review update…"}
-                    </button>
-                  ) : null}
-                  {installed && onUninstallPlugin ? (
-                    <button
-                      className="plugin-manager-button"
-                      data-action="uninstall-plugin"
-                      data-plugin-id={manifest.id}
-                      disabled={busy}
-                      onClick={() => void uninstall(manifest.id)}
-                      type="button"
-                    >
-                      {busyOperation?.kind === "uninstallPlugin" &&
-                      busyOperation.pluginId === manifest.id
-                        ? "Uninstalling…"
-                        : "Uninstall"}
-                    </button>
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                  <div className="plugin-manager-actions">
+                    <label className="plugin-manager-toggle">
+                      <input
+                        type="checkbox"
+                        aria-label={`Enable ${manifest.name}`}
+                        checked={enabled}
+                        disabled={busy || unavailable}
+                        onChange={() => togglePlugin(manifest.id)}
+                      />
+                      <span>{unavailable ? "Unavailable" : enabled ? "Enabled" : "Disabled"}</span>
+                    </label>
+                    {installed && updateResult?.status === "available" ? (
+                      <button
+                        className="plugin-manager-button"
+                        data-action="review-plugin-update"
+                        data-plugin-id={manifest.id}
+                        disabled={busy || !canUpdate}
+                        onClick={() => void reviewUpdate(updateResult.offer)}
+                        type="button"
+                      >
+                        {busyOperation?.kind === "prepareUpdate" &&
+                        busyOperation.pluginId === manifest.id
+                          ? "Downloading update…"
+                          : "Review update…"}
+                      </button>
+                    ) : null}
+                    {installed && onUninstallPlugin ? (
+                      <button
+                        className="plugin-manager-button"
+                        data-action="uninstall-plugin"
+                        data-plugin-id={manifest.id}
+                        disabled={busy || (engineInstalling && requiresRecognitionEngine(manifest.id))}
+                        onClick={() => void uninstall(manifest.id)}
+                        type="button"
+                      >
+                        {busyOperation?.kind === "uninstallPlugin" &&
+                        busyOperation.pluginId === manifest.id
+                          ? "Uninstalling…"
+                          : "Uninstall"}
+                      </button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
+          <section className="plugin-manager-available" aria-labelledby={`${titleId}-available`}>
+            <h3 id={`${titleId}-available`}>Available</h3>
+            {availableOfficialPlugins.length > 0 ? (
+              <ul className="plugin-manager-list" aria-label="Available official plugins">
+                {availableOfficialPlugins.map((entry) => {
+                  const rowError = officialInstallErrors.get(entry.pluginId);
+                  const downloading =
+                    busyOperation?.kind === "prepareOfficialInstall" &&
+                    busyOperation.pluginId === entry.pluginId;
+                  return (
+                    <li className="plugin-manager-item" data-plugin-id={entry.pluginId} key={entry.pluginId}>
+                      <div className="plugin-manager-details">
+                        <div className="plugin-manager-name">
+                          {entry.displayName}
+                          {entry.experimental ? (
+                            <span className="plugin-manager-badge is-experimental" data-testid="plugin-experimental-badge">
+                              Experimental
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="plugin-manager-id">{entry.pluginId}</div>
+                        <p>{entry.description}</p>
+                        {entry.experimental ? (
+                          <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
+                            {EXPERIMENTAL_PLUGIN_NOTICE}
+                          </p>
+                        ) : null}
+                        {rowError ? (
+                          <p
+                            className="plugin-manager-update-status is-error"
+                            data-official-install-error={entry.pluginId}
+                            role="alert"
+                          >
+                            {rowError}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="plugin-manager-actions">
+                        <button
+                          className="plugin-manager-button"
+                          data-action="install-official-plugin"
+                          data-plugin-id={entry.pluginId}
+                          disabled={busy || !canInstallOfficial}
+                          onClick={() => void prepareOfficialInstall(entry.pluginId, entry.displayName)}
+                          type="button"
+                        >
+                          {downloading ? "Downloading…" : "Install"}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="plugin-manager-available-empty">All official plugins are installed.</p>
+            )}
+          </section>
+        </div>
 
         {pendingUpdate ? (
           <PackageReview
@@ -428,9 +660,13 @@ export function PluginManagerDialog({
         ) : pending ? (
           <PackageReview
             busy={busy}
+            engine={pendingNeedsEngine ? { status: recognitionEngineStatus } : undefined}
             mode="install"
             subject={pending}
-            onCancel={() => setPending(undefined)}
+            onCancel={() => {
+              setPending(undefined);
+              setPendingOfficialPluginId(undefined);
+            }}
             onConfirm={() => void installPending()}
           />
         ) : (
@@ -476,6 +712,203 @@ export function PluginManagerDialog({
   );
 }
 
+function RecognitionEngineRow({
+  status,
+  run,
+  disabled,
+  onRefresh,
+  onInstall,
+  onCancel,
+  onUninstall,
+  onShowScreenCaptures
+}: {
+  status?: StructureRecognitionEngineStatus | null;
+  run?: StructureRecognitionInstallRun;
+  disabled: boolean;
+  onRefresh?: () => Promise<void>;
+  onInstall?: () => Promise<boolean>;
+  onCancel?: () => Promise<void>;
+  onUninstall?: () => Promise<void>;
+  onShowScreenCaptures?: () => Promise<void>;
+}) {
+  const [working, setWorking] = useState(false);
+  /** Install was clicked and the run has not shown up yet. Only this — never the whole install — keeps
+   *  the buttons busy, so Cancel install is available for as long as the install runs. */
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!onRefresh) return;
+    onRefresh().catch((cause: unknown) => setError(`The engine status could not be read: ${messageOf(cause)}`));
+    // Once per dialog opening; a changed callback identity is not a reason to ask again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const perform = (action: () => Promise<unknown>, failure: string): void => {
+    setWorking(true);
+    setError(undefined);
+    action()
+      .catch((cause: unknown) => setError(`${failure}: ${messageOf(cause)}`))
+      .finally(() => setWorking(false));
+  };
+
+  // A run this window did not start (or started before it was reopened) is still this install.
+  // `status` is checked with `!= null` throughout: a status must never be null, but a null one must
+  // degrade to "checking…" rather than take the whole window down in render.
+  const installing = run?.running === true || status?.state === "installing";
+  const installed = !installing && status?.state === "installed";
+
+  useEffect(() => {
+    if (installing) setStarting(false);
+  }, [installing]);
+
+  const startInstall = (install: () => Promise<boolean>): void => {
+    setStarting(true);
+    setError(undefined);
+    // The promise settles only when the whole install ends; the run itself reports failures, so all
+    // that is caught here is a call that could not start.
+    install()
+      .catch((cause: unknown) => setError(`The engine install could not start: ${messageOf(cause)}`))
+      .finally(() => setStarting(false));
+  };
+  const stateText = installing
+    ? "installing"
+    : status == null
+      ? error ? "status unavailable" : "checking…"
+      : installed
+        ? `installed (${formatDiskBytes(status.installed?.diskBytes ?? 0)})`
+        : status.state === "unsupported"
+          ? "not supported on this computer"
+          : status.state === "broken"
+            ? "needs to be installed again"
+            : "not installed";
+  const canInstall = !installing && status != null && status.state !== "unsupported" && !installed;
+  const runError = !installing ? run?.error : undefined;
+  // The host's plain reason, such as an engine from an older ChemDraft that no longer matches.
+  const brokenDetail = !installing && !runError && status?.state === "broken" ? status.detail?.trim() : undefined;
+  return (
+    <div className="plugin-manager-engine" data-testid="molscribe-engine-row">
+      <p className="plugin-manager-update-status" data-testid="molscribe-engine-state">
+        Recognition engine: {stateText}
+      </p>
+      {installing ? (
+        <RecognitionInstallProgress
+          progress={run?.progress ?? status?.progress}
+          startedAt={run?.startedAt}
+          phaseStartedAt={run?.phaseStartedAt}
+        />
+      ) : null}
+      {brokenDetail ? (
+        <p className="plugin-manager-update-status" data-testid="molscribe-engine-detail">
+          {brokenDetail}
+        </p>
+      ) : null}
+      {runError && status ? (
+        <p className="plugin-manager-update-status is-error" data-testid="molscribe-engine-install-error" role="alert">
+          {recognitionInstallErrorMessage(runError, status)}
+        </p>
+      ) : null}
+      {canInstall && status && onInstall ? (
+        <p className="plugin-manager-update-status" data-testid="molscribe-engine-install-note">
+          Downloads about 2.5 GB and needs {formatDiskBytes(status.requiredDiskBytes)} free (
+          {formatDiskBytes(status.freeDiskBytes)} free now). It runs entirely on this computer.
+        </p>
+      ) : null}
+      <div className="plugin-manager-package-actions">
+        {installing && onCancel ? (
+          <button
+            className="plugin-manager-button"
+            data-action="cancel-recognition-engine-install"
+            disabled={working}
+            onClick={() => perform(onCancel, "The install could not be cancelled")}
+            type="button"
+          >
+            Cancel install
+          </button>
+        ) : null}
+        {installed && onUninstall ? (
+          <button
+            className="plugin-manager-button"
+            data-action="remove-recognition-engine"
+            disabled={disabled || working}
+            onClick={() => perform(onUninstall, "The engine could not be removed")}
+            type="button"
+          >
+            {working ? "Removing…" : "Remove engine"}
+          </button>
+        ) : null}
+        {canInstall && onInstall ? (
+          <button
+            className="plugin-manager-button"
+            data-action="install-recognition-engine"
+            disabled={disabled || working || starting}
+            onClick={() => startInstall(onInstall)}
+            type="button"
+          >
+            {runError || status?.state === "broken" ? "Install engine again" : "Install engine"}
+          </button>
+        ) : null}
+        {/* Independent of the engine: captures kept from earlier recognitions stay reachable after the
+            engine is removed, until the user deletes them. */}
+        {onShowScreenCaptures ? (
+          <button
+            className="plugin-manager-button"
+            data-action="show-recognition-screen-captures"
+            disabled={working}
+            onClick={() => perform(onShowScreenCaptures, "The saved screen captures could not be shown")}
+            type="button"
+          >
+            Show saved screen captures
+          </button>
+        ) : null}
+      </div>
+      {error ? (
+        <p className="plugin-manager-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** What installing an engine-requiring plugin also downloads, stated before the user confirms. */
+function RecognitionEngineDisclosure({ status }: { status?: StructureRecognitionEngineStatus | null }) {
+  if (status?.state === "installed") {
+    return (
+      <p className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
+        Its recognition engine is already installed on this computer.
+      </p>
+    );
+  }
+  if (status?.state === "unsupported") {
+    return (
+      <p className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure" role="alert">
+        This plugin needs a local recognition engine, which this computer doesn’t support yet. The plugin will
+        install, but it cannot recognize images here.
+      </p>
+    );
+  }
+  const shortOfSpace = status != null && status.freeDiskBytes < status.requiredDiskBytes;
+  return (
+    <div className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
+      <p>
+        <strong>Also installs the local recognition engine:</strong> a private Python, PyTorch and the MolScribe
+        model — about 2.5 GB to download. It runs entirely on this computer; images never leave it.
+      </p>
+      <p>
+        Needs {formatDiskBytes(status?.requiredDiskBytes ?? 3e9)} free.{" "}
+        {status != null ? `Free now: ${formatDiskBytes(status.freeDiskBytes)}.` : "Free space: checking…"}
+      </p>
+      {shortOfSpace ? (
+        <p className="plugin-manager-unavailable" role="alert">
+          There isn’t enough free space for the engine. The plugin will still install; free up space, then use
+          Install engine.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * What the package declares, shown before it is staged.
  *
@@ -485,6 +918,7 @@ export function PluginManagerDialog({
 function PackageReview({
   busy,
   currentVersion,
+  engine,
   mode,
   subject,
   onCancel,
@@ -492,6 +926,8 @@ function PackageReview({
 }: {
   busy: boolean;
   currentVersion?: string;
+  /** Present when installing this plugin also installs the recognition engine. */
+  engine?: { status?: StructureRecognitionEngineStatus };
   mode: "install" | "update";
   subject: Pick<PickedPluginPackage, "inspection" | "checksumVerified">;
   onCancel: () => void;
@@ -499,11 +935,17 @@ function PackageReview({
 }) {
   const { manifest, provenance, unpackedBytes, sourceChecksum } = subject.inspection;
   const unavailablePermissions = getUnavailableDesktopPluginPermissions(manifest);
+  const experimental = isOfficialPluginExperimental(manifest.id);
   return (
     <footer className="plugin-manager-review" data-testid="plugin-package-review">
       <div className="plugin-manager-review-body">
         <div className="plugin-manager-name">
           {manifest.name} <span>v{manifest.version}</span>
+          {experimental ? (
+            <span className="plugin-manager-badge is-experimental" data-testid="plugin-experimental-badge">
+              Experimental
+            </span>
+          ) : null}
         </div>
         {mode === "update" && currentVersion ? (
           <p className="plugin-manager-update-version" data-testid="plugin-update-version">
@@ -512,8 +954,15 @@ function PackageReview({
         ) : null}
         <div className="plugin-manager-id">{manifest.id}</div>
         {manifest.description ? <p data-testid="plugin-package-description">{manifest.description}</p> : null}
+        {experimental ? (
+          <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
+            {EXPERIMENTAL_PLUGIN_NOTICE}
+          </p>
+        ) : null}
 
         <PermissionList permissions={manifest.permissions} />
+
+        {engine ? <RecognitionEngineDisclosure status={engine.status} /> : null}
 
         {unavailablePermissions.length > 0 ? (
           <p className="plugin-manager-unavailable" data-testid="plugin-package-unavailable" role="alert">
@@ -663,8 +1112,12 @@ function pluginManagerProgressMessage(
       return "Waiting for plugin package selection…";
     case "installPackage":
       return "Installing and verifying the plugin package…";
+    case "prepareOfficialInstall":
+      return `Downloading and verifying ${operation.pluginName}…`;
     case "uninstallPlugin":
       return `Uninstalling ${operation.pluginName}…`;
+    case "removeRecognitionEngine":
+      return "Removing the recognition engine…";
     case "checkUpdates":
       return "Checking installed plugins for updates…";
     case "prepareUpdate":
@@ -672,6 +1125,13 @@ function pluginManagerProgressMessage(
     case "applyUpdate":
       return `Updating ${operation.pluginName}…`;
   }
+}
+
+function withoutMapKey<K, V>(source: ReadonlyMap<K, V>, key: K): ReadonlyMap<K, V> {
+  if (!source.has(key)) return source;
+  const next = new Map(source);
+  next.delete(key);
+  return next;
 }
 
 /** Declared permissions, displayed without implying that reserved capabilities are currently granted. */
@@ -716,5 +1176,10 @@ function formatBytes(bytes: number): string {
 }
 
 function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+  if (cause instanceof Error) return cause.message;
+  // Tauri command rejections arrive as plain `{ code, message }` objects, not Error instances.
+  if (typeof cause === "object" && cause !== null && typeof (cause as { message?: unknown }).message === "string") {
+    return (cause as { message: string }).message;
+  }
+  return String(cause);
 }

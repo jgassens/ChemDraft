@@ -27,7 +27,7 @@ const EXAMPLES = fileURLToPath(new URL("../../examples/plugins/", import.meta.ur
  * have a package.json" would pass no matter what is there — it would assert the filesystem against
  * itself. This is the claim a human made and a test can now hold them to.
  */
-const REAL_PLUGINS = ["mass-fragment-demo", "molscribe-ocsr"];
+const REAL_PLUGINS = ["mass-fragment-demo"];
 
 const directories = readdirSync(EXAMPLES, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())

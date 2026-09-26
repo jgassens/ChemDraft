@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reveal-recognition-screen-captures"
+description = "Enables the reveal_recognition_screen_captures command without any pre-configured scope."
+commands.allow = ["reveal_recognition_screen_captures"]
+
+[[permission]]
+identifier = "deny-reveal-recognition-screen-captures"
+description = "Denies the reveal_recognition_screen_captures command without any pre-configured scope."
+commands.deny = ["reveal_recognition_screen_captures"]

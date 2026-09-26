@@ -369,14 +369,19 @@ Not allowed:
 
 ### 6.13 `examples/plugins/`
 
-Five example plugins live here. Two carry code; three are README-only placeholders.
+Three example plugins live here. One carries code; two are README-only placeholders.
 
 - `mass-fragment-demo` — a working, deliberately non-NMR analyzer that proves the plugin
   infrastructure is domain-agnostic: Hill-notation formula, monoisotopic and average mass, and
   common ESI adduct m/z via OpenChemLib, rendered through the same declarative panel report as any
   other analyzer. Keep it free of spectroscopy concepts, workers, and reference databases — that
   absence is the point of it.
-- `molscribe-ocsr` — image-to-structure scaffold; its rules follow below.
+- MolScribe OCSR is NO LONGER an example plugin (moved out 2026-09-24). It is an official
+  installable plugin (`org.chemdraft.ocsr.molscribe`) built from its own repository,
+  `jgassens/ChemDraft-MolScribe-Plugin`, and listed in the host catalog
+  (`apps/desktop/src/plugins/pluginUpdates.ts`) — so, like the NMR predictor, its menu item exists only
+  after the user installs it from Add or Remove Plugins. The recognition engine it drives stays
+  host-managed in the app (§8); the `molscribe-ocsr` example was deleted. Its rules follow below.
 - `advanced-style-pack`, `journal-style-pack` — README-only placeholders. Keep them placeholders
   until a slice implements them, and never describe them as shipped plugins; a README naming a
   future plugin is not a plugin.
@@ -385,24 +390,25 @@ Five example plugins live here. Two carry code; three are README-only placeholde
   (`apps/desktop/src-tauri/src/opsin.rs`) — and the `opsin-name-to-structure` example was deleted.
   Because it spawns a process, it requires `native.execute` in addition to `chemistry.compute`.
 
-`molscribe-ocsr` specifically:
+The MolScribe OCSR plugin specifically (enforced by the host, wherever the plugin's code lives):
 
 Allowed:
 
-- Plugin manifest and README scaffold
-- Image-to-structure command stub
+- Plugin manifest and README
+- Image-to-structure command using the host's command-scoped recognition capability
 - Recognized-structure result type usage
-- Fake recognition output for UI and permission testing
+- Fake recognition output in tests only
 - Source-image preservation
 - Proposed-patch acceptance flow
-- Clear instructions for later local-service integration
-- License and citation notice for external MolScribe when real integration is added
+- ChemDraft-managed local engine installation after explicit user action
+- License and citation notice for external MolScribe
 
 Not allowed:
 
-- Installing PyTorch, OpenCV, transformers, Hugging Face tooling, or model checkpoints in foundation tasks
+- Installing Python, PyTorch, MolScribe, or model checkpoints from plugin code
 - Running native code without explicit `native.execute` permission
 - Downloading model weights without explicit user action
+- Declaring `model.download`; engine installation is a host-owned user action
 - Silently inserting recognized structures without user review
 - Deleting or replacing the source image without user action
 
@@ -759,11 +765,22 @@ proposed insertion patch
 
 The user must approve insertion. The plugin host applies accepted patches through the normal document patch API.
 
+**Proposal versus direct insertion (plugin API 0.1.4, owner decision 2026-09-24).** Proposal review exists
+for results the user did not author and cannot vouch for — image recognition above all, which stays
+proposal-only. When the user supplied the input themselves and the conversion is deterministic (a name
+they typed, parsed by OPSIN), a confirmation step is friction, not safety. Such a plugin declares
+`document.write` and calls `documents.applyPatch`, available only while one of its own commands is
+executing; the host commits one labelled undo entry, selects what was inserted, and opens no review
+window. Undo is the safety net. Reports are for failures; a success needs no window.
+
 ## 8. MolScribe OCSR plugin rules
 
-The command registry, plugin API, permission system, and proposed-patch workflow all exist, and the
-first serious plugin turned out to be the NMR predictor rather than this one. MolScribe OCSR is
-still a scaffold (§6.13). If it is picked up, these rules apply.
+MolScribe OCSR is an official installable plugin in its own repository
+(`jgassens/ChemDraft-MolScribe-Plugin`, §6.13); the app does not bundle it. ChemDraft owns its local
+recognition engine, installation UI, and native boundary; the plugin receives only `recognition.recognizeStructure` for an image the
+host returned during that same command invocation. The private Python, PyTorch, MolScribe checkout,
+and model are installed only after explicit user action, run entirely on the computer, and are never
+downloaded or managed by plugin code. Recognition remains proposal-only (§6.13 and §7).
 
 Required behavior:
 
@@ -788,13 +805,12 @@ network inference used
 local model/checkpoint missing
 ```
 
-Implementation order, if it is picked up: begin from the existing scaffold's mocked fixture output;
-then a native-service or sidecar contract; then local inference against a user-supplied checkpoint;
-then, only behind explicit user approval, optional checkpoint download; and last, a confidence
-overlay with fixture-based accuracy tests. The sequence is not bureaucracy — each step exists to keep
-heavy dependencies and model weights from arriving before the permission and review flow that gates
-them. Do not vendor large checkpoints into the repository. Do not present recognized structures as
-guaranteed correct.
+The plugin declares `image.read`, `ml.inference`, `model.load`, and `native.execute` to receive the
+recognition capability, plus `document.proposePatch` for insertion review. It must not declare
+`model.download` or `document.write`. The host owns install, cancel, removal, status, and provenance;
+TypeScript callers use the `StructureRecognitionEngine` interface rather than native commands
+directly. Keep mocked recognitions in tests, do not vendor large checkpoints into the repository,
+and do not present recognized structures as guaranteed correct.
 
 ## 8a. Plugin runtime, packaging, and NMR rules (merged 2026-07-16, `1232a444`; see ADR-0030)
 
@@ -813,11 +829,13 @@ their `ui.toolbar` gate and whole-plugin rollback, and provenance maps stay accu
 
 **Panels are declarative and rendered by ONE renderer.** Plugins push `PluginPanelReport` data (text,
 keyValue, table, svg, linkedFigure sections); `PluginReportRenderer` is the single renderer for every
-surface — the in-app panel surface AND the floating `PluginPanelWindow` (ADR-0030). Never reintroduce a
-window-private section switch: an unknown section kind must never be silently dropped. The in-app
-surface keeps single-panel semantics with replacement-close (ADR-0012); popped-out windows are
-per-panelId (several may float); dismissing a window is a real panel close and must notify the plugin.
-Staleness (D-09) and Run again travel with the report over the panel bridge.
+surface — the floating `PluginPanelWindow` on desktop and the in-app web-build fallback. Never
+reintroduce a window-private section switch: an unknown section kind must never be silently dropped.
+On desktop, all analysis and plugin surfaces are independent native windows keyed per plugin+panel;
+the drawing viewport contains only the canvas and drawn objects. The in-app surface and its
+single-panel replacement semantics exist only for the web build. Dismissing a plugin report window
+is a real panel close and must notify the plugin. Staleness (D-09), Run again, built-in analysis
+actions, and proposal review actions travel over the shared snapshot/event bridge.
 
 **Isolation and installs.** Bundled analyzer plugins execute in per-plugin module Workers
 (`PluginWorkerBridge`, ADR-0029/M34); capability requests are serviced by the permission-gated host

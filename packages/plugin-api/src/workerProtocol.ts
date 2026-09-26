@@ -32,20 +32,24 @@ export const PLUGIN_WORKER_PROTOCOL_VERSION = 1 as const;
 
 /** The capability namespaces a plugin can reach across the boundary — one per capability object on
  *  {@link PluginCommandContext}. `documents` is always present on the context but its methods gate
- *  internally on `document.read` / `document.proposePatch`. */
+ *  internally on `document.read` / `document.proposePatch`; `applyPatch` is present only with
+ *  `document.write`. */
 export type PluginWorkerCapabilityNamespace =
   | "selection"
   | "analysis"
   | "storage"
   | "panels"
   | "documents"
-  | "chemistry";
+  | "chemistry"
+  | "dialogs"
+  | "images"
+  | "recognition";
 
 /**
  * The methods each namespace exposes. The host bridge validates an incoming request against this map
  * and rejects anything else, so a worker can never invoke an arbitrary property on a capability.
  *
- * THIS MAP IS THE SOURCE OF TRUTH FOR THE WORKER-SIDE STUB TOO — see `chemistryStubMethods` in
+ * THIS MAP IS THE SOURCE OF TRUTH FOR THE WORKER-SIDE STUB TOO — see the typed `call` helper in
  * `workerRuntime.ts`. It used to be a second, hand-maintained list, and the two drifted apart exactly
  * as you would expect: `nameToStructure` (API 0.1.1) and `structureFromSmiles` (API 0.1.2) were each
  * added to the stub and to the in-process host and never here, so both shipped methods were rejected
@@ -64,9 +68,12 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
-  documents: ["getActiveDocument", "proposePatch"],
+  documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
-  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"]
+  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"],
+  dialogs: ["promptText"],
+  images: ["requestImage"],
+  recognition: ["recognizeStructure"]
 } as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
 
 /**

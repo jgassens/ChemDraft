@@ -21,6 +21,7 @@
     "smoke:engine3d-hold-steady": "node scripts/smoke-engine3d-hold-steady.mjs",
     "smoke:engine3d-anneal-energy": "node scripts/smoke-engine3d-anneal-energy.mjs",
     "test": "vitest run",
+    "test:ocsr-real": "node packages/fixtures/ocsr/run-real-engine-check.mjs",
     "build:sdk": "node scripts/build-sdk.mjs plugin-api && node scripts/build-sdk.mjs plugin-host"
   },
   "devDependencies": {

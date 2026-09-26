@@ -26,7 +26,10 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.0`).
+`0.1.6`). API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that use it
+should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
+`context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
+capability. Existing `^0.1.0` through `^0.1.5` packages remain compatible.
 
 ## Manifest + registration
 
@@ -75,6 +78,165 @@ const runWidget: PluginCommandHandler = async (context) => {
 
 Report section kinds: `text`, `keyValue`, `table`, `svg`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
+
+## One-line text prompts
+
+A plugin declaring `ui.panel` may ask for one line of text from inside one of its own command
+handlers. The desktop renders core-owned modal chrome and shows the manifest-declared name and id of
+the plugin that invoked it. The host guarantees which plugin made the request; it does not attest that
+the plugin's self-declared display name is honest:
+
+```ts
+const answer = await context.dialogs?.promptText({
+  title: "Insert from chemical name",
+  label: "Chemical name",
+  placeholder: "e.g. 2-acetyloxybenzoic acid",
+  submitLabel: "Convert",
+  maxLength: 500
+});
+
+if (answer?.status === "submitted") {
+  // answer.value is exactly what the user typed; trim or otherwise interpret it here if appropriate.
+}
+```
+
+`dialogs` is absent without `ui.panel` and present with it, whether the plugin runs in-process or in its
+worker. An embedding host that has no prompt UI rejects the call with a plain error rather than hiding
+the capability, so both execution paths see the same shape. `promptText` rejects outside that plugin's active command
+invocation, and each command invocation may call it at most once (including after its first prompt has
+settled). Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
+Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
+
+## Host-owned image acquisition
+
+A plugin declaring `image.read` may request a user-selected image only while one of its own commands
+is executing:
+
+```ts
+const result = await context.images?.requestImage({
+  title: "Recognize Structure from Image",
+  // Omit `sources` to offer every provider this host currently has.
+  sources: ["file", "screenRegion"]
+});
+
+if (result?.status === "provided") {
+  const { mediaType, bytes, width, height, source, fileName } = result.image;
+}
+```
+
+`images` is absent without `image.read`, and a retained method rejects after its command ends. The
+result is `provided`, `cancelled`, or `unavailable` with a reason. Image bytes are a `Uint8Array`, not
+base64: typed arrays cross the worker transport through structured clone without base64's expansion.
+The host rejects images larger than 25 MB or 8192 pixels on either side. Supported media types are
+PNG, JPEG, TIFF, and WebP. A plugin receives bytes only after the user explicitly chooses a file or
+screen region; this permission does not grant arbitrary filesystem or whole-screen access.
+
+## Host-owned structure recognition
+
+API 0.1.6 exposes local image recognition without giving a plugin model installation or native-call
+authority. Declare all four capability permissions — `image.read`, `ml.inference`, `model.load`, and
+`native.execute` — then pass the exact image returned by `requestImage` during the same command:
+
+```ts
+const selected = await context.images?.requestImage({
+  title: "Recognize Structure from Image",
+  sources: ["file", "screenRegion"]
+});
+if (selected?.status !== "provided") return;
+
+const recognized = await context.recognition?.recognizeStructure(selected.image);
+if (recognized?.status === "recognized") {
+  // Validate warnings and submit recognized.result.proposedPatch with documents.proposePatch.
+}
+```
+
+`recognition` is absent if any one permission is missing. The host rejects an image constructed by the
+plugin, modified after selection, retained from another invocation, or used after the command ends.
+If the local engine is absent, the host identifies the requesting plugin and offers installation; the
+plugin cannot request a download and must not declare `model.download`. Declining the install, or an
+install that fails, gives `engineNotInstalled`, which a plugin may explain. Cancelling — the user
+cancels a running install, or the command invocation is abandoned — gives `cancelled`: the user
+already knows, so the plugin should stay silent. Recognition failures are typed, and successful results include nullable overall
+confidence, atom/bond confidence, elapsed time, and engine/model provenance.
+
+MolScribe results remain uncertain inferred output. A recognizer must validate the MOL/SMILES through
+available chemistry before proposing it, preserve the source-image preview and applicable uncertainty
+warnings, and use `documents.proposePatch`. It must never use `documents.applyPatch` for recognition,
+and the host enforces that (below).
+
+**`proposedPatch` without `document.read`.** The insertion the host builds for a recognized structure is
+laid out against the active document — its page id, an object id derived from the document's object
+count, and page-centre coordinates. A plugin that did not declare `document.read` must not learn those,
+so it receives `proposedPatch.patch` as an opaque `{ op: "hostHeldRecognition", ref }`
+(`HostHeldRecognitionPatchOp` in `@chemdraft/plugin-api`). Pass the `proposedPatch` to
+`documents.proposePatch` unchanged — overriding `reason`, `warnings`, and `recognition` is fine — during
+the same command invocation; the host substitutes the real insertion, queues it once, and returns a
+receipt without the patch. A second proposal of the same `ref`, a forged `ref`, or a proposal after the
+command ends is refused. A plugin that holds `document.read` receives the insertion itself, as before.
+The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
+`proposedPatch` unchanged, so it takes this path with no code change.
+
+## Direct document writes versus proposals
+
+A plugin declaring the dangerous `document.write` permission may apply a patch directly while one of
+its own commands is executing. The host validates the same strict `ProposedDocumentPatch` envelope as
+`proposePatch`, commits it through the normal document patch/history path, selects objects inserted by
+the patch, and returns a strict `{ applied: true, objectIds: string[] }` receipt:
+
+```ts
+const receipt = await context.documents.applyPatch?.({
+  reason: "Deterministic structure generated from the name the user entered",
+  patch: { op: "addObject", pageId, object: molecule }
+});
+```
+
+`applyPatch` is absent without `document.write`, and a retained method reference rejects after the
+command invocation ends. The direct write is one undo entry labelled with the plugin and command; it
+does not open the proposal review tray/window.
+
+Use `applyPatch` only when the user supplied the input and the result is deterministic, such as a
+name-to-structure command acting on text entered in the host prompt. Use `proposePatch` for uncertain
+or inferred output that needs inspection. Image recognition remains a proposal flow: low confidence,
+stereochemistry, charge/radical, and abbreviation uncertainty require explicit user approval before
+insertion. Holding `document.write` does not relax that recognition rule, and the host enforces it:
+
+- once `recognition.recognizeStructure` has returned `recognized` in a command invocation, every
+  `documents.applyPatch` call in that invocation is refused;
+- `applyPatch` refuses any patch carrying a `recognition` review block, and any
+  `hostHeldRecognition` reference.
+
+The rule is deliberately scoped to the **invocation**, not the plugin: a plugin may declare both the
+recognition permissions and `document.write` and still insert deterministic user input (a typed name)
+from a different command. Refusing `document.write` outright to every plugin holding the recognition
+permissions would have forced such a plugin to split in two without making recognition any safer. What
+the rule cannot see is a plugin that stores a recognized structure and re-creates it in a later command;
+that is a manifest-review matter, the same as any other misuse of a granted permission.
+
+**A direct write is bound to its document.** The host records which document was active when the
+command started and refuses `applyPatch` if a different document is active when the write arrives —
+after File > New, File > Open, or a switch to another document window — with "The document changed
+while the plugin was running; nothing was inserted." Edits and undo inside the same document do not
+count as a change. Proposals are unaffected: the user reviews and accepts them into the document in
+front of them.
+
+## Proposal lifetime
+
+A proposal stays in the host's queue only while it is pending. Accepting or rejecting it removes it
+(a recognition proposal carries its whole source image, which must not be held for the session), so
+`listProposedPatches("accepted")` and `listProposedPatches("rejected")` are always empty; the result of
+an accept or reject is carried by its return value and the `onProposedPatchesChanged` notification.
+Pending proposals survive unregistering the plugin — an update or disable must not discard review the
+user has not done yet.
+
+**Accepting is the user's action, not the plugin's.** `acceptProposedPatch` is the review step the
+recognition rule above waits for, so none of `applyPatch`'s refusals reach it: not the recognition
+rule, not the invocation binding (the command finished long ago), and not the document key (the user
+is accepting into the document in front of them). The desktop inserts an accepted proposal as one
+undo entry, selects what it inserted, and reports the result in the status line. A proposal whose
+patch cannot be applied stays pending, and the reason is shown both in the status line and on the
+proposal in the review window, so the user can retry or reject it. The review window waits for the
+main window's answer to every Accept and Reject and says so if none arrives — an Accept is never a
+button that silently does nothing.
 
 ## Worker entry
 
@@ -142,26 +304,36 @@ The checksum sidecar makes either archive independently verifiable. It is an **i
 a signature and not a trust decision — and a successful technical build does not override the license
 terms inside the archive.
 
-## Updates
+## Official catalog, installs, and updates
 
-Plugins do not self-update and manifests do not carry an update URL. ChemDraft owns a small trusted
-catalog keyed by plugin id, performs network access in the desktop host, and subjects a downloaded
-replacement to the same archive, manifest, API, permission, and worker-handshake gates as a manual
-install. The plugin worker remains under its same-origin-only CSP and receives no network or
-filesystem capability for this workflow.
+Plugins do not advertise themselves to ChemDraft, self-update, or carry install/update URLs in their
+manifests. ChemDraft compiles a fixed official-plugin catalog into the desktop host. The catalog owns
+each plugin's id, display name, description, exact GitHub repository, and release asset stem; there is
+no network discovery. The **Available** section of **Add or Remove Plugins** lists every catalog entry
+that is not installed and offers a one-click **Install** action.
+
+The desktop host fetches the latest stable release only from that catalog entry's repository and
+requires the exact versioned ZIP and `.zip.sha256` asset names. It applies the same redirect-host,
+download-size, checksum, archive, manifest, API, permission, and worker-handshake gates used by
+manual package installs and updates. Before either an official install or an update is committed, the
+ordinary package-review screen discloses permissions and provenance. The plugin worker remains under
+its same-origin-only CSP and receives no network or filesystem capability for this workflow.
 
 Update checks and installs are user-initiated. ChemDraft first shows an available version, then
 downloads and inspects the package for a second review screen; only an explicit **Update** action
 starts the replacement transaction. The active package stays intact until the candidate has passed
 its worker handshake and the new install record commits.
 
-The first trusted source is `org.chemdraft.nmr.predictor`, published from
+The official catalog contains `org.chemdraft.nmr.predictor`, published from
 `jgassens/ChemDraft-NMR-Plugin` as a stable `vX.Y.Z` GitHub release containing both
-`nmr-predictor-X.Y.Z.zip` and `nmr-predictor-X.Y.Z.zip.sha256`. The updater requires the sidecar to
-remain present for manual distribution, but verifies downloaded bytes against GitHub's release-asset
-digest. That digest establishes package integrity, not cryptographic publisher identity. Do not
-describe this path as signed or use it for silent updates; a future publisher-signature design needs
-its own plugin key, separate from Sparkle's application-update key.
+`nmr-predictor-X.Y.Z.zip` and `nmr-predictor-X.Y.Z.zip.sha256`, and
+`org.chemdraft.opsin.nameToStructure`, published from `jgassens/ChemDraft-OPSIN-Plugin` with
+`opsin-name-to-structure-X.Y.Z.zip` and its `.zip.sha256` sidecar. A catalog entry with no published
+release remains visible and reports that no release is published yet. The host requires the sidecar
+to remain present for manual distribution and verifies downloaded bytes against GitHub's
+release-asset digest. That digest establishes package integrity, not cryptographic publisher
+identity. Do not describe this path as signed or use it for silent updates; a future
+publisher-signature design needs its own plugin key, separate from Sparkle's application-update key.
 
 To host the *extracted source* elsewhere, merge the core-enablement surface
 (`docs/plugin-architecture/CORE-ENABLEMENT.md`) and add one `{ manifest, options }` entry to that

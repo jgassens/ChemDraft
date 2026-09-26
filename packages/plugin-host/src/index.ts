@@ -6,6 +6,7 @@ import type { ApplyPatchOptions } from "@chemdraft/chem-core";
 import { applyPatch } from "@chemdraft/chem-core";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
+  AppliedPatchReceipt,
   PluginAnalysisAPI,
   PluginAnalysisQuery,
   PluginAnalysisRecord,
@@ -14,6 +15,12 @@ import type {
   PluginCommandContext,
   PluginCommandContribution,
   PluginCommandHandler,
+  PluginDialogsAPI,
+  PluginImageRequest,
+  PluginImageRequestResult,
+  PluginImagesAPI,
+  PluginRecognitionAPI,
+  PluginRecognitionResult,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -27,6 +34,11 @@ import type {
   PluginPanelContribution,
   PluginPanelReport,
   PluginPermission,
+  NormalizedPluginPromptTextRequest,
+  NormalizedPluginImageRequest,
+  PluginPromptTextRequest,
+  PluginPromptTextResult,
+  PluginProvidedImage,
   PluginSelectionAPI,
   PluginSelectionSnapshot,
   PluginStorage,
@@ -39,9 +51,19 @@ import { AnalysisStore } from "./analysisStore";
 export { AnalysisStore } from "./analysisStore";
 export type { AnalysisStoreOptions } from "./analysisStore";
 import {
+  AppliedPatchReceiptSchema,
+  HostHeldRecognitionPatchOp,
+  PluginImageMaxBytes,
+  PluginImageMaxDimension,
+  PluginImageRequestResultSchema,
+  PluginImageRequestSchema,
+  PluginProvidedImageSchema,
+  PluginRecognitionResultSchema,
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
+  PluginPromptTextRequestSchema,
+  PluginPromptTextResultSchema,
   PluginStructureFromSmilesRequestSchema,
   ProposedDocumentPatchSchema,
   parsePluginManifest
@@ -175,15 +197,65 @@ export interface QueuedProposedPatch extends ProposedPatchReceipt {
   proposal: NormalizedProposedDocumentPatch;
 }
 
+/** Options for the USER accepting a queued proposal (never a plugin call; see `acceptProposedPatch`). */
+export interface AcceptProposedPatchOptions extends ApplyPatchOptions {
+  /** How the accepted proposal reaches the document. Defaults to chem-core `applyPatch`; the desktop
+   *  passes one that also selects what was inserted, so acceptance stays a single undo entry. */
+  apply?: (
+    document: ChemDraftDocument,
+    proposal: NormalizedProposedDocumentPatch,
+    options: ApplyPatchOptions
+  ) => ChemDraftDocument;
+}
+
+/** Host-owned transaction metadata for one command-scoped direct document write. */
+export interface PluginPatchApplicationRequest {
+  plugin: { id: string; name: string; version: string };
+  command: { id: string; title: string };
+  patch: NormalizedProposedDocumentPatch;
+  undoLabel: string;
+}
+
 export interface PluginHostOptions {
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
+  /**
+   * Identifies the document the user is working in — stable across edits and undo, different after
+   * File > New/Open or switching to another document. Read once when a plugin command starts and again
+   * before a `documents.applyPatch` commits: a mismatch refuses the write, so a plugin still running
+   * after the user moved on can never insert into a document it was not invoked on. Absent, the host
+   * cannot tell documents apart and performs no such check.
+   */
+  getActiveDocumentKey?: () => string | undefined;
   getSelection?: () => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
   /** Storage backend factory (defaults to per-plugin in-memory maps). The desktop app
    *  supplies a disk-backed implementation; the host stays platform-free. */
   createStorage?: (pluginId: string) => PluginStorage;
   /** Renders a validated panel report; absent hosts simply expose no panels API. */
   showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
+  /** Shows host-owned text-prompt UI. The signal aborts when the command ends or plugin unregisters. */
+  promptText?: (
+    plugin: { id: string; name: string },
+    request: NormalizedPluginPromptTextRequest,
+    signal: AbortSignal
+  ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
+  /** Acquires an image through host-owned UI. The signal aborts when the command ends/unregisters. */
+  requestImage?: (
+    plugin: { id: string; name: string },
+    request: NormalizedPluginImageRequest,
+    signal: AbortSignal
+  ) => PluginImageRequestResult | Promise<PluginImageRequestResult>;
+  /** Runs host-owned local recognition. The image has already been verified as one handed to this
+   * invocation; installation and any user consent stay entirely on the embedding host side. */
+  recognizeStructure?: (
+    plugin: { id: string; name: string },
+    image: PluginProvidedImage,
+    signal: AbortSignal
+  ) => PluginRecognitionResult | Promise<PluginRecognitionResult>;
+  /** Commits a validated direct patch through the embedding application's normal document/history path. */
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -212,9 +284,14 @@ export class PluginHost {
   private readonly storageByPluginId = new Map<string, PluginStorage>();
   private readonly panelClosedHandlers = new Map<string, (panelId: string) => void>();
   private readonly getActiveDocument?: PluginHostOptions["getActiveDocument"];
+  private readonly getActiveDocumentKey?: PluginHostOptions["getActiveDocumentKey"];
   private readonly getSelectionSnapshot?: PluginHostOptions["getSelection"];
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
+  private readonly promptText?: PluginHostOptions["promptText"];
+  private readonly requestImage?: PluginHostOptions["requestImage"];
+  private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
+  private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
@@ -224,13 +301,35 @@ export class PluginHost {
   private readonly analysisStore: AnalysisStore;
   private nextProposalId = 1;
   private readonly subscribers = new Set<() => void>();
+  private readonly activeCommandInvocations = new Map<symbol, ActiveCommandInvocation>();
+  private readonly textPromptInvocations = new Set<symbol>();
+  private readonly openTextPrompts = new Map<
+    string,
+    { invocationToken: symbol; abortController: AbortController }
+  >();
+  private readonly openImageRequests = new Map<symbol, Set<AbortController>>();
+  private readonly providedImagesByInvocation = new Map<symbol, PluginProvidedImage[]>();
+  private readonly openRecognitionRequests = new Map<symbol, Set<AbortController>>();
+  /** Real recognition insertions withheld from plugins without `document.read`, per invocation, keyed
+   *  by the opaque `ref` the plugin was handed instead (see `HostHeldRecognitionPatchOp`). */
+  private readonly heldRecognitionPatches = new Map<symbol, Map<string, NormalizedProposedDocumentPatch>>();
+  /** The host's own copy of the screen capture a pending recognition proposal was made from, keyed by
+   *  proposal id. A screen capture exists nowhere else once its proposal leaves the queue, so the app
+   *  reads it here before accepting (AGENTS.md §8: the source stays available). Image files the user
+   *  chose are not kept: they are still on disk. Never exposed to plugins. */
+  private readonly recognitionSources = new Map<string, PluginProvidedImage>();
 
   constructor(options: PluginHostOptions = {}) {
     this.commands = options.commandRegistry ?? new CommandRegistry();
     this.getActiveDocument = options.getActiveDocument;
+    this.getActiveDocumentKey = options.getActiveDocumentKey;
     this.getSelectionSnapshot = options.getSelection;
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
+    this.promptText = options.promptText;
+    this.requestImage = options.requestImage;
+    this.recognizeStructure = options.recognizeStructure;
+    this.applyDocumentPatch = options.applyDocumentPatch;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
     this.buildStructureFromSmiles = options.buildStructureFromSmiles;
@@ -276,10 +375,14 @@ export class PluginHost {
     this.panelClosedHandlers.get(pluginId)?.(panelId);
   }
 
-  /** Removes a plugin and its registered commands. Storage scopes and proposal history
-   *  survive on purpose: they are user-facing records, not runtime wiring. */
+  /** Removes a plugin and its registered commands. Storage scopes and PENDING proposals survive on
+   *  purpose: they are user-facing records, not runtime wiring — an update (`replacePlugin`) or a
+   *  disable must not silently discard a proposal the user has not reviewed yet. Resolved proposals
+   *  are already gone: accept/reject removes them from the queue. */
   unregisterPlugin(pluginId: string): void {
     const plugin = this.requireRegisteredPlugin(pluginId);
+    this.cancelOpenTextPrompt(pluginId);
+    this.cancelOpenImageRequests(pluginId);
     for (const command of plugin.manifest.contributes.commands) {
       this.commands.unregisterOwnedByPlugin(command.id, pluginId);
     }
@@ -371,7 +474,7 @@ export class PluginHost {
     }
   }
 
-  createCommandContext(pluginId: string): PluginCommandContext {
+  createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const storage = this.hasPermission(pluginId, "plugin.storage") ? this.getStorage(pluginId) : undefined;
     const selection: PluginSelectionAPI | undefined = this.hasPermission(pluginId, "selection.read")
@@ -397,6 +500,31 @@ export class PluginHost {
               const parsedReport = PluginPanelReportSchema.parse(report);
               await this.showPanelReport?.(pluginId, panelId, parsedReport);
             }
+          }
+        : undefined;
+    // Presence tracks the permission alone, as `chemistry` below explains: the worker stub is built
+    // from manifest permissions and cannot know whether this host wired a prompt UI, so gating on
+    // `this.promptText` too made the two paths disagree. A host without one rejects the call instead.
+    const dialogs: PluginDialogsAPI | undefined = this.hasPermission(pluginId, "ui.panel")
+      ? {
+          promptText: async (request: PluginPromptTextRequest) =>
+            this.promptTextForPlugin(pluginId, invocationToken, request)
+        }
+      : undefined;
+    const images: PluginImagesAPI | undefined = this.hasPermission(pluginId, "image.read")
+      ? {
+          requestImage: async (request: PluginImageRequest) =>
+            this.requestImageForPlugin(pluginId, invocationToken, request)
+        }
+      : undefined;
+    const recognition: PluginRecognitionAPI | undefined =
+      this.hasPermission(pluginId, "image.read") &&
+      this.hasPermission(pluginId, "ml.inference") &&
+      this.hasPermission(pluginId, "model.load") &&
+      this.hasPermission(pluginId, "native.execute")
+        ? {
+            recognizeStructure: async (image: PluginProvidedImage) =>
+              this.recognizeStructureForPlugin(pluginId, invocationToken, image)
           }
         : undefined;
     const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
@@ -499,11 +627,25 @@ export class PluginHost {
           // document — edits would land without ever passing through propose/review.
           return document === undefined ? undefined : deepFreeze(structuredClone(document));
         },
-        proposePatch: async (proposal) => this.proposePatch(pluginId, proposal)
+        proposePatch: async (proposal) => {
+          const { snapshot, hostHeld } = this.enqueueProposal(pluginId, proposal, invocationToken);
+          // The substituted patch is the document-derived insertion this plugin was not allowed to
+          // read; its receipt must not hand it back.
+          return hostHeld ? proposalReceipt(snapshot) : snapshot;
+        },
+        ...(this.hasPermission(pluginId, "document.write")
+          ? {
+              applyPatch: async (patch: ProposedDocumentPatch) =>
+                this.applyPatchForPlugin(pluginId, invocationToken, patch)
+            }
+          : {})
       },
       storage,
       selection,
       panels,
+      dialogs,
+      images,
+      recognition,
       analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
@@ -521,8 +663,35 @@ export class PluginHost {
   }
 
   proposePatch(pluginId: string, proposal: ProposedDocumentPatch): QueuedProposedPatch {
+    return this.enqueueProposal(pluginId, proposal, undefined).snapshot;
+  }
+
+  private enqueueProposal(
+    pluginId: string,
+    proposal: ProposedDocumentPatch,
+    invocationToken: symbol | undefined
+  ): { snapshot: QueuedProposedPatch; hostHeld: boolean } {
     this.requirePermission(pluginId, "document.proposePatch");
-    const parsedProposal = ProposedDocumentPatchSchema.parse(proposal);
+    let parsedProposal = ProposedDocumentPatchSchema.parse(proposal);
+    const hostHeld = isHostHeldRecognitionPatch(parsedProposal.patch);
+    const heldRef = hostHeld ? (parsedProposal.patch as unknown as { ref?: unknown }).ref : undefined;
+    if (hostHeld) {
+      const ref = heldRef;
+      const held = invocationToken ? this.heldRecognitionPatches.get(invocationToken) : undefined;
+      const heldPatch = typeof ref === "string" ? held?.get(ref) : undefined;
+      if (
+        !invocationToken ||
+        this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId ||
+        !heldPatch
+      ) {
+        throw new PluginHostError(
+          `Plugin "${pluginId}" may propose a recognized structure only once, during the command invocation that recognized it.`
+        );
+      }
+      // Single use: a second proposal of the same insertion would collide on its object id.
+      held!.delete(ref as string);
+      parsedProposal = { ...parsedProposal, patch: heldPatch.patch };
+    }
     const timestamp = this.timestamp();
     const queued: QueuedProposedPatch = {
       id: `proposal_${this.nextProposalId++}`,
@@ -535,9 +704,63 @@ export class PluginHost {
     // Snapshot BEFORE enqueueing: if a proposal cannot be cloned/frozen at all, it must never reach
     // the queue, or the tray's next render throws on an entry the user has no way to dismiss.
     const snapshot = snapshotProposal(queued);
+    const screenSource = this.screenCaptureSourceFor(invocationToken, parsedProposal, heldRef);
+    if (screenSource) this.recognitionSources.set(queued.id, screenSource);
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
-    return snapshot;
+    return { snapshot, hostHeld };
+  }
+
+  private async applyPatchForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    patch: ProposedDocumentPatch
+  ): Promise<AppliedPatchReceipt> {
+    this.requirePermission(pluginId, "document.write");
+    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    if (!invocation || invocation.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call documents.applyPatch only while one of its own commands is executing.`
+      );
+    }
+    const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
+    // Recognition is proposal-only (AGENTS.md §7/§8): enforced here, not left to plugin good manners.
+    // The rule is per invocation rather than per plugin, so one plugin may still recognize images in
+    // one command and write deterministic user input in another.
+    if (invocation.recognized) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" recognized an image in this command, so its result must go through documents.proposePatch for review; documents.applyPatch was refused.`
+      );
+    }
+    if (parsedPatch.recognition !== undefined || isHostHeldRecognitionPatch(parsedPatch.patch)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" passed a recognition proposal to documents.applyPatch; recognized structures must be proposed for review with documents.proposePatch.`
+      );
+    }
+    if (!this.applyDocumentPatch) {
+      throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
+    }
+    if (this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
+      throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");
+    }
+    const plugin = this.requireRegisteredPlugin(pluginId).manifest;
+    const receipt = await this.applyDocumentPatch({
+      plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
+      command: { id: invocation.commandId, title: invocation.commandTitle },
+      patch: parsedPatch,
+      undoLabel: `${plugin.name}: ${invocation.commandTitle}`
+    });
+    return AppliedPatchReceiptSchema.parse(receipt);
+  }
+
+  /**
+   * The screen capture a pending recognition proposal was made from, as the host captured it, or
+   * `undefined` when the source was an image file (still on disk) or the proposal is not a recognition.
+   * For the app, never a plugin: read it before `acceptProposedPatch`, which drops the host's copy.
+   */
+  recognitionScreenCaptureOf(proposalId: string): PluginProvidedImage | undefined {
+    const image = this.recognitionSources.get(proposalId);
+    return image ? { ...image, bytes: new Uint8Array(image.bytes) } : undefined;
   }
 
   listProposedPatches(status?: ProposedPatchStatus): QueuedProposedPatch[] {
@@ -546,16 +769,31 @@ export class PluginHost {
       .map(snapshotProposal);
   }
 
+  /**
+   * The USER accepted a queued proposal. This is the review step a recognition proposal exists for, so
+   * none of `documents.applyPatch`'s refusals apply here: not the recognition rule (the review is what
+   * that rule waits for), not the invocation binding (the command finished long ago), and not the
+   * document key (the user is accepting into the document in front of them). A proposal whose patch
+   * cannot be applied throws and stays pending, so the caller can report it and the user can retry or
+   * reject it.
+   */
   acceptProposedPatch(
     proposalId: string,
     document: ChemDraftDocument,
-    options: ApplyPatchOptions = {}
+    options: AcceptProposedPatchOptions = {}
   ): ChemDraftDocument {
     const queued = this.requirePendingProposal(proposalId);
-    const updated = applyPatch(document, queued.proposal.patch, options);
+    const { apply, ...applyOptions } = options;
+    const updated = apply
+      ? apply(document, queued.proposal, applyOptions)
+      : applyPatch(document, queued.proposal.patch, applyOptions);
 
     queued.status = "accepted";
     queued.resolvedAt = this.timestamp();
+    // Resolved proposals leave the queue: a recognition proposal carries its whole source image as a
+    // data URI (up to ~35 MB), and nothing reads a resolved entry back.
+    this.proposedPatches.delete(proposalId);
+    this.recognitionSources.delete(proposalId);
     this.onProposedPatchesChanged?.();
     return updated;
   }
@@ -564,8 +802,11 @@ export class PluginHost {
     const queued = this.requirePendingProposal(proposalId);
     queued.status = "rejected";
     queued.resolvedAt = this.timestamp();
+    const snapshot = snapshotProposal(queued);
+    this.proposedPatches.delete(proposalId);
+    this.recognitionSources.delete(proposalId);
     this.onProposedPatchesChanged?.();
-    return snapshotProposal(queued);
+    return snapshot;
   }
 
   getStorage(pluginId: string): PluginStorage {
@@ -620,7 +861,20 @@ export class PluginHost {
               this.requirePermission(manifest.id, permission);
             }
 
-            return await handler(this.createCommandContext(manifest.id));
+            const invocationToken = Symbol(command.id);
+            this.activeCommandInvocations.set(invocationToken, {
+              pluginId: manifest.id,
+              commandId: command.id,
+              commandTitle: command.title,
+              documentKey: this.getActiveDocumentKey?.(),
+              recognized: false,
+              recognizedImages: []
+            });
+            try {
+              return await handler(this.createCommandContext(manifest.id, invocationToken));
+            } finally {
+              this.finishCommandInvocation(invocationToken);
+            }
           }
         );
       }
@@ -683,6 +937,278 @@ export class PluginHost {
     }
   }
 
+  private async promptTextForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    request: PluginPromptTextRequest
+  ): Promise<PluginPromptTextResult> {
+    this.requirePermission(pluginId, "ui.panel");
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call dialogs.promptText only while one of its own commands is executing.`
+      );
+    }
+    if (this.textPromptInvocations.has(invocationToken)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call dialogs.promptText at most once per command invocation.`
+      );
+    }
+    this.textPromptInvocations.add(invocationToken);
+    if (this.openTextPrompts.has(pluginId)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" already has an open dialogs.promptText request; concurrent prompts are not allowed.`
+      );
+    }
+    if (!this.promptText) {
+      throw new PluginHostError(`This host provides no text-prompt UI for plugin "${pluginId}".`);
+    }
+
+    const parsedRequest = PluginPromptTextRequestSchema.parse(request);
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    const abortController = new AbortController();
+    const openPrompt = { invocationToken, abortController };
+    this.openTextPrompts.set(pluginId, openPrompt);
+
+    const cancelledOnAbort = new Promise<PluginPromptTextResult>((resolve) => {
+      abortController.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+    });
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.promptText(
+            { id: plugin.manifest.id, name: plugin.manifest.name },
+            parsedRequest,
+            abortController.signal
+          )
+        ),
+        cancelledOnAbort
+      ]);
+      const parsedResult = PluginPromptTextResultSchema.parse(result);
+      if (parsedResult.status === "submitted" && parsedResult.value.length > parsedRequest.maxLength) {
+        throw new PluginHostError(
+          `Plugin "${pluginId}" text prompt returned more than ${parsedRequest.maxLength} characters.`
+        );
+      }
+      return parsedResult;
+    } finally {
+      if (this.openTextPrompts.get(pluginId) === openPrompt) {
+        this.openTextPrompts.delete(pluginId);
+      }
+    }
+  }
+
+  private async requestImageForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    request: PluginImageRequest
+  ): Promise<PluginImageRequestResult> {
+    this.requirePermission(pluginId, "image.read");
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call images.requestImage only while one of its own commands is executing.`
+      );
+    }
+
+    const parsedRequest = PluginImageRequestSchema.parse(request);
+    if (!this.requestImage) {
+      return { status: "unavailable", reason: "This host provides no image acquisition UI." };
+    }
+
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    const abortController = new AbortController();
+    const requests = this.openImageRequests.get(invocationToken) ?? new Set<AbortController>();
+    requests.add(abortController);
+    this.openImageRequests.set(invocationToken, requests);
+    const cancelledOnAbort = new Promise<PluginImageRequestResult>((resolve) => {
+      abortController.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+    });
+
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.requestImage(
+            { id: plugin.manifest.id, name: plugin.manifest.name },
+            parsedRequest,
+            abortController.signal
+          )
+        ),
+        cancelledOnAbort
+      ]);
+      const parsedResult = PluginImageRequestResultSchema.parse(result);
+      if (parsedResult.status !== "provided") {
+        return parsedResult;
+      }
+      validateProvidedImage(pluginId, parsedRequest, parsedResult.image);
+      // In-process plugins share a heap with the provider. Give them their own byte snapshot, matching
+      // the independent value a structured-clone worker hop naturally produces.
+      const imageSnapshot = {
+        status: "provided",
+        image: { ...parsedResult.image, bytes: new Uint8Array(parsedResult.image.bytes) }
+      } as const;
+      const handedOut = this.providedImagesByInvocation.get(invocationToken) ?? [];
+      handedOut.push({ ...imageSnapshot.image, bytes: new Uint8Array(imageSnapshot.image.bytes) });
+      this.providedImagesByInvocation.set(invocationToken, handedOut);
+      return imageSnapshot;
+    } finally {
+      requests.delete(abortController);
+      if (requests.size === 0) {
+        this.openImageRequests.delete(invocationToken);
+      }
+    }
+  }
+
+  private async recognizeStructureForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    image: PluginProvidedImage
+  ): Promise<PluginRecognitionResult> {
+    for (const permission of ["image.read", "ml.inference", "model.load", "native.execute"] as const) {
+      this.requirePermission(pluginId, permission);
+    }
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call recognition.recognizeStructure only while one of its own commands is executing.`
+      );
+    }
+
+    const parsedImage = PluginProvidedImageSchema.parse(image);
+    const handedOut = this.providedImagesByInvocation.get(invocationToken) ?? [];
+    const heldImage = handedOut.find((candidate) => providedImagesEqual(candidate, parsedImage));
+    if (!heldImage) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may recognize only an image returned by images.requestImage in this command invocation.`
+      );
+    }
+    if (!this.recognizeStructure) {
+      return {
+        status: "failed",
+        code: "unsupported",
+        message: "This host provides no local structure-recognition engine."
+      };
+    }
+
+    const plugin = this.requireRegisteredPlugin(pluginId).manifest;
+    const abortController = new AbortController();
+    const requests = this.openRecognitionRequests.get(invocationToken) ?? new Set<AbortController>();
+    requests.add(abortController);
+    this.openRecognitionRequests.set(invocationToken, requests);
+    const cancelledOnAbort = new Promise<PluginRecognitionResult>((resolve) => {
+      // Abandoned, not declined: the plugin should stay silent rather than explain an install.
+      abortController.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), {
+        once: true
+      });
+    });
+    try {
+      const result = await Promise.race([
+        Promise.resolve(
+          this.recognizeStructure(
+            { id: plugin.id, name: plugin.name },
+            // The host's own retained copy, not the caller's bytes: what is recognized is exactly
+            // what the user chose, whatever the plugin did to its snapshot afterwards.
+            { ...heldImage, bytes: new Uint8Array(heldImage.bytes) },
+            abortController.signal
+          )
+        ),
+        cancelledOnAbort
+      ]);
+      const parsed = PluginRecognitionResultSchema.parse(result);
+      if (parsed.status !== "recognized") return parsed;
+      const invocation = this.activeCommandInvocations.get(invocationToken);
+      if (invocation) invocation.recognized = true;
+      const proposedPatch = parsed.result.proposedPatch;
+      if (!proposedPatch || this.hasPermission(pluginId, "document.read")) {
+        invocation?.recognizedImages.push({ image: heldImage });
+        return parsed;
+      }
+      // No `document.read`: keep the document-derived insertion host-side and hand out an opaque
+      // reference that `documents.proposePatch` resolves during this invocation.
+      // An invocation that already ended can never propose, so nothing is held for it.
+      const ref = `recognition_${this.createId()}`;
+      if (invocation) {
+        invocation.recognizedImages.push({ image: heldImage, ref });
+        const held = this.heldRecognitionPatches.get(invocationToken) ?? new Map<string, NormalizedProposedDocumentPatch>();
+        held.set(ref, proposedPatch);
+        this.heldRecognitionPatches.set(invocationToken, held);
+      }
+      return {
+        ...parsed,
+        result: {
+          ...parsed.result,
+          proposedPatch: {
+            ...proposedPatch,
+            patch: { op: HostHeldRecognitionPatchOp, ref } as unknown as NormalizedProposedDocumentPatch["patch"]
+          }
+        }
+      };
+    } finally {
+      requests.delete(abortController);
+      if (requests.size === 0) this.openRecognitionRequests.delete(invocationToken);
+    }
+  }
+
+  /** Which recognized screen capture a proposal carries. A host-held insertion names its image by
+   *  `ref`; a plugin with `document.read` proposes the real patch, and its review preview must be the
+   *  very bytes the host recognized. Anything else is not tied to a capture, and nothing is kept. */
+  private screenCaptureSourceFor(
+    invocationToken: symbol | undefined,
+    proposal: NormalizedProposedDocumentPatch,
+    heldRef: unknown
+  ): PluginProvidedImage | undefined {
+    const recognized = invocationToken
+      ? this.activeCommandInvocations.get(invocationToken)?.recognizedImages
+      : undefined;
+    if (!recognized?.length) return undefined;
+    let match: PluginProvidedImage | undefined;
+    if (typeof heldRef === "string") {
+      match = recognized.find((entry) => entry.ref === heldRef)?.image;
+    } else if (proposal.recognition) {
+      const previewBytes = dataUriBytes(proposal.recognition.sourceImageRef);
+      match = previewBytes
+        ? recognized.find((entry) => bytesEqual(entry.image.bytes, previewBytes))?.image
+        : undefined;
+    }
+    return match?.source === "screenRegion" ? { ...match, bytes: new Uint8Array(match.bytes) } : undefined;
+  }
+
+  private finishCommandInvocation(invocationToken: symbol): void {
+    const pluginId = this.activeCommandInvocations.get(invocationToken)?.pluginId;
+    this.activeCommandInvocations.delete(invocationToken);
+    this.textPromptInvocations.delete(invocationToken);
+    for (const controller of this.openImageRequests.get(invocationToken) ?? []) {
+      controller.abort();
+    }
+    this.openImageRequests.delete(invocationToken);
+    this.providedImagesByInvocation.delete(invocationToken);
+    this.heldRecognitionPatches.delete(invocationToken);
+    for (const controller of this.openRecognitionRequests.get(invocationToken) ?? []) {
+      controller.abort();
+    }
+    this.openRecognitionRequests.delete(invocationToken);
+    if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {
+      this.cancelOpenTextPrompt(pluginId);
+    }
+  }
+
+  private cancelOpenTextPrompt(pluginId: string): void {
+    this.openTextPrompts.get(pluginId)?.abortController.abort();
+  }
+
+  private cancelOpenImageRequests(pluginId: string): void {
+    for (const [invocationToken, invocation] of this.activeCommandInvocations) {
+      if (invocation.pluginId !== pluginId) continue;
+      for (const controller of this.openImageRequests.get(invocationToken) ?? []) {
+        controller.abort();
+      }
+      this.openImageRequests.delete(invocationToken);
+      this.providedImagesByInvocation.delete(invocationToken);
+      this.heldRecognitionPatches.delete(invocationToken);
+      for (const controller of this.openRecognitionRequests.get(invocationToken) ?? []) {
+        controller.abort();
+      }
+      this.openRecognitionRequests.delete(invocationToken);
+    }
+  }
+
   private requireRegisteredPlugin(pluginId: string): RegisteredPlugin {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
@@ -708,6 +1234,88 @@ export class PluginHost {
   private timestamp(): string {
     const value = this.now();
     return typeof value === "string" ? value : value.toISOString();
+  }
+}
+
+interface ActiveCommandInvocation {
+  pluginId: string;
+  commandId: string;
+  commandTitle: string;
+  /** `getActiveDocumentKey()` when the command started; `applyPatch` must still see the same key. */
+  documentKey: string | undefined;
+  /** Set once recognition returned a structure in this invocation; `applyPatch` is then refused. */
+  recognized: boolean;
+  /** The host-held images recognition returned a structure for in this invocation, with the opaque
+   *  `ref` handed out in place of the insertion when the plugin lacks `document.read`. */
+  recognizedImages: { image: PluginProvidedImage; ref?: string }[];
+}
+
+function isHostHeldRecognitionPatch(patch: NormalizedProposedDocumentPatch["patch"]): boolean {
+  return (patch as { op: string }).op === HostHeldRecognitionPatchOp;
+}
+
+function proposalReceipt(queued: QueuedProposedPatch): ProposedPatchReceipt {
+  const { id, pluginId, status, createdAt, resolvedAt } = queued;
+  return { id, pluginId, status, createdAt, ...(resolvedAt === undefined ? {} : { resolvedAt }) };
+}
+
+function validateProvidedImage(
+  pluginId: string,
+  request: NormalizedPluginImageRequest,
+  image: PluginProvidedImage
+): void {
+  if (!request.sources.includes(image.source)) {
+    throw new PluginHostError(
+      `Image provider for plugin "${pluginId}" returned source "${image.source}", which was not requested.`
+    );
+  }
+  if (image.bytes.byteLength === 0) {
+    throw new PluginHostError(`Image provider for plugin "${pluginId}" returned an empty image.`);
+  }
+  if (image.bytes.byteLength > PluginImageMaxBytes) {
+    throw new PluginHostError(
+      `Image for plugin "${pluginId}" is ${image.bytes.byteLength} bytes; the host limit is ${PluginImageMaxBytes} bytes (25 MB).`
+    );
+  }
+  if (image.width > PluginImageMaxDimension || image.height > PluginImageMaxDimension) {
+    throw new PluginHostError(
+      `Image for plugin "${pluginId}" is ${image.width}×${image.height}; each side must be at most ${PluginImageMaxDimension} pixels.`
+    );
+  }
+}
+
+function providedImagesEqual(left: PluginProvidedImage, right: PluginProvidedImage): boolean {
+  if (
+    left.mediaType !== right.mediaType ||
+    left.width !== right.width ||
+    left.height !== right.height ||
+    left.source !== right.source ||
+    left.fileName !== right.fileName
+  ) {
+    return false;
+  }
+  return bytesEqual(left.bytes, right.bytes);
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+/** The bytes of a base64 `data:` URI, or `undefined` when it is not one. */
+function dataUriBytes(uri: string): Uint8Array | undefined {
+  const comma = uri.indexOf(",");
+  if (!uri.startsWith("data:") || comma < 0 || !uri.slice(0, comma).endsWith(";base64")) return undefined;
+  try {
+    const binary = atob(uri.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  } catch {
+    return undefined;
   }
 }
 

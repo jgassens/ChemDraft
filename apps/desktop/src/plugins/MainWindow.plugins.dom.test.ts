@@ -1,12 +1,35 @@
 // @vitest-environment jsdom
 
-import { molscribeOcsrCommandId, molscribeOcsrManifest } from "@chemdraft/molscribe-ocsr-plugin";
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createPhase4Document } from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
+import { ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowAction } from "./panelBridge";
+import {
+  RECOGNITION_FIXTURE_COMMAND_ID,
+  RECOGNITION_FIXTURE_PANEL_ID
+} from "../testSupport/recognitionFixturePlugin";
+import type { DesktopPluginRuntime } from "./createPluginRuntime";
+
+// No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
+// to the test-only recognition fixture, standing in for an installed plugin.
+const bundled = vi.hoisted(() => ({ withRecognitionFixture: false }));
+vi.mock("./registerBundledPlugins", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./registerBundledPlugins")>();
+  const { recognitionFixtureDescriptor } = await import("../testSupport/recognitionFixturePlugin");
+  return {
+    ...actual,
+    registerBundledPlugins: (runtime: DesktopPluginRuntime, disabledIds?: ReadonlySet<string>) => {
+      if (!bundled.withRecognitionFixture) return actual.registerBundledPlugins(runtime, disabledIds);
+      const descriptors = [...actual.createBundledPluginDescriptors(), recognitionFixtureDescriptor()];
+      actual.applyEnabledPlugins(runtime, disabledIds ?? new Set(), descriptors);
+      return descriptors;
+    }
+  };
+});
 
 function installDomMocks(): void {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,6 +57,7 @@ let root: Root | undefined;
 let container: HTMLElement | undefined;
 
 afterEach(() => {
+  bundled.withRecognitionFixture = false;
   act(() => {
     root?.unmount();
   });
@@ -41,7 +65,40 @@ afterEach(() => {
   root = undefined;
   container = undefined;
   document.body.innerHTML = "";
+  window.history.replaceState(null, "", "/");
+  delete (window as Window & { __CHEMDRAFT_AGENT__?: unknown }).__CHEMDRAFT_AGENT__;
+  Reflect.deleteProperty(navigator, "clipboard");
+  vi.restoreAllMocks();
 });
+
+async function renderMainWindow(): Promise<void> {
+  installDomMocks();
+  container = document.createElement("div");
+  document.body.append(container);
+  await act(async () => {
+    root = createRoot(container!);
+    root.render(
+      createElement(MainWindow, {
+        initialDocument: createPhase4Document("Analysis Actions"),
+        initialPaletteMode: "hidden",
+        initialRulersVisible: false,
+        nativePalette: false
+      })
+    );
+    await Promise.resolve();
+  });
+}
+
+async function sendAnalysisWindowAction(action: AnalysisWindowAction): Promise<void> {
+  await act(async () => {
+    window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function statusText(): string {
+  return container!.querySelector('[role="status"]')?.textContent ?? "";
+}
 
 async function click(element: Element): Promise<void> {
   await act(async () => {
@@ -86,7 +143,28 @@ describe("MainWindow bundled plugin integration", () => {
     expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();
   });
 
+  it("shows no image-recognition item until the MolScribe plugin is installed", async () => {
+    installDomMocks();
+    container = document.createElement("div");
+    document.body.append(container);
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(
+        createElement(MainWindow, { initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: false })
+      );
+      await Promise.resolve();
+    });
+
+    await click(container.querySelector('button[data-menu-section="analyze"]')!);
+    const items = [...container.querySelectorAll<HTMLButtonElement>("button[data-command-id]")];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.some((item) => /molscribe/i.test(item.dataset.commandId ?? ""))).toBe(false);
+    expect(items.some((item) => /Recognize Structure from Image/.test(item.textContent ?? ""))).toBe(false);
+  });
+
   it("routes an Analyze menu contribution through PluginHost and opens its rendered panel", async () => {
+    bundled.withRecognitionFixture = true;
     installDomMocks();
     container = document.createElement("div");
     document.body.append(container);
@@ -105,28 +183,34 @@ describe("MainWindow bundled plugin integration", () => {
 
     expect(document.title).toBe("ChemDraft — test");
 
-    // The bundled plugin's Analyze contribution is present in the (web) menu bar.
+    // The plugin's Analyze contribution is present in the (web) menu bar.
     const analyzeButton = container.querySelector<HTMLButtonElement>('button[data-menu-section="analyze"]');
     expect(analyzeButton).not.toBeNull();
     await click(analyzeButton!);
 
     const menuItem = container.querySelector<HTMLButtonElement>(
-      `button[data-command-id="${molscribeOcsrCommandId}"]`
+      `button[data-command-id="${RECOGNITION_FIXTURE_COMMAND_ID}"]`
     );
     expect(menuItem).not.toBeNull();
-    expect(menuItem!.textContent).toContain("Recognize Structure from Image");
+    expect(menuItem!.textContent).toContain("Recognize Fixture Image");
 
     // No plugin panel before the command runs.
     expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
 
-    // Selecting it invokes the command through the host, which pushes a report the desktop renders.
+    // The browser test has no native image providers, so the host-owned request dialog explains that
+    // honestly. Closing it returns `unavailable`; the plugin reports that state without fake chemistry.
     await click(menuItem!);
+    await vi.waitFor(() => expect(document.querySelector(".plugin-image-dialog")).not.toBeNull());
+    expect(document.querySelector('.plugin-image-dialog [role="alert"]')?.textContent).toContain(
+      "None of the requested image sources"
+    );
+    await click(document.querySelector<HTMLButtonElement>(".plugin-image-dialog .plugin-prompt-actions button")!);
 
+    await vi.waitFor(() => expect(container!.querySelector('[data-testid="plugin-panel"]')).not.toBeNull());
     const panel = container.querySelector('[data-testid="plugin-panel"]');
     expect(panel).not.toBeNull();
-    expect(panel!.getAttribute("data-panel-id")).toBe("panel.molscribeOcsr.review");
-    expect(container.textContent).toContain("MolScribe OCSR (runtime canary)");
-    expect(container.textContent).toContain("Runtime path");
+    expect(panel!.getAttribute("data-panel-id")).toBe(RECOGNITION_FIXTURE_PANEL_ID);
+    expect(container.textContent).toContain("Image input is unavailable");
 
     // The panel closes cleanly.
     const closeButton = panel!.querySelector<HTMLButtonElement>(".plugin-panel-close");
@@ -161,8 +245,8 @@ describe("MainWindow bundled plugin integration", () => {
 
     const diagnostics = container.querySelector('[data-testid="plugin-diagnostics"]');
     expect(diagnostics).not.toBeNull();
-    expect(container.querySelector(`[data-plugin-id="${molscribeOcsrManifest.id}"]`)).not.toBeNull();
-    expect(container.textContent).toContain(molscribeOcsrManifest.name);
+    expect(container.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
+    expect(container.textContent).toContain(massFragmentManifest.name);
   });
 
   it("registers the mass analyzer in Analyze and lists it in diagnostics — and no NMR item exists anywhere (M39)", async () => {
@@ -198,5 +282,59 @@ describe("MainWindow bundled plugin integration", () => {
     expect(container.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
     expect(container.textContent).toContain(massFragmentManifest.name);
     expect([...container.querySelectorAll("[data-plugin-id]")].some((node) => /nmr/i.test(node.getAttribute("data-plugin-id") ?? ""))).toBe(false);
+  });
+
+  it("registers the analysis-window action listener once, however often the document changes", async () => {
+    const addListener = vi.spyOn(window, "addEventListener");
+    const registrations = () =>
+      addListener.mock.calls.filter(([name]) => name === ANALYSIS_WINDOW_ACTION_EVENT).length;
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    await renderMainWindow();
+    expect(registrations()).toBe(1);
+
+    const bridge = (window as Window & { __CHEMDRAFT_AGENT__?: { command(id: string): Promise<unknown> } })
+      .__CHEMDRAFT_AGENT__;
+    expect(bridge).toBeDefined();
+    // A new document replaces the one the analysis handlers close over — which used to tear the
+    // listener down and re-register it (an async gap in which a window's action was dropped).
+    await act(async () => {
+      await bridge!.command("document.new");
+    });
+    expect(statusText()).toContain("Blank native document");
+    expect(registrations()).toBe(1);
+  });
+
+  it("reports a failed Molecular Inspector copy instead of claiming it was copied", async () => {
+    await renderMainWindow();
+    Reflect.deleteProperty(navigator, "clipboard");
+    await sendAnalysisWindowAction({ kind: "copyMolecularInspector", text: "C6H6" });
+    expect(statusText()).toContain("Could not copy the analysis to the clipboard");
+
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    await sendAnalysisWindowAction({ kind: "copyMolecularInspector", text: "C6H6" });
+    expect(writeText).toHaveBeenCalledWith("C6H6");
+    expect(statusText()).toContain("Analysis copied");
+  });
+
+  it("performs a report window's file save itself, with the main window's own permissions", async () => {
+    await renderMainWindow();
+    const downloads: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this.download);
+    });
+    URL.createObjectURL ??= () => "blob:test";
+    URL.revokeObjectURL ??= () => undefined;
+    await sendAnalysisWindowAction({
+      kind: "saveTextFile",
+      requestId: "save-1",
+      filename: "predicted-1H-nmr.jdx",
+      text: "##TITLE=x",
+      title: "Export spectrum (JCAMP-DX)",
+      formatLabel: "JCAMP-DX",
+      extensions: ["jdx", "dx"],
+      mimeType: "chemical/x-jcamp-dx"
+    });
+    expect(downloads).toEqual(["predicted-1H-nmr.jdx"]);
   });
 });

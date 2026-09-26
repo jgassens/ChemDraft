@@ -1,7 +1,9 @@
 mod export;
 mod fonts;
 mod installed_plugins;
+mod ocsr_engine;
 mod opsin;
+mod screen_capture;
 
 use std::{
     collections::HashMap,
@@ -30,8 +32,9 @@ use tauri::{
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSEvent, NSFloatingWindowLevel, NSPasteboard, NSPasteboardTypeString, NSWindow,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
+    NSEvent, NSFloatingWindowLevel, NSNormalWindowLevel, NSPasteboard, NSPasteboardTypeString,
+    NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowLevel,
+    NSWindowStyleMask,
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
@@ -328,6 +331,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
+        .manage(ocsr_engine::OcsrEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
@@ -391,6 +395,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
@@ -405,6 +410,36 @@ pub fn run() {
                         }
                     }
                     _ => {}
+                }
+                return;
+            }
+
+            // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
+            // the same path as its own close control: hidden, not destroyed, and the main document
+            // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
+            // window. Destroying it left the main window believing it was still open.
+            if is_plugin_panel_window_label(window.label()) {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    if APP_QUITTING.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        eprintln!(
+                            "Could not hide ChemDraft panel window {}: {error}",
+                            window.label()
+                        );
+                    }
+                    if let Err(error) = window.app_handle().emit_to(
+                        MAIN_WINDOW_LABEL,
+                        PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+                        window.label(),
+                    ) {
+                        eprintln!(
+                            "Could not report the closed panel window {}: {error}",
+                            window.label()
+                        );
+                    }
                 }
                 return;
             }
@@ -448,6 +483,9 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
+            ocsr.start_idle_reaper();
+            ocsr.remove_stale_staging(app);
             // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
             // window loads; Rust no longer parses the manifest or applies customization for it.
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
@@ -503,6 +541,20 @@ pub fn run() {
             agent_bridge_status,
             opsin::opsin_status,
             opsin::opsin_name_to_structure,
+            ocsr_engine::ocsr_engine_status,
+            ocsr_engine::ocsr_engine_install,
+            ocsr_engine::ocsr_engine_cancel_install,
+            ocsr_engine::ocsr_engine_uninstall,
+            ocsr_engine::ocsr_recognize_image,
+            ocsr_engine::ocsr_recognize_cancel,
+            screen_capture::screen_capture_available,
+            screen_capture::screen_capture_permission_status,
+            screen_capture::request_screen_capture_permission,
+            screen_capture::open_screen_capture_settings,
+            screen_capture::capture_screen_region,
+            screen_capture::relaunch_app,
+            screen_capture::retain_recognition_screen_capture,
+            screen_capture::reveal_recognition_screen_captures,
             engine3d_sidecar_status,
             engine3d_sidecar_start_session,
             engine3d_sidecar_send_session,
@@ -515,8 +567,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
-            RunEvent::ExitRequested { .. } => {
+            // Cmd+Q on macOS ends the event loop without ExitRequested and only Exit arrives, so
+            // both shut the engine down (shutdown is idempotent); otherwise a quit during an
+            // install would leave uv running and writing into the staging tree.
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
                 APP_QUITTING.store(true, Ordering::SeqCst);
+                app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
             RunEvent::Reopen { .. } => {
                 if let Err(error) = ensure_main_window_visible(app) {
@@ -982,10 +1038,164 @@ struct OpenPluginPanelRequest {
     title: String,
     width: Option<f64>,
     height: Option<f64>,
+    /// True only when the user explicitly asked for this window (a menu command or a click). An
+    /// automatic show — a new proposal arriving, a plugin pushing its report — passes false so the
+    /// window appears without taking keyboard focus from the canvas. Missing means false.
+    #[serde(default)]
+    focus: bool,
 }
 
-/// Plugin panel windows get the same floating-utility treatment as toolset palettes: they
-/// float above the document while the app is active and hide with it on deactivate.
+/// The native window label for a panel id. Must be injective: `panel.a-b.c` and `panel.a.b-c` are
+/// different panels and must never share (and so replace or reveal) one window. Tauri labels allow
+/// `:` but not `.`, and panel ids never contain `:` (`is_valid_plugin_storage_id`), so swapping `.`
+/// for `:` loses nothing. The app's hex-encoded ids (`pluginPanelWindowId` in panelBridge.ts)
+/// contain neither and pass through unchanged, which `hidePluginPanelWindow` relies on.
+fn plugin_panel_window_label(panel_id: &str) -> String {
+    format!(
+        "{PLUGIN_PANEL_WINDOW_LABEL_PREFIX}{}",
+        panel_id.replace('.', ":")
+    )
+}
+
+const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
+/// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
+/// panelBridge.ts decodes it back to the panel.
+const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
+
+fn is_plugin_panel_window_label(label: &str) -> bool {
+    label.len() > PLUGIN_PANEL_WINDOW_LABEL_PREFIX.len()
+        && label.starts_with(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
+}
+
+#[cfg(test)]
+mod plugin_panel_label_tests {
+    use super::{
+        choose_analysis_window_position, is_plugin_panel_window_label, is_valid_plugin_storage_id,
+        plugin_panel_window_label, OpenPluginPanelRequest, ScreenRect,
+    };
+
+    #[test]
+    fn open_requests_focus_only_when_the_app_asks() {
+        let automatic: OpenPluginPanelRequest =
+            serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals"}"#).unwrap();
+        assert!(!automatic.focus);
+        let explicit: OpenPluginPanelRequest =
+            serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals","focus":true}"#)
+                .unwrap();
+        assert!(explicit.focus);
+    }
+
+    #[test]
+    fn native_close_interception_covers_every_panel_window_and_nothing_else() {
+        assert!(is_plugin_panel_window_label(&plugin_panel_window_label(
+            "v1x6f7267x70616e656c"
+        )));
+        assert!(is_plugin_panel_window_label(&plugin_panel_window_label(
+            "panel.a.b"
+        )));
+        for other in [
+            "main",
+            "toolset-core-main",
+            "plugin-panel-",
+            "palette-popover",
+            "plugin-panels",
+        ] {
+            assert!(!is_plugin_panel_window_label(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn distinct_panel_ids_never_share_a_window_label() {
+        let ids = [
+            "panel.a-b.c",
+            "panel.a.b-c",
+            "panel-a.b.c",
+            "panel.a.b.c",
+            "panel-a-b-c",
+            "panel_a.b",
+        ];
+        let labels: std::collections::HashSet<_> =
+            ids.iter().map(|id| plugin_panel_window_label(id)).collect();
+        assert_eq!(labels.len(), ids.len());
+    }
+
+    #[test]
+    fn labels_use_only_characters_tauri_accepts() {
+        let label = plugin_panel_window_label("org.chemdraft.nmr_v2-panel");
+        assert!(label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_')));
+        assert!(is_valid_plugin_storage_id("org.chemdraft.nmr_v2-panel"));
+    }
+
+    #[test]
+    fn analysis_windows_open_beside_the_main_window_when_the_screen_has_room() {
+        let monitor = ScreenRect::new(0.0, 0.0, 2560.0, 1440.0);
+        let main = ScreenRect::new(401.0, 134.0, 1280.0, 820.0);
+        assert_eq!(
+            choose_analysis_window_position(main, monitor, 420.0, 420.0, &[]),
+            (1697.0, 182.0)
+        );
+    }
+
+    #[test]
+    fn analysis_windows_inside_the_main_window_avoid_the_floating_palettes() {
+        // The live-test layout: a 1728-wide screen leaves no room beside the main window, and the
+        // Main and Art palettes sit over its top-left, where the old fallback opened the window.
+        let monitor = ScreenRect::new(0.0, 0.0, 1728.0, 1117.0);
+        let main = ScreenRect::new(401.0, 134.0, 1280.0, 820.0);
+        let palettes = [
+            ScreenRect::new(88.0, 176.0, 420.0, 64.0),
+            ScreenRect::new(608.0, 262.0, 360.0, 240.0),
+        ];
+        let (x, y) = choose_analysis_window_position(main, monitor, 420.0, 420.0, &palettes);
+        let frame = ScreenRect::new(x, y, 420.0, 420.0);
+        assert!(palettes
+            .iter()
+            .all(|palette| frame.overlap_area(palette) == 0.0));
+        assert_eq!((x, y), (1245.0, 182.0));
+    }
+
+    #[test]
+    fn analysis_windows_take_the_least_covered_corner_when_none_is_clear() {
+        let monitor = ScreenRect::new(0.0, 0.0, 1440.0, 900.0);
+        let main = ScreenRect::new(0.0, 25.0, 1440.0, 875.0);
+        // A wide palette strip over the whole top of the window; only the bottom corners are clear.
+        let palettes = [ScreenRect::new(0.0, 60.0, 1440.0, 120.0)];
+        let (x, y) = choose_analysis_window_position(main, monitor, 420.0, 420.0, &palettes);
+        assert_eq!((x, y), (1004.0, 464.0));
+    }
+
+    #[test]
+    fn analysis_windows_are_clamped_onto_the_work_area() {
+        // Work area of a 1728x1117 display with a 25pt menu bar and no Dock.
+        let area = ScreenRect::new(0.0, 25.0, 1728.0, 1092.0);
+        // Beside a main window low on the screen: pulled up so the whole window fits.
+        let low_main = ScreenRect::new(0.0, 700.0, 1200.0, 400.0);
+        assert_eq!(
+            choose_analysis_window_position(low_main, area, 380.0, 520.0, &[]),
+            (1216.0, 597.0)
+        );
+        // Taller than the work area: pinned below the menu bar so the title strip stays reachable.
+        let main = ScreenRect::new(0.0, 0.0, 1200.0, 800.0);
+        assert_eq!(
+            choose_analysis_window_position(main, area, 380.0, 2000.0, &[]),
+            (1216.0, 25.0)
+        );
+    }
+
+    #[test]
+    fn hex_window_ids_from_the_app_pass_through_unchanged() {
+        // panelBridge.ts hides a window by rebuilding this exact label.
+        assert_eq!(
+            plugin_panel_window_label("v1x6f7267x70616e656c"),
+            "plugin-panel-v1x6f7267x70616e656c"
+        );
+    }
+}
+
+/// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
+/// transport; each window is parented to the main document rather than being globally floating.
 #[tauri::command]
 fn open_plugin_panel_window(
     app: tauri::AppHandle,
@@ -995,16 +1205,22 @@ fn open_plugin_panel_window(
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
 
-    let label = format!("plugin-panel-{}", request.panel_id.replace('.', "-"));
+    let label = plugin_panel_window_label(&request.panel_id);
     if let Some(window) = app.get_webview_window(&label) {
-        window.show().map_err(|error| error.to_string())?;
-        configure_toolset_utility_window(&window, true)?;
+        // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
+        // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
+        // the window front.
+        if request.focus || !cfg!(target_os = "macos") {
+            window.show().map_err(|error| error.to_string())?;
+        }
+        configure_analysis_window(&window, request.focus)?;
         return Ok(());
     }
 
     let width = request.width.unwrap_or(380.0);
     let height = request.height.unwrap_or(520.0);
-    let window = WebviewWindowBuilder::new(
+    let position = analysis_window_initial_position(&app, width, height);
+    let mut builder = WebviewWindowBuilder::new(
         &app,
         &label,
         WebviewUrl::App(format!("/?window=pluginPanel&panelId={}", request.panel_id).into()),
@@ -1013,15 +1229,206 @@ fn open_plugin_panel_window(
     .inner_size(width, height)
     .min_inner_size(280.0, 200.0)
     .accept_first_mouse(true)
-    .focusable(toolset_window_focusable())
+    .focusable(true)
+    .focused(request.focus)
     .resizable(true)
     .decorations(false)
     .shadow(false)
-    .skip_taskbar(true)
-    .build()
-    .map_err(|error| error.to_string())?;
+    .skip_taskbar(true);
+    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        builder = builder.parent(&main).map_err(|error| error.to_string())?;
+    }
+    if let Some(position) = position {
+        builder = builder.position(position.x, position.y);
+    }
+    let window = builder.build().map_err(|error| error.to_string())?;
 
-    configure_toolset_utility_window(&window, true)?;
+    configure_analysis_window(&window, request.focus)?;
+    Ok(())
+}
+
+fn analysis_window_initial_position<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    width: f64,
+    height: f64,
+) -> Option<tauri::LogicalPosition<f64>> {
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let scale = main.scale_factor().ok()?;
+    let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
+    let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
+    // Clamp to the work area, not the full display: a window pushed under the menu bar or the Dock
+    // has its title strip -- the only way to drag an undecorated window -- out of reach.
+    let work_area = monitor_logical_work_area(&main.current_monitor().ok().flatten()?);
+    // The floating palettes sit at a higher window level than this window, so wherever they are is
+    // somewhere the new window would open underneath them, title bar and all.
+    let palettes: Vec<ScreenRect> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(label, window)| {
+            label.starts_with("toolset-") && window.is_visible().unwrap_or(false)
+        })
+        .filter_map(|(_, window)| {
+            let window_scale = window.scale_factor().ok()?;
+            let position = window
+                .outer_position()
+                .ok()?
+                .to_logical::<f64>(window_scale);
+            let size = window.outer_size().ok()?.to_logical::<f64>(window_scale);
+            Some(ScreenRect::new(
+                position.x,
+                position.y,
+                size.width,
+                size.height,
+            ))
+        })
+        .collect();
+    let (x, y) = choose_analysis_window_position(
+        ScreenRect::new(
+            main_position.x,
+            main_position.y,
+            main_size.width,
+            main_size.height,
+        ),
+        work_area,
+        width,
+        height,
+        &palettes,
+    );
+    Some(tauri::LogicalPosition::new(x, y))
+}
+
+/// A window frame in logical screen coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScreenRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl ScreenRect {
+    fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn overlap_area(&self, other: &ScreenRect) -> f64 {
+        let width = (self.x + self.width).min(other.x + other.width) - self.x.max(other.x);
+        let height = (self.y + self.height).min(other.y + other.height) - self.y.max(other.y);
+        if width <= 0.0 || height <= 0.0 {
+            0.0
+        } else {
+            width * height
+        }
+    }
+}
+
+/// Where a new analysis window opens: beside the main window when the screen has room, otherwise
+/// inside the main window's frame — in whichever corner the floating palettes cover least, so the
+/// window (and the title strip it is dragged by) does not open underneath them. Every candidate is
+/// clamped to `monitor` (the work area); among equally clear candidates the earlier one wins.
+fn choose_analysis_window_position(
+    main: ScreenRect,
+    monitor: ScreenRect,
+    width: f64,
+    height: f64,
+    palettes: &[ScreenRect],
+) -> (f64, f64) {
+    let gap = 16.0;
+    // Below the main window's own title bar.
+    let top_inset = 48.0;
+    let monitor_right = monitor.x + monitor.width;
+    let monitor_bottom = monitor.y + monitor.height;
+    let max_x = (monitor_right - width).max(monitor.x);
+    let max_y = (monitor_bottom - height).max(monitor.y);
+    let clamp = |x: f64, y: f64| (x.clamp(monitor.x, max_x), y.clamp(monitor.y, max_y));
+
+    let top = main.y + top_inset;
+    let bottom = main.y + main.height - height - gap;
+    let right_of_main = main.x + main.width + gap;
+    let left_of_main = main.x - width - gap;
+    let mut candidates = Vec::new();
+    if right_of_main + width <= monitor_right {
+        candidates.push((right_of_main, top));
+    }
+    if left_of_main >= monitor.x {
+        candidates.push((left_of_main, top));
+    }
+    let inner_right = main.x + main.width - width - gap;
+    let inner_left = main.x + gap;
+    candidates.extend([
+        (inner_right, top),
+        (inner_right, bottom),
+        (inner_left, bottom),
+        (inner_left, top),
+    ]);
+
+    let covered = |(x, y): (f64, f64)| {
+        let frame = ScreenRect::new(x, y, width, height);
+        palettes
+            .iter()
+            .map(|palette| frame.overlap_area(palette))
+            .sum::<f64>()
+    };
+    let mut best = clamp(candidates[0].0, candidates[0].1);
+    let mut best_covered = covered(best);
+    for &(x, y) in &candidates[1..] {
+        if best_covered == 0.0 {
+            break;
+        }
+        let candidate = clamp(x, y);
+        let candidate_covered = covered(candidate);
+        if candidate_covered < best_covered {
+            best = candidate;
+            best_covered = candidate_covered;
+        }
+    }
+    best
+}
+
+/// Always focusable, so the user can click into the window. It is focused only when `focus` is
+/// true: an automatic re-show must never take keyboard focus from the canvas mid-typing.
+#[cfg(target_os = "macos")]
+fn configure_analysis_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    focus: bool,
+) -> Result<(), String> {
+    let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+    let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
+        return Err("Could not access native ChemDraft analysis window.".to_string());
+    };
+    // Normal level + a native parent keeps the window with its document without making it globally
+    // always-on-top. It remains an ordinary focusable, movable, resizable utility surface.
+    ns_window.setLevel(NSNormalWindowLevel);
+    ns_window.setHidesOnDeactivate(false);
+    ns_window.setCanHide(true);
+    ns_window.setIgnoresMouseEvents(false);
+    window
+        .set_focusable(true)
+        .map_err(|error| error.to_string())?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    // orderFront shows the window without making it key, so this is also the unfocused show.
+    ns_window.orderFront(None);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_analysis_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    focus: bool,
+) -> Result<(), String> {
+    window
+        .set_focusable(true)
+        .map_err(|error| error.to_string())?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -3264,6 +3671,15 @@ fn monitor_logical_bounds(monitor: &tauri::Monitor) -> (f64, f64, f64, f64) {
     )
 }
 
+/// A monitor's work area (minus menu bar and Dock) in the same logical points.
+fn monitor_logical_work_area(monitor: &tauri::Monitor) -> ScreenRect {
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let size = area.size.to_logical::<f64>(scale);
+    ScreenRect::new(origin.x, origin.y, size.width, size.height)
+}
+
 /// True when the rect overlaps some attached monitor enough to be seen and dragged.
 fn toolset_position_is_reachable(
     monitors: &[tauri::Monitor],
@@ -4071,6 +4487,38 @@ mod tests {
         expect_true(permissions.iter().any(|permission| {
             capability_permission_identifier(permission) == Some("allow-rasterize-svg")
         }));
+    }
+
+    #[test]
+    fn screen_capture_capability_is_main_window_only() {
+        let capture: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/screen-capture.json"))
+                .expect("screen capture capability should parse");
+        assert_eq!(capture["windows"], serde_json::json!(["main"]));
+        let permissions = capture["permissions"]
+            .as_array()
+            .expect("screen capture permissions");
+        for expected in [
+            "allow-screen-capture-available",
+            "allow-screen-capture-permission-status",
+            "allow-request-screen-capture-permission",
+            "allow-open-screen-capture-settings",
+            "allow-capture-screen-region",
+            "allow-relaunch-app",
+        ] {
+            assert!(permissions.iter().any(|value| value == expected));
+        }
+        let default = include_str!("../capabilities/default.json");
+        for permission in [
+            "allow-screen-capture-available",
+            "allow-screen-capture-permission-status",
+            "allow-request-screen-capture-permission",
+            "allow-open-screen-capture-settings",
+            "allow-capture-screen-region",
+            "allow-relaunch-app",
+        ] {
+            assert!(!default.contains(permission));
+        }
     }
 
     #[test]

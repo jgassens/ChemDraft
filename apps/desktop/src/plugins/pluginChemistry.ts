@@ -23,6 +23,7 @@ import type {
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
 
 import { analysisClient } from "../analysisClient";
+import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import {
   createSmilesMolecule,
   pastedStructureDepictionFromMolfile,
@@ -99,8 +100,8 @@ export async function computeIsotopeEnvelopeForPlugin(
  * structure inserted from a name and the same structure pasted as SMILES are the same object rather
  * than two implementations that drift.
  *
- * The object is returned, not inserted. Insertion goes through `proposePatch` like every other plugin
- * change, which is what keeps the user's review step in the path.
+ * The object is returned, not inserted. A plugin uses `applyPatch` for deterministic user-supplied
+ * input or `proposePatch` when the result needs review; either path stays undoable in the host.
  */
 export async function structureFromSmilesForPlugin(
   request: PluginStructureFromSmilesRequest,
@@ -121,11 +122,7 @@ export async function structureFromSmilesForPlugin(
   const ocl = await import("@chemdraft/ocl-adapter");
   let depiction: PastedStructureDepiction;
   try {
-    const [{ registerRdkitWasmLoader }, rdkit] = await Promise.all([
-      import("../rdkitWasmLoader"),
-      import("@chemdraft/rdkit-adapter")
-    ]);
-    registerRdkitWasmLoader();
+    const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
     depiction = pastedStructureDepictionFromMolfile(await rdkit.generateSmiles2DMolfile(request.smiles));
   } catch {
     try {

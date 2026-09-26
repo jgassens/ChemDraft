@@ -13,6 +13,10 @@ RUN_MODE="${1:-app}"
 CHEMDRAFT_WORKTREE_BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 CHEMDRAFT_WORKTREE_LABEL="$(basename "$ROOT_DIR")${CHEMDRAFT_WORKTREE_BRANCH:+ [$CHEMDRAFT_WORKTREE_BRANCH]}"
 export CHEMDRAFT_WORKTREE_LABEL
+# Populated by select_dev_sign_identity/resign_local_bundle so the banner can report what actually
+# signed the bundle. Empty in --dev mode, where the bundle is never (re)signed.
+RUN_APP_SIGN_IDENTITY=""
+RUN_APP_SIGN_IDENTITY_DESC=""
 LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
 TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
 # /Applications/ChemDraft.app is the STABLE build from `main` and is never written, renamed, or
@@ -49,6 +53,9 @@ print_launch_banner() {
   # Printed so a launch is self-evidently NOT the stable /Applications app.
   echo "  bundle id: $RUN_APP_BUNDLE_ID"
   echo "  stable:    /Applications/ChemDraft.app ($STABLE_BUNDLE_ID) — untouched"
+  if [ -n "$RUN_APP_SIGN_IDENTITY_DESC" ]; then
+    echo "  signing:   $RUN_APP_SIGN_IDENTITY_DESC"
+  fi
   echo "============================================================"
   echo ""
 }
@@ -449,13 +456,61 @@ strip_bundle_detritus() {
   fi
 }
 
+# macOS keys privacy grants (Screen Recording, etc.) to the app's code-signing identity, not its
+# bundle id. An ad-hoc signature (identity "-") is derived fresh from the binary's own contents each
+# time, so every rebuild is a new identity as far as TCC is concerned: System Settings is left
+# showing a stale, still-"on" entry for the previous build, and the new build can never be granted
+# access through it. Signing with a stable identity across rebuilds lets the grant carry over.
+select_dev_sign_identity() {
+  if [ -n "${CHEMDRAFT_DEV_SIGN_IDENTITY:-}" ]; then
+    RUN_APP_SIGN_IDENTITY="$CHEMDRAFT_DEV_SIGN_IDENTITY"
+    RUN_APP_SIGN_IDENTITY_DESC="$CHEMDRAFT_DEV_SIGN_IDENTITY (\$CHEMDRAFT_DEV_SIGN_IDENTITY)"
+    return 0
+  fi
+
+  if command -v security >/dev/null 2>&1; then
+    # Select by SHA-1 hash, not by the common name: this machine has several identities all named
+    # "Apple Development: ...", and signing by name lets codesign pick an unpredictable one of them.
+    local hash
+    # `|| true`: with no Apple Development identity grep exits 1, and under `set -euo pipefail`
+    # the failed assignment would end the script here instead of reaching the ad-hoc fallback.
+    hash="$(security find-identity -v -p codesigning 2>/dev/null \
+      | grep '"Apple Development:' | head -n1 | awk '{print $2}' || true)"
+    if [ -n "$hash" ]; then
+      RUN_APP_SIGN_IDENTITY="$hash"
+      RUN_APP_SIGN_IDENTITY_DESC="$hash (Apple Development, from keychain)"
+      return 0
+    fi
+  fi
+
+  RUN_APP_SIGN_IDENTITY=""
+  RUN_APP_SIGN_IDENTITY_DESC="ad-hoc (no Apple Development identity found; permissions will not survive rebuilds)"
+}
+
 resign_local_bundle() {
   local bundle="$1"
 
   strip_bundle_detritus "$bundle"
-  if command -v codesign >/dev/null 2>&1; then
-    codesign --force --deep --sign - "$bundle" >/dev/null
+  if ! command -v codesign >/dev/null 2>&1; then
+    return 0
   fi
+
+  select_dev_sign_identity
+
+  if [ -n "$RUN_APP_SIGN_IDENTITY" ]; then
+    # Same flags as the ad-hoc path below, apart from the identity: no --options runtime. Hardened
+    # runtime would need its own entitlements for the webview's JIT, which dev builds don't carry,
+    # so turning it on here would just break the app rather than help it.
+    if codesign --force --deep --sign "$RUN_APP_SIGN_IDENTITY" "$bundle" >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "Signing with $RUN_APP_SIGN_IDENTITY_DESC failed (e.g. keychain locked); falling back to ad-hoc."
+    echo "Screen Recording and similar permission grants will not survive the next rebuild."
+    RUN_APP_SIGN_IDENTITY=""
+    RUN_APP_SIGN_IDENTITY_DESC="ad-hoc (stable-identity signing failed; permissions will not survive rebuilds)"
+  fi
+
+  codesign --force --deep --sign - "$bundle" >/dev/null
 }
 
 launch_bundle() {

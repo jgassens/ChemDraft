@@ -427,6 +427,36 @@ describe("LinkedFigureView", () => {
     expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
+  it("claims Escape for Full size before any window-level handler sees it", () => {
+    // A report window's own Escape handler (registered earlier, bubbling) skips a defaultPrevented key.
+    const outer = vi.fn((event: KeyboardEvent) => event.defaultPrevented);
+    window.addEventListener("keydown", outer);
+    try {
+      mount(createElement(LinkedFigureView, { spectrum, structure }));
+      const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find(
+        (b) => b.textContent === "Full size"
+      )!;
+      act(() => {
+        fullSize.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(document.querySelector(".lf-modal")).not.toBeNull();
+
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      });
+      expect(document.querySelector(".lf-modal")).toBeNull();
+      expect(outer.mock.results[0]?.value).toBe(true);
+
+      // With the overlay gone, Escape is no longer claimed and reaches the window untouched.
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      });
+      expect(outer.mock.results[1]?.value).toBe(false);
+    } finally {
+      window.removeEventListener("keydown", outer);
+    }
+  });
+
   it("shrinks shift labels for a crowded structure but keeps them full-size for a sparse one", () => {
     const shiftAll = (count: number): PluginLinkedFigureSpectrum => ({
       nucleus: "13C",

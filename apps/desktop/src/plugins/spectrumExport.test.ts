@@ -10,18 +10,31 @@ import {
   spectrumToJcampDx,
   standaloneSpectrumSvg
 } from "./spectrumExport";
+import { ANALYSIS_WINDOW_ACTION_EVENT, ANALYSIS_WINDOW_ACTION_RESULT_EVENT } from "./panelBridge";
 
 const nativeSave = vi.hoisted(() => vi.fn());
 const nativeWriteTextFile = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/plugin-fs", () => ({ writeTextFile: nativeWriteTextFile }));
+const bridgeEmit = vi.hoisted(() => vi.fn());
+const bridgeListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: bridgeEmit,
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    bridgeListeners.set(name, handler);
+    return () => bridgeListeners.delete(name);
+  }
+}));
 
 const originalClipboardItem = globalThis.ClipboardItem;
 
 afterEach(() => {
   nativeSave.mockReset();
   nativeWriteTextFile.mockReset();
+  bridgeEmit.mockReset();
+  bridgeListeners.clear();
+  window.history.replaceState(null, "", "/");
   delete (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   Reflect.deleteProperty(navigator, "clipboard");
   if (originalClipboardItem) {
@@ -206,5 +219,45 @@ describe("saveTextFile", () => {
       })
     ).resolves.toBe("failed");
     expect(click).not.toHaveBeenCalled();
+  });
+
+  it("hands a report window's save to the main window instead of opening a dialog it cannot use", async () => {
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    window.history.replaceState(null, "", "/?window=pluginPanel&panelId=v1x61x62");
+    bridgeEmit.mockImplementation(async (_name: string, action: { requestId: string }) => {
+      bridgeListeners.get(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)?.({
+        payload: { requestId: action.requestId, result: "cancelled" }
+      });
+    });
+
+    await expect(
+      saveTextFile("predicted.jdx", "data", {
+        title: "Export",
+        formatLabel: "JCAMP-DX",
+        extensions: ["jdx"],
+        mimeType: "chemical/x-jcamp-dx"
+      })
+    ).resolves.toBe("cancelled");
+    expect(nativeSave).not.toHaveBeenCalled();
+    expect(bridgeEmit).toHaveBeenCalledWith(
+      ANALYSIS_WINDOW_ACTION_EVENT,
+      expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data" })
+    );
+    // The listener is gone once answered.
+    expect(bridgeListeners.has(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)).toBe(false);
+  });
+
+  it("reports failed when the request cannot reach the main window", async () => {
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    window.history.replaceState(null, "", "/?window=pluginPanel&panelId=v1x61x62");
+    bridgeEmit.mockRejectedValue(new Error("event bridge unavailable"));
+    await expect(
+      saveTextFile("predicted.jdx", "data", {
+        title: "Export",
+        formatLabel: "JCAMP-DX",
+        extensions: ["jdx"],
+        mimeType: "chemical/x-jcamp-dx"
+      })
+    ).resolves.toBe("failed");
   });
 });

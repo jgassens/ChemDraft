@@ -1,10 +1,14 @@
 import { useMemo, useState } from "react";
 import type { PluginHost, QueuedProposedPatch } from "@chemdraft/plugin-host";
+import type { PluginProposalReviewItem } from "./panelBridge";
+import { EXPERIMENTAL_RECOGNITION_REVIEW_NOTICE } from "./pluginUpdates";
+import { reviewedRecognition } from "./recognitionAgreement";
+import { recognitionStructurePreview } from "./recognitionPreview";
 
 /**
- * Review affordance for the proposePatch flow. Plugins queue document changes; the user
- * accepts or rejects them here. Plugins never mutate the document directly — this tray is
- * the only path from a proposal into document history.
+ * Review affordance for the proposePatch flow. Plugins queue document changes; the user accepts or
+ * rejects them here. This tray remains the only path from a proposal into document history;
+ * command-scoped `document.write` patches deliberately bypass the proposal queue.
  */
 export function PatchReviewTray({
   host,
@@ -30,36 +34,23 @@ export function PatchReviewTray({
     return null;
   }
 
+  const items = pending.map((proposal) => proposalReviewItem(host, proposal));
+
   return (
     <div className="patch-review-tray" data-patch-review-tray="true">
       {open ? (
         <div className="patch-review-popover" role="dialog" aria-label="Plugin proposals awaiting review">
-          {pending.map((proposal) => {
-            const plugin = host.getPlugin(proposal.pluginId);
-            return (
-              <div className="patch-review-item" key={proposal.id} data-proposal-id={proposal.id}>
-                <div className="patch-review-item-header">
-                  <span className="patch-review-plugin">{plugin?.manifest.name ?? proposal.pluginId}</span>
-                </div>
-                <p className="patch-review-reason">{proposal.proposal.reason}</p>
-                {proposal.proposal.warnings.length > 0 ? (
-                  <ul className="patch-review-warnings">
-                    {proposal.proposal.warnings.map((warning) => (
-                      <li key={warning.code}>{warning.message}</li>
-                    ))}
-                  </ul>
-                ) : null}
-                <div className="patch-review-actions">
-                  <button type="button" onClick={() => onAccept(proposal)}>
-                    Accept
-                  </button>
-                  <button type="button" onClick={() => onReject(proposal)}>
-                    Reject
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+          <PatchReviewList
+            proposals={items}
+            onAccept={(proposalId) => {
+              const proposal = pending.find((candidate) => candidate.id === proposalId);
+              if (proposal) onAccept(proposal);
+            }}
+            onReject={(proposalId) => {
+              const proposal = pending.find((candidate) => candidate.id === proposalId);
+              if (proposal) onReject(proposal);
+            }}
+          />
         </div>
       ) : null}
       <button
@@ -68,8 +59,137 @@ export function PatchReviewTray({
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        {pending.length === 1 ? "1 plugin proposal" : `${pending.length} plugin proposals`}
+        {pendingProposalsLabel(pending.length)}
       </button>
     </div>
   );
+}
+
+export function pendingProposalsLabel(count: number): string {
+  return count === 1 ? "1 plugin proposal" : `${count} plugin proposals`;
+}
+
+/**
+ * Desktop way back to the Plugin Proposals window. Proposals review in their own native window,
+ * which the user can close with proposals still pending; without this badge they would be
+ * unreachable until the queue changed. Shown only while proposals wait and the window is closed.
+ */
+export function PendingProposalsBadge({
+  count,
+  windowOpen,
+  onReview
+}: {
+  count: number;
+  windowOpen: boolean;
+  onReview(): void;
+}) {
+  if (count <= 0 || windowOpen) return null;
+  return (
+    <div className="patch-review-tray" data-pending-proposals-badge="true">
+      <button
+        type="button"
+        className="patch-review-badge"
+        title="Review plugin proposals"
+        onClick={onReview}
+      >
+        {pendingProposalsLabel(count)}
+      </button>
+    </div>
+  );
+}
+
+/** Shared proposal body used by the browser tray and the desktop analysis window. */
+export function PatchReviewList({
+  proposals,
+  notices,
+  busyIds,
+  onAccept,
+  onReject
+}: {
+  proposals: readonly PluginProposalReviewItem[];
+  /** Why the last Accept/Reject on a proposal did not go through, keyed by proposal id. */
+  notices?: Readonly<Record<string, string>>;
+  /** Proposals whose Accept/Reject is still waiting for an answer. */
+  busyIds?: ReadonlySet<string>;
+  onAccept(proposalId: string): void;
+  onReject(proposalId: string): void;
+}) {
+  return (
+    <div className="patch-review-list" data-testid="patch-review-list">
+      {proposals.map((proposal) => (
+        <div className="patch-review-item" key={proposal.id} data-proposal-id={proposal.id}>
+          <div className="patch-review-item-header">
+            <span className="patch-review-plugin">{proposal.pluginName}</span>
+          </div>
+          <p className="patch-review-reason">{proposal.reason}</p>
+          {proposal.recognition ? (
+            <div className="patch-review-recognition" data-testid="recognition-proposal-preview">
+              <img src={proposal.recognition.sourceImageRef} alt="Source submitted for structure recognition" />
+              <div>
+                <span className={`patch-review-confidence is-${proposal.recognition.confidenceTier}`}>
+                  {capitalize(proposal.recognition.confidenceTier)} confidence
+                </span>
+                {proposal.structurePreview ? (
+                  <img
+                    className="patch-review-structure"
+                    src={proposal.structurePreview}
+                    alt="Recognized structure"
+                    data-testid="recognition-structure-preview"
+                  />
+                ) : null}
+                {proposal.recognition.proposedSmiles ? (
+                  <p>
+                    Recognized structure: <code>{proposal.recognition.proposedSmiles}</code>
+                  </p>
+                ) : (
+                  <p>Recognized structure: MOL structure ready for review</p>
+                )}
+                <p className="patch-review-experimental-note" data-testid="recognition-experimental-note">
+                  {EXPERIMENTAL_RECOGNITION_REVIEW_NOTICE}
+                </p>
+              </div>
+            </div>
+          ) : null}
+          {proposal.warnings.length > 0 ? (
+            <ul className="patch-review-warnings">
+              {proposal.warnings.map((warning) => (
+                <li key={warning.code}>{warning.message}</li>
+              ))}
+            </ul>
+          ) : null}
+          {notices?.[proposal.id] ? (
+            <p className="patch-review-error" role="alert">
+              {notices[proposal.id]}
+            </p>
+          ) : null}
+          <div className="patch-review-actions">
+            <button type="button" disabled={busyIds?.has(proposal.id)} onClick={() => onAccept(proposal.id)}>
+              Accept
+            </button>
+            <button type="button" disabled={busyIds?.has(proposal.id)} onClick={() => onReject(proposal.id)}>
+              Reject
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function proposalReviewItem(host: PluginHost, proposal: QueuedProposedPatch): PluginProposalReviewItem {
+  // The plugin chose the confidence tier; the host caps it by how far its engine's runs agreed.
+  const { recognition, warnings } = reviewedRecognition(proposal.proposal.recognition, proposal.proposal.warnings);
+  return {
+    id: proposal.id,
+    pluginId: proposal.pluginId,
+    pluginName: host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId,
+    reason: proposal.proposal.reason,
+    warnings,
+    recognition,
+    structurePreview: recognitionStructurePreview(proposal.proposal)
+  };
+}
+
+function capitalize(value: string): string {
+  return value.length === 0 ? value : `${value[0].toUpperCase()}${value.slice(1)}`;
 }

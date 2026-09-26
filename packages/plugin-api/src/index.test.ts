@@ -2,14 +2,136 @@ import { describe, expect, it } from "vitest";
 import pluginApiPackage from "../package.json";
 import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
+  AppliedPatchReceiptSchema,
+  PluginImageRequestResultSchema,
+  PluginImageRequestSchema,
   PluginApiVersion,
   PluginPanelReportSchema,
+  PluginPromptTextRequestSchema,
+  PluginPromptTextResultSchema,
+  PluginRecognitionResultSchema,
+  ProposedDocumentPatchSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
   dangerousPluginPermissions,
   parsePluginManifest,
   validatePluginManifest
 } from "./index";
+
+describe("document patch schemas", () => {
+  it("uses the same strict proposal envelope for direct patches", () => {
+    expect(
+      ProposedDocumentPatchSchema.parse({
+        reason: "Insert deterministic structure",
+        patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } }
+      })
+    ).toMatchObject({
+      reason: "Insert deterministic structure",
+      requiresUserApproval: true,
+      warnings: []
+    });
+    expect(() =>
+      ProposedDocumentPatchSchema.parse({
+        reason: "Insert deterministic structure",
+        patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } },
+        unexpected: true
+      })
+    ).toThrow();
+  });
+
+  it("strictly validates applied-patch receipts", () => {
+    expect(AppliedPatchReceiptSchema.parse({ applied: true, objectIds: ["mol_001"] })).toEqual({
+      applied: true,
+      objectIds: ["mol_001"]
+    });
+    expect(() => AppliedPatchReceiptSchema.parse({ applied: false, objectIds: [] })).toThrow();
+    expect(() =>
+      AppliedPatchReceiptSchema.parse({ applied: true, objectIds: [], status: "accepted" })
+    ).toThrow();
+  });
+});
+
+describe("plugin text-prompt schemas", () => {
+  it("strictly validates and normalizes prompt requests", () => {
+    expect(
+      PluginPromptTextRequestSchema.parse({ title: "Chemical name", label: "Name" })
+    ).toEqual({ title: "Chemical name", label: "Name", maxLength: 500 });
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({ title: "", label: "Name" })
+    ).toThrow();
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({ title: "Name", label: "", extra: true })
+    ).toThrow();
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({
+        title: "Name",
+        label: "Chemical name",
+        initialValue: "benzene",
+        maxLength: 6
+      })
+    ).toThrow();
+    expect(() =>
+      PluginPromptTextRequestSchema.parse({ title: "Name", label: "Chemical name", maxLength: 2_001 })
+    ).toThrow();
+  });
+
+  it("accepts submitted and cancelled results without trimming submitted text", () => {
+    expect(PluginPromptTextResultSchema.parse({ status: "submitted", value: "  benzene  " })).toEqual({
+      status: "submitted",
+      value: "  benzene  "
+    });
+    expect(PluginPromptTextResultSchema.parse({ status: "cancelled" })).toEqual({ status: "cancelled" });
+    expect(() => PluginPromptTextResultSchema.parse({ status: "submitted", value: "" })).toThrow();
+    expect(() => PluginPromptTextResultSchema.parse({ status: "cancelled", value: "ignored" })).toThrow();
+  });
+});
+
+describe("plugin image-request schemas", () => {
+  it("strictly validates requests and defaults to every API image source", () => {
+    expect(PluginImageRequestSchema.parse({ title: "Choose an image" })).toEqual({
+      title: "Choose an image",
+      sources: ["file", "screenRegion"]
+    });
+    expect(PluginImageRequestSchema.parse({ title: "Capture", sources: ["screenRegion"] })).toEqual({
+      title: "Capture",
+      sources: ["screenRegion"]
+    });
+    expect(() => PluginImageRequestSchema.parse({ title: "", sources: ["file"] })).toThrow();
+    expect(() => PluginImageRequestSchema.parse({ title: "Image", sources: [] })).toThrow();
+    expect(() => PluginImageRequestSchema.parse({ title: "Image", sources: ["file", "file"] })).toThrow();
+    expect(() => PluginImageRequestSchema.parse({ title: "Image", extra: true })).toThrow();
+  });
+
+  it("uses strict, structured-clone-safe Uint8Array results", () => {
+    const result = PluginImageRequestResultSchema.parse({
+      status: "provided",
+      image: {
+        mediaType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 320,
+        height: 240,
+        source: "screenRegion"
+      }
+    });
+    expect(result.status).toBe("provided");
+    if (result.status !== "provided") throw new Error("expected a provided image");
+    expect(result.image.bytes).toBeInstanceOf(Uint8Array);
+    expect(() =>
+      PluginImageRequestResultSchema.parse({
+        status: "provided",
+        image: {
+          mediaType: "image/gif",
+          bytes: [1, 2, 3],
+          width: 1,
+          height: 1,
+          source: "file"
+        }
+      })
+    ).toThrow();
+    expect(() => PluginImageRequestResultSchema.parse({ status: "cancelled", reason: "ignored" })).toThrow();
+    expect(() => PluginImageRequestResultSchema.parse({ status: "unavailable", reason: "" })).toThrow();
+  });
+});
 
 describe("createStructureSourceFingerprint", () => {
   const base = {
@@ -271,6 +393,28 @@ describe("validatePluginManifest", () => {
 });
 
 describe("RecognizedStructureResult", () => {
+  it("uses strict API 0.1.6 recognition outcome envelopes", () => {
+    expect(PluginRecognitionResultSchema.parse({ status: "engineNotInstalled" })).toEqual({
+      status: "engineNotInstalled"
+    });
+    // A user cancel is its own outcome, so a plugin can stay silent instead of explaining an install.
+    expect(PluginRecognitionResultSchema.parse({ status: "cancelled" })).toEqual({ status: "cancelled" });
+    expect(() => PluginRecognitionResultSchema.parse({ status: "cancelled", reason: "abort" })).toThrow();
+    expect(
+      PluginRecognitionResultSchema.parse({
+        status: "failed",
+        code: "timeout",
+        message: "Recognition took too long."
+      })
+    ).toEqual({ status: "failed", code: "timeout", message: "Recognition took too long." });
+    expect(() =>
+      PluginRecognitionResultSchema.parse({ status: "engineNotInstalled", downloaded: false })
+    ).toThrow();
+    expect(() =>
+      PluginRecognitionResultSchema.parse({ status: "failed", code: "unknown", message: "No" })
+    ).toThrow();
+  });
+
   it("represents a reviewable image-to-structure result with a real proposed patch envelope", () => {
     const result: RecognizedStructureResult = RecognizedStructureResultSchema.parse({
       sourceImageRef: "fixture://benzene.png",
@@ -308,6 +452,34 @@ describe("RecognizedStructureResult", () => {
     expect(result.confidence).toBeGreaterThan(0.9);
     expect(result.proposedPatch?.requiresUserApproval).toBe(true);
     expect(result.proposedPatch?.patch.op).toBe("addObject");
+  });
+
+  it("accepts nullable confidence and strict engine provenance added in API 0.1.6", () => {
+    const result = RecognizedStructureResultSchema.parse({
+      sourceImageRef: "data:image/png;base64,iVBORw==",
+      proposedSmiles: "C",
+      proposedMolfile: "mol",
+      confidence: null,
+      atomConfidence: [{ id: "0", confidence: 0.61 }],
+      bondConfidence: [{ id: "0-1", confidence: 0.72 }],
+      warnings: [],
+      elapsedMs: 21,
+      engine: {
+        name: "MolScribe",
+        molscribeCommit: "abc123",
+        modelSha256: "a".repeat(64)
+      }
+    });
+
+    expect(result.confidence).toBeNull();
+    expect(result.atomConfidence?.[0]?.confidence).toBe(0.61);
+    expect(result.engine?.name).toBe("MolScribe");
+    expect(() =>
+      RecognizedStructureResultSchema.parse({
+        ...result,
+        engine: { ...result.engine, modelSha256: "not-a-sha" }
+      })
+    ).toThrow();
   });
 
   it("keeps dangerous permission names explicit for host review surfaces", () => {

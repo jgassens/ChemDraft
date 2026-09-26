@@ -2,22 +2,26 @@ import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
 
 // Re-export the chem-core types the SDK's own signatures reference (e.g. `getActiveDocument()` returns
-// a `ChemDraftDocument`, `proposePatch()` takes a `DocumentPatch`). Surfacing them here keeps the plugin
+// a `ChemDraftDocument`, document patch methods take a `DocumentPatch`). Surfacing them here keeps the plugin
 // boundary a single package: a plugin — and a host merging only the SDK — names these without importing
 // chem-core directly (see docs/plugin-architecture and the M33 boundary guard).
 export type { ChemDraftDocument, DocumentObject, DocumentPatch } from "@chemdraft/chem-core";
 import type { DocumentObject } from "@chemdraft/chem-core";
 
 /**
- * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`.
+ * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
+ * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`; 0.1.5
+ * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local
+ * `PluginRecognitionAPI.recognizeStructure`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
- * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` to also insert), which this host
- * satisfies and an older one correctly does not.
+ * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` for 2D layout, `^0.1.3` for
+ * text prompts, `^0.1.4` for direct document writes, `^0.1.5` for image acquisition, `^0.1.6` for
+ * local structure recognition), which this host satisfies and an older one correctly does not.
  */
-export const PluginApiVersion = "0.1.2" as const;
+export const PluginApiVersion = "0.1.6" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -498,6 +502,31 @@ export const RecognitionConfidencePointSchema = z
   })
   .strict();
 
+export const RecognitionConfidenceTierSchema = z.enum(["high", "medium", "low", "missing"]);
+
+export const RecognitionEngineProvenanceSchema = z
+  .object({
+    name: NonEmptyStringSchema,
+    molscribeCommit: NonEmptyStringSchema,
+    modelSha256: z.string().regex(/^[a-fA-F0-9]{64}$/, "Model SHA-256 must contain 64 hexadecimal characters.")
+  })
+  .strict();
+
+/** Optional recognition-specific material shown by the host's proposal review. Keeping it on the
+ * proposal means the uncertain structure and its evidence cannot become detached while queued. */
+export const RecognitionProposalReviewSchema = z
+  .object({
+    sourceImageRef: z
+      .string()
+      .regex(/^data:image\/(png|jpeg|tiff|webp);base64,/, "Recognition previews must be image data URIs."),
+    proposedSmiles: z.string().min(1).optional(),
+    proposedMolfile: z.string().min(1),
+    confidenceTier: RecognitionConfidenceTierSchema,
+    engine: RecognitionEngineProvenanceSchema.optional(),
+    elapsedMs: z.number().finite().nonnegative().optional()
+  })
+  .strict();
+
 /** Own-property names that poison `Object.prototype` (or an object's prototype chain) when copied
  *  onto a target by ordinary assignment/merge. `JSON.parse` and `structuredClone` both produce these
  *  as real own keys, so a worker can send one across the boundary. */
@@ -564,20 +593,36 @@ export const ProposedDocumentPatchSchema = z
     patch: DocumentPatchLikeSchema,
     reason: NonEmptyStringSchema,
     warnings: z.array(RecognitionWarningSchema).default([]),
-    requiresUserApproval: z.literal(true).default(true)
+    requiresUserApproval: z.literal(true).default(true),
+    recognition: RecognitionProposalReviewSchema.optional()
   })
   .strict();
+
+/**
+ * The `op` of a recognition `proposedPatch` handed to a plugin WITHOUT `document.read`.
+ *
+ * The insertion the host builds for a recognized structure is laid out against the active document: its
+ * page id, an object id derived from the document's object count, and page-centre coordinates. Handing
+ * those to a plugin that was never granted `document.read` would leak the document past that gate, so
+ * such a plugin receives `{ op: HostHeldRecognitionPatchOp, ref }` instead. The host keeps the real
+ * patch and substitutes it when the plugin passes this value to `documents.proposePatch` during the same
+ * command invocation (once). The value is opaque: pass it through unchanged. `documents.applyPatch`
+ * refuses it — recognition is proposal-only.
+ */
+export const HostHeldRecognitionPatchOp = "hostHeldRecognition" as const;
 
 export const RecognizedStructureResultSchema = z
   .object({
     sourceImageRef: NonEmptyStringSchema,
     proposedSmiles: z.string().optional(),
     proposedMolfile: z.string().optional(),
-    confidence: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1).nullable(),
     atomConfidence: z.array(RecognitionConfidencePointSchema).default([]),
     bondConfidence: z.array(RecognitionConfidencePointSchema).default([]),
     warnings: z.array(RecognitionWarningSchema).default([]),
-    proposedPatch: ProposedDocumentPatchSchema.optional()
+    proposedPatch: ProposedDocumentPatchSchema.optional(),
+    engine: RecognitionEngineProvenanceSchema.optional(),
+    elapsedMs: z.number().finite().nonnegative().optional()
   })
   .strict();
 
@@ -597,6 +642,9 @@ export type PluginContributions = z.infer<typeof PluginContributionsSchema>;
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 export type RecognitionWarning = z.infer<typeof RecognitionWarningSchema>;
 export type RecognitionConfidencePoint = z.infer<typeof RecognitionConfidencePointSchema>;
+export type RecognitionConfidenceTier = z.infer<typeof RecognitionConfidenceTierSchema>;
+export type RecognitionEngineProvenance = z.infer<typeof RecognitionEngineProvenanceSchema>;
+export type RecognitionProposalReview = z.infer<typeof RecognitionProposalReviewSchema>;
 export type ProposedDocumentPatch = z.input<typeof ProposedDocumentPatchSchema>;
 export type NormalizedProposedDocumentPatch = z.output<typeof ProposedDocumentPatchSchema>;
 export type RecognizedStructureResult = z.infer<typeof RecognizedStructureResultSchema>;
@@ -611,6 +659,16 @@ export interface ProposedPatchReceipt {
   resolvedAt?: string;
 }
 
+/** Receipt returned only after the host has committed a direct plugin patch. */
+export const AppliedPatchReceiptSchema = z
+  .object({
+    applied: z.literal(true),
+    objectIds: z.array(NonEmptyStringSchema)
+  })
+  .strict();
+
+export type AppliedPatchReceipt = z.infer<typeof AppliedPatchReceiptSchema>;
+
 export interface PluginStorage {
   get<T = unknown>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
@@ -621,6 +679,8 @@ export interface PluginStorage {
 export interface PluginDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
+  /** Present only with `document.write`; valid only during one of this plugin's command invocations. */
+  applyPatch?(patch: ProposedDocumentPatch): Promise<AppliedPatchReceipt>;
 }
 
 export const PluginStructureFormatSchema = z.enum(["smiles", "molfile-v2000", "molfile-v3000", "unknown"]);
@@ -904,9 +964,9 @@ export const PluginStructureFromSmilesRequestSchema = z
 /**
  * A drawable object, or why there is not one.
  *
- * The object is returned rather than inserted, because inserting is `proposePatch`'s job and that
- * queue is what gives the user a review step. A plugin gets the thing it could not build for itself —
- * atoms, bonds, and **2D coordinates** — and still has to propose it like any other change.
+ * The object is returned rather than inserted. A plugin gets the thing it could not build for itself
+ * — atoms, bonds, and **2D coordinates** — then uses `applyPatch` for deterministic user-supplied
+ * input or `proposePatch` when the result needs user review.
  */
 export type PluginStructureFromSmilesResult =
   | { available: true; built: true; object: DocumentObject }
@@ -935,6 +995,135 @@ export interface PluginChemistryAPI {
   nameToStructure?(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
 }
 
+export const PluginPromptTextRequestSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    label: z.string().min(1).max(200),
+    placeholder: z.string().max(200).optional(),
+    initialValue: z.string().optional(),
+    submitLabel: z.string().max(200).optional(),
+    maxLength: z.number().int().min(1).max(2_000).default(500)
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.initialValue !== undefined && request.initialValue.length > request.maxLength) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum: request.maxLength,
+        type: "string",
+        inclusive: true,
+        exact: false,
+        path: ["initialValue"],
+        message: `Initial value must contain at most ${request.maxLength} characters.`
+      });
+    }
+  });
+
+export const PluginPromptTextResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("submitted"), value: z.string().min(1).max(2_000) }).strict(),
+  z.object({ status: z.literal("cancelled") }).strict()
+]);
+
+export type PluginPromptTextRequest = z.input<typeof PluginPromptTextRequestSchema>;
+export type NormalizedPluginPromptTextRequest = z.output<typeof PluginPromptTextRequestSchema>;
+export type PluginPromptTextResult = z.infer<typeof PluginPromptTextResultSchema>;
+
+export interface PluginDialogsAPI {
+  promptText(request: PluginPromptTextRequest): Promise<PluginPromptTextResult>;
+}
+
+export const PluginImageSourceSchema = z.enum(["file", "screenRegion"]);
+
+/** Host-wide limits enforced after a provider returns, before bytes reach plugin code. */
+export const PluginImageMaxBytes = 25 * 1024 * 1024;
+export const PluginImageMaxDimension = 8_192;
+
+/**
+ * The image formats a host hands a plugin, and so the formats the local recognition engine must
+ * accept. The desktop engine keeps an identical list (`SUPPORTED_MEDIA_TYPES` in
+ * apps/desktop/src-tauri/src/ocsr_engine/mod.rs), and a Rust test fails if the two differ.
+ */
+export const PluginImageMediaTypes = ["image/png", "image/jpeg", "image/tiff", "image/webp"] as const;
+
+export const PluginImageRequestSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    sources: z
+      .array(PluginImageSourceSchema)
+      .min(1)
+      .max(2)
+      .refine((sources) => new Set(sources).size === sources.length, "Image sources must be unique.")
+      .default(["file", "screenRegion"])
+  })
+  .strict();
+
+export const PluginProvidedImageSchema = z
+  .object({
+    mediaType: z.enum(PluginImageMediaTypes),
+    // Uint8Array is structured-clone-safe and avoids the 4/3 expansion and duplicate allocation of
+    // base64. The worker bridge preserves it as a typed array end to end.
+    bytes: z.custom<Uint8Array>(
+      (value) => value instanceof Uint8Array,
+      "Image bytes must be provided as a Uint8Array."
+    ),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    source: PluginImageSourceSchema,
+    fileName: z.string().min(1).max(1_024).optional()
+  })
+  .strict();
+
+export const PluginImageRequestResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("provided"), image: PluginProvidedImageSchema }).strict(),
+  z.object({ status: z.literal("cancelled") }).strict(),
+  z.object({ status: z.literal("unavailable"), reason: z.string().min(1).max(2_000) }).strict()
+]);
+
+export type PluginImageSource = z.infer<typeof PluginImageSourceSchema>;
+export type PluginImageRequest = z.input<typeof PluginImageRequestSchema>;
+export type NormalizedPluginImageRequest = z.output<typeof PluginImageRequestSchema>;
+export type PluginProvidedImage = z.infer<typeof PluginProvidedImageSchema>;
+export type PluginImageRequestResult = z.infer<typeof PluginImageRequestResultSchema>;
+
+export interface PluginImagesAPI {
+  requestImage(request: PluginImageRequest): Promise<PluginImageRequestResult>;
+}
+
+export const PluginRecognitionFailureCodeSchema = z.enum([
+  "invalidImage",
+  "recognitionFailed",
+  "engineCrashed",
+  "timeout",
+  "busy",
+  "unsupported",
+  "installFailed",
+  "invalidResult"
+]);
+
+export const PluginRecognitionResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("recognized"), result: RecognizedStructureResultSchema }).strict(),
+  z.object({ status: z.literal("engineNotInstalled") }).strict(),
+  // The user cancelled the install, or the command invocation was abandoned. Nothing failed and the
+  // user already knows, so a plugin should stay silent — unlike `engineNotInstalled`, which means the
+  // user declined the install or it did not complete, and is worth a line of explanation.
+  z.object({ status: z.literal("cancelled") }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: PluginRecognitionFailureCodeSchema,
+      message: z.string().min(1).max(2_000)
+    })
+    .strict()
+]);
+
+export type PluginRecognitionFailureCode = z.infer<typeof PluginRecognitionFailureCodeSchema>;
+export type PluginRecognitionResult = z.infer<typeof PluginRecognitionResultSchema>;
+
+export interface PluginRecognitionAPI {
+  /** Recognizes only an image returned by `images.requestImage` in this same command invocation. */
+  recognizeStructure(image: PluginProvidedImage): Promise<PluginRecognitionResult>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -954,6 +1143,13 @@ export interface PluginCommandContext {
   analysis?: PluginAnalysisAPI;
   /** Present only when the plugin declares "chemistry.compute" and the host provides an engine. */
   chemistry?: PluginChemistryAPI;
+  /** Present only when the plugin declares "ui.panel" and the host provides dialog UI. */
+  dialogs?: PluginDialogsAPI;
+  /** Present only with `image.read`; requests are valid only during this plugin's active command. */
+  images?: PluginImagesAPI;
+  /** Present only with image.read + ml.inference + model.load + native.execute. The host owns any
+   * local-engine install and never delegates model download authority to plugin code. */
+  recognition?: PluginRecognitionAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

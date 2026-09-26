@@ -27,7 +27,7 @@ import {
 } from "@chemdraft/plugin-api";
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createBundledPluginDescriptors } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
@@ -563,6 +563,324 @@ describe("every chemistry method survives the worker boundary", () => {
     host.registerPlugin(chemistryManifest, delegatingOptions(chemistryManifest, bridge));
     await host.invokeCommand("plugin.chemprobe.run");
     expect(failure).toBeUndefined();
+    bridge.terminate();
+  });
+});
+
+describe("documents.applyPatch survives the worker boundary", () => {
+  it("round-trips a command-scoped direct patch to the host", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.apply-patch-worker",
+      name: "Worker Writer",
+      version: "0",
+      apiVersion: "^0.1.4",
+      entry: "x",
+      permissions: ["document.write"],
+      contributes: {
+        commands: [
+          {
+            id: "plugin.applyPatchWorker.insert",
+            title: "Insert Structure",
+            requiredPermissions: ["document.write"]
+          }
+        ]
+      }
+    });
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_worker"] }));
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.applyPatchWorker.insert": (context) =>
+          context.documents.applyPatch!({
+            reason: "user supplied input",
+            patch: {
+              op: "addObject",
+              pageId: "page_001",
+              object: { id: "mol_worker" }
+            } as never
+          })
+      }
+    };
+    const host = new PluginHost({ applyDocumentPatch });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+
+    await expect(host.invokeCommand("plugin.applyPatchWorker.insert")).resolves.toEqual({
+      applied: true,
+      objectIds: ["mol_worker"]
+    });
+    expect(applyDocumentPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plugin: { id: manifest.id, name: manifest.name, version: manifest.version },
+        command: { id: "plugin.applyPatchWorker.insert", title: "Insert Structure" },
+        undoLabel: "Worker Writer: Insert Structure"
+      })
+    );
+    expect(host.listProposedPatches()).toHaveLength(0);
+    bridge.terminate();
+  });
+
+  it("omits the worker stub without document.write", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.no-apply-patch-worker",
+      name: "Worker Reader",
+      version: "0",
+      apiVersion: "^0.1.4",
+      entry: "x",
+      permissions: [],
+      contributes: { commands: [{ id: "plugin.noApplyPatchWorker.inspect", title: "Inspect" }] }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.noApplyPatchWorker.inspect": (context) => typeof context.documents.applyPatch
+      }
+    };
+    const host = new PluginHost();
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+
+    await expect(host.invokeCommand("plugin.noApplyPatchWorker.inspect")).resolves.toBe("undefined");
+    bridge.terminate();
+  });
+});
+
+describe("dialogs.promptText survives the worker boundary", () => {
+  it("round-trips the request and exact submitted value through linked endpoints", async () => {
+    const dialogManifest = parsePluginManifest({
+      id: "org.test.dialog-worker",
+      name: "Worker Dialog Probe",
+      version: "0",
+      apiVersion: "^0.1.3",
+      entry: "x",
+      permissions: ["ui.panel"],
+      contributes: { commands: [{ id: "plugin.dialogWorker.run", title: "Run" }] }
+    });
+    let workerResult: unknown;
+    const registration: PluginWorkerRegistration = {
+      manifest: dialogManifest,
+      commandHandlers: {
+        "plugin.dialogWorker.run": async (context) => {
+          workerResult = await context.dialogs?.promptText({
+            title: "Chemical name",
+            label: "Name",
+            placeholder: "benzene"
+          });
+          return workerResult;
+        }
+      }
+    };
+    const promptText = vi.fn(async () => ({ status: "submitted" as const, value: "  benzene  " }));
+    const host = new PluginHost({ promptText });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(dialogManifest, delegatingOptions(dialogManifest, bridge));
+
+    await expect(host.invokeCommand("plugin.dialogWorker.run")).resolves.toEqual({
+      status: "submitted",
+      value: "  benzene  "
+    });
+    expect(workerResult).toEqual({ status: "submitted", value: "  benzene  " });
+    expect(promptText).toHaveBeenCalledWith(
+      { id: dialogManifest.id, name: dialogManifest.name },
+      { title: "Chemical name", label: "Name", placeholder: "benzene", maxLength: 500 },
+      expect.any(AbortSignal)
+    );
+    bridge.terminate();
+  });
+
+  it("enforces one prompt per command invocation after the first worker prompt settles", async () => {
+    const dialogManifest = parsePluginManifest({
+      id: "org.test.dialog-worker-repeat",
+      name: "Worker Dialog Repeat",
+      version: "0",
+      apiVersion: "^0.1.3",
+      entry: "x",
+      permissions: ["ui.panel"],
+      contributes: { commands: [{ id: "plugin.dialogWorkerRepeat.run", title: "Run" }] }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest: dialogManifest,
+      commandHandlers: {
+        "plugin.dialogWorkerRepeat.run": async (context) => {
+          await context.dialogs!.promptText({ title: "First", label: "Value" });
+          try {
+            await context.dialogs!.promptText({ title: "Second", label: "Value" });
+            return "unexpectedly opened a second prompt";
+          } catch (error) {
+            return (error as Error).message;
+          }
+        }
+      }
+    };
+    const promptText = vi.fn(async () => ({ status: "cancelled" as const }));
+    const host = new PluginHost({ promptText });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(dialogManifest, delegatingOptions(dialogManifest, bridge));
+
+    await expect(host.invokeCommand("plugin.dialogWorkerRepeat.run")).resolves.toMatch(
+      /org\.test\.dialog-worker-repeat.*at most once per command invocation/i
+    );
+    expect(promptText).toHaveBeenCalledOnce();
+    bridge.terminate();
+  });
+});
+
+describe("images.requestImage survives the worker boundary", () => {
+  it("round-trips Uint8Array bytes through linked structured-clone endpoints", async () => {
+    const imageManifest = parsePluginManifest({
+      id: "org.test.image-worker",
+      name: "Worker Image Probe",
+      version: "0",
+      apiVersion: "^0.1.5",
+      entry: "x",
+      permissions: ["image.read"],
+      contributes: {
+        commands: [
+          { id: "plugin.imageWorker.run", title: "Run", requiredPermissions: ["image.read"] }
+        ]
+      }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest: imageManifest,
+      commandHandlers: {
+        "plugin.imageWorker.run": (context) =>
+          context.images!.requestImage({ title: "Choose structure image", sources: ["file"] })
+      }
+    };
+    const requestImage = vi.fn(async () => ({
+      status: "provided" as const,
+      image: {
+        mediaType: "image/png" as const,
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 640,
+        height: 480,
+        source: "file" as const,
+        fileName: "structure.png"
+      }
+    }));
+    const host = new PluginHost({ requestImage });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(imageManifest, delegatingOptions(imageManifest, bridge));
+
+    const result = await host.invokeCommand("plugin.imageWorker.run");
+    expect(result).toEqual({
+      status: "provided",
+      image: {
+        mediaType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 640,
+        height: 480,
+        source: "file",
+        fileName: "structure.png"
+      }
+    });
+    expect(requestImage).toHaveBeenCalledWith(
+      { id: imageManifest.id, name: imageManifest.name },
+      { title: "Choose structure image", sources: ["file"] },
+      expect.any(AbortSignal)
+    );
+    bridge.terminate();
+  });
+
+  it("omits the worker stub without image.read", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.no-image-worker",
+      name: "No Worker Image",
+      version: "0",
+      apiVersion: "^0.1.5",
+      entry: "x",
+      permissions: [],
+      contributes: { commands: [{ id: "plugin.noImageWorker.inspect", title: "Inspect" }] }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest,
+      commandHandlers: {
+        "plugin.noImageWorker.inspect": (context) => typeof context.images
+      }
+    };
+    const host = new PluginHost();
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+
+    await expect(host.invokeCommand("plugin.noImageWorker.inspect")).resolves.toBe("undefined");
+    bridge.terminate();
+  });
+});
+
+describe("recognition.recognizeStructure survives the worker boundary", () => {
+  it("round-trips the command-scoped image and recognized result through linked endpoints", async () => {
+    const recognitionManifest = parsePluginManifest({
+      id: "org.test.recognition-worker",
+      name: "Worker Recognition Probe",
+      version: "0",
+      apiVersion: "^0.1.6",
+      entry: "x",
+      permissions: ["image.read", "ml.inference", "model.load", "native.execute"],
+      contributes: {
+        commands: [
+          {
+            id: "plugin.recognitionWorker.run",
+            title: "Run",
+            requiredPermissions: ["image.read", "ml.inference", "model.load", "native.execute"]
+          }
+        ]
+      }
+    });
+    const registration: PluginWorkerRegistration = {
+      manifest: recognitionManifest,
+      commandHandlers: {
+        "plugin.recognitionWorker.run": async (context) => {
+          const selected = await context.images!.requestImage({
+            title: "Choose structure image",
+            sources: ["file"]
+          });
+          if (selected.status !== "provided") return selected;
+          return context.recognition!.recognizeStructure(selected.image);
+        }
+      }
+    };
+    const providedImage = {
+      mediaType: "image/png" as const,
+      bytes: new Uint8Array([137, 80, 78, 71]),
+      width: 640,
+      height: 480,
+      source: "file" as const,
+      fileName: "structure.png"
+    };
+    const recognizeStructure = vi.fn(async () => ({
+      status: "recognized" as const,
+      result: {
+        sourceImageRef: "data:image/png;base64,iVBORw==",
+        proposedSmiles: "C",
+        proposedMolfile: "mol",
+        confidence: null,
+        atomConfidence: [],
+        bondConfidence: [],
+        warnings: [],
+        elapsedMs: 42,
+        engine: {
+          name: "MolScribe" as const,
+          molscribeCommit: "abc123",
+          modelSha256: "a".repeat(64)
+        }
+      }
+    }));
+    const host = new PluginHost({
+      requestImage: async () => ({ status: "provided", image: providedImage }),
+      recognizeStructure
+    });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(recognitionManifest, delegatingOptions(recognitionManifest, bridge));
+
+    await expect(host.invokeCommand("plugin.recognitionWorker.run")).resolves.toMatchObject({
+      status: "recognized",
+      result: { proposedSmiles: "C", confidence: null, elapsedMs: 42 }
+    });
+    expect(recognizeStructure).toHaveBeenCalledWith(
+      { id: recognitionManifest.id, name: recognitionManifest.name },
+      providedImage,
+      expect.any(AbortSignal)
+    );
     bridge.terminate();
   });
 });

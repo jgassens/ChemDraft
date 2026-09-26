@@ -44,7 +44,9 @@ export interface MolecularInspectorPaneProps {
    */
   stale?: boolean;
   onChangeInterpretation?(interpretationId: string | undefined): void;
-  onCopy?(text: string): void;
+  /** Resolves with whether the copy actually succeeded; a `void` return is treated as success, for
+   *  callers (the web toolbar fallback) that perform the write synchronously and cannot fail. */
+  onCopy?(text: string): boolean | Promise<boolean> | void;
 }
 
 export function MolecularInspectorPane({
@@ -55,7 +57,7 @@ export function MolecularInspectorPane({
   onCopy
 }: MolecularInspectorPaneProps) {
   const [selection, setSelection] = useState<InspectorSelection>({});
-  const [copied, setCopied] = useState<"text" | "markdown" | undefined>();
+  const [copyResult, setCopyResult] = useState<{ kind: "text" | "markdown"; ok: boolean } | undefined>();
 
   const model = useMemo(() => (report ? buildInspectorModel(report) : undefined), [report]);
 
@@ -68,7 +70,7 @@ export function MolecularInspectorPane({
 
   // Never let "Copied" claim a stale success for a different selection or a newer run.
   useEffect(() => {
-    setCopied(undefined);
+    setCopyResult(undefined);
   }, [selection, report]);
 
   const visible = useMemo(
@@ -122,13 +124,19 @@ export function MolecularInspectorPane({
   const selectedLabel = selection.categoryId ?? "All analyses";
 
   const copy = (kind: "text" | "markdown"): void => {
-    // "Copied" only when something was asked to copy it. `setCopied` used to fire unconditionally, so
-    // wherever `onCopy` was absent — the detached palette, which is the shipping desktop path — the
-    // button announced success onto an empty clipboard. A label that lies about the clipboard is
-    // worse than a button that does nothing, because the user walks away and pastes something else.
+    // "Copied" only when something was asked to copy it, and only once the copy is known to have
+    // actually reached the clipboard. `setCopied` used to fire unconditionally on the call alone, so
+    // the floating window — whose copy runs in the main window and can fail — announced success onto
+    // an empty clipboard. A label that lies about the clipboard is worse than a button that does
+    // nothing, because the user walks away and pastes something else.
     if (!onCopy) return;
-    onCopy(kind === "text" ? renderSelectionText(report, selection) : renderSelectionMarkdown(report, selection));
-    setCopied(kind);
+    const text = kind === "text" ? renderSelectionText(report, selection) : renderSelectionMarkdown(report, selection);
+    const outcome = onCopy(text);
+    if (outcome === undefined) {
+      setCopyResult({ kind, ok: true });
+      return;
+    }
+    void Promise.resolve(outcome).then((ok) => setCopyResult({ kind, ok }));
   };
 
   return (
@@ -160,10 +168,10 @@ export function MolecularInspectorPane({
         ) : null}
         <span className="molecular-inspector-spacer" />
         <button type="button" onClick={() => copy("text")} title={`Copy ${selectedLabel} as text`}>
-          {copied === "text" ? "Copied" : "Copy"}
+          {copyResult?.kind === "text" ? (copyResult.ok ? "Copied" : "Copy failed") : "Copy"}
         </button>
         <button type="button" onClick={() => copy("markdown")} title={`Copy ${selectedLabel} as Markdown`}>
-          {copied === "markdown" ? "Copied" : "Copy as Markdown"}
+          {copyResult?.kind === "markdown" ? (copyResult.ok ? "Copied" : "Copy failed") : "Copy as Markdown"}
         </button>
       </div>
 

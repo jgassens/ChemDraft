@@ -9,6 +9,9 @@ import {
   checkForPluginUpdates,
   GITHUB_RELEASE_ASSET_HOST,
   GITHUB_RELEASE_ASSET_PATH_PREFIX,
+  isOfficialPluginExperimental,
+  OFFICIAL_PLUGIN_CATALOG,
+  prepareOfficialPluginInstall,
   preparePluginUpdate,
   type PluginUpdateOffer
 } from "./pluginUpdates";
@@ -117,6 +120,35 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("host-managed plugin update catalog", () => {
+  it("compiles the complete official plugin catalog into the host", () => {
+    expect(OFFICIAL_PLUGIN_CATALOG).toEqual([
+      {
+        pluginId: "org.chemdraft.nmr.predictor",
+        displayName: "NMR Shift Predictor",
+        description: "¹H/¹³C shift prediction from NMRShiftDB2-derived statistics.",
+        repository: "jgassens/ChemDraft-NMR-Plugin",
+        assetStem: "nmr-predictor"
+      },
+      {
+        pluginId: "org.chemdraft.opsin.nameToStructure",
+        displayName: "Name to Structure (OPSIN)",
+        description: "Type a systematic chemical name and insert its structure.",
+        repository: "jgassens/ChemDraft-OPSIN-Plugin",
+        assetStem: "opsin-name-to-structure"
+      },
+      {
+        pluginId: "org.chemdraft.ocsr.molscribe",
+        displayName: "Structure from Image (MolScribe)",
+        description:
+          "Recognize a drawn structure from an image or screenshot. Installing it also downloads a local recognition engine (about 2.5 GB).",
+        repository: "jgassens/ChemDraft-MolScribe-Plugin",
+        assetStem: "molscribe-ocsr",
+        requiresEngine: "structureRecognition",
+        experimental: true
+      }
+    ]);
+  });
+
   it("checks only allowlisted installed plugins and reports up-to-date without downloading", async () => {
     const zip = await pluginPackage("0.1.0");
     const fetch = vi.fn(async (url: string, _init?: RequestInit & { maxRedirections?: number }) => {
@@ -241,6 +273,39 @@ describe("host-managed plugin update catalog", () => {
     expect(fetch.mock.calls.every((call) => call[1]?.maxRedirections === 0)).toBe(true);
   });
 
+  it("prepares an official catalog install through the same verified release path", async () => {
+    const zip = await pluginPackage("0.1.0");
+    const release = await releaseDocument("0.1.0", zip);
+    const checksum = await sha256Hex(zip);
+    const fetch = vi.fn(async (url: string) => {
+      if (url === API_URL) return jsonResponse(release);
+      if (url.endsWith(".sha256")) {
+        return new Response(`${checksum}  nmr-predictor-0.1.0.zip\n`, { status: 200 });
+      }
+      return new Response(zip.slice().buffer, { status: 200 });
+    });
+
+    const prepared = await prepareOfficialPluginInstall(PLUGIN_ID, { fetch });
+
+    expect(prepared).toMatchObject({
+      pluginId: PLUGIN_ID,
+      checksumVerified: true,
+      inspection: { manifest: { id: PLUGIN_ID, version: "0.1.0" } }
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["org.chemdraft.opsin.nameToStructure", "org.chemdraft.ocsr.molscribe"])(
+    "reports an official catalog entry with no release explicitly (%s)",
+    async (pluginId) => {
+      await expect(
+        prepareOfficialPluginInstall(pluginId, {
+          fetch: async () => new Response(null, { status: 404, statusText: "Not Found" })
+        })
+      ).rejects.toThrow("No release published yet");
+    }
+  );
+
   it("keeps the trusted redirect host in step with the capability scope", async () => {
     // The module refuses a redirect that misses these strings, and the capability scope refuses the
     // follow-up request that misses them. If GitHub moves the host again, both must move together
@@ -264,11 +329,15 @@ describe("host-managed plugin update catalog", () => {
     const isAllowed = (url: string) =>
       allowed.some((pattern) => new URLPattern(pattern).test(url));
 
-    const packageUrl =
-      "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.1.0/nmr-predictor-0.1.0.zip";
-    expect(isAllowed(API_URL)).toBe(true);
-    expect(isAllowed(packageUrl)).toBe(true);
-    expect(isAllowed(`${packageUrl}.sha256`)).toBe(true);
+    for (const entry of OFFICIAL_PLUGIN_CATALOG) {
+      const apiUrl = `https://api.github.com/repos/${entry.repository}/releases/latest`;
+      const packageUrl =
+        `https://github.com/${entry.repository}/releases/download/v0.1.0/` +
+        `${entry.assetStem}-0.1.0.zip`;
+      expect(isAllowed(apiUrl), `${entry.pluginId} release API`).toBe(true);
+      expect(isAllowed(packageUrl), `${entry.pluginId} package`).toBe(true);
+      expect(isAllowed(`${packageUrl}.sha256`), `${entry.pluginId} checksum`).toBe(true);
+    }
     expect(
       isAllowed(`https://${GITHUB_RELEASE_ASSET_HOST}${GITHUB_RELEASE_ASSET_PATH_PREFIX}1/asset?x=1`)
     ).toBe(true);
@@ -391,5 +460,19 @@ describe("host-managed plugin update catalog", () => {
           )
       })
     ).rejects.toThrow(/exceeded.*limit/i);
+  });
+});
+
+describe("isOfficialPluginExperimental", () => {
+  it("is true only for the MolScribe OCSR catalog entry", () => {
+    expect(isOfficialPluginExperimental("org.chemdraft.ocsr.molscribe")).toBe(true);
+    expect(isOfficialPluginExperimental("org.chemdraft.nmr.predictor")).toBe(false);
+    expect(isOfficialPluginExperimental("org.chemdraft.opsin.nameToStructure")).toBe(false);
+    expect(isOfficialPluginExperimental("org.chemdraft.unknown.plugin")).toBe(false);
+  });
+
+  it("matches the flag recorded on the catalog entry itself", () => {
+    const molscribe = OFFICIAL_PLUGIN_CATALOG.find((entry) => entry.pluginId === "org.chemdraft.ocsr.molscribe");
+    expect(molscribe?.experimental).toBe(true);
   });
 });
