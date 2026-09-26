@@ -47,7 +47,38 @@ export function applyPatch(
   options: ApplyPatchOptions = {}
 ): ChemDraftDocument {
   const next = cloneDocument(document);
+  applyPatchInPlace(next, patch);
+  next.updatedAt = toIsoTimestamp(options.now ?? new Date());
+  return ChemDraftDocumentSchema.parse(next);
+}
 
+/**
+ * Apply `patches` in order; each sees the result of the ones before it, and any that fails throws
+ * with nothing applied. The document is cloned and validated once for the batch, not once per patch:
+ * a clone is a full JSON round trip plus a schema parse, and multi-object edits (rotate, move, align,
+ * distribute, delete, paste) emit one patch per object — so per-patch validation made them quadratic.
+ * Rotating 1,000 selected molecules took 54 s; 5,000 would have taken about 20 minutes.
+ */
+export function applyPatches(
+  document: ChemDraftDocument,
+  patches: DocumentPatch[],
+  options: ApplyPatchOptions = {}
+): ChemDraftDocument {
+  if (patches.length === 0) {
+    return document;
+  }
+  if (patches.length === 1) {
+    return applyPatch(document, patches[0]!, options);
+  }
+  const next = cloneDocument(document);
+  for (const patch of patches) {
+    applyPatchInPlace(next, patch);
+  }
+  next.updatedAt = toIsoTimestamp(options.now ?? new Date());
+  return ChemDraftDocumentSchema.parse(next);
+}
+
+function applyPatchInPlace(next: ChemDraftDocument, patch: DocumentPatch): void {
   switch (patch.op) {
     case "addObject":
       addObject(next, patch.pageId, patch.object);
@@ -85,21 +116,11 @@ export function applyPatch(
     default:
       assertNever(patch);
   }
-
-  next.updatedAt = toIsoTimestamp(options.now ?? new Date());
-  return ChemDraftDocumentSchema.parse(next);
-}
-
-export function applyPatches(
-  document: ChemDraftDocument,
-  patches: DocumentPatch[],
-  options: ApplyPatchOptions = {}
-): ChemDraftDocument {
-  return patches.reduce((current, patch) => applyPatch(current, patch, options), document);
 }
 
 function addObject(document: ChemDraftDocument, pageId: string, object: DocumentObject): void {
-  const page = document.pages.find((candidate) => candidate.id === pageId);
+  const pageIndex = document.pages.findIndex((candidate) => candidate.id === pageId);
+  const page = document.pages[pageIndex];
   if (!page) {
     throw new DocumentPatchError(`Cannot add object: page "${pageId}" does not exist.`);
   }
@@ -109,6 +130,7 @@ function addObject(document: ChemDraftDocument, pageId: string, object: Document
   }
 
   page.objects.push(DocumentObjectSchema.parse(object));
+  recordAppendedObject(document, pageIndex, object.id);
 }
 
 function removeObject(document: ChemDraftDocument, objectId: string): void {
@@ -382,18 +404,61 @@ function mergeObjectChanges(
   return DocumentObjectSchema.parse(merged);
 }
 
+/**
+ * Where each object sits, per working document. A batch of n patches used to find each object with
+ * a linear scan — O(n²) for a large selection. The index is a hint, never trusted blindly: a hit is
+ * checked against the array, and a stale one (after an add, remove, or reorder shifted positions)
+ * rebuilds it, so the result is always what a scan would return.
+ */
+const objectLocationIndexes = new WeakMap<ChemDraftDocument, Map<string, { pageIndex: number; objectIndex: number }>>();
+
+function buildObjectLocationIndex(document: ChemDraftDocument): Map<string, { pageIndex: number; objectIndex: number }> {
+  const index = new Map<string, { pageIndex: number; objectIndex: number }>();
+  document.pages.forEach((page, pageIndex) => {
+    page.objects.forEach((object, objectIndex) => {
+      // First occurrence wins, as the scan's findIndex did.
+      if (!index.has(object.id)) {
+        index.set(object.id, { pageIndex, objectIndex });
+      }
+    });
+  });
+  objectLocationIndexes.set(document, index);
+  return index;
+}
+
 function findObject(
   document: ChemDraftDocument,
   objectId: string
 ): { page: ChemDraftDocument["pages"][number]; object: DocumentObject; objectIndex: number } | undefined {
-  for (const page of document.pages) {
-    const objectIndex = page.objects.findIndex((object) => object.id === objectId);
-    if (objectIndex >= 0) {
-      return { page, object: page.objects[objectIndex], objectIndex };
+  const resolve = (index: Map<string, { pageIndex: number; objectIndex: number }>) => {
+    const location = index.get(objectId);
+    const page = location ? document.pages[location.pageIndex] : undefined;
+    const object = location ? page?.objects[location.objectIndex] : undefined;
+    return page && object && object.id === objectId ? { page, object, objectIndex: location!.objectIndex } : undefined;
+  };
+  const cached = objectLocationIndexes.get(document);
+  if (cached) {
+    const hit = resolve(cached);
+    if (hit) {
+      return hit;
+    }
+    // Ids enter a page only through addObject, which records them, so an id the index has never
+    // seen is absent — answering that without a rebuild keeps a batch of additions linear.
+    if (!cached.has(objectId)) {
+      return undefined;
     }
   }
+  // No index yet, or a stale position: rebuild once and answer from the fresh index.
+  return resolve(buildObjectLocationIndex(document));
+}
 
-  return undefined;
+/** Record an object appended to `document.pages[pageIndex]` in the location index, if one exists. */
+function recordAppendedObject(document: ChemDraftDocument, pageIndex: number, objectId: string): void {
+  const index = objectLocationIndexes.get(document);
+  const page = document.pages[pageIndex];
+  if (index && page && !index.has(objectId)) {
+    index.set(objectId, { pageIndex, objectIndex: page.objects.length - 1 });
+  }
 }
 
 function assertNever(value: never): never {
