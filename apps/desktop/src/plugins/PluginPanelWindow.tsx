@@ -123,7 +123,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       data-plugin-id={identity?.pluginId}
     >
       <div
-        className="palette-title"
+        className="palette-title plugin-panel-window-title"
         data-palette-title-drag-surface="true"
         onPointerDown={(event) => {
           if (event.button === 0 && !(event.target as HTMLElement).closest("button")) {

@@ -1103,6 +1103,24 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
+    fn analysis_windows_are_clamped_onto_the_work_area() {
+        // Work area of a 1728x1117 display with a 25pt menu bar and no Dock.
+        let area = ScreenRect::new(0.0, 25.0, 1728.0, 1092.0);
+        // Beside a main window low on the screen: pulled up so the whole window fits.
+        let low_main = ScreenRect::new(0.0, 700.0, 1200.0, 400.0);
+        assert_eq!(
+            choose_analysis_window_position(low_main, area, 380.0, 520.0, &[]),
+            (1216.0, 597.0)
+        );
+        // Taller than the work area: pinned below the menu bar so the title strip stays reachable.
+        let main = ScreenRect::new(0.0, 0.0, 1200.0, 800.0);
+        assert_eq!(
+            choose_analysis_window_position(main, area, 380.0, 2000.0, &[]),
+            (1216.0, 25.0)
+        );
+    }
+
+    #[test]
     fn hex_window_ids_from_the_app_pass_through_unchanged() {
         // panelBridge.ts hides a window by rebuilding this exact label.
         assert_eq!(
@@ -1174,10 +1192,9 @@ fn analysis_window_initial_position<R: Runtime>(
     let scale = main.scale_factor().ok()?;
     let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
     let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
-    let monitor = main.current_monitor().ok().flatten()?;
-    let monitor_scale = monitor.scale_factor();
-    let monitor_position = monitor.position().to_logical::<f64>(monitor_scale);
-    let monitor_size = monitor.size().to_logical::<f64>(monitor_scale);
+    // Clamp to the work area, not the full display: a window pushed under the menu bar or the Dock
+    // has its title strip -- the only way to drag an undecorated window -- out of reach.
+    let work_area = monitor_logical_work_area(&main.current_monitor().ok().flatten()?);
     // The floating palettes sit at a higher window level than this window, so wherever they are is
     // somewhere the new window would open underneath them, title bar and all.
     let palettes: Vec<ScreenRect> = app
@@ -1208,12 +1225,7 @@ fn analysis_window_initial_position<R: Runtime>(
             main_size.width,
             main_size.height,
         ),
-        ScreenRect::new(
-            monitor_position.x,
-            monitor_position.y,
-            monitor_size.width,
-            monitor_size.height,
-        ),
+        work_area,
         width,
         height,
         &palettes,
@@ -1254,7 +1266,7 @@ impl ScreenRect {
 /// Where a new analysis window opens: beside the main window when the screen has room, otherwise
 /// inside the main window's frame — in whichever corner the floating palettes cover least, so the
 /// window (and the title strip it is dragged by) does not open underneath them. Every candidate is
-/// clamped to the monitor; among equally clear candidates the earlier one wins.
+/// clamped to `monitor` (the work area); among equally clear candidates the earlier one wins.
 fn choose_analysis_window_position(
     main: ScreenRect,
     monitor: ScreenRect,
@@ -3593,6 +3605,15 @@ fn monitor_logical_bounds(monitor: &tauri::Monitor) -> (f64, f64, f64, f64) {
         origin.x + size.width,
         origin.y + size.height,
     )
+}
+
+/// A monitor's work area (minus menu bar and Dock) in the same logical points.
+fn monitor_logical_work_area(monitor: &tauri::Monitor) -> ScreenRect {
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(scale);
+    let size = area.size.to_logical::<f64>(scale);
+    ScreenRect::new(origin.x, origin.y, size.width, size.height)
 }
 
 /// True when the rect overlaps some attached monitor enough to be seen and dragged.

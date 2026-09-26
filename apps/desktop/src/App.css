@@ -5597,12 +5597,34 @@ textarea:focus-visible,
 }
 
 /* A floating report window is undecorated, so its title strip is the only way to move it: give it a
-   real title bar's height and weight rather than the compact palette strip. */
-.plugin-panel-shell > .palette-title {
+   real title bar's height and weight rather than the compact palette strip. It reuses the palette
+   title (stoplight close on the left) laid out as a row: the palette label is display:block at full
+   width, which pushed "Run again" onto a second line below the title and out of the strip. Here the
+   label takes the remaining width and ellipsizes, and the button keeps its size, down to the
+   window's 280px minimum. */
+.plugin-panel-window-title {
+  display: flex;
   flex: none;
+  align-items: center;
+  gap: 6px;
   height: 28px;
+  padding: 0 6px 0 22px;
   font-size: 11px;
-  line-height: 27px;
+  line-height: normal;
+}
+
+.plugin-panel-window-title .palette-title-label {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.plugin-panel-window-title .plugin-panel-run-again {
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 /* Plugin panel windows (declarative report surface) */

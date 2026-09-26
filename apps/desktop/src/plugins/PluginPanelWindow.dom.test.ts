@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -408,6 +412,30 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     } finally {
       window.removeEventListener(PLUGIN_PANEL_RERUN_EVENT, onRerun);
     }
+  });
+
+  it("lays the title strip out as one row so Run again never drops under the title", async () => {
+    await mountWindow();
+    await broadcast(reportPayload());
+    const strip = container!.querySelector<HTMLElement>(".plugin-panel-window-title");
+    expect(strip).not.toBeNull();
+    expect(strip!.classList.contains("palette-title")).toBe(true);
+    expect(strip!.querySelector(".palette-title-label")?.textContent).toBe("Analysis Result");
+    expect(strip!.querySelector(".plugin-panel-run-again")).not.toBeNull();
+    expect(strip!.querySelector(".palette-close-button")).not.toBeNull();
+
+    // jsdom has no layout, so pin the rules that fix the cramped header: a flex row whose label
+    // takes (and ellipsizes within) the remaining width while the button keeps its size.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../App.css"), "utf8");
+    const rule = (selector: string) => {
+      const start = css.indexOf(`${selector} {`);
+      expect(start).toBeGreaterThan(-1);
+      return css.slice(start, css.indexOf("}", start));
+    };
+    expect(rule(".plugin-panel-window-title")).toContain("display: flex;");
+    expect(rule(".plugin-panel-window-title .palette-title-label")).toContain("flex: 1 1 auto;");
+    expect(rule(".plugin-panel-window-title .plugin-panel-run-again")).toContain("flex-shrink: 0;");
+    expect(rule(".plugin-panel-window-title .plugin-panel-run-again")).toContain("white-space: nowrap;");
   });
 
   it("hides Run again when the payload carries no command", async () => {
