@@ -1751,7 +1751,7 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 - ~~Whether the app supports a browser version initially.~~ Yes, as a shell: `pnpm dev:web` runs the desktop app in the browser. There is still no separate `apps/web` package.
 - ~~Whether plugins are distributed through a registry later.~~ Not a registry — a host-owned catalog allowlisted by plugin id, with the app owning source, download, verification, handshake, replacement, and rollback. An installed plugin cannot choose its own download URL.
 - ~~Whether RDKit loads in the frontend, backend, or both.~~ Moot for now: OpenChemLib is the shipped engine and `rdkit-adapter` is a declared placeholder (AGENTS.md §6.18-6.19). The question returns if real RDKit wiring lands.
-- ~~What installer/distribution system is preferred for each OS.~~ Settled for macOS: signed and notarized bundle, Sparkle auto-update against a signed appcast (`docs/releasing/macos-updates.md`). Windows and Linux remain open.
+- ~~What installer/distribution system is preferred for each OS.~~ Settled for macOS: signed and notarized bundle, Sparkle auto-update against a signed appcast (`docs/releasing/macos-updates.md`). Settled for Windows (2026-09-25): per-user NSIS installer, Tauri updater against a signed `latest.json` on `main` (`docs/releasing/windows-updates.md`); Authenticode signing deferred. Linux remains open.
 
 ## 21. Guiding rule
 

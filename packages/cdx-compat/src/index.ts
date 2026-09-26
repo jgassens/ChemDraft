@@ -4,6 +4,7 @@ import {
   DocumentSchemaVersion,
   createEmptyDocument,
   deserializeDocument,
+  isDativeBond,
   parseDocument,
   serializeDocument,
   type Anchor,
@@ -13,6 +14,7 @@ import {
   type CompatibilityWarning,
   type CrossingOverride,
   type DocumentObject,
+  type GroupObject,
   type DocumentPage,
   type GraphicMarker,
   type GraphicObject,
@@ -196,7 +198,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   if (normalized.length === 0) {
     return {
       source: "external-cdxml",
-      warnings: [warning("cdxml.empty_payload", "Open failed because the file is empty.")]
+      warnings: [warning("cdxml.empty_payload", "The file is empty.")]
     };
   }
 
@@ -204,11 +206,26 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     return openLegacyJsonDocument(normalized);
   }
 
+  // "VjCD0100" opens every ChemDraw binary file. Say what it is and what to do — the generic
+  // "neither JSON nor XML" left a ChemDraw user with no way forward.
+  // "VmpDRDAx" is the same signature base64-encoded, the form CDX takes in some interchange files.
+  if (normalized.startsWith("VjCD") || normalized.startsWith("VmpDRDAx")) {
+    return {
+      source: "external-cdxml",
+      warnings: [
+        warning(
+          "cdx.binary_not_supported",
+          "This is a ChemDraw binary (.cdx) file, which ChemDraft cannot read yet. In ChemDraw, use File ▸ Save As and choose CDXML, then open that file."
+        )
+      ]
+    };
+  }
+
   if (!normalized.startsWith("<")) {
     return {
       source: "external-cdxml",
       warnings: [
-        warning("cdxml.unrecognized_payload", "Open failed because the file is neither native JSON nor CDXML XML.")
+        warning("cdxml.unrecognized_payload", "The file is neither a ChemDraft document nor CDXML: it is not JSON or XML.")
       ]
     };
   }
@@ -220,6 +237,21 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     return {
       source: "external-cdxml",
       warnings: [warning("cdxml.malformed_xml", `CDXML parse failed: ${errorMessage(error)}`)]
+    };
+  }
+
+  // XML that is not CDXML at all — `.cdxml` is also PowerShell's cmdlet-definition extension, and
+  // those files are XML too. Name what the file is instead of reporting "no page elements".
+  const rootName = xmlRootElementName(tree);
+  if (rootName !== undefined && rootName.toLowerCase() !== "cdxml") {
+    return {
+      source: "external-cdxml",
+      warnings: [
+        warning(
+          "cdxml.not_cdxml_xml",
+          `This XML file is not ChemDraw CDXML: its top-level element is <${rootName}>, not <CDXML>.`
+        )
+      ]
     };
   }
 
@@ -598,7 +630,9 @@ function exportBond(
   const nativeRef = { objectId: molecule.id, bondId: bond.id };
   const nativeRefKey = bondRefKey(nativeRef);
   const bondId = cdxmlBondIdForRef(nativeRef, context, allocator);
-  const order = cdxmlBondOrder(bond.order, molecule.id, warnings);
+  // A native dative bond (single + dashed) keeps its meaning in CDXML, which has an order for it;
+  // written as Order="1" it read back — in ChemDraw or RDKit — as an ordinary covalent single bond.
+  const order = isDativeBond(bond) ? "dative" : cdxmlBondOrder(bond.order, molecule.id, warnings);
   const attributes = [
     `id="${bondId}"`,
     `B="${atomIds.get(bond.fromAtomId) ?? escapeXmlAttribute(bond.fromAtomId)}"`,
@@ -1415,45 +1449,86 @@ function importPageObjects(
     colorTable
   };
   let objectIndex = 1;
+
+  // One CDXML element → every object it produced (in drawing order) and the ids that stand for it at
+  // its parent's level. A `<group>` is a container, not an object: its children are imported like
+  // page children and tied together by a native group. Importing the whole group as one opaque
+  // unknown object dropped every molecule inside it — real ChemDraw files group routinely.
+  const importElement = (element: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
+    const single = (object: DocumentObject | undefined) => {
+      if (!object) {
+        return { objects: [], rootIds: [] };
+      }
+      objectIndex += 1;
+      return { objects: [object], rootIds: [object.id] };
+    };
+    if (element.name === "fragment") {
+      return single(importFragment(element, pageIndex, objectIndex, warnings, context));
+    }
+    if (element.name === "t") {
+      return single(importText(element, pageIndex, objectIndex));
+    }
+    if (element.name === "graphic") {
+      return single(importGraphic(element, pageIndex, objectIndex, context));
+    }
+    if (element.name === "arrow") {
+      return single(importArrowGraphic(element, pageIndex, objectIndex, context));
+    }
+    if (element.name === "group") {
+      return importGroup(element);
+    }
+    if (element.name === "objecttag") {
+      return { objects: [], rootIds: [] };
+    }
+    warnings.push({
+      code: "cdxml.object_import_unsupported",
+      message: `Imported unsupported CDXML object "${element.name}" as an unknown compatibility object.`
+    });
+    return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
+  };
+
+  const importGroup = (groupElement: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
+    const members: DocumentObject[] = [];
+    const memberRootIds: string[] = [];
+    for (const child of groupElement.children) {
+      const element = elementView(child);
+      if (!element || isChemDraftObjectTag(element)) {
+        continue;
+      }
+      const imported = importElement(element);
+      members.push(...imported.objects);
+      memberRootIds.push(...imported.rootIds);
+    }
+    // A native group needs two members to mean anything (the app's own Group command requires two);
+    // with fewer, the lone member simply stands on the page.
+    const bounds = memberRootIds.length >= 2 ? unionObjectBounds(members.filter((object) => memberRootIds.includes(object.id))) : undefined;
+    if (!bounds) {
+      return { objects: members, rootIds: memberRootIds };
+    }
+    const group: GroupObject = {
+      id: `cdxml_group_${pageIndex + 1}_${objectIndex}`,
+      type: "group",
+      ...bounds,
+      rotation: 0,
+      style: {},
+      childObjectIds: memberRootIds,
+      compatibility: {
+        sourceFormat: "cdxml",
+        originalId: groupElement.attributes.id,
+        warnings: [],
+        unknown: {}
+      }
+    };
+    objectIndex += 1;
+    return { objects: [...members, group], rootIds: [group.id] };
+  };
+
   for (const child of pageElement.children) {
     const element = elementView(child);
     if (!element || isChemDraftObjectTag(element)) {
       continue;
     }
-    if (element.name === "fragment") {
-      const molecule = importFragment(element, pageIndex, objectIndex, warnings, context);
-      if (molecule) {
-        objects.push(molecule);
-        objectIndex += 1;
-      }
-      continue;
-    }
-    if (element.name === "t") {
-      objects.push(importText(element, pageIndex, objectIndex));
-      objectIndex += 1;
-      continue;
-    }
-    if (element.name === "graphic") {
-      const graphic = importGraphic(element, pageIndex, objectIndex, context);
-      if (graphic) {
-        objects.push(graphic);
-        objectIndex += 1;
-      }
-      continue;
-    }
-    if (element.name === "arrow") {
-      objects.push(importArrowGraphic(element, pageIndex, objectIndex, context));
-      objectIndex += 1;
-      continue;
-    }
-    if (element.name !== "objecttag") {
-      objects.push(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
-      warnings.push({
-        code: "cdxml.object_import_unsupported",
-        message: `Imported unsupported CDXML object "${element.name}" as an unknown compatibility object.`
-      });
-      objectIndex += 1;
-    }
+    objects.push(...importElement(element).objects);
   }
   return {
     objects,
@@ -1789,6 +1864,9 @@ function importFragment(
         message: `CDXML bond display "${bondElement.attributes.Display}" is not represented in the current ChemDraft molecule schema.`,
         sourceObjectId: objectId
       });
+    }
+    if (isCdxmlDativeOrder(bondElement.attributes.Order)) {
+      bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
     }
     return bond;
   });
@@ -2678,6 +2756,23 @@ function cdxmlCornerRadiusToCssPx(value: string | undefined): number {
   return cdxmlToCssPx(radius / defaultCdxmlCornerRadiusFactor);
 }
 
+/** The page-space box enclosing `objects`, or undefined when there is none to enclose. */
+function unionObjectBounds(
+  objects: readonly DocumentObject[]
+): { x: number; y: number; width: number; height: number } | undefined {
+  const finite = objects.filter((object) =>
+    [object.x, object.y, object.width, object.height].every((value) => Number.isFinite(value))
+  );
+  if (finite.length === 0) {
+    return undefined;
+  }
+  const left = Math.min(...finite.map((object) => object.x));
+  const top = Math.min(...finite.map((object) => object.y));
+  const right = Math.max(...finite.map((object) => object.x + object.width));
+  const bottom = Math.max(...finite.map((object) => object.y + object.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number): DocumentObject {
   return {
     id: `cdxml_unknown_${pageIndex + 1}_${objectIndex}`,
@@ -2790,6 +2885,17 @@ function findChemDraftObjectTags(tree: OrderedXmlTree): Record<string, string> {
     tags[name] = element.attributes.Value ?? textContent(element.children);
   }
   return tags;
+}
+
+/** The document element's name, skipping the XML declaration and other processing instructions. */
+function xmlRootElementName(tree: OrderedXmlTree): string | undefined {
+  for (const node of tree) {
+    const element = elementView(node);
+    if (element && !element.name.startsWith("?") && !element.name.startsWith("!")) {
+      return element.name;
+    }
+  }
+  return undefined;
 }
 
 function findElements(tree: OrderedXmlTree, name: string): XmlElementView[] {
@@ -3001,6 +3107,10 @@ function cdxmlBondOrder(
   return "1";
 }
 
+function isCdxmlDativeOrder(order: string | undefined): boolean {
+  return order?.trim().toLowerCase() === "dative";
+}
+
 function moleculeBondOrderFromCdxml(
   order: string | undefined,
   warnings: CompatibilityConversionWarning[],
@@ -3014,6 +3124,11 @@ function moleculeBondOrderFromCdxml(
   }
   if (order === "3") {
     return "triple";
+  }
+  if (isCdxmlDativeOrder(order)) {
+    // A dative bond is native: a single bond drawn dashed (`isDativeBond`). The dashed style is
+    // applied by the caller, after the bond's own Display, so the pair always reads back as dative.
+    return "single";
   }
   if (order === "1.5" || order?.toLowerCase() === "aromatic") {
     warnings.push({

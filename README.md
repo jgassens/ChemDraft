@@ -61,6 +61,10 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
   installed to `%LOCALAPPDATA%\ChemDraft (dev)`), with a per-worktree identifier — its own app data and
   single-instance lock, so it installs beside the stable app rather than over it (AGENTS.md §21.2).
   Release automation building a tagged commit sets `CHEMDRAFT_STABLE_BUILD=1`.
+- The released app updates itself: a daily check of a signed feed on `main`, File ▸ Check for
+  Updates…, and never a silent install. Publishing an update, and where the signing key lives, is in
+  `docs/releasing/windows-updates.md`. The installer itself is not Authenticode-signed yet, so
+  SmartScreen still warns on a manual download.
 - The Windows installer registers `.chemdraft` only (`tauri.windows.conf.json`). The macOS `.cdxml` entry
   ranks ChemDraft as an Alternate handler, but NSIS ignores rank: a per-user install would write
   `HKCU\Software\Classes\.cdxml`, which outranks ChemDraw's machine-wide registration and silently takes

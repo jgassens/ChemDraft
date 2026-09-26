@@ -548,13 +548,16 @@ export async function loadDocumentSession(): Promise<unknown | undefined> {
 
 /** Persist the working-document autosave envelope. JS owns the shape; Rust writes the opaque
  *  JSON. No-op off the desktop runtime. */
-export async function saveDocumentSession(state: unknown): Promise<void> {
+/** Autosave ignores a failed write (the previous session stays); `strict` rejects instead, for callers
+ *  that are about to end the process and must know the document reached disk. */
+export async function saveDocumentSession(state: unknown, options?: { strict?: boolean }): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("save_document_session", { state }).catch(() => undefined);
+  const write = invoke("save_document_session", { state });
+  await (options?.strict ? write : write.catch(() => undefined));
 }
 
 /** Emitted by Rust to the document window when the app is about to quit (off macOS: closing the

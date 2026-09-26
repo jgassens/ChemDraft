@@ -652,7 +652,21 @@ import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
 import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
-import { createDesktopShortcutRegistry, isBrowserReloadChord } from "./keyboardShortcuts";
+import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform, isBrowserReloadChord } from "./keyboardShortcuts";
+import { decodeDocumentBytes } from "./documentText";
+import {
+  APP_CHECK_FOR_UPDATES_COMMAND_ID,
+  AUTO_CHECK_DELAY_MS,
+  appUpdateChecksAllowed,
+  appUpdatesSupported,
+  autoCheckDue,
+  currentUpdateBuildInfo,
+  readLastAutoCheck,
+  runUpdateFlow,
+  safeLocalStorage,
+  tauriUpdateFlowDeps,
+  writeLastAutoCheck
+} from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
@@ -1393,7 +1407,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_HISTORY_LIMIT = 100;
-const CURRENT_BUILD_STAMP = "9.25.14.59-opus";
+const CURRENT_BUILD_STAMP = "9.25.22.53-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -7484,7 +7498,9 @@ export function MainWindow({
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
   // so the startup blank can't clobber the previous session before the restore above has read it.
-  const writeDocumentSessionNow = useCallback(async () => {
+  // `strict` rethrows a failed write. The app updater needs it: its installer ends the process, so
+  // "the previous autosave stays" is not good enough there — a failed save must stop the update.
+  const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean }) => {
     if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
       return;
     }
@@ -7497,8 +7513,11 @@ export function MainWindow({
         path ? nativePathBasename(path) : payload.filename,
         documentIsBlank(documentRef.current)
       );
-      await saveDocumentSession(envelope);
-    } catch {
+      await saveDocumentSession(envelope, { strict: options?.strict });
+    } catch (error) {
+      if (options?.strict) {
+        throw error;
+      }
       // Serialization or the write must never break editing (or block a quit); the previous
       // autosave stays.
     }
@@ -7539,6 +7558,52 @@ export function MainWindow({
       unlisten?.();
     };
   }, [writeDocumentSessionNow]);
+
+  // Windows app updates (appUpdates.ts). One flow at a time: a menu click during the launch check, or
+  // a double click, must not raise a second prompt or start a second download.
+  const appUpdateFlowRunningRef = useRef(false);
+  const runAppUpdateCheck = useCallback(async (mode: "manual" | "automatic") => {
+    if (appUpdateFlowRunningRef.current) {
+      if (mode === "manual") {
+        setStatus("Already checking for updates");
+      }
+      return;
+    }
+    appUpdateFlowRunningRef.current = true;
+    try {
+      const info = await currentUpdateBuildInfo(isDesktopRuntime(), detectDesktopShortcutPlatform());
+      if (!appUpdateChecksAllowed(info)) {
+        if (mode === "manual") {
+          setStatus("Updates go to the released ChemDraft only; this is a development build");
+        }
+        return;
+      }
+      const outcome = await runUpdateFlow(
+        mode,
+        tauriUpdateFlowDeps({ setStatus, flushSession: () => writeDocumentSessionNow({ strict: true }) })
+      );
+      if (outcome !== "check-failed") {
+        writeLastAutoCheck(safeLocalStorage(), Date.now());
+      }
+    } finally {
+      appUpdateFlowRunningRef.current = false;
+    }
+  }, [writeDocumentSessionNow]);
+  const runAppUpdateCheckRef = useRef(runAppUpdateCheck);
+  runAppUpdateCheckRef.current = runAppUpdateCheck;
+
+  // The launch check: at most once a day, after startup has settled (same cadence as Sparkle's).
+  useEffect(() => {
+    if (!appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
+      return undefined;
+    }
+    const handle = window.setTimeout(() => {
+      if (autoCheckDue(readLastAutoCheck(safeLocalStorage()), Date.now())) {
+        void runAppUpdateCheckRef.current("automatic");
+      }
+    }, AUTO_CHECK_DELAY_MS);
+    return () => window.clearTimeout(handle);
+  }, []);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
     const payload = createNativeSavePayload(documentRef.current);
@@ -7722,6 +7787,22 @@ export function MainWindow({
       },
       () => setPluginManagerOpen(true)
     );
+
+    // File ▸ Check for Updates… on Windows. macOS answers the same menu id natively (Sparkle), and
+    // other builds have no update channel, so the command exists only where it can work.
+    if (appUpdatesSupported({ isDesktop: isDesktopRuntime(), platform: detectDesktopShortcutPlatform() })) {
+      register(
+        {
+          id: APP_CHECK_FOR_UPDATES_COMMAND_ID,
+          title: "Check for Updates…",
+          icon: "open",
+          source: "core",
+          category: "app",
+          description: "Check for a newer ChemDraft and offer to install it"
+        },
+        () => runAppUpdateCheckRef.current("manual")
+      );
+    }
 
     quickActions.forEach((action) => {
       register(action, async () => {
@@ -27148,9 +27229,10 @@ function prewarmNativeDialogModule(): void {
   });
 }
 
+/** An opened document's text, decoded by its byte-order mark (see documentText.ts) — `readTextFile`
+ *  alone assumes UTF-8, so a UTF-16 CDXML file opened as noise. */
 async function readNativeTextFile(path: string): Promise<string> {
-  const { readTextFile } = await import("@tauri-apps/plugin-fs");
-  return readTextFile(path);
+  return decodeDocumentBytes(await readNativeBinaryFile(path));
 }
 
 async function readNativeBinaryFile(path: string): Promise<Uint8Array> {

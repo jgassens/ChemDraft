@@ -36,6 +36,11 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+# App updates on Windows (macOS keeps Sparkle; Linux has no release yet): signed manifest +
+# NSIS installer, see docs/releasing/windows-updates.md.
+[target.'cfg(windows)'.dependencies.tauri-plugin-updater]
+version = "2.12.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPasteboard", "NSWindow", "NSEvent"] }

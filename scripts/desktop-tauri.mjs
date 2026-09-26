@@ -49,7 +49,8 @@ env.CHEMDRAFT_WORKTREE_LABEL ??= identity.label;
 // gives the installer its own install directory and uninstall entry. Without this, installing a branch
 // build replaced the stable install and a running stable app swallowed the branch build's launch.
 // CHEMDRAFT_STABLE_BUILD=1 opts out, for release automation building a tagged commit.
-if (args[0] === "build" && identity.branch !== "main" && env.CHEMDRAFT_STABLE_BUILD !== "1") {
+const isBranchBuild = args[0] === "build" && identity.branch !== "main" && env.CHEMDRAFT_STABLE_BUILD !== "1";
+if (isBranchBuild) {
   const devConfig = JSON.stringify({
     identifier: identity.devBundleId,
     productName: DEV_PRODUCT_NAME,
@@ -57,6 +58,22 @@ if (args[0] === "build" && identity.branch !== "main" && env.CHEMDRAFT_STABLE_BU
   });
   args.splice(1, 0, "--config", devConfig);
   console.log(`Branch build (${identity.label}): ${DEV_PRODUCT_NAME}, ${identity.devBundleId}`);
+}
+
+// A stable Windows build also signs its installer for the in-app updater (`<installer>.sig`, the
+// input to `pnpm release:windows-manifest`). Only when the updater key is on this machine: without it
+// the build still succeeds, just without update signatures, so a developer on main is never blocked.
+// Branch builds never sign — they must not be publishable as an update to the released app.
+if (args[0] === "build" && !isBranchBuild && process.platform === "win32") {
+  const keyPath = env.CHEMDRAFT_UPDATER_KEY_PATH ?? join(homedir(), ".tauri", "chemdraft-updater.key");
+  if (env.TAURI_SIGNING_PRIVATE_KEY || existsSync(keyPath)) {
+    env.TAURI_SIGNING_PRIVATE_KEY ??= readFileSync(keyPath, "utf8");
+    env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ??= "";
+    args.splice(1, 0, "--config", JSON.stringify({ bundle: { createUpdaterArtifacts: true } }));
+    console.log("Stable build: signing the installer for the in-app updater.");
+  } else {
+    console.log(`Stable build without the updater key (${keyPath}): the installer cannot be published as an update.`);
+  }
 }
 
 // The installer names each association's registry ProgID after its `name`, so a branch build that

@@ -7,6 +7,7 @@ import {
   type ArrowObject,
   type ChemDraftDocument,
   type GraphicObject,
+  type GroupObject,
   type MoleculeObject,
   type TextObject
 } from "@chemdraft/chem-core";
@@ -23,6 +24,90 @@ import {
   visibleHashForCdxml
 } from "./index";
 import { sha256Hex, utf8Bytes } from "./sha256";
+
+describe("files that are not CDXML", () => {
+  it("names a ChemDraw binary .cdx file and says what to do", () => {
+    const opened = openChemDraftPayload("VjCD0100\u0004\u0003\u0002\u0001�\u0000");
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
+    expect(opened.warnings?.[0].message).toContain("Save As");
+    // The same file base64-encoded, as some interchange files carry it.
+    expect(openChemDraftPayload("VmpDRDAxMDAEAwIBAAAAAAAA").warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
+  });
+
+  it("names the root element of XML that is not CDXML", () => {
+    const opened = openChemDraftPayload('<?xml version="1.0" encoding="utf-8"?>\n<PowerShellMetadata><Class/></PowerShellMetadata>');
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings?.[0]).toMatchObject({ code: "cdxml.not_cdxml_xml" });
+    expect(opened.warnings?.[0].message).toContain("<PowerShellMetadata>");
+  });
+
+  it("still opens CDXML whatever the root element's case", () => {
+    const opened = openChemDraftPayload('<?xml version="1.0"?><cdxml><page id="1"><t p="0 0"><s>Hi</s></t></page></cdxml>');
+    expect(opened.document).toBeDefined();
+  });
+});
+
+describe("CDXML groups", () => {
+  const fragment = (id: string, x: number) =>
+    `<fragment id="${id}"><n id="${id}a" p="${x} 0"/><n id="${id}b" p="${x + 14} 0"/><b id="${id}c" B="${id}a" E="${id}b"/></fragment>`;
+
+  it("imports the molecules inside a group and ties them with a native group", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g1">${fragment("m1", 0)}${fragment("m2", 40)}</group></page></CDXML>`);
+    const objects = opened.document?.pages[0].objects ?? [];
+    const molecules = objects.filter((object) => object.type === "molecule");
+    const groups = objects.filter((object): object is GroupObject => object.type === "group");
+    expect(molecules).toHaveLength(2);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].childObjectIds).toEqual(molecules.map((molecule) => molecule.id));
+    expect(opened.warnings?.some(({ message }) => message.includes('"group"'))).toBe(false);
+    // The group encloses its members.
+    for (const molecule of molecules) {
+      expect(molecule.x).toBeGreaterThanOrEqual(groups[0].x);
+      expect(molecule.x + molecule.width).toBeLessThanOrEqual(groups[0].x + groups[0].width + 1e-9);
+    }
+  });
+
+  it("keeps nested groups nested, and stands a lone member on the page", () => {
+    const nested = openChemDraftPayload(
+      `<CDXML><page id="1"><group id="outer"><group id="inner">${fragment("m1", 0)}${fragment("m2", 40)}</group>${fragment("m3", 80)}</group></page></CDXML>`
+    );
+    const objects = nested.document?.pages[0].objects ?? [];
+    const groups = objects.filter((object): object is GroupObject => object.type === "group");
+    expect(objects.filter((object) => object.type === "molecule")).toHaveLength(3);
+    expect(groups).toHaveLength(2);
+    const [inner, outer] = groups;
+    expect(outer.childObjectIds).toContain(inner.id);
+    expect(inner.childObjectIds).toHaveLength(2);
+
+    const lone = openChemDraftPayload(`<CDXML><page id="1"><group id="g">${fragment("m1", 0)}</group></page></CDXML>`);
+    const loneObjects = lone.document?.pages[0].objects ?? [];
+    expect(loneObjects.map((object) => object.type)).toEqual(["molecule"]);
+  });
+});
+
+describe("CDXML dative bonds", () => {
+  const dativeCdxml = `<CDXML><page id="1"><fragment id="f">
+    <n id="n" p="0 0" Element="7"/><n id="m" p="14 0" Element="29"/>
+    <b id="b" B="n" E="m" Order="dative"/>
+  </fragment></page></CDXML>`;
+
+  it("imports Order=\"dative\" as the native dative bond (single, dashed) without a warning", () => {
+    const opened = openChemDraftPayload(dativeCdxml);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    expect(molecule.bonds[0]).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+    expect(opened.warnings?.some(({ code }) => code === "cdxml.bond_order_import_unsupported")).toBe(false);
+  });
+
+  it("writes a native dative bond back as Order=\"dative\"", () => {
+    const opened = openChemDraftPayload(dativeCdxml);
+    const exported = exportDocumentToCdxml(opened.document!).contents;
+    expect(exported).toMatch(/<b [^>]*Order="dative"/);
+    const reopened = openChemDraftPayload(canonicalVisibleCdxml(exported));
+    const bond = (reopened.document?.pages[0].objects[0] as MoleculeObject).bonds[0];
+    expect(bond).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+  });
+});
 
 describe("CDXML abbreviation fallbacks", () => {
   function openAbbreviation(body: string, label = "<s>SO3</s>", attributes = "") {

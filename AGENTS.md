@@ -1348,7 +1348,10 @@ settle a typed value once, on blur or Enter; palette, popover, and tooltip windo
 taskbar and never stealing focus from the document; palette toggles that bring a palette hidden
 behind the document to the front instead of hiding it; popovers and tooltips landing under their
 button across two monitors at different scale factors; a maximized window restored maximized; and
-the clipboard round trips (text, ChemDraft selection, SVG, PNG, and CDX/MDL paste from ChemDraw).
+the clipboard round trips (text, ChemDraft selection, SVG, PNG, and CDX/MDL paste from ChemDraw); and the app
+updater — an older signed build offered the newer one by the launch check and by File ▸ Check for
+Updates…, the document saved before the passive installer runs and restored after it relaunches, and
+a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`).
 
 Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
 on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a

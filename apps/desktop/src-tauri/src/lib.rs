@@ -65,7 +65,7 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 #[cfg(target_os = "macos")]
@@ -440,6 +440,12 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_sparkle_updater::init());
 
+    // Windows app updates: a signed manifest on main (`plugins.updater` in tauri.windows.conf.json)
+    // and a signed NSIS installer. The webview drives the flow, and only a stable build ever checks;
+    // see docs/releasing/windows-updates.md.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
     // Only macOS has an app-wide menu bar. Elsewhere an app-wide Tauri menu is attached to EVERY
     // window, which subclasses each palette/popover with muda's menu proc; see `install_app_menu`
     // for why that crashed. There the menu is attached to the document window in `setup` instead.
@@ -466,6 +472,15 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
                 check_for_updates(app);
+                return;
+            }
+            // Windows runs the check in the document webview: it owns the prompt, the download
+            // progress, and the session flush that must precede the installer (appUpdates.ts).
+            #[cfg(windows)]
+            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
+                if let Err(error) = emit_command_to_main(app, command_id) {
+                    eprintln!("Could not route the update check: {error}");
+                }
                 return;
             }
             #[cfg(not(target_os = "macos"))]
@@ -578,6 +593,11 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
                 eprintln!("Could not install the ChemDraft menu: {error}");
+            }
+
+            #[cfg(windows)]
+            if let Err(error) = app.add_capability(app_update_capability()) {
+                eprintln!("Could not grant the update check to the document window: {error}");
             }
 
             if let Err(error) = ensure_main_window_visible(app) {
@@ -1555,6 +1575,18 @@ fn set_window_global_logical_position<R: Runtime>(
             physical_y.round() as i32,
         ))
         .map_err(|error| error.to_string())
+}
+
+/// The update check's permissions: granted in code rather than in capabilities/*.json because the
+/// updater plugin exists only in Windows builds, and a JSON capability naming `updater:default` would
+/// fail every other platform's build. Main window only — like the plugin-update transport, no palette,
+/// popover, or plugin panel can reach it. `dialog:allow-message` is for "up to date" and failures.
+#[cfg(windows)]
+fn app_update_capability() -> tauri::ipc::CapabilityBuilder {
+    tauri::ipc::CapabilityBuilder::new("app-updates")
+        .window(MAIN_WINDOW_LABEL)
+        .permission("updater:default")
+        .permission("dialog:allow-message")
 }
 
 /// Move the calling window to a point in global logical coordinates (see
@@ -2893,7 +2925,11 @@ fn is_openable_document_path(path: &Path) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("chemdraft") || extension.eq_ignore_ascii_case("cdxml")
+            // `.cdx` cannot be read yet, but it is accepted so the opener can say so; filtering it
+            // out here made "Open with ChemDraft" on a .cdx do nothing at all.
+            extension.eq_ignore_ascii_case("chemdraft")
+                || extension.eq_ignore_ascii_case("cdxml")
+                || extension.eq_ignore_ascii_case("cdx")
         });
     extension_ok && path.is_file()
 }
@@ -2936,8 +2972,35 @@ fn open_document_payload_from_url(
     open_document_payload_from_path(&path).map(Some)
 }
 
+/// An opened document's bytes as text, by the same rule as `decodeDocumentBytes` (documentText.ts):
+/// a UTF-8/UTF-16 byte-order mark decides, otherwise lenient UTF-8. `read_to_string` failed on
+/// anything that was not valid UTF-8, and that failure was only logged — so double-clicking a UTF-16
+/// CDXML file (or a .cdx renamed .cdxml) did nothing at all. Now it reaches the opener, which can say
+/// what the file is.
+fn decode_document_text(bytes: &[u8]) -> String {
+    let utf16 = |body: &[u8], little_endian: bool| {
+        let units = body
+            .chunks_exact(2)
+            .map(|pair| {
+                if little_endian {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect::<Vec<_>>();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, body @ ..] => utf16(body, true),
+        [0xFE, 0xFF, body @ ..] => utf16(body, false),
+        [0xEF, 0xBB, 0xBF, body @ ..] => String::from_utf8_lossy(body).into_owned(),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
-    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let contents = decode_document_text(&fs::read(path).map_err(|error| error.to_string())?);
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -3277,7 +3340,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         }),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
-                    #[cfg(target_os = "macos")]
+                    // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
+                    // (appUpdates.ts). Linux has no update channel yet, so no item there.
+                    #[cfg(any(target_os = "macos", windows))]
                     &MenuItem::with_id(
                         app,
                         CHECK_FOR_UPDATES_COMMAND_ID,
@@ -3285,7 +3350,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         true,
                         None::<&str>,
                     )?,
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::close_window(app, None)?,
                     // A routed item, not PredefinedMenuItem::quit: on Windows muda's predefined Quit
@@ -5325,6 +5390,29 @@ mod tests {
                 .iter()
                 .any(|extensions| extensions.contains(&"cdxml")),
         );
+    }
+
+    #[test]
+    fn opened_documents_decode_by_byte_order_mark_and_never_fail() {
+        let xml = "<CDXML><page id=\"1\"/></CDXML>";
+        assert_eq!(decode_document_text(xml.as_bytes()), xml);
+        let mut bom8 = vec![0xEF, 0xBB, 0xBF];
+        bom8.extend_from_slice(xml.as_bytes());
+        assert_eq!(decode_document_text(&bom8), xml);
+
+        let units = xml.encode_utf16().collect::<Vec<_>>();
+        let mut le = vec![0xFF, 0xFE];
+        le.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+        assert_eq!(decode_document_text(&le), xml);
+        let mut be = vec![0xFE, 0xFF];
+        be.extend(units.iter().flat_map(|unit| unit.to_be_bytes()));
+        assert_eq!(decode_document_text(&be), xml);
+
+        // A binary ChemDraw file must still reach the opener, signature intact, so it can say what
+        // the file is rather than the open silently doing nothing.
+        let mut cdx = b"VjCD0100".to_vec();
+        cdx.extend_from_slice(&[0x04, 0x03, 0x02, 0x01, 0xFF, 0x00, 0x80]);
+        assert!(decode_document_text(&cdx).starts_with("VjCD0100"));
     }
 
     /// NSIS ignores `rank`, so a Windows `.cdxml` association is never "Alternate": a per-user install

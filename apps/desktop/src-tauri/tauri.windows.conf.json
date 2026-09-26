@@ -10,5 +10,14 @@
         "role": "Editor"
       }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU5MkUwNjVEQTNDRjA3NzcKUldSM0I4K2pYUVl1V1g1MjJGa1NNTmZMUWFrTDRaMkM3STZyREZvN1ZCbWR2ZkQ4VGVPbEZCN1QK",
+      "endpoints": ["https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
