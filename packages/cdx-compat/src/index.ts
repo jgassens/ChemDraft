@@ -5,6 +5,7 @@ import {
   createEmptyDocument,
   deserializeDocument,
   isDativeBond,
+  isEngineDocument,
   parseDocument,
   serializeDocument,
   type Anchor,
@@ -39,6 +40,9 @@ export interface CdxmlExportOptions {
 export interface CdxmlExportResult {
   contents: string;
   warnings: CompatibilityConversionWarning[];
+  /** SHA-256 of the native document the envelope embeds: an identity for what was saved, already
+   *  computed for the envelope, so a caller need not hash the megabytes of `contents` again. */
+  nativePayloadHash: string;
 }
 
 export type ChemDraftOpenSource = "native-payload" | "legacy-json" | "external-cdxml";
@@ -160,7 +164,9 @@ export function exportDocumentToCdxml(
   document: ChemDraftDocument,
   options: CdxmlExportOptions = {}
 ): CdxmlExportResult {
-  const parsedDocument = parseDocument(document);
+  // A document the patch engine produced is validated and normalized already; re-parsing it cost a
+  // full schema pass over every object on each save, and autosave runs after every pause in editing.
+  const parsedDocument = isEngineDocument(document) ? document : parseDocument(document);
   const warnings: CompatibilityConversionWarning[] = [];
   const creationProgram = options.creationProgram ?? "ChemDraft";
   const nativeJson = serializeDocument(parsedDocument);
@@ -187,7 +193,7 @@ export function exportDocumentToCdxml(
   // metadata back to the same visible hash; the round-trip tests (a save reopens as its native
   // payload, not as an externally edited file) are what enforce it.
 
-  return { contents, warnings };
+  return { contents, warnings, nativePayloadHash };
 }
 
 export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
@@ -3626,7 +3632,15 @@ function parseNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+// One scan decides whether escaping is needed at all. Most values need none — the embedded base64
+// payload, megabytes long, never does — and five replace passes over it cost ~300 ms per save.
+const XML_TEXT_SPECIAL = /[&<>]/;
+const XML_ATTRIBUTE_SPECIAL = /[&<>"']/;
+
 function escapeXmlText(value: string): string {
+  if (!XML_TEXT_SPECIAL.test(value)) {
+    return value;
+  }
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -3634,6 +3648,9 @@ function escapeXmlText(value: string): string {
 }
 
 function escapeXmlAttribute(value: string): string {
+  if (!XML_ATTRIBUTE_SPECIAL.test(value)) {
+    return value;
+  }
   return escapeXmlText(value)
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");

@@ -30,6 +30,7 @@ import {
   CSS_PX_PER_INCH,
   DefaultNativeTextStyle,
   applyPatches,
+  toEngineDocument,
   createDocumentHistory,
   moleculeToMolfileV2000,
   nativeDrawingStyleFromObjectStyle,
@@ -1137,7 +1138,6 @@ type TextResizeState = {
 type NativeFileState = {
   path?: string;
   dirty: boolean;
-  lastSavedPayloadHash?: string;
 };
 type ResolvedOpenDocument = {
   document: ChemDraftDocument;
@@ -1411,7 +1411,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "9.26.10.55-opus";
+const CURRENT_BUILD_STAMP = "9.26.11.35-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2553,7 +2553,7 @@ export function MainWindow({
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
-    installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(nextDocument)));
+    installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(toEngineDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
   }, [installDocumentHistory]);
@@ -7295,12 +7295,7 @@ export function MainWindow({
       ? recommendImportedPageFit(resolvedOpen.document)
       : undefined;
     const dirty = options?.dirty ?? false;
-    resetDocumentHistory(resolvedOpen.document, {
-      path,
-      dirty,
-      // Dirty contents were never saved anywhere, so they must not pose as the on-disk state.
-      lastSavedPayloadHash: dirty ? undefined : sha256Utf8Hex(contents)
-    });
+    resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
     const openStatus = options?.statusOverride
@@ -7646,8 +7641,7 @@ export function MainWindow({
       setFileState((current) => {
         const nextFileState = {
           ...current,
-          dirty: false,
-          lastSavedPayloadHash: payload.payloadHash
+          dirty: false
         };
         fileStateRef.current = nextFileState;
         return nextFileState;
@@ -7670,8 +7664,7 @@ export function MainWindow({
       await writeNativeTextFile(finalPath, payload.contents);
       const nextFileState = {
         path: finalPath,
-        dirty: false,
-        lastSavedPayloadHash: payload.payloadHash
+        dirty: false
       };
       fileStateRef.current = nextFileState;
       setFileState(nextFileState);

@@ -149,6 +149,8 @@ export {
   DocumentPatchError,
   adoptDerivedDocument,
   applyPatch,
+  isEngineDocument,
+  toEngineDocument,
   applyPatches,
   type ApplyPatchOptions,
   type DocumentPatch,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adoptDerivedDocument, applyPatch, applyPatches, DocumentPatchError } from "./patches";
+import { adoptDerivedDocument, applyPatch, applyPatches, DocumentPatchError, isEngineDocument, toEngineDocument } from "./patches";
 import { createEmptyDocument } from "./document";
 import type { ChemDraftDocument, DocumentObject } from "./schemas";
 
@@ -112,6 +112,42 @@ describe("patch engine structural sharing", () => {
     const handBuilt = createEmptyDocument({ title: "t", now }) as ChemDraftDocument;
     const derived = { ...handBuilt, title: "u" };
     expect(adoptDerivedDocument(handBuilt, derived)).toBe(derived);
+  });
+
+  it("admits an outside document once, as an independent copy the next edit shares from", () => {
+    const outside = JSON.parse(JSON.stringify(documentWith(3))) as ChemDraftDocument;
+    expect(isEngineDocument(outside)).toBe(false);
+    const admitted = toEngineDocument(outside);
+    expect(isEngineDocument(admitted)).toBe(true);
+    expect(admitted).not.toBe(outside);
+    expect(admitted.pages[0]!.objects[0]).not.toBe(outside.pages[0]!.objects[0]);
+    expect(toEngineDocument(admitted)).toBe(admitted);
+    const edited = applyPatch(admitted, { op: "moveObject", objectId: "t2", x: 5, y: 5 }, { now });
+    expect(edited.pages[0]!.objects[0]).toBe(admitted.pages[0]!.objects[0]);
+  });
+
+  it("removes a run of objects in one pass with the same result as one patch at a time", () => {
+    const base = documentWith(6);
+    const page = base.pages[0]!;
+    // A duplicate id, as a parsed legacy file may carry (addObject refuses one): removal takes the
+    // first remaining one each time.
+    const outside = JSON.parse(JSON.stringify(base)) as ChemDraftDocument;
+    outside.pages[0]!.objects.push(textObject("t1", 99));
+    outside.selection = { pageId: page.id, objectIds: ["t0", "t1", "t4"] };
+    const withDuplicate = toEngineDocument(outside);
+    const removals = ["t1", "t4", "t1", "t2"].map((objectId) => ({ op: "removeObject" as const, objectId }));
+    const batched = applyPatches(withDuplicate, removals, { now });
+    const sequential = removals.reduce((document, patch) => applyPatch(document, patch, { now }), withDuplicate);
+    expect(batched.pages[0]!.objects.map((object) => [object.id, object.x])).toEqual(
+      sequential.pages[0]!.objects.map((object) => [object.id, object.x])
+    );
+    expect(batched.pages[0]!.objects.map((object) => object.id)).toEqual(["t0", "t3", "t5"]);
+    expect(batched.selection.objectIds).toEqual(sequential.selection.objectIds);
+    expect(batched.selection.objectIds).toEqual(["t0"]);
+
+    // And a missing id still fails the whole batch, naming it.
+    expect(() => applyPatches(withDuplicate, [...removals, { op: "removeObject", objectId: "t1" }], { now }))
+      .toThrow('object "t1" does not exist');
   });
 
   it("keeps the page shell validated: a layout whose size disagrees with the page is refused", () => {

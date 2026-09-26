@@ -13,6 +13,7 @@ import {
   type PageLayout
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
+import { engineDocuments } from "./engineDocuments";
 import { pageMarginFromLayout } from "./page-layout";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
@@ -49,12 +50,6 @@ export function applyPatch(
   return applyPatches(document, [patch], options);
 }
 
-/**
- * Documents this engine produced. Their every object was validated when it entered, so a later
- * patch need only validate what it changes. Anything else — a document built by hand, or taken from
- * elsewhere — is deep-copied and fully validated first, exactly as every patch used to be.
- */
-const engineDocuments = new WeakSet<ChemDraftDocument>();
 
 /**
  * Apply `patches` in order; each sees the result of the ones before it, and any that fails throws
@@ -82,8 +77,24 @@ export function applyPatches(
   }
   const base = engineDocuments.has(document) ? document : cloneDocument(document);
   const draft = createDraft(base);
-  for (const patch of patches) {
+  for (let index = 0; index < patches.length; ) {
+    const patch = patches[index]!;
+    if (patch.op === "removeObject") {
+      // A run of removals (deleting a selection) is one pass over the page. One at a time, each
+      // splice left the id index stale and each re-filtered the selection: deleting 5,000 selected
+      // objects did 25 million steps. The result is the same as removing them in order.
+      let end = index + 1;
+      while (end < patches.length && patches[end]!.op === "removeObject") {
+        end += 1;
+      }
+      if (end - index > 1) {
+        removeObjects(draft, patches.slice(index, end).map((entry) => (entry as { objectId: string }).objectId));
+        index = end;
+        continue;
+      }
+    }
     applyPatchInPlace(draft, patch);
+    index += 1;
   }
   draft.updatedAt = toIsoTimestamp(options.now ?? new Date());
   const next = validateDraft(draft);
@@ -92,6 +103,34 @@ export function applyPatches(
     deepFreezeNew(next);
   }
   return next;
+}
+
+/**
+ * Whether the patch engine produced `document` (as a patch result or through
+ * `adoptDerivedDocument`). Such a document is already validated and normalized, so a consumer that
+ * would otherwise re-parse it — a save, run after every pause in editing — can use it as it is.
+ */
+export function isEngineDocument(document: ChemDraftDocument): boolean {
+  return engineDocuments.has(document);
+}
+
+/**
+ * `document` as an engine document: validated and normalized once, now, as a patch would on its
+ * first edit. For a document that enters from outside — opened, restored, created — so that saves
+ * before the first edit skip re-validation and the first edit shares its unchanged objects rather
+ * than deep-copying the whole page. The result is an independent copy; the input is never adopted,
+ * since its caller may still hold and mutate it.
+ */
+export function toEngineDocument(document: ChemDraftDocument): ChemDraftDocument {
+  if (engineDocuments.has(document)) {
+    return document;
+  }
+  const admitted = cloneDocument(document);
+  engineDocuments.add(admitted);
+  if (freezeResults) {
+    deepFreezeNew(admitted);
+  }
+  return admitted;
 }
 
 /**
@@ -247,6 +286,44 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
   location.page.objects.splice(location.objectIndex, 1);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
   pruneCrossings(location.page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === objectId));
+}
+
+/**
+ * Remove `objectIds` as successive `removeObject` patches would: each removal takes the first
+ * remaining object with that id, searching pages in order; every selection entry naming a removed id
+ * goes; and each page drops the crossings that name an object removed from it.
+ */
+function removeObjects(document: ChemDraftDocument, objectIds: readonly string[]): void {
+  const remaining = new Map<string, number>();
+  for (const id of objectIds) {
+    remaining.set(id, (remaining.get(id) ?? 0) + 1);
+  }
+  const removed = new Set<string>();
+  for (const page of document.pages) {
+    const removedHere = new Set<string>();
+    const kept = page.objects.filter((object) => {
+      const count = remaining.get(object.id);
+      if (!count) {
+        return true;
+      }
+      remaining.set(object.id, count - 1);
+      removedHere.add(object.id);
+      return false;
+    });
+    if (removedHere.size === 0) {
+      continue;
+    }
+    // The draft page owns a fresh objects array (createDraft), so it can simply be replaced; a spread
+    // into splice would overflow the argument stack on a page of 100,000 objects.
+    page.objects = kept;
+    pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => removedHere.has(ref.objectId)));
+    removedHere.forEach((id) => removed.add(id));
+  }
+  const missing = objectIds.find((id) => (remaining.get(id) ?? 0) > 0);
+  if (missing !== undefined) {
+    throw new DocumentPatchError(`Cannot remove object: object "${missing}" does not exist.`);
+  }
+  document.selection.objectIds = document.selection.objectIds.filter((id) => !removed.has(id));
 }
 
 function reorderObject(

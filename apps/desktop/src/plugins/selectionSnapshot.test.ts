@@ -1,4 +1,5 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import * as OCL from "openchemlib";
 import { describe, expect, it } from "vitest";
 
 import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
@@ -94,6 +95,24 @@ describe("pluginFacingStructure", () => {
     expect(facing.structure).toContain(" R# ");
     expect(facing.structure).toContain("M  RGP  1   2   1");
     expect(facing.structure).not.toContain(" *  ");
+  });
+
+  it("spells a condensed label with its hydrogens, so the plugin's OpenChemLib reads the molecule drawn", () => {
+    const ethanol = {
+      id: "m", type: "molecule", structureFormat: "smiles", structure: "",
+      atoms: [
+        { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a1", element: "C", x: 14, y: 0, formalCharge: 0 },
+        { id: "a2", element: "OH", x: 28, y: 0, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" },
+        { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }
+      ]
+    } as unknown as Parameters<typeof pluginFacingStructure>[0];
+    const facing = pluginFacingStructure(ethanol);
+    expect(facing.structure).not.toContain("R#");
+    expect(OCL.Molecule.fromMolfile(facing.structure).getMolecularFormula().formula).toBe("C2H6O");
   });
 
   it("passes through the existing structure when there is no atom graph (e.g. a SMILES import)", () => {

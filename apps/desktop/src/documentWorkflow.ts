@@ -94,7 +94,6 @@ import {
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
   openChemDraftPayload,
-  sha256Utf8Hex,
   type ChemDraftOpenResult,
   type CompatibilityConversionWarning
 } from "@chemdraft/cdx-compat";
@@ -13289,8 +13288,9 @@ export function duplicateSelectedDocumentObjects(
   offset: PagePoint = { x: 24, y: 24 }
 ): ChemDraftDocument {
   const page = firstPage(document);
+  const directlySelected = new Set(document.selection.objectIds);
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
-    object.type === "group" && document.selection.objectIds.includes(object.id)
+    object.type === "group" && directlySelected.has(object.id)
   );
   const selectedIds = new Set(selectedTransformObjectIds(document));
   const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id));
@@ -13317,6 +13317,9 @@ export function duplicateSelectedDocumentObjects(
 
   const duplicateGroupIds: string[] = [];
   const groupedDuplicateChildIds = new Set<string>();
+  // Built once: per group it copied the whole page, and a fresh array also defeated the object index
+  // `selectionBounds` keeps per array, so every group rebuilt it.
+  const objectsWithDuplicates = [...page.objects, ...duplicates];
   for (const group of selectedGroups) {
     const childObjectIds = group.childObjectIds
       .map((childId) => duplicateIdByOriginalId.get(childId))
@@ -13325,7 +13328,7 @@ export function duplicateSelectedDocumentObjects(
       continue;
     }
     childObjectIds.forEach((childId) => groupedDuplicateChildIds.add(childId));
-    const bounds = selectionBounds([...page.objects, ...duplicates], childObjectIds);
+    const bounds = selectionBounds(objectsWithDuplicates, childObjectIds);
     if (!bounds) {
       continue;
     }
@@ -17577,7 +17580,9 @@ export function createNativeSavePayload(document: ChemDraftDocument): NativeSave
     mimeType: "chemical/x-cdxml",
     contents: result.contents,
     warnings: result.warnings,
-    payloadHash: sha256Utf8Hex(result.contents)
+    // The embedded native document's hash, already computed by the export: hashing the whole
+    // envelope again cost ~190 ms per autosave on a large page.
+    payloadHash: result.nativePayloadHash
   };
 }
 
@@ -20552,7 +20557,9 @@ function nativeLiteralAtomValenceComplete(
  * "OH" → O + 1). Undefined for anything else — multiple heavy atoms, abbreviations, pure-H
  * labels — which stay unchecked superatoms.
  */
-function nativeSingleHeavyElementLabelValence(
+/** A condensed label naming one heavy atom and its hydrogens ("OH", "NH2", "CH3"), spelled out;
+ *  undefined for anything else ("Ph", "OMe"). Also the molfile writers' `spellLabel`. */
+export function nativeSingleHeavyElementLabelValence(
   label: string
 ): { element: NativeElementSymbol; hydrogens: number } | undefined {
   const counts = parseCondensedLabelFormula(label);
