@@ -24,7 +24,7 @@ function listFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) return listFiles(full);
-    return /\.cdx(ml)?$/i.test(name) ? [full] : [];
+    return /\.(cdx|cdxml|chemdraft)$/i.test(name) ? [full] : [];
   });
 }
 
@@ -71,8 +71,20 @@ function timed<T>(report: FileReport, stage: string, run: () => T): T {
 /** A non-finite number in an attribute or path, ignoring the base64 ChemDraft payload (whose text can
  *  contain "NaN" by chance). */
 function hasNonFiniteNumber(markup: string): boolean {
-  const visible = markup.replace(/Value="[A-Za-z0-9+/=]{64,}"/g, "");
-  return /="[^"]*(NaN|-?Infinity)[^"]*"/.test(visible);
+  // A linear walk over attribute values: a regular expression over a multi-megabyte payload
+  // overflows V8's regex stack (the same limit cdx-compat had to work around).
+  for (let open = markup.indexOf('="'); open !== -1; open = markup.indexOf('="', open + 2)) {
+    const close = markup.indexOf('"', open + 2);
+    if (close === -1) {
+      break;
+    }
+    const value = markup.slice(open + 2, close);
+    if (value.length <= 4096 && /\b(NaN|-?Infinity)\b/.test(value)) {
+      return true;
+    }
+    open = close;
+  }
+  return false;
 }
 
 function warningText(warning: unknown): string {

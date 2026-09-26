@@ -86,6 +86,58 @@ describe("CDXML groups", () => {
   });
 });
 
+describe("hostile CDXML", () => {
+  it("skips bonds that do not join two different atoms, and says so", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="a" p="0 0"/><n id="b" p="14 0"/>
+      <b id="ok" B="a" E="b"/><b id="dangling" B="a" E="missing"/><b id="ghost" B="x" E="y"/><b id="self" B="a" E="a"/>
+    </fragment></page></CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    expect(molecule.bonds).toHaveLength(1);
+    const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
+    expect(molecule.bonds.every((bond) => atomIds.has(bond.fromAtomId) && atomIds.has(bond.toAtomId))).toBe(true);
+    expect(opened.warnings?.find(({ code }) => code === "cdxml.bond_endpoints_invalid")?.message).toContain("Skipped 3");
+  });
+
+  it("refuses coordinates too large to represent with a message, not an exception", () => {
+    const open = () =>
+      openChemDraftPayload(`<CDXML><page id="1"><fragment id="f"><n id="a" p="1e308 1e308"/><n id="b" p="-1e308 5"/><b id="c" B="a" E="b"/></fragment></page></CDXML>`);
+    expect(open).not.toThrow();
+    const opened = open();
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings?.[0]).toMatchObject({ code: "cdxml.values_out_of_range" });
+  });
+
+  it("does not expand entity bombs or read external entities", () => {
+    let entities = '<!ENTITY l0 "lol">';
+    for (let i = 1; i <= 9; i++) entities += `<!ENTITY l${i} "${`&l${i - 1};`.repeat(10)}">`;
+    const bomb = openChemDraftPayload(`<?xml version="1.0"?><!DOCTYPE CDXML [${entities}]><CDXML><page id="1"><t p="0 0"><s>&l9;</s></t></page></CDXML>`);
+    const text = JSON.stringify(bomb.document ?? {});
+    expect(text.length).toBeLessThan(100_000);
+    const xxe = openChemDraftPayload('<?xml version="1.0"?><!DOCTYPE CDXML [<!ENTITY x SYSTEM "file:///C:/Windows/win.ini">]><CDXML><page id="1"><t p="0 0"><s>&x;</s></t></page></CDXML>');
+    expect(xxe.document).toBeUndefined();
+  });
+});
+
+describe("large documents", () => {
+  it("exports, saves, and reopens a document whose payload is megabytes long", () => {
+    // 3,000 molecules: the base64 payload attribute runs to megabytes, which overflowed the XML
+    // validator's per-character recursion — the export threw, and so did reopening the saved file.
+    const fragments = Array.from({ length: 3000 }, (_, index) => {
+      const x = (index % 60) * 30;
+      const y = Math.floor(index / 60) * 30;
+      return `<fragment id="f${index}"><n id="a${index}" p="${x} ${y}"/><n id="b${index}" p="${x + 14} ${y}"/><b id="c${index}" B="a${index}" E="b${index}"/></fragment>`;
+    }).join("");
+    const opened = openChemDraftPayload(`<CDXML><page id="1">${fragments}</page></CDXML>`);
+    expect(opened.document?.pages[0].objects).toHaveLength(3000);
+    const exported = exportDocumentToCdxml(opened.document!).contents;
+    expect(exported.length).toBeGreaterThan(1_000_000);
+    const reopened = openChemDraftPayload(exported);
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.document?.pages[0].objects).toHaveLength(3000);
+  });
+});
+
 describe("CDXML dative bonds", () => {
   const dativeCdxml = `<CDXML><page id="1"><fragment id="f">
     <n id="n" p="0 0" Element="7"/><n id="m" p="14 0" Element="29"/>

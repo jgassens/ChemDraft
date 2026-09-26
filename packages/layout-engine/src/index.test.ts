@@ -641,6 +641,50 @@ function visiblePrimitiveSignature(
   });
 }
 
+describe("large molecules", () => {
+  function chainOntoBenzene(chainLength: number): MoleculeObject {
+    const benzene = benzeneMolecule();
+    const atoms = [...benzene.atoms];
+    const bonds = [...benzene.bonds];
+    let previous = "atom_001";
+    for (let index = 0; index < chainLength; index += 1) {
+      const id = `chain_${index}`;
+      atoms.push({ id, element: "C", x: 100 - index * 14, y: 180 + (index % 2) * 8, formalCharge: 0 });
+      bonds.push({ id: `chain_bond_${index}`, fromAtomId: previous, toAtomId: id, order: "single" });
+      previous = id;
+    }
+    return moleculeObject({ ...benzene, id: "mol_long", atoms, bonds });
+  }
+
+  it("still finds the ring at the end of a long chain once bridges are skipped", () => {
+    const rings = nativeMoleculeRings(chainOntoBenzene(3000));
+    expect(rings).toHaveLength(1);
+    expect(rings[0]!.bondIds).toEqual(["bond_001", "bond_002", "bond_003", "bond_004", "bond_005", "bond_006"]);
+  });
+
+  it("does not mistake two parallel bonds for bridges, and still finds fused rings", () => {
+    const naphthalene = nativeMoleculeRings(fusedAceneMolecule(2));
+    expect(naphthalene).toHaveLength(2);
+    const benzene = benzeneMolecule();
+    const doubled = moleculeObject({
+      ...benzene,
+      bonds: [...benzene.bonds, { id: "bond_parallel", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    expect(nativeMoleculeRings(doubled).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("labels every atom of a long chain the way a short chain labels them", () => {
+    const long = chainOntoBenzene(2000);
+    const short = chainOntoBenzene(3);
+    const labelOf = (molecule: MoleculeObject, atomId: string) =>
+      atomDisplayLabel(molecule.atoms.find((atom) => atom.id === atomId)!, molecule.bonds, undefined, molecule.atoms);
+    // The terminal carbon, an interior chain carbon, and the ring junction.
+    expect(labelOf(long, "chain_1999")).toBe(labelOf(short, "chain_2"));
+    expect(labelOf(long, "chain_500")).toBe(labelOf(short, "chain_1"));
+    expect(labelOf(long, "atom_001")).toBe(labelOf(short, "atom_001"));
+  });
+});
+
 describe("layout-engine page SVG planner", () => {
   it("reports stable native molecule ring keys for benzene, naphthalene, and anthracene", () => {
     const benzeneRings = nativeMoleculeRings(benzeneMolecule());

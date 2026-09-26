@@ -270,10 +270,14 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
             ),
             ...visibleImport.warnings
           ]
-        : [
-            warning("cdxml.external_import_not_implemented", "This CDXML file does not contain a ChemDraft payload and no supported visible objects were found."),
-            ...visibleImport.warnings
-          ]
+        // A refusal that already names its reason stands alone; the generic "no supported objects"
+        // sentence would be false for it and would bury the real cause.
+        : visibleImport.warnings.some(({ code }) => code === "cdxml.values_out_of_range")
+          ? visibleImport.warnings
+          : [
+              warning("cdxml.external_import_not_implemented", "This CDXML file does not contain a ChemDraft payload and no supported visible objects were found."),
+              ...visibleImport.warnings
+            ]
     };
   }
 
@@ -1416,21 +1420,34 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
     };
   }
 
-  return {
-    document: ChemDraftDocumentSchema.parse({
-      ...base,
-      pages: importedPages,
-      selection: { objectIds: [] },
-      compatibility: {
-        warnings: warnings.map((item) => ({
-          code: item.code,
-          message: item.message,
-          objectId: item.sourceObjectId
-        }))
-      }
-    }),
-    warnings
-  };
+  // The schema is the last line of defence against values no drawing can hold — coordinates near
+  // 1e308 overflow to Infinity once a width is taken — and a rejection there must reach the user as
+  // a refusal naming the problem, not as an exception dumping the validator's JSON.
+  const parsed = ChemDraftDocumentSchema.safeParse({
+    ...base,
+    pages: importedPages,
+    selection: { objectIds: [] },
+    compatibility: {
+      warnings: warnings.map((item) => ({
+        code: item.code,
+        message: item.message,
+        objectId: item.sourceObjectId
+      }))
+    }
+  });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.length ? ` (at ${issue.path.join(".")})` : "";
+    return {
+      warnings: [
+        warning(
+          "cdxml.values_out_of_range",
+          `This CDXML file has values ChemDraft cannot represent${where}: ${issue?.message ?? "invalid document"}. Coordinates this large are usually a sign of a damaged file.`
+        )
+      ]
+    };
+  }
+  return { document: parsed.data, warnings };
 }
 
 function importPageObjects(
@@ -1870,7 +1887,28 @@ function importFragment(
     }
     return bond;
   });
-  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, bonds);
+  // A bond must join two different atoms of this fragment. One naming a missing atom used to keep
+  // the raw CDXML id as its endpoint — a bond to nothing that every later consumer (renderer, SMILES,
+  // valence) had to survive — and one from an atom to itself is no bond at all.
+  const importedAtomIds = new Set(atoms.map((atom) => atom.id));
+  const joinedBonds = bonds.filter(
+    (bond) => importedAtomIds.has(bond.fromAtomId) && importedAtomIds.has(bond.toAtomId) && bond.fromAtomId !== bond.toAtomId
+  );
+  if (joinedBonds.length !== bonds.length) {
+    // Crossing hints resolve CDXML bond ids through this map; a skipped bond must not stay reachable.
+    const keptBondIds = new Set(joinedBonds.map((bond) => bond.id));
+    for (const [cdxmlBondId, ref] of context.bondRefsByCdxmlId) {
+      if (ref.objectId === objectId && !keptBondIds.has(ref.bondId)) {
+        context.bondRefsByCdxmlId.delete(cdxmlBondId);
+      }
+    }
+    warnings.push({
+      code: "cdxml.bond_endpoints_invalid",
+      message: `Skipped ${bonds.length - joinedBonds.length} CDXML bond${bonds.length - joinedBonds.length === 1 ? "" : "s"} that did not join two different atoms of the fragment.`,
+      sourceObjectId: objectId
+    });
+  }
+  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, joinedBonds);
   const atomStereochemistry = Object.entries(cdxmlAtomStereochemistryByAtomId).map(
     ([atomId, stereo]) => `${atomId}:${stereo.assignment}`
   );
@@ -2796,9 +2834,48 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
   };
 }
 
+/**
+ * fast-xml-parser's validator matches attribute values with `(([\s\S])*?)`, a group repeated once per
+ * character, which V8 runs recursively: a value of a few hundred thousand characters overflows the
+ * stack. The embedded ChemDraft payload is exactly such a value — base64 of the whole document — so
+ * every large drawing failed to save (the export re-parses its own output for the visible hash) and a
+ * large saved file could not be reopened. Validation only checks structure, so it runs on a copy with
+ * long values shortened; the parser, whose attribute pattern is flat, reads the real text.
+ */
+const VALIDATION_ATTRIBUTE_VALUE_LIMIT = 4096;
+
+// A linear scan, not a regular expression: even `"[^"<]{4096,}"` keeps backtracking state per
+// character in V8 and overflows on a multi-megabyte match.
+function withLongAttributeValuesShortened(xml: string): string {
+  let result = "";
+  let copiedUpTo = 0;
+  let cursor = xml.indexOf("=", 0);
+  while (cursor !== -1) {
+    let open = cursor + 1;
+    while (open < xml.length && (xml[open] === " " || xml[open] === "\t" || xml[open] === "\n" || xml[open] === "\r")) {
+      open += 1;
+    }
+    const quote = xml[open];
+    if (quote === '"' || quote === "'") {
+      const close = xml.indexOf(quote, open + 1);
+      if (close === -1) {
+        break;
+      }
+      if (close - open - 1 >= VALIDATION_ATTRIBUTE_VALUE_LIMIT && !xml.slice(open + 1, close).includes("<")) {
+        result += `${xml.slice(copiedUpTo, open + 1)}…`;
+        copiedUpTo = close;
+      }
+      cursor = xml.indexOf("=", close + 1);
+    } else {
+      cursor = xml.indexOf("=", cursor + 1);
+    }
+  }
+  return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
+}
+
 function parseCdxml(contents: string): OrderedXmlTree {
   const xml = stripByteOrderMark(contents);
-  const validation = XMLValidator.validate(xml);
+  const validation = XMLValidator.validate(withLongAttributeValuesShortened(xml));
   if (validation !== true) {
     throw new Error(validation.err.msg);
   }

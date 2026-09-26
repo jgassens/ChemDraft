@@ -962,16 +962,16 @@ function resolvePageBondCrossings(
   const resolved: InternalResolvedBondCrossing[] = [];
   const overrides = page.crossings;
 
-  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+  forEachCandidatePairOverlappingInX(candidates, (leftIndex, rightIndex) => {
+    {
       const left = candidates[leftIndex];
       const right = candidates[rightIndex];
       if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
-        continue;
+        return;
       }
       const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
       if (!intersection) {
-        continue;
+        return;
       }
       const depth = compareBondDepth(left, right, { overrides });
       const frontCandidate = depth >= 0 ? left : right;
@@ -992,10 +992,40 @@ function resolvePageBondCrossings(
         backCandidate
       });
     }
-  }
+  });
 
   warnForDepthCycles(resolved, warnings);
   return resolved.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+/**
+ * Visit every candidate pair whose bond segments overlap in x, as `(lower index, higher index)` —
+ * the order the all-pairs loop used, which decides depth ties. Sweep and prune: sorted by left edge,
+ * a pair is visited while the next segment starts no further right than this one ends (inclusive,
+ * matching `segmentBoxesOverlap`). Every pair the old O(n²) loop kept overlaps in x, so the result is
+ * identical; a page of a few thousand bonds no longer compares millions of far-apart pairs.
+ * Segments with non-finite ends are left out — `shouldSkipCrossingCandidatePair` skips them anyway,
+ * and NaN cannot be sorted.
+ */
+function forEachCandidatePairOverlappingInX(
+  candidates: readonly PageNativeBondCandidate[],
+  visit: (leftIndex: number, rightIndex: number) => void
+): void {
+  const spans = candidates.flatMap((candidate, index) => {
+    const minX = Math.min(candidate.start.x, candidate.end.x);
+    const maxX = Math.max(candidate.start.x, candidate.end.x);
+    return Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(candidate.start.y) && Number.isFinite(candidate.end.y)
+      ? [{ index, minX, maxX }]
+      : [];
+  });
+  spans.sort((left, right) => left.minX - right.minX || left.index - right.index);
+  for (let i = 0; i < spans.length; i += 1) {
+    const current = spans[i]!;
+    for (let j = i + 1; j < spans.length && spans[j]!.minX <= current.maxX; j += 1) {
+      const other = spans[j]!;
+      visit(Math.min(current.index, other.index), Math.max(current.index, other.index));
+    }
+  }
 }
 
 function nativeBondCandidates(object: MoleculeObject, objectLayerIndex: number): PageNativeBondCandidate[] {
@@ -1694,6 +1724,11 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   });
   adjacency.forEach((edges) => edges.sort((left, right) => left.atomId.localeCompare(right.atomId)));
 
+  // A bridge (a bond whose removal disconnects the graph) lies on no cycle, so its shortest-path
+  // search below could only come back empty. Skipping bridges leaves the result unchanged and stops
+  // ring perception from being quadratic: every bond of a chain is a bridge, and each search used to
+  // walk the whole molecule.
+  const bridges = moleculeBridgeBondIds(adjacency);
   const cycles = new Map<string, MoleculeFillRingCycle>();
   for (const bond of object.bonds) {
     if (cycles.size >= maxMoleculeFillCycles) {
@@ -1703,7 +1738,8 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
     if (
       !atomIdSet.has(bond.fromAtomId) ||
       !atomIdSet.has(bond.toAtomId) ||
-      bond.fromAtomId === bond.toAtomId
+      bond.fromAtomId === bond.toAtomId ||
+      bridges.has(bond.id)
     ) {
       continue;
     }
@@ -1727,6 +1763,60 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   return [...cycles.values()].sort((left, right) =>
     moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
   );
+}
+
+/**
+ * Bond ids of every bridge, by Tarjan's low-link method. Iterative, not recursive: a long chain is
+ * exactly the input this exists for, and recursion one frame per atom would overflow the stack.
+ * Parent edges are skipped by bond id, so two parallel bonds between one pair form a cycle, not two
+ * bridges.
+ */
+function moleculeBridgeBondIds(adjacency: ReadonlyMap<string, readonly MoleculeFillAdjacencyEdge[]>): Set<string> {
+  const discovered = new Map<string, number>();
+  const low = new Map<string, number>();
+  const bridges = new Set<string>();
+  let time = 0;
+  for (const start of adjacency.keys()) {
+    if (discovered.has(start)) {
+      continue;
+    }
+    discovered.set(start, time);
+    low.set(start, time);
+    time += 1;
+    const stack: { atomId: string; parentBondId: string | undefined; edgeIndex: number }[] = [
+      { atomId: start, parentBondId: undefined, edgeIndex: 0 }
+    ];
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      const edges = adjacency.get(frame.atomId) ?? [];
+      if (frame.edgeIndex < edges.length) {
+        const edge = edges[frame.edgeIndex]!;
+        frame.edgeIndex += 1;
+        if (edge.bondId === frame.parentBondId) {
+          continue;
+        }
+        const seen = discovered.get(edge.atomId);
+        if (seen === undefined) {
+          discovered.set(edge.atomId, time);
+          low.set(edge.atomId, time);
+          time += 1;
+          stack.push({ atomId: edge.atomId, parentBondId: edge.bondId, edgeIndex: 0 });
+        } else {
+          low.set(frame.atomId, Math.min(low.get(frame.atomId)!, seen));
+        }
+        continue;
+      }
+      stack.pop();
+      const parent = stack[stack.length - 1];
+      if (parent) {
+        low.set(parent.atomId, Math.min(low.get(parent.atomId)!, low.get(frame.atomId)!));
+        if (low.get(frame.atomId)! > discovered.get(parent.atomId)! && frame.parentBondId !== undefined) {
+          bridges.add(frame.parentBondId);
+        }
+      }
+    }
+  }
+  return bridges;
 }
 
 export function nativeMoleculeRings(object: MoleculeObject): NativeMoleculeRing[] {
@@ -5052,7 +5142,7 @@ export function atomDisplayLabel(
   // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
   // unpaired electron from an associated radical mark occupies a bonding slot, and a dative
   // bond from a pyrrole-type N–H costs that proton (see `dativeDeprotonationCount`).
-  const incidentBonds = bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  const incidentBonds = incidentBondsOf(atom.id, bonds);
   // A carbon whose only bonds are dative (a CO ligand's C drawn as a bare atom) cannot carry
   // four hydrogens as well: under the terminal-carbon style it reads "C", never "CH4".
   const dativeOnlyCarbon = element === "C" && incidentBonds.length > 0 && incidentBonds.every(isDativeBond);
@@ -5227,14 +5317,11 @@ export function dativeDeprotonationCount(
   if (donorElement !== "N") {
     return 0;
   }
-  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const atomById = atomByIdOf(atoms);
   const covalentNeighborIds: string[] = [];
   let donatesToMetal = false;
   let covalentAllSingle = true;
-  bonds.forEach((bond) => {
-    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
-      return;
-    }
+  incidentBondsOf(atom.id, bonds).forEach((bond) => {
     const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
     if (isDativeBond(bond)) {
       const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
@@ -5251,8 +5338,7 @@ export function dativeDeprotonationCount(
   if (!donatesToMetal || covalentNeighborIds.length !== 2 || !covalentAllSingle) {
     return 0;
   }
-  const conjugated = covalentNeighborIds.every((neighborId) => bonds.some((bond) =>
-    (bond.fromAtomId === neighborId || bond.toAtomId === neighborId) &&
+  const conjugated = covalentNeighborIds.every((neighborId) => incidentBondsOf(neighborId, bonds).some((bond) =>
     bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id &&
     !isDativeBond(bond) &&
     (bond.order === "double" || bond.order === "aromatic")
@@ -5270,14 +5356,11 @@ function terminalChalcogenolDeprotonation(
   bonds: readonly CoreMoleculeBond[],
   atoms: readonly MoleculeAtom[]
 ): number {
-  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const atomById = atomByIdOf(atoms);
   let covalentBonds = 0;
   let covalentAllSingle = true;
   let donatesToMetal = false;
-  bonds.forEach((bond) => {
-    if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
-      return;
-    }
+  incidentBondsOf(atom.id, bonds).forEach((bond) => {
     if (isDativeBond(bond)) {
       const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId;
       const neighborElement = nativeElementFromAtomLabel(atomById.get(neighborId)?.element ?? "");
@@ -5294,13 +5377,69 @@ function terminalChalcogenolDeprotonation(
   return donatesToMetal && covalentBonds === 1 && covalentAllSingle ? 1 : 0;
 }
 
+/**
+ * Per-atom label work used to scan every bond of the molecule (and rebuild an atom map) once per atom
+ * — quadratic, so a 4,000-atom molecule took seconds to render and export. These indexes are built
+ * once per bond/atom array and reused. The arrays are never mutated in place (documents change by
+ * replacement), and the cached entry is re-validated by length and last element, so an array that
+ * was appended to between calls is simply re-indexed.
+ */
+interface IncidentBondIndex {
+  length: number;
+  last: CoreMoleculeBond | undefined;
+  byAtomId: Map<string, CoreMoleculeBond[]>;
+}
+const incidentBondIndexes = new WeakMap<readonly CoreMoleculeBond[], IncidentBondIndex>();
+const noBonds: readonly CoreMoleculeBond[] = [];
+
+/** The bonds touching `atomId`, in the order `bonds` lists them — exactly
+ *  `bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId)`. */
+function incidentBondsOf(atomId: string, bonds: readonly CoreMoleculeBond[]): readonly CoreMoleculeBond[] {
+  let index = incidentBondIndexes.get(bonds);
+  if (!index || index.length !== bonds.length || index.last !== bonds[bonds.length - 1]) {
+    const byAtomId = new Map<string, CoreMoleculeBond[]>();
+    const add = (id: string, bond: CoreMoleculeBond) => {
+      const list = byAtomId.get(id);
+      if (list) {
+        list.push(bond);
+      } else {
+        byAtomId.set(id, [bond]);
+      }
+    };
+    for (const bond of bonds) {
+      add(bond.fromAtomId, bond);
+      if (bond.toAtomId !== bond.fromAtomId) {
+        add(bond.toAtomId, bond);
+      }
+    }
+    index = { length: bonds.length, last: bonds[bonds.length - 1], byAtomId };
+    incidentBondIndexes.set(bonds, index);
+  }
+  return index.byAtomId.get(atomId) ?? noBonds;
+}
+
+interface AtomByIdIndex {
+  length: number;
+  last: MoleculeAtom | undefined;
+  byId: ReadonlyMap<string, MoleculeAtom>;
+}
+const atomByIdIndexes = new WeakMap<readonly MoleculeAtom[], AtomByIdIndex>();
+
+/** `new Map(atoms.map((atom) => [atom.id, atom]))`, built once per array (later duplicates win, as there). */
+function atomByIdOf(atoms: readonly MoleculeAtom[]): ReadonlyMap<string, MoleculeAtom> {
+  let index = atomByIdIndexes.get(atoms);
+  if (!index || index.length !== atoms.length || index.last !== atoms[atoms.length - 1]) {
+    index = { length: atoms.length, last: atoms[atoms.length - 1], byId: new Map(atoms.map((atom) => [atom.id, atom])) };
+    atomByIdIndexes.set(atoms, index);
+  }
+  return index.byId;
+}
+
 function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {
-  return bonds.reduce((sum, bond) => (
-    bond.fromAtomId === atomId || bond.toAtomId === atomId
-      // A dashed single is dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
-      // drawn hydrogen count ignores it — same rule as the valence checker's.
-      ? sum + (isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1)
-      : sum
+  return incidentBondsOf(atomId, bonds).reduce((sum, bond) => (
+    // A dashed single is dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
+    // drawn hydrogen count ignores it — same rule as the valence checker's.
+    sum + (isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1)
   ), 0);
 }
 
@@ -5309,9 +5448,9 @@ function heavyAtomNeighborCount(
   bonds: readonly CoreMoleculeBond[],
   atoms: readonly MoleculeAtom[]
 ): number {
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const atomById = atomByIdOf(atoms);
   const neighborIds = new Set<string>();
-  for (const bond of bonds) {
+  for (const bond of incidentBondsOf(atomId, bonds)) {
     const neighborId = bond.fromAtomId === atomId
       ? bond.toAtomId
       : bond.toAtomId === atomId
