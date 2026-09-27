@@ -415,4 +415,17 @@ describe("the SMILES writer reports a guessed tautomer", () => {
       "Hydrogen counts at aromatic atoms a2, a4 were guessed using a closed-shell reading and written to SMILES."
     ]);
   });
+
+  it("says inferred, not guessed, for a unique placement (pyrrole's one N)", () => {
+    const molecule = testMoleculeFromSmiles("c1ccnc1");
+    const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+    expect([...resolution.inferredHydrogenAtomIds]).toEqual(["a3"]);
+    expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
+    const warnings: string[] = [];
+    nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds, warnings);
+    expect(warnings).toEqual([
+      "Hydrogen count at aromatic atom a3 was inferred (not stated in the source; the only closed-shell reading) and written to SMILES."
+    ]);
+    expect(warnings.join(" ")).not.toContain("guessed");
+  });
 });

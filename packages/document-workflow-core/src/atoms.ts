@@ -289,11 +289,19 @@ export function nativeAtomValidationState(
   // have a number, but that number is a guess: say so on the atom rather than let it pass.
   // A stated count is a number, not just an N–H toggle. Check it even on charged atoms and
   // on fallback readings; the warning must say exactly which source constraint could not hold.
-  if (atom.hydrogenCount !== undefined && element) {
+  // The count was stated to settle an aromatic ring; on an atom with no aromatic bond left it
+  // describes a graph that no longer exists, so it is ignored rather than badged. The resolution's
+  // bonds are already rewritten, so an aromatic bond shows as a Kekulé order or an unresolved atom.
+  const statedCount = atom.hydrogenCount;
+  const hint = statedCount !== undefined && (resolution.unresolvedAtomIds.has(atom.id) ||
+    (resolution.bondsByAtom.get(atom.id) ?? []).some((bond) => resolution.kekuleOrders.has(bond.id)))
+    ? statedCount
+    : undefined;
+  if (hint !== undefined && element) {
     const resolvedHydrogens = atom.labelLiteral === true ? 0 : Math.max(0,
       nativeAtomValenceForCharge(element, effectiveFormalCharge) - valenceUsed
       - dativeDeprotonationCount(atom, bonds, atoms, resolution));
-    if (resolvedHydrogens !== atom.hydrogenCount) {
+    if (resolvedHydrogens !== hint) {
       return {
         atomId: atom.id,
         element,
@@ -301,7 +309,7 @@ export function nativeAtomValidationState(
         formalCharge: effectiveFormalCharge,
         valid: false,
         ...(resolution.unresolvedAtomIds.has(atom.id) ? { unresolvedAromatic: true as const } : {}),
-        invalidReason: `${element} atom ${atom.id} states ${atom.hydrogenCount} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
+        invalidReason: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
       };
     }
   }

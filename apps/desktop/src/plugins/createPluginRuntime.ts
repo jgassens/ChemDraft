@@ -4,6 +4,7 @@ import type {
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
+  PluginCommandContext,
   PluginNameToStructureResult,
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult,
@@ -66,8 +67,12 @@ export interface DesktopPluginRuntimeOptions {
    * pushing onto it. Without one, the runtime falls back to {@link documentIdentityKey}.
    */
   getActiveDocumentKey?: () => string | undefined;
-  /** Builds an immutable selection snapshot from current desktop state. */
-  getSelection?: () => PluginSelectionSnapshot | undefined;
+  /**
+   * Builds an immutable selection snapshot from current desktop state. `warnings` is the collector of
+   * the command invocation that asked (see {@link DesktopPluginRuntime.invokeCommand}); it is
+   * undefined for a read made outside one, which should stay silent.
+   */
+  getSelection?: (warnings?: string[]) => PluginSelectionSnapshot | undefined;
   /**
    * The app's stable CommandRegistry (see commands/coreCommandRegistrar). When supplied, plugin
    * commands register into the SAME registry core commands live in, so one `host.invokeCommand`
@@ -160,6 +165,13 @@ export interface DesktopPluginRuntime {
   /** Replace one registration transactionally; if the new contribution fails, restore the prior one. */
   replacePlugin(pluginId: string, candidate: unknown, options?: RegisterPluginOptions): PluginManifest;
   unregisterPlugin(pluginId: string): void;
+  /**
+   * Invoke a command through the host. `selectionWarnings` collects what the snapshot could not carry
+   * faithfully for the selection reads THIS invocation makes, and only those: another plugin reading
+   * the selection meanwhile, or this one reading it after its own patch changed the document, can
+   * neither add to it nor take from it.
+   */
+  invokeCommand(commandId: string, options?: { selectionWarnings?: string[] }): Promise<unknown>;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when the plugin toolset set changes (register/unregister). Returns unsubscribe. */
@@ -208,12 +220,42 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         )
       : preparePluginStructureRecognition(outcome, image, options.getActiveDocument())
   );
-  const host = new PluginHost({
+  // Selection warnings are scoped to the invocation, not guessed from which snapshot or document a
+  // read touched. The host builds an invocation's context synchronously inside `invokeCommand`
+  // (registry → handler wrapper → `createCommandContext`, no await between), so a collector armed
+  // around that call is claimed by exactly that invocation's context. Its selection API then hands the
+  // collector to the snapshot builder for the synchronous span of each read, and nothing else can.
+  let armedSelectionWarnings: string[] | undefined;
+  let readingSelectionWarnings: string[] | undefined;
+  class DesktopPluginHost extends PluginHost {
+    override createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
+      const context = super.createCommandContext(pluginId, invocationToken);
+      const collector = armedSelectionWarnings;
+      armedSelectionWarnings = undefined;
+      const selection = context.selection;
+      if (!selection || !collector) return context;
+      return {
+        ...context,
+        selection: {
+          getSelection: () => {
+            readingSelectionWarnings = collector;
+            try {
+              return selection.getSelection();
+            } finally {
+              readingSelectionWarnings = undefined;
+            }
+          }
+        }
+      };
+    }
+  }
+  const readSelection = options.getSelection;
+  const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
     getActiveDocument: options.getActiveDocument,
     getActiveDocumentKey:
       options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
-    getSelection: options.getSelection,
+    getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
     createStorage: options.createStorage,
     onProposedPatchesChanged: options.onProposedPatchesChanged,
     applyDocumentPatch: options.applyDocumentPatch,
@@ -293,6 +335,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       toolsetsByPluginId.delete(pluginId);
       registrations.delete(pluginId);
       notify();
+    },
+    invokeCommand(commandId, invokeOptions = {}) {
+      armedSelectionWarnings = invokeOptions.selectionWarnings;
+      try {
+        return host.invokeCommand(commandId);
+      } finally {
+        // Unclaimed when the command is not a plugin's or failed before its context was built.
+        armedSelectionWarnings = undefined;
+      }
     },
     listPluginToolsets: () => [...toolsetsByPluginId.values()].flat(),
     pluginIdForToolset: (toolsetId) => pluginIdByToolsetId.get(toolsetId),

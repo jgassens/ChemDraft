@@ -214,4 +214,4 @@ export { isMetalSymbol } from "./elements";
 export { isDativeBond, moleculeToMolfileV2000, moleculeToMolfileV3000, type MolfileWriteOptions, type MolfileWriteResult } from "./molfile";
 
 export { bridgeBondIndices } from "./bondGraph";
-export { clearChangedAtomHydrogenHints } from "./hydrogenHints";
+export { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";

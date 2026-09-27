@@ -12,11 +12,11 @@ import { describe, expect, it, vi } from "vitest";
 import { MainWindow, nativeMoleculeRingSelectionFromPointerTarget, spin3dHydrogenWarnings, spin3dPrefetchMolfile } from "./MainWindow";
 import { nativeMoleculeInvalidAtomStates } from "./documentWorkflow";
 import { buildPluginSelectionSnapshot } from "./plugins/selectionSnapshot";
-import type { PluginRuntimeProviders } from "./plugins/usePluginRuntime";
+import type { PluginRuntimeProviders, PluginRuntimeView } from "./plugins/usePluginRuntime";
 
 const pluginCalls = vi.hoisted(() => ({
   providers: undefined as PluginRuntimeProviders | undefined,
-  invoke: undefined as (() => Promise<unknown>) | undefined
+  invoke: undefined as PluginRuntimeView["invokePluginCommand"] | undefined
 }));
 vi.mock("./plugins/usePluginRuntime", async (importOriginal) => {
   const original = await importOriginal<typeof import("./plugins/usePluginRuntime")>();
@@ -48,8 +48,12 @@ describe("aromatic warnings at the plugin action boundary", () => {
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
-    const invoke = vi.fn(async () => {
-      if (readsSelection) expect(pluginCalls.providers!.getSelection().molecules).toHaveLength(1);
+    // Stands in for the runtime, which hands the invocation's own collector to the provider on
+    // every selection read that invocation makes (see createPluginRuntime's invokeCommand).
+    const invoke = vi.fn(async (_commandId: string, options?: { selectionWarnings?: string[] }) => {
+      if (readsSelection) {
+        expect(pluginCalls.providers!.getSelection(options?.selectionWarnings).molecules).toHaveLength(1);
+      }
       return { ok: true };
     });
     pluginCalls.invoke = invoke;

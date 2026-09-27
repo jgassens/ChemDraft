@@ -334,7 +334,8 @@ export const MoleculeAtomSchema = z
      * (no H) or pyrrole-type (N–H); this settles it when the bonds are resolved into a Kekulé
      * pattern. The drawn label and formula still follow the valence model, which agrees with it
      * whenever the ring honours it. This is an import-time hint: editing the atom's element,
-     * charge or incident bonds (including dative bonds) drops it before revalidation.
+     * charge or incident bonds (including dative bonds) drops it before revalidation, and adding
+     * or updating a molecule drops it from any atom left with no aromatic bond in a ring.
      */
     hydrogenCount: z.number().int().nonnegative().optional(),
     /**

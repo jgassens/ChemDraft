@@ -82,16 +82,33 @@ export function nativeSmilesBondOrderResolution(
       `${count} aromatic bond${count === 1 ? "" : "s"} could not be resolved into alternating single and double bonds; written to SMILES as single.`
     );
   }
-  if (resolution.inferredHydrogenAtomIds.size > 0) {
-    const ids = [...resolution.inferredHydrogenAtomIds].sort();
+  // Worded by the resolver's own split: a unique placement was inferred (the source stated no H,
+  // but only one closed-shell reading fits); only a tie, a declined five-ring N–H or a bounded
+  // search fallback is a guess.
+  const guessed = [...resolution.guessedHydrogenAtomIds].sort();
+  const inferred = [...resolution.inferredHydrogenAtomIds]
+    .filter((id) => !resolution.guessedHydrogenAtomIds.has(id))
+    .sort();
+  if (inferred.length > 0) {
     warnings.aromatic.push(
-      `Hydrogen counts at aromatic atoms ${ids.join(", ")} were guessed using a closed-shell reading and written to SMILES.`
+      `${hydrogenCountsAt(inferred)} inferred (not stated in the source; the only closed-shell reading) and written to SMILES.`
+    );
+  }
+  if (guessed.length > 0) {
+    warnings.aromatic.push(
+      `${hydrogenCountsAt(guessed)} guessed using a closed-shell reading and written to SMILES.`
     );
   }
   return {
     bonds: resolution.bonds.map((bond) => bond.order === "unknown" ? { ...bond, order: "single" } : bond),
     warnings
   };
+}
+
+function hydrogenCountsAt(ids: readonly string[]): string {
+  return ids.length === 1
+    ? `Hydrogen count at aromatic atom ${ids[0]} was`
+    : `Hydrogen counts at aromatic atoms ${ids.join(", ")} were`;
 }
 
 export function nativeSingleBondGraphSmiles(

@@ -31,6 +31,11 @@ from this preference; diazapyrene and the diaza-dibenzocyclooctene sweep retain 
 The whole-system 4n+2 preference is retained for porphine. Its known cost, measured in review, is
 dipyrrolo-biphenylene (`c1c5cncc5c2c3cc5cncc5cc3c2c1`): it reads **C16H8N2**, badged, even though
 C16H10N2 is closed-shell. The preference declines both five-ring N–H on that 4n core.
+A second cost is the fused imidazolone-pyrrole `O=c1nc2ccnc2n1`: it reads **C5H5N3O** (three ring
+N–H) although the minimum-H reading C5H3N3O is equally closed-shell. Whenever the 4n+2 criterion
+chooses between closed-shell readings with different H counts, the nitrogens those readings disagree
+on (here the two imidazolone N) are reported as **guessed**, not uniquely inferred, so they stay
+badged and Spin 3D prefetch does not treat the choice as certain.
 
 If the rule conflicts with closure, the closed-shell reading wins and is badged. Unhinted guanine
 and xanthine read **two H short** of the natural products: C5H3N5O / C5H2N4O2, both badged, versus
@@ -43,7 +48,8 @@ double bond, so closure requires that H. It is badged as the explicit closed-she
 Among placements at that fixed count, local circuits and ring membership rank the candidates.
 Every inferred or declined N–H is reported in `inferredHydrogenAtomIds`, even if uniquely placed.
 `guessedHydrogenAtomIds` is its uncertain subset: differing atoms in tied arrangements, declined
-five-ring H, and bounded-search fallbacks. A unique inferred placement keeps its canvas badge but
+five-ring H, nitrogens whose H the 4n+2 preference decided against a closed-shell reading with a
+different H count, and bounded-search fallbacks. A unique inferred placement keeps its canvas badge but
 permits Spin 3D prefetch and adds no guessed-H Spin status. All inferred sites use
 `chemistry.aromatic_tautomer_guessed`: the existing badge
 already describes an uncertain per-atom H count, including choosing between zero and one H;

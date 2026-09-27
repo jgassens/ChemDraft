@@ -8536,19 +8536,12 @@ export function MainWindow({
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
-  const pluginSelectionWarningsRef = useRef(new WeakMap<ChemDraftDocument, string[]>());
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
-    getSelection: () => {
-      const source = documentRef.current;
-      const warnings: string[] = [];
-      const snapshot = buildPluginSelectionSnapshot(source, warnings);
-      // Reuse warnings from the snapshot actually read. Background reads stay silent, and a
-      // command that never reads selection does no extra serialization just to harvest warnings.
-      pluginSelectionWarningsRef.current.set(source, warnings);
-      return snapshot;
-    },
+    // `warnings` is the collector of the command invocation that is reading (see the plugin command
+    // dispatch below); a read outside one gets none and stays silent.
+    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
@@ -9091,18 +9084,17 @@ export function MainWindow({
       const run = previous
         .catch(() => undefined)
         .then(async () => {
-          const source = documentRef.current;
-          const previousWarnings = pluginSelectionWarningsRef.current.get(source);
-          const result = await invokePluginCommand(commandId);
+          // Collected per invocation: only this command's own selection reads can add to it.
+          const selectionWarnings: string[] = [];
+          const result = await invokePluginCommand(commandId, { selectionWarnings });
           if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
           const failure = pluginCommandFailure(result);
-          const warnings = pluginSelectionWarningsRef.current.get(source);
           if (failure) {
             setStatus(`Plugin command failed: ${failure}`);
-          } else if (owner?.permissions.includes("selection.read") && warnings !== previousWarnings && warnings?.length) {
-            setStatus([...new Set(warnings)].join(" "));
+          } else if (selectionWarnings.length) {
+            setStatus([...new Set(selectionWarnings)].join(" "));
           }
         })
         .catch((error: unknown) => {

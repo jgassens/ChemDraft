@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import type { CliIo } from "../output";
-import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, nmrHelp, resolveNmrPluginDir, runNmrCommand } from "./nmr";
+import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, nmrHelp, nmrHelpText, resolveNmrPluginDir, runNmrCommand } from "./nmr";
 
 interface Resonance {
   nucleus: "1H" | "13C";
@@ -130,6 +130,29 @@ describe("chemdraft nmr without the plugin", () => {
     expect(help).toContain("nmrshiftdb2 Database License");
     expect(help).toContain(NMR_PLUGIN_DIR_ENV);
     expect(help).not.toMatch(/synthetic|fixture-backed/i);
+  });
+
+  it("names the trust file in help, or why its location is unknown — never an empty path", async () => {
+    const found = captureIo();
+    await runNmrCommand(["--help"], found.io, { accountHomeLookup: () => ({ homedir: "/Users/someone" }) });
+    const foundHelp = found.stdout.join("\n");
+    expect(foundHelp).toContain(
+      `plugin trust file ${join("/Users/someone", ".config", "chemdraft", "trusted-plugins.json")}:`);
+    expect(foundHelp).not.toContain("trust file location unavailable");
+
+    for (const lookup of [
+      () => { throw new Error("no passwd entry for uid 501"); },
+      () => ({ homedir: "" })
+    ]) {
+      const { io, stdout } = captureIo();
+      expect(await runNmrCommand(["--help"], io, { accountHomeLookup: lookup })).toBe(0);
+      const help = stdout.join("\n");
+      expect(help).toMatch(/^trust file location unavailable: Could not determine the ChemDraft plugin trust file's default location: .+$/m);
+      expect(help).not.toMatch(/trust file\s*:/);
+      expect(help).toContain(`"id":"${NMR_PLUGIN_ID}"`);
+    }
+    expect(nmrHelpText(() => { throw new Error("no passwd entry for uid 501"); }))
+      .toContain("home directory lookup failed (no passwd entry for uid 501)");
   });
 
   it("reports a missing plugin directory as ok:false naming the environment variable", async () => {

@@ -193,8 +193,9 @@ export interface NativeBondOrderResolution {
    */
   readonly inferredHydrogenAtomIds: ReadonlySet<string>;
   /**
-   * The uncertain subset of inferredHydrogenAtomIds: tied placements, declined five-ring N–H,
-   * or a bounded-search fallback. A uniquely inferred N–H is badged but is not a tautomer guess.
+   * The uncertain subset of inferredHydrogenAtomIds: tied placements, declined five-ring N–H, N
+   * whose H the whole-system 4n+2 preference chose over a closed-shell reading with a different H
+   * count, or a bounded-search fallback. A uniquely inferred N–H is badged but is not a tautomer guess.
    */
   readonly guessedHydrogenAtomIds: ReadonlySet<string>;
   /** Aromatic bonds outside any conjugated ring. */
@@ -949,6 +950,7 @@ interface LocalAromaticRing {
  * participates; every other open atom must take a double bond. Prefer a 4n+2 conjugated system,
  * then satisfied five-rings and fewer inferred H, with a spread-out deterministic tautomer. A partially
  * satisfied macrocycle is allowed (porphine has only two pyrrole-type N), but never an open shell.
+ * Where the 4n+2 criterion alone picks the H count, the N it decided are guessed (see README).
  */
 function solveFiveRingHydrogens(
   flexIds: readonly string[],
@@ -991,6 +993,10 @@ function solveFiveRingHydrogens(
     return nearest;
   };
   let best: { system: boolean; score: number; out: Set<string>; doubles: number[]; spread: number } | undefined;
+  // Closed-shell readings the 4n+2 criterion ranks below any system-aromatic one. Where it picks a
+  // system-aromatic reading over one of these with a different H count, that choice is the
+  // preference's, not the ring's: the atoms the two readings disagree on are guessed, not inferred.
+  const nonSystemReadings: Set<string>[] = [];
   const tiedOut = new Set<string>();
   const tiedIn = new Set<string>();
   const out = new Set<string>();
@@ -1008,6 +1014,7 @@ function solveFiveRingHydrogens(
     const doubles = matcher.solve(out, [], { exact: 0 });
     if (!doubles) return;
     const system = systemAromatic(out);
+    if (!system) nonSystemReadings.push(new Set(out));
     const score = fiveRings.filter((ring) => aromatic(ring, out)).length;
     const comparison = best ? Number(system) - Number(best.system) || score - best.score || best.out.size - out.size : 1;
     if (comparison < 0) return;
@@ -1022,15 +1029,19 @@ function solveFiveRingHydrogens(
     }
   };
   visit(0);
-  const chosen = best as { score: number; out: Set<string>; doubles: number[] } | undefined;
+  const chosen = best as { system: boolean; score: number; out: Set<string>; doubles: number[] } | undefined;
   if (!chosen) return undefined;
   // Closure wins where a five-ring cannot be made aromatic without an impermissible extra H.
   // Badge those declined sites too: e.g. unhinted guanine cannot gain N1–H in its six-ring.
   const declined = candidates.filter((id) => !fiveRings.some((ring) => ring.flex.includes(id) && aromatic(ring, chosen.out)));
+  const preferred = chosen.system
+    ? candidates.filter((id) => nonSystemReadings.some((reading) =>
+      reading.size !== chosen.out.size && reading.has(id) !== chosen.out.has(id)))
+    : [];
   return {
     doubles: chosen.doubles,
-    inferred: [...new Set([...tiedOut, ...declined])],
-    guessed: [...new Set([...candidates.filter((id) => tiedOut.has(id) && tiedIn.has(id)), ...declined])]
+    inferred: [...new Set([...tiedOut, ...declined, ...preferred])],
+    guessed: [...new Set([...candidates.filter((id) => tiedOut.has(id) && tiedIn.has(id)), ...declined, ...preferred])]
   };
 }
 

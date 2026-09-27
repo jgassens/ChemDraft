@@ -62,7 +62,8 @@ export interface PluginRuntimeProviders {
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
    *  File > New in one session are indistinguishable to the write-binding check. */
   getActiveDocumentKey?: () => string | undefined;
-  getSelection: () => PluginSelectionSnapshot;
+  /** `warnings`: the asking invocation's collector, or undefined for a read that should stay silent. */
+  getSelection: (warnings?: string[]) => PluginSelectionSnapshot;
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
    *  use (commands/coreCommandRegistrar), so one dispatch serves both. Must be referentially stable
    *  for the component's lifetime — the runtime is created exactly once from the first render. */
@@ -107,7 +108,8 @@ export interface PluginRuntimeView {
   recognitionEngineInstall: StructureRecognitionInstallRun | undefined;
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
-  invokePluginCommand: (commandId: string) => Promise<unknown>;
+  /** `selectionWarnings` collects the selection warnings of this invocation alone. */
+  invokePluginCommand: (commandId: string, options?: { selectionWarnings?: string[] }) => Promise<unknown>;
   closePanel: () => void;
   submitTextPrompt: (id: number, value: string) => void;
   cancelTextPrompt: (id: number) => void;
@@ -148,7 +150,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       getActiveDocumentKey: providers.getActiveDocumentKey
         ? () => providersRef.current.getActiveDocumentKey?.()
         : undefined,
-      getSelection: () => providersRef.current.getSelection(),
+      getSelection: (warnings) => providersRef.current.getSelection(warnings),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
       commandRegistry: providers.commandRegistry,
@@ -422,7 +424,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [runtime]
   );
   const invokePluginCommand = useCallback(
-    (commandId: string): Promise<unknown> => runtime.host.invokeCommand(commandId),
+    (commandId: string, options?: { selectionWarnings?: string[] }): Promise<unknown> =>
+      runtime.invokeCommand(commandId, options),
     [runtime]
   );
   const closePanel = useCallback(() => runtime.panels.closePanel(), [runtime]);

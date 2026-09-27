@@ -209,6 +209,35 @@ describe("ring nitrogens: stated H constrains its atom, and inferred H stays bad
       atomDisplayLabel(atom, molecule.bonds, DefaultNativeDrawingStyle, molecule.atoms)
     ]));
 
+  it("a 4n+2 choice between closed-shell readings with different H counts is guessed, not inferred", () => {
+    const drawnHydrogens = (graph: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): number => {
+      const atoms = visibleCarbons(graph.atoms);
+      return atoms.reduce((sum, atom) =>
+        sum + hydrogensInLabel(atomDisplayLabel(atom, graph.bonds, DefaultNativeDrawingStyle, atoms)), 0);
+    };
+    // Two fused five-rings with a carbonyl: the whole-system 4n+2 count picks three N–H (C5H5N3O)…
+    const graph = testMoleculeFromSmiles("O=c1nc2ccnc2n1");
+    const resolution = nativeBondOrderResolution(graph.atoms, graph.bonds);
+    expect(drawnHydrogens(graph)).toBe(5);
+    expect([...resolution.inferredHydrogenAtomIds].sort()).toEqual(["a2", "a6", "a8"]);
+    // …over a closed-shell reading with one (C5H3N3O). The two N the readings disagree on are the
+    // preference's call, so Spin 3D must not treat them as certain; a6 carries H in both.
+    expect([...resolution.guessedHydrogenAtomIds].sort()).toEqual(["a2", "a8"]);
+    const minimum = {
+      ...graph,
+      atoms: graph.atoms.map((atom) => (atom.id === "a2" || atom.id === "a8" ? { ...atom, hydrogenCount: 0 } : atom))
+    };
+    const minimumResolution = nativeBondOrderResolution(minimum.atoms, minimum.bonds);
+    expect(minimumResolution.unresolvedAtomIds.size).toBe(0);
+    expect(drawnHydrogens(minimum)).toBe(3);
+
+    // A single closed-shell H count stays a unique inference.
+    const pyrrolopyrrole = testMoleculeFromSmiles("c1cc2nccc2n1");
+    const unique = nativeBondOrderResolution(pyrrolopyrrole.atoms, pyrrolopyrrole.bonds);
+    expect([...unique.inferredHydrogenAtomIds].sort()).toEqual(["a3", "a7"]);
+    expect(unique.guessedHydrogenAtomIds.size).toBe(0);
+  });
+
   it("imidazole with no H stated: exactly one N–H, and both nitrogens reported as guessed", () => {
     const imidazole = testMoleculeFromSmiles("c1cncn1");
     const resolution = nativeBondOrderResolution(imidazole.atoms, imidazole.bonds);

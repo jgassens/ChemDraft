@@ -16001,6 +16001,50 @@ describe("aromatic bond orders: one count for the formula, the label and the val
     expect(atomDisplayLabel(after.atoms.find((atom) => atom.id === nitrogen.id)!, after.bonds, undefined, after.atoms)).toBe("N");
   });
 
+  it("a copied N plus one neighbour of a CDXML pyrrole pastes as NH2 with no stated-count badge", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+      <n id="n" p="100 100" Element="7" NumHydrogens="1"/>
+      <n id="c1" p="120 100"/><n id="c2" p="125 120"/><n id="c3" p="110 130"/><n id="c4" p="95 120"/>
+      <b id="b1" B="n" E="c1" Order="1.5"/><b id="b2" B="c1" E="c2" Order="1.5"/>
+      <b id="b3" B="c2" E="c3" Order="1.5"/><b id="b4" B="c3" E="c4" Order="1.5"/>
+      <b id="b5" B="c4" E="n" Order="1.5"/>
+    </fragment></page></CDXML>`).document!;
+    const molecule = opened.pages[0]!.objects[0] as MoleculeObject;
+    const nitrogen = molecule.atoms.find((atom) => atom.element === "N")!;
+    expect(nitrogen.hydrogenCount).toBe(1);
+    const bond = molecule.bonds.find((candidate) => candidate.fromAtomId === nitrogen.id || candidate.toAtomId === nitrogen.id)!;
+    const neighbour = bond.fromAtomId === nitrogen.id ? bond.toAtomId : bond.fromAtomId;
+    const lasso = createSelectionClipboardPayload(opened, [{ objectId: molecule.id, atomIds: [nitrogen.id, neighbour], bondIds: [bond.id] }])!;
+    // The same fragment as a payload built elsewhere (another window, an older build) that never
+    // went through the fragment rebuild: the stale count arrives on the atom and must still go.
+    const lassoFragment = lasso.objects[0] as MoleculeObject;
+    const raw = structuredClone(lasso);
+    (raw.objects[0] as MoleculeObject).atoms = lassoFragment.atoms.map((atom) =>
+      atom.element === "N" ? { ...atom, hydrogenCount: 1 } : atom);
+
+    for (const payload of [lasso, raw]) {
+      const pasted = pasteSelectionClipboardPayload(opened, payload, { x: 300, y: 300 }).pages[0]!.objects.at(-1) as MoleculeObject;
+      const pastedNitrogen = pasted.atoms.find((atom) => atom.element === "N")!;
+      expect(pasted.atoms).toHaveLength(2);
+      expect(pastedNitrogen.hydrogenCount).toBeUndefined();
+      expect(atomDisplayLabel(pastedNitrogen, pasted.bonds, undefined, pasted.atoms)).toBe("NH2");
+      expect(pasted.chemistry?.formula).toBe("CH5N");
+      const states = nativeMoleculeInvalidAtomStates(pasted);
+      expect(states.some((state) => state.invalidReason?.includes("NumHydrogens"))).toBe(false);
+      // What remains is the cut ring itself: the kept bond is still marked aromatic and is
+      // counted single, which the unresolved-aromatic rule flags on both of its atoms.
+      expect(states.every((state) => state.unresolvedAromatic === true)).toBe(true);
+    }
+  });
+
+  it("the stated-count check ignores a hint left on an atom with no aromatic bond", () => {
+    const graph = testMoleculeFromSmiles("CN");
+    // Bypasses every patch: a stale count on a molecule read straight from storage.
+    const atoms = graph.atoms.map((atom) => (atom.element === "N" ? { ...atom, hydrogenCount: 1 } : atom));
+    const molecule = { ...fixtureMolecule(graph, graph.bonds, "mol_stale_hint"), atoms };
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toEqual([]);
+  });
+
   it("relabeling an atom to another element drops a hydrogen count stated for the old one", () => {
     const graph = testMoleculeFromSmiles("c1c[nH]cn1");
     const molecule = fixtureMolecule(graph, graph.bonds, "mol_relabel_hint");

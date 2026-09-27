@@ -2313,8 +2313,9 @@ describe("ChemDraft desktop shell", () => {
     // Both MainWindow perception sites (the flatten reference and the pre-spin center scan) must
     // use the same molfile flatten's read-back uses; the plain export writer turns "Ph" into "*",
     // which OpenChemLib reads as carbon. Covered functionally in ocl-adapter; this guards the wiring.
-    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget)");
-    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule)");
+    // Both sites also collect the spelling's warnings (a guessed tautomer, say) instead of dropping them.
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget, warnings)");
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule, warnings)");
   });
 
   it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
@@ -2776,7 +2777,7 @@ describe("ChemDraft desktop shell", () => {
   it("threads Spin 3D placement through modeled typed rotation while preserving legacy X/Y tilt", () => {
     // The numeric-rotation flatten must run the stereo read-back guard (spin3dFlattenStereoOptions),
     // not commit geometry-only, so a typed rotation can't silently persist a different stereoisomer.
-    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId\)\s*}\s*\)/s);
+    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId,\s*warnings\)\s*}\s*\)/s);
     expect(mainWindowSource).toContain("modeledRotationEntry ? 0");
     expect(mainWindowSource).toMatch(/quatFromAxisAngle\(SPIN_AXIS_Z,\s*-deltaDegrees \* Math\.PI \/ 180\)/);
     expect(mainWindowSource).toMatch(/attachSpin3dModelFromConformer\(nextDocument,\s*input\.objectId/s);
