@@ -59,8 +59,6 @@ function nonLiteralDynamicCalls(source: string): number {
 const NON_LITERAL_DYNAMIC_IMPORT_ALLOWLIST: Record<string, string> = {
   "packages/chemdraft-cli/src/pluginTrust.ts":
     "loads a plugin's manifest and entry module from a realpath-checked filesystem path chosen at runtime (trusted plugin loading)",
-  "packages/chemdraft-cli/src/commands/nmr.ts":
-    "loads OpenChemLib's entry file, resolved via require.resolve at runtime, so the engine loads lazily (AGENTS.md §15)",
   "packages/chemdraft-cli/src/commands/stereo.ts":
     "loads OpenChemLib's entry file, resolved via require.resolve at runtime, so the engine loads lazily (AGENTS.md §15)"
 };
