@@ -34,6 +34,24 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Headless document core and CLI plugin trust (2026-09-27, branch `claude/document-workflow-core`)
+
+The CLI and MCP server imported document-building code straight out of `apps/desktop`, so the
+headless tools depended on the app. The ~100 pure declarations they need (depiction to native
+molecule, text and arrow insertion, atom validation and valence, the native SMILES writer) moved
+into `packages/document-workflow-core` (AGENTS §6.28); `documentWorkflow.ts` and `moleculeSmiles.ts`
+re-export every moved name, so desktop callers did not change. Import-boundary tests keep it that
+way: no `apps/` imports, no undeclared package imports, and non-literal dynamic `import()` only in
+an explicit allow-list.
+
+`chemdraft nmr` now loads the external NMR plugin only from a directory listed in
+`~/.config/chemdraft/trusted-plugins.json`, validates `src/manifest.ts` before importing the entry,
+and refuses dangerous permissions (`packages/chemdraft-cli/src/pluginTrust.ts`; the CLI README has
+the full order). This sits before, and does not replace, the capability check from PR #50.
+
+Known, accepted: a documented symlink-swap window between the trust check and the import.
+Aromatic bond counting is a separate follow-up on `claude/aromatic-bond-order`.
+
 ## Tester feedback fixes + 0.3.5 (2026-09-25, PR #47 merge `60cc59e`, release PR #48 merge `e107b23`)
 
 Two tester-reported problems, fixed and released same day.

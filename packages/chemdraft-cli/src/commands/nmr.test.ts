@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import type { CliIo } from "../output";
-import { NMR_PLUGIN_DIR_ENV, nmrHelp, resolveNmrPluginDir, runNmrCommand } from "./nmr";
+import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, nmrHelp, resolveNmrPluginDir, runNmrCommand } from "./nmr";
 
 interface Resonance {
   nucleus: "1H" | "13C";
@@ -40,9 +40,16 @@ function captureIo(): { io: CliIo; stdout: string[]; stderr: string[] } {
   return { io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, stdout, stderr };
 }
 
-async function run(argv: string[]): Promise<{ code: number; lines: Line[]; stderr: string[] }> {
+// The trust file these tests load plugins under; written in beforeAll, listing the CI fixture and
+// (when present) the real plugin checkout.
+let trustConfigPath: string;
+
+async function run(
+  argv: string[],
+  configPath: string = trustConfigPath
+): Promise<{ code: number; lines: Line[]; stderr: string[] }> {
   const { io, stdout, stderr } = captureIo();
-  const code = await runNmrCommand(argv, io);
+  const code = await runNmrCommand(argv, io, { trustConfigPath: configPath });
   return { code, lines: stdout.map((line) => JSON.parse(line) as Line), stderr };
 }
 
@@ -55,6 +62,29 @@ async function withPluginDir<T>(dir: string, body: () => Promise<T>): Promise<T>
     if (previous === undefined) delete process.env[NMR_PLUGIN_DIR_ENV];
     else process.env[NMR_PLUGIN_DIR_ENV] = previous;
   }
+}
+
+/** A valid manifest for a plugin directory under test: same shape as the CI fixture's. */
+async function writeValidManifest(pluginDir: string): Promise<void> {
+  await mkdir(join(pluginDir, "src"), { recursive: true });
+  await writeFile(
+    join(pluginDir, "src", "manifest.ts"),
+    `export const nmrPredictorManifest = ${JSON.stringify({
+      id: NMR_PLUGIN_ID,
+      name: "NMR Shift Predictor (test fixture)",
+      version: "0.0.0",
+      apiVersion: "^0.1.0",
+      entry: "src/index.ts",
+      permissions: ["selection.read", "analysis.write"]
+    })};\n`
+  );
+}
+
+/** A trust file naming only `pluginDir` under {@link NMR_PLUGIN_ID}, written the same way as the branch's "not listed" test. */
+async function trustFileFor(pluginDir: string, name: string): Promise<string> {
+  const path = join(outputDirectory, name);
+  await writeFile(path, JSON.stringify({ version: 1, trustedPlugins: [{ id: NMR_PLUGIN_ID, dir: pluginDir }] }));
+  return path;
 }
 
 const pluginDir = resolveNmrPluginDir();
@@ -70,6 +100,14 @@ let outputDirectory: string;
 
 beforeAll(async () => {
   outputDirectory = await mkdtemp(join(tmpdir(), "chemdraft-nmr-cli-"));
+  trustConfigPath = join(outputDirectory, "trusted-plugins.json");
+  await writeFile(trustConfigPath, JSON.stringify({
+    version: 1,
+    trustedPlugins: [
+      { id: NMR_PLUGIN_ID, dir: fixturePluginDir },
+      ...(pluginPresent ? [{ id: NMR_PLUGIN_ID, dir: pluginDir }] : [])
+    ]
+  }));
 });
 
 afterAll(async () => {
@@ -104,6 +142,16 @@ describe("chemdraft nmr without the plugin", () => {
     expect(lines[0]!.error).toContain(join(missing, "src", "index.ts"));
   });
 
+  it("refuses a plugin directory the trust file does not list, naming the trust file", async () => {
+    const emptyTrust = join(outputDirectory, "empty-trust.json");
+    await writeFile(emptyTrust, JSON.stringify({ version: 1, trustedPlugins: [] }));
+    const { code, lines } = await withPluginDir(fixturePluginDir, () => run(["--smiles", "CCO"], emptyTrust));
+    expect(code).toBe(1);
+    expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(lines[0]!.error).toContain(emptyTrust);
+    expect(lines[0]!.error).toContain("not listed");
+  });
+
   it("refuses a plugin checkout missing one required capability and gives safe update guidance", async () => {
     const oldPluginDir = join(outputDirectory, "old plugin's checkout");
     await mkdir(join(oldPluginDir, "src"), { recursive: true });
@@ -112,7 +160,9 @@ describe("chemdraft nmr without the plugin", () => {
       "export const NMR_PLUGIN_CAPABILITIES = ['constitutional-equivalence-grouping', 'diastereotopic-disclosure'];\n" +
       "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
     );
-    const { code, lines } = await withPluginDir(oldPluginDir, () => run(["--smiles", "CCO"]));
+    await writeValidManifest(oldPluginDir);
+    const trustPath = await trustFileFor(oldPluginDir, "old-plugin-trust.json");
+    const { code, lines } = await withPluginDir(oldPluginDir, () => run(["--smiles", "CCO"], trustPath));
     expect(code).toBe(1);
     expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
     expect(lines[0]!.error).toContain("truthful-spectrum-caption");
@@ -131,7 +181,9 @@ describe("chemdraft nmr without the plugin", () => {
       "export const NMR_PLUGIN_CAPABILITIES = 'constitutional-equivalence-grouping';\n" +
       "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
     );
-    const { code, lines } = await withPluginDir(invalidPluginDir, () => run(["--smiles", "CCO"]));
+    await writeValidManifest(invalidPluginDir);
+    const trustPath = await trustFileFor(invalidPluginDir, "non-array-capabilities-trust.json");
+    const { code, lines } = await withPluginDir(invalidPluginDir, () => run(["--smiles", "CCO"], trustPath));
     expect(code).toBe(1);
     expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
     expect(lines[0]!.error).toContain("constitutional-equivalence-grouping");
@@ -141,10 +193,16 @@ describe("chemdraft nmr without the plugin", () => {
 
   it("retries a failed plugin load after its entry is created at the same path", async () => {
     const retriedPluginDir = join(outputDirectory, "retry-plugin");
+    // Trusted up front: the directory does not exist yet, so the first run's failure must come from
+    // the missing entry file (checked before the trust gate), not from the plugin being untrusted.
+    const trustPath = await trustFileFor(retriedPluginDir, "retry-plugin-trust.json");
 
-    const failed = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO"]));
+    const failed = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO"], trustPath));
     expect(failed.code).toBe(1);
     expect(failed.lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    // Prove which step failed: the entry-existence check, not the trust gate.
+    expect(failed.lines[0]!.error).toContain("NMR predictor plugin not found");
+    expect(failed.lines[0]!.error).toContain(join(retriedPluginDir, "src", "index.ts"));
 
     // The initial failure happens before import: Node may cache a module at a stable file URL.
     // Writing the valid fixture afterward proves the rejected cache key is retried at this path.
@@ -153,8 +211,12 @@ describe("chemdraft nmr without the plugin", () => {
       join(retriedPluginDir, "src", "index.ts"),
       await readFile(join(fixturePluginDir, "src", "index.ts"), "utf8")
     );
+    await writeFile(
+      join(retriedPluginDir, "src", "manifest.ts"),
+      await readFile(join(fixturePluginDir, "src", "manifest.ts"), "utf8")
+    );
 
-    const retried = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"]));
+    const retried = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"], trustPath));
     expect(retried.code).toBe(0);
     expect(retried.lines[0]).toMatchObject({ ok: true, smiles: "CCO" });
   });

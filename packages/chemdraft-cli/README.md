@@ -155,6 +155,55 @@ suffixes); --spectrum-dir <dir> (batch naming <dir>/<name>-<nucleus>.<format>);
 loaded from $CHEMDRAFT_NMR_PLUGIN_DIR (default: ~/programming/chemdraft-nmr-plugin). It is a
 separate repository and is not bundled here.
 
+### Plugin trust file
+
+The plugin is code from outside this repository, and it runs in-process with the CLI's full
+privileges (and inside the long-lived MCP server, which calls the same command). So the directory
+must also be listed in a trust file the owner edits by hand,
+`~/.config/chemdraft/trusted-plugins.json`:
+
+~~~json
+{
+  "version": 1,
+  "trustedPlugins": [
+    { "id": "org.chemdraft.nmr.predictor", "dir": "/Users/you/programming/chemdraft-nmr-plugin" }
+  ]
+}
+~~~
+
+Why the environment variable alone is not enough: anyone who can set `CHEMDRAFT_NMR_PLUGIN_DIR`
+could otherwise point the CLI at any directory and have its `src/index.ts` executed.
+`CHEMDRAFT_NMR_PLUGIN_DIR` now only chooses among trusted directories. For the same reason the trust
+file's location cannot be changed by an environment variable or a flag, and nothing in the CLI
+creates or edits it. Its default location is resolved from the **OS account's home directory**
+(`os.userInfo().homedir` — the passwd entry for the effective uid on POSIX, the profile-directory
+lookup on Windows), never from `os.homedir()`, `HOME`, or `USERPROFILE`: whoever can set
+`CHEMDRAFT_NMR_PLUGIN_DIR` could otherwise also set `HOME` and point the CLI at an allow-list of
+their own choosing. If the account's home directory cannot be determined, there is no default — the
+CLI refuses every plugin directory with a clear error rather than falling back to the environment.
+When a directory is refused, the error names the trust file, the resolved directory, and the exact
+entry to add.
+
+Honest limit: this closes the `HOME` route specifically. A caller who controls the process
+environment more broadly can still make Node itself run arbitrary code — for example through
+`NODE_OPTIONS` — regardless of what this trust file does. The allow-list guards against a wrong or
+hostile *plugin directory*; it is not a defense against a hostile *process environment*.
+
+Loading runs in this order (`src/pluginTrust.ts`), and each step stops the load before the next:
+
+1. **Allow-list**, before any plugin file is imported. The trust file is parsed strictly (an unknown
+   `version`, unknown keys, relative `dir`, or malformed JSON is refused). The requested directory
+   and each listed `dir` are compared by real path, so symlinks to a trusted checkout work; the
+   entry (`src/index.ts`) and manifest (`src/manifest.ts`) must also resolve inside the trusted
+   directory, so a symlinked file cannot escape it.
+2. **Manifest and permissions.** Only `src/manifest.ts` is imported, and its `nmrPredictorManifest`
+   export is validated by `@chemdraft/plugin-host`. Its id must be `org.chemdraft.nmr.predictor`,
+   and it must not declare any permission the CLI refuses (`document.write`, `filesystem.read`,
+   `filesystem.write`, `network.fetch`, `native.execute`, `model.load`, `model.download`,
+   `clipboard.read`, `clipboard.write`, `image.read`). This checks what the plugin declares, not what
+   its code does; the allow-list is what bounds execution.
+3. **Entry.** Only then is `src/index.ts` imported and its exports checked.
+
 The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivalence-grouping`,
 `diastereotopic-disclosure`, and `truthful-spectrum-caption`. Older checkouts are refused; update
 the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.

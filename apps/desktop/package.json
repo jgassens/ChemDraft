@@ -21,6 +21,7 @@
     "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/chemistry-adapter": "workspace:*",
     "@chemdraft/clipboard-adapter": "workspace:*",
+    "@chemdraft/document-workflow-core": "workspace:*",
     "@chemdraft/editor-adapter": "workspace:*",
     "@chemdraft/engine3d-api": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
