@@ -450,17 +450,15 @@ pub async fn ocsr_engine_uninstall<R: Runtime>(app: tauri::AppHandle<R>) -> Ocsr
         OcsrEngineState::stop_sidecar_blocking(&process, &sidecar_kill);
         let _staging = lock_ignoring_poison(&staging);
         *lock_ignoring_poison(&upgrade_refused) = None;
-        for path in [paths.final_dir(), paths.partial_dir(), paths.previous_dir()] {
-            if path.exists() {
-                if let Err(error) = fs::remove_dir_all(&path) {
-                    return Some(broken_status(
-                        free_disk_for(&paths.app_data),
-                        format!("Could not remove {}: {error}", path.display()),
-                    ));
-                }
-            }
+        // Rename-first, never an in-place delete: a quit mid-delete must not leave a
+        // half-deleted `ocsr-engine/` behind (see `install::remove_engine_trees`).
+        match install::remove_engine_trees(&paths) {
+            Ok(()) => None,
+            Err((path, error)) => Some(broken_status(
+                free_disk_for(&paths.app_data),
+                format!("Could not remove {}: {error}", path.display()),
+            )),
         }
-        None
     })
     .await;
     match failure {

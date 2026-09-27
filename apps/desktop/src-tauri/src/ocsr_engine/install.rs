@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,8 @@ pub const ENGINE_DIR: &str = "ocsr-engine";
 pub const PARTIAL_DIR: &str = "ocsr-engine.partial";
 /// A working install set aside while its replacement is swapped in; restored if the swap fails.
 pub const PREVIOUS_DIR: &str = "ocsr-engine.previous";
+/// Name prefix of a tree renamed out of the way and waiting to be deleted (see [`retire_tree`]).
+pub const DISCARD_PREFIX: &str = "ocsr-engine.discard-";
 pub const RECEIPT_FILE: &str = "install.json";
 pub const REQUIREMENTS_FILE: &str = "requirements.txt";
 
@@ -672,14 +674,13 @@ pub fn install(
         fs::remove_dir_all(&temp_dir).map_err(InstallError::failed_io)?;
     }
     verify_layout(&partial, platform)?;
-    let receipt_path = partial.join(RECEIPT_FILE);
-    let mut receipt = InstallReceipt::pinned(platform, 0);
-    write_receipt(&receipt_path, &receipt)?;
-    receipt.disk_bytes = directory_size(&partial).map_err(InstallError::failed_io)?;
-    write_receipt(&receipt_path, &receipt)?;
+    // The receipt is NOT written here: it is the last thing written, into the final location, once
+    // the engine has proved it works there (see `commit_staged_tree`).
+    let disk_bytes = directory_size(&partial).map_err(InstallError::failed_io)?;
+    let receipt = InstallReceipt::pinned(platform, disk_bytes);
     check_cancel(cancel)?;
 
-    commit_staged_tree(paths, platform, io, cancel, &mut guard)?;
+    commit_staged_tree(paths, platform, io, cancel, &mut guard, &receipt)?;
     progress.report(message(InstallPhase::Done, "MolScribe is installed."));
     Ok(receipt)
 }
@@ -692,12 +693,32 @@ pub fn install(
 /// location, and the import check runs from the final location, which is the only proof that the
 /// relocation worked. Any existing install is set aside first and restored if anything fails, so
 /// a failed reinstall never costs the user a working engine.
+///
+/// # Crash safety
+///
+/// Two rules make every moment of this function survivable by a quit, a crash, or power loss:
+///
+/// 1. **`ocsr-engine/` only ever changes by whole-directory renames.** Nothing is ever deleted
+///    inside it. A tree leaving that name is renamed to a fresh `ocsr-engine.discard-*` sibling
+///    first ([`retire_tree`]) and deleted there, so an interrupted delete can only ever leave a
+///    half-deleted *discard* directory, which the next launch sweeps.
+/// 2. **The receipt is the last file written into an engine and leaves with the tree.** It is
+///    written into `ocsr-engine/` only after the relocation, the layout check and the import
+///    check have all passed there. So an `ocsr-engine/` holding a current receipt is a complete,
+///    verified engine; one without a receipt is an interrupted commit. [`is_healthy`] and the
+///    status command both require the receipt, so a partial engine is never reported installed.
+///
+/// If the process dies at any point, [`remove_stale_staging`] at the next launch finds one of: a
+/// healthy `ocsr-engine/` (the set-aside tree is discarded); a missing or receipt-less
+/// `ocsr-engine/` beside a healthy `ocsr-engine.previous/` (the previous engine is restored); or
+/// a receipt-less `ocsr-engine/` alone (discarded, so status reads "not installed").
 fn commit_staged_tree(
     paths: &InstallPaths,
     platform: &dyn EnginePlatform,
     io: &dyn InstallIo,
     cancel: &AtomicBool,
     guard: &mut PartialGuard,
+    receipt: &InstallReceipt,
 ) -> Result<(), InstallError> {
     let partial = paths.partial_dir();
     let final_dir = paths.final_dir();
@@ -715,9 +736,10 @@ fn commit_staged_tree(
         }
     }
 
-    if previous.exists() {
-        fs::remove_dir_all(&previous).map_err(InstallError::failed_io)?;
-    }
+    // A set-aside tree from an interrupted swap may be the only working engine: put it back in
+    // place first if `ocsr-engine/` is not, so it becomes the one this install falls back to.
+    reconcile_previous(paths, platform);
+    remove_tree(&paths.app_data, &previous).map_err(InstallError::failed_io)?;
     let had_previous = final_dir.exists();
     if had_previous {
         fs::rename(&final_dir, &previous).map_err(InstallError::failed_io)?;
@@ -726,7 +748,7 @@ fn commit_staged_tree(
         restore_previous(&final_dir, &previous, had_previous);
         return Err(InstallError::failed_io(error));
     }
-    // From here the staging tree is gone; a failure removes the new tree instead.
+    // From here the staging tree is gone; a failure retires the new tree instead.
     guard.commit();
 
     let outcome = relocate_staged_tree(&final_dir, &rebases)
@@ -749,22 +771,37 @@ fn commit_staged_tree(
                 cancel,
                 None,
             )
-        });
+        })
+        .and_then(|()| check_cancel(cancel))
+        // Last: from this write on, `ocsr-engine/` is a verified install.
+        .and_then(|()| write_receipt(&final_dir.join(RECEIPT_FILE), receipt));
     match outcome {
         Ok(()) => {
-            if had_previous {
-                if let Err(error) = fs::remove_dir_all(&previous) {
-                    eprintln!(
-                        "[chemdraft ocsr] could not remove the replaced engine at {}: {error}",
-                        previous.display()
-                    );
-                }
+            if let Err(error) = remove_tree(&paths.app_data, &previous) {
+                eprintln!(
+                    "[chemdraft ocsr] could not set aside the replaced engine at {}: {error}",
+                    previous.display()
+                );
             }
             Ok(())
         }
         Err(error) => {
-            let _ = fs::remove_dir_all(&final_dir);
-            restore_previous(&final_dir, &previous, had_previous);
+            // Rename the failed tree away before restoring, never delete it in place: a quit
+            // mid-delete would leave a half-deleted tree where the engine belongs.
+            match retire_tree(&paths.app_data, &final_dir) {
+                Ok(discarded) => {
+                    restore_previous(&final_dir, &previous, had_previous);
+                    if let Some(discarded) = discarded {
+                        delete_discarded(&discarded);
+                    }
+                }
+                // The failed tree has no receipt, so it reads as not installed, and the next
+                // launch restores the previous engine over it.
+                Err(retire_error) => eprintln!(
+                    "[chemdraft ocsr] could not set aside the failed engine at {}: {retire_error}",
+                    final_dir.display()
+                ),
+            }
             Err(error)
         }
     }
@@ -779,6 +816,148 @@ fn restore_previous(final_dir: &Path, previous: &Path, had_previous: bool) {
             );
         }
     }
+}
+
+/// A fresh, unused discard path beside the engine. It lives in `app_data` itself so renaming a
+/// tree to it never crosses a filesystem, which is what makes the rename atomic.
+fn discard_path(app_data: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let candidate = app_data.join(format!(
+            "{DISCARD_PREFIX}{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        if fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+    }
+}
+
+/// Atomically renames `tree` to a fresh discard directory and returns where it went, or `None`
+/// if there was nothing to move. On error `tree` is untouched and still whole.
+pub fn retire_tree(app_data: &Path, tree: &Path) -> io::Result<Option<PathBuf>> {
+    if fs::symlink_metadata(tree).is_err() {
+        return Ok(None);
+    }
+    let discarded = discard_path(app_data);
+    fs::rename(tree, &discarded)?;
+    Ok(Some(discarded))
+}
+
+/// Deletes a retired tree, receipt first. A failure is logged and left for the next launch's
+/// sweep; the tree is already out of every place ChemDraft reads an engine from.
+fn delete_discarded(discarded: &Path) -> bool {
+    let _ = fs::remove_file(discarded.join(RECEIPT_FILE));
+    match fs::remove_dir_all(discarded) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "[chemdraft ocsr] could not delete {} (the next launch retries): {error}",
+                discarded.display()
+            );
+            false
+        }
+    }
+}
+
+/// Removes `tree` rename-first: it is renamed to a discard directory, then deleted there. An
+/// error means the rename failed and `tree` is still whole in place.
+pub fn remove_tree(app_data: &Path, tree: &Path) -> io::Result<()> {
+    if let Some(discarded) = retire_tree(app_data, tree)? {
+        delete_discarded(&discarded);
+    }
+    Ok(())
+}
+
+/// Every leftover discard directory in `app_data`.
+fn discard_dirs(app_data: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(app_data) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(DISCARD_PREFIX)
+        })
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// Uninstall: removes every engine tree, each rename-first. The live engine goes LAST, so a
+/// failure part-way never leaves a set-aside engine that the next launch would restore over an
+/// uninstall the user asked for. On error, returns the tree that could not be moved aside; it is
+/// still whole in place.
+pub fn remove_engine_trees(paths: &InstallPaths) -> Result<(), (PathBuf, io::Error)> {
+    for tree in [paths.partial_dir(), paths.previous_dir(), paths.final_dir()] {
+        remove_tree(&paths.app_data, &tree).map_err(|error| (tree, error))?;
+    }
+    for discarded in discard_dirs(&paths.app_data) {
+        delete_discarded(&discarded);
+    }
+    Ok(())
+}
+
+/// Settles `ocsr-engine.previous/` after an interrupted swap. Beside a healthy `ocsr-engine/` it
+/// is discarded. Otherwise, if it is healthy itself, it is restored: the unhealthy or missing
+/// `ocsr-engine/` is retired and the previous engine renamed back. If neither is healthy both are
+/// left alone. Returns whether `ocsr-engine.previous/` was removed from disk.
+fn reconcile_previous(paths: &InstallPaths, platform: &dyn EnginePlatform) -> bool {
+    let final_dir = paths.final_dir();
+    let previous = paths.previous_dir();
+    if !previous.exists() {
+        return false;
+    }
+    if is_healthy(&final_dir, platform) {
+        return match retire_tree(&paths.app_data, &previous) {
+            Ok(discarded) => {
+                if let Some(discarded) = discarded {
+                    delete_discarded(&discarded);
+                }
+                true
+            }
+            Err(error) => {
+                eprintln!(
+                    "[chemdraft ocsr] could not set aside the stale {}: {error}",
+                    previous.display()
+                );
+                false
+            }
+        };
+    }
+    if !is_restorable(&previous, platform) {
+        return false;
+    }
+    let discarded = match retire_tree(&paths.app_data, &final_dir) {
+        Ok(discarded) => discarded,
+        Err(error) => {
+            eprintln!(
+                "[chemdraft ocsr] could not set aside the unhealthy {}: {error}",
+                final_dir.display()
+            );
+            return false;
+        }
+    };
+    match fs::rename(&previous, &final_dir) {
+        Ok(()) => eprintln!(
+            "[chemdraft ocsr] restored the previous engine from {}",
+            previous.display()
+        ),
+        Err(error) => eprintln!(
+            "[chemdraft ocsr] could not restore the previous engine from {}: {error}",
+            previous.display()
+        ),
+    }
+    if let Some(discarded) = discarded {
+        delete_discarded(&discarded);
+    }
+    // Restored, not removed: the engine is still on disk, now as `ocsr-engine/`.
+    false
 }
 
 /// Rewrites every symlink under `root` whose target lies under an old prefix, and the `home`
@@ -847,33 +1026,73 @@ fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
 }
 
 /// Whether `root` holds an install that matches this build's pins and layout, as
-/// `ocsr_engine_status` would report `installed`.
+/// `ocsr_engine_status` would report `installed`. The receipt is required, and it is written last
+/// on install and leaves first (with the whole tree, by rename) on teardown, so a tree that is
+/// incomplete for either reason never counts (see `commit_staged_tree`).
 pub fn is_healthy(root: &Path, platform: &dyn EnginePlatform) -> bool {
     read_current_receipt(&root.join(RECEIPT_FILE))
         .is_some_and(|receipt| receipt.matches_pins(platform))
         && verify_layout(root, platform).is_ok()
 }
 
-/// Removes staging trees an interrupted install left behind: `ocsr-engine.partial/` always (the
-/// caller guarantees no install is running), and `ocsr-engine.previous/` only when
-/// `ocsr-engine/` is a healthy install — otherwise the set-aside tree may be the only working
-/// engine, and it is left for the user's next install or uninstall. Returns what was removed.
+/// Whether a set-aside `ocsr-engine.previous/` is a verified engine worth renaming back.
+///
+/// [`is_healthy`] cannot answer this: the tree was relocated for `ocsr-engine/`, so its venv
+/// interpreter is an absolute link into `ocsr-engine/` and resolves only once the tree is back
+/// there (or, worse, resolves into whatever tree is there now). So the links are checked as
+/// entries, not followed. The receipt carries the weight: it was written last, after the engine
+/// verified in place, and nothing deletes inside a set-aside tree (every teardown renames it away
+/// whole first), so a set-aside tree with a current receipt is a whole, verified engine.
+fn is_restorable(root: &Path, platform: &dyn EnginePlatform) -> bool {
+    let receipt_ok = read_current_receipt(&root.join(RECEIPT_FILE))
+        .is_some_and(|receipt| receipt.matches_pins(platform));
+    let model = root.join(pins::MODEL_FILENAME);
+    receipt_ok
+        && platform.uv_executable(root).is_file()
+        && fs::symlink_metadata(platform.venv_python(root)).is_ok()
+        && fs::metadata(&model).is_ok_and(|meta| meta.is_file() && meta.len() == pins::MODEL_BYTES)
+}
+
+/// Settles what an interrupted install, reinstall or uninstall left behind. The caller guarantees
+/// no install is running. In order:
+///
+/// - `ocsr-engine.partial/` is removed (rename-first, like every teardown here);
+/// - `ocsr-engine.previous/` is discarded beside a healthy `ocsr-engine/`, and restored in its
+///   place when `ocsr-engine/` is missing or unhealthy and the previous engine is healthy; when
+///   neither is healthy it is left for the user's next install or uninstall;
+/// - an `ocsr-engine/` with no receipt at all is an interrupted commit (the receipt is written
+///   last) and is discarded;
+/// - every leftover `ocsr-engine.discard-*` directory is deleted.
+///
+/// Returns what was removed from disk.
 pub fn remove_stale_staging(paths: &InstallPaths, platform: &dyn EnginePlatform) -> Vec<PathBuf> {
-    let mut stale = vec![paths.partial_dir()];
-    if is_healthy(&paths.final_dir(), platform) {
-        stale.push(paths.previous_dir());
-    }
     let mut removed = Vec::new();
-    for path in stale {
-        if !path.exists() {
-            continue;
-        }
-        match fs::remove_dir_all(&path) {
-            Ok(()) => removed.push(path),
+    let partial = paths.partial_dir();
+    if partial.exists() {
+        match remove_tree(&paths.app_data, &partial) {
+            Ok(()) => removed.push(partial),
             Err(error) => eprintln!(
                 "[chemdraft ocsr] could not remove the stale {}: {error}",
-                path.display()
+                partial.display()
             ),
+        }
+    }
+    if reconcile_previous(paths, platform) {
+        removed.push(paths.previous_dir());
+    }
+    let final_dir = paths.final_dir();
+    if final_dir.is_dir() && fs::symlink_metadata(final_dir.join(RECEIPT_FILE)).is_err() {
+        match remove_tree(&paths.app_data, &final_dir) {
+            Ok(()) => removed.push(final_dir),
+            Err(error) => eprintln!(
+                "[chemdraft ocsr] could not set aside the incomplete {}: {error}",
+                final_dir.display()
+            ),
+        }
+    }
+    for discarded in discard_dirs(&paths.app_data) {
+        if delete_discarded(&discarded) {
+            removed.push(discarded);
         }
     }
     removed
@@ -1733,6 +1952,186 @@ mod tests {
         assert!(!paths.final_dir().join("marker").exists());
         assert!(paths.final_dir().join(RECEIPT_FILE).is_file());
         assert_no_staging(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn assert_no_discards(paths: &InstallPaths) {
+        assert_eq!(
+            discard_dirs(&paths.app_data),
+            Vec::<PathBuf>::new(),
+            "discard dir left behind"
+        );
+    }
+
+    #[test]
+    fn a_cancel_during_verification_after_the_swap_restores_the_healthy_previous_engine() {
+        let root = temp_root("cancel-verify");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        run_install(&paths, &FakeIo::new(None)).expect("first install");
+        fs::write(paths.final_dir().join("marker"), b"old").expect("marker");
+
+        let error = run_install(
+            &paths,
+            &FakeIo::new(Some(("verify", InstallErrorCode::Cancelled))),
+        )
+        .expect_err("quit during step 9");
+        assert_eq!(error.code, InstallErrorCode::Cancelled);
+        assert_eq!(
+            fs::read(paths.final_dir().join("marker")).expect("previous engine restored"),
+            b"old"
+        );
+        assert!(is_healthy(&paths.final_dir(), &platform));
+        assert_no_staging(&paths);
+        assert_no_discards(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_receipt_is_written_only_after_the_engine_verifies_in_place() {
+        let root = temp_root("receipt-last");
+        let paths = test_paths(&root);
+        let error = run_install(
+            &paths,
+            &FakeIo::new(Some(("verify", InstallErrorCode::Failed))),
+        )
+        .expect_err("verification fails after the swap");
+        assert_eq!(error.code, InstallErrorCode::Failed);
+        // No previous engine to restore: the failed tree is retired whole, receipt and all.
+        assert!(!paths.final_dir().exists());
+        assert_no_staging(&paths);
+        assert_no_discards(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_leftover_discard_dir_is_swept_at_startup() {
+        let root = temp_root("discard-sweep");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        run_install(&paths, &FakeIo::new(None)).expect("install");
+        // A delete interrupted by a quit: the tree was renamed away first, so only the discard
+        // directory is half-deleted, and the live engine is untouched.
+        let discarded = root.join(format!("{DISCARD_PREFIX}1-0"));
+        fs::create_dir_all(discarded.join("venv").join("lib")).expect("discard dir");
+        fs::write(discarded.join("venv").join("lib").join("left"), b"x").expect("discard file");
+
+        assert_eq!(
+            remove_stale_staging(&paths, &platform),
+            vec![discarded.clone()]
+        );
+        assert!(!discarded.exists());
+        assert!(is_healthy(&paths.final_dir(), &platform));
+        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_missing_final_engine_beside_a_healthy_previous_is_restored_at_startup() {
+        let root = temp_root("restore-missing");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        run_install(&paths, &FakeIo::new(None)).expect("install");
+        // A quit between setting the old engine aside and renaming the new one into place.
+        fs::rename(paths.final_dir(), paths.previous_dir()).expect("set aside");
+
+        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        assert!(is_healthy(&paths.final_dir(), &platform));
+        assert_no_staging(&paths);
+        assert_no_discards(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unhealthy_final_engine_beside_a_healthy_previous_is_replaced_by_it_at_startup() {
+        let root = temp_root("restore-unhealthy");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        run_install(&paths, &FakeIo::new(None)).expect("install");
+        fs::write(paths.final_dir().join("marker"), b"old").expect("marker");
+        fs::rename(paths.final_dir(), paths.previous_dir()).expect("set aside");
+        // A quit after the new tree was renamed in but before it verified: no receipt yet, and
+        // everything else in place, as the layout check sees it.
+        let fresh = paths.final_dir();
+        for file in [platform.uv_executable(&fresh), platform.venv_python(&fresh)] {
+            fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+            fs::write(file, b"x").expect("file");
+        }
+        File::create(fresh.join(pins::MODEL_FILENAME))
+            .and_then(|model| model.set_len(pins::MODEL_BYTES))
+            .expect("model");
+        assert!(verify_layout(&paths.final_dir(), &platform).is_ok());
+        assert!(!is_healthy(&paths.final_dir(), &platform));
+
+        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        assert_eq!(
+            fs::read(paths.final_dir().join("marker")).expect("previous engine restored"),
+            b"old"
+        );
+        assert!(is_healthy(&paths.final_dir(), &platform));
+        assert_no_staging(&paths);
+        assert_no_discards(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_final_engine_without_a_receipt_is_an_interrupted_commit_and_is_discarded() {
+        let root = temp_root("unreceipted");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        run_install(&paths, &FakeIo::new(None)).expect("install");
+        fs::remove_file(paths.final_dir().join(RECEIPT_FILE)).expect("unreceipted");
+
+        assert_eq!(
+            remove_stale_staging(&paths, &platform),
+            vec![paths.final_dir()]
+        );
+        assert!(!paths.final_dir().exists());
+        assert_no_discards(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn uninstall_removes_every_tree_rename_first_and_leaves_no_engine_behind() {
+        let root = temp_root("uninstall");
+        let paths = test_paths(&root);
+        let platform = MacPlatform::new(MacArchitecture::Aarch64);
+        run_install(&paths, &FakeIo::new(None)).expect("install");
+        fs::create_dir_all(paths.previous_dir().join("venv")).expect("previous");
+        fs::create_dir_all(paths.partial_dir().join("venv")).expect("partial");
+        let stale = root.join(format!("{DISCARD_PREFIX}1-0"));
+        fs::create_dir_all(&stale).expect("stale discard");
+
+        remove_engine_trees(&paths).expect("uninstall");
+        assert!(!paths.final_dir().exists());
+        assert!(!is_healthy(&paths.final_dir(), &platform));
+        assert_no_staging(&paths);
+        assert_no_discards(&paths);
+        // Nothing but the test's own requirements file is left in the app data directory.
+        let left: Vec<_> = fs::read_dir(&root)
+            .expect("root")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(left, vec![OsString::from("source-requirements.txt")]);
+        // Idempotent: a second uninstall finds nothing to do.
+        remove_engine_trees(&paths).expect("second uninstall");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retiring_a_tree_moves_it_whole_to_a_unique_sibling() {
+        let root = temp_root("retire");
+        let tree = root.join(ENGINE_DIR);
+        fs::create_dir_all(tree.join("venv")).expect("tree");
+        fs::write(tree.join(RECEIPT_FILE), b"{}").expect("receipt");
+        let first = retire_tree(&root, &tree).expect("retire").expect("moved");
+        assert!(!tree.exists());
+        assert_eq!(first.parent(), Some(root.as_path()));
+        assert!(first.join(RECEIPT_FILE).is_file() && first.join("venv").is_dir());
+        fs::create_dir_all(&tree).expect("second tree");
+        let second = retire_tree(&root, &tree).expect("retire").expect("moved");
+        assert_ne!(first, second);
+        assert_eq!(retire_tree(&root, &tree).expect("absent"), None);
         let _ = fs::remove_dir_all(root);
     }
 
