@@ -155,6 +155,10 @@ suffixes); --spectrum-dir <dir> (batch naming <dir>/<name>-<nucleus>.<format>);
 loaded from $CHEMDRAFT_NMR_PLUGIN_DIR (default: ~/programming/chemdraft-nmr-plugin). It is a
 separate repository and is not bundled here.
 
+The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivalence-grouping`,
+`diastereotopic-disclosure`, and `truthful-spectrum-caption`. Older checkouts are refused; update
+the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.
+
 What the numbers are:
   - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
     assignments. They are predictions, not measurements. source "hose-fragment" is a database
@@ -167,11 +171,11 @@ What the numbers are:
   - No shift is ever invented for an unmatched environment: it is omitted and a warning
     (NMR_NO_FRAGMENT_MATCH / NMR_PARTIAL_PREDICTION) says so.
   - No confidence percentages are reported; thin matches carry warnings instead.
-  - Symmetry check: when two resonances of one nucleus sit on symmetry-equivalent atoms (same
-    OpenChemLib symmetry rank and diastereotopic ID), both records get the flag
-    "equivalence-split" and an NMR_EQUIVALENCE_SPLIT warning names the atoms. Treat them as one
-    environment; the predictor's shifts and nEquivalent are reported unchanged, not merged.
-    NMR_EQUIVALENCE_UNCHECKED says the check could not run.
+  - Atoms the predictor finds equivalent by constitution are reported as one resonance;
+    nEquivalent counts them. Where such atoms may still differ because the molecule has a
+    stereocenter (the two H of a CH2, or two methyls on one carbon), they stay one resonance
+    with one shift and an NMR_POTENTIALLY_DIASTEREOTOPIC_HYDROGENS or
+    NMR_POTENTIALLY_DIASTEREOTOPIC_METHYLS warning says so.
   - The reference database is a derivative database under the nmrshiftdb2 Database License
     (ODbL-derived: attribution, share-alike). That licence is separate from the code licence;
     each result line names it under "database".
