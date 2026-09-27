@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -16,14 +16,79 @@ import { validateTrustedPluginManifest } from "@chemdraft/plugin-host";
  *    edits by hand (`~/.config/chemdraft/trusted-plugins.json`). This runs before any file from the
  *    directory is imported and is what actually bounds which code executes. The file's location is
  *    a function parameter, never an environment variable: whoever can point the CLI at a plugin
- *    directory must not also be able to point it at an allow-list of their choosing. Nothing in this
- *    module creates or edits the trust file.
+ *    directory must not also be able to point it at an allow-list of their choosing. For the same
+ *    reason its default is resolved from the OS account database (`os.userInfo().homedir`), never
+ *    from `os.homedir()`/`HOME`/`USERPROFILE` — those read the environment, and whoever can set
+ *    `CHEMDRAFT_NMR_PLUGIN_DIR` could otherwise also set `HOME` and point the CLI at an allow-list of
+ *    their own choosing. If the account's home cannot be determined, there is no default: every
+ *    plugin directory is refused rather than falling back to the environment. Nothing in this module
+ *    creates or edits the trust file.
  * B. Manifest and permissions. Only after A passes, the plugin's manifest module is imported and
  *    validated through `@chemdraft/plugin-host`; its id must match, and it must not declare a
  *    permission the CLI refuses to grant. Only then is the plugin entry imported.
  */
 
-export const DEFAULT_TRUSTED_PLUGINS_PATH = join(homedir(), ".config", "chemdraft", "trusted-plugins.json");
+export class PluginTrustError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PluginTrustError";
+  }
+}
+
+/** The subset of `os.userInfo()`'s return value the default trust-path lookup needs. */
+export interface AccountHomeInfo {
+  homedir: string;
+}
+
+/** A lookup for the effective OS account's home directory. Defaults to `node:os`'s `userInfo`. */
+export type AccountHomeLookup = () => AccountHomeInfo;
+
+/**
+ * Resolves the plugin trust file's default location from the OS account database — POSIX: the
+ * passwd entry for the effective uid; Windows: the profile-directory lookup — never from
+ * `os.homedir()`, `HOME`, or `USERPROFILE`. `lookup` is a seam for tests; real callers should never
+ * pass it.
+ *
+ * Fails closed: throws {@link PluginTrustError}, and never falls back to the environment, if the
+ * account's home directory cannot be determined (the lookup throws, or returns an empty homedir).
+ */
+export function resolveDefaultTrustedPluginsPath(lookup: AccountHomeLookup = userInfo): string {
+  let info: AccountHomeInfo;
+  try {
+    info = lookup();
+  } catch (error) {
+    throw new PluginTrustError(
+      `Could not determine the ChemDraft plugin trust file's default location: the OS account home ` +
+        `directory lookup failed (${(error as Error).message}). Refusing to fall back to HOME/USERPROFILE for ` +
+        "it; pass an explicit trust file path instead."
+    );
+  }
+  if (!info.homedir) {
+    throw new PluginTrustError(
+      "Could not determine the ChemDraft plugin trust file's default location: the OS account home " +
+        "directory lookup returned no home directory. Refusing to fall back to HOME/USERPROFILE for it; " +
+        "pass an explicit trust file path instead."
+    );
+  }
+  return join(info.homedir, ".config", "chemdraft", "trusted-plugins.json");
+}
+
+/** Set at import time when {@link resolveDefaultTrustedPluginsPath} fails; see its use below. */
+let defaultTrustedPluginsPathError: PluginTrustError | undefined;
+
+function resolveDefaultTrustedPluginsPathAtImport(): string {
+  try {
+    return resolveDefaultTrustedPluginsPath();
+  } catch (error) {
+    defaultTrustedPluginsPathError = error as PluginTrustError;
+    // Never HOME/USERPROFILE: an empty string is not a directory either lookup could point at, and
+    // readTrustedPlugins/resolveTrustedPlugin re-throw defaultTrustedPluginsPathError before this
+    // value is ever used as a real path.
+    return "";
+  }
+}
+
+export const DEFAULT_TRUSTED_PLUGINS_PATH: string = resolveDefaultTrustedPluginsPathAtImport();
 
 const TRUST_FILE_VERSION = 1;
 
@@ -52,13 +117,6 @@ export const CLI_REFUSED_PLUGIN_PERMISSIONS = [
   "clipboard.write",
   "image.read"
 ] as const satisfies readonly PluginPermission[];
-
-export class PluginTrustError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PluginTrustError";
-  }
-}
 
 export interface TrustedPluginEntry {
   id: string;
@@ -109,6 +167,9 @@ function rejectUnknownKeys(value: Record<string, unknown>, allowed: readonly str
 
 /** Read and strictly validate the trust file. Throws {@link PluginTrustError} naming the file. */
 export function readTrustedPlugins(configPath: string = DEFAULT_TRUSTED_PLUGINS_PATH): TrustedPluginEntry[] {
+  if (configPath === DEFAULT_TRUSTED_PLUGINS_PATH && defaultTrustedPluginsPathError !== undefined) {
+    throw defaultTrustedPluginsPathError;
+  }
   let raw: string;
   try {
     raw = readFileSync(configPath, "utf8");
@@ -190,6 +251,9 @@ function realpathInside(dir: string, relativeFile: string, role: string): string
  */
 export function resolveTrustedPlugin(request: TrustedPluginRequest): TrustedPluginLocation {
   const configPath = request.configPath ?? DEFAULT_TRUSTED_PLUGINS_PATH;
+  if (configPath === DEFAULT_TRUSTED_PLUGINS_PATH && defaultTrustedPluginsPathError !== undefined) {
+    throw defaultTrustedPluginsPathError;
+  }
   const dir = realpathOrUndefined(request.pluginDir);
   if (dir === undefined) {
     throw new PluginTrustError(`Plugin directory ${request.pluginDir} does not exist.`);

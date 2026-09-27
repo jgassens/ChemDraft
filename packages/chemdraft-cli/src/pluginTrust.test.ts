@@ -7,9 +7,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   CLI_REFUSED_PLUGIN_PERMISSIONS,
+  DEFAULT_TRUSTED_PLUGINS_PATH,
   PluginTrustError,
   loadTrustedPlugin,
   readTrustedPlugins,
+  resolveDefaultTrustedPluginsPath,
   type TrustedPluginRequest
 } from "./pluginTrust";
 
@@ -243,5 +245,55 @@ describe("plugin manifest and permissions", () => {
     expect(loaded.module.loadedFrom).toBe("fake plugin");
     expect(existsSync(plugin.manifestMarker)).toBe(true);
     expect(existsSync(plugin.entryMarker)).toBe(true);
+  });
+});
+
+describe("default trust file location", () => {
+  it("is derived from the OS account home, ignores a HOME/USERPROFILE hijack, and never trusts a trust file planted there", async () => {
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    const before = resolveDefaultTrustedPluginsPath();
+    try {
+      const attackerHome = await mkdtemp(join(root, "attacker-home-"));
+      const attackerPlugin = await fakePlugin();
+      await mkdir(join(attackerHome, ".config", "chemdraft"), { recursive: true });
+      await writeFile(
+        join(attackerHome, ".config", "chemdraft", "trusted-plugins.json"),
+        JSON.stringify(trusting(attackerPlugin.dir))
+      );
+
+      process.env.HOME = attackerHome;
+      process.env.USERPROFILE = attackerHome;
+
+      const after = resolveDefaultTrustedPluginsPath();
+      expect(after).toBe(before);
+      expect(after).toBe(DEFAULT_TRUSTED_PLUGINS_PATH);
+      expect(after).not.toBe(join(attackerHome, ".config", "chemdraft", "trusted-plugins.json"));
+
+      // Whether or not a real trust file exists at the account's actual default location, it was
+      // never written to list attackerPlugin, so loading through it must refuse.
+      await expect(loadTrustedPlugin(request(attackerPlugin.dir, after))).rejects.toThrow(PluginTrustError);
+      expectNothingRan(attackerPlugin);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+    }
+  });
+
+  it("fails closed, without throwing at the caller's usual message shape, when the account home lookup throws", () => {
+    const lookup = (): { homedir: string } => {
+      throw new Error("no passwd entry for this uid");
+    };
+    expect(() => resolveDefaultTrustedPluginsPath(lookup)).toThrow(PluginTrustError);
+    expect(() => resolveDefaultTrustedPluginsPath(lookup)).toThrow(/account home/i);
+    expect(() => resolveDefaultTrustedPluginsPath(lookup)).toThrow(/no passwd entry for this uid/);
+  });
+
+  it("fails closed when the account home lookup returns an empty homedir, never falling back", () => {
+    const lookup = (): { homedir: string } => ({ homedir: "" });
+    expect(() => resolveDefaultTrustedPluginsPath(lookup)).toThrow(PluginTrustError);
+    expect(() => resolveDefaultTrustedPluginsPath(lookup)).toThrow(/account home/i);
   });
 });
