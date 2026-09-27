@@ -131,8 +131,8 @@ describe("structure list export", () => {
     expect(result.warnings).toEqual([]);
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
     expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { fromDocFrame: true }));
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
     expect(document).toEqual(before);
   });
 
@@ -240,9 +240,9 @@ describe("structure list export", () => {
 
   it("uses a nonempty source molfile title as the name and omits names for blank titles", async () => {
     const named = { ...moleculeAt("named", 0, 0), structureFormat: "molfile-v2000" as const };
-    named.structure = `  Ethane\tstandard  ${moleculeToMolfileV2000(named)}`.replace(/\n/g, "\r\n");
+    named.structure = `  Ethane\tstandard  ${moleculeToMolfileV2000(named, { kekuleBondOrders: new Map() }).contents}`.replace(/\n/g, "\r\n");
     const unnamed = { ...moleculeAt("unnamed", 200, 0), structureFormat: "molfile-v2000" as const };
-    unnamed.structure = ` \t ${moleculeToMolfileV2000(unnamed)}`;
+    unnamed.structure = ` \t ${moleculeToMolfileV2000(unnamed, { kekuleBondOrders: new Map() }).contents}`;
     const document = documentWith([unnamed, named]);
     expect((await exportStructureListSmi(document)).contents).toBe("CC\tEthane standard\nCC\t2\n");
     const records = (await exportStructureListSdf(document)).contents.split("$$$$\n");
@@ -270,7 +270,7 @@ describe("structure list export", () => {
     molecule.atoms[1].element = "Ph";
     molecule.bonds[0].display = { bondStyle: "dashed" };
     const writerWarnings: string[] = [];
-    moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings: writerWarnings });
+    moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true, warnings: writerWarnings }).contents;
     expect(writerWarnings).toHaveLength(2);
     const document = documentWith([molecule]);
     const result = await exportStructureListSdf(document);
@@ -302,20 +302,39 @@ describe("structure list export", () => {
     expect(engine.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
   });
 
-  it("reports an unresolvable aromatic system only when the native writer produced the SMILES", async () => {
+  it("reports an unresolvable aromatic system on both export routes", async () => {
     const molecule = { ...moleculeAt("odd-aromatic", 0, 0), structureFormat: "unknown" as const };
-    molecule.atoms = ["a1", "a2", "a3", "a4", "a5"].map((id, index) => ({ id, element: "C", x: index * 10, y: 0, formalCharge: 0 }));
-    molecule.bonds = molecule.atoms.map((atom, index) => ({
-      id: `b${index}`, fromAtomId: atom.id, toAtomId: molecule.atoms[(index + 1) % 5].id, order: "aromatic" as const
-    }));
+    // Raw type-4 input: never manufacture this import fixture through the MOL writer under test.
+    const raw = `Unresolved five-ring
+  ChemDraft test
+
+  5  5  0  0  0  0  0  0  0  0999 V2000
+    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   10.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   20.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   30.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+   40.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  4  0  0  0  0
+  2  3  4  0  0  0  0
+  3  4  4  0  0  0  0
+  4  5  4  0  0  0  0
+  5  1  4  0  0  0  0
+M  END
+`;
+    const graph = parseMolfileGraph(raw);
+    molecule.atoms = graph.atoms;
+    molecule.bonds = graph.bonds;
     const document = documentWith([molecule]);
     const native = await exportStructureListSmi(document);
     expect(native.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
     expect(native.warnings[0].message).toContain("5 aromatic bonds could not be resolved");
-    // RDKit reads the molfile's type-4 bonds itself: no downgrade happened, so no warning.
+    // Type 4 now stays truthful; unresolved interpretation still has to be disclosed.
     vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "c1cccc1" });
     const engine = await exportStructureListSmi(document);
-    expect(engine.warnings).toEqual([]);
+    expect(engine.warnings).toEqual([expect.objectContaining({
+      code: "export.smiles_v2000_loss", objectId: molecule.id,
+      message: expect.stringContaining("no resolved Kekulé order; preserved as type 4")
+    })]);
   });
 
   it("gives a typed atom on an aromatic ring its Kekulé valence in the SDF molfile, with no warning", async () => {

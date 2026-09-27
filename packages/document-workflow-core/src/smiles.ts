@@ -82,10 +82,10 @@ export function nativeSmilesBondOrderResolution(
       `${count} aromatic bond${count === 1 ? "" : "s"} could not be resolved into alternating single and double bonds; written to SMILES as single.`
     );
   }
-  if (resolution.guessedHydrogenAtomIds.size > 0) {
-    const ids = [...resolution.guessedHydrogenAtomIds].sort();
+  if (resolution.inferredHydrogenAtomIds.size > 0) {
+    const ids = [...resolution.inferredHydrogenAtomIds].sort();
     warnings.aromatic.push(
-      `The aromatic bonds do not say which ring nitrogens carry hydrogen (${ids.join(", ")}); one tautomer was guessed and written to SMILES.`
+      `Hydrogen counts at aromatic atoms ${ids.join(", ")} were guessed using a closed-shell reading and written to SMILES.`
     );
   }
   return {

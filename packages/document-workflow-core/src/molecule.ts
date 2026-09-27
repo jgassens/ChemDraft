@@ -221,7 +221,7 @@ export function createSmilesMolecule(
     fromDocFrame: true,
     warnings: structureWarnings,
     kekuleBondOrders: nativeBondOrderResolution(atoms, bonds).kekuleOrders
-  });
+  }).contents;
 
   return normalizeNativeMoleculeGeometry({
     id: nextObjectId(document, source.objectIdPrefix, source.reservedObjectIds),
@@ -431,12 +431,13 @@ function medianNumber(values: readonly number[]): number | undefined {
  * element and from every other label, which is all the guard needs: it compares the drawing's
  * reading before and after, and both reads use this same spelling.
  */
-export function stereoPerceptionMolfile(molecule: MoleculeObject): string {
+export function stereoPerceptionMolfile(molecule: MoleculeObject, warnings?: string[]): string {
   return moleculeToMolfileV2000(molecule, {
     fromDocFrame: true,
     abbreviations: "rgroup",
+    warnings,
     kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
-  });
+  }).contents;
 }
 
 export function scaleParsedMolfileAtoms(

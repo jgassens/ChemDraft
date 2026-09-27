@@ -8,13 +8,12 @@ import {
   type MoleculeBond
 } from "@chemdraft/chem-core";
 import {
-  atomBondOrderUsageMap,
   dativeDeprotonationCount,
-  nativeAtomBondOrderUsage,
   nativeAtomChargeIsExpressible,
   nativeAtomValenceForCharge,
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
+  type NativeBondOrderResolution,
   type NativeElementSymbol
 } from "@chemdraft/layout-engine";
 
@@ -49,8 +48,8 @@ export interface NativeAtomValidationState {
    */
   unresolvedAromatic?: true;
   /**
-   * Set when the atom is a ring nitrogen whose hydrogen the source never stated and the ring did not
-   * force: one tautomer was picked for it, and the badge says so.
+   * Set when an unstated ring hydrogen count, tautomer or closed-shell fallback was inferred.
+   * A unique placement still gets a badge when the five-ring default supplied its H count.
    */
   tautomerGuessed?: true;
 }
@@ -267,11 +266,12 @@ export function nativeAtomValidationState(
   atom: MoleculeAtom,
   bonds: readonly MoleculeBond[],
   effectiveFormalCharge = atom.formalCharge,
-  atoms: readonly MoleculeAtom[] = [atom]
+  atoms: readonly MoleculeAtom[] = [atom],
+  resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
 ): NativeAtomValidationState {
   const element = nativeElementFromAtomLabel(atom.element);
   // Unpaired electrons from associated radical marks occupy bonding slots like bonds do.
-  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds, atoms) + (atom.markRadicals ?? 0);
+  const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
 
   // The user dismissed this atom's warning from the context menu — report it valid so no
   // badge renders and no warning is stored, whatever the arithmetic says.
@@ -287,7 +287,24 @@ export function nativeAtomValidationState(
 
   // Aromatic bonds with no Kekulé pattern were counted as single so the formula and label still
   // have a number, but that number is a guess: say so on the atom rather than let it pass.
-  const resolution = nativeBondOrderResolution(atoms, bonds);
+  // A stated count is a number, not just an N–H toggle. Check it even on charged atoms and
+  // on fallback readings; the warning must say exactly which source constraint could not hold.
+  if (atom.hydrogenCount !== undefined && element) {
+    const resolvedHydrogens = atom.labelLiteral === true ? 0 : Math.max(0,
+      nativeAtomValenceForCharge(element, effectiveFormalCharge) - valenceUsed
+      - dativeDeprotonationCount(atom, bonds, atoms, resolution));
+    if (resolvedHydrogens !== atom.hydrogenCount) {
+      return {
+        atomId: atom.id,
+        element,
+        valenceUsed,
+        formalCharge: effectiveFormalCharge,
+        valid: false,
+        ...(resolution.unresolvedAtomIds.has(atom.id) ? { unresolvedAromatic: true as const } : {}),
+        invalidReason: `${element} atom ${atom.id} states ${atom.hydrogenCount} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
+      };
+    }
+  }
   if (resolution.unresolvedAtomIds.has(atom.id)) {
     const symbol = element ?? (atom.element.trim() || "(blank)");
     return {
@@ -301,9 +318,9 @@ export function nativeAtomValidationState(
     };
   }
 
-  // The aromatic bonds fit more than one arrangement of ring N–H and nothing in the source said
-  // which: one was picked. The count is a guess, so the atom says so (owner decision 2026-09-27).
-  if (resolution.guessedHydrogenAtomIds.has(atom.id)) {
+  // An unstated N–H, a tautomer choice or a closed-shell fallback is still an inferred hydrogen
+  // count, even when only one placement fits (owner decision 2026-09-27).
+  if (resolution.inferredHydrogenAtomIds.has(atom.id)) {
     const symbol = element ?? (atom.element.trim() || "(blank)");
     return {
       atomId: atom.id,
@@ -312,7 +329,7 @@ export function nativeAtomValidationState(
       formalCharge: effectiveFormalCharge,
       valid: false,
       tautomerGuessed: true,
-      invalidReason: `${symbol} atom ${atom.id}: the aromatic bonds do not say which ring nitrogens carry hydrogen, so its hydrogen count was guessed (one tautomer was picked). Draw the H explicitly to settle it.`
+      invalidReason: `${symbol} atom ${atom.id}: the aromatic bonds do not state its hydrogen count, so its hydrogen count was guessed using a closed-shell reading. Draw the H explicitly to settle it.`
     };
   }
 
@@ -351,9 +368,7 @@ export function nativeAtomValidationState(
     const metalCeiling = nativeMetalMaxCoordination[element];
     // Coordination counts ligand attachments, including dashed dative contacts, rather than
     // covalent valence; radical slots still occupy one site just as they do in valence checking.
-    const coordinationUsed = bonds.reduce((count, bond) => (
-      bond.fromAtomId === atom.id || bond.toAtomId === atom.id ? count + 1 : count
-    ), atom.markRadicals ?? 0);
+    const coordinationUsed = (resolution.bondsByAtom.get(atom.id)?.length ?? 0) + (atom.markRadicals ?? 0);
     if (metalCeiling !== undefined && coordinationUsed > metalCeiling) {
       return {
         atomId: atom.id,
@@ -464,11 +479,11 @@ export function nativeSingleBondGraphMetadata(
   const elementCounts = new Map<string, number>();
   // Aromatic bonds count at their Kekulé orders — the same bonds `atomDisplayLabel` counts, so the
   // formula's hydrogens are the ones the drawing shows.
-  const covalentBonds = nativeBondOrderResolution(atoms, bonds).bonds;
-  const valenceUsage = atomBondOrderUsageMap(atoms, bonds);
+  const resolution = nativeBondOrderResolution(atoms, bonds);
+  const valenceUsage = resolution.bondOrderUsage;
   const totalCharge = atoms.reduce((sum, atom) => sum + atom.formalCharge, 0);
   const radicalCount = atoms.reduce((sum, atom) => sum + (atom.markRadicals ?? 0), 0);
-  const warnings = nativeInvalidAtomWarnings(atoms, bonds);
+  const warnings = nativeInvalidAtomWarnings(atoms, bonds, resolution);
 
   atoms.forEach((atom) => {
     if (atom.element === "D" || atom.element === "T") {
@@ -497,7 +512,7 @@ export function nativeSingleBondGraphMetadata(
         valenceUsed,
         atom.formalCharge,
         atom.markRadicals ?? 0
-      ) - dativeDeprotonationCount(atom, covalentBonds, atoms));
+      ) - dativeDeprotonationCount(atom, bonds, atoms, resolution));
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
@@ -706,10 +721,11 @@ export function nativeAtomFormalChargeForValence(
 
 function nativeInvalidAtomWarnings(
   atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[]
+  bonds: readonly MoleculeBond[],
+  resolution: NativeBondOrderResolution
 ): CompatibilityWarning[] {
   return atoms
-    .map((atom) => nativeAtomValidationState(atom, bonds, atom.formalCharge, atoms))
+    .map((atom) => nativeAtomValidationState(atom, bonds, atom.formalCharge, atoms, resolution))
     .filter((state) => !state.valid)
     .map((state) => ({
       code: state.unresolvedAromatic

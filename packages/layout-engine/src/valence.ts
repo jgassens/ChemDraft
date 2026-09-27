@@ -5,7 +5,7 @@
 // SMILES writer all count through it, so a label and the formula beside it cannot disagree (AGENTS.md
 // §5.26). `@chemdraft/document-workflow-core` re-exports these names; it never carries a copy.
 
-import { isDativeBond, isMetalSymbol, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
+import { bridgeBondIndices, isDativeBond, isMetalSymbol, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
 
 export const nativeElementSymbols = [
   "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
@@ -148,14 +148,7 @@ export function atomBondOrderUsageMap(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): ReadonlyMap<string, number> {
-  const usage = new Map(atoms.map((atom) => [atom.id, 0]));
-  nativeBondOrderResolution(atoms, bonds).bonds.forEach((bond) => {
-    const value = nativeBondValenceContribution(bond);
-    usage.set(bond.fromAtomId, (usage.get(bond.fromAtomId) ?? 0) + value);
-    usage.set(bond.toAtomId, (usage.get(bond.toAtomId) ?? 0) + value);
-  });
-
-  return usage;
+  return nativeBondOrderResolution(atoms, bonds).bondOrderUsage;
 }
 
 /**
@@ -169,14 +162,14 @@ export function nativeAtomBondOrderUsage(
   bonds: readonly MoleculeBond[],
   atoms: readonly MoleculeAtom[]
 ): number {
-  return nativeBondOrderResolution(atoms, bonds).bonds.reduce((sum, bond) => (
-    bond.fromAtomId === atomId || bond.toAtomId === atomId
-      ? sum + nativeBondValenceContribution(bond)
-      : sum
-  ), 0);
+  return nativeBondOrderResolution(atoms, bonds).bondOrderUsage.get(atomId) ?? 0;
 }
 
 export interface NativeBondOrderResolution {
+  /** Per-molecule indices for label/metadata batches; pass this resolution through the whole batch. */
+  readonly atomById: ReadonlyMap<string, MoleculeAtom>;
+  readonly bondsByAtom: ReadonlyMap<string, readonly MoleculeBond[]>;
+  readonly bondOrderUsage: ReadonlyMap<string, number>;
   /**
    * The input bonds, index-aligned, with every aromatic bond rewritten: to its Kekulé order where
    * the ring system resolves, and to single where it does not. The input array itself when it holds
@@ -193,10 +186,15 @@ export interface NativeBondOrderResolution {
    */
   readonly unresolvedAtomIds: ReadonlySet<string>;
   /**
-   * Ring nitrogens (or P, As) whose hydrogen the source never stated and the ring system did not
-   * force: more than one arrangement fits the drawn bonds — imidazole's N1–H or N3–H, guanine's
-   * 1H,9H or 1H,7H. One was picked, deterministically, and the valence check badges each of these
-   * atoms (`chemistry.aromatic_tautomer_guessed`), so a placed or dropped N–H is never silent.
+   * Ring atoms whose unstated hydrogen count was inferred or whose five-ring N–H was declined:
+   * an inferred N–H, an ambiguous tautomer, or a closed-shell fallback that conflicts with the
+   * five-ring rule. The valence check badges all as `chemistry.aromatic_tautomer_guessed`.
+   * This includes a forced placement: a unique matching does not make an unstated H observed.
+   */
+  readonly inferredHydrogenAtomIds: ReadonlySet<string>;
+  /**
+   * The uncertain subset of inferredHydrogenAtomIds: tied placements, declined five-ring N–H,
+   * or a bounded-search fallback. A uniquely inferred N–H is badged but is not a tautomer guess.
    */
   readonly guessedHydrogenAtomIds: ReadonlySet<string>;
   /** Aromatic bonds outside any conjugated ring. */
@@ -217,11 +215,11 @@ interface ResolutionCacheEntry {
   result: NativeBondOrderResolution;
 }
 
-const BOND_FIELDS = 4;
+const BOND_FIELDS = 5;
 const ATOM_FIELDS = 6;
 
 function bondFieldsOf(bonds: readonly MoleculeBond[]): (string | undefined)[] {
-  return bonds.flatMap((bond) => [bond.order, bond.fromAtomId, bond.toAtomId, bond.display?.bondStyle]);
+  return bonds.flatMap((bond) => [bond.order, bond.fromAtomId, bond.toAtomId, bond.display?.bondStyle, bond.id]);
 }
 
 function atomFieldsOf(atoms: readonly MoleculeAtom[]): (string | number | boolean | undefined)[] {
@@ -259,7 +257,8 @@ function cachedResolutionMatches(
       entry.bondFields[offset] !== bond.order ||
       entry.bondFields[offset + 1] !== bond.fromAtomId ||
       entry.bondFields[offset + 2] !== bond.toAtomId ||
-      entry.bondFields[offset + 3] !== bond.display?.bondStyle
+      entry.bondFields[offset + 3] !== bond.display?.bondStyle ||
+      entry.bondFields[offset + 4] !== bond.id
     ) {
       return false;
     }
@@ -294,25 +293,28 @@ function cachedResolutionMatches(
  * A bond the search cannot resolve counts as single — the order the SMILES writer also writes — and
  * its atoms land in `unresolvedAtomIds`, which the valence check turns into a badge. Where the
  * bonds fit more than one arrangement of ring N–H, one is picked and its atoms land in
- * `guessedHydrogenAtomIds`, which the valence check badges too.
+ * `guessedHydrogenAtomIds`. The valence check badges all `inferredHydrogenAtomIds`, including
+ * uniquely inferred N–H and declined five-ring H.
  */
 export function nativeBondOrderResolution(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): NativeBondOrderResolution {
-  if (!bonds.some((bond) => bond.order === "aromatic")) {
-    return {
-      bonds,
-      kekuleOrders: emptyResolvedOrders,
-      unresolvedAtomIds: emptyAtomIds,
-      guessedHydrogenAtomIds: emptyAtomIds,
-      nonRingAromaticBondCount: 0,
-      unresolvedAromaticBondCount: 0
-    };
-  }
   const cached = resolutionCache.get(bonds);
   if (cached && cachedResolutionMatches(cached, atoms, bonds)) {
     return cached.result;
+  }
+  if (!bonds.some((bond) => bond.order === "aromatic")) {
+    return cacheResolution(atoms, bonds, {
+      ...indexResolvedGraph(atoms, bonds),
+      bonds,
+      kekuleOrders: emptyResolvedOrders,
+      unresolvedAtomIds: emptyAtomIds,
+      inferredHydrogenAtomIds: emptyAtomIds,
+      guessedHydrogenAtomIds: emptyAtomIds,
+      nonRingAromaticBondCount: 0,
+      unresolvedAromaticBondCount: 0
+    });
   }
 
   const kekulized = kekulizeNativeAromaticBonds(atoms, bonds);
@@ -331,13 +333,23 @@ export function nativeBondOrderResolution(
     return bond;
   });
   const result: NativeBondOrderResolution = {
+    ...indexResolvedGraph(atoms, resolvedBonds),
     bonds: resolvedBonds,
     kekuleOrders,
     unresolvedAtomIds,
+    inferredHydrogenAtomIds: kekulized.inferred,
     guessedHydrogenAtomIds: kekulized.guessed,
     nonRingAromaticBondCount: kekulized.nonRing,
     unresolvedAromaticBondCount: kekulized.unresolved
   };
+  return cacheResolution(atoms, bonds, result);
+}
+
+function cacheResolution(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  result: NativeBondOrderResolution
+): NativeBondOrderResolution {
   resolutionCache.set(bonds, {
     atoms,
     bondRefs: [...bonds],
@@ -347,6 +359,22 @@ export function nativeBondOrderResolution(
     result
   });
   return result;
+}
+
+function indexResolvedGraph(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]) {
+  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const bondsByAtom = new Map<string, MoleculeBond[]>();
+  const bondOrderUsage = new Map(atoms.map((atom) => [atom.id, 0]));
+  for (const bond of bonds) {
+    const value = nativeBondValenceContribution(bond);
+    for (const id of [bond.fromAtomId, bond.toAtomId]) {
+      const incident = bondsByAtom.get(id);
+      if (incident) incident.push(bond);
+      else bondsByAtom.set(id, [bond]);
+      bondOrderUsage.set(id, (bondOrderUsage.get(id) ?? 0) + value);
+    }
+  }
+  return { atomById, bondsByAtom, bondOrderUsage };
 }
 
 type AtomClass = "must" | "never" | "flex";
@@ -376,6 +404,7 @@ interface KekuleOutcome {
   bonds: MoleculeBond[];
   nonRing: number;
   unresolved: number;
+  inferred: Set<string>;
   guessed: Set<string>;
 }
 
@@ -410,7 +439,7 @@ function kekulizeNativeAromaticBonds(
 ): KekuleOutcome {
   const aromaticIndices = bonds.flatMap((bond, index) => bond.order === "aromatic" ? [index] : []);
   if (aromaticIndices.length === 0) {
-    return { bonds: [...bonds], nonRing: 0, unresolved: 0, guessed: new Set() };
+    return { bonds: [...bonds], nonRing: 0, unresolved: 0, inferred: new Set(), guessed: new Set() };
   }
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
   const otherEnd = (index: number, atomId: string): string =>
@@ -447,12 +476,12 @@ function kekulizeNativeAromaticBonds(
     const identity = ringAtomIdentity(atom);
     return identity !== undefined && identity.element !== "C" && identity.element !== "H";
   };
-  const bridges = bridgeBondIndices(bonds, otherEnd, (bond) =>
+  const conjugatedBond = (bond: MoleculeBond): boolean =>
     !isDativeBond(bond) && (
       bond.order === "aromatic" || bond.order === "double" || bond.order === "triple" ||
       (piCapable(bond.fromAtomId) && piCapable(bond.toAtomId))
-    )
-  );
+    );
+  const bridges = bridgeBondIndices(bonds, otherEnd, conjugatedBond);
   const ringIndices = aromaticIndices.filter((index) => !bridges.has(index));
   const nonRing = aromaticIndices.length - ringIndices.length;
   const ringByAtom = new Map<string, number[]>();
@@ -461,6 +490,15 @@ function kekulizeNativeAromaticBonds(
       ringByAtom.set(atomId, [...(ringByAtom.get(atomId) ?? []), index]);
     }
   }
+  // Context includes explicit ring bonds too. Splitting on aromatic edges alone lost the amide N
+  // between xanthine's carbonyls, and therefore its lone pair in the ring electron count.
+  const systemByAtom = new Map<string, number[]>();
+  bonds.forEach((bond, index) => {
+    if (bridges.has(index) || !conjugatedBond(bond)) return;
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      systemByAtom.set(atomId, [...(systemByAtom.get(atomId) ?? []), index]);
+    }
+  });
   // Deterministic search: neighbours in id order, whatever order the bond array arrived in.
   for (const [atomId, indices] of ringByAtom) {
     ringByAtom.set(atomId, [...indices].sort((left, right) => otherEnd(left, atomId).localeCompare(otherEnd(right, atomId))));
@@ -478,9 +516,10 @@ function kekulizeNativeAromaticBonds(
     }
   });
 
-  // Ring systems: connected components of the ring aromatic bonds, solved one at a time.
+  // Ring systems: connected components of all conjugated ring bonds, solved one at a time.
   const doubleIndices = new Set<number>();
   const unresolvedIndices = new Set<number>();
+  const inferred = new Set<string>();
   const guessed = new Set<string>();
   const assignedAtoms = new Set<string>();
   for (const seedAtomId of [...ringByAtom.keys()].sort()) {
@@ -491,7 +530,7 @@ function kekulizeNativeAromaticBonds(
     while (queue.length > 0) {
       const atomId = queue.pop()!;
       systemAtoms.push(atomId);
-      for (const index of ringByAtom.get(atomId) ?? []) {
+      for (const index of systemByAtom.get(atomId) ?? []) {
         const next = otherEnd(index, atomId);
         if (!assignedAtoms.has(next)) {
           assignedAtoms.add(next);
@@ -515,6 +554,7 @@ function kekulizeNativeAromaticBonds(
         });
     if (solution) {
       for (const index of solution.doubles) doubleIndices.add(index);
+      for (const atomId of solution.inferred) inferred.add(atomId);
       for (const atomId of solution.guessed) guessed.add(atomId);
     } else {
       // The whole system stays `aromatic` here; the caller downgrades it to single and reports it.
@@ -530,6 +570,7 @@ function kekulizeNativeAromaticBonds(
     }),
     nonRing,
     unresolved: unresolvedIndices.size,
+    inferred,
     guessed
   };
 }
@@ -593,6 +634,8 @@ function ringAtomRole(atomId: string, systemAtomSet: ReadonlySet<string>, contex
   const spent = (context.spent.get(atomId) ?? 0) + labelHydrogens;
   const spare = nativeAtomValenceForCharge(element, atom.formalCharge) - spent - ringBonds - radicals;
   let cls = kekuleAtomClass(element, atom.formalCharge, spare);
+  // Explicit single bonds are fixed: this atom cannot acquire a double bond from the matcher.
+  if (ringBonds === 0) cls = "never";
   let metalDonor = false;
   if (cls === "flex") {
     // Hydrogen the source stated decides the role outright. A typed literal "N" carries none; a
@@ -653,6 +696,7 @@ function kekuleAtomClass(element: NativeElementSymbol, formalCharge: number, spa
 
 interface RingSystemSolution {
   readonly doubles: readonly number[];
+  readonly inferred: readonly string[];
   readonly guessed: readonly string[];
 }
 
@@ -661,25 +705,25 @@ interface RingSystemSolution {
  * and each open ("flex") nitrogen either takes one (pyridine-type) or stays out and keeps an N–H
  * (pyrrole-type). Which nitrogens stay out is chosen by, in order:
  *
- *  1. the whole system obeying Hückel's rule — 4n+2 π electrons. Porphine and phthalocyanine keep
- *     two N–H (26 and 42 π) and guanine keeps two (10 π), where a pattern that double-bonds every N
- *     also exists but leaves 4n and deprotonates the molecule;
- *  2. the fewest N–H among those — hydrogens nothing asks for are not invented;
- *  3. the most small rings that are aromatic on their own — adenine's N–H goes to the five-ring
- *     (N7 or N9), not to N1 or N3, which would leave both rings at odd counts.
+ *  1. closed-shell matching under the source's explicit constraints;
+ *  2. N–H only in five-membered rings needing it for aromaticity, when a matching allows it;
+ *  3. otherwise the maximum-matching H count, with a badge if closure requires other N–H;
+ *  4. no hydrogens outside small rings, then the most aromatic local circuits.
  *
- * When several arrangements tie on all three, one is taken — N–H first on the nitrogen in the
+ * Only step 2 may add H to the maximum-matching reading. Outside that five-ring exception,
+ * neither larger rings nor whole-system electron counts justify extra H. Every inferred N–H is badged.
+ *
+ * When several arrangements tie, one is taken — N–H first on the nitrogen in the
  * smallest ring, then by atom id — and every nitrogen whose role differs between them is reported
- * as guessed. So is every open nitrogen when a less-preferred arrangement leaves more small rings
- * aromatic than the chosen one, since the whole-system rule cannot be trusted for every fused core.
+ * as guessed. A five-ring N whose H is declined is badged even if it stays bare in every reading.
  *
  * A metal-donor N is tried as pyridine-type first and allowed to keep its N–H (which the dative
  * bond then removes; see `dativeDeprotonationCount`) only when no pattern exists otherwise.
  *
  * Every question is a perfect-matching test on a graph of the ring's atoms (Edmonds' blossom
  * algorithm, polynomial). The exhaustive comparison runs only over nitrogens whose role is actually
- * open, and only up to `MAX_EXHAUSTIVE_OPEN_ATOMS` of them; past that a greedy pass places them and
- * all are reported as guessed, so the search never grows exponentially with the molecule.
+ * open, and only up to `MAX_EXHAUSTIVE_OPEN_ATOMS` of them. Independent local circuits have a
+ * size-independent exact path; otherwise a capped fallback is explicitly badged.
  */
 function solveRingSystem(systemAtoms: readonly string[], context: RingSystemContext): RingSystemSolution | undefined {
   const systemAtomSet = new Set(systemAtoms);
@@ -716,28 +760,23 @@ function solveWithRoles(
 
   if (flexIds.length === 0) {
     const doubles = matcher.solve(new Set(), [], "any");
-    return doubles ? { doubles, guessed: [] } : undefined;
+    // No π bonds at all is a saturated ring, not a successful Kekulé assignment. Explicit
+    // in-ring multiple bonds may already supply them in a mixed representation.
+    const hasPiBond = doubles?.length || systemAtoms.some((id) =>
+      context.hasExplicitMultiple.has(id) && roles.get(id)?.piElectrons === 1
+    );
+    return doubles && hasPiBond ? { doubles, inferred: [], guessed: [] } : undefined;
   }
-  const anyPattern = matcher.solve(new Set(), flexIds, "any");
-  if (!anyPattern) return undefined;
-  if (flexIds.length > MAX_JUDGED_FLEX_ATOMS) {
-    // Too many to judge one by one: any Kekulé pattern will do, and every flexible N is a guess.
-    return { doubles: anyPattern, guessed: flexIds };
+  // The maximum-matching reading remains the baseline. The owner's only exception is an
+  // unstated N–H needed by a FIVE-membered aromatic ring, still subject to closed-shell matching.
+  let targetOut = 0;
+  let baseline: number[] | undefined;
+  for (; targetOut <= flexIds.length; targetOut += 1) {
+    baseline = matcher.solve(new Set(), flexIds, { exact: targetOut });
+    if (baseline) break;
   }
-
-  // Hückel's count for the whole system, when every atom's contribution is known: must and covered
-  // flex atoms bring one π electron each, an N–H two, "never" atoms what `nonBondingPiElectrons` says.
-  let hueckelBase: number | undefined = mustIds.length + flexIds.length;
-  for (const atomId of systemAtoms) {
-    if (classOf(atomId) !== "never") continue;
-    const electrons = roles.get(atomId)!.piElectrons;
-    hueckelBase = electrons === undefined || hueckelBase === undefined ? undefined : hueckelBase + electrons;
-  }
-  const hueckelHolds = (outCount: number): boolean =>
-    hueckelBase !== undefined && (hueckelBase + outCount) % 4 === 2;
-
-  // Small rings through the flexible atoms, with their π count when every flex atom is covered.
-  const smallRings = smallRingsThrough(flexIds, systemAtomSet, context);
+  if (!baseline) return undefined;
+  const smallRings = smallRingsThrough(systemAtoms, systemAtomSet, context);
   const rings = smallRings.flatMap((ring) => {
     let base = 0;
     for (const atomId of ring) {
@@ -746,7 +785,7 @@ function solveWithRoles(
       if (electrons === undefined) return [];
       base += electrons;
     }
-    return [{ base, flex: ring.filter((atomId) => classOf(atomId) === "flex") }];
+    return [{ atoms: ring, base, flex: ring.filter((atomId) => classOf(atomId) === "flex") }];
   });
   const smallestRing = new Map<string, number>();
   for (const ring of smallRings) {
@@ -758,14 +797,59 @@ function solveWithRoles(
     (ring.base + ring.flex.filter((atomId) => out.has(atomId)).length) % 4 === 2
   ).length;
 
+  // ringAtomRole already applies each atom's stated H/charge/label to that atom alone. Other
+  // atoms' source information must not suppress an unstated five-ring N–H or its badge.
+  const fiveRings = rings.filter((ring) => ring.atoms.length === 5 && ring.base % 4 !== 2);
+  const fiveRingCandidates = flexIds.filter((id) => context.atomById.get(id)!.element === "N" &&
+    !context.metalDonorIds.has(id) && fiveRings.some((ring) => ring.flex.includes(id)));
+  const fiveRingReading = solveFiveRingHydrogens(flexIds, fiveRingCandidates, fiveRings, matcher, baseline, systemAtomSet,
+    systemAtoms.reduce((sum, id) => sum + (classOf(id) === "never" ? roles.get(id)!.piElectrons ?? NaN : 1), 0),
+    context);
+  if (fiveRingReading) return fiveRingReading;
+  // A failed five-ring reading declines H at every eligible site. Carry those badges through
+  // every fallback, including when only a six-ring N–H is forced out (xanthine).
+  const fallback = (doubles: readonly number[], out: Iterable<string>, uncertain: readonly string[] = []): RingSystemSolution => {
+    const unstated = (ids: Iterable<string>): string[] => [...new Set(ids)].filter((id) => !context.metalDonorIds.has(id));
+    const guessed = unstated([...uncertain, ...fiveRingCandidates]);
+    return { doubles, inferred: unstated([...out, ...guessed]), guessed };
+  };
+  if (targetOut === 0) return fallback(baseline, []);
+
+  // A common large case has one open N per small ring (fused pyrrole ladders). When the local
+  // circuits independently agree on every N and a matching exists, that is the same optimum an
+  // exhaustive comparison would find, regardless of the search cap.
+  {
+    const desired = new Map<string, boolean>();
+    let consistent = true;
+    for (const ring of rings) {
+      if (ring.flex.length !== 1) continue;
+      const id = ring.flex[0]!;
+      const out = (ring.base + 1) % 4 === 2;
+      if (!out && ring.base % 4 !== 2) continue;
+      if (desired.has(id) && desired.get(id) !== out) consistent = false;
+      desired.set(id, out);
+    }
+    if (consistent && desired.size === flexIds.length) {
+      const out = new Set(flexIds.filter((id) => desired.get(id)));
+      const doubles = matcher.solve(out, [], "any");
+      if (out.size === targetOut && doubles && localScore(out) === rings.length) {
+        return fallback(doubles, out);
+      }
+    }
+  }
+  if (flexIds.length > MAX_JUDGED_FLEX_ATOMS) {
+    // Beyond the bounded exact/local paths the reading remains explicitly uncertain.
+    return fallback(baseline, flexIds, flexIds);
+  }
+
   // Roles the ring system forces whatever else happens (an atom that can only stay out, or only take
   // a double bond), then the ones still open.
   const forcedOut = new Set<string>();
   const open: string[] = [];
   for (const atomId of flexIds) {
     const others = flexIds.filter((other) => other !== atomId);
-    const canStayOut = matcher.solve(new Set([atomId]), others, "any") !== undefined;
-    const canTakeDouble = matcher.solve(new Set(), others, "any") !== undefined;
+    const canStayOut = matcher.solve(new Set([atomId]), others, { exact: targetOut - 1 }) !== undefined;
+    const canTakeDouble = matcher.solve(new Set(), others, { exact: targetOut }) !== undefined;
     if (canStayOut && canTakeDouble) open.push(atomId);
     else if (canStayOut) forcedOut.add(atomId);
   }
@@ -773,26 +857,20 @@ function solveWithRoles(
     (smallestRing.get(left) ?? Infinity) - (smallestRing.get(right) ?? Infinity) || left.localeCompare(right)
   );
   const finish = (out: ReadonlySet<string>, guessed: readonly string[]): RingSystemSolution | undefined => {
-    const doubles = matcher.solve(out, [], "any");
-    return doubles ? { doubles, guessed } : undefined;
+    if (out.size !== targetOut) return undefined;
+    const doubles = matcher.solve(out, [], { exact: 0 });
+    // Closure can require an N–H outside a five-ring (e.g. pyridone). Keep the closed shell and
+    // badge the inferred H. A metal donor's H is removed by dativeDeprotonationCount, not guessed.
+    return doubles ? fallback(doubles, out, guessed) : undefined;
   };
   if (open.length === 0) return finish(forcedOut, []);
 
   if (open.length > MAX_EXHAUSTIVE_OPEN_ATOMS) {
-    // Too many open nitrogens to compare every arrangement: take the Hückel count (else the fewest
-    // N–H), place them greedily, and report every one of them as guessed.
+    // Keep the baseline H count even in the bounded fallback; every open placement is badged.
     const out = new Set(forcedOut);
-    let target: number | undefined;
-    for (let extra = 0; extra <= open.length && target === undefined; extra += 1) {
-      if (hueckelHolds(forcedOut.size + extra) && matcher.solve(out, open, { exact: extra })) target = extra;
-    }
-    for (let extra = 0; extra <= open.length && target === undefined; extra += 1) {
-      if (matcher.solve(out, open, { exact: extra })) target = extra;
-    }
-    if (target === undefined) return undefined;
     // Each step keeps a completion with exactly `goal` N–H possible: N–H here when the rest still
     // fits, a double bond otherwise (then every completion must give it one).
-    const goal = target;
+    const goal = targetOut - forcedOut.size;
     let placed = 0;
     open.forEach((atomId, position) => {
       out.add(atomId);
@@ -805,12 +883,10 @@ function solveWithRoles(
     return finish(out, open);
   }
 
-  // Compare every arrangement of the open nitrogens that has a Kekulé pattern. The key is the
-  // chemistry: Hückel for the whole system, then no N–H on an atom outside every small ring (a
-  // phthalocyanine's aza bridges), then the most locally aromatic small rings, then the fewest N–H.
-  type Key = readonly [hueckel: number, noStrayHydrogens: number, localRings: number, fewestHydrogens: number];
-  const compare = (left: Key, right: Key): number =>
-    left[0] - right[0] || left[1] - right[1] || left[2] - right[2] || left[3] - right[3];
+  // Compare placements of the fixed H count: prefer ring N–H over meso bridges, then local
+  // aromatic circuits. Whole-system 4n+2 is deliberately absent: it cannot choose an H count.
+  type Key = readonly [noStrayHydrogens: number, localRings: number];
+  const compare = (left: Key, right: Key): number => left[0] - right[0] || left[1] - right[1];
   const distances = ringDistances(flexIds, systemAtomSet, context);
   // Among arrangements the chemistry cannot tell apart, the one whose N–H sit furthest apart —
   // porphine's trans pair, not the cis — then the first found (N–H on the earlier nitrogen).
@@ -827,14 +903,12 @@ function solveWithRoles(
   let best: { key: Key; spread: number; out: Set<string> } | undefined;
   let tiedOut = new Set<string>();
   let tiedIn = new Set<string>();
-  let bestLocalAnywhere = -1;
   const out = new Set(forcedOut);
   const visit = (position: number): void => {
     if (position === open.length) {
       const local = localScore(out);
-      bestLocalAnywhere = Math.max(bestLocalAnywhere, local);
       const stray = [...out].filter((atomId) => !smallestRing.has(atomId)).length;
-      const key: Key = [hueckelHolds(out.size) ? 1 : 0, -stray, local, -out.size];
+      const key: Key = [-stray, local];
       const comparison = best ? compare(key, best.key) : 1;
       if (comparison > 0) {
         best = { key, spread: spread(out), out: new Set(out) };
@@ -851,19 +925,113 @@ function solveWithRoles(
     const rest = open.slice(position + 1);
     // N–H first, so among equals the first arrangement found keeps the H on the earlier nitrogen.
     out.add(atomId);
-    if (matcher.solve(out, rest, "any")) visit(position + 1);
+    if (matcher.solve(out, rest, { exact: targetOut - out.size })) visit(position + 1);
     out.delete(atomId);
-    if (matcher.solve(out, rest, "any")) visit(position + 1);
+    if (matcher.solve(out, rest, { exact: targetOut - out.size })) visit(position + 1);
   };
   visit(0);
   const chosen = best as { key: Key; spread: number; out: Set<string> } | undefined;
   if (!chosen) return undefined;
-  // The whole-system count is not right for every fused core (pyrene's is 4n): when an arrangement
-  // it ranked lower leaves more small rings aromatic, the choice itself is uncertain.
-  const guessed = bestLocalAnywhere > chosen.key[2]
-    ? open
-    : open.filter((atomId) => tiedOut.has(atomId) && tiedIn.has(atomId));
+  // Only atoms that differ between tied readings are uncertain. Meso aza nitrogens in
+  // phthalocyanine are bare in every tied reading, so they must not inherit the inner N badges.
+  const guessed = open.filter((atomId) => tiedOut.has(atomId) && tiedIn.has(atomId));
   return finish(chosen.out, guessed);
+}
+
+interface LocalAromaticRing {
+  readonly atoms: readonly string[];
+  readonly base: number;
+  readonly flex: readonly string[];
+}
+
+/**
+ * The five-ring exception to minimum-H matching. Only N whose lone pair can complete a five-ring
+ * participates; every other open atom must take a double bond. Prefer a 4n+2 conjugated system,
+ * then satisfied five-rings and fewer inferred H, with a spread-out deterministic tautomer. A partially
+ * satisfied macrocycle is allowed (porphine has only two pyrrole-type N), but never an open shell.
+ */
+function solveFiveRingHydrogens(
+  flexIds: readonly string[],
+  candidates: readonly string[],
+  fiveRings: readonly LocalAromaticRing[],
+  matcher: RingMatcher,
+  baseline: number[],
+  systemAtomSet: ReadonlySet<string>,
+  systemPiBase: number,
+  context: RingSystemContext
+): RingSystemSolution | undefined {
+  if (candidates.length === 0) return undefined;
+  const candidateSet = new Set(candidates);
+  const aromatic = (ring: LocalAromaticRing, out: ReadonlySet<string>): boolean =>
+    (ring.base + ring.flex.filter((id) => out.has(id)).length) % 4 === 2;
+  const needed = (out: ReadonlySet<string>): boolean => [...out].every((id) =>
+    fiveRings.some((ring) => ring.flex.includes(id) && aromatic(ring, out)));
+  const allOut = new Set(candidates);
+  const systemAromatic = (out: ReadonlySet<string>): boolean => (systemPiBase + out.size) % 4 === 2;
+  // Independent pyrrole rings, including arbitrarily long fused ladders, have an exact linear
+  // constraint path: every eligible N is required and one matching proves simultaneous closure.
+  if (fiveRings.every((ring) => ring.flex.filter((id) => candidateSet.has(id)).length === 1)) {
+    const doubles = matcher.solve(allOut, [], { exact: 0 });
+    if (doubles && systemAromatic(allOut) && needed(allOut) && fiveRings.every((ring) => aromatic(ring, allOut))) {
+      return { doubles, inferred: candidates, guessed: [] };
+    }
+  }
+  // Keep the existing bounded-search contract for highly entangled large systems. The caller's
+  // maximum-matching fallback remains closed-shell; badge every unresolved five-ring choice.
+  if (candidates.length > MAX_EXHAUSTIVE_OPEN_ATOMS) {
+    const uncertain = flexIds.filter((id) => !context.metalDonorIds.has(id));
+    return { doubles: baseline, inferred: uncertain, guessed: uncertain };
+  }
+  const distances = ringDistances(candidates, systemAtomSet, context);
+  const spread = (out: ReadonlySet<string>): number => {
+    let nearest = Number.MAX_SAFE_INTEGER;
+    for (const left of out) for (const right of out) {
+      if (left !== right) nearest = Math.min(nearest, distances.get(left)?.get(right) ?? Number.MAX_SAFE_INTEGER);
+    }
+    return nearest;
+  };
+  let best: { system: boolean; score: number; out: Set<string>; doubles: number[]; spread: number } | undefined;
+  const tiedOut = new Set<string>();
+  const tiedIn = new Set<string>();
+  const out = new Set<string>();
+  const visit = (position: number): void => {
+    if (position < candidates.length) {
+      const id = candidates[position]!;
+      const rest = candidates.slice(position + 1);
+      out.add(id);
+      if (matcher.solve(out, rest, "any")) visit(position + 1);
+      out.delete(id);
+      if (matcher.solve(out, rest, "any")) visit(position + 1);
+      return;
+    }
+    if (!needed(out)) return;
+    const doubles = matcher.solve(out, [], { exact: 0 });
+    if (!doubles) return;
+    const system = systemAromatic(out);
+    const score = fiveRings.filter((ring) => aromatic(ring, out)).length;
+    const comparison = best ? Number(system) - Number(best.system) || score - best.score || best.out.size - out.size : 1;
+    if (comparison < 0) return;
+    if (comparison > 0) {
+      tiedOut.clear();
+      tiedIn.clear();
+    }
+    for (const id of candidates) (out.has(id) ? tiedOut : tiedIn).add(id);
+    const separation = spread(out);
+    if (comparison > 0 || (best && separation > best.spread)) {
+      best = { system, score, out: new Set(out), doubles, spread: separation };
+    }
+  };
+  visit(0);
+  const chosen = best as { score: number; out: Set<string>; doubles: number[] } | undefined;
+  if (!chosen) return undefined;
+  // Closure wins where a five-ring cannot be made aromatic without an impermissible extra H.
+  // Badge those declined sites too: e.g. unhinted guanine cannot gain N1–H in its six-ring.
+  const declined = candidates.filter((id) => !fiveRings.some((ring) => ring.flex.includes(id) && aromatic(ring, chosen.out)));
+  return {
+    doubles: chosen.doubles,
+    inferred: [...new Set([...tiedOut, ...declined])],
+    guessed: [...new Set([...candidates.filter((id) => tiedOut.has(id) && tiedIn.has(id)), ...declined])]
+  };
 }
 
 /** Bond-count distance between each pair of `atomIds`, walking the system's covalent bonds. */
@@ -945,6 +1113,7 @@ function ringMatcher(
 ): RingMatcher {
   return {
     solve(out, open, openOut) {
+      if (openOut !== "any" && (openOut.exact < 0 || openOut.exact > open.length)) return undefined;
       const vertices = [...mustIds, ...flexIds.filter((atomId) => !out.has(atomId))];
       const indexOf = new Map(vertices.map((atomId, index) => [atomId, index]));
       const adjacency: number[][] = vertices.map(() => []);
@@ -1094,59 +1263,4 @@ function maximumMatching(adjacency: readonly (readonly number[])[]): Int32Array 
     }
   }
   return match;
-}
-
-/**
- * Bonds (by index) whose removal disconnects the graph of included bonds — the bonds in no ring.
- * Tarjan's low-link walk, iterative so a long chain cannot overflow the stack.
- */
-function bridgeBondIndices(
-  bonds: readonly MoleculeBond[],
-  otherEnd: (index: number, atomId: string) => string,
-  include: (bond: MoleculeBond) => boolean
-): Set<number> {
-  const adjacency = new Map<string, number[]>();
-  bonds.forEach((bond, index) => {
-    if (bond.fromAtomId === bond.toAtomId || !include(bond)) return;
-    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
-      adjacency.set(atomId, [...(adjacency.get(atomId) ?? []), index]);
-    }
-  });
-  const discovered = new Map<string, number>();
-  const low = new Map<string, number>();
-  const bridges = new Set<number>();
-  let clock = 0;
-  for (const start of adjacency.keys()) {
-    if (discovered.has(start)) continue;
-    discovered.set(start, clock);
-    low.set(start, clock);
-    clock += 1;
-    const stack: { atomId: string; viaBond: number; next: number }[] = [{ atomId: start, viaBond: -1, next: 0 }];
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1]!;
-      const incident = adjacency.get(frame.atomId)!;
-      if (frame.next < incident.length) {
-        const index = incident[frame.next]!;
-        frame.next += 1;
-        if (index === frame.viaBond) continue;
-        const next = otherEnd(index, frame.atomId);
-        const seen = discovered.get(next);
-        if (seen !== undefined) {
-          low.set(frame.atomId, Math.min(low.get(frame.atomId)!, seen));
-          continue;
-        }
-        discovered.set(next, clock);
-        low.set(next, clock);
-        clock += 1;
-        stack.push({ atomId: next, viaBond: index, next: 0 });
-        continue;
-      }
-      stack.pop();
-      const parent = stack[stack.length - 1];
-      if (!parent) continue;
-      low.set(parent.atomId, Math.min(low.get(parent.atomId)!, low.get(frame.atomId)!));
-      if (low.get(frame.atomId)! > discovered.get(parent.atomId)!) bridges.add(frame.viaBond);
-    }
-  }
-  return bridges;
 }

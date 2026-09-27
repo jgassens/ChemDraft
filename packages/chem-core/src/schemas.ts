@@ -333,7 +333,8 @@ export const MoleculeAtomSchema = z
      * atoms on aromatic bonds. Aromatic bonds alone cannot say whether a ring N is pyridine-type
      * (no H) or pyrrole-type (N–H); this settles it when the bonds are resolved into a Kekulé
      * pattern. The drawn label and formula still follow the valence model, which agrees with it
-     * whenever the ring honours it. Relabeling the atom to another element drops it.
+     * whenever the ring honours it. This is an import-time hint: editing the atom's element,
+     * charge or incident bonds (including dative bonds) drops it before revalidation.
      */
     hydrogenCount: z.number().int().nonnegative().optional(),
     /**

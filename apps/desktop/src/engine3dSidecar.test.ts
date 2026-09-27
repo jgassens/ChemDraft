@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import {
   Engine3DProtocolVersion,
@@ -156,6 +158,14 @@ function maxBondLength3d(
 }
 
 describe("engine3d sidecar client", () => {
+  it("hands unresolved aromatic bonds to the engine as type 4 with one ring warning", () => {
+    const warnings: string[] = [];
+    const input = createEngine3dSessionInputFromMolecule({ ...molecule, ...unresolvableAromaticRing() }, { warnings });
+    expect(parseMolfileGraph(input.molfile).bonds.map((bond) => bond.order)).toEqual(Array(5).fill("aromatic"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("atoms u0, u1, u2, u3, u4");
+    expect(warnings[0]).toContain("preserved as type 4");
+  });
   it("creates graph-guarded session input from a ChemDraft molecule", () => {
     const input = createEngine3dSessionInputFromMolecule(molecule, {
       selectedAtomIds: ["a2"],

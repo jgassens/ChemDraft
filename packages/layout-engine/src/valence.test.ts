@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DefaultNativeDrawingStyle, type MoleculeAtom, type MoleculeBond, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, DefaultNativeDrawingStyle, type MoleculeAtom, type MoleculeBond, type MoleculeObject } from "@chemdraft/chem-core";
 
 import {
   atomBondOrderUsageMap,
   atomDisplayLabel,
   nativeAtomBondOrderUsage,
   nativeBondOrderResolution,
+  planPageSvgRender,
   planMoleculeAtomLabels
 } from "./index";
 import {
@@ -171,6 +172,17 @@ describe("one resolution per molecule", () => {
     expect(nativeBondOrderResolution(atoms, bonds)).not.toBe(after);
   });
 
+  it("re-resolves when a bond id is renamed in place", () => {
+    const { atoms, bonds } = testMoleculeFromSmiles("c1ccccc1");
+    const before = nativeBondOrderResolution(atoms, bonds);
+    bonds[0]!.id = "renamed";
+    const after = nativeBondOrderResolution(atoms, bonds);
+    expect(after).not.toBe(before);
+    expect(after.bonds[0]!.id).toBe("renamed");
+    expect(after.kekuleOrders.has("renamed")).toBe(true);
+    expect(after.kekuleOrders.has("b0")).toBe(false);
+  });
+
   it("stays fast on a large aromatic molecule: labels for 120 atoms do not re-run the search per atom", () => {
     const atoms: MoleculeAtom[] = [];
     const bonds: MoleculeBond[] = [];
@@ -182,14 +194,15 @@ describe("one resolution per molecule", () => {
         bonds.push({ id: `link${ringIndex}`, fromAtomId: `r${ringIndex - 1}_3`, toAtomId: `r${ringIndex}_0`, order: "single" });
       }
     }
-    const started = performance.now();
-    const labels = atoms.map((atom) => atomDisplayLabel({ ...atom, labelVisible: true }, bonds, DefaultNativeDrawingStyle, atoms));
-    expect(performance.now() - started).toBeLessThan(500);
+    const resolution = nativeBondOrderResolution(atoms, bonds);
+    const started = kekuleSearchWorkForTesting();
+    const labels = atoms.map((atom) => atomDisplayLabel({ ...atom, labelVisible: true }, bonds, DefaultNativeDrawingStyle, atoms, resolution));
+    expect(kekuleSearchWorkForTesting() - started).toBe(0);
     expect(labels.filter((label) => label === "CH")).toHaveLength(120 - 38);
   });
 });
 
-describe("ring nitrogens: hydrogen the source states decides, and anything else is a badged guess", () => {
+describe("ring nitrogens: stated H constrains its atom, and inferred H stays badged", () => {
   const nitrogenLabels = (molecule: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): Record<string, string | undefined> =>
     Object.fromEntries(molecule.atoms.filter((atom) => atom.element === "N").map((atom) => [
       atom.id,
@@ -200,13 +213,30 @@ describe("ring nitrogens: hydrogen the source states decides, and anything else 
     const imidazole = testMoleculeFromSmiles("c1cncn1");
     const resolution = nativeBondOrderResolution(imidazole.atoms, imidazole.bonds);
     expect([...resolution.guessedHydrogenAtomIds].sort()).toEqual(["a2", "a4"]);
+    expect(resolution.inferredHydrogenAtomIds).toEqual(resolution.guessedHydrogenAtomIds);
     expect(resolution.unresolvedAtomIds.size).toBe(0);
     expect(Object.values(nitrogenLabels(imidazole)).sort()).toEqual(["N", "NH"]);
+  });
+
+  it.each([
+    ["pyrrole", "c1ccnc1", "a3"],
+    ["indole", "c1ccc2nccc2c1", "a4"],
+    ["imidazole with one N's H stated", "c1c[n]cn1", "a4"],
+    ["imidazole with one explicit double bond", "c1cn=cn1", "a4"],
+    ["closed-shell pyridone fallback", "O=c1ncccc1", "a2"]
+  ])("%s: separates a unique inferred N–H from an ambiguous placement", (_name, smiles, nh) => {
+    const graph = testMoleculeFromSmiles(smiles);
+    const resolution = nativeBondOrderResolution(graph.atoms, graph.bonds);
+    expect([...resolution.inferredHydrogenAtomIds]).toEqual([nh]);
+    expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
+    expect(resolution.unresolvedAtomIds.size).toBe(0);
+    expect(nitrogenLabels(graph)[nh]).toBe("NH");
   });
 
   it("a stated hydrogen count settles it, and editing the count in place re-resolves", () => {
     const imidazole = testMoleculeFromSmiles("c1c[nH]cn1");
     const first = nativeBondOrderResolution(imidazole.atoms, imidazole.bonds);
+    expect(first.inferredHydrogenAtomIds.size).toBe(0);
     expect(first.guessedHydrogenAtomIds.size).toBe(0);
     expect(nitrogenLabels(imidazole)).toEqual({ a2: "NH", a4: "N" });
     imidazole.atoms[2]!.hydrogenCount = 0;
@@ -230,6 +260,7 @@ describe("ring nitrogens: hydrogen the source states decides, and anything else 
       const other = complex.atoms[5]!.id;
       const resolution = nativeBondOrderResolution(complex.atoms, complex.bonds);
       expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
+      expect([...resolution.inferredHydrogenAtomIds]).toEqual([other]);
       expect(nitrogenLabels(complex)).toEqual({ [donor]: "N", [other]: "NH" });
     }
   });
@@ -239,6 +270,7 @@ describe("ring nitrogens: hydrogen the source states decides, and anything else 
     const resolution = nativeBondOrderResolution(complex.atoms, complex.bonds);
     expect(resolution.unresolvedAtomIds.size).toBe(0);
     expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
+    expect(resolution.inferredHydrogenAtomIds.size).toBe(0);
     expect(nitrogenLabels(complex)).toEqual({ a3: "N" });
   });
 
@@ -254,13 +286,13 @@ describe("ring nitrogens: hydrogen the source states decides, and anything else 
     expect(nativeBondOrderResolution(literalPyrrole, pyrrole.bonds).unresolvedAtomIds.size).toBe(5);
   });
 
-  it("guanine, porphine and phthalocyanine keep their N–H instead of double-bonding every N", () => {
+  it("unhinted five-rings may infer H while six-ring amide hydrogens are not added", () => {
     const ringNH = (molecule: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): number =>
       Object.entries(nitrogenLabels(molecule)).filter(([atomId, label]) =>
         label === "NH" && molecule.bonds.some((bond) =>
           bond.order === "aromatic" && (bond.fromAtomId === atomId || bond.toAtomId === atomId))
       ).length;
-    expect(ringNH(testMoleculeFromSmiles("Nc1nc2ncnc2c(=O)n1"))).toBe(2);
+    expect(ringNH(testMoleculeFromSmiles("Nc1nc2ncnc2c(=O)n1"))).toBe(0);
     expect(ringNH(porphyrinoid("C", false))).toBe(2);
     expect(ringNH(porphyrinoid("N", true))).toBe(2);
     expect(ringNH(testMoleculeFromSmiles("c1cc2nccc2n1"))).toBe(2);
@@ -288,6 +320,52 @@ describe("an aromatic bond in a ring that is otherwise saturated", () => {
 });
 
 describe("search cost, counted rather than timed", () => {
+  it("caches non-aromatic graph indices and invalidates them on chemical edits", () => {
+    const { atoms, bonds } = testMoleculeFromSmiles("CCN");
+    const first = nativeBondOrderResolution(atoms, bonds);
+    expect(nativeBondOrderResolution(atoms, bonds)).toBe(first);
+    expect(first.bonds).toBe(bonds);
+    bonds[0]!.order = "double";
+    const changed = nativeBondOrderResolution(atoms, bonds);
+    expect(changed).not.toBe(first);
+    expect(changed.bondOrderUsage.get("a0")).toBe(2);
+    expect(nativeBondOrderResolution(atoms, bonds)).toBe(changed);
+  });
+
+  it("wedge label checks reuse one molecule resolution, with linear chemistry-field reads", () => {
+    const work = (groups: number): number => {
+      let reads = 0;
+      const count = <T extends object>(value: T): T => new Proxy(value, {
+        get(target, key, receiver) {
+          if (key === "order" || key === "hydrogenCount") reads += 1;
+          return Reflect.get(target, key, receiver);
+        }
+      });
+      const atoms: MoleculeAtom[] = [];
+      const bonds: MoleculeBond[] = [];
+      for (let i = 0; i < groups; i += 1) {
+        for (let j = 0; j < 3; j += 1) atoms.push(count({
+          id: `${i}-${j}`, element: "C", x: 100 * i + 28 * j, y: j === 1 ? 28 : 0, formalCharge: 0
+        }));
+        for (const j of [0, 2]) bonds.push(count({
+          id: `${i}-${j}`, fromAtomId: `${i}-${j}`, toAtomId: `${i}-1`, order: "single", display: { bondStyle: "wedge" }
+        }));
+      }
+      const object: MoleculeObject = {
+        id: "wedges", type: "molecule", x: 0, y: 0, width: 100 * groups, height: 50,
+        rotation: 0, style: {}, structureFormat: "smiles", structure: "", atoms, bonds, superatoms: [], rGroups: []
+      };
+      const page = createEmptyDocument().pages[0]!;
+      page.objects = [object];
+      nativeBondOrderResolution(atoms, bonds);
+      reads = 0;
+      planPageSvgRender(page);
+      return reads;
+    };
+    const small = work(30);
+    expect(small).toBeGreaterThan(0);
+    expect(work(60)).toBeLessThan(small * 2.2);
+  });
   const work = (molecule: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): number => {
     const before = kekuleSearchWorkForTesting();
     nativeBondOrderResolution(molecule.atoms, molecule.bonds);
@@ -307,5 +385,20 @@ describe("search cost, counted rather than timed", () => {
     for (const rings of [2, 4, 6, 8, 10, 11, 12, 16, 24, 32, 40, 41, 48, 64, 128]) {
       expect(work(fusedPyrroleLadder(rings)), `${rings} rings`).toBeLessThan(500 * rings ** 3);
     }
+  });
+
+  it.each([8, 10, 11, 12, 40, 41, 64, 128])("infers and badges each five-ring N–H at %i fused rings, across both search caps", (rings) => {
+    const molecule = fusedPyrroleLadder(rings);
+    const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+    expect(resolution.unresolvedAtomIds.size).toBe(0);
+    const labels = molecule.atoms.filter((atom) => atom.element === "N").map((atom) =>
+      atomDisplayLabel(atom, molecule.bonds, DefaultNativeDrawingStyle, molecule.atoms, resolution)
+    );
+    // Every five-ring needs its own pyrrole-type N; a matching verifies they coexist closed-shell.
+    expect(labels.filter((label) => label === "NH")).toHaveLength(rings);
+    expect([...resolution.inferredHydrogenAtomIds].sort()).toEqual(
+      molecule.atoms.filter((atom) => atom.element === "N").map((atom) => atom.id).sort()
+    );
+    expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
   });
 });

@@ -359,7 +359,7 @@ function identityMolfile(
   if (semantics.dativeBondIndices.length > 0) {
     return {
       contents: markV3000UnspecifiedDoubleBonds(
-        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }),
+        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }).contents,
         unspecified
       ),
       format: "molfile-v3000"
@@ -367,7 +367,7 @@ function identityMolfile(
   }
   return {
     contents: markV2000UnspecifiedDoubleBonds(
-      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }),
+      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }).contents,
       unspecified
     ),
     format: "molfile-v2000"

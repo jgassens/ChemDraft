@@ -567,6 +567,12 @@ function exportMoleculeObject(
     if (atom.formalCharge !== 0) {
       attributes.push(`Charge="${atom.formalCharge}"`);
     }
+    // NumHydrogens is the standard CDXML atom constraint, understood without ChemDraft's native
+    // payload. Keep aromatic display (Order=1.5) while preserving the source's chosen N–H site.
+    // In particular, zero is a constraint too; omitting it reopens the tautomer choice.
+    if (atom.hydrogenCount !== undefined) {
+      attributes.push(`NumHydrogens="${atom.hydrogenCount}"`);
+    }
     return `<n ${attributes.join(" ")}/>`;
   });
   const bondLines = molecule.bonds.map((bond) => exportBond(bond, molecule, atomIds, context, allocator, warnings));

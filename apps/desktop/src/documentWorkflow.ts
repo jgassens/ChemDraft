@@ -46,6 +46,7 @@ import {
   isDativeBond,
   isMetalSymbol,
   moleculeToMolfileV2000,
+  clearChangedAtomHydrogenHints,
   moleculeToMolfileV3000,
   PageSizePresets,
   pageMarginFromLayout,
@@ -794,12 +795,14 @@ export function nativeMoleculeInvalidAtomStates(
   molecule: MoleculeObject,
   chargeByAtomId: ReadonlyMap<string, number> = new Map()
 ): NativeAtomValidationState[] {
+  const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
   return molecule.atoms
     .map((atom) => nativeAtomValidationState(
       atom,
       molecule.bonds,
       atom.formalCharge + (chargeByAtomId.get(atom.id) ?? 0),
-      molecule.atoms
+      molecule.atoms,
+      resolution
     ))
     .filter((state) => !state.valid);
 }
@@ -13319,6 +13322,8 @@ export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
  * back (atom count/element mismatch) — the caller surfaces that as a status, nothing commits.
  */
 export interface NativeEngineRelayoutOptions {
+  /** MOL/perception warnings surfaced by the cleanup command. */
+  warnings?: string[];
   /**
    * Bond length the rebuilt geometry is scaled to. Omitted (the 3D Cleanup command), the
    * drawing's own mean covalent bond length is kept, so a deliberately large or small drawing
@@ -13497,8 +13502,9 @@ export function applyNativeMoleculeEngineRelayout(
   // explicit valence and the engine does not lay out a hydrogen that is not there.
   const molfile = moleculeToMolfileV2000(ligand, {
     fromDocFrame: true,
+    warnings: options.warnings,
     kekuleBondOrders: nativeBondOrderResolution(ligand.atoms, ligand.bonds).kekuleOrders
-  });
+  }).contents;
   const emittedAtoms = parseMolfileGraph(molfile).atoms;
   const depiction = relayout(molfile);
   if (depiction.atoms.length !== ligandAtoms.length) {
@@ -13684,13 +13690,13 @@ export function applyNativeMoleculeEngineRelayout(
   if (options.perceiveStereo) {
     const perceive = options.perceiveStereo;
     const reference = new Map<number, "R" | "S">();
-    perceive(stereoPerceptionMolfile(molecule)).forEach((entry, index) => {
+    perceive(stereoPerceptionMolfile(molecule, options.warnings)).forEach((entry, index) => {
       if (entry?.isStereoCenter && (entry.descriptor === "R" || entry.descriptor === "S")) {
         reference.set(index, entry.descriptor);
       }
     });
     if (reference.size > 0) {
-      const reconciled = reconcileFlattenedStereo(molecule, atoms, sidedBonds, reference, perceive);
+      const reconciled = reconcileFlattenedStereo(molecule, atoms, sidedBonds, reference, perceive, { warnings: options.warnings });
       if (!reconciled.ok) {
         throw new Error(
           reconciled.reason === "legibility"
@@ -15310,6 +15316,7 @@ export function reconcileFlattenedStereo(
   options: {
     /** Rotated conformer depth by atom id; larger values are nearer the viewer. */
     depthByAtomId?: ReadonlyMap<string, number>;
+    warnings?: string[];
   } = {}
 ): {
   ok: boolean;
@@ -15332,7 +15339,7 @@ export function reconcileFlattenedStereo(
   const signatureOf = (source: readonly MoleculeBond[]): string =>
     source.map((bond) => (bond.display?.bondStyle === "wedge" ? "W" : bond.display?.bondStyle === "hashed" ? "H" : "-")).join("");
   const perceiveOf = (source: readonly MoleculeBond[]) =>
-    perceive(stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }));
+    perceive(stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }, options.warnings));
 
   let current = cloneBonds(bonds);
   const seen = new Set<string>();
@@ -15360,7 +15367,8 @@ export function reconcileFlattenedStereo(
         current,
         reference,
         perceive,
-        options.depthByAtomId
+        options.depthByAtomId,
+        options.warnings
       );
       // Every CIP descriptor is already validated here, so a relocation failure is a pure
       // legibility refusal: report it as such rather than claiming centers would change.
@@ -15423,7 +15431,8 @@ function relocateRepeatedStereoMarkers(
   bonds: readonly MoleculeBond[],
   reference: ReadonlyMap<number, "R" | "S">,
   perceive: StereoPerceiver,
-  depthByAtomId?: ReadonlyMap<string, number>
+  depthByAtomId?: ReadonlyMap<string, number>,
+  warnings?: string[]
 ): MoleculeBond[] | undefined {
   const cloneBonds = (source: readonly MoleculeBond[]): MoleculeBond[] =>
     source.map((bond) => ({ ...bond, display: bond.display ? { ...bond.display } : undefined }));
@@ -15478,7 +15487,7 @@ function relocateRepeatedStereoMarkers(
     }
     perceptionCalls += 1;
     const perceived = perceive(
-      stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() })
+      stereoPerceptionMolfile({ ...templateMolecule, atoms: atoms.slice(), bonds: source.slice() }, warnings)
     );
     for (const [index, descriptor] of reference) {
       const result = perceived[index];
@@ -15935,10 +15944,11 @@ export function flattenSpunMolecule(
   // perceiver (injected) what the drawing actually says and flip any center that reads the wrong
   // hand; if the depiction can't be made to read back as the original stereochemistry, refuse the
   // view (document untouched) instead of silently committing a different stereoisomer.
+  const structureWarnings: string[] = [];
   let committedBonds = nextBonds;
   if (options.perceiveStereo) {
     const perceive = options.perceiveStereo;
-    const referenceStereo = perceive(stereoPerceptionMolfile(molecule));
+    const referenceStereo = perceive(stereoPerceptionMolfile(molecule, structureWarnings));
     const reference = new Map<number, "R" | "S">();
     molecule.atoms.forEach((_, index) => {
       const entry = referenceStereo[index];
@@ -15957,7 +15967,7 @@ export function flattenSpunMolecule(
       nextBonds,
       reference,
       perceive,
-      { depthByAtomId }
+      { depthByAtomId, warnings: structureWarnings }
     );
     if (!reconciled.ok) {
       return {
@@ -15985,12 +15995,11 @@ export function flattenSpunMolecule(
   // see the note where a new molecule's structure is first written. Aromatic bonds pass their Kekulé
   // orders so a literal atom keeps its valence, and anything the writer could not keep is reported
   // with the flatten rather than stored silently.
-  const structureWarnings: string[] = [];
   const structure = moleculeToMolfileV2000(stagedMolecule, {
     fromDocFrame: true,
     warnings: structureWarnings,
     kekuleBondOrders: nativeBondOrderResolution(stagedMolecule.atoms, stagedMolecule.bonds).kekuleOrders
-  });
+  }).contents;
 
   const patches: DocumentPatch[] = [
     {
@@ -16023,7 +16032,7 @@ export function flattenSpunMolecule(
     status: "committed",
     warnings: [
       ...result.warnings,
-      ...structureWarnings.map((message): FlattenWarning => ({ code: "stored-structure-lossy", message }))
+      ...[...new Set(structureWarnings)].map((message): FlattenWarning => ({ code: "stored-structure-lossy", message }))
     ],
     refusalReasons: [],
     stereoCenters: result.stereoCenters
@@ -17006,7 +17015,7 @@ export function copyAsMolfile(
     warnings: warningsOut,
     kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders
   };
-  return flavor === "v2000" ? moleculeToMolfileV2000(merged, options) : moleculeToMolfileV3000(merged, options);
+  return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
 }
 
 const copyAsPagePaddingPx = 16;
@@ -17692,12 +17701,8 @@ function nativeAtomWithElement(
   // both the element and the rule keeps the dismissal.
   const sameElement = normalizeNativeAtomElementLabel(atom.element) === normalizeNativeAtomElementLabel(element);
   const sameRule = (atom.labelLiteral === true) === labelLiteral;
-  // A hydrogen count an import stated belongs to the element it was stated for: a CH relabeled N
-  // must not arrive as an N–H.
-  const { hydrogenCount, ...unhinted } = baseAtom;
   return {
-    ...unhinted,
-    ...(hydrogenCount !== undefined && sameElement ? { hydrogenCount } : {}),
+    ...baseAtom,
     element,
     ...(labelVisible ? { labelVisible: true } : {}),
     ...(labelLiteral ? { labelLiteral: true } : {}),
@@ -17819,11 +17824,18 @@ function canSetNativeBondOrder(
   // answered `undefined` and refused every bond touching a metal. Only a change that BREAKS an
   // endpoint is refused; an atom already flagged stays editable.
   const nextBonds = molecule.bonds.map((candidate) => (candidate.id === bond.id ? { ...candidate, order } : candidate));
+  const nextAtoms = clearChangedAtomHydrogenHints(molecule, molecule.atoms, nextBonds);
+  const nextAtomById = new Map(nextAtoms.map((atom) => [atom.id, atom]));
+  const beforeResolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  const afterResolution = nativeBondOrderResolution(nextAtoms, nextBonds);
   const breaks = (atom: MoleculeAtom): boolean => {
     // A dismissed badge must not license the edit: judge the bare arithmetic.
     const { warningSuppressed: _warningSuppressed, ...bare } = atom;
-    return nativeAtomValidationState(bare, molecule.bonds, bare.formalCharge, molecule.atoms).valid &&
-      !nativeAtomValidationState(bare, nextBonds, bare.formalCharge, molecule.atoms).valid;
+    const { warningSuppressed: _nextSuppressed, ...nextBare } = nextAtomById.get(atom.id)!;
+    // The proposed graph has already invalidated import-time hints. Judging it against the old
+    // H count would refuse ordinary edits such as converting imported ethane to ethene.
+    return nativeAtomValidationState(bare, molecule.bonds, bare.formalCharge, molecule.atoms, beforeResolution).valid &&
+      !nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution).valid;
   };
   return !breaks(fromAtom) && !breaks(toAtom);
 }
@@ -17945,6 +17957,8 @@ function refreshNativeSingleBondGraph(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): MoleculeObject {
+  // Clear import hints before deriving labels, formula, validation and the stored structure.
+  atoms = clearChangedAtomHydrogenHints(molecule, atoms, bonds);
   return normalizeNativeMoleculeGeometry({
     ...molecule,
     // `structure` is re-derived as SMILES here, so the format must say so. Leaving an imported

@@ -14,6 +14,7 @@ import {
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
 import { pageMarginFromLayout } from "./page-layout";
+import { clearChangedAtomHydrogenHints } from "./hydrogenHints";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
@@ -196,6 +197,9 @@ function updateObject(
   }
 
   const updated = mergeObjectChanges(location.object, changes, objectId);
+  if (location.object.type === "molecule" && updated.type === "molecule") {
+    updated.atoms = clearChangedAtomHydrogenHints(location.object, updated.atoms, updated.bonds);
+  }
   location.page.objects[location.objectIndex] = updated;
   pruneCrossingsAfterObjectUpdate(location.page, location.object, updated);
 }

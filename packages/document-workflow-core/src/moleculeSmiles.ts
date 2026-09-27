@@ -51,7 +51,7 @@ export async function moleculeSmiles(
           fromDocFrame: true,
           warnings: writerWarnings,
           kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
-        })
+        }).contents
       );
       if (identifiers?.smiles) {
         // Only report these losses when the engine's molfile route supplied the output.

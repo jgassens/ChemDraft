@@ -22,7 +22,8 @@ import {
  * parsed) do we fall back to the object's existing structure string.
  */
 export function pluginFacingStructure(
-  molecule: MoleculeObject
+  molecule: MoleculeObject,
+  warnings: string[] = []
 ): { structureFormat: PluginStructureFormat; structure: string } {
   if (molecule.atoms && molecule.atoms.length > 0) {
     try {
@@ -35,11 +36,13 @@ export function pluginFacingStructure(
         // this file does not spell" (AGENTS.md §10: no fake chemistry).
         structure: moleculeToMolfileV2000(molecule, {
           fromDocFrame: true,
+          warnings,
           abbreviations: "rgroup",
           kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
-        })
+        }).contents
       };
-    } catch {
+    } catch (error) {
+      warnings.push(`Molecule ${molecule.id} could not be written from its graph: ${String(error)}; using its stored structure.`);
       // >999 atoms/bonds or other writer limit: fall back to whatever the object already carries
       // rather than dropping the molecule from the selection.
     }
@@ -56,7 +59,7 @@ export function pluginFacingStructure(
  * This stays a thin read over current document state. That kept plugin code untouched when the
  * selection-policy refactor landed (docs/shipped/selection-policy-refactor.md); keep it thin.
  */
-export function buildPluginSelectionSnapshot(document: ChemDraftDocument): PluginSelectionSnapshot {
+export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnings: string[] = []): PluginSelectionSnapshot {
   const located = new Map<string, { pageId: string; molecule: MoleculeObject }>();
   for (const page of document.pages) {
     for (const object of page.objects) {
@@ -72,7 +75,7 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument): Plugi
     if (!hit) {
       continue;
     }
-    const facing = pluginFacingStructure(hit.molecule);
+    const facing = pluginFacingStructure(hit.molecule, warnings);
     molecules.push({
       objectId,
       documentId: document.id,

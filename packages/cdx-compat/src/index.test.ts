@@ -11,6 +11,7 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
+import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import {
   CdxmlEnvelopeCodecVersion,
   CdxmlEnvelopeCodecVersionV1,
@@ -55,6 +56,25 @@ describe("CDXML NumHydrogens on aromatic rings", () => {
   it("records nothing where the file states nothing, and nothing off the aromatic bonds", () => {
     const graph = openChemDraftPayload(aromaticImidazoleCdxml()).document?.pages[0].objects[0] as MoleculeObject;
     expect(graph.atoms.every((atom) => atom.hydrogenCount === undefined)).toBe(true);
+  });
+
+  it.each([0, 1])("preserves NumHydrogens=%i and the methylimidazole tautomer through the visible layer only", (hydrogens) => {
+    const original = openChemDraftPayload(aromaticImidazoleCdxml(`NumHydrogens="${hydrogens}"`)).document!;
+    const before = original.pages[0].objects[0] as MoleculeObject;
+    const exported = exportDocumentToCdxml(original);
+    expect(exported.contents).toContain(`NumHydrogens="${hydrogens}"`);
+    const visibleOnly = exported.contents.replace(/<objecttag Name="org\.chemdraft\/[^>]*\/>/g, "");
+    const reopened = openChemDraftPayload(visibleOnly);
+    expect(reopened.source).toBe("external-cdxml");
+    const after = reopened.document!.pages[0].objects[0] as MoleculeObject;
+    expect(after.atoms.map((atom) => atom.hydrogenCount)).toEqual(before.atoms.map((atom) => atom.hydrogenCount));
+    expect(nativeSingleBondGraphSmiles(after.atoms, after.bonds)).toBe(nativeSingleBondGraphSmiles(before.atoms, before.bonds));
+    const metadata = nativeSingleBondGraphMetadata(after.atoms, after.bonds);
+    expect(metadata.formula).toBe("C4H6N2");
+    // A stated zero settles n1 only: n3's forced N–H is still inferred and keeps its badge.
+    expect(metadata.warnings.map(({ code, objectId }) => ({ code, objectId }))).toEqual(hydrogens === 0
+      ? [{ code: "chemistry.aromatic_tautomer_guessed", objectId: after.atoms[1]!.id }]
+      : []);
   });
 });
 

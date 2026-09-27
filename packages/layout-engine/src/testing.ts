@@ -309,3 +309,22 @@ export function fusedPyrroleLadder(rings: number): TestMolecule {
   }
   return { atoms, bonds };
 }
+
+/** Raw connection-table fixture, deliberately independent of the production MOL writer/resolver. */
+export function rawMolfileFixture(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]): string {
+  const i3 = (value: number) => String(value).padStart(3);
+  const indices = new Map(atoms.map((atom, index) => [atom.id, index + 1]));
+  const lines = ["Raw aromatic fixture", "  ChemDraft test", "",
+    `${i3(atoms.length)}${i3(bonds.length)}  0  0  0  0  0  0  0  0999 V2000`];
+  for (const atom of atoms) lines.push(
+    [atom.x, -atom.y, 0].map((v) => v.toFixed(4).padStart(10)).join("") +
+    ` ${atom.element.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`
+  );
+  for (const bond of bonds) lines.push(
+    `${i3(indices.get(bond.fromAtomId)!)}${i3(indices.get(bond.toAtomId)!)}${i3({ single: 1, double: 2, triple: 3, aromatic: 4, unknown: 1 }[bond.order])}  0  0  0  0`
+  );
+  atoms.forEach((atom, index) => {
+    if (atom.formalCharge) lines.push(`M  CHG  1${String(index + 1).padStart(4)}${String(atom.formalCharge).padStart(4)}`);
+  });
+  return [...lines, "M  END", ""].join("\n");
+}

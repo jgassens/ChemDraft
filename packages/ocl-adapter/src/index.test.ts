@@ -3,6 +3,7 @@ import * as OCL from "openchemlib";
 
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 
 import {
   depictSmiles2D,
@@ -329,7 +330,10 @@ describe("moleculeToMolfileV2000 — round-trips through the OCL parser", () => 
   }
 
   it("OCL parses the molfile with atom count, element order, and wedge preserved", () => {
-    const molfile = moleculeToMolfileV2000(sampleChiralMolecule());
+    const molecule = sampleChiralMolecule();
+    const molfile = moleculeToMolfileV2000(molecule, {
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+    }).contents;
     const parsed = OCL.Molecule.fromMolfile(molfile);
     expect(parsed.getAllAtoms()).toBe(4);
     expect(parsed.getAtomLabel(0)).toBe("C");
@@ -346,7 +350,10 @@ describe("moleculeToMolfileV2000 — round-trips through the OCL parser", () => 
   });
 
   it("the written molfile feeds straight back into generate3DConformer", async () => {
-    const molfile = moleculeToMolfileV2000(sampleChiralMolecule());
+    const molecule = sampleChiralMolecule();
+    const molfile = moleculeToMolfileV2000(molecule, {
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+    }).contents;
     const result = await oclConformerGenerator.generate3DConformer({ molfile });
     expect(result.embed.status).toBe("ok");
     expect(result.originalAtomCount).toBe(4);
@@ -492,8 +499,13 @@ describe("abbreviated labels in perception molfiles", () => {
     ],
     superatoms: [], rGroups: []
   });
-  const descriptorOf = (labels: [string, string], abbreviations?: "dummy" | "rgroup") =>
-    perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(center(labels), { abbreviations }))[0]!.descriptor;
+  const descriptorOf = (labels: [string, string], abbreviations?: "dummy" | "rgroup") => {
+    const molecule = center(labels);
+    return perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(molecule, {
+      abbreviations,
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+    }).contents)[0]!.descriptor;
+  };
 
   it("keeps a center's CIP descriptor when the abbreviation is written as an R-group", () => {
     expect(descriptorOf(["Ph", "C"])).toBe("unspecified"); // the dummy reads as a second methyl

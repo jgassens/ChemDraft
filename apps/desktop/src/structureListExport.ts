@@ -72,7 +72,7 @@ export async function exportStructureListSdf(
       fromDocFrame: true,
       warnings: writerWarnings,
       kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
-    });
+    }).contents;
     warnings.push(...writerWarnings.map((message): ExportWarning => ({
       code: "export.sdf_v2000_loss",
       message,

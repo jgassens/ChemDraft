@@ -3,6 +3,31 @@ import { createEmptyDocument, type ChemDraftDocument, type GraphicObject, type M
 import { createMoleculeInspectorModel, resolveMoleculeInspectorTargets } from "./moleculeInspectorModel";
 
 describe("moleculeInspectorModel", () => {
+  it("checks implicit-H availability with linear chemistry-field reads on a carbon chain", () => {
+    const work = (size: number): number => {
+      let reads = 0;
+      const count = <T extends object>(value: T): T => new Proxy(value, {
+        get(target, key, receiver) {
+          if (key === "order" || key === "hydrogenCount") reads += 1;
+          return Reflect.get(target, key, receiver);
+        }
+      });
+      const molecule = singleBondMolecule("chain", 100, {
+        atoms: Array.from({ length: size }, (_, i) => count({
+          id: `a${i}`, element: "C", x: 20 * i, y: 20 * (i % 2), formalCharge: 0
+        })),
+        bonds: Array.from({ length: size - 1 }, (_, i) => count({
+          id: `b${i}`, fromAtomId: `a${i}`, toAtomId: `a${i + 1}`, order: "single" as const
+        }))
+      });
+      const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
+      expect(model.atomLabels.implicitHydrogensAffectLabels).toBe(false);
+      return reads;
+    };
+    const small = work(80);
+    expect(small).toBeGreaterThan(0);
+    expect(work(160)).toBeLessThan(small * 2.2);
+  });
   it("resolves selected molecules and parent part molecules in stable document order", () => {
     const first = singleBondMolecule("mol_a", 100);
     const second = singleBondMolecule("mol_b", 220);

@@ -1021,6 +1021,7 @@ type RotationInputBase = {
   target?: NativeMoleculeTransformableSelectionPart;
   targetLabel: string;
   startDocument: ChemDraftDocument;
+  warnings?: readonly string[];
 };
 
 type RotationInputState =
@@ -1467,6 +1468,27 @@ function createShellCommandMap(commands: readonly CommandSpec[]): ReadonlyMap<st
 // independently refuses a speculative embed for a large structure on the OCL engine (where
 // it would be ~45 s and uninterruptible), so this generous cap is safe under either engine.
 const SPIN_PREFETCH_MAX_ATOMS = 200;
+
+/** Speculation is safe only when the aromatic interpretation is settled. Routine writer losses
+ * (dative V2000 spelling, abbreviation placeholders) are reported by the explicit Spin action. */
+export function spin3dPrefetchMolfile(molecule: MoleculeObject): string | undefined {
+  const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  if (resolution.unresolvedAtomIds.size > 0 || resolution.guessedHydrogenAtomIds.size > 0) return undefined;
+  return moleculeToMolfileV2000(molecule, {
+    fromDocFrame: true,
+    kekuleBondOrders: resolution.kekuleOrders
+  }).contents;
+}
+
+/** Unique inferred N–H keeps its canvas badge without a guessed-tautomer Spin status. */
+export function spin3dHydrogenWarnings(molecule: MoleculeObject): string[] {
+  const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  if (resolution.guessedHydrogenAtomIds.size === 0) return [];
+  return nativeMoleculeInvalidAtomStates(molecule).flatMap((state) =>
+    resolution.guessedHydrogenAtomIds.has(state.atomId) && state.tautomerGuessed && state.invalidReason
+      ? [state.invalidReason] : []
+  );
+}
 // The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
 // fine for small structures, catastrophic for a 60-atom branched chain.
 const SPIN_IN_PAGE_MAX_ATOMS = 30;
@@ -1940,6 +1962,13 @@ export function MainWindow({
     hoveredNativeAtomStateRef.current = hoveredNativeAtom;
   }, [hoveredNativeAtom]);
   const [hoveredNativeDeleteTarget, setHoveredNativeDeleteTarget] = useState<NativeMoleculeDeleteTarget | undefined>();
+  const hoveredNativeWarning = useMemo(() => {
+    if (hoveredNativeDeleteTarget?.kind !== "atom") return undefined;
+    const molecule = findDocumentObject(document, hoveredNativeDeleteTarget.objectId);
+    return molecule?.type === "molecule"
+      ? nativeMoleculeInvalidAtomStates(molecule).find((state) => state.atomId === hoveredNativeDeleteTarget.atomId)?.invalidReason
+      : undefined;
+  }, [document, hoveredNativeDeleteTarget]);
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
@@ -3699,6 +3728,7 @@ export function MainWindow({
     void (async () => {
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           engineTargetIds.reduce((next, objectId) => {
             // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
@@ -3711,11 +3741,12 @@ export function MainWindow({
               : undefined;
             return applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D, {
               targetBondLengthPx,
+              warnings,
               perceiveStereo: perceiveStereoCentersFromMolfile
             });
           }, cleanUpNativeMolecules2d(current, nativeTargetIds))
         );
-        setStatus(cleanedStatus(changed));
+        setStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -3814,7 +3845,9 @@ export function MainWindow({
       try {
         // The same spelling flatten uses for its read-back, so the centers found here are the
         // centers the guard can hold to (abbreviated labels as R-groups, not dummy carbons).
-        const molfile = stereoPerceptionMolfile(flattenTarget);
+        const warnings: string[] = [];
+        const molfile = stereoPerceptionMolfile(flattenTarget, warnings);
+        if (warnings.length) setStatus(warnings.join(" "));
         const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
         perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
@@ -3927,7 +3960,8 @@ export function MainWindow({
   // loaded yet or the target isn't an editable native graph.
   const spin3dFlattenStereoOptions = useCallback((
     sourceDocument: ChemDraftDocument,
-    objectId: string
+    objectId: string,
+    warnings: string[]
   ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
     const perceive = spin3dStereoPerceiverRef.current;
     if (!perceive) return {};
@@ -3935,7 +3969,7 @@ export function MainWindow({
     if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
     try {
       // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
-      const molfile = stereoPerceptionMolfile(molecule);
+      const molfile = stereoPerceptionMolfile(molecule, warnings);
       const perAtom = perceive(molfile);
       let stereoCenterAtomIds: ReadonlySet<string> | undefined;
       if (perAtom.length === molecule.atoms.length) {
@@ -4205,6 +4239,7 @@ export function MainWindow({
       stage: "spin.molfile",
       atomCount: molecule.atoms.length
     }, emitTrace);
+    const molfileWarnings = spin3dHydrogenWarnings(molecule);
     let molfile: string;
     try {
       // Geometry spelling: the conformer engine needs an atom it can place, so an abbreviated
@@ -4212,8 +4247,9 @@ export function MainWindow({
       // (stereoPerceptionMolfile); the two never meet — this molfile is not perceived.
       molfile = moleculeToMolfileV2000(molecule, {
         fromDocFrame: true,
+        warnings: molfileWarnings,
         kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
-      });
+      }).contents;
       molfileSpan.complete({ atomCount: molecule.atoms.length });
     } catch (error) {
       molfileSpan.fail(error, { atomCount: molecule.atoms.length });
@@ -4297,9 +4333,10 @@ export function MainWindow({
       // build (no devtools) shows WHY tug/planar cleanup are off, instead of silently no-op'ing.
       const rdkitUnavailable = conformer.warnings.find((warning) => warning.code === "rdkit.unavailable");
       setStatus(
-        rdkitUnavailable
+        (rdkitUnavailable
           ? `Spin 3D — ${rdkitUnavailable.message}`
-          : "Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel"
+          : "Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel") +
+        (molfileWarnings.length ? ` — ${molfileWarnings.join(" ")}` : "")
       );
     };
 
@@ -4495,10 +4532,8 @@ export function MainWindow({
       const client = getConformerWorkerClient();
       if (!client) return;
       // Same geometry spelling as the conformer request (the prefetch must key on the same text).
-      const molfile = moleculeToMolfileV2000(molecule, {
-        fromDocFrame: true,
-        kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
-      });
+      const molfile = spin3dPrefetchMolfile(molecule);
+      if (!molfile) return;
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
       client.warmup({ sessionId: `warmup:${Date.now()}` });
@@ -4712,12 +4747,14 @@ export function MainWindow({
     void (async () => {
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
+            warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
           })
         );
-        setStatus(changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout");
+        setStatus((changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout") + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -5001,8 +5038,9 @@ export function MainWindow({
       bonds: interactive3dBondsForMolecule(molecule)
     });
     try {
-      const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords });
-      const session = await openEngine3dWorkspaceSession({ input: sessionInput });
+      const warnings: string[] = [];
+      const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords, warnings });
+      const session = await openEngine3dWorkspaceSession({ input: sessionInput, warnings });
       // Superseded (a newer attach) or torn down (spin ended / Esc / selection change) while we
       // awaited startup: the workspace no longer carries our openId. Close the freshly opened
       // session so its native child process is not orphaned in the Rust session map.
@@ -5014,7 +5052,7 @@ export function MainWindow({
         ? { ...current, session, status: "tug-ready" }
         : current);
       pollInteractive3dSessionAfterOpen(openId, session);
-      setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel");
+      setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel" + (warnings.length ? ` — ${warnings.join(" ")}` : ""));
     } catch (error) {
       setInteractive3dWorkspace((current) => current?.openId === openId ? undefined : current);
       setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
@@ -5905,7 +5943,8 @@ export function MainWindow({
       case "clipboard.copyAs.inchi":
       case "clipboard.copyAs.inchiKey": {
         const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
-        const molfile = copyAsMolfile(current, "v2000");
+        const warnings: string[] = [];
+        const molfile = copyAsMolfile(current, "v2000", warnings);
         if (!molfile) {
           setStatus(`Nothing to copy as ${label}`);
           return;
@@ -5923,7 +5962,7 @@ export function MainWindow({
             setStatus(`${label} is unavailable for this structure`);
             return;
           }
-          await writeText(value, label);
+          await writeText(value, label, warnings);
         } catch (error) {
           setStatus(`Copy as ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -8497,10 +8536,19 @@ export function MainWindow({
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
+  const pluginSelectionWarningsRef = useRef(new WeakMap<ChemDraftDocument, string[]>());
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
-    getSelection: () => buildPluginSelectionSnapshot(documentRef.current),
+    getSelection: () => {
+      const source = documentRef.current;
+      const warnings: string[] = [];
+      const snapshot = buildPluginSelectionSnapshot(source, warnings);
+      // Reuse warnings from the snapshot actually read. Background reads stay silent, and a
+      // command that never reads selection does no extra serialization just to harvest warnings.
+      pluginSelectionWarningsRef.current.set(source, warnings);
+      return snapshot;
+    },
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
@@ -9043,13 +9091,18 @@ export function MainWindow({
       const run = previous
         .catch(() => undefined)
         .then(async () => {
+          const source = documentRef.current;
+          const previousWarnings = pluginSelectionWarningsRef.current.get(source);
           const result = await invokePluginCommand(commandId);
           if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
           const failure = pluginCommandFailure(result);
+          const warnings = pluginSelectionWarningsRef.current.get(source);
           if (failure) {
             setStatus(`Plugin command failed: ${failure}`);
+          } else if (owner?.permissions.includes("selection.read") && warnings !== previousWarnings && warnings?.length) {
+            setStatus([...new Set(warnings)].join(" "));
           }
         })
         .catch((error: unknown) => {
@@ -11556,12 +11609,13 @@ export function MainWindow({
       // Preview frames flatten geometry-only for speed; the PERSISTED commit must re-flatten the
       // final orientation through the stereo read-back guard so a rotation can't silently commit a
       // different stereoisomer (the same protection the Spin 3D overlay commit applies).
+      const warnings: string[] = [];
       const guarded = flattenSpunMolecule(
         drag.startDocument,
         drag.objectId,
         drag.spin3dModel.coords3d,
         quatToViewMatrix(finalOrientation),
-        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId) }
+        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId, warnings) }
       );
       if (guarded.status !== "committed") {
         replacePresentDocument(drag.startDocument);
@@ -11574,7 +11628,7 @@ export function MainWindow({
         engine: drag.spin3dModel.engine
       });
       commitDocumentHistoryFrom(drag.startDocument, modeled);
-      setStatus("3D rotation applied");
+      setStatus(["3D rotation applied", ...new Set(warnings)].join(" "));
       return true;
     }
 
@@ -11587,7 +11641,7 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
-  const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
+  const rotationInputDocumentFromDraft = useCallback((input: RotationInputState, warnings: string[]): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
     if (!object) {
       return undefined;
@@ -11677,7 +11731,7 @@ export function MainWindow({
           // unchanged (input.startDocument) rather than committing altered stereochemistry.
           const outcome = flattenSpunMolecule(input.startDocument, input.objectId, coords3d, quatToViewMatrix(nextQuat), {
             placement,
-            ...spin3dFlattenStereoOptions(input.startDocument, input.objectId)
+            ...spin3dFlattenStereoOptions(input.startDocument, input.objectId, warnings)
           });
           if (outcome.status === "committed") {
             document = attachSpin3dModelFromConformer(outcome.document, input.objectId, {
@@ -11743,8 +11797,9 @@ export function MainWindow({
   }, [spinPlacementFor, spin3dFlattenStereoOptions]);
 
   const handleRotationInputChange = useCallback((nextInput: RotationInputState) => {
-    updateRotationInput(nextInput);
-    const result = rotationInputDocumentFromDraft(nextInput);
+    const warnings: string[] = [];
+    const result = rotationInputDocumentFromDraft(nextInput, warnings);
+    updateRotationInput({ ...nextInput, warnings });
     if (!result) {
       setStatus(nextInput.kind === "z" ? "Enter a valid Z rotation" : "Enter valid X and Y rotations");
       return;
@@ -11756,14 +11811,16 @@ export function MainWindow({
     } else {
       setObjectRotateReadout({ objectId: nextInput.objectId, degrees: result.zDegrees });
     }
+    if (warnings.length > 0) setStatus([...new Set(warnings)].join(" "));
+    return warnings;
   }, [replacePresentDocument, rotationInputDocumentFromDraft, showProjectedPlaneTiltReadout, updateRotationInput]);
 
   const handleRotationInputHome = useCallback((input: RotationInputState) => {
     const nextInput: RotationInputState = input.kind === "z"
       ? { ...input, ...rotationInputHomeDraftDegrees("z") }
       : { ...input, ...rotationInputHomeDraftDegrees("xy") };
-    handleRotationInputChange(nextInput);
-    setStatus(nextInput.kind === "z" ? "Z rotation set to 0" : "X/Y rotation set to 0");
+    const warnings = handleRotationInputChange(nextInput) ?? [];
+    setStatus([nextInput.kind === "z" ? "Z rotation set to 0" : "X/Y rotation set to 0", ...new Set(warnings)].join(" "));
   }, [handleRotationInputChange]);
 
   const handleRotationInputCancel = useCallback((input?: RotationInputState) => {
@@ -11787,7 +11844,7 @@ export function MainWindow({
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
-    setStatus(changed ? "Rotation applied" : "Rotation unchanged");
+    setStatus([changed ? "Rotation applied" : "Rotation unchanged", ...new Set(session.warnings ?? [])].join(" "));
     return changed;
   }, [commitLiveInputPreview, updateRotationInput]);
 
@@ -17229,9 +17286,10 @@ export function MainWindow({
             ? [
                 interactive3dWorkspace.status,
                 interactive3dWorkspace.energyLabel,
+                ...new Set(interactive3dWorkspace.session?.warnings ?? []),
                 "Esc to close"
               ].filter(Boolean).join(" · ")
-            : status}
+            : hoveredNativeWarning ?? status}
         </div>
       </section>
       {objectContextMenu ? (
@@ -23295,6 +23353,7 @@ function DocumentObjectView({
       // labels read the molecule directly; atoms whose charge came from a mark carry markCharge.
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
       const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
+      const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
         .map((atom) => atom.id);
@@ -23498,6 +23557,7 @@ function DocumentObjectView({
                   data-invalid-atom-id={atom.id}
                   key={`invalid-${atom.id}`}
                 >
+                  <title>{invalidReasonByAtomId.get(atom.id)}</title>
                   <circle
                     className="native-atom-invalid-ring"
                     cx={atom.x - object.x + 9}
