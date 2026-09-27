@@ -4,6 +4,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createShortcutRegistry,
+  hasOpenModalDialog,
+  isBlockedByModalDialog,
+  isInsideModalDialog,
   keyboardEventChord,
   normalizeShortcut,
   parseShortcutDisplay,
@@ -180,5 +183,53 @@ describe("shouldIgnoreShortcutTarget", () => {
     expect(shouldIgnoreShortcutTarget(editable)).toBe(true);
     expect(shouldIgnoreShortcutTarget(plain)).toBe(false);
     expect(shouldIgnoreShortcutTarget(null)).toBe(false);
+  });
+});
+
+describe("modal dialogs own the keyboard", () => {
+  function openModal(): { dialog: HTMLElement; button: HTMLButtonElement } {
+    const dialog = window.document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const button = window.document.createElement("button");
+    dialog.append(button);
+    window.document.body.append(dialog);
+    return { dialog, button };
+  }
+
+  it("ignores every shortcut — modified ones included — from a focused button inside a modal", () => {
+    const { dialog, button } = openModal();
+    try {
+      for (const key of ["v", "x", "z", "Escape", "Delete"]) {
+        expect(shouldIgnoreShortcutTarget(button, key)).toBe(true);
+      }
+      const registry = createShortcutRegistry([{ commandId: "clipboard.paste", keys: ["Cmd", "V"] }], {
+        platform: "macos"
+      });
+      expect(registry.resolve({ target: button, key: "v", metaKey: true })).toBeUndefined();
+    } finally {
+      dialog.remove();
+    }
+  });
+
+  it("blocks canvas handling while any modal is open, even when focus fell to <body>", () => {
+    const body = window.document.body;
+    expect(hasOpenModalDialog(window.document)).toBe(false);
+    expect(isBlockedByModalDialog(body, window.document)).toBe(false);
+
+    const { dialog, button } = openModal();
+    try {
+      expect(isInsideModalDialog(button)).toBe(true);
+      expect(isInsideModalDialog(body)).toBe(false);
+      expect(hasOpenModalDialog(window.document)).toBe(true);
+      expect(isBlockedByModalDialog(body, window.document)).toBe(true);
+
+      // A dialog kept in the DOM but hidden is not open.
+      dialog.hidden = true;
+      expect(hasOpenModalDialog(window.document)).toBe(false);
+      expect(isBlockedByModalDialog(button, window.document)).toBe(false);
+    } finally {
+      dialog.remove();
+    }
   });
 });

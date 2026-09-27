@@ -1,0 +1,15 @@
+{
+  "comment": "Expected answers for the opt-in real-engine OCSR accuracy check (pnpm test:ocsr-real). See README.md.",
+  "fixtures": [
+    {
+      "id": "brevetoxin-a",
+      "image": "brevetoxin-a-1920.png",
+      "expectedSmiles": "*[C@@H]1C[C@H](O)[C@@H]2O[C@@H]3C[C@]4(C)O[C@@H]5/C=C\\C[C@@H]6O[C@H]7[C@H](C/C=C\\C[C@H]6O[C@H]5CCC[C@H]4O[C@H]3C[C@H]2O1)O[C@@H]1C[C@@H]2O[C@@H]3CC(=O)O[C@H]3C[C@@H](C)C[C@@]2(C)O[C@H]1C[C@@H]7C",
+      "variants": {
+        "file": "majority",
+        "retina-2x-on-white": "majority",
+        "1x-on-white-20px-margin": "exactLowOrFailed"
+      }
+    }
+  ]
+}

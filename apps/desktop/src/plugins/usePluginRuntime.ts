@@ -1,6 +1,12 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import type { PluginManifest, PluginSelectionSnapshot, PluginStorage } from "@chemdraft/plugin-api";
-import type { CommandRegistry } from "@chemdraft/plugin-host";
+import type {
+  AppliedPatchReceipt,
+  PluginImageSource,
+  PluginManifest,
+  PluginSelectionSnapshot,
+  PluginStorage
+} from "@chemdraft/plugin-api";
+import type { CommandRegistry, PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { PluginAppMenuItem } from "../appMenu";
@@ -19,13 +25,24 @@ import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreference
 import { createTauriPluginStagingFs, isTauriHost, type PluginStagingFs } from "./pluginStagingFs";
 import {
   checkForPluginUpdates,
+  prepareOfficialPluginInstall,
   preparePluginUpdate,
+  type PreparedOfficialPluginInstall,
   type PluginUpdateCheckResult,
   type PluginUpdateOffer,
   type PreparedPluginUpdate
 } from "./pluginUpdates";
 import { registerBundledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
+import type { OpenPluginTextPrompt } from "./PluginPromptTextController";
+import type { OpenPluginImageRequest } from "./PluginImageRequestController";
+import type {
+  OpenStructureRecognitionInstall,
+  StructureRecognitionController,
+  StructureRecognitionInstallRun
+} from "./StructureRecognitionController";
+import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
+import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -41,6 +58,10 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 
 export interface PluginRuntimeProviders {
   getActiveDocument: () => ChemDraftDocument | undefined;
+  /** Identifies the working document for a plugin's `documents.applyPatch` (see
+   *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
+   *  File > New in one session are indistinguishable to the write-binding check. */
+  getActiveDocumentKey?: () => string | undefined;
   getSelection: () => PluginSelectionSnapshot;
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
    *  use (commands/coreCommandRegistrar), so one dispatch serves both. Must be referentially stable
@@ -50,6 +71,10 @@ export interface PluginRuntimeProviders {
   createStorage?: (pluginId: string) => PluginStorage;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
+  /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
+  applyDocumentPatch?: (
+    request: PluginPatchApplicationRequest
+  ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
 }
 
 export interface PluginRuntimeView {
@@ -64,6 +89,7 @@ export interface PluginRuntimeView {
   /** Show the native picker and describe the chosen package; `undefined` when this build cannot install. */
   pickPackage: (() => Promise<PickedPluginPackage | undefined>) | undefined;
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
+  prepareOfficialPluginInstall: ((pluginId: string) => Promise<PreparedOfficialPluginInstall>) | undefined;
   uninstallInstalledPlugin: ((pluginId: string) => Promise<void>) | undefined;
   checkInstalledPluginUpdates: (() => Promise<readonly PluginUpdateCheckResult[]>) | undefined;
   prepareInstalledPluginUpdate: ((offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>) | undefined;
@@ -71,12 +97,35 @@ export interface PluginRuntimeView {
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
   openPanel: OpenPluginPanel | undefined;
-  /** Panels popped out into floating windows (ADR-0030): per-panelId, several may float at once. */
+  /** Desktop-native report windows: per plugin+panel id, several may float at once. */
   detachedPanels: readonly OpenPluginPanel[];
+  openTextPrompt: OpenPluginTextPrompt | undefined;
+  openImageRequest: OpenPluginImageRequest | undefined;
+  openRecognitionInstall: OpenStructureRecognitionInstall | undefined;
+  recognitionEngineStatus: StructureRecognitionEngineStatus | undefined;
+  /** The running engine install, or the last one that stopped without installing. */
+  recognitionEngineInstall: StructureRecognitionInstallRun | undefined;
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
   invokePluginCommand: (commandId: string) => Promise<unknown>;
   closePanel: () => void;
+  submitTextPrompt: (id: number, value: string) => void;
+  cancelTextPrompt: (id: number) => void;
+  acquireImage: (id: number, source: PluginImageSource) => void;
+  openImagePermissionSettings: (id: number) => void;
+  refreshImagePermission: (id: number) => void;
+  relaunchForImagePermission: (id: number) => void;
+  cancelImageRequest: (id: number) => void;
+  installRecognitionEngine: (id: number) => void;
+  cancelRecognitionEngineInstall: (id: number) => void;
+  declineRecognitionEngineInstall: (id: number) => void;
+  refreshRecognitionEngineStatus: () => Promise<void>;
+  /** Installs the engine in place, with progress in the plugin manager (no separate dialog). */
+  startRecognitionEngineInstall: () => Promise<boolean>;
+  cancelRunningRecognitionEngineInstall: () => Promise<void>;
+  uninstallRecognitionEngine: () => Promise<void>;
+  /** Cancel on the recognition progress indicator, which reads `runtime.recognition` itself. */
+  cancelRecognition: (id: number) => void;
 }
 
 /**
@@ -96,12 +145,23 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   if (ownerRef.current === null) {
     const runtime = createPluginRuntime({
       getActiveDocument: () => providersRef.current.getActiveDocument(),
+      getActiveDocumentKey: providers.getActiveDocumentKey
+        ? () => providersRef.current.getActiveDocumentKey?.()
+        : undefined,
       getSelection: () => providersRef.current.getSelection(),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
       commandRegistry: providers.commandRegistry,
       createStorage: providers.createStorage,
-      onProposedPatchesChanged: () => providersRef.current.onProposedPatchesChanged?.()
+      onProposedPatchesChanged: () => providersRef.current.onProposedPatchesChanged?.(),
+      applyDocumentPatch: (request) => {
+        const apply = providersRef.current.applyDocumentPatch;
+        if (!apply) {
+          throw new Error("This desktop provides no direct plugin document-write path.");
+        }
+        return apply(request);
+      },
+      defaultPanelSurface: isTauriHost() ? "window" : "inApp"
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
@@ -112,9 +172,35 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   useEffect(() => {
     const unsubscribeHost = runtime.host.subscribe(bumpVersion);
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);
+    const unsubscribePrompts = runtime.prompts.subscribe(bumpVersion);
+    const unsubscribeImages = runtime.images.subscribe(bumpVersion);
+    // No engine status call at startup (§15): the plugin manager and the recognition command each
+    // ask when they need it.
+    //
+    // Install progress arrives several times a second for the whole install. It reaches the progress
+    // display through its own store; here only a change the rest of the UI shows (a dialog opening,
+    // an install starting or stopping, a new engine state) bumps the shared version — otherwise every
+    // event re-rendered MainWindow and rebuilt the native menu bar.
+    let recognitionKey = recognitionViewKey(runtime.recognition);
+    const unsubscribeRecognition = runtime.recognition.subscribe(() => {
+      const next = recognitionViewKey(runtime.recognition);
+      if (next === recognitionKey) return;
+      recognitionKey = next;
+      bumpVersion();
+    });
+    const disconnectProgress = recognitionInstallProgressStore.connect(runtime.recognition);
+    // MainWindow renders the install dialog from this hook's `openRecognitionInstall`. Recognition
+    // progress never passes through here: the indicator subscribes to the controller's activity
+    // itself, so a reading does not re-render MainWindow.
+    const detachInstallPresenter = runtime.recognition.attachInstallPresenter();
     return () => {
+      detachInstallPresenter();
       unsubscribeHost();
       unsubscribePanels();
+      unsubscribePrompts();
+      unsubscribeImages();
+      unsubscribeRecognition();
+      disconnectProgress();
     };
   }, [runtime]);
 
@@ -211,6 +297,16 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         inspection,
         replaces: bundledPlugins.find((candidate) => candidate.manifest.id === inspection.manifest.id)
       });
+      // A fresh install (from the catalog or a package) is the user asking for this plugin, so it must
+      // not inherit a disabled preference left by something that once had its id — the removed bundled
+      // MolScribe canary shared org.chemdraft.ocsr.molscribe with the catalog plugin, and a user who had
+      // disabled the canary got the new plugin back disabled after restart. Uninstall already clears it.
+      // An update is different: that plugin is installed and its toggle is on screen, so its disabled
+      // state is the user's current choice and `updateInstalledPlugin` preserves it.
+      const disabled = loadDisabledPluginIds();
+      if (disabled.delete(record.id)) {
+        saveDisabledPluginIds(disabled);
+      }
       setInstalledPlugins((current) => [
         ...current.filter((entry) => entry.record.id !== record.id),
         { record, manifest: descriptor.manifest, descriptor }
@@ -254,6 +350,11 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     []
   );
 
+  const prepareCatalogPluginInstall = useCallback(
+    (pluginId: string): Promise<PreparedOfficialPluginInstall> => prepareOfficialPluginInstall(pluginId),
+    []
+  );
+
   const updateInstalledPlugin = useCallback(
     async (prepared: PreparedPluginUpdate): Promise<void> => {
       if (!stagingFs) return;
@@ -283,18 +384,35 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [bundledPlugins, installedPlugins, runtime, stagingFs]
   );
 
-  const plugins = useMemo(() => runtime.host.listPlugins(), [runtime, version]);
-  const pluginMenuItems = useMemo(
-    () =>
-      buildPluginMenuItems(
-        runtime.host.listMenuContributions(),
-        (commandId) => runtime.host.commands.get(commandId)?.enabled === true
-      ),
-    [runtime, version]
+  // These three keep their identity until their content changes: MainWindow re-syncs the native menu
+  // bar whenever `pluginMenuItems` is a new array, and an unrelated host or panel notification must
+  // not rebuild it.
+  const plugins = useStableValue(
+    useMemo(() => runtime.host.listPlugins(), [runtime, version]),
+    sameElements
+  );
+  const pluginMenuItems = useStableValue(
+    useMemo(
+      () =>
+        buildPluginMenuItems(
+          runtime.host.listMenuContributions(),
+          (commandId) => runtime.host.commands.get(commandId)?.enabled === true
+        ),
+      [runtime, version]
+    ),
+    sameJson
   );
   const openPanel = useMemo(() => runtime.panels.getOpenPanel(), [runtime, version]);
-  const detachedPanels = useMemo(() => runtime.panels.getDetachedPanels(), [runtime, version]);
+  const detachedPanels = useStableValue(
+    useMemo(() => runtime.panels.getDetachedPanels(), [runtime, version]),
+    sameElements
+  );
   const diagnostics = useMemo(() => runtime.panels.getDiagnostics(), [runtime, version]);
+  const openTextPrompt = useMemo(() => runtime.prompts.getOpenPrompt(), [runtime, version]);
+  const openImageRequest = useMemo(() => runtime.images.getOpenRequest(), [runtime, version]);
+  const openRecognitionInstall = useMemo(() => runtime.recognition.getOpenInstall(), [runtime, version]);
+  const recognitionEngineStatus = useMemo(() => runtime.recognition.getStatus(), [runtime, version]);
+  const recognitionEngineInstall = useMemo(() => runtime.recognition.getInstallRun(), [runtime, version]);
 
   // Ownership, not mere presence: the registry is SHARED with core commands now, so `has(id)` would
   // claim every core command too. A command is a plugin command iff a plugin registered it (the host
@@ -308,6 +426,49 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [runtime]
   );
   const closePanel = useCallback(() => runtime.panels.closePanel(), [runtime]);
+  const submitTextPrompt = useCallback((id: number, value: string) => runtime.prompts.submit(id, value), [runtime]);
+  const cancelTextPrompt = useCallback((id: number) => runtime.prompts.cancel(id), [runtime]);
+  const acquireImage = useCallback(
+    (id: number, source: PluginImageSource) => void runtime.images.acquire(id, source),
+    [runtime]
+  );
+  const openImagePermissionSettings = useCallback(
+    (id: number) => void runtime.images.openPermissionSettings(id),
+    [runtime]
+  );
+  const refreshImagePermission = useCallback(
+    (id: number) => void runtime.images.refreshPermission(id),
+    [runtime]
+  );
+  const relaunchForImagePermission = useCallback(
+    (id: number) => void runtime.images.relaunch(id),
+    [runtime]
+  );
+  const cancelImageRequest = useCallback((id: number) => runtime.images.cancel(id), [runtime]);
+  const installRecognitionEngine = useCallback(
+    (id: number) => void runtime.recognition.install(id),
+    [runtime]
+  );
+  const cancelRecognitionEngineInstall = useCallback(
+    (id: number) => void runtime.recognition.cancel(id),
+    [runtime]
+  );
+  const declineRecognitionEngineInstall = useCallback(
+    (id: number) => runtime.recognition.decline(id),
+    [runtime]
+  );
+  const refreshRecognitionEngineStatus = useCallback(async () => {
+    await runtime.recognition.refreshStatus();
+  }, [runtime]);
+  const startRecognitionEngineInstall = useCallback(() => runtime.recognition.installEngine(), [runtime]);
+  const cancelRunningRecognitionEngineInstall = useCallback(
+    () => runtime.recognition.cancelEngineInstall(),
+    [runtime]
+  );
+  const uninstallRecognitionEngine = useCallback(async () => {
+    await runtime.recognition.uninstall();
+  }, [runtime]);
+  const cancelRecognition = useCallback((id: number) => runtime.recognition.cancelRecognition(id), [runtime]);
 
   return {
     runtime,
@@ -318,6 +479,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     // rather than offer an install that would fail on click.
     pickPackage: stagingFs ? pickPackage : undefined,
     installPackage: stagingFs ? installPackage : undefined,
+    prepareOfficialPluginInstall:
+      stagingFs && installedPluginCatalogReady ? prepareCatalogPluginInstall : undefined,
     uninstallInstalledPlugin: stagingFs ? uninstallInstalledPlugin : undefined,
     checkInstalledPluginUpdates:
       stagingFs && installedPluginCatalogReady ? checkInstalledPluginUpdates : undefined,
@@ -329,9 +492,72 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     pluginMenuItems,
     openPanel,
     detachedPanels,
+    openTextPrompt,
+    openImageRequest,
+    openRecognitionInstall,
+    recognitionEngineStatus,
+    recognitionEngineInstall,
     diagnostics,
     isPluginCommand,
     invokePluginCommand,
-    closePanel
+    closePanel,
+    submitTextPrompt,
+    cancelTextPrompt,
+    acquireImage,
+    openImagePermissionSettings,
+    refreshImagePermission,
+    relaunchForImagePermission,
+    cancelImageRequest,
+    installRecognitionEngine,
+    cancelRecognitionEngineInstall,
+    declineRecognitionEngineInstall,
+    refreshRecognitionEngineStatus,
+    startRecognitionEngineInstall,
+    cancelRunningRecognitionEngineInstall,
+    uninstallRecognitionEngine,
+    cancelRecognition
   };
+}
+
+/** The last value, kept while `same` says the new one carries the same content. */
+function useStableValue<T>(next: T, same: (previous: T, next: T) => boolean): T {
+  const ref = useRef(next);
+  if (ref.current !== next && !same(ref.current, next)) ref.current = next;
+  return ref.current;
+}
+
+function sameElements<T>(previous: readonly T[], next: readonly T[]): boolean {
+  return previous.length === next.length && previous.every((value, index) => value === next[index]);
+}
+
+/** Plain-data comparison for menu items (strings, booleans, and nested plain objects only). */
+function sameJson<T>(previous: T, next: T): boolean {
+  return JSON.stringify(previous) === JSON.stringify(next);
+}
+
+/**
+ * Everything about recognition the UI renders from the shared version, minus what changes with every
+ * progress event: the progress itself, phase timings, and the host's elapsed time and free-space
+ * reading while it installs (the install is what consumes that space).
+ */
+function recognitionViewKey(recognition: StructureRecognitionController): string {
+  const open = recognition.getOpenInstall();
+  const status = recognition.getStatus();
+  const run = recognition.getInstallRun();
+  return JSON.stringify([
+    open && {
+      ...open,
+      progress: undefined,
+      startedAt: undefined,
+      phaseStartedAt: undefined,
+      status: statusKey(open.status)
+    },
+    status && statusKey(status),
+    run && { running: run.running, startedAt: run.startedAt, error: run.error }
+  ]);
+}
+
+function statusKey(status: StructureRecognitionEngineStatus): Partial<StructureRecognitionEngineStatus> {
+  const { progress: _progress, installElapsedMs: _elapsed, ...rest } = status;
+  return rest.state === "installing" ? { ...rest, freeDiskBytes: undefined } : rest;
 }

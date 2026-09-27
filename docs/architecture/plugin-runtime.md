@@ -2,8 +2,8 @@
 
 How ChemDraft hosts bundled plugins: the persistent host, the generic
 capability APIs, the declarative panel model, menu integration, the worker
-pattern, and the panel lifecycle. The NMR predictor is the first real consumer;
-`molscribe-ocsr` is the runtime canary. Everything here is domain-neutral — no
+pattern, and the panel lifecycle. The NMR predictor is the first real consumer; the
+MolScribe OCSR plugin (installed, not bundled) is the image-input consumer. Everything here is domain-neutral — no
 NMR (or any domain) concepts leak into `plugin-api` / `plugin-host`.
 
 ## Layers
@@ -46,6 +46,8 @@ when the manifest declares the matching permission (ADR-0008). A handler sees
 - **`panels`** (`ui.panel`) — `showReport(panelId, report)` pushes a validated,
   declarative `PluginPanelReport`.
 - **`documents`** — read + `proposePatch` (queued for user approval).
+- **`images`** (`image.read`) — command-scoped `requestImage`; the host owns source selection,
+  validates a strict result, and caps inputs at 25 MB / 8192 pixels per side.
 
 ## Declarative panels (no plugin React)
 
@@ -56,6 +58,48 @@ so embedded script can never execute and the plot is theme-isolated. A report ma
 carry an optional `source: { objectId, sourceFingerprint }`; desktop chrome
 compares it against the live document (`computeObjectFingerprint`) and shows a
 **stale** banner when the structure changed since the report was computed.
+
+On desktop, a report goes directly to its own native analysis window, keyed by
+plugin id plus panel id. Several reports may remain open at once; none render in
+the main drawing viewport. `PluginPanelWindow` is also the host for core-owned
+Molecular Inspector, validation result, bundled-plugin diagnostics, and plugin
+proposal review snapshots. They all reuse `openPluginPanelWindow` and the same
+request/replay event bridge; interactive actions travel back to the main window,
+where the document and plugin runtime live. The native windows are children of
+the main document window, not global always-on-top panels, and retain their
+session position when hidden and reopened. The in-app `PluginPanelSurface` and
+proposal tray are web-build fallbacks only.
+
+Analysis windows hold no dialog, filesystem, or clipboard permission
+(`capabilities/plugin-panel.json`), and must not gain one. Anything that needs
+one is performed by the main window on the window's behalf:
+
+- **File saves** (the NMR figure's JCAMP-DX export): `saveTextFile` detects the
+  `?window=pluginPanel` route and sends a `saveTextFile` analysis-window action;
+  the main window shows the save dialog, writes the file, and answers on
+  `chemdraft://analysis-window-action-result` with `saved` / `cancelled` /
+  `failed`, keyed by request id, so the button reports what really happened.
+- **Copy** from the floating Molecular Inspector goes through the native
+  clipboard command, because the web Clipboard API refuses a write that arrives
+  over the event bridge without a user gesture in the main document. A failed
+  write is reported as a failure.
+
+The main window registers its analysis-window action listener once and reads
+its live handlers through a ref, so no action can fall into a re-registration
+gap when the document changes.
+
+**Focus.** `openPluginPanelWindow` carries an explicit `focus` flag. Only a
+window the user asked for (an Analyze menu command, the pending-proposals
+badge) takes keyboard focus; automatic shows — a proposal arriving, a plugin
+pushing its report — order the window front without making it key, so typing on
+the canvas is never interrupted. The window stays focusable for a click. The
+proposal window is marked open only once its native open succeeds, so a failed
+open leaves the pending-proposals badge in place.
+
+**Escape.** A report window closes on a bubbling window-level Escape unless the
+event was already `defaultPrevented`. An inner overlay (the linked figure's
+Full size view) handles Escape in the capture phase and prevents the default,
+so the first Escape closes the overlay and only a second closes the window.
 
 ## Menu integration + drift test
 
@@ -86,18 +130,25 @@ different plugin/panel is also treated as a close; and the command
 re-checks `signal.aborted` after the predictor resolves, so a late result never
 writes a record or resurrects a dismissed panel.
 
+Closing a native plugin report window sends the same real panel-close signal.
+Closing a core analysis window only hides that host-owned surface; invoking its
+Analyze command reopens it with the latest cached snapshot. Proposal review
+opens when the queue gains a proposal and hides when the queue becomes empty.
+
 ## Command error channel (ADR-0010)
 
 A command may fail by throwing **or** by returning `{ ok: false, error }`. The
 desktop's dispatch surfaces both in the status bar, so a returned not-ok result is
 never silent.
 
-## Canary
+## Image input
 
-`molscribe-ocsr` is registered as a bundled plugin purely to exercise the path
-manifest → host → Analyze menu → command → declarative report, without proposing
-any document patch. It, plus the bundled-plugin diagnostics view, is how the
-runtime is smoke-tested end to end (see `MainWindow.plugins.dom.test.ts`).
+No image-input plugin is bundled. MolScribe OCSR is an official plugin installed from its own
+repository (`jgassens/ChemDraft-MolScribe-Plugin`) through the host catalog; it reaches the host-managed
+engine through `recognition.recognizeStructure` (see `ocsr-engine.md`). Host tests drive the same path —
+manifest → host → Analyze menu → provider registry → user-selected image → recognition → proposal — with
+the test-only fixture in `apps/desktop/src/testSupport/recognitionFixturePlugin.ts`. Mock recognition
+stays test-only.
 
 ## Extension points
 

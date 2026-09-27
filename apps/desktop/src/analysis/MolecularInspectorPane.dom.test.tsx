@@ -122,6 +122,36 @@ describe("MolecularInspectorPane", () => {
     expect(copied).toMatch(/Run fingerprint: fnv1a64:/);
   });
 
+  it("shows Copy failed when the caller reports the clipboard write did not land", async () => {
+    const onCopy = vi.fn(async () => false);
+    const view = render(<MolecularInspectorPane report={REPORT} onCopy={onCopy} />);
+
+    // Matched by title, which stays fixed across the label swap ("Copy" -> "Copied" -> "Copy failed").
+    const copyButton = () =>
+      [...view.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.title === "Copy All analyses as text")!;
+    await act(async () => {
+      copyButton().click();
+      await Promise.resolve();
+    });
+
+    expect(onCopy).toHaveBeenCalledOnce();
+    expect(copyButton().textContent).toBe("Copy failed");
+  });
+
+  it("still shows Copied for a caller that reports success asynchronously", async () => {
+    const onCopy = vi.fn(async () => true);
+    const view = render(<MolecularInspectorPane report={REPORT} onCopy={onCopy} />);
+
+    const copyButton = () =>
+      [...view.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.title === "Copy All analyses as text")!;
+    await act(async () => {
+      copyButton().click();
+      await Promise.resolve();
+    });
+
+    expect(copyButton().textContent).toBe("Copied");
+  });
+
   it("copies Markdown when asked, scoped the same way", () => {
     const onCopy = vi.fn();
     const view = render(<MolecularInspectorPane report={REPORT} onCopy={onCopy} />);
