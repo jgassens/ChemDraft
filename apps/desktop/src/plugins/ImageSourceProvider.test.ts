@@ -10,7 +10,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile, stat } from "@tauri-apps/plugin-fs";
 
-import { fileImageSourceProvider, ImageSourceError, screenRegionImageSourceProvider } from "./ImageSourceProvider";
+import {
+  describeImageSourceError,
+  fileImageSourceProvider,
+  ImageSourceError,
+  screenRegionImageSourceProvider
+} from "./ImageSourceProvider";
 
 // A 3×2 PNG header: signature, then the IHDR chunk carrying width and height.
 const png = pngHeader(3, 2);
@@ -129,5 +134,16 @@ describe("screenRegionImageSourceProvider", () => {
       height: 20,
       source: "screenRegion"
     });
+  });
+});
+
+describe("describeImageSourceError", () => {
+  it("reads the message from Errors, strings, and the plain objects Tauri commands reject with", () => {
+    expect(describeImageSourceError(new Error("disk full"))).toBe("disk full");
+    expect(describeImageSourceError("offline")).toBe("offline");
+    expect(describeImageSourceError({ kind: "failed", message: "capture failed" })).toBe("capture failed");
+    expect(describeImageSourceError({ kind: "unsupported" })).toBe("The image source failed (unsupported).");
+    expect(describeImageSourceError({})).not.toContain("[object Object]");
+    expect(describeImageSourceError(undefined)).toBe("Unknown error.");
   });
 });

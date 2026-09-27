@@ -101,7 +101,13 @@ import {
   shouldRestoreDocumentSession
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
-import { applyPluginDocumentPatch, describePatchFailure } from "./plugins/applyPluginDocumentPatch";
+import {
+  applyAcceptedPluginProposal,
+  applyPluginDocumentPatch,
+  createPluginWriteGate,
+  describePatchFailure,
+  type PluginWriteGate
+} from "./plugins/applyPluginDocumentPatch";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
@@ -133,7 +139,7 @@ import {
 } from "./plugins/panelBridge";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
+import { isBlockedByModalDialog, shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
@@ -664,16 +670,10 @@ import {
   stripForcedDocumentHistorySuffix
 } from "./editHistoryRouting";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
-import {
-  retainRecognitionScreenCapture,
-  revealRecognitionScreenCaptures
-} from "./plugins/recognitionScreenCaptures";
-import { PluginPromptTextDialog, isPluginPromptKeyboardEvent } from "./plugins/PluginPromptTextDialog";
-import { PluginImageRequestDialog, isPluginImageKeyboardEvent } from "./plugins/PluginImageRequestDialog";
-import {
-  StructureRecognitionInstallDialog,
-  isRecognitionInstallKeyboardEvent
-} from "./plugins/StructureRecognitionInstallDialog";
+import { revealRecognitionScreenCaptures } from "./plugins/recognitionScreenCaptures";
+import { PluginPromptTextDialog } from "./plugins/PluginPromptTextDialog";
+import { PluginImageRequestDialog } from "./plugins/PluginImageRequestDialog";
+import { StructureRecognitionInstallDialog } from "./plugins/StructureRecognitionInstallDialog";
 import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
@@ -2014,6 +2014,8 @@ export function MainWindow({
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
   const [moleculeStyleOverridePrompt, setMoleculeStyleOverridePrompt] =
     useState<MoleculeStyleOverridePromptState | undefined>();
+  const moleculeStyleOverridePromptRef = useRef(moleculeStyleOverridePrompt);
+  moleculeStyleOverridePromptRef.current = moleculeStyleOverridePrompt;
   const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
@@ -8431,6 +8433,59 @@ export function MainWindow({
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
 
+  // Every canvas session that previews from a snapshot of the document taken when it began, then commits
+  // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
+  // multi-click path tool, hover previews of a style, typed rotate/resize entries, and the ring-override
+  // prompt. A document write committed in the middle of one is overwritten by the next preview frame and
+  // dropped from history by the commit. Listed generously: waiting a moment longer is harmless.
+  const isSnapshotSessionActive = useCallback(
+    (): boolean =>
+      nativeBondDragRef.current !== null ||
+      nativePlacementDragRef.current !== null ||
+      nativeBondEditDragRef.current !== null ||
+      nativePartDragRef.current !== null ||
+      objectDragRef.current !== null ||
+      graphicCornerRadiusDragRef.current !== null ||
+      graphicPathEditDragRef.current !== null ||
+      graphicMarkerDragRef.current !== null ||
+      graphicGradientDragRef.current !== null ||
+      freehandArtDragRef.current !== null ||
+      mechanismArrowDragRef.current !== null ||
+      mechanismHandleDragRef.current !== null ||
+      pathArtDrawRef.current !== null ||
+      bezierArtNodeDragRef.current !== null ||
+      objectRotateDragRef.current !== null ||
+      projectedPlaneTiltDragRef.current !== null ||
+      objectResizeDragRef.current !== null ||
+      groupTransformDragRef.current !== null ||
+      textResizeRef.current !== null ||
+      artStylePreviewRef.current !== null ||
+      moleculeInspectorPreviewRef.current !== null ||
+      rotationInputRef.current !== undefined ||
+      objectResizeInputRef.current !== undefined ||
+      moleculeStyleOverridePromptRef.current !== undefined,
+    []
+  );
+  // A plugin's direct write that lands during such a session waits for it to commit or cancel, then
+  // commits as its own undo entry on top — and the plugin's receipt is sent only once it has. Applying it
+  // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
+  // different shape; one predicate is easier to keep true than two dozen snapshot rewrites.
+  const pluginWriteGateRef = useRef<PluginWriteGate | undefined>(undefined);
+  useEffect(() => {
+    const gate = createPluginWriteGate({ isGestureActive: isSnapshotSessionActive });
+    pluginWriteGateRef.current = gate;
+    // Sessions end on a release; check right after the canvas handlers have committed (window listeners
+    // run after React's). The gate's own timer covers endings that are not a release (a double-click).
+    const flush = () => gate.flush();
+    const events = ["pointerup", "pointercancel", "keyup", "blur"] as const;
+    for (const type of events) window.addEventListener(type, flush);
+    return () => {
+      for (const type of events) window.removeEventListener(type, flush);
+      gate.dispose();
+      if (pluginWriteGateRef.current === gate) pluginWriteGateRef.current = undefined;
+    };
+  }, [isSnapshotSessionActive]);
+
   // The persistent plugin runtime (host + panel controller + toolset stage), created exactly once on
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
@@ -8443,15 +8498,28 @@ export function MainWindow({
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
     applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
-      const applied = applyPluginDocumentPatch(documentRef.current, patch);
-      commitDocumentChange(applied.document, undoLabel);
-      setSelectedNativeMoleculePart(undefined);
-      setStatus(
-        applied.receipt.objectIds.length > 0
-          ? `${plugin.name}: inserted structure`
-          : `${plugin.name}: applied ${command.title}`
-      );
-      return applied.receipt;
+      const gate = pluginWriteGateRef.current;
+      if (!gate) throw new Error("The document window is closing; nothing was inserted.");
+      // The host checked the document key before calling; a write that waits for a gesture checks again
+      // when it runs, so it can never land in a document opened meanwhile.
+      const documentIdentity = documentIdentityRef.current;
+      if (isSnapshotSessionActive()) {
+        setStatus(`${plugin.name}: finish the current edit to insert the result`);
+      }
+      return gate.run(() => {
+        if (documentIdentityRef.current !== documentIdentity) {
+          throw new Error("The document changed while the plugin was running; nothing was inserted.");
+        }
+        const applied = applyPluginDocumentPatch(documentRef.current, patch);
+        commitDocumentChange(applied.document, undoLabel);
+        setSelectedNativeMoleculePart(undefined);
+        setStatus(
+          applied.receipt.objectIds.length > 0
+            ? `${plugin.name}: inserted structure`
+            : `${plugin.name}: applied ${command.title}`
+        );
+        return applied.receipt;
+      });
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
@@ -8653,35 +8721,33 @@ export function MainWindow({
       const host = pluginRuntime.runtime.host;
       const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
       const recognized = proposal.proposal.recognition !== undefined;
-      // A screen capture exists only in the proposal; read the host's copy before accepting drops it,
-      // and keep it once the insertion lands (AGENTS.md §8). Image files are still on disk, and only
-      // the native provider produces screen captures, so no desktop check is needed here.
+      // An accept during a canvas session would be dropped by the session's own commit (see
+      // isSnapshotSessionActive). The review window cannot wait for it, so the proposal stays pending
+      // and the user accepts again once the edit is finished — nothing lost, nothing half-applied.
+      if (isSnapshotSessionActive()) {
+        const message = "Finish the current edit on the canvas, then accept the proposal again.";
+        setStatus(message);
+        return { ok: false, message };
+      }
+      // A screen capture is saved to the recognition-sources folder when it is taken (AGENTS.md §8), so
+      // accepting keeps nothing more; the capture stays there until the user deletes it.
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
+        // Laid onto the document in front of the user, which need not be the one the proposal was
+        // made in: a taken object id gets a fresh one, a missing page becomes this document's first.
         const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
-          apply: (current, proposed, options) => applyPluginDocumentPatch(current, proposed, options).document
+          apply: (current, proposed, options) => applyAcceptedPluginProposal(current, proposed, options).document
         });
         commitDocumentChange(
           updated,
           `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`
         );
         setSelectedNativeMoleculePart(undefined);
-        const message = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
+        const inserted = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
+        const message = screenCapture
+          ? `${inserted}; its screen capture stays saved (Add or Remove Plugins › Show saved screen captures)`
+          : inserted;
         setStatus(message);
-        if (screenCapture) {
-          void retainRecognitionScreenCapture(screenCapture).then(
-            () =>
-              setStatus(
-                `${message}; its screen capture is kept (Add or Remove Plugins › Show saved screen captures)`
-              ),
-            (error: unknown) =>
-              setStatus(
-                `${message}, but its screen capture could not be kept: ${
-                  error instanceof Error ? error.message : String(error)
-                }`
-              )
-          );
-        }
         return { ok: true, message };
       } catch (error) {
         const message = `Could not insert the proposal: ${describePatchFailure(error)}`;
@@ -8689,7 +8755,7 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [commitDocumentChange, pluginRuntime.runtime]
+    [commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
   );
 
   const rejectPluginProposal = useCallback(
@@ -9240,7 +9306,13 @@ export function MainWindow({
       event: ClipboardEvent,
       mode: "copy" | "cut"
     ): boolean => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target, mode === "copy" ? "c" : "x")) {
+      // Behind an open modal the document is out of reach: native Edit > Cut/Copy (and the keys) then
+      // belong to the dialog — selected dialog text copies natively — never to the canvas selection.
+      if (
+        event.defaultPrevented ||
+        isBlockedByModalDialog(event.target) ||
+        shouldIgnoreShortcutTarget(event.target, mode === "copy" ? "c" : "x")
+      ) {
         return false;
       }
 
@@ -9302,7 +9374,13 @@ export function MainWindow({
     };
 
     const handlePaste = (event: ClipboardEvent) => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target, "v")) {
+      // A paste with a modal open is the dialog's (a text field in it pastes natively), never an
+      // insertion into the document behind it.
+      if (
+        event.defaultPrevented ||
+        isBlockedByModalDialog(event.target) ||
+        shouldIgnoreShortcutTarget(event.target, "v")
+      ) {
         return;
       }
 
@@ -9724,13 +9802,9 @@ export function MainWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      // The prompt owns its keys. MainWindow also has a capture-phase Escape listener, so its global
-      // handlers must opt out explicitly; propagation control inside the dialog is too late for that.
-      if (
-        isPluginPromptKeyboardEvent(event) ||
-        isPluginImageKeyboardEvent(event) ||
-        isRecognitionInstallKeyboardEvent(event)
-      ) {
+      // An open modal dialog owns the keyboard. MainWindow also has a capture-phase Escape listener, so
+      // its global handlers must opt out explicitly; propagation control inside a dialog is too late.
+      if (isBlockedByModalDialog(event.target)) {
         return;
       }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
@@ -9927,11 +10001,7 @@ export function MainWindow({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        isPluginPromptKeyboardEvent(event) ||
-        isPluginImageKeyboardEvent(event) ||
-        isRecognitionInstallKeyboardEvent(event)
-      ) {
+      if (isBlockedByModalDialog(event.target)) {
         return;
       }
       if (event.key === "Shift" || event.shiftKey) {
@@ -9999,11 +10069,7 @@ export function MainWindow({
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
-      if (
-        isPluginPromptKeyboardEvent(event) ||
-        isPluginImageKeyboardEvent(event) ||
-        isRecognitionInstallKeyboardEvent(event)
-      ) return;
+      if (isBlockedByModalDialog(event.target)) return;
       if (event.key !== "Escape") return;
     if (spin3dStateRef.current) {
       event.preventDefault();
@@ -10353,11 +10419,7 @@ export function MainWindow({
       return;
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (
-        isPluginPromptKeyboardEvent(event) ||
-        isPluginImageKeyboardEvent(event) ||
-        isRecognitionInstallKeyboardEvent(event)
-      ) {
+      if (isBlockedByModalDialog(event.target)) {
         return;
       }
       if (event.key === "Escape") {

@@ -360,26 +360,84 @@ describe("PluginManagerDialog", () => {
     expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
   });
 
-  it("lets the user open the screen captures kept behind accepted recognitions from the MolScribe row", async () => {
+  it.each([
+    ["with the MolScribe plugin installed", [molscribeInstalled]],
+    ["with no recognition plugin installed", []]
+  ] as const)("lets the user open the saved screen captures %s", async (_label, installedPlugins) => {
     const onShowRecognitionScreenCaptures = vi.fn(async () => undefined);
     mount(
       createElement(Harness, {
         runtime: createRuntime(),
-        installedPlugins: [molscribeInstalled],
+        installedPlugins,
         recognitionEngineStatus: installedEngineStatus,
         onShowRecognitionScreenCaptures,
         onClose: vi.fn(),
         onPluginsChanged: vi.fn()
       })
     );
-    const button = document.querySelector<HTMLButtonElement>(
-      '[data-testid="molscribe-engine-row"] [data-action="show-recognition-screen-captures"]'
-    );
-    expect(button?.textContent).toBe("Show saved screen captures");
+    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-action="show-recognition-screen-captures"]');
+    // One place, outside any plugin's row: the captures outlive the plugin and its engine.
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]!.closest('[data-testid="molscribe-engine-row"]')).toBeNull();
+    expect(buttons[0]!.textContent).toBe("Show saved screen captures");
     await act(async () => {
-      button!.click();
+      buttons[0]!.click();
     });
     expect(onShowRecognitionScreenCaptures).toHaveBeenCalledOnce();
+  });
+
+  it("offers no saved screen captures where the build cannot show them (web)", () => {
+    mount(createElement(Harness, { runtime: createRuntime(), onClose: vi.fn(), onPluginsChanged: vi.fn() }));
+    expect(document.querySelector('[data-action="show-recognition-screen-captures"]')).toBeNull();
+  });
+
+  it("says the one-time engine check is running, with no Cancel that would break the engine", () => {
+    mount(
+      createElement(Harness, {
+        runtime: createRuntime(),
+        installedPlugins: [molscribeInstalled],
+        recognitionEngineStatus: {
+          ...installedEngineStatus,
+          state: "installing",
+          engineCheck: true,
+          progress: { phase: "verifying", message: "Checking the installed recognition engine." }
+        },
+        recognitionEngineInstall: { running: true, startedAt: 0, phaseStartedAt: 0, engineCheck: true },
+        onInstallRecognitionEngine: vi.fn(async () => true),
+        onCancelRecognitionEngineInstall: vi.fn(async () => undefined),
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-state"]')?.textContent).toBe(
+      "Checking the recognition engine…"
+    );
+    expect(document.querySelector('[data-action="cancel-recognition-engine-install"]')).toBeNull();
+    expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
+  });
+
+  it("shows the host's reason when a followed engine check ends without an engine", () => {
+    const detail = "The installed engine was made by an older ChemDraft and must be installed again.";
+    mount(
+      createElement(Harness, {
+        runtime: createRuntime(),
+        installedPlugins: [molscribeInstalled],
+        recognitionEngineStatus: { ...installedEngineStatus, installed: undefined, state: "broken", detail },
+        recognitionEngineInstall: {
+          running: false,
+          startedAt: 0,
+          phaseStartedAt: 0,
+          engineCheck: true,
+          error: { code: "failed", message: detail }
+        },
+        onInstallRecognitionEngine: vi.fn(async () => true),
+        onClose: vi.fn(),
+        onPluginsChanged: vi.fn()
+      })
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(detail);
+    // Said once, not twice.
+    expect(document.querySelector('[data-testid="molscribe-engine-detail"]')).toBeNull();
   });
 
   it.each([
@@ -650,19 +708,41 @@ describe("PluginManagerDialog", () => {
     expect(document.querySelector('[data-action="install-recognition-engine"]')).toBeNull();
   });
 
-  it("leaves Escape to the engine install dialog opened over it", () => {
+  // Every host dialog that can open over this one: the engine install dialog, a plugin's text prompt,
+  // and a plugin's image request. Each marks its root the way the real one does.
+  it.each([
+    ["the engine install dialog", "div", "plugin-prompt-dialog recognition-install-dialog"],
+    ["a plugin's text prompt", "form", "plugin-prompt-dialog"],
+    ["a plugin's image request", "div", "plugin-prompt-dialog plugin-image-dialog"]
+  ])("leaves Escape to %s opened over it", (_label, tag, className) => {
     const runtime = createRuntime();
     const onClose = vi.fn();
     mount(createElement(Harness, { runtime, onClose, onPluginsChanged: vi.fn() }));
-    const installDialog = document.createElement("div");
-    installDialog.className = "recognition-install-dialog";
+    const dialog = document.createElement(tag);
+    dialog.className = className;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
     const target = document.createElement("button");
-    installDialog.appendChild(target);
-    document.body.appendChild(installDialog);
+    dialog.appendChild(target);
+    document.body.appendChild(dialog);
 
     act(() => target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(onClose).not.toHaveBeenCalled();
+    // Focus that fell to <body> while that dialog is open is still not an Escape for this one.
     act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Once it closes, Escape is this dialog's again.
+    dialog.remove();
+    act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("still closes on Escape pressed inside itself", () => {
+    const onClose = vi.fn();
+    mount(createElement(Harness, { runtime: createRuntime(), onClose, onPluginsChanged: vi.fn() }));
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="plugin-manager-dialog"] button')!;
+    act(() => button.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(onClose).toHaveBeenCalledOnce();
   });
 

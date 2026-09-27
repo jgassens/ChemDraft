@@ -1,4 +1,8 @@
-import type { PluginProvidedImage, PluginRecognitionResult } from "@chemdraft/plugin-api";
+import type {
+  PluginProvidedImage,
+  PluginRecognitionFailureCode,
+  PluginRecognitionResult
+} from "@chemdraft/plugin-api";
 
 import {
   isStructureRecognitionInstallError,
@@ -75,10 +79,16 @@ export interface StructureRecognitionInstallRun {
   progress?: StructureRecognitionInstallProgress;
   /** Set once a run has stopped without installing: failed, cancelled, or unsupported. */
   error?: StructureRecognitionInstallError;
+  /** The followed operation is the host's one-time check of an engine already on disk (after an app
+   *  update), not a download: nothing to cancel, and its failure is a check that did not pass. */
+  engineCheck?: boolean;
 }
 
 interface InstallRunState extends StructureRecognitionInstallRun {
   promise: Promise<boolean>;
+  /** The user asked to cancel this run. A followed run learns how it ended only from the host's next
+   *  status, which says "not installed" either way, so the request is what tells a cancel apart. */
+  cancelRequested?: boolean;
 }
 
 export interface StructureRecognitionControllerOptions {
@@ -149,7 +159,7 @@ export class StructureRecognitionController {
   /** The running engine install, or the last one that stopped without installing. */
   getInstallRun(): StructureRecognitionInstallRun | undefined {
     if (!this.run) return undefined;
-    const { promise: _promise, ...run } = this.run;
+    const { promise: _promise, cancelRequested: _cancelRequested, ...run } = this.run;
     return run;
   }
 
@@ -274,6 +284,7 @@ export class StructureRecognitionController {
    * rejection refreshes the status through `status()`, and a followed install's next poll reads it.
    */
   private async cancelRunningInstall(): Promise<void> {
+    if (this.run?.running) this.run.cancelRequested = true;
     try {
       await this.engine.cancelInstall();
     } catch {
@@ -290,7 +301,7 @@ export class StructureRecognitionController {
     if (signal.aborted) return { status: "cancelled" };
     // One at a time: the engine runs one recognition, and the indicator shows one.
     if (this.active) {
-      return { status: "failed", code: "busy", message: "Another image is already being recognized." };
+      return recognitionFailure("busy", "Another image is already being recognized.");
     }
     const active: ActiveRecognition = {
       id: this.nextId++,
@@ -328,7 +339,7 @@ export class StructureRecognitionController {
       status = await this.refreshStatus();
       if (stopped.aborted) return { status: "cancelled" };
     } catch (error) {
-      return { status: "failed", code: "installFailed", message: `Recognition engine status failed: ${messageOf(error)}` };
+      return recognitionFailure("installFailed", `Recognition engine status failed: ${messageOf(error)}`);
     }
     // After an app update the host checks the engine already on disk once (about a minute). That is
     // not an install: wait for it here, under the indicator, rather than open the install dialog.
@@ -336,7 +347,7 @@ export class StructureRecognitionController {
       try {
         status = await untilStopped(this.waitForEngineCheck(), stopped);
       } catch (error) {
-        return { status: "failed", code: "installFailed", message: `Recognition engine status failed: ${messageOf(error)}` };
+        return recognitionFailure("installFailed", `Recognition engine status failed: ${messageOf(error)}`);
       }
     }
     if (status === STOPPED) return { status: "cancelled" };
@@ -376,16 +387,18 @@ export class StructureRecognitionController {
       );
       outcome = await untilStopped(call, stopped);
     } catch (error) {
-      return { status: "failed", code: "recognitionFailed", message: messageOf(error) };
+      return recognitionFailure("recognitionFailed", messageOf(error));
     } finally {
       active.engineRunning = false;
     }
     if (outcome === STOPPED || outcome.status === "cancelled") return { status: "cancelled" };
     if (outcome.status === "notInstalled") return { status: "engineNotInstalled" };
-    if (outcome.status === "failed") return outcome;
+    // The engine's own words, which may be empty or a whole traceback: bounded like every failure.
+    if (outcome.status === "failed") return recognitionFailure(outcome.code, outcome.message);
     this.setStage(active, "validating");
     const result = await untilStopped(this.prepareResult(outcome, image), stopped);
-    return result === STOPPED ? { status: "cancelled" } : result;
+    if (result === STOPPED) return { status: "cancelled" };
+    return result.status === "failed" ? recognitionFailure(result.code, result.message) : result;
   }
 
   /** Waits for the one-time engine check the host is running, then reads the status it left. */
@@ -518,7 +531,8 @@ export class StructureRecognitionController {
       running: true,
       startedAt: now - (status.installElapsedMs ?? 0),
       phaseStartedAt: now,
-      progress: status.progress
+      progress: status.progress,
+      ...(status.engineCheck === true ? { engineCheck: true } : {})
     } as InstallRunState;
     this.run = run;
     run.promise = new Promise<boolean>((resolve) => {
@@ -547,10 +561,7 @@ export class StructureRecognitionController {
                 resolve(true);
                 return;
               }
-              this.stopRun(run, {
-                code: "failed",
-                message: "The recognition engine install stopped before it finished."
-              });
+              this.stopRun(run, followedRunEnd(run, next));
               this.notify();
               resolve(false);
             },
@@ -675,14 +686,66 @@ function withinGrace(settled: Promise<void>): Promise<void> {
   });
 }
 
+/**
+ * How a followed install ended without installing, in the host's own words. The host's status is all
+ * that is left of it, so its `detail` (an engine from an older build, say) is the reason to show — a
+ * generic "stopped" would hide the one sentence that says what to do next.
+ */
+function followedRunEnd(
+  run: InstallRunState,
+  status: StructureRecognitionEngineStatus
+): StructureRecognitionInstallError {
+  if (run.cancelRequested) return { code: "cancelled", message: "Installation was cancelled." };
+  const detail = status.detail?.trim();
+  if (status.state === "unsupported") {
+    return { code: "unsupported", message: detail || "This computer isn’t supported by the MolScribe recognition engine." };
+  }
+  return { code: "failed", message: detail || "The recognition engine install stopped before it finished." };
+}
+
 function isEngineCheck(status: StructureRecognitionEngineStatus): boolean {
   return status.state === "installing" && status.engineCheck === true;
 }
 
 function unsupportedResult(status: StructureRecognitionEngineStatus): PluginRecognitionResult {
-  const message =
-    status.detail?.trim() || "This computer isn’t supported by the MolScribe recognition engine.";
-  return { status: "failed", code: "unsupported", message: message.slice(0, 2_000) };
+  return recognitionFailure("unsupported", status.detail);
+}
+
+/** `PluginRecognitionResultSchema` bounds a failure message to 1–2000 characters. */
+export const MAX_RECOGNITION_FAILURE_MESSAGE_LENGTH = 2_000;
+
+/** What each failure says when whoever failed said nothing. */
+const DEFAULT_RECOGNITION_FAILURE_MESSAGES: Record<PluginRecognitionFailureCode, string> = {
+  invalidImage: "The recognition engine could not read this image.",
+  recognitionFailed: "The recognition engine could not recognize a structure in this image.",
+  engineCrashed: "The recognition engine stopped unexpectedly.",
+  timeout: "The recognition engine took too long and was stopped.",
+  busy: "Another image is already being recognized.",
+  unsupported: "This computer isn’t supported by the MolScribe recognition engine.",
+  installFailed: "The recognition engine could not be prepared.",
+  invalidResult: "The recognized structure could not be turned into a proposal."
+};
+
+/**
+ * Every failure this controller returns goes through here. The host validates the result against
+ * `PluginRecognitionResultSchema`, whose message must be 1–2000 characters: an engine that failed
+ * with an empty message or a whole traceback otherwise turned `{status: "failed"}` into a ZodError the
+ * plugin never saw as a failure. Empty becomes the code's own sentence; overlong is cut with an ellipsis.
+ */
+export function recognitionFailure(
+  code: PluginRecognitionFailureCode,
+  message: string | undefined
+): Extract<PluginRecognitionResult, { status: "failed" }> {
+  const trimmed = message?.trim() ?? "";
+  const text = trimmed || DEFAULT_RECOGNITION_FAILURE_MESSAGES[code];
+  return {
+    status: "failed",
+    code,
+    message:
+      text.length > MAX_RECOGNITION_FAILURE_MESSAGE_LENGTH
+        ? `${text.slice(0, MAX_RECOGNITION_FAILURE_MESSAGE_LENGTH - 1)}…`
+        : text
+  };
 }
 
 function messageOf(error: unknown): string {

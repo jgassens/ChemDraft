@@ -1,7 +1,11 @@
-import type { PluginProvidedImage, PluginRecognitionResult } from "@chemdraft/plugin-api";
+import { PluginRecognitionResultSchema, type PluginProvidedImage, type PluginRecognitionResult } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 
-import { StructureRecognitionController } from "./StructureRecognitionController";
+import {
+  MAX_RECOGNITION_FAILURE_MESSAGE_LENGTH,
+  recognitionFailure,
+  StructureRecognitionController
+} from "./StructureRecognitionController";
 import type {
   StructureRecognitionEngine,
   StructureRecognitionEngineStatus,
@@ -839,5 +843,121 @@ describe("StructureRecognitionController recognition progress", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("a followed host operation that ends without installing", () => {
+  const brokenAfterCheck: StructureRecognitionEngineStatus = {
+    ...notInstalled,
+    state: "broken",
+    detail: "The installed engine was made by an older ChemDraft and must be installed again."
+  };
+
+  function followed(statuses: StructureRecognitionEngineStatus[]) {
+    const queue = [...statuses];
+    const engine: StructureRecognitionEngine = {
+      status: vi.fn(async () => queue.shift() ?? notInstalled),
+      install: vi.fn(async () => installed),
+      cancelInstall: vi.fn(async () => undefined),
+      uninstall: vi.fn(async () => notInstalled),
+      recognizeImage: vi.fn(async () => recognized)
+    };
+    return { engine, controller: new StructureRecognitionController(engine, vi.fn(), { followIntervalMs: 500 }) };
+  }
+
+  it("records the host's own reason, not a generic 'stopped before it finished'", async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller } = followed([checkingEngine, brokenAfterCheck]);
+      await controller.refreshStatus();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(controller.getInstallRun()).toMatchObject({
+        running: false,
+        error: { code: "failed", message: brokenAfterCheck.detail }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a cancel the user asked for as a cancel", async () => {
+    vi.useFakeTimers();
+    try {
+      const installing: StructureRecognitionEngineStatus = { ...notInstalled, state: "installing" };
+      const { controller, engine } = followed([installing, notInstalled]);
+      await controller.refreshStatus();
+      await controller.cancelEngineInstall();
+      expect(engine.cancelInstall).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(controller.getInstallRun()).toMatchObject({
+        running: false,
+        error: { code: "cancelled", message: "Installation was cancelled." }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to a plain sentence when the host gave no reason", async () => {
+    vi.useFakeTimers();
+    try {
+      const installing: StructureRecognitionEngineStatus = { ...notInstalled, state: "installing" };
+      const { controller } = followed([installing, { ...notInstalled, detail: "   " }]);
+      await controller.refreshStatus();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(controller.getInstallRun()?.error).toEqual({
+        code: "failed",
+        message: "The recognition engine install stopped before it finished."
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("recognition failure messages always satisfy the plugin result schema", () => {
+  it("normalizes empty and overlong messages in one place", () => {
+    expect(recognitionFailure("engineCrashed", "")).toEqual({
+      status: "failed",
+      code: "engineCrashed",
+      message: "The recognition engine stopped unexpectedly."
+    });
+    expect(recognitionFailure("timeout", undefined).message.length).toBeGreaterThan(0);
+    const long = recognitionFailure("recognitionFailed", "x".repeat(5_000));
+    expect(long.message).toHaveLength(MAX_RECOGNITION_FAILURE_MESSAGE_LENGTH);
+    expect(long.message.endsWith("…")).toBe(true);
+    expect(recognitionFailure("busy", "  kept  ").message).toBe("kept");
+    for (const result of [long, recognitionFailure("installFailed", "")]) {
+      expect(PluginRecognitionResultSchema.safeParse(result).success).toBe(true);
+    }
+  });
+
+  it.each([
+    ["an empty engine failure", { status: "failed", code: "engineCrashed", message: "" }],
+    ["an overlong engine failure", { status: "failed", code: "recognitionFailed", message: "trace\n".repeat(1_000) }]
+  ] as const)("delivers %s as a parseable failure", async (_label, outcome) => {
+    const { controller, engine } = setup();
+    vi.mocked(engine.recognizeImage).mockResolvedValueOnce(outcome as StructureRecognitionOutcome);
+    const result = await controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    expect(result).toMatchObject({ status: "failed", code: outcome.code });
+    expect(PluginRecognitionResultSchema.parse(result)).toEqual(result);
+  });
+
+  it("delivers a thrown engine error with no message as a parseable failure", async () => {
+    const { controller, engine } = setup();
+    vi.mocked(engine.recognizeImage).mockRejectedValueOnce(new Error(""));
+    const result = await controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    expect(PluginRecognitionResultSchema.parse(result)).toEqual({
+      status: "failed",
+      code: "recognitionFailed",
+      message: "The recognition engine could not recognize a structure in this image."
+    });
+  });
+
+  it("delivers a status read that fails with an overlong reason as a parseable failure", async () => {
+    const { controller, engine } = setup();
+    vi.mocked(engine.status).mockRejectedValueOnce(new Error("y".repeat(3_000)));
+    const result = await controller.recognize({ id: "p", name: "P" }, image, new AbortController().signal);
+    expect(PluginRecognitionResultSchema.parse(result)).toMatchObject({ status: "failed", code: "installFailed" });
   });
 });

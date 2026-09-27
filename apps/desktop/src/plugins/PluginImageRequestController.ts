@@ -10,7 +10,7 @@ import type {
   ImageSourcePermissionStatus,
   ImageSourceProvider
 } from "./ImageSourceProvider";
-import { ImageSourceRegistry } from "./ImageSourceProvider";
+import { describeImageSourceError, ImageSourceRegistry } from "./ImageSourceProvider";
 
 export interface OpenImagePermissionPanel {
   source: PluginImageSource;
@@ -122,7 +122,7 @@ export class PluginImageRequestController {
         this.showPermissionPanel(request, provider, status === "granted");
         return;
       }
-      request.error = error instanceof Error ? error.message : String(error);
+      request.error = describeImageSourceError(error);
       this.notify();
     }
   }
@@ -133,7 +133,7 @@ export class PluginImageRequestController {
     try {
       await selection.permission.openSettings();
     } catch (error) {
-      selection.request.error = error instanceof Error ? error.message : String(error);
+      selection.request.error = describeImageSourceError(error);
       this.notify();
     }
   }
@@ -155,7 +155,7 @@ export class PluginImageRequestController {
         this.showPermissionPanel(selection.request, selection.provider, false);
       }
     } catch (error) {
-      selection.request.error = error instanceof Error ? error.message : String(error);
+      selection.request.error = describeImageSourceError(error);
       this.notify();
     }
   }
@@ -166,7 +166,7 @@ export class PluginImageRequestController {
     try {
       await this.relaunchApplication();
     } catch (error) {
-      request.error = error instanceof Error ? error.message : String(error);
+      request.error = describeImageSourceError(error);
       this.notify();
     }
   }

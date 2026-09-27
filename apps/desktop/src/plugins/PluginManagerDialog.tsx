@@ -1,6 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { OPEN_MODAL_DIALOG_SELECTOR } from "@chemdraft/shortcut-engine";
+
 import { dangerousPluginPermissions, type PluginPermission } from "@chemdraft/plugin-api";
 
 import {
@@ -22,12 +24,23 @@ import { EXPERIMENTAL_PLUGIN_NOTICE, isOfficialPluginExperimental, OFFICIAL_PLUG
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";
-import {
-  formatDiskBytes,
-  isRecognitionInstallKeyboardEvent,
-  recognitionInstallErrorMessage
-} from "./StructureRecognitionInstallDialog";
+import { formatDiskBytes, recognitionInstallErrorMessage } from "./StructureRecognitionInstallDialog";
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
+
+/**
+ * True when an Escape belongs to another modal dialog: it was pressed inside one, or one is open over
+ * this dialog (focus can fall to `<body>` when a dialog's focused button disables itself). Every host
+ * dialog marks its root `aria-modal="true"`, so this does not need to know which dialogs exist.
+ */
+export function escapeBelongsToAnotherDialog(event: Pick<KeyboardEvent, "target">, own: Element | null): boolean {
+  const target = event.target instanceof Element ? event.target : null;
+  const targetDialog = target?.closest(OPEN_MODAL_DIALOG_SELECTOR) ?? null;
+  if (targetDialog && targetDialog !== own) return true;
+  const root = own?.ownerDocument ?? (typeof document === "undefined" ? undefined : document);
+  return Array.from(root?.querySelectorAll(OPEN_MODAL_DIALOG_SELECTOR) ?? []).some(
+    (dialog) => dialog !== own && !own?.contains(dialog)
+  );
+}
 
 /** Whether the official catalog says this plugin needs the host-managed recognition engine. The
  *  catalog entry is the only authority; nothing here keys on a particular plugin id. */
@@ -186,8 +199,9 @@ export function PluginManagerDialog({
     // and the operation is owned by the install machinery rather than by this dialog — closing does
     // not abandon it, it just stops holding the user hostage to a progress line.
     const closeOnEscape = (event: KeyboardEvent): void => {
-      // The engine install dialog opens over this one and owns its own Escape (decline or cancel).
-      if (event.key === "Escape" && !isRecognitionInstallKeyboardEvent(event)) {
+      // A dialog opened over this one — the engine install dialog, a plugin's text prompt or image
+      // request — owns its own Escape (decline or cancel), and must not also close this one.
+      if (event.key === "Escape" && !escapeBelongsToAnotherDialog(event, dialogRef.current)) {
         onClose();
       }
     };
@@ -538,7 +552,6 @@ export function PluginManagerDialog({
                         onInstall={onInstallRecognitionEngine}
                         onCancel={onCancelRecognitionEngineInstall}
                         onUninstall={onUninstallRecognitionEngine}
-                        onShowScreenCaptures={onShowRecognitionScreenCaptures}
                       />
                     ) : null}
                   </div>
@@ -646,6 +659,10 @@ export function PluginManagerDialog({
               <p className="plugin-manager-available-empty">All official plugins are installed.</p>
             )}
           </section>
+
+          {onShowRecognitionScreenCaptures ? (
+            <RecognitionScreenCapturesRow onShow={onShowRecognitionScreenCaptures} />
+          ) : null}
         </div>
 
         {pendingUpdate ? (
@@ -719,8 +736,7 @@ function RecognitionEngineRow({
   onRefresh,
   onInstall,
   onCancel,
-  onUninstall,
-  onShowScreenCaptures
+  onUninstall
 }: {
   status?: StructureRecognitionEngineStatus | null;
   run?: StructureRecognitionInstallRun;
@@ -729,7 +745,6 @@ function RecognitionEngineRow({
   onInstall?: () => Promise<boolean>;
   onCancel?: () => Promise<void>;
   onUninstall?: () => Promise<void>;
-  onShowScreenCaptures?: () => Promise<void>;
 }) {
   const [working, setWorking] = useState(false);
   /** Install was clicked and the run has not shown up yet. Only this — never the whole install — keeps
@@ -757,6 +772,10 @@ function RecognitionEngineRow({
   // degrade to "checking…" rather than take the whole window down in render.
   const installing = run?.running === true || status?.state === "installing";
   const installed = !installing && status?.state === "installed";
+  // The one-time check of an engine already on disk after an app update. It is not an install: there
+  // is nothing to cancel (cancelling it marked the engine broken and offered a 2.5 GB download), and it
+  // ends by itself in about a minute.
+  const engineCheck = installing && status?.engineCheck === true;
 
   useEffect(() => {
     if (installing) setStarting(false);
@@ -784,14 +803,24 @@ function RecognitionEngineRow({
             : "not installed";
   const canInstall = !installing && status != null && status.state !== "unsupported" && !installed;
   const runError = !installing ? run?.error : undefined;
-  // The host's plain reason, such as an engine from an older ChemDraft that no longer matches.
-  const brokenDetail = !installing && !runError && status?.state === "broken" ? status.detail?.trim() : undefined;
+  // A followed check that did not pass already says why in the host's words; "could not be installed"
+  // would misname it, since nothing was being installed.
+  const runErrorText =
+    runError && status
+      ? run?.engineCheck && runError.code === "failed"
+        ? runError.message
+        : recognitionInstallErrorMessage(runError, status)
+      : undefined;
+  // The host's plain reason, such as an engine from an older ChemDraft that no longer matches — unless
+  // the run error above already says exactly that.
+  const hostDetail = !installing && status?.state === "broken" ? status.detail?.trim() : undefined;
+  const brokenDetail = hostDetail && hostDetail !== runError?.message ? hostDetail : undefined;
   return (
     <div className="plugin-manager-engine" data-testid="molscribe-engine-row">
       <p className="plugin-manager-update-status" data-testid="molscribe-engine-state">
-        Recognition engine: {stateText}
+        {engineCheck ? "Checking the recognition engine…" : `Recognition engine: ${stateText}`}
       </p>
-      {installing ? (
+      {installing && !engineCheck ? (
         <RecognitionInstallProgress
           progress={run?.progress ?? status?.progress}
           startedAt={run?.startedAt}
@@ -803,9 +832,9 @@ function RecognitionEngineRow({
           {brokenDetail}
         </p>
       ) : null}
-      {runError && status ? (
+      {runErrorText ? (
         <p className="plugin-manager-update-status is-error" data-testid="molscribe-engine-install-error" role="alert">
-          {recognitionInstallErrorMessage(runError, status)}
+          {runErrorText}
         </p>
       ) : null}
       {canInstall && status && onInstall ? (
@@ -815,7 +844,7 @@ function RecognitionEngineRow({
         </p>
       ) : null}
       <div className="plugin-manager-package-actions">
-        {installing && onCancel ? (
+        {installing && !engineCheck && onCancel ? (
           <button
             className="plugin-manager-button"
             data-action="cancel-recognition-engine-install"
@@ -848,19 +877,6 @@ function RecognitionEngineRow({
             {runError || status?.state === "broken" ? "Install engine again" : "Install engine"}
           </button>
         ) : null}
-        {/* Independent of the engine: captures kept from earlier recognitions stay reachable after the
-            engine is removed, until the user deletes them. */}
-        {onShowScreenCaptures ? (
-          <button
-            className="plugin-manager-button"
-            data-action="show-recognition-screen-captures"
-            disabled={working}
-            onClick={() => perform(onShowScreenCaptures, "The saved screen captures could not be shown")}
-            type="button"
-          >
-            Show saved screen captures
-          </button>
-        ) : null}
       </div>
       {error ? (
         <p className="plugin-manager-error" role="alert">
@@ -868,6 +884,47 @@ function RecognitionEngineRow({
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The screen captures behind recognitions (AGENTS.md §8: the source image stays available until the
+ * user deletes it). They belong to the user, not to a plugin or its engine, so this row is shown on
+ * desktop whether or not a recognition plugin is installed — captures made before the plugin or its
+ * engine was removed stay reachable until the user deletes them.
+ */
+function RecognitionScreenCapturesRow({ onShow }: { onShow: () => Promise<void> }) {
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const show = (): void => {
+    setWorking(true);
+    setError(undefined);
+    onShow()
+      .catch((cause: unknown) => setError(`The saved screen captures could not be shown: ${messageOf(cause)}`))
+      .finally(() => setWorking(false));
+  };
+  return (
+    <section className="plugin-manager-screen-captures" data-testid="recognition-screen-captures">
+      <p className="plugin-manager-update-status">
+        Screen captures used for structure recognition are saved on this computer until you delete them.
+      </p>
+      <div className="plugin-manager-package-actions">
+        <button
+          className="plugin-manager-button"
+          data-action="show-recognition-screen-captures"
+          disabled={working}
+          onClick={show}
+          type="button"
+        >
+          Show saved screen captures
+        </button>
+      </div>
+      {error ? (
+        <p className="plugin-manager-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
   );
 }
 

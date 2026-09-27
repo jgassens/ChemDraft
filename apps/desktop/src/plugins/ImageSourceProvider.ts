@@ -225,7 +225,24 @@ function normalizeScreenCaptureError(error: unknown): ImageSourceError {
   if (kind === "unsupported" || String(error).includes("unsupported")) {
     return new ImageSourceError("unsupported", detail ?? "Screen-region capture is not available on this platform.");
   }
-  return new ImageSourceError("failed", detail ?? (error instanceof Error ? error.message : String(error)));
+  return new ImageSourceError("failed", detail ?? describeImageSourceError(error));
+}
+
+/**
+ * One readable sentence for a failure from an image source. Tauri commands reject with the plain
+ * serialized error object (`{ kind, message }`), not an `Error`, and `String()` of that is
+ * "[object Object]" — which is what the image dialog used to show.
+ */
+export function describeImageSourceError(error: unknown): string {
+  if (error instanceof Error) return error.message || error.name || "Unknown error.";
+  if (typeof error === "string") return error || "Unknown error.";
+  if (error && typeof error === "object") {
+    const { message, kind } = error as { message?: unknown; kind?: unknown };
+    if (typeof message === "string" && message.trim()) return message;
+    if (typeof kind === "string" && kind.trim()) return `The image source failed (${kind}).`;
+    return "Unknown error.";
+  }
+  return error === undefined || error === null ? "Unknown error." : String(error);
 }
 
 function inspectSupportedImage(bytes: Uint8Array): Pick<ProvidedImage, "mediaType" | "width" | "height"> {
