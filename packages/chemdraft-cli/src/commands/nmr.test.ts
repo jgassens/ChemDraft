@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
 import type { CliIo } from "../output";
-import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, nmrEquivalenceClasses, nmrHelp, resolveNmrPluginDir, runNmrCommand } from "./nmr";
+import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, nmrHelp, resolveNmrPluginDir, runNmrCommand } from "./nmr";
 
 interface Resonance {
   nucleus: "1H" | "13C";
