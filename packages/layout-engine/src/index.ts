@@ -64,7 +64,6 @@ import {
 
 export {
   atomBondOrderUsageMap,
-  kekulizeNativeAromaticBonds,
   nativeAtomBondOrderUsage,
   nativeAtomChargeIsExpressible,
   nativeAtomValenceForCharge,
@@ -4752,7 +4751,8 @@ export function planAtomLabel(
   bonds: readonly CoreMoleculeBond[],
   drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
   color = drawingStyle.atomLabelColor,
-  atoms: readonly MoleculeAtom[] = []
+  // Required, not defaulted: aromatic bonds count at their Kekulé orders, which needs every ring atom.
+  atoms: readonly MoleculeAtom[]
 ): AtomLabelPlan | undefined {
   const label = atomDisplayLabel(atom, bonds, drawingStyle, atoms);
   if (!label) {
@@ -5051,12 +5051,16 @@ export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: Nati
  * The label a native atom renders with in 2D — element symbol + implicit hydrogens +
  * charge, or undefined for plain bonded carbons. Exported so the 3D spin overlay can
  * label its atoms IDENTICALLY to the drawing it floats over.
+ *
+ * `atoms` is the whole molecule and is required: an aromatic bond counts at its Kekulé order, which
+ * takes every ring atom to resolve, and a defaulted empty list used to count it single — a wrong
+ * hydrogen count with nothing on screen to say so.
  */
 export function atomDisplayLabel(
   atom: MoleculeAtom,
   bonds: readonly CoreMoleculeBond[],
   drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
-  atoms: readonly MoleculeAtom[] = []
+  atoms: readonly MoleculeAtom[]
 ): string | undefined {
   // The mark-contributed part of the charge is drawn by the floating charge mark itself, so the
   // label must not repeat it as a superscript — but hydrogen count always follows the FULL

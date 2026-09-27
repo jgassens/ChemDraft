@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import { buildSmilesDocument } from "../document";
 import { exportPerJobFormat, runExportCommand as runCli } from "./export";
@@ -105,8 +106,12 @@ describe("chemdraft export", () => {
   it("keeps a typed atom's identity when its aromatic ring round-trips through CDXML", async () => {
     // Simulates a pasted/imported aromatic ring (type-4 bonds) with one atom the user typed a
     // label on — the case molfile-writer callers must pass kekuleBondOrders for (AGENTS §5.26).
-    // Without it, the typed atom's molfile valence field is omitted and a reader may add a
-    // hydrogen it should not, breaking the CDXML round-trip identity check below.
+    // A typed label is literal: a typed "C" is a carbon with no hydrogens (MoleculeAtom
+    // labelLiteral), so the drawn structure is the phenyl radical, not benzene. That identity —
+    // stated here independently of the writer, as SMILES — is what the CDXML round trip must keep.
+    // Without kekuleBondOrders the typed atom's molfile valence field is omitted, a reader adds the
+    // hydrogen it should not, and the round trip comes back as benzene: the check below fails.
+    // (It used to compare against the untyped input's identity, which the typed drawing is not.)
     const built = await buildSmilesDocument("c1ccccc1", { name: "benzene-typed" });
     const page = built.document.pages[0]!;
     const moleculeIndex = page.objects.findIndex((object) => object.type === "molecule");
@@ -116,8 +121,11 @@ describe("chemdraft export", () => {
       atoms: source.atoms.map((atom, index) => index === 0 ? { ...atom, labelLiteral: true } : atom),
       bonds: source.bonds.map((bond) => ({ ...bond, order: "aromatic" as const }))
     };
+    const typedIdentity = (await computeStructureIdentifiers("[c]1ccccc1"))?.smiles;
+    expect(typedIdentity).toBe("[c]1ccccc1");
     const patched = {
       ...built,
+      sourceCanonicalSmiles: typedIdentity,
       molecule: aromatic,
       document: {
         ...built.document,

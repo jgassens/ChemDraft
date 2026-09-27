@@ -73,13 +73,19 @@ export function nativeSmilesBondOrderResolution(
   if (resolution.nonRingAromaticBondCount > 0) {
     const count = resolution.nonRingAromaticBondCount;
     warnings.aromatic.push(
-      `${count} aromatic bond${count === 1 ? "" : "s"} outside any ring written to SMILES as single.`
+      `${count} aromatic bond${count === 1 ? "" : "s"} outside any aromatic ring written to SMILES as single.`
     );
   }
   if (resolution.unresolvedAromaticBondCount > 0) {
     const count = resolution.unresolvedAromaticBondCount;
     warnings.aromatic.push(
       `${count} aromatic bond${count === 1 ? "" : "s"} could not be resolved into alternating single and double bonds; written to SMILES as single.`
+    );
+  }
+  if (resolution.guessedHydrogenAtomIds.size > 0) {
+    const ids = [...resolution.guessedHydrogenAtomIds].sort();
+    warnings.aromatic.push(
+      `The aromatic bonds do not say which ring nitrogens carry hydrogen (${ids.join(", ")}); one tautomer was guessed and written to SMILES.`
     );
   }
   return {

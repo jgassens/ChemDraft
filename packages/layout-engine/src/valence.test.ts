@@ -8,7 +8,14 @@ import {
   nativeBondOrderResolution,
   planMoleculeAtomLabels
 } from "./index";
-import { aromaticFixtures, unresolvableAromaticRing } from "./testing";
+import {
+  aromaticFixtures,
+  fusedPyrroleLadder,
+  kekuleSearchWorkForTesting,
+  porphyrinoid,
+  testMoleculeFromSmiles,
+  unresolvableAromaticRing
+} from "./testing";
 
 // Aromatic bonds count at their Kekulé orders. A flat 1.5 per bond drew pyrrole's N–H as a bare N;
 // a flat 1 made every aromatic carbon CH2. These pin the one implementation both paths use.
@@ -179,5 +186,126 @@ describe("one resolution per molecule", () => {
     const labels = atoms.map((atom) => atomDisplayLabel({ ...atom, labelVisible: true }, bonds, DefaultNativeDrawingStyle, atoms));
     expect(performance.now() - started).toBeLessThan(500);
     expect(labels.filter((label) => label === "CH")).toHaveLength(120 - 38);
+  });
+});
+
+describe("ring nitrogens: hydrogen the source states decides, and anything else is a badged guess", () => {
+  const nitrogenLabels = (molecule: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): Record<string, string | undefined> =>
+    Object.fromEntries(molecule.atoms.filter((atom) => atom.element === "N").map((atom) => [
+      atom.id,
+      atomDisplayLabel(atom, molecule.bonds, DefaultNativeDrawingStyle, molecule.atoms)
+    ]));
+
+  it("imidazole with no H stated: exactly one N–H, and both nitrogens reported as guessed", () => {
+    const imidazole = testMoleculeFromSmiles("c1cncn1");
+    const resolution = nativeBondOrderResolution(imidazole.atoms, imidazole.bonds);
+    expect([...resolution.guessedHydrogenAtomIds].sort()).toEqual(["a2", "a4"]);
+    expect(resolution.unresolvedAtomIds.size).toBe(0);
+    expect(Object.values(nitrogenLabels(imidazole)).sort()).toEqual(["N", "NH"]);
+  });
+
+  it("a stated hydrogen count settles it, and editing the count in place re-resolves", () => {
+    const imidazole = testMoleculeFromSmiles("c1c[nH]cn1");
+    const first = nativeBondOrderResolution(imidazole.atoms, imidazole.bonds);
+    expect(first.guessedHydrogenAtomIds.size).toBe(0);
+    expect(nitrogenLabels(imidazole)).toEqual({ a2: "NH", a4: "N" });
+    imidazole.atoms[2]!.hydrogenCount = 0;
+    imidazole.atoms[4]!.hydrogenCount = 1;
+    const second = nativeBondOrderResolution(imidazole.atoms, imidazole.bonds);
+    expect(second).not.toBe(first);
+    expect(nitrogenLabels(imidazole)).toEqual({ a2: "N", a4: "NH" });
+  });
+
+  it("an explicit H atom on one nitrogen settles it", () => {
+    const imidazole = testMoleculeFromSmiles("c1c[nH]cn1", { bracketHydrogens: "atoms" });
+    expect(nativeBondOrderResolution(imidazole.atoms, imidazole.bonds).guessedHydrogenAtomIds.size).toBe(0);
+    // Both drawn bare: a2's hydrogen is its own atom, and a4 is pyridine-type.
+    expect(nitrogenLabels(imidazole)).toEqual({ a2: "N", a4: "N" });
+  });
+
+  it("a nitrogen donating to a metal is the bare one, whichever id is higher", () => {
+    for (const reverseIds of [false, true]) {
+      const complex = testMoleculeFromSmiles("c1cn(->[Zn])cn1", { reverseIds });
+      const donor = complex.atoms[2]!.id;
+      const other = complex.atoms[5]!.id;
+      const resolution = nativeBondOrderResolution(complex.atoms, complex.bonds);
+      expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
+      expect(nitrogenLabels(complex)).toEqual({ [donor]: "N", [other]: "NH" });
+    }
+  });
+
+  it("a pyrrolide donor still resolves: the ring leaves it no double bond, and the dative bond takes its H", () => {
+    const complex = testMoleculeFromSmiles("c1ccn(->[Zn])c1");
+    const resolution = nativeBondOrderResolution(complex.atoms, complex.bonds);
+    expect(resolution.unresolvedAtomIds.size).toBe(0);
+    expect(resolution.guessedHydrogenAtomIds.size).toBe(0);
+    expect(nitrogenLabels(complex)).toEqual({ a3: "N" });
+  });
+
+  it("a typed literal N carries no H, so it is pyridine-type (and a literal N in pyrrole is flagged)", () => {
+    const pyridine = testMoleculeFromSmiles("c1ccncc1");
+    const literalPyridine = pyridine.atoms.map((atom) => (atom.element === "N" ? { ...atom, labelLiteral: true } : atom));
+    const resolved = nativeBondOrderResolution(literalPyridine, pyridine.bonds);
+    expect(resolved.unresolvedAtomIds.size).toBe(0);
+    expect(resolved.guessedHydrogenAtomIds.size).toBe(0);
+
+    const pyrrole = testMoleculeFromSmiles("c1ccnc1");
+    const literalPyrrole = pyrrole.atoms.map((atom) => (atom.element === "N" ? { ...atom, labelLiteral: true } : atom));
+    expect(nativeBondOrderResolution(literalPyrrole, pyrrole.bonds).unresolvedAtomIds.size).toBe(5);
+  });
+
+  it("guanine, porphine and phthalocyanine keep their N–H instead of double-bonding every N", () => {
+    const ringNH = (molecule: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): number =>
+      Object.entries(nitrogenLabels(molecule)).filter(([atomId, label]) =>
+        label === "NH" && molecule.bonds.some((bond) =>
+          bond.order === "aromatic" && (bond.fromAtomId === atomId || bond.toAtomId === atomId))
+      ).length;
+    expect(ringNH(testMoleculeFromSmiles("Nc1nc2ncnc2c(=O)n1"))).toBe(2);
+    expect(ringNH(porphyrinoid("C", false))).toBe(2);
+    expect(ringNH(porphyrinoid("N", true))).toBe(2);
+    expect(ringNH(testMoleculeFromSmiles("c1cc2nccc2n1"))).toBe(2);
+    expect(ringNH(testMoleculeFromSmiles("c1nc2ncnc2n1"))).toBe(2);
+  });
+});
+
+describe("an aromatic bond in a ring that is otherwise saturated", () => {
+  it("is not aromatic: it counts single and both atoms are flagged (cyclohexane never loses two H)", () => {
+    const molecule = testMoleculeFromSmiles("C1CC:CCC1");
+    const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+    expect(resolution.nonRingAromaticBondCount).toBe(1);
+    expect([...resolution.unresolvedAtomIds].sort()).toEqual(["a2", "a3"]);
+    expect(resolution.bonds.every((bond) => bond.order === "single")).toBe(true);
+    expect(nativeAtomBondOrderUsage("a2", molecule.bonds, molecule.atoms)).toBe(2);
+  });
+
+  it("while a ring whose aromatic run is broken by an explicit single bond between ring atoms still resolves", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const mixed = benzene.aromatic.map((bond, index): MoleculeBond => (index === 0 ? { ...bond, order: "single" } : bond));
+    const resolution = nativeBondOrderResolution(benzene.atoms, mixed);
+    expect(resolution.unresolvedAtomIds.size).toBe(0);
+    expect([...atomBondOrderUsageMap(benzene.atoms, mixed).values()]).toEqual([3, 3, 3, 3, 3, 3]);
+  });
+});
+
+describe("search cost, counted rather than timed", () => {
+  const work = (molecule: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }): number => {
+    const before = kekuleSearchWorkForTesting();
+    nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+    return kekuleSearchWorkForTesting() - before;
+  };
+
+  it("resolves phthalocyanine with bounded work, once per molecule", () => {
+    const phthalocyanine = porphyrinoid("N", true);
+    expect(work(phthalocyanine)).toBeLessThan(500_000);
+    // Every later caller — each atom's label, the formula, the badge — is served from the cache.
+    expect(work(phthalocyanine)).toBe(0);
+  });
+
+  it("stays polynomial as a fused ring system gains open nitrogens", () => {
+    // One open N per ring. An exhaustive search over their arrangements would be 2^n; the
+    // resolver compares arrangements only up to a fixed count and is polynomial past it.
+    for (const rings of [2, 4, 6, 8, 10, 11, 12, 16, 24, 32, 40, 41, 48, 64, 128]) {
+      expect(work(fusedPyrroleLadder(rings)), `${rings} rings`).toBeLessThan(500 * rings ** 3);
+    }
   });
 });

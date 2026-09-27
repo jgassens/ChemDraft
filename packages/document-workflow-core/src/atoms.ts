@@ -48,6 +48,11 @@ export interface NativeAtomValidationState {
    * valence was counted with those bonds as single, which is a guess the badge has to show.
    */
   unresolvedAromatic?: true;
+  /**
+   * Set when the atom is a ring nitrogen whose hydrogen the source never stated and the ring did not
+   * force: one tautomer was picked for it, and the badge says so.
+   */
+  tautomerGuessed?: true;
 }
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
@@ -282,7 +287,8 @@ export function nativeAtomValidationState(
 
   // Aromatic bonds with no Kekulé pattern were counted as single so the formula and label still
   // have a number, but that number is a guess: say so on the atom rather than let it pass.
-  if (nativeBondOrderResolution(atoms, bonds).unresolvedAtomIds.has(atom.id)) {
+  const resolution = nativeBondOrderResolution(atoms, bonds);
+  if (resolution.unresolvedAtomIds.has(atom.id)) {
     const symbol = element ?? (atom.element.trim() || "(blank)");
     return {
       atomId: atom.id,
@@ -292,6 +298,21 @@ export function nativeAtomValidationState(
       valid: false,
       unresolvedAromatic: true,
       invalidReason: `${symbol} atom ${atom.id} is on aromatic bonds that could not be resolved into alternating single and double bonds; its hydrogen count assumes single bonds.`
+    };
+  }
+
+  // The aromatic bonds fit more than one arrangement of ring N–H and nothing in the source said
+  // which: one was picked. The count is a guess, so the atom says so (owner decision 2026-09-27).
+  if (resolution.guessedHydrogenAtomIds.has(atom.id)) {
+    const symbol = element ?? (atom.element.trim() || "(blank)");
+    return {
+      atomId: atom.id,
+      element: symbol,
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: false,
+      tautomerGuessed: true,
+      invalidReason: `${symbol} atom ${atom.id}: the aromatic bonds do not say which ring nitrogens carry hydrogen, so its hydrogen count was guessed (one tautomer was picked). Draw the H explicitly to settle it.`
     };
   }
 
@@ -691,7 +712,9 @@ function nativeInvalidAtomWarnings(
     .map((atom) => nativeAtomValidationState(atom, bonds, atom.formalCharge, atoms))
     .filter((state) => !state.valid)
     .map((state) => ({
-      code: state.unresolvedAromatic ? "chemistry.unresolved_aromatic" : "chemistry.invalid_valence",
+      code: state.unresolvedAromatic
+        ? "chemistry.unresolved_aromatic"
+        : state.tautomerGuessed ? "chemistry.aromatic_tautomer_guessed" : "chemistry.invalid_valence",
       message: state.invalidReason ?? `${state.element} atom ${state.atomId} has invalid valence.`,
       objectId: state.atomId
     }));

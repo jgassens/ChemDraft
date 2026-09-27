@@ -216,7 +216,12 @@ export function createSmilesMolecule(
   // Stored-structure spelling: molecule.structure is a standard export molfile (an abbreviated
   // label as the dummy "*"), which is what RDKit, Copy As and the loaders read. CIP perception
   // never reads this field — it spells its own molfile (stereoPerceptionMolfile, R-groups).
-  const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
+  const structureWarnings: string[] = [];
+  const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, {
+    fromDocFrame: true,
+    warnings: structureWarnings,
+    kekuleBondOrders: nativeBondOrderResolution(atoms, bonds).kekuleOrders
+  });
 
   return normalizeNativeMoleculeGeometry({
     id: nextObjectId(document, source.objectIdPrefix, source.reservedObjectIds),
@@ -234,7 +239,11 @@ export function createSmilesMolecule(
     },
     compatibility: {
       sourceFormat: "smiles",
-      warnings: [{ code: source.warningCode, message: source.warningMessage }],
+      warnings: [
+        { code: source.warningCode, message: source.warningMessage },
+        // What the stored molfile could not carry is recorded, not dropped.
+        ...structureWarnings.map((message) => ({ code: "molfile.stored_structure_lossy", message }))
+      ],
       unknown: { smiles: smilesText }
     },
     structureFormat: "molfile-v2000",

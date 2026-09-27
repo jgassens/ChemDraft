@@ -13493,7 +13493,12 @@ export function applyNativeMoleculeEngineRelayout(
   // Geometry only, so the export spelling (an abbreviated label as the dummy "*", an atom the
   // engine can place) is the right one here; the R-group spelling is for CIP perception alone.
   const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
-  const molfile = moleculeToMolfileV2000(ligand, { fromDocFrame: true });
+  // Kekulé orders for aromatic bonds, so a typed literal atom on a pasted aromatic ring keeps its
+  // explicit valence and the engine does not lay out a hydrogen that is not there.
+  const molfile = moleculeToMolfileV2000(ligand, {
+    fromDocFrame: true,
+    kekuleBondOrders: nativeBondOrderResolution(ligand.atoms, ligand.bonds).kekuleOrders
+  });
   const emittedAtoms = parseMolfileGraph(molfile).atoms;
   const depiction = relayout(molfile);
   if (depiction.atoms.length !== ligandAtoms.length) {
@@ -15977,8 +15982,15 @@ export function flattenSpunMolecule(
     ...geometry
   };
   // Stored-structure spelling (dummy "*" for an abbreviated label), not the perception one —
-  // see the note where a new molecule's structure is first written.
-  const structure = moleculeToMolfileV2000(stagedMolecule, { fromDocFrame: true });
+  // see the note where a new molecule's structure is first written. Aromatic bonds pass their Kekulé
+  // orders so a literal atom keeps its valence, and anything the writer could not keep is reported
+  // with the flatten rather than stored silently.
+  const structureWarnings: string[] = [];
+  const structure = moleculeToMolfileV2000(stagedMolecule, {
+    fromDocFrame: true,
+    warnings: structureWarnings,
+    kekuleBondOrders: nativeBondOrderResolution(stagedMolecule.atoms, stagedMolecule.bonds).kekuleOrders
+  });
 
   const patches: DocumentPatch[] = [
     {
@@ -16009,7 +16021,10 @@ export function flattenSpunMolecule(
   return {
     document: applyPatches(document, patches, { now: phase4Timestamp }),
     status: "committed",
-    warnings: result.warnings,
+    warnings: [
+      ...result.warnings,
+      ...structureWarnings.map((message): FlattenWarning => ({ code: "stored-structure-lossy", message }))
+    ],
     refusalReasons: [],
     stereoCenters: result.stereoCenters
   };
@@ -17677,8 +17692,12 @@ function nativeAtomWithElement(
   // both the element and the rule keeps the dismissal.
   const sameElement = normalizeNativeAtomElementLabel(atom.element) === normalizeNativeAtomElementLabel(element);
   const sameRule = (atom.labelLiteral === true) === labelLiteral;
+  // A hydrogen count an import stated belongs to the element it was stated for: a CH relabeled N
+  // must not arrive as an N–H.
+  const { hydrogenCount, ...unhinted } = baseAtom;
   return {
-    ...baseAtom,
+    ...unhinted,
+    ...(hydrogenCount !== undefined && sameElement ? { hydrogenCount } : {}),
     element,
     ...(labelVisible ? { labelVisible: true } : {}),
     ...(labelLiteral ? { labelLiteral: true } : {}),

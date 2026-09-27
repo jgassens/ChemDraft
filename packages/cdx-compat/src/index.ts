@@ -1704,10 +1704,15 @@ function importFragment(
   const objectId = `cdxml_molecule_${pageIndex + 1}_${objectIndex}`;
   const atomIdByCdxmlId = new Map<string, string>();
   const cdxmlAtomStereochemistryByAtomId: Record<string, { assignment: "R" | "S"; cdxmlAtomId: string; geometry?: string }> = {};
+  const statedHydrogensByAtomId = new Map<string, number>();
   const atoms: MoleculeAtom[] = atomElements.map((atomElement, atomIndex) => {
     const atomId = `atom_${String(atomIndex + 1).padStart(3, "0")}`;
     const cdxmlId = atomElement.attributes.id ?? atomId;
     atomIdByCdxmlId.set(cdxmlId, atomId);
+    const statedHydrogens = parseInteger(atomElement.attributes.NumHydrogens);
+    if (statedHydrogens !== undefined && statedHydrogens >= 0) {
+      statedHydrogensByAtomId.set(atomId, statedHydrogens);
+    }
     const point = parseCdxmlPoint(atomElement.attributes.p);
     const labelPoint = cdxmlAtomLabelPoint(atomElement);
     const element = elementFromCdxmlAtom(atomElement.attributes.Element);
@@ -1793,6 +1798,16 @@ function importFragment(
     return bond;
   });
   const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, bonds);
+  // Order=1.5 bonds cannot say whether a ring N is pyridine-type or an N–H; the file's NumHydrogens
+  // can, so it is kept on exactly those atoms for the Kekulé resolution to honour.
+  const aromaticAtomIds = new Set(normalizedBonds.flatMap((bond) =>
+    bond.order === "aromatic" ? [bond.fromAtomId, bond.toAtomId] : []));
+  for (const atom of atoms) {
+    const stated = statedHydrogensByAtomId.get(atom.id);
+    if (stated !== undefined && aromaticAtomIds.has(atom.id)) {
+      atom.hydrogenCount = stated;
+    }
+  }
   const atomStereochemistry = Object.entries(cdxmlAtomStereochemistryByAtomId).map(
     ([atomId, stereo]) => `${atomId}:${stereo.assignment}`
   );

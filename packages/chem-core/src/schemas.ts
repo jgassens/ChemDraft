@@ -329,6 +329,14 @@ export const MoleculeAtomSchema = z
      */
     labelLiteral: z.boolean().optional(),
     /**
+     * The hydrogen count the source file stated for this atom (CDXML `NumHydrogens`), kept only for
+     * atoms on aromatic bonds. Aromatic bonds alone cannot say whether a ring N is pyridine-type
+     * (no H) or pyrrole-type (N–H); this settles it when the bonds are resolved into a Kekulé
+     * pattern. The drawn label and formula still follow the valence model, which agrees with it
+     * whenever the ring honours it. Relabeling the atom to another element drops it.
+     */
+    hydrogenCount: z.number().int().nonnegative().optional(),
+    /**
      * The user dismissed this atom's valence warning from the context menu: the checker still
      * runs but reports the atom valid, so no badge renders and no warning is stored. Restore
      * from the same menu.
