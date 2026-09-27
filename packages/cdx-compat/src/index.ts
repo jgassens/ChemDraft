@@ -7,7 +7,6 @@ import {
   isDativeBond,
   isEngineDocument,
   parseDocument,
-  serializeDocument,
   type Anchor,
   type ArrowObject,
   type BondRef,
@@ -169,7 +168,12 @@ export function exportDocumentToCdxml(
   const parsedDocument = isEngineDocument(document) ? document : parseDocument(document);
   const warnings: CompatibilityConversionWarning[] = [];
   const creationProgram = options.creationProgram ?? "ChemDraft";
-  const nativeJson = serializeDocument(parsedDocument);
+  // Compact, not serializeDocument's indented form: the JSON is base64-encoded into an attribute
+  // nobody reads by eye, and indentation grew a large drawing's file ~1.8x. `parsedDocument` is
+  // validated already, so stringifying it directly also skips serializeDocument's second parse of
+  // a document that was not an engine document. Older, indented payloads still open — the reader
+  // hashes and parses whatever JSON bytes the envelope carries.
+  const nativeJson = JSON.stringify(parsedDocument);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
   const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
@@ -3128,56 +3132,92 @@ function cdataContent(value: unknown): string | undefined {
   return undefined;
 }
 
-function encodeBase64UrlBytes(bytes: Uint8Array): string {
-  let encoded = "";
-  for (let index = 0; index < bytes.length; index += 3) {
-    const first = bytes[index];
-    const second = bytes[index + 1];
-    const third = bytes[index + 2];
-    const triple = (first << 16) | ((second ?? 0) << 8) | (third ?? 0);
-    encoded += base64UrlAlphabet[(triple >> 18) & 0x3f];
-    encoded += base64UrlAlphabet[(triple >> 12) & 0x3f];
-    if (index + 1 < bytes.length) {
-      encoded += base64UrlAlphabet[(triple >> 6) & 0x3f];
-    }
-    if (index + 2 < bytes.length) {
-      encoded += base64UrlAlphabet[triple & 0x3f];
-    }
+// The native payload is megabytes of base64url on a large drawing, so both directions work on
+// preallocated byte arrays. Growing a string one character at a time was most of a 5,000-molecule
+// save, and pushing decoded bytes into a number[] was a third of reopening it. Node's Buffer would
+// do this natively, but this code also runs in the WebView, where there is no Buffer.
+const base64UrlEncodeCodes = Uint8Array.from(base64UrlAlphabet, (char) => char.charCodeAt(0));
+const base64UrlDecodeTable = (() => {
+  const table = new Int16Array(128).fill(-1);
+  for (let index = 0; index < base64UrlAlphabet.length; index += 1) {
+    table[base64UrlAlphabet.charCodeAt(index)] = index;
   }
-  return encoded;
+  return table;
+})();
+
+// Unpadded base64url: a trailing group of one byte becomes two characters and a group of two
+// becomes three, never "=" padding. Files already on disk were written that way, so the output
+// must stay byte-identical to the character-by-character encoder this replaced.
+export function encodeBase64UrlBytes(bytes: Uint8Array): string {
+  const length = bytes.length;
+  const remainder = length % 3;
+  const wholeGroupsEnd = length - remainder;
+  const out = new Uint8Array((wholeGroupsEnd / 3) * 4 + (remainder === 0 ? 0 : remainder + 1));
+  let write = 0;
+  for (let index = 0; index < wholeGroupsEnd; index += 3) {
+    const triple = (bytes[index] << 16) | (bytes[index + 1] << 8) | bytes[index + 2];
+    out[write] = base64UrlEncodeCodes[triple >> 18];
+    out[write + 1] = base64UrlEncodeCodes[(triple >> 12) & 0x3f];
+    out[write + 2] = base64UrlEncodeCodes[(triple >> 6) & 0x3f];
+    out[write + 3] = base64UrlEncodeCodes[triple & 0x3f];
+    write += 4;
+  }
+  if (remainder === 1) {
+    const first = bytes[wholeGroupsEnd];
+    out[write] = base64UrlEncodeCodes[first >> 2];
+    out[write + 1] = base64UrlEncodeCodes[(first << 4) & 0x3f];
+  } else if (remainder === 2) {
+    const pair = (bytes[wholeGroupsEnd] << 8) | bytes[wholeGroupsEnd + 1];
+    out[write] = base64UrlEncodeCodes[pair >> 10];
+    out[write + 1] = base64UrlEncodeCodes[(pair >> 4) & 0x3f];
+    out[write + 2] = base64UrlEncodeCodes[(pair << 2) & 0x3f];
+  }
+  // Every code is ASCII, so a UTF-8 decode is the identity and turns the whole array into a string
+  // in one native call.
+  return new TextDecoder().decode(out);
 }
 
-function decodeBase64UrlBytes(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
+export function decodeBase64UrlBytes(value: string): Uint8Array {
+  const length = value.length;
+  const remainder = length % 4;
+  // One leftover character cannot carry a whole byte, so no encoder produces it.
+  if (remainder === 1) {
     throw new Error("Invalid base64url payload.");
   }
-  const bytes: number[] = [];
-  for (let index = 0; index < value.length; index += 4) {
-    const a = decodeBase64UrlChar(value[index]);
-    const b = decodeBase64UrlChar(value[index + 1]);
-    const c = value[index + 2] === undefined ? 0 : decodeBase64UrlChar(value[index + 2]);
-    const d = value[index + 3] === undefined ? 0 : decodeBase64UrlChar(value[index + 3]);
-    const triple = (a << 18) | (b << 12) | (c << 6) | d;
-    bytes.push((triple >> 16) & 0xff);
-    if (value[index + 2] !== undefined) {
-      bytes.push((triple >> 8) & 0xff);
-    }
-    if (value[index + 3] !== undefined) {
-      bytes.push(triple & 0xff);
+  const wholeGroupsEnd = length - remainder;
+  const bytes = new Uint8Array((wholeGroupsEnd / 4) * 3 + (remainder === 0 ? 0 : remainder - 1));
+  let write = 0;
+  for (let index = 0; index < wholeGroupsEnd; index += 4) {
+    const quad =
+      (base64UrlSextet(value, index) << 18) |
+      (base64UrlSextet(value, index + 1) << 12) |
+      (base64UrlSextet(value, index + 2) << 6) |
+      base64UrlSextet(value, index + 3);
+    bytes[write] = quad >> 16;
+    bytes[write + 1] = (quad >> 8) & 0xff;
+    bytes[write + 2] = quad & 0xff;
+    write += 3;
+  }
+  if (remainder >= 2) {
+    const high = (base64UrlSextet(value, wholeGroupsEnd) << 6) | base64UrlSextet(value, wholeGroupsEnd + 1);
+    if (remainder === 2) {
+      bytes[write] = high >> 4;
+    } else {
+      const triple = (high << 6) | base64UrlSextet(value, wholeGroupsEnd + 2);
+      bytes[write] = triple >> 10;
+      bytes[write + 1] = (triple >> 2) & 0xff;
     }
   }
-  return new Uint8Array(bytes);
+  return bytes;
 }
 
-function decodeBase64UrlChar(char: string | undefined): number {
-  if (char === undefined) {
-    throw new Error("Invalid base64url payload length.");
+function base64UrlSextet(value: string, index: number): number {
+  const code = value.charCodeAt(index);
+  const sextet = code < 128 ? base64UrlDecodeTable[code] : -1;
+  if (sextet < 0) {
+    throw new Error("Invalid base64url payload.");
   }
-  const value = base64UrlAlphabet.indexOf(char);
-  if (value < 0) {
-    throw new Error("Invalid base64url character.");
-  }
-  return value;
+  return sextet;
 }
 
 function createIdAllocator(pageIndex: number): IdAllocator {
@@ -3632,8 +3672,9 @@ function parseNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-// One scan decides whether escaping is needed at all. Most values need none — the embedded base64
-// payload, megabytes long, never does — and five replace passes over it cost ~300 ms per save.
+// One scan decides whether escaping is needed at all, and a value with nothing to escape is
+// returned untouched rather than copied by each replace pass. Most values need none, including the
+// base64url payload, whose alphabet has no XML-special characters.
 const XML_TEXT_SPECIAL = /[&<>]/;
 const XML_ATTRIBUTE_SPECIAL = /[&<>"']/;
 

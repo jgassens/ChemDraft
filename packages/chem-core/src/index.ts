@@ -147,6 +147,7 @@ export {
 
 export {
   DocumentPatchError,
+  admitParsedDocument,
   adoptDerivedDocument,
   applyPatch,
   isEngineDocument,

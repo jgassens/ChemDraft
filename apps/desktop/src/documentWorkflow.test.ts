@@ -31,6 +31,7 @@ import {
   type TextObject,
   type VisualEffect
 } from "@chemdraft/chem-core";
+import { decodeBase64UrlUtf8, exportDocumentToCdxml, sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
 import {
   applyChargeToolAtPoint,
@@ -1164,6 +1165,37 @@ describe("Phase 4 document workflow", () => {
     expect(reopened.source).toBe("native-payload");
     expect(reopened.warnings).toEqual([]);
     expect(reopened.document).toEqual(document);
+  });
+
+  it("hashes the embedded native document, not the whole envelope", () => {
+    const document = applySingleBondToolAtPoint(createPhase4Document("Hash"), { x: 600, y: 600 });
+    const payload = createNativeSavePayload(document);
+    const encoded = /Name="org\.chemdraft\/native-document"[^>]*Value="([^"]*)"/.exec(payload.contents)?.[1];
+    expect(encoded).toBeDefined();
+    const nativeJson = decodeBase64UrlUtf8(encoded!);
+    expect(payload.payloadHash).toBe(sha256Utf8Hex(nativeJson));
+    expect(payload.payloadHash).toBe(exportDocumentToCdxml(document).nativePayloadHash);
+    expect(payload.payloadHash).not.toBe(sha256Utf8Hex(payload.contents));
+  });
+
+  it("builds a save payload once per engine document", () => {
+    const document = applySingleBondToolAtPoint(createPhase4Document("Cached"), { x: 600, y: 600 });
+    const first = createNativeSavePayload(document);
+    // The same object back: the export did not run again.
+    expect(createNativeSavePayload(document)).toBe(first);
+    expect(Object.isFrozen(first)).toBe(true);
+
+    const edited = applySingleBondToolAtPoint(document, { x: 300, y: 300 });
+    const afterEdit = createNativeSavePayload(edited);
+    expect(afterEdit).not.toBe(first);
+    expect(afterEdit.contents).not.toBe(first.contents);
+    expect(afterEdit.payloadHash).not.toBe(first.payloadHash);
+
+    // A document the engine did not produce may be mutated between saves, so it is never cached.
+    const handBuilt = { ...document, title: "Hand Built" };
+    const handBuiltPayload = createNativeSavePayload(handBuilt);
+    expect(createNativeSavePayload(handBuilt)).not.toBe(handBuiltPayload);
+    expect(handBuiltPayload.filename).toBe("Hand-Built.chemdraft");
   });
 
   it("saves and opens per-ring molecule styles", () => {
@@ -12040,6 +12072,23 @@ describe("Phase 4 document workflow", () => {
     expect(svg).toContain('data-mark-kind="charge"');
     expect(svg).toContain('data-mechanism-arrow-kind="full-headed"');
 
+    // The scoped document is built in one patch batch; it must equal moving the scoped objects one
+    // at a time, as it once did, on the fitted page it builds.
+    const scopeObjects = copyAsScopeObjects(moleculeSelected);
+    const scopeMinX = Math.min(...scopeObjects.map((object) => object.x));
+    const scopeMinY = Math.min(...scopeObjects.map((object) => object.y));
+    const oneAtATime = scopeObjects.reduce((current, object) => moveDocumentObject(
+      current,
+      object.id,
+      { x: object.x + 16 - scopeMinX, y: object.y + 16 - scopeMinY },
+      { clampToPage: false, translateAnchoredGeometry: true, cascadeAnchoredMarks: false }
+    ), {
+      ...moleculeSelected,
+      pages: [{ ...scoped.pages[0], objects: [...scopeObjects] }],
+      selection: { ...moleculeSelected.selection, objectIds: [] }
+    } as ChemDraftDocument);
+    expect(scoped).toEqual(oneAtATime);
+
     // The arrow's Bezier control must ride along with the translation onto the fitted page —
     // a stale control rendered wild arcs sweeping outside the copied image.
     const scopedArrow = scoped.pages[0].objects.find((object): object is MechanismArrowObject =>
@@ -13707,6 +13756,66 @@ describe("group transforms (multi-object selection)", () => {
     expect(duplicateChildIds.some((objectId) => ids.includes(objectId))).toBe(false);
   });
 
+  it("duplicates a group nested inside a selected group with the same nesting", () => {
+    // Nested groups arrive through CDXML import; the duplicate used to flatten them to loose objects.
+    const document = createPhase4Document("Nested Group Duplicate");
+    const pageId = document.pages[0].id;
+    const text = (id: string, x: number): TextObject => ({
+      id, type: "text", x, y: 180, width: 60, height: 30, rotation: 0, style: {}, text: id, spans: []
+    });
+    const group = (id: string, childObjectIds: string[]): GroupObject => ({
+      id, type: "group", x: 100, y: 180, width: 300, height: 30, rotation: 0, style: {}, childObjectIds
+    });
+    const selected = applyPatches(document, [
+      ...[text("m1", 100), text("m2", 200), text("m3", 300), group("inner", ["m1", "m2"]), group("outer", ["inner", "m3"])]
+        .map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["outer"] }
+    ]);
+
+    const duplicated = duplicateSelectedDocumentObjects(selected);
+    const objects = duplicated.pages[0].objects;
+    const originals = new Set(["m1", "m2", "m3", "inner", "outer"]);
+    const copies = objects.filter((object) => !originals.has(object.id));
+    const groupCopies = copies.filter((object): object is GroupObject => object.type === "group");
+    expect(copies).toHaveLength(5);
+    expect(groupCopies).toHaveLength(2);
+
+    const [outerCopyId] = duplicated.selection.objectIds;
+    expect(duplicated.selection.objectIds).toHaveLength(1);
+    const outerCopy = groupCopies.find((candidate) => candidate.id === outerCopyId)!;
+    const innerCopy = groupCopies.find((candidate) => candidate.id !== outerCopyId)!;
+    expect(outerCopy.childObjectIds).toHaveLength(2);
+    expect(outerCopy.childObjectIds[0]).toBe(innerCopy.id);
+    const textById = new Map(copies.map((object) => [object.id, object]));
+    expect(innerCopy.childObjectIds.map((id) => (textById.get(id) as TextObject).text)).toEqual(["m1", "m2"]);
+    expect((textById.get(outerCopy.childObjectIds[1]!) as TextObject).text).toBe("m3");
+    // The originals keep their own structure.
+    expect(objects.find((object) => object.id === "outer")).toMatchObject({ childObjectIds: ["inner", "m3"] });
+    // Every copied leaf moved by the duplicate offset.
+    expect(copies.filter((object) => object.type === "text").map((object) => object.x).sort((a, b) => a - b))
+      .toEqual([124, 224, 324]);
+  });
+
+  it("deletes the ids it is given in place of the selection, sharing what it keeps", () => {
+    // Cut deletes what it captured, which may no longer be the selection; handing the ids over keeps
+    // the document an engine document instead of a spread the engine would copy wholesale.
+    const document = createPhase4Document("Delete Given Ids");
+    const pageId = document.pages[0].id;
+    const text = (id: string, x: number): TextObject => ({
+      id, type: "text", x, y: 180, width: 60, height: 30, rotation: 0, style: {}, text: id, spans: []
+    });
+    const base = applyPatches(document, [
+      ...[text("a", 100), text("b", 200), text("c", 300)].map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["c"] }
+    ]);
+
+    const deleted = deleteSelectedDocumentObjects(base, ["a", "b"]);
+    expect(deleted.pages[0].objects.map((object) => object.id)).toEqual(["c"]);
+    expect(deleted.pages[0].objects[0]).toBe(base.pages[0].objects[2]);
+    expect(deleted.selection.objectIds).toEqual(["c"]);
+    expect(deleteSelectedDocumentObjects(base, ["missing"])).toBe(base);
+  });
+
   it("moves selected group children through layer order as a visible block", () => {
     const document = createPhase4Document("Group Layer Order");
     const pageId = document.pages[0].id;
@@ -13798,6 +13907,29 @@ describe("group transforms (multi-object selection)", () => {
       "front"
     ]);
     expect(toBack.selection.objectIds).toEqual(["left", "right"]);
+  });
+
+  it("brings one object to front on a 2,000-object page as a single whole-page order patch", () => {
+    const document = createPhase4Document("Large Layer Fixture");
+    const pageId = document.pages[0].id;
+    const objects = Array.from({ length: 2000 }, (_, index) => ({
+      id: `text_${index}`, type: "text" as const, x: index, y: 0, width: 10, height: 10, rotation: 0, style: {}, text: "t", spans: []
+    }));
+    const selected = applyPatches(document, [
+      ...objects.map((object) => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection" as const, pageId, objectIds: ["text_500"] }
+    ]);
+
+    const front = reorderSelectedDocumentObject(selected, "front");
+    const expectedOrder = [...objects.map((object) => object.id).filter((id) => id !== "text_500"), "text_500"];
+    expect(front.pages[0].objects.map((object) => object.id)).toEqual(expectedOrder);
+    expect(front.selection.objectIds).toEqual(["text_500"]);
+    // Every object moved, none was re-created, and the result is exactly one setObjectOrder patch's.
+    expect(front.pages[0].objects[1999]).toBe(selected.pages[0].objects[500]);
+    const onePatch = applyPatches(selected, [{ op: "setObjectOrder", pageId, objectIds: expectedOrder }], {
+      now: front.updatedAt
+    });
+    expect(front).toEqual(onePatch);
   });
 
   it("deletes a selected group and its child objects", () => {

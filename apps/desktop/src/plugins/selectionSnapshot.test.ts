@@ -115,6 +115,25 @@ describe("pluginFacingStructure", () => {
     expect(OCL.Molecule.fromMolfile(facing.structure).getMolecularFormula().formula).toBe("C2H6O");
   });
 
+  it("hands an aromatic-order pyrrole NH over as an R-group, never as an NH2 that OpenChemLib would read", () => {
+    // On two aromatic bonds the stated hydrogen would ride on a valence of 1.5 + 1.5 + 1 = 4, which
+    // OpenChemLib honours as an NH2 — a molecule the user did not draw. An R-group admits the gap.
+    const ring = ["a0", "a1", "a2", "a3", "a4"];
+    const pyrrole = {
+      id: "m", type: "molecule", structureFormat: "smiles", structure: "",
+      atoms: ring.map((id, i) => ({
+        id, element: i === 0 ? "NH" : "C", x: 14 * Math.cos((2 * Math.PI * i) / 5), y: 14 * Math.sin((2 * Math.PI * i) / 5), formalCharge: 0
+      })),
+      bonds: ring.map((id, i) => ({ id: `b${i}`, fromAtomId: id, toAtomId: ring[(i + 1) % 5], order: "aromatic" }))
+    } as unknown as Parameters<typeof pluginFacingStructure>[0];
+    const facing = pluginFacingStructure(pyrrole);
+    expect(facing.structure).toContain(" R# ");
+    const parsed = OCL.Molecule.fromMolfile(facing.structure);
+    expect(parsed.getAllAtoms()).toBe(5);
+    // The nitrogen is gone from the connection table rather than misstated: no N, and never NH2.
+    expect(parsed.getMolecularFormula().formula).not.toContain("N");
+  });
+
   it("passes through the existing structure when there is no atom graph (e.g. a SMILES import)", () => {
     expect(pluginFacingStructure({ structureFormat: "smiles", structure: "c1ccccc1", atoms: [] } as never)).toEqual({
       structureFormat: "smiles",

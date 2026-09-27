@@ -21,7 +21,10 @@ export interface DocumentSessionEnvelope {
   version: typeof DOCUMENT_SESSION_VERSION;
   /** Full serialized document (the same payload File > Save writes). */
   contents: string;
-  /** Hash of `contents`, kept for debugging and future retention policies. */
+  /**
+   * SHA-256 of the native document JSON embedded in `contents` (the envelope's native-payload hash),
+   * not of `contents` itself; kept for debugging and future retention policies.
+   */
   payloadHash: string;
   /** True when the document had no drawable objects on any page at save time. */
   blank: boolean;

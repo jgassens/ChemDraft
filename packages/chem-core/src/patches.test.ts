@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { adoptDerivedDocument, applyPatch, applyPatches, DocumentPatchError, isEngineDocument, toEngineDocument } from "./patches";
-import { createEmptyDocument } from "./document";
+import {
+  admitParsedDocument,
+  adoptDerivedDocument,
+  applyPatch,
+  applyPatches,
+  DocumentPatchError,
+  isEngineDocument,
+  toEngineDocument
+} from "./patches";
+import { createEmptyDocument, deserializeDocument } from "./document";
 import type { ChemDraftDocument, DocumentObject } from "./schemas";
 
 const now = "2026-09-26T00:00:00.000Z";
@@ -126,6 +134,28 @@ describe("patch engine structural sharing", () => {
     expect(edited.pages[0]!.objects[0]).toBe(admitted.pages[0]!.objects[0]);
   });
 
+  it("admits a freshly parsed document as it is, without copying, and shares from it on the next edit", () => {
+    const parsed = deserializeDocument(JSON.stringify(documentWith(3)));
+    expect(isEngineDocument(parsed)).toBe(false);
+    const admitted = admitParsedDocument(parsed);
+    expect(admitted).toBe(parsed);
+    expect(isEngineDocument(admitted)).toBe(true);
+    // Frozen under test like every engine document, so a caller that broke the hand-over contract
+    // and mutated it would throw rather than silently rewrite shared snapshots.
+    expect(Object.isFrozen(admitted.pages[0]!.objects[0])).toBe(true);
+    expect(admitParsedDocument(admitted)).toBe(admitted);
+    expect(toEngineDocument(admitted)).toBe(admitted);
+    const edited = applyPatch(admitted, { op: "moveObject", objectId: "t2", x: 5, y: 5 }, { now });
+    expect(edited.pages[0]!.objects[0]).toBe(admitted.pages[0]!.objects[0]);
+    expect(edited.pages[0]!.objects[2]).toMatchObject({ x: 5, y: 5 });
+  });
+
+  it("admits a created empty document as it is", () => {
+    const created = createEmptyDocument({ title: "t", now });
+    expect(admitParsedDocument(created)).toBe(created);
+    expect(isEngineDocument(created)).toBe(true);
+  });
+
   it("removes a run of objects in one pass with the same result as one patch at a time", () => {
     const base = documentWith(6);
     const page = base.pages[0]!;
@@ -148,6 +178,120 @@ describe("patch engine structural sharing", () => {
     // And a missing id still fails the whole batch, naming it.
     expect(() => applyPatches(withDuplicate, [...removals, { op: "removeObject", objectId: "t1" }], { now }))
       .toThrow('object "t1" does not exist');
+  });
+
+  it("fails a batched removal on the id a sequential run would fail on, before removing anything", () => {
+    const base = documentWith(3);
+    // One "t0" and one "t1": [t1, t0, t0, t1] fails sequentially on the second "t0".
+    const removals = ["t1", "t0", "t0", "t1"].map((objectId) => ({ op: "removeObject" as const, objectId }));
+    expect(() => removals.reduce((document, patch) => applyPatch(document, patch, { now }), base))
+      .toThrow('object "t0" does not exist');
+    expect(() => applyPatches(base, removals, { now })).toThrow('object "t0" does not exist');
+    expect(base.pages[0]!.objects.map((object) => object.id)).toEqual(["t0", "t1", "t2"]);
+  });
+
+  it("fails a batched removal whose patch names no id, as a single removal does", () => {
+    const base = documentWith(2);
+    const removals = [
+      { op: "removeObject" as const, objectId: "t0" },
+      { op: "removeObject" as const, objectId: undefined as unknown as string }
+    ];
+    expect(() => applyPatches(base, removals, { now })).toThrow(DocumentPatchError);
+    expect(() => applyPatches(base, removals, { now })).toThrow('object "undefined" does not exist');
+  });
+
+  it("prunes crossings per page when a run of removals deletes both crossed molecules", () => {
+    const molecule = (id: string, y: number): DocumentObject => ({
+      id, type: "molecule", x: 0, y, width: 60, height: 60, rotation: 0, style: {},
+      structureFormat: "smiles", structure: "CC",
+      atoms: [
+        { id: "a1", element: "C", x: 0, y, formalCharge: 0 },
+        { id: "a2", element: "C", x: 60, y: 60 - y, formalCharge: 0 }
+      ],
+      bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }],
+      superatoms: [],
+      rGroups: []
+    } as unknown as DocumentObject);
+    const empty = createEmptyDocument({ title: "t", now });
+    const pageId = empty.pages[0]!.id;
+    const ref = (objectId: string) => ({ objectId, bondId: "b1" });
+    const crossing = (left: string, right: string) => ({
+      op: "setCrossingOverride" as const, pageId, crossing: { bonds: [ref(left), ref(right)] as [ReturnType<typeof ref>, ReturnType<typeof ref>], front: ref(left) }
+    });
+    // Two crossed pairs, plus one crossing that ties a deleted molecule to a surviving one.
+    const drawn = applyPatches(empty, [
+      ...["m1", "m2", "m3", "m4"].map((id, index) => ({ op: "addObject" as const, pageId, object: molecule(id, index % 2 === 0 ? 0 : 60) })),
+      crossing("m1", "m2"),
+      crossing("m3", "m4"),
+      crossing("m1", "m3")
+    ], { now });
+    expect(drawn.pages[0]!.crossings).toHaveLength(3);
+
+    const removals = ["m1", "m2"].map((objectId) => ({ op: "removeObject" as const, objectId }));
+    const batched = applyPatches(drawn, removals, { now });
+    const sequential = removals.reduce((document, patch) => applyPatch(document, patch, { now }), drawn);
+    expect(batched.pages[0]!.crossings).toEqual(sequential.pages[0]!.crossings);
+    expect(batched.pages[0]!.crossings.map((entry) => entry.bonds.map((bond) => bond.objectId))).toEqual([["m3", "m4"]]);
+  });
+
+  it("resolves an id to its first occurrence after a removal shifts a page that repeats it", () => {
+    const base = documentWith(1);
+    // [t0, Y(x=1), Y(x=2)]: the index records Y at slot 1. Removing t0 shifts both Ys down, so slot
+    // 1 now holds the second Y — which shares the id and would pass a positional check.
+    const outside = JSON.parse(JSON.stringify(base)) as ChemDraftDocument;
+    outside.pages[0]!.objects.push(textObject("Y", 1), textObject("Y", 2));
+    const withDuplicate = toEngineDocument(outside);
+    const patches = [
+      { op: "removeObject" as const, objectId: "t0" },
+      { op: "updateObject" as const, objectId: "Y", changes: { x: 99 } }
+    ];
+    const batched = applyPatches(withDuplicate, patches, { now });
+    const sequential = patches.reduce((document, patch) => applyPatch(document, patch, { now }), withDuplicate);
+    expect(batched.pages[0]!.objects.map((object) => [object.id, object.x])).toEqual([["Y", 99], ["Y", 2]]);
+    expect(sequential.pages[0]!.objects.map((object) => [object.id, object.x])).toEqual([["Y", 99], ["Y", 2]]);
+
+    // The same after a batched run of removals, which replaces the page's array outright.
+    const outsideTwo = JSON.parse(JSON.stringify(documentWith(2))) as ChemDraftDocument;
+    outsideTwo.pages[0]!.objects.push(textObject("Y", 1), textObject("Y", 2));
+    const afterRun = applyPatches(toEngineDocument(outsideTwo), [
+      { op: "removeObject", objectId: "t0" },
+      { op: "removeObject", objectId: "t1" },
+      { op: "updateObject", objectId: "Y", changes: { x: 99 } }
+    ], { now });
+    expect(afterRun.pages[0]!.objects.map((object) => [object.id, object.x])).toEqual([["Y", 99], ["Y", 2]]);
+  });
+
+  it("validates compatibility, styles, and plugin data a derived document replaced", () => {
+    const base = documentWith(1);
+    expect(() => adoptDerivedDocument(base, { ...base, styles: "not-an-object" } as unknown as ChemDraftDocument)).toThrow();
+    expect(() => adoptDerivedDocument(base, { ...base, plugins: [] } as unknown as ChemDraftDocument)).toThrow();
+    expect(() =>
+      adoptDerivedDocument(base, { ...base, compatibility: { warnings: [{ bogus: true }] } } as unknown as ChemDraftDocument)
+    ).toThrow();
+    // A valid replacement is admitted and kept.
+    const adopted = adoptDerivedDocument(base, { ...base, styles: { preset: "acs" } });
+    expect(isEngineDocument(adopted)).toBe(true);
+    expect(adopted.styles).toEqual({ preset: "acs" });
+  });
+
+  it("sets a page's whole stacking order in one patch, and refuses anything but a permutation", () => {
+    const base = documentWith(4);
+    const pageId = base.pages[0]!.id;
+    const withSelection = applyPatch(base, { op: "setSelection", pageId, objectIds: ["t1"] }, { now });
+    const reordered = applyPatch(withSelection, { op: "setObjectOrder", pageId, objectIds: ["t2", "t0", "t3", "t1"] }, { now });
+    expect(reordered.pages[0]!.objects.map((object) => object.id)).toEqual(["t2", "t0", "t3", "t1"]);
+    // Objects move, they are not copied, and the selection stands.
+    expect(reordered.pages[0]!.objects[3]).toBe(withSelection.pages[0]!.objects[1]);
+    expect(reordered.selection.objectIds).toEqual(["t1"]);
+    // Later lookups see the new positions.
+    const moved = applyPatch(reordered, { op: "moveObject", objectId: "t3", x: 7, y: 7 }, { now });
+    expect(moved.pages[0]!.objects[2]).toMatchObject({ id: "t3", x: 7 });
+
+    for (const objectIds of [["t0", "t1", "t2"], ["t0", "t1", "t2", "t2"], ["t0", "t1", "t2", "zz"], ["t0", "t1", "t2", "t3", "t3"]]) {
+      expect(() => applyPatch(base, { op: "setObjectOrder", pageId, objectIds }, { now })).toThrow(DocumentPatchError);
+    }
+    expect(() => applyPatch(base, { op: "setObjectOrder", pageId: "nope", objectIds: ["t0", "t1", "t2", "t3"] }, { now }))
+      .toThrow(DocumentPatchError);
   });
 
   it("keeps the page shell validated: a layout whose size disagrees with the page is refused", () => {

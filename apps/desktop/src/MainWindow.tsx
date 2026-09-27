@@ -29,6 +29,7 @@ import {
 import {
   CSS_PX_PER_INCH,
   DefaultNativeTextStyle,
+  admitParsedDocument,
   applyPatches,
   toEngineDocument,
   createDocumentHistory,
@@ -1411,7 +1412,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "9.26.11.35-opus";
+const CURRENT_BUILD_STAMP = "9.27.09.00-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1835,8 +1836,12 @@ export function MainWindow({
 
   // Every document entering the app is normalized so charge marks near atoms carry their
   // chemistry from the first paint — the commit funnels keep it normalized from then on.
+  // The created document is a fresh schema parse nothing else holds, so the engine takes it as it
+  // is; a caller-supplied one may still be held by the caller, so it is admitted as a copy.
   const [documentHistory, setDocumentHistory] = useState(() =>
-    createDocumentHistory(reconcileNativeChargeMarks(initialDocument ?? createPhase4Document()))
+    createDocumentHistory(reconcileNativeChargeMarks(
+      initialDocument ? toEngineDocument(initialDocument) : admitParsedDocument(createPhase4Document())
+    ))
   );
   const document = documentHistory.present;
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
@@ -2549,11 +2554,15 @@ export function MainWindow({
     updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
   }, [updateToolbarStyleTargetSnapshot]);
+  // `nextDocument` is handed over, not lent: both callers pass a schema-parse result nothing else
+  // holds (an opened file's parse, or a newly created document), so the engine admits it without the
+  // copy-and-reparse `toEngineDocument` would make — 150–200 ms per open of a 5,000-molecule file.
+  // A caller holding a document it still uses must pass `toEngineDocument(document)` instead.
   const resetDocumentHistory = useCallback((nextDocument: ChemDraftDocument, nextFileState: NativeFileState = { dirty: false }) => {
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
-    installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(toEngineDocument(nextDocument))));
+    installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
   }, [installDocumentHistory]);
@@ -5769,10 +5778,7 @@ export function MainWindow({
     // Use the selection that produced the successful clipboard write. It may include both
     // whole objects and fragments, and the user may have changed selection while it was writing.
     const carriedMarkIds = payload.objects.filter((object) => object.type === "electron-mark").map((object) => object.id);
-    let nextDocument = deleteSelectedDocumentObjects({
-      ...currentDocument,
-      selection: { ...currentDocument.selection, objectIds: [...wholeObjectIds, ...carriedMarkIds] }
-    });
+    let nextDocument = deleteSelectedDocumentObjects(currentDocument, [...wholeObjectIds, ...carriedMarkIds]);
     for (const object of payload.objects) {
       if (object.type === "molecule") {
         nextDocument = applyNativeMoleculePartsDelete(nextDocument, {

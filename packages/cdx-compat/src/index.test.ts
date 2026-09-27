@@ -4,6 +4,7 @@ import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
   createEmptyDocument,
+  parseDocument,
   serializeDocument,
   type ArrowObject,
   type ChemDraftDocument,
@@ -18,7 +19,10 @@ import {
   CdxmlEnvelopeCodecVersionV1,
   ChemDraftObjectTags,
   canonicalVisibleCdxml,
+  decodeBase64UrlBytes,
   decodeBase64UrlUtf8,
+  encodeBase64UrlBytes,
+  encodeBase64UrlUtf8,
   exportDocumentToCdxml,
   openChemDraftPayload,
   sha256Utf8Hex,
@@ -317,10 +321,47 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(sha256Hex(large)).toBe(createHash("sha256").update(large).digest("hex"));
   });
 
+  it("encodes base64url exactly as the original encoder did, and as Node's unpadded base64url does", () => {
+    // Every saved file carries this encoding, so the fast encoder must match the character-by-character
+    // one it replaced bit for bit, including the one- and two-byte tails.
+    const bytes = new Uint8Array(300);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = (index * 197 + 13) & 0xff;
+    }
+    for (let length = 0; length <= bytes.length; length += 1) {
+      const slice = bytes.subarray(0, length);
+      const encoded = encodeBase64UrlBytes(slice);
+      expect(encoded).toBe(referenceEncodeBase64UrlBytes(slice));
+      expect(encoded).toBe(Buffer.from(slice).toString("base64url"));
+      expect(decodeBase64UrlBytes(encoded)).toEqual(slice);
+      expect(decodeBase64UrlBytes(encoded)).toEqual(referenceDecodeBase64UrlBytes(encoded));
+    }
+    const large = new Uint8Array(3 * 1024 * 1024 + 2);
+    for (let index = 0; index < large.length; index += 1) {
+      large[index] = (index * 2654435761) >>> 24;
+    }
+    // Compared as booleans: a failing toBe/toEqual would try to diff megabytes.
+    const encodedLarge = encodeBase64UrlBytes(large);
+    expect(encodedLarge === referenceEncodeBase64UrlBytes(large)).toBe(true);
+    expect(encodedLarge === Buffer.from(large).toString("base64url")).toBe(true);
+    expect(Buffer.from(decodeBase64UrlBytes(encodedLarge)).equals(Buffer.from(large))).toBe(true);
+    expect(Buffer.from(referenceDecodeBase64UrlBytes(encodedLarge)).equals(Buffer.from(large))).toBe(true);
+  }, 30_000);
+
+  it("rejects base64url that no encoder produces", () => {
+    expect(() => decodeBase64UrlBytes("A")).toThrow(/Invalid base64url/);
+    expect(() => decodeBase64UrlBytes("AAAAA")).toThrow(/Invalid base64url/);
+    for (const invalid of ["AB+C", "AB/C", "AB=C", "ABC=", "AB C", "ABé", "AB\u{1F600}"]) {
+      expect(() => decodeBase64UrlBytes(invalid)).toThrow(/Invalid base64url/);
+    }
+  });
+
   it("exports a deterministic CDXML envelope with hidden native payload metadata", () => {
     const document = createEmptyDocument({ title: "Escaped & Quoted", now: "2026-06-06T00:00:00.000Z" });
     const result = exportDocumentToCdxml(document, { creationProgram: 'Test "Build" & Check' });
-    const nativeJson = serializeDocument(document);
+    // The embedded JSON is compact: it lives base64-encoded in an attribute, where indentation was
+    // pure file size.
+    const nativeJson = JSON.stringify(parseDocument(document));
 
     expect(result.warnings).toEqual([]);
     expect(result.contents).toContain('<?xml version="1.0" encoding="UTF-8"?>');
@@ -335,6 +376,70 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(extractObjectTag(result.contents, ChemDraftObjectTags.nativePayloadHash)).toBe(sha256Utf8Hex(nativeJson));
     expect(decodeBase64UrlUtf8(extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument))).toBe(nativeJson);
     expect(extractObjectTag(result.contents, ChemDraftObjectTags.visibleCdxmlHash)).toBe(visibleHashForCdxml(result.contents));
+  });
+
+  it("reports the hash of the embedded native JSON, the same value the envelope's hash tag carries", () => {
+    const result = exportDocumentToCdxml(documentWithObjects([singleBondMolecule()]));
+    const embeddedJson = decodeBase64UrlUtf8(extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument));
+
+    expect(result.nativePayloadHash).toBe(createHash("sha256").update(embeddedJson, "utf8").digest("hex"));
+    expect(extractObjectTag(result.contents, ChemDraftObjectTags.nativePayloadHash)).toBe(result.nativePayloadHash);
+  });
+
+  it("embeds compact native JSON, and still opens an envelope an older build wrote with indented JSON", () => {
+    const document = documentWithObjects([singleBondMolecule()]);
+    const result = exportDocumentToCdxml(document);
+    const embeddedJson = decodeBase64UrlUtf8(extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument));
+    expect(embeddedJson).not.toContain("\n");
+    expect(embeddedJson).toBe(JSON.stringify(JSON.parse(embeddedJson)));
+
+    // Rebuild the envelope the way older builds did: serializeDocument's indented JSON, hashed over
+    // its own bytes. Only the two native tags change, so the visible hash still matches.
+    const prettyJson = serializeDocument(document);
+    const older = result.contents
+      .replace(
+        `Value="${extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument)}"`,
+        `Value="${encodeBase64UrlUtf8(prettyJson)}"`
+      )
+      .replace(`Value="${result.nativePayloadHash}"`, `Value="${sha256Utf8Hex(prettyJson)}"`);
+    expect(older).not.toBe(result.contents);
+
+    const opened = openChemDraftPayload(older);
+    expect(opened.source).toBe("native-payload");
+    expect(opened.warnings).toEqual([]);
+    expect(opened.document).toEqual(openChemDraftPayload(result.contents).document);
+  });
+
+  it("escapes XML-special characters in text content and reopens the same text", () => {
+    const text = "a < b & c > d";
+    const document = documentWithObjects([
+      {
+        id: "text_specials",
+        type: "text",
+        x: 120,
+        y: 140,
+        width: 220,
+        height: 42,
+        rotation: 0,
+        style: {},
+        text,
+        spans: []
+      }
+    ]);
+    const result = exportDocumentToCdxml(document);
+    expect(result.contents).toContain("a &lt; b &amp; c &gt; d");
+    expect(result.contents).not.toContain(text);
+
+    const reopened = openChemDraftPayload(result.contents);
+    expect(reopened.source).toBe("native-payload");
+    expect((reopened.document?.pages[0].objects[0] as TextObject).text).toBe(text);
+    // The visible layer alone — what ChemDraw would read — carries the same text.
+    const visibleOnly = openChemDraftPayload(
+      result.contents.replace(/<objecttag Name="org\.chemdraft\/native-document"[^>]*\/>/, "")
+    );
+    expect(visibleOnly.source).toBe("external-cdxml");
+    const visibleTexts = (visibleOnly.document?.pages[0].objects ?? []).filter((object): object is TextObject => object.type === "text");
+    expect(visibleTexts.map((object) => object.text)).toContain(text);
   });
 
   it("preserves non-ASCII native text through UTF-8 base64url payload encoding", () => {
@@ -2184,6 +2289,49 @@ function singleBondMolecule(): MoleculeObject {
     superatoms: [],
     rGroups: []
   };
+}
+
+// The encoder and decoder as they were before they moved to preallocated byte arrays, kept as the
+// oracle that the rewrite must reproduce exactly.
+const referenceBase64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+function referenceEncodeBase64UrlBytes(bytes: Uint8Array): string {
+  let encoded = "";
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index];
+    const second = bytes[index + 1];
+    const third = bytes[index + 2];
+    const triple = (first << 16) | ((second ?? 0) << 8) | (third ?? 0);
+    encoded += referenceBase64UrlAlphabet[(triple >> 18) & 0x3f];
+    encoded += referenceBase64UrlAlphabet[(triple >> 12) & 0x3f];
+    if (index + 1 < bytes.length) {
+      encoded += referenceBase64UrlAlphabet[(triple >> 6) & 0x3f];
+    }
+    if (index + 2 < bytes.length) {
+      encoded += referenceBase64UrlAlphabet[triple & 0x3f];
+    }
+  }
+  return encoded;
+}
+
+function referenceDecodeBase64UrlBytes(value: string): Uint8Array {
+  const sextet = (char: string | undefined) => referenceBase64UrlAlphabet.indexOf(char ?? "");
+  const bytes: number[] = [];
+  for (let index = 0; index < value.length; index += 4) {
+    const a = sextet(value[index]);
+    const b = sextet(value[index + 1]);
+    const c = value[index + 2] === undefined ? 0 : sextet(value[index + 2]);
+    const d = value[index + 3] === undefined ? 0 : sextet(value[index + 3]);
+    const triple = (a << 18) | (b << 12) | (c << 6) | d;
+    bytes.push((triple >> 16) & 0xff);
+    if (value[index + 2] !== undefined) {
+      bytes.push((triple >> 8) & 0xff);
+    }
+    if (value[index + 3] !== undefined) {
+      bytes.push(triple & 0xff);
+    }
+  }
+  return new Uint8Array(bytes);
 }
 
 function extractObjectTag(contents: string, name: string): string {

@@ -45,6 +45,7 @@ import {
   pageLayoutSourceUnit,
   flattenPerspectiveFrom3D,
   isDativeBond,
+  isEngineDocument,
   isMetalSymbol,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
@@ -145,6 +146,10 @@ export interface NativeSavePayload {
   mimeType: "chemical/x-cdxml";
   contents: string;
   warnings: CompatibilityConversionWarning[];
+  /**
+   * SHA-256 of the native document JSON embedded in `contents` — the envelope's own
+   * native-payload hash — not of the whole envelope.
+   */
   payloadHash: string;
 }
 
@@ -7196,10 +7201,20 @@ function validateNativeMoleculeColorTarget(
     : undefined;
 }
 
-export function deleteSelectedDocumentObjects(document: ChemDraftDocument): ChemDraftDocument {
+/**
+ * Delete the selection — or `selectedObjectIds` in its place, for a caller (Cut) that deletes what
+ * it captured earlier rather than what is selected now. Passing the ids keeps `document` the engine
+ * document it is: the alternative, a spread with a replaced selection, is unknown to the patch
+ * engine, which then deep-copies and re-validates the whole page (385 ms against 2 ms on a
+ * 5,000-molecule page) and leaves the undo snapshot sharing nothing with the one before it.
+ */
+export function deleteSelectedDocumentObjects(
+  document: ChemDraftDocument,
+  selectedObjectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
   const page = selectionPage(document);
-  const selectedIds = new Set(document.selection.objectIds);
-  const selectedChildIds = new Set(resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds));
+  const selectedIds = new Set(selectedObjectIds);
+  const selectedChildIds = new Set(resolveGroupedDocumentObjectIds(page.objects, selectedObjectIds));
   const affectedGroupIds = page.objects
     .filter((object): object is GroupObject =>
       object.type === "group" &&
@@ -11091,12 +11106,12 @@ function reorderPageObjects(
     return document;
   }
 
-  // Relative reorders, applied in order within one batch — the same result as one patch at a time.
-  return applyPatches(
-    document,
-    [...nextOrder].reverse().map((objectId): DocumentPatch => ({ op: "reorderObject", objectId, placement: "back" })),
-    { now: phase4Timestamp }
-  );
+  // One whole-page order, not one "send to back" per object: each of those spliced the page and
+  // staled the engine's location index, so Bring to Front of one object on a 5,000-object page
+  // took seconds. The patch refuses anything but a permutation of the page, as the splices did.
+  return applyPatches(document, [{ op: "setObjectOrder", pageId: page.id, objectIds: nextOrder }], {
+    now: phase4Timestamp
+  });
 }
 
 export function reorderedLayerObjectIds(
@@ -11104,7 +11119,10 @@ export function reorderedLayerObjectIds(
   objectIds: readonly string[],
   placement: ObjectReorderPlacement
 ): string[] {
-  const selected = new Set(objectIds.filter((objectId) => currentOrder.includes(objectId)));
+  // A set of the page's ids, not `includes` per selected id: selecting all of a large page and
+  // reordering it was quadratic before any patch ran.
+  const present = new Set(currentOrder);
+  const selected = new Set(objectIds.filter((objectId) => present.has(objectId)));
   if (selected.size === 0) {
     return [...currentOrder];
   }
@@ -11231,48 +11249,65 @@ export function nativeMoleculePartBounds(
   };
 }
 
+export interface MoveDocumentObjectOptions {
+  /**
+   * Interactive moves keep objects on the page; exact translations (the Copy As scoped
+   * document) must NOT clamp — a mechanism arrow whose bounds exceed the fitted page would
+   * otherwise translate by the wrong delta, leaving its Bezier controls at stale coordinates.
+   */
+  clampToPage?: boolean;
+  /**
+   * A bulk, uniform-delta translate (the Copy As scoped document, which moves every scoped
+   * object by the same dx/dy — including a mechanism arrow's anchored atoms, via their own
+   * separate move in that same batch) needs a fully atom/object-anchored arrow's Bezier
+   * controls to move too, since the atoms it's relative to are moving by the identical
+   * amount. An interactive single-object drag has no such guarantee — the rest of the
+   * document, including any anchored atom, stays put — so it must default to false.
+   */
+  translateAnchoredGeometry?: boolean;
+  /**
+   * The single-object interactive drag cascades a molecule's move to its anchored marks
+   * (they render from their own x/y, so leaving them behind strands the chemistry). Batches
+   * that explicitly move EVERY object themselves (the Copy As scoped translate) must opt
+   * out, or a mark that happens to precede its molecule in z-order gets moved twice.
+   */
+  cascadeAnchoredMarks?: boolean;
+}
+
 export function moveDocumentObject(
   document: ChemDraftDocument,
   objectId: string,
   position: PagePoint,
-  options: {
-    /**
-     * Interactive moves keep objects on the page; exact translations (the Copy As scoped
-     * document) must NOT clamp — a mechanism arrow whose bounds exceed the fitted page would
-     * otherwise translate by the wrong delta, leaving its Bezier controls at stale coordinates.
-     */
-    clampToPage?: boolean;
-    /**
-     * A bulk, uniform-delta translate (the Copy As scoped document, which moves every scoped
-     * object by the same dx/dy — including a mechanism arrow's anchored atoms, via their own
-     * separate call in that same loop) needs a fully atom/object-anchored arrow's Bezier
-     * controls to move too, since the atoms it's relative to are moving by the identical
-     * amount. An interactive single-object drag has no such guarantee — the rest of the
-     * document, including any anchored atom, stays put — so it must default to false.
-     */
-    translateAnchoredGeometry?: boolean;
-    /**
-     * The single-object interactive drag cascades a molecule's move to its anchored marks
-     * (they render from their own x/y, so leaving them behind strands the chemistry). Loops
-     * that explicitly move EVERY object themselves (the Copy As scoped translate) must opt
-     * out, or a mark that happens to precede its molecule in z-order gets moved twice.
-     */
-    cascadeAnchoredMarks?: boolean;
-  } = {}
+  options: MoveDocumentObjectOptions = {}
 ): ChemDraftDocument {
   const page = pageContainingObject(document, objectId);
   const object = objectOnPage(page, objectId);
   if (!page || !object) {
     return document;
   }
+  const patches = moveDocumentObjectPatches(page, object, position, options);
+  return patches.length === 0 ? document : applyPatches(document, patches, { now: phase4Timestamp });
+}
 
+/**
+ * The patches that move `object` (on `page`) to `position` — empty when it would not move. Apart
+ * from the anchored-mark cascade, which `cascadeAnchoredMarks: false` turns off, they touch
+ * `object` alone, so a caller moving many objects can concatenate them into one batch.
+ */
+function moveDocumentObjectPatches(
+  page: DocumentPage,
+  object: DocumentObject,
+  position: PagePoint,
+  options: MoveDocumentObjectOptions
+): DocumentPatch[] {
+  const objectId = object.id;
   const clampToPage = options.clampToPage ?? true;
   const nextX = clampToPage ? clamp(position.x, 0, Math.max(0, page.width - object.width)) : position.x;
   const nextY = clampToPage ? clamp(position.y, 0, Math.max(0, page.height - object.height)) : position.y;
   const dx = nextX - object.x;
   const dy = nextY - object.y;
   if (dx === 0 && dy === 0) {
-    return document;
+    return [];
   }
 
   if (object.type === "molecule") {
@@ -11288,73 +11323,61 @@ export function moveDocumentObject(
           (point) => ({ x: point.x + dx, y: point.y + dy })
         )
       : [];
-    return applyPatches(
-      document,
-      [
-        {
-          op: "updateObject",
-          objectId,
-          changes: {
-            x: nextX,
-            y: nextY,
-            atoms: object.atoms.map((atom) => ({
-              ...atom,
-              x: atom.x + dx,
-              y: atom.y + dy
-            }))
-          }
-        },
-        ...anchoredMarkPatches
-      ],
-      { now: phase4Timestamp }
-    );
+    return [
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: nextX,
+          y: nextY,
+          atoms: object.atoms.map((atom) => ({
+            ...atom,
+            x: atom.x + dx,
+            y: atom.y + dy
+          }))
+        }
+      },
+      ...anchoredMarkPatches
+    ];
   }
 
   if (object.type === "electron-mark" && object.markKind === "charge") {
-    return applyPatch(
-      document,
-      {
-        op: "updateObject",
-        objectId,
-        changes: {
-          x: nextX,
-          y: nextY,
-          anchor: {
-            ...object.anchor,
-            kind: "point",
-            point: {
-              x: nextX + object.width / 2,
-              y: nextY + object.height / 2
-            }
+    return [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        x: nextX,
+        y: nextY,
+        anchor: {
+          ...object.anchor,
+          kind: "point",
+          point: {
+            x: nextX + object.width / 2,
+            y: nextY + object.height / 2
           }
         }
-      },
-      { now: phase4Timestamp }
-    );
+      }
+    }];
   }
 
   if (object.type === "reaction-arrow") {
-    return applyPatch(
-      document,
-      {
-        op: "updateObject",
-        objectId,
-        changes: {
-          x: nextX,
-          y: nextY,
-          start: offsetAnchorPoint(object.start, dx, dy),
-          end: offsetAnchorPoint(object.end, dx, dy)
-        }
-      },
-      { now: phase4Timestamp }
-    );
+    return [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        x: nextX,
+        y: nextY,
+        start: offsetAnchorPoint(object.start, dx, dy),
+        end: offsetAnchorPoint(object.end, dx, dy)
+      }
+    }];
   }
 
   if (object.type === "mechanism-arrow") {
     // The Bezier controls and any point-anchored ends live in page coordinates, so they ride
     // along; atom/object anchors stay put and re-resolve wherever their targets are — UNLESS
     // this is a bulk uniform translate (translateAnchoredGeometry) where the anchored atoms are
-    // moving by the identical delta via their own call in the same loop, in which case the
+    // moving by the identical delta via their own move in the same batch, in which case the
     // controls must move too or they end up stale relative to the atoms that did move. Without
     // that flag, when BOTH ends are atom/object-anchored the arrow has no independent position to
     // translate — sliding just the control points while the (unmoved) endpoints stayed put would
@@ -11362,51 +11385,34 @@ export function moveDocumentObject(
     const sourceIsPoint = object.source.kind === "point" && object.source.point !== undefined;
     const targetIsPoint = object.target.kind === "point" && object.target.point !== undefined;
     if (!options.translateAnchoredGeometry && !sourceIsPoint && !targetIsPoint) {
-      return document;
+      return [];
     }
-    return applyPatch(
-      document,
-      {
-        op: "updateObject",
-        objectId,
-        changes: {
-          x: nextX,
-          y: nextY,
-          source: offsetAnchorPoint(object.source, dx, dy),
-          target: offsetAnchorPoint(object.target, dx, dy),
-          controlPoints: object.controlPoints.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }))
-        }
-      },
-      { now: phase4Timestamp }
-    );
+    return [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        x: nextX,
+        y: nextY,
+        source: offsetAnchorPoint(object.source, dx, dy),
+        target: offsetAnchorPoint(object.target, dx, dy),
+        controlPoints: object.controlPoints.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }))
+      }
+    }];
   }
 
   if (object.type === "graphic") {
-    return applyPatch(
-      document,
-      {
-        op: "updateObject",
-        objectId,
-        changes: {
-          x: nextX,
-          y: nextY,
-          data: translateGraphicObjectData(object.data, dx, dy)
-        }
-      },
-      { now: phase4Timestamp }
-    );
+    return [{
+      op: "updateObject",
+      objectId,
+      changes: {
+        x: nextX,
+        y: nextY,
+        data: translateGraphicObjectData(object.data, dx, dy)
+      }
+    }];
   }
 
-  return applyPatch(
-    document,
-    {
-      op: "moveObject",
-      objectId,
-      x: nextX,
-      y: nextY
-    },
-    { now: phase4Timestamp }
-  );
+  return [{ op: "moveObject", objectId, x: nextX, y: nextY }];
 }
 
 function translateGraphicObjectData(
@@ -13315,23 +13321,52 @@ export function duplicateSelectedDocumentObjects(
     patches.push({ op: "addObject", pageId: page.id, object: duplicate });
   }
 
+  // Every group reachable inside a selected group, innermost first, so a nested group's copy exists
+  // before the group containing it maps its children. Only the selected groups used to be copied —
+  // and their leaves resolve past any group nested inside them, so the outer copy found no copy of
+  // the nested group, lost it, and (left with fewer than two children) was not created either: a
+  // CDXML import's nested groups duplicated as loose objects.
+  const objectById = objectByIdIndex(page.objects);
+  const groupsToDuplicate: GroupObject[] = [];
+  const visitedGroupIds = new Set<string>();
+  const collectGroup = (group: GroupObject) => {
+    if (visitedGroupIds.has(group.id)) {
+      return;
+    }
+    visitedGroupIds.add(group.id);
+    for (const childId of group.childObjectIds) {
+      const child = objectById.get(childId);
+      if (child?.type === "group") {
+        collectGroup(child);
+      }
+    }
+    groupsToDuplicate.push(group);
+  };
+  selectedGroups.forEach(collectGroup);
+
   const duplicateGroupIds: string[] = [];
   const groupedDuplicateChildIds = new Set<string>();
+  // A group whose copy was not created leaves its children's copies to the group containing it,
+  // rather than taking them out of the copy altogether.
+  const uncreatedGroupChildIds = new Map<string, string[]>();
+  // Leaf copies under each group copy: bounds are measured over leaves, and group copies are not
+  // in `objectsWithDuplicates`.
+  const duplicateLeafIdsByGroupId = new Map<string, string[]>();
   // Built once: per group it copied the whole page, and a fresh array also defeated the object index
   // `selectionBounds` keeps per array, so every group rebuilt it.
   const objectsWithDuplicates = [...page.objects, ...duplicates];
-  for (const group of selectedGroups) {
-    const childObjectIds = group.childObjectIds
-      .map((childId) => duplicateIdByOriginalId.get(childId))
-      .filter((childId): childId is string => childId !== undefined);
-    if (childObjectIds.length < 2) {
+  for (const group of groupsToDuplicate) {
+    const childObjectIds = group.childObjectIds.flatMap((childId) => {
+      const duplicateId = duplicateIdByOriginalId.get(childId);
+      return duplicateId !== undefined ? [duplicateId] : uncreatedGroupChildIds.get(childId) ?? [];
+    });
+    const leafIds = childObjectIds.flatMap((childId) => duplicateLeafIdsByGroupId.get(childId) ?? [childId]);
+    const bounds = childObjectIds.length < 2 ? undefined : selectionBounds(objectsWithDuplicates, leafIds);
+    if (!bounds) {
+      uncreatedGroupChildIds.set(group.id, childObjectIds);
       continue;
     }
     childObjectIds.forEach((childId) => groupedDuplicateChildIds.add(childId));
-    const bounds = selectionBounds(objectsWithDuplicates, childObjectIds);
-    if (!bounds) {
-      continue;
-    }
     const duplicateGroup: GroupObject = {
       id: allocateId("group"),
       type: "group",
@@ -13344,11 +13379,15 @@ export function duplicateSelectedDocumentObjects(
       childObjectIds
     };
     duplicateGroupIds.push(duplicateGroup.id);
+    duplicateIdByOriginalId.set(group.id, duplicateGroup.id);
+    duplicateLeafIdsByGroupId.set(duplicateGroup.id, leafIds);
     patches.push({ op: "addObject", pageId: page.id, object: duplicateGroup });
   }
 
+  // The copies of what was selected at the top level: a nested group's copy is reached through its
+  // parent's, as the original was.
   const selectionIds = [
-    ...duplicateGroupIds,
+    ...duplicateGroupIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId)),
     ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId))
   ];
   patches.push({ op: "setSelection", pageId: page.id, objectIds: selectionIds });
@@ -17573,9 +17612,23 @@ export function applyEditorSaveResultToSelectedMolecule(
   });
 }
 
+/**
+ * Save payloads already built, per engine document. An edit followed by Save built the same payload
+ * three times — the autosave, the Save, and the autosave the Save re-armed by changing the file
+ * state — at ~1.5 s each on a 5,000-molecule page. Only engine documents are cached: the patch
+ * engine never changes one after producing it, so its identity fixes its contents, and a document
+ * built by hand could be mutated between saves. Weak, so a document dropped from the undo history
+ * takes its payload with it.
+ */
+const nativeSavePayloadCache = new WeakMap<ChemDraftDocument, NativeSavePayload>();
+
 export function createNativeSavePayload(document: ChemDraftDocument): NativeSavePayload {
+  const cached = nativeSavePayloadCache.get(document);
+  if (cached) {
+    return cached;
+  }
   const result = exportDocumentToCdxmlEnvelope(document);
-  return {
+  const payload: NativeSavePayload = {
     filename: `${sanitizeFilename(document.title.replace(/\.chemdraft$/i, ""))}.chemdraft`,
     mimeType: "chemical/x-cdxml",
     contents: result.contents,
@@ -17584,6 +17637,12 @@ export function createNativeSavePayload(document: ChemDraftDocument): NativeSave
     // envelope again cost ~190 ms per autosave on a large page.
     payloadHash: result.nativePayloadHash
   };
+  if (isEngineDocument(document)) {
+    // Every later save of this document receives this same object, so none may change it for the rest.
+    Object.freeze(payload.warnings);
+    nativeSavePayloadCache.set(document, Object.freeze(payload));
+  }
+  return payload;
 }
 
 export function exportPhase4Cdxml(
@@ -17875,17 +17934,17 @@ export function copyAsMergedMolecule(
   return { ...molecules[0], atoms, bonds };
 }
 
-/** Labels whose native atoms have to become dummy `[*]` atoms in SMILES. */
 /**
  * What the property analysis reads for `molecule`: a V3000 molfile of the live atom/bond graph.
  *
  * Not `molecule.structure` — empty for an imported molecule and a lossy SMILES for a drawn fused ring
- * system — and not the plugins' V2000 form either: V3000 has no 999-atom ceiling (a V2000 overflow
- * fell back to that lossy string, silently), and a condensed label the label grammar spells as one
- * element with stated hydrogens ("OH", "NH2", "CH3") is written as that element with that many
- * hydrogens. The plugins' writer turns such labels into R-group placeholders, which would make
- * ethanol drawn as C–C–OH lose its formula and mass. Only labels that grammar cannot spell ("Ph",
- * "OMe") stay placeholders, and `nativeMoleculeUnspellableLabels` names exactly those.
+ * system. Label handling is the same as the plugins' V2000 form: a condensed label the label grammar
+ * spells as one element with stated hydrogens ("OH", "NH2", "CH3") is written as that element with
+ * that many hydrogens, so ethanol drawn as C–C–OH keeps its formula and mass; labels that grammar
+ * cannot spell ("Ph", "OMe"), and spelled labels on an atom with an aromatic bond (where the stated
+ * hydrogens have no exact valence), stay R-group placeholders — `nativeMoleculeUnspellableLabels`
+ * names the first kind. What V3000 adds is room: it has no 999-atom ceiling, and a V2000 overflow
+ * falls back to that lossy `structure` string, silently.
  */
 export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string } {
   if (molecule.atoms.length === 0) {
@@ -17914,6 +17973,7 @@ export function analysisSubjectKey(molecule: MoleculeObject): string {
   ]);
 }
 
+/** Labels whose native atoms have to become dummy `[*]` atoms in SMILES. */
 export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): string[] {
   return [...new Set(molecule.atoms
     .filter((atom) =>
@@ -17984,30 +18044,33 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
 
   const scopedWidth = maxX - minX + copyAsPagePaddingPx * 2;
   const scopedHeight = maxY - minY + copyAsPagePaddingPx * 2;
-  let scoped: ChemDraftDocument = {
+  const scopedPage: DocumentPage = {
+    ...page,
+    width: scopedWidth,
+    height: scopedHeight,
+    // The schema pins layout px to the page dimensions, so the fitted page carries a
+    // matching custom layout (margins zeroed — a clipboard image has no print margins).
+    layout: createCustomPageLayout(scopedWidth, scopedHeight, "css-px", { top: 0, right: 0, bottom: 0, left: 0 }),
+    objects: [...objects]
+  };
+  const scoped: ChemDraftDocument = {
     ...document,
-    pages: [{
-      ...page,
-      width: scopedWidth,
-      height: scopedHeight,
-      // The schema pins layout px to the page dimensions, so the fitted page carries a
-      // matching custom layout (margins zeroed — a clipboard image has no print margins).
-      layout: createCustomPageLayout(scopedWidth, scopedHeight, "css-px", { top: 0, right: 0, bottom: 0, left: 0 }),
-      objects: [...objects]
-    }],
+    pages: [scopedPage],
     selection: { ...document.selection, objectIds: [] }
   };
   const dx = copyAsPagePaddingPx - minX;
   const dy = copyAsPagePaddingPx - minY;
-  for (const object of objects) {
-    scoped = moveDocumentObject(
-      scoped,
-      object.id,
-      { x: object.x + dx, y: object.y + dy },
-      { clampToPage: false, translateAnchoredGeometry: true, cascadeAnchoredMarks: false }
-    );
-  }
-  return scoped;
+  // One batch. A patch per object re-copied the page's object array and rebuilt its id index each
+  // time, so Copy As of a select-all on a 5,000-molecule page took ~13 s. With the anchored-mark
+  // cascade off, each object's patches touch only that object, so computing them all against the
+  // unmoved page gives exactly what moving one object at a time did.
+  const patches = objects.flatMap((object) => moveDocumentObjectPatches(
+    scopedPage,
+    object,
+    { x: object.x + dx, y: object.y + dy },
+    { clampToPage: false, translateAnchoredGeometry: true, cascadeAnchoredMarks: false }
+  ));
+  return patches.length === 0 ? scoped : applyPatches(scoped, patches, { now: phase4Timestamp });
 }
 
 export function exportPhase4Svg(
@@ -20554,11 +20617,10 @@ function nativeLiteralAtomValenceComplete(
 
 /**
  * Read a condensed label as ONE heavy element plus its spelled hydrogens ("NH2" → N + 2,
- * "OH" → O + 1). Undefined for anything else — multiple heavy atoms, abbreviations, pure-H
- * labels — which stay unchecked superatoms.
+ * "OH" → O + 1, "CH3" → C + 3). Undefined for anything else — multiple heavy atoms, abbreviations
+ * ("Ph", "OMe"), pure-H labels — which stay unchecked superatoms. Also the molfile writers'
+ * `spellLabel`.
  */
-/** A condensed label naming one heavy atom and its hydrogens ("OH", "NH2", "CH3"), spelled out;
- *  undefined for anything else ("Ph", "OMe"). Also the molfile writers' `spellLabel`. */
 export function nativeSingleHeavyElementLabelValence(
   label: string
 ): { element: NativeElementSymbol; hydrogens: number } | undefined {

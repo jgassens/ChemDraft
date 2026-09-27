@@ -436,6 +436,108 @@ describe("non-element atom labels", () => {
     expect(v3000).toMatch(/M {2}V30 2 C [^\n]* VAL=5/);
   });
 
+  // The app's condensed-label grammar reduced to what these cases need: one heavy element, then H
+  // with an optional count.
+  const spellCondensed = (label: string) => {
+    const match = /^([A-Z][a-z]?)H(\d*)$/.exec(label);
+    return match ? { element: match[1]!, hydrogens: match[2] ? Number(match[2]) : 1 } : undefined;
+  };
+
+  it("does not spell a label on two aromatic bonds — pyrrole's NH would sum to 4 and read as NH2", () => {
+    const pyrrole = molecule(
+      [
+        { id: "n", element: "NH", x: 0, y: 0 },
+        { id: "c1", element: "C", x: 1, y: 0.5 },
+        { id: "c2", element: "C", x: 1, y: 1.5 },
+        { id: "c3", element: "C", x: -1, y: 1.5 },
+        { id: "c4", element: "C", x: -1, y: 0.5 }
+      ],
+      [
+        { id: "b1", from: "n", to: "c1", order: "aromatic" },
+        { id: "b2", from: "c1", to: "c2", order: "aromatic" },
+        { id: "b3", from: "c2", to: "c3", order: "aromatic" },
+        { id: "b4", from: "c3", to: "c4", order: "aromatic" },
+        { id: "b5", from: "c4", to: "n", order: "aromatic" }
+      ]
+    );
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(pyrrole, { warnings, spellLabel: spellCondensed, abbreviations: "rgroup" }).split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const nitrogen = lines[countsLine + 1]!;
+    expect(nitrogen.slice(31, 34).trim()).toBe("R#");
+    expect(nitrogen.slice(48, 51).trim()).toBe("0");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"NH"');
+    expect(warnings[0]).toContain("aromatic bond");
+
+    const v3000Warnings: string[] = [];
+    const v3000 = moleculeToMolfileV3000(pyrrole, { warnings: v3000Warnings, spellLabel: spellCondensed, abbreviations: "rgroup" });
+    expect(v3000).toContain("M  V30 1 R# ");
+    expect(v3000).not.toContain("VAL=");
+    expect(v3000Warnings[0]).toContain("aromatic bond");
+  });
+
+  it("does not spell a label on one aromatic bond, whose fractional sum the valence field cannot hold", () => {
+    const phenolLike = molecule(
+      [
+        { id: "c", element: "C", x: 0, y: 0 },
+        { id: "o", element: "OH", x: 1.5, y: 0 }
+      ],
+      [{ id: "b1", from: "c", to: "o", order: "aromatic" }]
+    );
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(phenolLike, { warnings, spellLabel: spellCondensed, abbreviations: "rgroup" }).split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    expect(lines[countsLine + 2]!.slice(31, 34).trim()).toBe("R#");
+    // One warning — the placeholder's — and not the literal-valence pass's "written without it".
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("aromatic bond");
+  });
+
+  it("does not spell a label whose bond orders and hydrogens pass the valence field's limit of 14", () => {
+    const overfull = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "CH20", x: 1.5, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(overfull, { warnings, spellLabel: spellCondensed, abbreviations: "rgroup" }).split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    expect(lines[countsLine + 2]!.slice(31, 34).trim()).toBe("R#");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("21");
+    expect(warnings[0]).toContain("14");
+  });
+
+  it("still spells a Kekulé pyrrole's NH, with a valence of 3", () => {
+    const kekule = molecule(
+      [
+        { id: "n", element: "NH", x: 0, y: 0 },
+        { id: "c1", element: "C", x: 1, y: 0.5 },
+        { id: "c2", element: "C", x: 1, y: 1.5 },
+        { id: "c3", element: "C", x: -1, y: 1.5 },
+        { id: "c4", element: "C", x: -1, y: 0.5 }
+      ],
+      [
+        { id: "b1", from: "n", to: "c1" },
+        { id: "b2", from: "c1", to: "c2", order: "double" },
+        { id: "b3", from: "c2", to: "c3" },
+        { id: "b4", from: "c3", to: "c4", order: "double" },
+        { id: "b5", from: "c4", to: "n" }
+      ]
+    );
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(kekule, { warnings, spellLabel: spellCondensed, abbreviations: "rgroup" }).split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const nitrogen = lines[countsLine + 1]!;
+    expect(nitrogen.slice(31, 34).trim()).toBe("N");
+    expect(nitrogen.slice(48, 51).trim()).toBe("3");
+    expect(warnings).toEqual([]);
+    expect(moleculeToMolfileV3000(kekule, { spellLabel: spellCondensed })).toMatch(/M {2}V30 1 N [^\n]* VAL=3/);
+  });
+
   it("V2000 writes a dummy atom with a warning instead of an invalid element symbol", () => {
     const warnings: string[] = [];
     const mf = moleculeToMolfileV2000(condensed, { warnings });

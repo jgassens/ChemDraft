@@ -68,8 +68,10 @@ export interface MolfileWriteOptions {
    * Spells a condensed label as one element carrying a stated number of hydrogens ("OH" → O with
    * one, "NH2" → N with two), or returns undefined. A spelled atom is written as that element with
    * an explicit valence of its bond-order sum plus those hydrogens, so a reader counts exactly the
-   * hydrogens the label names — never a placeholder, never its own default valence. Label parsing
-   * lives with the caller (the app's condensed-label grammar is above this package).
+   * hydrogens the label names — never a placeholder, never its own default valence. When that
+   * valence cannot say it exactly — the atom has an aromatic bond, or the sum passes 14 — the label
+   * is not spelled and takes the placeholder path with a warning instead. Label parsing lives with
+   * the caller (the app's condensed-label grammar is above this package).
    */
   spellLabel?: (label: string) => { element: string; hydrogens: number } | undefined;
 }
@@ -144,6 +146,26 @@ const MOLFILE_ATOM_SYMBOLS = new Set([
   "D", "T", "*"
 ]);
 
+/**
+ * What one bond adds to the explicit valence of each of its atoms, as a reader of `format` counts
+ * it. Aromatic type 4 is a code, not four covalent bonds, so it counts 1.5. V2000 emits dative as
+ * single; V3000 readers count a coordination bond only at its acceptor, so its donor gets nothing.
+ * Shared by the literal-valence pass and the spell guard so the two can never disagree.
+ */
+function bondValenceIncrements(
+  bond: MoleculeBond,
+  atomById: ReadonlyMap<string, MoleculeAtom>,
+  format: "V2000" | "V3000"
+): [[string, number], [string, number]] {
+  const order = bond.order === "aromatic" ? 1.5 : BOND_ORDER_CODE[bond.order];
+  const dative = format === "V3000" && isDativeBond(bond);
+  const [from, to] = dative ? v3000BondAtomIds(bond, atomById) : [bond.fromAtomId, bond.toAtomId];
+  return [[from, dative ? 0 : order], [to, order]];
+}
+
+/** The largest explicit valence the CTfile valence field holds (V2000 vvv, V3000 VAL=). */
+const MAX_EXPLICIT_VALENCE = 14;
+
 /** Explicit valence stops a reader adding hydrogens to a literal element label. */
 function literalAtomValences(
   atoms: readonly MoleculeAtom[],
@@ -162,20 +184,16 @@ function literalAtomValences(
   if (valences.size === 0) return valences;
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
   for (const bond of bonds) {
-    // Aromatic type 4 is a code, not four covalent bonds. V2000 emits dative as single; V3000
-    // readers count a coordination bond only at its acceptor, so its donor gets no extra H.
-    const order = bond.order === "aromatic" ? 1.5 : BOND_ORDER_CODE[bond.order];
-    const dative = format === "V3000" && isDativeBond(bond);
-    const [from, to] = dative ? v3000BondAtomIds(bond, atomById) : [bond.fromAtomId, bond.toAtomId];
-    if (valences.has(from)) valences.set(from, valences.get(from)! + (dative ? 0 : order));
-    if (valences.has(to)) valences.set(to, valences.get(to)! + order);
+    for (const [id, increment] of bondValenceIncrements(bond, atomById, format)) {
+      if (valences.has(id)) valences.set(id, valences.get(id)! + increment);
+    }
   }
   for (const [id, valence] of valences) {
     // CTfile's explicit valence is an integer from 1 to 14, plus a zero-valence sentinel. An
     // unrepresentable sum (one aromatic bond, 1.5) gets no field and a warning rather than a
     // rounded value that would invent hydrogens — or an exception that would abort the whole
     // export, cleanup or 3D pass this writer is feeding.
-    if (!Number.isInteger(valence) || valence > 14) {
+    if (!Number.isInteger(valence) || valence > MAX_EXPLICIT_VALENCE) {
       const atom = atomById.get(id)!;
       warnings?.push(
         `Literal atom "${atom.element}" has a bond-order sum of ${valence}, which the ${format} valence field cannot hold; written without it, so a reader may add hydrogens.`
@@ -195,7 +213,9 @@ function literalAtomValences(
  * R-group numbered per distinct label so readers keep the labels apart (see the option).
  */
 function molfileAtomSymbols(
-  atoms: readonly { id: string; element: string }[],
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  format: "V2000" | "V3000",
   options: MolfileWriteOptions
 ): {
   symbols: string[];
@@ -206,6 +226,25 @@ function molfileAtomSymbols(
   const rgroupByLabel = new Map<string, number>();
   const rgroups: { atomNumber: number; rgroup: number }[] = [];
   const spelledHydrogens = new Map<string, number>();
+  // Bond-order sums and aromatic contact, computed only when a label might be spelled: a spelled
+  // atom's hydrogens are carried by its explicit valence, so the sum decides whether spelling is
+  // even possible.
+  let bondValence: Map<string, { sum: number; aromatic: boolean }> | undefined;
+  const bondValenceOf = (atomId: string) => {
+    if (!bondValence) {
+      bondValence = new Map();
+      const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+      for (const bond of bonds) {
+        for (const [id, increment] of bondValenceIncrements(bond, atomById, format)) {
+          const entry = bondValence.get(id) ?? { sum: 0, aromatic: false };
+          entry.sum += increment;
+          entry.aromatic ||= bond.order === "aromatic";
+          bondValence.set(id, entry);
+        }
+      }
+    }
+    return bondValence.get(atomId) ?? { sum: 0, aromatic: false };
+  };
   const symbols = atoms.map((atom, index) => {
     // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
     // must not pass through: OpenChemLib reads "*" as a carbon, which is exactly the misranking
@@ -214,6 +253,8 @@ function molfileAtomSymbols(
       return atom.element;
     }
     const spelled = options.spellLabel?.(atom.element);
+    // Why a label that spells cleanly still cannot be written as its element, if it cannot.
+    let unspellable: string | undefined;
     if (
       spelled &&
       spelled.element !== "*" &&
@@ -221,9 +262,23 @@ function molfileAtomSymbols(
       Number.isInteger(spelled.hydrogens) &&
       spelled.hydrogens >= 0
     ) {
-      spelledHydrogens.set(atom.id, spelled.hydrogens);
-      return spelled.element;
+      // A spelled label is only as good as the explicit valence that carries its hydrogens. An
+      // aromatic bond makes that valence ambiguous — pyrrole's "NH" sums to 4 on two type-4 bonds,
+      // which a reader takes as NH2, and one aromatic bond gives a fraction the field cannot hold —
+      // and a sum past the field's ceiling cannot be written at all. Writing the bare element in
+      // either case lets the reader pick its own hydrogen count (AGENTS.md §5.7), so fall through
+      // to the placeholder, which at least says the group is not represented.
+      const { sum, aromatic } = bondValenceOf(atom.id);
+      if (aromatic) {
+        unspellable = "it has an aromatic bond, which makes the hydrogen count it states unrepresentable as an explicit valence";
+      } else if (sum + spelled.hydrogens > MAX_EXPLICIT_VALENCE) {
+        unspellable = `its bond orders and stated hydrogens sum to ${sum + spelled.hydrogens}, past the ${format} valence field's limit of ${MAX_EXPLICIT_VALENCE}`;
+      } else {
+        spelledHydrogens.set(atom.id, spelled.hydrogens);
+        return spelled.element;
+      }
     }
+    const reason = unspellable ? `; it cannot be written as ${spelled!.element} because ${unspellable}` : "";
     if (options.abbreviations === "rgroup") {
       let rgroup = rgroupByLabel.get(atom.element);
       if (rgroup === undefined) {
@@ -232,12 +287,12 @@ function molfileAtomSymbols(
       }
       rgroups.push({ atomNumber: index + 1, rgroup });
       options.warnings?.push(
-        `Atom label "${atom.element}" is not an element symbol; written as R-group placeholder R${rgroup} — the label's group is not represented in the molfile.`
+        `Atom label "${atom.element}" is not an element symbol${reason}; written as R-group placeholder R${rgroup} — the label's group is not represented in the molfile.`
       );
       return "R#";
     }
     options.warnings?.push(
-      `Atom label "${atom.element}" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile.`
+      `Atom label "${atom.element}" is not an element symbol${reason}; written as a dummy atom (*) — the label's group is not represented in the molfile.`
     );
     return "*";
   });
@@ -330,7 +385,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const lines: string[] = ["", "  ChemDraft", ""];
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
-  const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, options);
+  const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V2000", options);
   const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings, spelledHydrogens);
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
@@ -405,7 +460,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     "M  V30 BEGIN ATOM"
   ];
 
-  const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, options);
+  const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V3000", options);
   const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings, spelledHydrogens);
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
