@@ -1,4 +1,5 @@
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   createStructureSourceFingerprint,
   type PluginSelectedMolecule,
@@ -32,7 +33,11 @@ export function pluginFacingStructure(
         // the plugin's OpenChemLib reads "*" as a carbon and would predict for a molecule the
         // user did not draw, with nothing to tell it otherwise. An R-group is honestly "a group
         // this file does not spell" (AGENTS.md §10: no fake chemistry).
-        structure: moleculeToMolfileV2000(molecule, { fromDocFrame: true, abbreviations: "rgroup" })
+        structure: moleculeToMolfileV2000(molecule, {
+          fromDocFrame: true,
+          abbreviations: "rgroup",
+          kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+        })
       };
     } catch {
       // >999 atoms/bonds or other writer limit: fall back to whatever the object already carries

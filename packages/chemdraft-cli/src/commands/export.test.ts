@@ -102,6 +102,31 @@ describe("chemdraft export", () => {
     60_000
   );
 
+  it("keeps a typed atom's identity when its aromatic ring round-trips through CDXML", async () => {
+    // Simulates a pasted/imported aromatic ring (type-4 bonds) with one atom the user typed a
+    // label on — the case molfile-writer callers must pass kekuleBondOrders for (AGENTS §5.26).
+    // Without it, the typed atom's molfile valence field is omitted and a reader may add a
+    // hydrogen it should not, breaking the CDXML round-trip identity check below.
+    const built = await buildSmilesDocument("c1ccccc1", { name: "benzene-typed" });
+    const page = built.document.pages[0]!;
+    const moleculeIndex = page.objects.findIndex((object) => object.type === "molecule");
+    const source = page.objects[moleculeIndex] as MoleculeObject;
+    const aromatic: MoleculeObject = {
+      ...source,
+      atoms: source.atoms.map((atom, index) => index === 0 ? { ...atom, labelLiteral: true } : atom),
+      bonds: source.bonds.map((bond) => ({ ...bond, order: "aromatic" as const }))
+    };
+    const patched = {
+      ...built,
+      molecule: aromatic,
+      document: {
+        ...built.document,
+        pages: [{ ...page, objects: page.objects.map((object, index) => index === moleculeIndex ? aromatic : object) }]
+      }
+    };
+    await expect(exportPerJobFormat("cdxml", patched)).resolves.toBeDefined();
+  }, 60_000);
+
   it("exports a PDF starting with the %PDF signature", async () => {
     const out = join(outputDirectory, "ethanol.pdf");
     const io = collectIo();

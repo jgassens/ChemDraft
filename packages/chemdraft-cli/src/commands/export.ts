@@ -8,6 +8,7 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { moleculeSmiles } from "@chemdraft/document-workflow-core";
 
@@ -262,9 +263,10 @@ async function assertCdxmlRoundTripIdentity(
     );
   }
   const molecule = molecules[0]!;
+  const kekuleBondOrders = nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders;
   const molfile = built.dativeBonds > 0
-    ? moleculeToMolfileV3000(molecule, { fromDocFrame: true })
-    : moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    ? moleculeToMolfileV3000(molecule, { fromDocFrame: true, kekuleBondOrders })
+    : moleculeToMolfileV2000(molecule, { fromDocFrame: true, kekuleBondOrders });
   await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
 }
 

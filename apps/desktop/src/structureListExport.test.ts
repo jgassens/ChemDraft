@@ -318,6 +318,32 @@ describe("structure list export", () => {
     expect(engine.warnings).toEqual([]);
   });
 
+  it("gives a typed atom on an aromatic ring its Kekulé valence in the SDF molfile, with no warning", async () => {
+    const ids = ["a0", "a1", "a2", "a3", "a4", "a5"];
+    const molecule: MoleculeObject = {
+      ...moleculeAt("benzene", 0, 0),
+      atoms: ids.map((id, index) => ({
+        id,
+        element: "C",
+        x: Math.cos((index / 6) * 2 * Math.PI) * 50,
+        y: Math.sin((index / 6) * 2 * Math.PI) * 50,
+        formalCharge: 0,
+        ...(index === 0 ? { labelLiteral: true } : {})
+      })),
+      bonds: ids.map((id, index) => ({
+        id: `b${index}`, fromAtomId: id, toAtomId: ids[(index + 1) % 6], order: "aromatic" as const
+      }))
+    };
+    const result = await exportStructureListSdf(documentWith([molecule]));
+    expect(result.warnings).toEqual([]);
+    const lines = result.contents.split(/\r?\n/);
+    const countsLineIndex = lines.findIndex((line) => /V2000$/.test(line));
+    // Each benzene carbon takes one single and one double bond in the Kekulé structure it resolves
+    // to (sum 3); before molfile-writer callers passed kekuleBondOrders, the typed atom's aromatic
+    // bonds had no resolved order and its valence field was omitted with a warning instead.
+    expect(lines[countsLineIndex + 1].slice(48, 51)).toBe("  3");
+  });
+
   it("returns an empty text result for an empty page", async () => {
     const document = createPhase4Document("Empty");
     expect(await exportStructureListSdf(document)).toMatchObject({ contents: "", warnings: [] });

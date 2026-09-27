@@ -157,6 +157,7 @@ import {
   ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
+  nativeBondOrderResolution,
   nativeMoleculeRings,
   nativeMultipleBondGapPx,
   defaultMechanismArrowControls,
@@ -4209,7 +4210,10 @@ export function MainWindow({
       // Geometry spelling: the conformer engine needs an atom it can place, so an abbreviated
       // label goes as the dummy "*" here. Only CIP perception uses the R-group spelling
       // (stereoPerceptionMolfile); the two never meet — this molfile is not perceived.
-      molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      molfile = moleculeToMolfileV2000(molecule, {
+        fromDocFrame: true,
+        kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+      });
       molfileSpan.complete({ atomCount: molecule.atoms.length });
     } catch (error) {
       molfileSpan.fail(error, { atomCount: molecule.atoms.length });
@@ -4491,7 +4495,10 @@ export function MainWindow({
       const client = getConformerWorkerClient();
       if (!client) return;
       // Same geometry spelling as the conformer request (the prefetch must key on the same text).
-      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      const molfile = moleculeToMolfileV2000(molecule, {
+        fromDocFrame: true,
+        kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+      });
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
       client.warmup({ sessionId: `warmup:${Date.now()}` });

@@ -12,6 +12,7 @@ import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
 import {
   atomLabelHaloWidthPx,
+  nativeBondOrderResolution,
   planMoleculeAtomLabels,
   planPageSvgRender,
   type PageSvgAttributeValue,
@@ -354,10 +355,11 @@ function identityMolfile(
   warnings?: string[]
 ): { contents: string; format: "molfile-v2000" | "molfile-v3000" } {
   const unspecified = new Set(semantics.unspecifiedDoubleBondIndices);
+  const kekuleBondOrders = nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders;
   if (semantics.dativeBondIndices.length > 0) {
     return {
       contents: markV3000UnspecifiedDoubleBonds(
-        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings }),
+        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }),
         unspecified
       ),
       format: "molfile-v3000"
@@ -365,7 +367,7 @@ function identityMolfile(
   }
   return {
     contents: markV2000UnspecifiedDoubleBonds(
-      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings }),
+      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }),
       unspecified
     ),
     format: "molfile-v2000"

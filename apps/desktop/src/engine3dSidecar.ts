@@ -1,4 +1,5 @@
 import { moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   Engine3DProtocolVersion,
   createEngine3DBondSignature,
@@ -117,7 +118,10 @@ export function createEngine3dSessionInputFromMolecule(
     // Geometry spelling for the 3D engine: an abbreviated label goes as the dummy "*" it can
     // place. CIP perception spells its own molfile (stereoPerceptionMolfile, R-groups) and never
     // reads this one.
-    molfile: moleculeToMolfileV2000(molecule, { fromDocFrame: true }),
+    molfile: moleculeToMolfileV2000(molecule, {
+      fromDocFrame: true,
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+    }),
     format: "molfile-v2000",
     atomIdByMolfileIndex,
     graphSignature: createEngine3DGraphSignature({
