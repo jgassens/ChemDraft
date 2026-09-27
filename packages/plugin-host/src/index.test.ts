@@ -231,6 +231,97 @@ describe("PluginHost", () => {
     expect(promptText).not.toHaveBeenCalled();
   });
 
+  it("spends the once-per-invocation prompt only when a prompt is shown, so a corrected retry works", async () => {
+    const promptText = vi.fn(async () => ({ status: "submitted" as const, value: "benzene" }));
+    const host = new PluginHost({ promptText });
+    let invalid: unknown;
+    host.registerPlugin(
+      {
+        id: "org.test.retry-dialog",
+        name: "Retry Dialog",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: { commands: [{ id: "plugin.retryDialog.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.retryDialog.run": async (context) => {
+            invalid = await context.dialogs!.promptText({ title: "", label: "Name" }).catch((error: unknown) => error);
+            const answer = await context.dialogs!.promptText({ title: "Name", label: "Name" });
+            // That one was shown, so the allowance is now spent.
+            await expect(context.dialogs!.promptText({ title: "Again", label: "Name" })).rejects.toThrow(
+              /at most once per command invocation/
+            );
+            return answer;
+          }
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.retryDialog.run")).resolves.toEqual({
+      status: "submitted",
+      value: "benzene"
+    });
+    expect(invalid).toBeInstanceOf(Error);
+    expect(promptText).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not spend the prompt allowance when another invocation's prompt is still open", async () => {
+    let resolveFirst!: (result: PluginPromptTextResult) => void;
+    const promptText = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<PluginPromptTextResult>((resolve) => (resolveFirst = resolve)))
+      .mockImplementation(async () => ({ status: "submitted" as const, value: "second" }));
+    const host = new PluginHost({ promptText });
+    let refused: unknown;
+    let firstOpen!: () => void;
+    const opened = new Promise<void>((resolve) => (firstOpen = resolve));
+    host.registerPlugin(
+      {
+        id: "org.test.overlapping-dialogs",
+        name: "Overlapping Dialogs",
+        version: "0.0.1",
+        apiVersion: "^0.1.3",
+        entry: "dist/plugin.js",
+        permissions: ["ui.panel"],
+        contributes: {
+          commands: [
+            { id: "plugin.overlappingDialogs.first", title: "First" },
+            { id: "plugin.overlappingDialogs.second", title: "Second" }
+          ]
+        }
+      },
+      {
+        commandHandlers: {
+          "plugin.overlappingDialogs.first": (context) => {
+            const pending = context.dialogs!.promptText({ title: "First", label: "Value" });
+            firstOpen();
+            return pending;
+          },
+          "plugin.overlappingDialogs.second": async (context) => {
+            refused = await context.dialogs!.promptText({ title: "Second", label: "Value" }).catch((error: unknown) => error);
+            await opened;
+            resolveFirst({ status: "cancelled" });
+            await first;
+            // The refused call showed nothing, so this invocation may still prompt once.
+            return context.dialogs!.promptText({ title: "Second", label: "Value" });
+          }
+        }
+      }
+    );
+
+    const first = host.invokeCommand("plugin.overlappingDialogs.first");
+    await opened;
+    await expect(host.invokeCommand("plugin.overlappingDialogs.second")).resolves.toEqual({
+      status: "submitted",
+      value: "second"
+    });
+    expect(refused).toHaveProperty("message", expect.stringMatching(/concurrent prompts are not allowed/));
+    expect(promptText).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects a host UI result longer than the request maxLength", async () => {
     const promptText = vi.fn(async () => ({ status: "submitted" as const, value: "12345" }));
     const host = new PluginHost({ promptText });
@@ -703,6 +794,66 @@ describe("PluginHost", () => {
       undoLabel: "Direct Writer: Insert Structure"
     });
     expect(host.listProposedPatches()).toHaveLength(0);
+  });
+
+  it("lets documents.applyPatch insert new content only; edits and removals must be proposed", async () => {
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: [] }));
+    const host = new PluginHost({ applyDocumentPatch, now: () => timestamp });
+    const patches: Record<string, unknown> = {
+      removeObject: { op: "removeObject", objectId: "mol_001" },
+      updateObject: { op: "updateObject", objectId: "mol_001", changes: { structure: "CCO" } },
+      moveObject: { op: "moveObject", objectId: "mol_001", x: 0, y: 0 },
+      removeAnnotation: { op: "removeAnnotation", annotationId: "ann_001" },
+      updatePageLayout: { op: "updatePageLayout", pageId: "page_001", layout: {} },
+      setSelection: { op: "setSelection", objectIds: [] }
+    };
+    const outcomes: Record<string, unknown> = {};
+    host.registerPlugin(
+      {
+        id: "org.test.edit-write",
+        name: "Edit Writer",
+        version: "0.0.1",
+        apiVersion: "^0.1.4",
+        entry: "dist/plugin.js",
+        permissions: ["document.write", "document.proposePatch"],
+        contributes: { commands: [{ id: "plugin.editWrite.run", title: "Run" }] }
+      },
+      {
+        commandHandlers: {
+          "plugin.editWrite.run": async (context) => {
+            for (const [op, patch] of Object.entries(patches)) {
+              outcomes[op] = await context.documents
+                .applyPatch!({ reason: "edit existing chemistry", patch: patch as never })
+                .catch((error: unknown) => error);
+            }
+            // Insertion ops pass the gate.
+            await context.documents.applyPatch!({
+              reason: "typed name",
+              patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
+            });
+            await context.documents.applyPatch!({
+              reason: "typed note",
+              patch: { op: "addAnnotation", pageId: "page_001", annotation: { id: "ann_001" } } as never
+            });
+            // The same edit is still available for review.
+            return context.documents.proposePatch({ reason: "edit for review", patch: patches.removeObject as never });
+          }
+        }
+      }
+    );
+
+    await expect(host.invokeCommand("plugin.editWrite.run")).resolves.toMatchObject({ status: "pending" });
+    for (const op of Object.keys(patches)) {
+      expect(outcomes[op], op).toBeInstanceOf(PluginHostError);
+      expect((outcomes[op] as Error).message).toBe(
+        `Plugin "org.test.edit-write" passed a "${op}" patch to documents.applyPatch, which only inserts new content (addObject, addAnnotation); changing or removing what is already in the document must go through documents.proposePatch for review.`
+      );
+    }
+    expect(applyDocumentPatch).toHaveBeenCalledTimes(2);
+    expect(applyDocumentPatch.mock.calls.map((call) => (call as unknown as [{ patch: { patch: { op: string } } }])[0].patch.patch.op)).toEqual([
+      "addObject",
+      "addAnnotation"
+    ]);
   });
 
   it("registers plugin commands and queues proposed patches for user review", async () => {
@@ -1619,30 +1770,52 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     return result;
   }
 
-  it("refuses documents.applyPatch in an invocation that recognized an image, while proposePatch still works", async () => {
-    const { host, applyDocumentPatch } = recognitionHost();
-    register(host, [...recognitionPermissions, "document.write", "document.proposePatch"], {
-      "plugin.recognizer.run": async (context) => {
-        const result = await recognize(context);
-        await expect(
-          context.documents.applyPatch!({
-            reason: "sneak the recognized structure in",
-            patch: { op: "addObject", pageId: "page_001", object: moleculeObject() }
-          })
-        ).rejects.toThrow(/must go through documents\.proposePatch for review; documents\.applyPatch was refused/);
-        return context.documents.proposePatch({ ...result.result.proposedPatch!, reason: "Review me" });
-      }
-    });
+  it("refuses to register a recognizer that also declares document.write or model.download", () => {
+    const { host } = recognitionHost();
+    const handlers = { "plugin.recognizer.run": () => undefined };
+    expect(() => register(host, [...recognitionPermissions, "document.proposePatch", "document.write"], handlers)).toThrow(
+      new PluginPermissionError(
+        'Plugin "org.test.recognizer" declares the structure-recognition permissions (image.read, ml.inference, model.load, native.execute) together with "document.write", which a recognizer may not declare: recognized structures are proposal-only and the host alone installs the engine. Remove that permission, or move deterministic direct writes into a separate plugin.'
+      )
+    );
+    expect(() => register(host, [...recognitionPermissions, "model.download", "document.write"], handlers)).toThrow(
+      /together with "document\.write" and "model\.download".*Remove those permissions/
+    );
+    expect(() => register(host, [...recognitionPermissions, "model.download"], handlers)).toThrow(
+      /together with "model\.download"/
+    );
+    // Refused before any state changed: no plugin, no command.
+    expect(host.getPlugin("org.test.recognizer")).toBeUndefined();
+    expect(host.commands.has("plugin.recognizer.run")).toBe(false);
+    // The same check guards every caller of the shared manifest validation.
+    expect(() =>
+      validateTrustedPluginManifest({ ...minimalManifest("org.test.v"), permissions: [...recognitionPermissions, "document.write"] })
+    ).toThrow(PluginPermissionError);
+    // Holding only some of the recognition permissions is not a recognizer.
+    expect(() =>
+      validateTrustedPluginManifest({ ...minimalManifest("org.test.w"), permissions: ["image.read", "native.execute", "document.write"] })
+    ).not.toThrow();
+  });
 
-    await expect(host.invokeCommand("plugin.recognizer.run")).resolves.toMatchObject({ status: "pending" });
-    expect(applyDocumentPatch).not.toHaveBeenCalled();
-    expect(host.listProposedPatches("pending")).toHaveLength(1);
+  it("registers the official MolScribe plugin's permission set", () => {
+    const { host } = recognitionHost();
+    expect(() =>
+      host.registerPlugin({
+        id: "org.chemdraft.ocsr.molscribe",
+        name: "MolScribe OCSR",
+        version: "0.1.0",
+        apiVersion: "^0.1.6",
+        entry: "dist/plugin.js",
+        permissions: [...recognitionPermissions, "document.proposePatch", "ui.menu", "ui.panel"]
+      })
+    ).not.toThrow();
+    expect(host.getPlugin("org.chemdraft.ocsr.molscribe")).toBeDefined();
   });
 
   it("refuses a patch carrying a recognition review block, but lets another command write directly", async () => {
     const { host, applyDocumentPatch } = recognitionHost();
     const patch = { op: "addObject", pageId: "page_001", object: moleculeObject() } as const;
-    register(host, [...recognitionPermissions, "document.write"], {
+    register(host, ["document.write"], {
       "plugin.recognizer.smuggle": (context) =>
         context.documents.applyPatch!({
           reason: "recognized",
@@ -1701,7 +1874,11 @@ describe("PluginHost recognition, document binding, and queue release", () => {
       createdAt: timestamp
     });
     const [queued] = host.listProposedPatches("pending");
-    expect(queued.proposal).toMatchObject({ reason: "Review me", patch: documentDerivedPatch });
+    // The reason is the host's: a plugin's text could claim a confidence the review does not show.
+    expect(queued.proposal).toMatchObject({
+      reason: "Insert the locally recognized structure after review.",
+      patch: documentDerivedPatch
+    });
   });
 
   it("keeps a recognized screen capture for the app until the proposal is accepted, and never a chosen file", async () => {
@@ -1763,12 +1940,10 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     // the user's own action on the document in front of them and must not be refused for it.
     let activeKey = "document-a";
     const { host, applyDocumentPatch } = recognitionHost({ getActiveDocumentKey: () => activeKey });
-    register(host, [...recognitionPermissions, "document.write", "document.proposePatch"], {
+    register(host, [...recognitionPermissions, "document.proposePatch"], {
       "plugin.recognizer.run": async (context) => {
         const result = await recognize(context);
-        await expect(context.documents.applyPatch!(result.result.proposedPatch!)).rejects.toThrow(
-          /must go through documents\.proposePatch for review/
-        );
+        expect(context.documents.applyPatch).toBeUndefined();
         await context.documents.proposePatch({
           ...result.result.proposedPatch!,
           recognition: {
@@ -1815,6 +1990,143 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     expect(host.listProposedPatches("pending").map((proposal) => proposal.id)).toEqual([queued.id]);
   });
 
+  describe("the review shows the host's record of the recognition, not the plugin's account of it", () => {
+    const hostWarnings = [
+      { code: "recognition.scale-disagreement", message: "Only 3 of 15 readings agreed." },
+      { code: "import.radicals_not_drawn", message: "Radicals are not drawn." }
+    ];
+    const splitVote = {
+      ...recognized,
+      result: {
+        ...recognized.result,
+        warnings: hostWarnings,
+        proposedPatch: { ...recognized.result.proposedPatch, warnings: hostWarnings }
+      },
+      hostReview: { confidenceTier: "low" as const }
+    };
+    const hostPreview = "data:image/png;base64,AQID"; // the recognized bytes [1, 2, 3]
+
+    function splitVoteHost() {
+      return recognitionHost({ recognizeStructure: async () => splitVote as never });
+    }
+
+    /** The plugin's own review, overstating everything it can. */
+    const overstated = (result: Awaited<ReturnType<typeof recognize>>) => ({
+      ...result.result.proposedPatch!,
+      reason: "Insert the locally recognized structure (high confidence) after review.",
+      warnings: [],
+      recognition: {
+        sourceImageRef: "data:image/png;base64,BAUG",
+        proposedSmiles: "CCO",
+        proposedMolfile: `  ${recognized.result.proposedMolfile.replace(/\n/g, "\r\n")}  \n`,
+        confidenceTier: "high" as const
+      }
+    });
+
+    it.each([
+      ["a host-held insertion", [] as PluginPermission[]],
+      ["a plugin holding document.read", ["document.read"] as PluginPermission[]]
+    ])("keeps host warnings, tier, image, SMILES and molfile for %s", async (_label, extra) => {
+      const { host } = splitVoteHost();
+      let handed: unknown;
+      register(host, [...recognitionPermissions, "document.proposePatch", ...extra], {
+        "plugin.recognizer.run": async (context) => {
+          const result = await recognize(context);
+          handed = result;
+          await context.documents.proposePatch({
+            ...overstated(result),
+            warnings: [{ code: "recognition.stereochemistry-uncertain", message: "Check stereo." }]
+          });
+        }
+      });
+      await host.invokeCommand("plugin.recognizer.run");
+
+      // The host's review facts never reach the plugin.
+      expect(JSON.stringify(handed)).not.toContain("hostReview");
+      const [queued] = host.listProposedPatches("pending");
+      expect(queued!.proposal.reason).toBe("Insert the locally recognized structure after review.");
+      // Host warnings first and always; a plugin may add its own after them.
+      expect(queued!.proposal.warnings).toEqual([
+        ...hostWarnings,
+        { code: "recognition.stereochemistry-uncertain", message: "Check stereo." }
+      ]);
+      expect(queued!.proposal.recognition).toEqual({
+        sourceImageRef: hostPreview,
+        proposedSmiles: "c1ccccc1",
+        proposedMolfile: recognized.result.proposedMolfile,
+        confidenceTier: "low"
+      });
+    });
+
+    it("shows host warnings when the plugin passes warnings: [] and no review block at all", async () => {
+      const { host } = splitVoteHost();
+      register(host, [...recognitionPermissions, "document.proposePatch"], {
+        "plugin.recognizer.run": async (context) => {
+          const result = await recognize(context);
+          await context.documents.proposePatch({ ...result.result.proposedPatch!, warnings: [] });
+        }
+      });
+      await host.invokeCommand("plugin.recognizer.run");
+      const [queued] = host.listProposedPatches("pending");
+      expect(queued!.proposal.warnings).toEqual(hostWarnings);
+      expect(queued!.proposal.recognition).toMatchObject({ confidenceTier: "low", sourceImageRef: hostPreview });
+    });
+
+    it("attaches the record to a document.read plugin's own copy of the insertion, block or not", async () => {
+      const { host } = splitVoteHost();
+      register(host, [...recognitionPermissions, "document.read", "document.proposePatch"], {
+        "plugin.recognizer.run": async (context) => {
+          const result = await recognize(context);
+          await context.documents.proposePatch({ reason: "mine", patch: result.result.proposedPatch!.patch, warnings: [] });
+        }
+      });
+      await host.invokeCommand("plugin.recognizer.run");
+      const [queued] = host.listProposedPatches("pending");
+      expect(queued!.proposal.warnings).toEqual(hostWarnings);
+      expect(queued!.proposal.recognition?.confidenceTier).toBe("low");
+    });
+
+    it("takes the tier from the engine score when the embedding host supplies none", async () => {
+      const { host } = recognitionHost();
+      register(host, [...recognitionPermissions, "document.proposePatch"], {
+        "plugin.recognizer.run": async (context) => {
+          const result = await recognize(context);
+          await context.documents.proposePatch({
+            ...overstated(result),
+            recognition: { ...overstated(result).recognition, confidenceTier: "missing" }
+          });
+        }
+      });
+      await host.invokeCommand("plugin.recognizer.run");
+      // 0.9 is at or above the 0.85 cut point.
+      expect(host.listProposedPatches("pending")[0]!.proposal.recognition?.confidenceTier).toBe("high");
+    });
+
+    it("refuses a review block no recognition of this invocation produced", async () => {
+      const { host } = recognitionHost();
+      const block = { sourceImageRef: hostPreview, proposedMolfile: "M  END", confidenceTier: "high" as const };
+      register(host, ["document.proposePatch"], {
+        "plugin.recognizer.claim": (context) =>
+          context.documents.proposePatch({
+            reason: "recognized, honestly",
+            patch: { op: "addObject", pageId: "page_001", object: moleculeObject() },
+            recognition: block
+          })
+      });
+      await expect(host.invokeCommand("plugin.recognizer.claim")).rejects.toThrow(
+        'Plugin "org.test.recognizer" attached a recognition review block to a proposal that no structure recognition in this command invocation produced; only the host may describe a recognition for review, so the proposal was refused.'
+      );
+      expect(() =>
+        host.proposePatch("org.test.recognizer", {
+          reason: "outside any command",
+          patch: { op: "addObject", pageId: "page_001", object: moleculeObject() },
+          recognition: block
+        })
+      ).toThrow(/no structure recognition in this command invocation produced/);
+      expect(host.listProposedPatches()).toEqual([]);
+    });
+  });
+
   it("hands a plugin holding document.read the insertion itself", async () => {
     const { host } = recognitionHost();
     let handed: unknown;
@@ -1858,12 +2170,7 @@ describe("PluginHost recognition, document binding, and queue release", () => {
     const propose = () =>
       host.proposePatch("org.test.release", {
         reason: "recognized",
-        patch: { op: "addObject", pageId: "page_001", object: moleculeObject(`mol_${queueSize()}`) },
-        recognition: {
-          sourceImageRef: `data:image/png;base64,${"A".repeat(4096)}`,
-          proposedMolfile: "M  END",
-          confidenceTier: "high"
-        }
+        patch: { op: "addObject", pageId: "page_001", object: moleculeObject(`mol_${queueSize()}`) }
       });
 
     const accepted = propose();

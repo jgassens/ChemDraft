@@ -177,7 +177,7 @@ export function PatchReviewList({
 }
 
 export function proposalReviewItem(host: PluginHost, proposal: QueuedProposedPatch): PluginProposalReviewItem {
-  // The plugin chose the confidence tier; the host caps it by how far its engine's runs agreed.
+  // The plugin host already attached its own record of a recognition (tier, image, warnings) on queueing.
   const { recognition, warnings } = reviewedRecognition(proposal.proposal.recognition, proposal.proposal.warnings);
   return {
     id: proposal.id,

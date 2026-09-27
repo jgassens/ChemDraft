@@ -679,7 +679,9 @@ export interface PluginStorage {
 export interface PluginDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
-  /** Present only with `document.write`; valid only during one of this plugin's command invocations. */
+  /** Present only with `document.write`; valid only during one of this plugin's command invocations.
+   *  Inserts only (`addObject`, `addAnnotation`): the host refuses any other op, which must be proposed.
+   *  A plugin declaring the recognition permissions may not declare `document.write` at all. */
   applyPatch?(patch: ProposedDocumentPatch): Promise<AppliedPatchReceipt>;
 }
 

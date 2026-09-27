@@ -1,12 +1,9 @@
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
-import type {
-  PluginProvidedImage,
-  PluginRecognitionResult,
-  RecognitionWarning
-} from "@chemdraft/plugin-api";
+import type { PluginProvidedImage, RecognitionWarning } from "@chemdraft/plugin-api";
+import type { HostRecognitionOutcome } from "@chemdraft/plugin-host";
 
 import { createNativeMolfileMolecule } from "../documentWorkflow";
-import { recognitionAgreementWarning, rememberRecognitionAgreement } from "./recognitionAgreement";
+import { hostRecognitionConfidenceTier, recognitionAgreementWarning } from "./recognitionAgreement";
 import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import type { StructureRecognitionOutcome } from "./structureRecognitionEngine";
 
@@ -19,13 +16,15 @@ const RESERVED_RECOGNITION_OBJECT_IDS = new Set<string>();
 
 /** Validate and turn native MolScribe output into the SDK result a plugin may propose. Molfile parsing
  * and document geometry deliberately reuse the same import path as MOL paste; no recognition-specific
- * chemistry parser exists here. */
+ * chemistry parser exists here. A recognized result also carries `hostReview` — the agreement-capped
+ * confidence tier — which the plugin host keeps with the recognition and strips before the plugin sees
+ * the result. */
 export async function preparePluginStructureRecognition(
   outcome: Extract<StructureRecognitionOutcome, { status: "recognized" }>,
   image: PluginProvidedImage,
   document: ChemDraftDocument | undefined,
   validate: RecognitionStructureValidator = validateWithAvailableChemistryAdapter
-): Promise<PluginRecognitionResult> {
+): Promise<HostRecognitionOutcome> {
   if (!document?.pages[0]) {
     return { status: "failed", code: "invalidResult", message: "There is no open page for the recognized structure." };
   }
@@ -92,7 +91,6 @@ export async function preparePluginStructureRecognition(
   // on wrong answers as on right ones.
   const agreementWarning = recognitionAgreementWarning(outcome.agreement);
   const agreementWarnings: RecognitionWarning[] = agreementWarning ? [agreementWarning] : [];
-  rememberRecognitionAgreement(outcome.molfile, outcome.agreement);
   // MolScribe may omit a per-atom or per-bond score. A missing score is not a low one, and the SDK
   // schema accepts only real scores, so the points are left out and the reviewer is told (AGENTS.md §8).
   const atomConfidence = confidencePoints(outcome.atoms.map((atom) => [String(atom.index), atom.confidence]));
@@ -139,7 +137,8 @@ export async function preparePluginStructureRecognition(
       },
       engine: outcome.engine,
       elapsedMs: outcome.elapsedMs
-    }
+    },
+    hostReview: { confidenceTier: hostRecognitionConfidenceTier(outcome.confidence, outcome.agreement) }
   };
 }
 

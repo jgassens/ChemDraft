@@ -378,6 +378,17 @@ export class PluginWorkerBridge {
     }
 
     const method = (capability as CapabilityMethods)[message.method];
+    if (typeof method !== "function") {
+      // The namespace is granted but this method is not: the host builds a method onto the context only
+      // when the plugin declared what it costs (`documents.applyPatch` needs `document.write`,
+      // `chemistry.nameToStructure` needs `native.execute`). Same refusal as an ungranted namespace,
+      // rather than a raw TypeError from calling `undefined`.
+      this.sendCapabilityError(message.requestId, {
+        code: PluginWorkerErrorCodes.CapabilityNotGranted,
+        message: `Plugin "${this.pluginId}" is not granted the "${message.namespace}.${message.method}" capability.`
+      });
+      return;
+    }
     Promise.resolve()
       .then(() => method.apply(capability, [...message.args]))
       .then(

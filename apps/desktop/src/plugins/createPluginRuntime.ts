@@ -195,6 +195,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const recognitionEngine =
     options.structureRecognitionEngine ??
     (isTauriHost() ? new TauriStructureRecognitionEngine() : new UnsupportedStructureRecognitionEngine());
+  // The prepared result carries `hostReview` (the agreement-capped tier). The controller returns that
+  // same object to `recognizeStructure` below, and the plugin host keeps the review with the
+  // recognition and strips it before the plugin sees the result.
   const recognition = new StructureRecognitionController(recognitionEngine, (outcome, image) =>
     options.recognitionStructureValidator
       ? preparePluginStructureRecognition(

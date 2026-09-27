@@ -285,6 +285,28 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     expect(grant).toMatchObject({ ok: true, value: { objectIds: [], molecules: [] } });
     expect(selectionCalls).toBe(1);
 
+    // A whitelisted method the host left off a granted namespace (applyPatch without document.write)
+    // is refused like an ungranted capability — not a TypeError from calling `undefined`.
+    workerSide.postMessage({
+      kind: "capabilityRequest",
+      requestId: 104,
+      commandRequestId,
+      namespace: "documents",
+      method: "applyPatch",
+      args: [{ reason: "sneak", patch: { op: "addObject" } }]
+    });
+    await flush();
+    const missingMethod = sentToWorker.find(
+      (m): m is Extract<HostToWorkerMessage, { kind: "capabilityResult" }> => m.kind === "capabilityResult" && m.requestId === 104
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: {
+        code: PluginWorkerErrorCodes.CapabilityNotGranted,
+        message: 'Plugin "org.test.caps" is not granted the "documents.applyPatch" capability.'
+      }
+    });
+
     workerSide.postMessage({ kind: "commandSettled", commandRequestId, ok: true, value: { ok: true } });
     await expect(invocation).resolves.toEqual({ ok: true });
     bridge.terminate();

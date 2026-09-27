@@ -21,6 +21,9 @@ import type {
   PluginImagesAPI,
   PluginRecognitionAPI,
   PluginRecognitionResult,
+  RecognitionConfidenceTier,
+  RecognitionProposalReview,
+  RecognitionWarning,
   PluginIsotopeEnvelopeRequest,
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
@@ -59,6 +62,8 @@ import {
   PluginImageRequestSchema,
   PluginProvidedImageSchema,
   PluginRecognitionResultSchema,
+  RecognitionConfidenceTierSchema,
+  RecognitionProposalReviewSchema,
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
@@ -216,6 +221,64 @@ export interface PluginPatchApplicationRequest {
   undoLabel: string;
 }
 
+/**
+ * The four permissions that together grant `recognition.recognizeStructure`. A manifest declaring all of
+ * them is a recognizer, and the host holds it to AGENTS.md §8 at registration.
+ */
+export const RecognitionCapabilityPermissions = [
+  "image.read",
+  "ml.inference",
+  "model.load",
+  "native.execute"
+] as const satisfies readonly PluginPermission[];
+
+/**
+ * Permissions a recognizer may never declare (AGENTS.md §8). `document.write` would let it insert a
+ * recognized structure through `documents.applyPatch` from another — or a concurrent — command, where
+ * the per-invocation proposal-only check cannot see the recognition; `model.download` belongs to the
+ * host, which alone installs the engine after the user asks it to.
+ */
+export const PermissionsForbiddenToRecognizers = [
+  "document.write",
+  "model.download"
+] as const satisfies readonly PluginPermission[];
+
+/**
+ * The only patch ops `documents.applyPatch` accepts. The direct-write exception (API 0.1.4, AGENTS.md
+ * §7) covers deterministic INSERTION of what the user supplied; changing or removing chemistry that is
+ * already in the document is not insertion and must go through proposal review. Both ops refuse an id
+ * that already exists, so neither can overwrite an object.
+ */
+export const DirectWritePatchOps = ["addObject", "addAnnotation"] as const;
+
+/**
+ * Review cut points on the engine's overall confidence score, used when the embedding host supplies no
+ * tier of its own (`HostRecognitionReview`). They are the published MolScribe plugin's thresholds, so a
+ * host without agreement data shows the same tier that plugin would have claimed — never a higher one.
+ */
+export const RecognitionConfidenceThresholds = { high: 0.85, medium: 0.65 } as const;
+
+/** The review tier the host assigns an engine confidence score on its own. */
+export function recognitionConfidenceTierFromScore(confidence: number | null): RecognitionConfidenceTier {
+  if (confidence === null) return "missing";
+  if (confidence >= RecognitionConfidenceThresholds.high) return "high";
+  if (confidence >= RecognitionConfidenceThresholds.medium) return "medium";
+  return "low";
+}
+
+/**
+ * Review facts only the embedding host knows about a recognition — for the desktop, the confidence tier
+ * after capping it by how far the engine's runs at different image sizes agreed. Never shown to the
+ * plugin: the host strips it before the result is validated and handed out.
+ */
+export interface HostRecognitionReview {
+  confidenceTier: RecognitionConfidenceTier;
+}
+
+/** What an embedding host's `recognizeStructure` returns: the plugin-facing result, plus, for a
+ *  recognized structure, the host's own review facts. */
+export type HostRecognitionOutcome = PluginRecognitionResult & { hostReview?: HostRecognitionReview };
+
 export interface PluginHostOptions {
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
@@ -246,12 +309,14 @@ export interface PluginHostOptions {
     signal: AbortSignal
   ) => PluginImageRequestResult | Promise<PluginImageRequestResult>;
   /** Runs host-owned local recognition. The image has already been verified as one handed to this
-   * invocation; installation and any user consent stay entirely on the embedding host side. */
+   * invocation; installation and any user consent stay entirely on the embedding host side. A
+   * recognized result may carry `hostReview`, which the host keeps for the proposal review and never
+   * hands to the plugin. */
   recognizeStructure?: (
     plugin: { id: string; name: string },
     image: PluginProvidedImage,
     signal: AbortSignal
-  ) => PluginRecognitionResult | Promise<PluginRecognitionResult>;
+  ) => HostRecognitionOutcome | Promise<HostRecognitionOutcome>;
   /** Commits a validated direct patch through the embedding application's normal document/history path. */
   applyDocumentPatch?: (
     request: PluginPatchApplicationRequest
@@ -672,18 +737,18 @@ export class PluginHost {
     invocationToken: symbol | undefined
   ): { snapshot: QueuedProposedPatch; hostHeld: boolean } {
     this.requirePermission(pluginId, "document.proposePatch");
-    let parsedProposal = ProposedDocumentPatchSchema.parse(proposal);
+    const pluginProposal = ProposedDocumentPatchSchema.parse(proposal);
+    let parsedProposal = pluginProposal;
     const hostHeld = isHostHeldRecognitionPatch(parsedProposal.patch);
     const heldRef = hostHeld ? (parsedProposal.patch as unknown as { ref?: unknown }).ref : undefined;
+    const activeInvocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    const invocation = activeInvocation?.pluginId === pluginId ? activeInvocation : undefined;
+    let hostRecognition: HostRecognitionRecord | undefined;
     if (hostHeld) {
       const ref = heldRef;
       const held = invocationToken ? this.heldRecognitionPatches.get(invocationToken) : undefined;
       const heldPatch = typeof ref === "string" ? held?.get(ref) : undefined;
-      if (
-        !invocationToken ||
-        this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId ||
-        !heldPatch
-      ) {
+      if (!invocation || !heldPatch) {
         throw new PluginHostError(
           `Plugin "${pluginId}" may propose a recognized structure only once, during the command invocation that recognized it.`
         );
@@ -691,6 +756,19 @@ export class PluginHost {
       // Single use: a second proposal of the same insertion would collide on its object id.
       held!.delete(ref as string);
       parsedProposal = { ...parsedProposal, patch: heldPatch.patch };
+      hostRecognition = invocation.recognizedImages.find((entry) => entry.ref === ref)?.record;
+    } else if (invocation) {
+      hostRecognition = matchHostRecognition(invocation.recognizedImages, parsedProposal);
+    }
+    if (!hostRecognition && parsedProposal.recognition !== undefined) {
+      // Only the host describes a recognition for review. A block with no recognition behind it is a
+      // plugin vouching for a structure — tier, source image and all — that the host never saw.
+      throw new PluginHostError(
+        `Plugin "${pluginId}" attached a recognition review block to a proposal that no structure recognition in this command invocation produced; only the host may describe a recognition for review, so the proposal was refused.`
+      );
+    }
+    if (hostRecognition) {
+      parsedProposal = withHostRecognitionReview(parsedProposal, hostRecognition);
     }
     const timestamp = this.timestamp();
     const queued: QueuedProposedPatch = {
@@ -704,7 +782,7 @@ export class PluginHost {
     // Snapshot BEFORE enqueueing: if a proposal cannot be cloned/frozen at all, it must never reach
     // the queue, or the tray's next render throws on an entry the user has no way to dismiss.
     const snapshot = snapshotProposal(queued);
-    const screenSource = this.screenCaptureSourceFor(invocationToken, parsedProposal, heldRef);
+    const screenSource = this.screenCaptureSourceFor(invocationToken, pluginProposal, heldRef);
     if (screenSource) this.recognitionSources.set(queued.id, screenSource);
     this.proposedPatches.set(queued.id, queued);
     this.onProposedPatchesChanged?.();
@@ -724,9 +802,15 @@ export class PluginHost {
       );
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
-    // Recognition is proposal-only (AGENTS.md §7/§8): enforced here, not left to plugin good manners.
-    // The rule is per invocation rather than per plugin, so one plugin may still recognize images in
-    // one command and write deterministic user input in another.
+    const op = (parsedPatch.patch as { op: string }).op;
+    if (!(DirectWritePatchOps as readonly string[]).includes(op)) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" passed a "${op}" patch to documents.applyPatch, which only inserts new content (${DirectWritePatchOps.join(", ")}); changing or removing what is already in the document must go through documents.proposePatch for review.`
+      );
+    }
+    // Recognition is proposal-only (AGENTS.md §7/§8). Registration already refuses a recognizer that
+    // declares `document.write` (`assertRecognizerPermissions`); these per-invocation checks stay as
+    // defence in depth, so a gap in that policy still cannot turn a recognition into a direct write.
     if (invocation.recognized) {
       throw new PluginHostError(
         `Plugin "${pluginId}" recognized an image in this command, so its result must go through documents.proposePatch for review; documents.applyPatch was refused.`
@@ -953,7 +1037,6 @@ export class PluginHost {
         `Plugin "${pluginId}" may call dialogs.promptText at most once per command invocation.`
       );
     }
-    this.textPromptInvocations.add(invocationToken);
     if (this.openTextPrompts.has(pluginId)) {
       throw new PluginHostError(
         `Plugin "${pluginId}" already has an open dialogs.promptText request; concurrent prompts are not allowed.`
@@ -965,6 +1048,11 @@ export class PluginHost {
 
     const parsedRequest = PluginPromptTextRequestSchema.parse(request);
     const plugin = this.requireRegisteredPlugin(pluginId);
+    // The once-per-invocation allowance is spent only now, when a prompt is actually about to be shown:
+    // a call refused above (concurrent prompt, no prompt UI, invalid request) showed the user nothing,
+    // so a corrected retry in the same invocation must still be allowed. Everything from the checks to
+    // here is synchronous, so a concurrent second call still finds the allowance spent.
+    this.textPromptInvocations.add(invocationToken);
     const abortController = new AbortController();
     const openPrompt = { invocationToken, abortController };
     this.openTextPrompts.set(pluginId, openPrompt);
@@ -1111,13 +1199,16 @@ export class PluginHost {
         ),
         cancelledOnAbort
       ]);
-      const parsed = PluginRecognitionResultSchema.parse(result);
+      // The host's review facts never reach the plugin; the rest is validated as the plugin will see it.
+      const { hostReview, ...pluginResult } = result as HostRecognitionOutcome;
+      const parsed = PluginRecognitionResultSchema.parse(pluginResult);
       if (parsed.status !== "recognized") return parsed;
       const invocation = this.activeCommandInvocations.get(invocationToken);
       if (invocation) invocation.recognized = true;
+      const record = hostRecognitionRecord(parsed.result, heldImage, hostReview);
       const proposedPatch = parsed.result.proposedPatch;
       if (!proposedPatch || this.hasPermission(pluginId, "document.read")) {
-        invocation?.recognizedImages.push({ image: heldImage });
+        invocation?.recognizedImages.push({ image: heldImage, record });
         return parsed;
       }
       // No `document.read`: keep the document-derived insertion host-side and hand out an opaque
@@ -1125,7 +1216,7 @@ export class PluginHost {
       // An invocation that already ended can never propose, so nothing is held for it.
       const ref = `recognition_${this.createId()}`;
       if (invocation) {
-        invocation.recognizedImages.push({ image: heldImage, ref });
+        invocation.recognizedImages.push({ image: heldImage, ref, record });
         const held = this.heldRecognitionPatches.get(invocationToken) ?? new Map<string, NormalizedProposedDocumentPatch>();
         held.set(ref, proposedPatch);
         this.heldRecognitionPatches.set(invocationToken, held);
@@ -1246,8 +1337,119 @@ interface ActiveCommandInvocation {
   /** Set once recognition returned a structure in this invocation; `applyPatch` is then refused. */
   recognized: boolean;
   /** The host-held images recognition returned a structure for in this invocation, with the opaque
-   *  `ref` handed out in place of the insertion when the plugin lacks `document.read`. */
-  recognizedImages: { image: PluginProvidedImage; ref?: string }[];
+   *  `ref` handed out in place of the insertion when the plugin lacks `document.read`, and the host's
+   *  own review record for that recognition. */
+  recognizedImages: { image: PluginProvidedImage; ref?: string; record: HostRecognitionRecord }[];
+}
+
+/**
+ * What the host itself knows about one recognition, kept for the proposal review. It is bound to the
+ * recognition (its held `ref`, image, and inserted object) — never looked up by text a plugin echoes
+ * back — so a plugin can add to what the reviewer sees but cannot remove or overrule any of it.
+ */
+interface HostRecognitionRecord {
+  /** The warnings the host attached to the result: engine agreement, missing scores, validation, import. */
+  warnings: RecognitionWarning[];
+  reason: string;
+  /** The review block the host shows; absent when the recognition returned no MOL block to review. */
+  review: RecognitionProposalReview | undefined;
+  /** Id of the object the host's own insertion adds, to recognize that insertion when it comes back. */
+  objectId: string | undefined;
+}
+
+const HOST_RECOGNITION_REASON = "Insert the locally recognized structure after review.";
+
+function hostRecognitionRecord(
+  result: Extract<PluginRecognitionResult, { status: "recognized" }>["result"],
+  image: PluginProvidedImage,
+  hostReview: HostRecognitionReview | undefined
+): HostRecognitionRecord {
+  const confidenceTier = hostReview
+    ? RecognitionConfidenceTierSchema.parse(hostReview.confidenceTier)
+    : recognitionConfidenceTierFromScore(result.confidence);
+  // The preview is the host's own copy of the recognized bytes, not a string anyone handed back.
+  const review = result.proposedMolfile
+    ? RecognitionProposalReviewSchema.safeParse({
+        sourceImageRef: bytesDataUri(image.mediaType, image.bytes),
+        ...(result.proposedSmiles ? { proposedSmiles: result.proposedSmiles } : {}),
+        proposedMolfile: result.proposedMolfile,
+        confidenceTier,
+        ...(result.engine ? { engine: result.engine } : {}),
+        ...(result.elapsedMs === undefined ? {} : { elapsedMs: result.elapsedMs })
+      })
+    : undefined;
+  const patch = result.proposedPatch?.patch as { op?: unknown; object?: { id?: unknown } } | undefined;
+  return {
+    warnings: mergeRecognitionWarnings(result.warnings, result.proposedPatch?.warnings ?? []),
+    reason: result.proposedPatch?.reason ?? HOST_RECOGNITION_REASON,
+    review: review?.success ? review.data : undefined,
+    objectId: patch?.op === "addObject" && typeof patch.object?.id === "string" ? patch.object.id : undefined
+  };
+}
+
+/**
+ * The recognition a proposal WITHOUT a host-held ref describes, among those of its own invocation: the
+ * one whose insertion it proposes (same object id), else the one whose image its preview carries, else
+ * the only one. `undefined` when the proposal neither carries a review block nor proposes a recognized
+ * insertion — an unrelated proposal — or when several recognitions fit and none can be told apart.
+ */
+function matchHostRecognition(
+  recognized: ActiveCommandInvocation["recognizedImages"],
+  proposal: NormalizedProposedDocumentPatch
+): HostRecognitionRecord | undefined {
+  if (recognized.length === 0) return undefined;
+  const patch = proposal.patch as { op?: unknown; object?: { id?: unknown } };
+  const objectId = patch.op === "addObject" && typeof patch.object?.id === "string" ? patch.object.id : undefined;
+  const byObject = objectId === undefined ? undefined : recognized.find((entry) => entry.record.objectId === objectId);
+  if (byObject) return byObject.record;
+  if (proposal.recognition === undefined) return undefined;
+  const previewBytes = dataUriBytes(proposal.recognition.sourceImageRef);
+  const byImage = previewBytes ? recognized.filter((entry) => bytesEqual(entry.image.bytes, previewBytes)) : [];
+  if (byImage.length === 1) return byImage[0]!.record;
+  return recognized.length === 1 ? recognized[0]!.record : undefined;
+}
+
+/** The proposal as the reviewer sees it: the host's reason and review block, the host's warnings first,
+ *  then any the plugin added that the host had not already given. */
+function withHostRecognitionReview(
+  proposal: NormalizedProposedDocumentPatch,
+  record: HostRecognitionRecord
+): NormalizedProposedDocumentPatch {
+  const { recognition: _pluginReview, ...rest } = proposal;
+  return {
+    ...rest,
+    reason: record.reason,
+    warnings: mergeRecognitionWarnings(record.warnings, proposal.warnings),
+    ...(record.review ? { recognition: { ...record.review } } : {})
+  };
+}
+
+function mergeRecognitionWarnings(
+  first: readonly RecognitionWarning[],
+  second: readonly RecognitionWarning[]
+): RecognitionWarning[] {
+  const merged: RecognitionWarning[] = [];
+  for (const { code, message } of [...first, ...second]) {
+    if (!merged.some((existing) => existing.code === code)) merged.push({ code, message });
+  }
+  return merged;
+}
+
+/** Refuse a recognizer that also declares a permission AGENTS.md §8 forbids it (see
+ *  `PermissionsForbiddenToRecognizers`). Runs inside `validateTrustedPluginManifest`, so every
+ *  registration path — bundled, installed, fixture, replace — meets it before any state changes. */
+function assertRecognizerPermissions(manifest: PluginManifest): void {
+  const declared = new Set<PluginPermission>(manifest.permissions);
+  if (!RecognitionCapabilityPermissions.every((permission) => declared.has(permission))) return;
+  const conflicting = PermissionsForbiddenToRecognizers.filter((permission) => declared.has(permission));
+  if (conflicting.length === 0) return;
+  throw new PluginPermissionError(
+    `Plugin "${manifest.id}" declares the structure-recognition permissions (${RecognitionCapabilityPermissions.join(
+      ", "
+    )}) together with ${conflicting.map((permission) => `"${permission}"`).join(" and ")}, which a recognizer may not declare: recognized structures are proposal-only and the host alone installs the engine. Remove ${
+      conflicting.length === 1 ? "that permission" : "those permissions"
+    }, or move deterministic direct writes into a separate plugin.`
+  );
 }
 
 function isHostHeldRecognitionPatch(patch: NormalizedProposedDocumentPatch["patch"]): boolean {
@@ -1305,6 +1507,15 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+function bytesDataUri(mediaType: string, bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:${mediaType};base64,${btoa(binary)}`;
+}
+
 /** The bytes of a base64 `data:` URI, or `undefined` when it is not one. */
 function dataUriBytes(uri: string): Uint8Array | undefined {
   const comma = uri.indexOf(",");
@@ -1343,7 +1554,9 @@ class ScopedPluginStorage implements PluginStorage {
 }
 
 export function validateTrustedPluginManifest(candidate: unknown): PluginManifest {
-  return parsePluginManifest(candidate);
+  const manifest = parsePluginManifest(candidate);
+  assertRecognizerPermissions(manifest);
+  return manifest;
 }
 
 type RequiredCommandDefinition = Omit<CommandDefinition, "requiredPermissions" | "enabled" | "source"> & {

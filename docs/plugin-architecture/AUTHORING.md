@@ -104,7 +104,9 @@ if (answer?.status === "submitted") {
 worker. An embedding host that has no prompt UI rejects the call with a plain error rather than hiding
 the capability, so both execution paths see the same shape. `promptText` rejects outside that plugin's active command
 invocation, and each command invocation may call it at most once (including after its first prompt has
-settled). Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
+settled). Only a prompt the user was actually shown uses up that allowance: a call the host refuses
+first — an invalid request, another of the plugin's prompts still open, or a host with no prompt UI —
+leaves it, so a corrected retry in the same invocation still works. Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
 
 ## Host-owned image acquisition
@@ -153,7 +155,9 @@ if (recognized?.status === "recognized") {
 `recognition` is absent if any one permission is missing. The host rejects an image constructed by the
 plugin, modified after selection, retained from another invocation, or used after the command ends.
 If the local engine is absent, the host identifies the requesting plugin and offers installation; the
-plugin cannot request a download and must not declare `model.download`. Declining the install, or an
+plugin cannot request a download. A plugin declaring all four recognition permissions is a recognizer,
+and the host refuses to register one that also declares `model.download` or `document.write` (see
+below) — the error names the plugin and the conflicting permissions. Declining the install, or an
 install that fails, gives `engineNotInstalled`, which a plugin may explain. Cancelling — the user
 cancels a running install, or the command invocation is abandoned — gives `cancelled`: the user
 already knows, so the plugin should stay silent. Recognition failures are typed, and successful results include nullable overall
@@ -164,13 +168,31 @@ available chemistry before proposing it, preserve the source-image preview and a
 warnings, and use `documents.proposePatch`. It must never use `documents.applyPatch` for recognition,
 and the host enforces that (below).
 
+**The review describes the recognition as the host saw it.** When the host recognizes an image it keeps
+its own record of that recognition: the warnings it attached (engine disagreement across image sizes,
+missing scores, validation and import notes), a confidence tier it assigns itself, the recognized bytes,
+and the SMILES and MOL block. When a proposal of that recognition is queued — through the
+`hostHeldRecognition` reference below, or with a `recognition` review block, or (for a plugin holding
+`document.read`) as the host's own insertion — the host attaches that record to it:
+
+- the review block's `confidenceTier`, `sourceImageRef`, `proposedSmiles`, and `proposedMolfile` are the
+  host's, whatever the plugin sent. On the desktop the tier is the engine score's tier capped by how far
+  the engine's readings agreed, so a split vote is shown as low even if the plugin claims high;
+- the proposal's `reason` is the host's, since a plugin's text could claim a confidence the review does
+  not show;
+- the host's warnings always come first. A plugin may add warnings of its own after them; it cannot
+  remove or replace the host's, so passing `warnings: []` hides nothing.
+
+A `recognition` review block on a proposal that no recognition in the same command invocation produced
+is refused: only the host may describe a recognition for review.
+
 **`proposedPatch` without `document.read`.** The insertion the host builds for a recognized structure is
 laid out against the active document — its page id, an object id derived from the document's object
 count, and page-centre coordinates. A plugin that did not declare `document.read` must not learn those,
 so it receives `proposedPatch.patch` as an opaque `{ op: "hostHeldRecognition", ref }`
 (`HostHeldRecognitionPatchOp` in `@chemdraft/plugin-api`). Pass the `proposedPatch` to
-`documents.proposePatch` unchanged — overriding `reason`, `warnings`, and `recognition` is fine — during
-the same command invocation; the host substitutes the real insertion, queues it once, and returns a
+`documents.proposePatch` unchanged — adding warnings is fine; the host's reason, warnings, and review
+block apply regardless (above) — during the same command invocation; the host substitutes the real insertion, queues it once, and returns a
 receipt without the patch. A second proposal of the same `ref`, a forged `ref`, or a proposal after the
 command ends is refused. A plugin that holds `document.read` receives the insertion itself, as before.
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
@@ -178,7 +200,7 @@ The official MolScribe plugin declares `document.proposePatch`, not `document.re
 
 ## Direct document writes versus proposals
 
-A plugin declaring the dangerous `document.write` permission may apply a patch directly while one of
+A plugin declaring the dangerous `document.write` permission may insert content directly while one of
 its own commands is executing. The host validates the same strict `ProposedDocumentPatch` envelope as
 `proposePatch`, commits it through the normal document patch/history path, selects objects inserted by
 the patch, and returns a strict `{ applied: true, objectIds: string[] }` receipt:
@@ -191,26 +213,28 @@ const receipt = await context.documents.applyPatch?.({
 ```
 
 `applyPatch` is absent without `document.write`, and a retained method reference rejects after the
-command invocation ends. The direct write is one undo entry labelled with the plugin and command; it
+command invocation ends. It accepts **insertion only** — `addObject` and `addAnnotation`, both of which
+refuse an id that already exists. Any other op (`removeObject`, `updateObject`, `moveObject`,
+`updatePageLayout`, `setSelection`, …) is refused with an error naming the op: changing or removing what
+is already in the document is not deterministic insertion of user input, so it goes through
+`proposePatch` and the user's review. The direct write is one undo entry labelled with the plugin and command; it
 does not open the proposal review tray/window.
 
 Use `applyPatch` only when the user supplied the input and the result is deterministic, such as a
 name-to-structure command acting on text entered in the host prompt. Use `proposePatch` for uncertain
 or inferred output that needs inspection. Image recognition remains a proposal flow: low confidence,
 stereochemistry, charge/radical, and abbreviation uncertainty require explicit user approval before
-insertion. Holding `document.write` does not relax that recognition rule, and the host enforces it:
+insertion, and the host enforces that at registration: **a plugin declaring the four recognition
+permissions may not also declare `document.write`** (nor `model.download`), and such a manifest is
+refused with an error naming the plugin and the conflicting permissions. A per-invocation rule was not
+enough: a plugin holding both could recognize an image in one command and insert the structure through
+`applyPatch` from another — or from a concurrent — command, where nothing ties the write to the
+recognition. A plugin that needs both recognition and deterministic direct writes (a typed name) ships
+them as two plugins.
 
-- once `recognition.recognizeStructure` has returned `recognized` in a command invocation, every
-  `documents.applyPatch` call in that invocation is refused;
-- `applyPatch` refuses any patch carrying a `recognition` review block, and any
-  `hostHeldRecognition` reference.
-
-The rule is deliberately scoped to the **invocation**, not the plugin: a plugin may declare both the
-recognition permissions and `document.write` and still insert deterministic user input (a typed name)
-from a different command. Refusing `document.write` outright to every plugin holding the recognition
-permissions would have forced such a plugin to split in two without making recognition any safer. What
-the rule cannot see is a plugin that stores a recognized structure and re-creates it in a later command;
-that is a manifest-review matter, the same as any other misuse of a granted permission.
+Behind that, as defence in depth, `applyPatch` still refuses every call in an invocation that has
+recognized a structure, and any patch carrying a `recognition` review block or a `hostHeldRecognition`
+reference.
 
 **A direct write is bound to its document.** The host records which document was active when the
 command started and refuses `applyPatch` if a different document is active when the write arrives —

@@ -78,8 +78,11 @@ describe("preparePluginStructureRecognition", () => {
     const prepared = await preparePluginStructureRecognition(partial, image, createPhase4Document(), validate);
 
     if (prepared.status !== "recognized") throw new Error("expected recognized result");
-    // The SDK's own schema is what the host parses the result with; it must accept this one.
-    expect(PluginRecognitionResultSchema.safeParse(prepared).success).toBe(true);
+    // The SDK's own schema is what the host parses the result with, after keeping `hostReview` for
+    // itself; it must accept the rest.
+    const { hostReview, ...pluginFacing } = prepared;
+    expect(hostReview).toEqual({ confidenceTier: "missing" });
+    expect(PluginRecognitionResultSchema.safeParse(pluginFacing).success).toBe(true);
     expect(prepared.result.atomConfidence).toEqual([{ id: "1", confidence: 0.92 }]);
     expect(prepared.result.bondConfidence).toEqual([]);
     const missing = prepared.result.warnings.find((warning) => warning.code === "recognition.missing_confidence");
