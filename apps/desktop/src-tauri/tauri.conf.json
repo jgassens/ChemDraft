@@ -37,7 +37,13 @@
       "icons/icon.icns"
     ],
     "externalBin": ["binaries/avogadro3d-sidecar"],
-    "resources": ["resources/opsin/*.jar", "resources/opsin/*.txt", "resources/opsin/jre"],
+    "resources": [
+      "resources/opsin/*.jar",
+      "resources/opsin/*.txt",
+      "resources/opsin/jre",
+      "resources/ocsr/*.py",
+      "resources/ocsr/*.txt"
+    ],
     "fileAssociations": [
       {
         "ext": ["chemdraft"],

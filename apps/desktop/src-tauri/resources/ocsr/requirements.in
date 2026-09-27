@@ -1,0 +1,28 @@
+# Input to the hash-locked requirements.txt beside it. Edit this file, then re-lock:
+#
+#   uv pip compile requirements.in --universal --python-version 3.10 --generate-hashes \
+#     -o requirements.txt
+#
+# (uv keeps the versions already in requirements.txt unless told --upgrade.) Then update
+# REQUIREMENTS_LOCK_SHA256 in src/ocsr_engine/pins.rs; a test fails until it matches.
+# See docs/architecture/ocsr-engine.md.
+
+# The reviewed engine versions.
+torch==2.14.0
+torchvision==0.29.0
+numpy==1.26.4
+
+# MolScribe's own install_requires (setup.py at 7296a30413eb55436702011efdff78131f66d162).
+# MolScribe itself is installed afterwards, with --no-deps, from its SHA-256-verified tarball.
+numpy>=1.19.5,<2.0
+pandas
+matplotlib
+opencv-python>=4.5.5.64
+SmilesPE==0.0.3
+OpenNMT-py==2.2.0
+rdkit>=2022.3.3
+albumentations==1.1.0
+timm==0.4.12
+
+# Builds the MolScribe sdist in the venv (--no-build-isolation), so the build backend is locked too.
+setuptools
