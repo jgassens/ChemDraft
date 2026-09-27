@@ -14,7 +14,7 @@ import {
   stylePresetToObjectStyle
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { nativeElementFromAtomLabel, nativeSingleBondGraphMetadata } from "./atoms";
 import {
   clamp,
@@ -423,7 +423,11 @@ function medianNumber(values: readonly number[]): number | undefined {
  * reading before and after, and both reads use this same spelling.
  */
 export function stereoPerceptionMolfile(molecule: MoleculeObject): string {
-  return moleculeToMolfileV2000(molecule, { fromDocFrame: true, abbreviations: "rgroup" });
+  return moleculeToMolfileV2000(molecule, {
+    fromDocFrame: true,
+    abbreviations: "rgroup",
+    kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+  });
 }
 
 export function scaleParsedMolfileAtoms(

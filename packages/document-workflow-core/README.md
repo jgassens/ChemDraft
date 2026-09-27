@@ -17,8 +17,8 @@ desktop importers did not change.
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
-| `atoms.ts` | Element tables, valence and charge rules, atom validation, formula metadata |
-| `smiles.ts` | The native SMILES writer and its bond-order resolution |
+| `atoms.ts` | Valence and charge rules, atom validation, formula metadata; re-exports layout-engine's element table and bond-order counting |
+| `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
 | `graph.ts` | Graph walks over native atoms and bonds |
 | `shared.ts` | Ids, page access, numeric helpers |
@@ -44,6 +44,11 @@ desktop importers did not change.
 - **No copied rendering math.** Bond, label, and stroke geometry belongs to `layout-engine`
   (AGENTS.md §5.26); import it from there, and add an `export` in `layout-engine` if a helper is
   internal.
+- **No second copy of bond-order counting.** The element table, `nativeElementFromAtomLabel`,
+  `nativeBondOrderValue`, `nativeAtomBondOrderUsage`, `atomBondOrderUsageMap`, the kekulizer, and the
+  `clamp`/`distance` helpers live in `layout-engine` and are re-exported here under the same names.
+  Two copies once disagreed about aromatic bonds (1 here, 1.5 there): benzene stored C6H12 while
+  pyrrole's N–H drew as a bare N.
 
 `src/boundary.test.ts` fails if any file here imports from `apps/`, React, Tauri, or the plugin and
 3D runtimes. `packages/chemdraft-cli/src/importBoundary.test.ts` fails if the CLI or MCP server

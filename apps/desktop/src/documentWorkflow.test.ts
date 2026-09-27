@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
+import * as layoutEngine from "@chemdraft/layout-engine";
+import { aromaticFixtures, type AromaticFixture, unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
+import * as workflowCore from "@chemdraft/document-workflow-core";
+import { nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   DefaultNativeDrawingStyle,
@@ -15720,5 +15724,188 @@ describe("clipboard and chemistry review regressions", () => {
     expect(moleculeById(grown, molecule.id).atoms).toHaveLength(3);
     expect(moleculeById(grown, molecule.id).bonds).toHaveLength(2);
     expect(moleculeById(grown, foreign.id)).toEqual(foreign);
+  });
+});
+
+// Aromatic bonds (MOL/RXN type 4, CDXML Order=1.5, a Ketcher V3000 save) used to be counted two
+// ways: the formula/valence copy in document-workflow-core took 1 per bond (benzene stored C6H12,
+// and the carbonyl hotkey put a C=O straight onto a ring carbon: C1(=O)CCCCC1), while layout-engine's
+// label copy took 1.5 (pyrrole's N–H drew as a bare N). Both now count one resolution: each
+// aromatic bond at its Kekulé order, computed once per molecule in layout-engine.
+describe("aromatic bond orders: one count for the formula, the label and the valence check", () => {
+  const formulaHydrogens = (formula: string): number => {
+    const match = formula.match(/H(\d*)/);
+    return match ? (match[1] ? Number(match[1]) : 1) : 0;
+  };
+  const labelHydrogens = (label: string | undefined): number => {
+    const match = label?.match(/H(\d*)/);
+    return match ? (match[1] ? Number(match[1]) : 1) : 0;
+  };
+  const visibleCarbons = (atoms: readonly MoleculeAtom[]): MoleculeAtom[] =>
+    atoms.map((atom) => (atom.element === "C" ? { ...atom, labelVisible: true } : atom));
+  const fixtureMolecule = (fixture: Pick<AromaticFixture, "atoms">, bonds: readonly MoleculeBond[], id = "mol_fixture"): MoleculeObject => ({
+    id,
+    type: "molecule",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    rotation: 0,
+    style: {},
+    structureFormat: "molfile-v2000",
+    structure: "",
+    atoms: fixture.atoms.map((atom) => ({ ...atom, x: 200 + atom.x * 3, y: 200 + atom.y * 3 })),
+    bonds: [...bonds],
+    superatoms: [],
+    rGroups: []
+  });
+  /** Paste the fixture as a V2000 molfile, so its ring bonds arrive as type 4 exactly as a user's would. */
+  const pasted = (fixture: Pick<AromaticFixture, "atoms">, bonds: readonly MoleculeBond[]): ChemDraftDocument => {
+    const molfile = moleculeToMolfileV2000(fixtureMolecule(fixture, bonds), { fromDocFrame: true });
+    return insertNativeMolfileMolecule(createPhase4Document("Aromatic paste"), { x: 240, y: 240 }, molfile, "molfile-v2000");
+  };
+  const reparsedFormula = (smiles: string): string => OCL.Molecule.fromSmiles(smiles).getMolecularFormula().formula;
+  const cases = aromaticFixtures.map((fixture) => [fixture.name, fixture] as const);
+
+  it.each(cases)("%s: the formula is the chemist's formula", (_name, fixture) => {
+    expect(nativeSingleBondGraphMetadata(fixture.atoms, fixture.aromatic).formula).toBe(fixture.formula);
+  });
+
+  it.each(cases)("%s: a type-4 MOL paste stores that formula and draws no badge", (_name, fixture) => {
+    const molecule = selectedMolecule(pasted(fixture, fixture.aromatic));
+    expect(molecule.bonds.some((bond) => bond.order === "aromatic")).toBe(true);
+    expect(molecule.chemistry?.formula).toBe(fixture.formula);
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toEqual([]);
+  });
+
+  it.each(cases)("%s: the drawn labels carry exactly the formula's hydrogens", (_name, fixture) => {
+    const atoms = visibleCarbons(fixture.atoms);
+    const drawn = atoms.reduce(
+      (sum, atom) => sum + labelHydrogens(atomDisplayLabel(atom, fixture.aromatic, DefaultNativeDrawingStyle, atoms)),
+      0
+    );
+    const formula = nativeSingleBondGraphMetadata(atoms, fixture.aromatic).formula ?? "";
+    expect(formula).toBe(fixture.formula);
+    expect(drawn).toBe(formulaHydrogens(formula));
+    for (const [atomId, label] of Object.entries(fixture.heteroatomLabels)) {
+      const atom = atoms.find((candidate) => candidate.id === atomId)!;
+      expect(atomDisplayLabel(atom, fixture.aromatic, DefaultNativeDrawingStyle, atoms), atomId).toBe(label);
+    }
+  });
+
+  it.each(cases)("%s: no valence badge (thiophene S, furan O, fused and C=O carbons included)", (_name, fixture) => {
+    for (const atom of fixture.atoms) {
+      expect(nativeAtomValidationState(atom, fixture.aromatic, atom.formalCharge, fixture.atoms), atom.id)
+        .toMatchObject({ valid: true });
+    }
+    expect(nativeSingleBondGraphMetadata(fixture.atoms, fixture.aromatic).warnings).toEqual([]);
+  });
+
+  it.each(cases)("%s: the Kekulé form counts exactly as before, and both SMILES reparse to the formula", (_name, fixture) => {
+    expect(nativeSingleBondGraphMetadata(fixture.atoms, fixture.aromatic))
+      .toEqual(nativeSingleBondGraphMetadata(fixture.atoms, fixture.kekule));
+    expect(reparsedFormula(nativeSingleBondGraphSmiles(fixture.atoms, fixture.aromatic))).toBe(fixture.formula);
+    expect(reparsedFormula(nativeSingleBondGraphSmiles(fixture.atoms, fixture.kekule))).toBe(fixture.formula);
+    for (const atom of visibleCarbons(fixture.atoms)) {
+      expect(atomDisplayLabel(atom, fixture.aromatic, DefaultNativeDrawingStyle, fixture.atoms))
+        .toBe(atomDisplayLabel(atom, fixture.kekule, DefaultNativeDrawingStyle, fixture.atoms));
+    }
+  });
+
+  it("puts the carbonyl hotkey's C=O on a new carbon, never straight onto an aromatic ring carbon", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const document = pasted(benzene, benzene.aromatic);
+    const molecule = selectedMolecule(document);
+    expect(molecule.chemistry?.formula).toBe("C6H6");
+    const ringCarbon = molecule.atoms[0]!;
+
+    const result = selectedMolecule(applyNativeCarbonylAtAtomTarget(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: ringCarbon.id,
+      distanceToPointer: 0
+    }));
+
+    const oxygen = result.atoms.find((atom) => atom.element === "O")!;
+    const carbonyl = result.bonds.find((bond) => bond.order === "double" && (bond.fromAtomId === oxygen.id || bond.toAtomId === oxygen.id))!;
+    const carbonylCarbon = carbonyl.fromAtomId === oxygen.id ? carbonyl.toAtomId : carbonyl.fromAtomId;
+    expect(carbonylCarbon).not.toBe(ringCarbon.id);
+    expect(result.chemistry?.formula).toBe("C7H6O");
+    expect(result.structureFormat).toBe("smiles");
+    expect(reparsedFormula(result.structure ?? "")).toBe("C7H6O");
+    expect(nativeMoleculeInvalidAtomStates(result)).toEqual([]);
+  });
+
+  it("refuses the methylidene hotkey on an aromatic ring carbon", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const document = pasted(benzene, benzene.aromatic);
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0]!.id, distanceToPointer: 0 };
+    expect(applyNativeAtomSproutTarget(document, target, "methylidene")).toBe(document);
+  });
+
+  it("badges every atom of an aromatic ring with no Kekulé pattern, and says why", () => {
+    const ring = unresolvableAromaticRing();
+    const molecule = selectedMolecule(pasted(ring, ring.bonds));
+    const states = nativeMoleculeInvalidAtomStates(molecule);
+    expect(states.map((state) => state.atomId).sort()).toEqual(molecule.atoms.map((atom) => atom.id).sort());
+    expect(states.every((state) => state.unresolvedAromatic === true)).toBe(true);
+    expect(states[0]!.invalidReason).toContain("could not be resolved into alternating single and double bonds");
+    // Counted single, as the SMILES writer writes it, so the stored formula and SMILES agree.
+    expect(molecule.chemistry?.formula).toBe("C5H10");
+    expect(molecule.chemistry?.warnings.filter((warning) => warning.code === "chemistry.unresolved_aromatic")).toHaveLength(5);
+  });
+
+  it("lets a pasted aromatic ring's bond be redrawn double without breaking its atoms", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const molecule = fixtureMolecule(benzene, benzene.aromatic);
+    const redrawn = molecule.bonds.map((bond, index): MoleculeBond => (index === 0 ? { ...bond, order: "double" } : bond));
+    for (const atom of molecule.atoms) {
+      expect(nativeAtomValidationState(atom, redrawn, 0, molecule.atoms), atom.id).toMatchObject({ valid: true, valenceUsed: 3 });
+    }
+  });
+
+  it("keeps one implementation: document-workflow-core re-exports layout-engine's helpers", () => {
+    const shared = [
+      "atomBondOrderUsageMap",
+      "nativeAtomBondOrderUsage",
+      "nativeBondOrderResolution",
+      "nativeBondOrderValue",
+      "nativeBondValenceContribution",
+      "nativeElementFromAtomLabel",
+      "nativeElementSymbols",
+      "normalizeNativeAtomElementLabel",
+      "clamp",
+      "distance"
+    ] as const;
+    for (const name of shared) {
+      expect(workflowCore[name], name).toBe(layoutEngine[name]);
+    }
+  });
+
+  it("writes a text-typed furan O with molfile valence 2 in the app's own molfiles, not 1.5 per bond's 3", () => {
+    const furan = aromaticFixtures.find((fixture) => fixture.name === "furan")!;
+    const molecule = fixtureMolecule(furan, furan.aromatic);
+    const literal = { ...molecule, atoms: molecule.atoms.map((atom) => (atom.id === "a0" ? { ...atom, labelLiteral: true } : atom)) };
+    const oxygenLine = (molfile: string): string => {
+      const lines = molfile.split("\n");
+      return lines[lines.findIndex((line) => line.includes("V2000")) + 1]!;
+    };
+    expect(oxygenLine(stereoPerceptionMolfile(literal)).slice(48, 51)).toBe("  2");
+
+    const base = createPhase4Document("Literal furan");
+    const pageId = base.pages[0]!.id;
+    const document = applyPatches(
+      base,
+      [
+        { op: "addObject", pageId, object: literal },
+        { op: "setSelection", pageId, objectIds: [literal.id] }
+      ],
+      { now: "2026-05-29T00:00:00.000Z" }
+    );
+    const warnings: string[] = [];
+    expect(oxygenLine(copyAsMolfile(document, "v2000", warnings)!).slice(48, 51)).toBe("  2");
+    expect(copyAsMolfile(document, "v3000", warnings)).toMatch(/ O [^\n]* VAL=2\n/);
+    expect(warnings.filter((warning) => warning.includes("Kekulé"))).toEqual([]);
   });
 });

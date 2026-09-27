@@ -31,6 +31,8 @@
  *     abbreviation like "Ph") writes as a dummy atom ("*") with a warning — the group the label
  *     spells is not represented in the molfile. Consumers inside the app that RANK atoms (CIP
  *     perception, the plugin hand-off) ask for `abbreviations: "rgroup"` instead; see the option.
+ *   - A literal (text-typed) atom on an aromatic bond gets an explicit valence only when the caller
+ *     supplies `kekuleBondOrders`; otherwise the field is omitted with a warning.
  *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
  *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
  */
@@ -64,6 +66,14 @@ export interface MolfileWriteOptions {
    * Either way the group itself is not represented, and the writer warns.
    */
   abbreviations?: "dummy" | "rgroup";
+  /**
+   * Bond id → the order (1 or 2) each aromatic bond takes in a Kekulé structure, for the explicit
+   * valence of literal atoms. Aromatic bonds are still WRITTEN as type 4; this only lets the writer
+   * sum a literal atom's valence correctly. chem-core has no valence model and cannot work the
+   * pattern out itself — `nativeBondOrderResolution(...).kekuleOrders` in layout-engine does. Without
+   * an entry, a literal atom on that aromatic bond gets no valence field and a warning.
+   */
+  kekuleBondOrders?: ReadonlyMap<string, number>;
 }
 
 const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
@@ -141,27 +151,45 @@ function literalAtomValences(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[],
   format: "V2000" | "V3000",
-  warnings?: string[]
+  warnings?: string[],
+  kekuleBondOrders?: ReadonlyMap<string, number>
 ): Map<string, number> {
   const valences = new Map(atoms
     .filter((atom) => atom.labelLiteral === true && atom.element !== "*" && MOLFILE_ATOM_SYMBOLS.has(atom.element))
     .map((atom) => [atom.id, 0]));
   if (valences.size === 0) return valences;
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const unresolvedAromatic = new Set<string>();
   for (const bond of bonds) {
-    // Aromatic type 4 is a code, not four covalent bonds. V2000 emits dative as single; V3000
-    // readers count a coordination bond only at its acceptor, so its donor gets no extra H.
-    const order = bond.order === "aromatic" ? 1.5 : BOND_ORDER_CODE[bond.order];
+    // Aromatic type 4 is a code, not a count. The bond is single or double depending on the ring's
+    // Kekulé pattern; 1.5 per bond matched that only by accident (a benzene C, 3) and was wrong
+    // elsewhere (a furan O read 3, a fused C 4.5). Use the caller's Kekulé order or leave it unset.
+    // V2000 emits dative as single; V3000 readers count a coordination bond only at its acceptor,
+    // so its donor gets no extra H.
+    const kekuleOrder = bond.order === "aromatic" ? kekuleBondOrders?.get(bond.id) : undefined;
+    if (bond.order === "aromatic" && (kekuleOrder === undefined || !Number.isInteger(kekuleOrder))) {
+      unresolvedAromatic.add(bond.fromAtomId);
+      unresolvedAromatic.add(bond.toAtomId);
+      continue;
+    }
+    const order = kekuleOrder ?? BOND_ORDER_CODE[bond.order];
     const dative = format === "V3000" && isDativeBond(bond);
     const [from, to] = dative ? v3000BondAtomIds(bond, atomById) : [bond.fromAtomId, bond.toAtomId];
     if (valences.has(from)) valences.set(from, valences.get(from)! + (dative ? 0 : order));
     if (valences.has(to)) valences.set(to, valences.get(to)! + order);
   }
+  for (const id of unresolvedAromatic) {
+    if (!valences.has(id)) continue;
+    warnings?.push(
+      `Literal atom "${atomById.get(id)!.element}" is on an aromatic bond with no resolved Kekulé order, so its ${format} valence cannot be counted; written without it, so a reader may add hydrogens.`
+    );
+    valences.delete(id);
+  }
   for (const [id, valence] of valences) {
     // CTfile's explicit valence is an integer from 1 to 14, plus a zero-valence sentinel. An
-    // unrepresentable sum (one aromatic bond, 1.5) gets no field and a warning rather than a
-    // rounded value that would invent hydrogens — or an exception that would abort the whole
-    // export, cleanup or 3D pass this writer is feeding.
+    // unrepresentable sum gets no field and a warning rather than a clamped value that would
+    // invent hydrogens — or an exception that would abort the whole export, cleanup or 3D pass
+    // this writer is feeding.
     if (!Number.isInteger(valence) || valence > 14) {
       const atom = atomById.get(id)!;
       warnings?.push(
@@ -301,7 +329,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
   const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings);
+  const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders);
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
@@ -376,7 +404,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   ];
 
   const { symbols, rgroups } = molfileAtomSymbols(atoms, options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings);
+  const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings, options.kekuleBondOrders);
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";

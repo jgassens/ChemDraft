@@ -122,6 +122,7 @@ import {
   doubleBondRendersSymmetric,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
+  nativeBondOrderResolution,
   resolvePageAnchorPoint,
   ringInteriorDoubleBondSides
 } from "@chemdraft/layout-engine";
@@ -794,7 +795,12 @@ export function nativeMoleculeInvalidAtomStates(
   chargeByAtomId: ReadonlyMap<string, number> = new Map()
 ): NativeAtomValidationState[] {
   return molecule.atoms
-    .map((atom) => nativeAtomValidationState(atom, molecule.bonds, atom.formalCharge + (chargeByAtomId.get(atom.id) ?? 0)))
+    .map((atom) => nativeAtomValidationState(
+      atom,
+      molecule.bonds,
+      atom.formalCharge + (chargeByAtomId.get(atom.id) ?? 0),
+      molecule.atoms
+    ))
     .filter((state) => !state.valid);
 }
 
@@ -6764,7 +6770,7 @@ function nativeAtomCanCarryCharge(molecule: MoleculeObject, atom: MoleculeAtom, 
   if (!element) {
     return true;
   }
-  const usage = nativeAtomBondOrderUsage(atom.id, molecule.bonds) + (atom.markRadicals ?? 0);
+  const usage = nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms) + (atom.markRadicals ?? 0);
   return nativeAtomChargeSupportsValence(element, usage, charge);
 }
 
@@ -16980,9 +16986,12 @@ export function copyAsMolfile(
   if (!merged) {
     return undefined;
   }
-  return flavor === "v2000"
-    ? moleculeToMolfileV2000(merged, { fromDocFrame: true, warnings: warningsOut })
-    : moleculeToMolfileV3000(merged, { fromDocFrame: true, warnings: warningsOut });
+  const options = {
+    fromDocFrame: true,
+    warnings: warningsOut,
+    kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders
+  };
+  return flavor === "v2000" ? moleculeToMolfileV2000(merged, options) : moleculeToMolfileV3000(merged, options);
 }
 
 const copyAsPagePaddingPx = 16;
@@ -17794,7 +17803,8 @@ function canSetNativeBondOrder(
   const breaks = (atom: MoleculeAtom): boolean => {
     // A dismissed badge must not license the edit: judge the bare arithmetic.
     const { warningSuppressed: _warningSuppressed, ...bare } = atom;
-    return nativeAtomValidationState(bare, molecule.bonds).valid && !nativeAtomValidationState(bare, nextBonds).valid;
+    return nativeAtomValidationState(bare, molecule.bonds, bare.formalCharge, molecule.atoms).valid &&
+      !nativeAtomValidationState(bare, nextBonds, bare.formalCharge, molecule.atoms).valid;
   };
   return !breaks(fromAtom) && !breaks(toAtom);
 }

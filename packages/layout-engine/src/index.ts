@@ -54,6 +54,30 @@ export type {
   NativeArtVisualPlan
 } from "@chemdraft/art-engine";
 
+import {
+  nativeAtomBondOrderUsage,
+  nativeAtomValenceForCharge,
+  nativeBondOrderResolution,
+  nativeElementFromAtomLabel,
+  type NativeElementSymbol
+} from "./valence";
+
+export {
+  atomBondOrderUsageMap,
+  kekulizeNativeAromaticBonds,
+  nativeAtomBondOrderUsage,
+  nativeAtomChargeIsExpressible,
+  nativeAtomValenceForCharge,
+  nativeBondOrderResolution,
+  type NativeBondOrderResolution,
+  nativeBondOrderValue,
+  nativeBondValenceContribution,
+  nativeElementFromAtomLabel,
+  type NativeElementSymbol,
+  nativeElementSymbols,
+  normalizeNativeAtomElementLabel
+} from "./valence";
+
 export type LayoutCommandId =
   | "layout.group"
   | "layout.ungroup"
@@ -718,7 +742,7 @@ function clampPointToBounds(point: LayoutPoint, bounds: LayoutBounds): LayoutPoi
   };
 }
 
-function distance(left: LayoutPoint, right: LayoutPoint): number {
+export function distance(left: LayoutPoint, right: LayoutPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
@@ -790,7 +814,7 @@ function degreesToRadians(degrees: number): number {
   return degrees * Math.PI / 180;
 }
 
-function clamp(value: number, min: number, max: number): number {
+export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
@@ -4881,9 +4905,7 @@ function leadingImplicitHydrogenElement(label: string): NativeElementSymbol | un
     return undefined;
   }
 
-  return nativeElementSymbolSet.has(match[1])
-    ? match[1] as NativeElementSymbol
-    : undefined;
+  return nativeElementFromAtomLabel(match[1]);
 }
 
 function leadingImplicitHydrogenAtomLabelLayout(
@@ -5045,14 +5067,18 @@ export function atomDisplayLabel(
     const symbol = atom.element.trim() || "C";
     return `${symbol}${chargeLabelSuffix(labelCharge)}`;
   }
-  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
+  // Aromatic bonds count at their Kekulé orders, resolved once per molecule — the same bonds the
+  // formula and the valence check count, so the drawn H count and the formula agree. A molecule
+  // with no aromatic bond gets its own array back.
+  const covalentBonds = nativeBondOrderResolution(atoms, bonds).bonds;
+  const valenceUsed = nativeAtomBondOrderUsage(atom.id, covalentBonds, atoms);
   const formalCharge = atom.formalCharge;
   // A literal label (typed with the text tool) means exactly what it says — no auto-drawn
   // hydrogen count ever. Everything else follows the classic skeletal convention: the
   // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
   // unpaired electron from an associated radical mark occupies a bonding slot, and a dative
   // bond from a pyrrole-type N–H costs that proton (see `dativeDeprotonationCount`).
-  const incidentBonds = bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  const incidentBonds = covalentBonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
   // A carbon whose only bonds are dative (a CO ligand's C drawn as a bare atom) cannot carry
   // four hydrogens as well: under the terminal-carbon style it reads "C", never "CH4".
   const dativeOnlyCarbon = element === "C" && incidentBonds.length > 0 && incidentBonds.every(isDativeBond);
@@ -5061,7 +5087,7 @@ export function atomDisplayLabel(
     : implicitHydrogenLabel(Math.max(
         0,
         nativeAtomValenceForCharge(element, formalCharge) - valenceUsed - (atom.markRadicals ?? 0)
-          - dativeDeprotonationCount(atom, bonds, atoms)
+          - dativeDeprotonationCount(atom, covalentBonds, atoms)
       ));
 
   if (element === "C" && formalCharge === 0) {
@@ -5088,115 +5114,6 @@ export function atomDisplayLabel(
   return hydrogenBeforeElement
     ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
     : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`;
-}
-
-const nativeElementSymbols = [
-  "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
-  "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
-  "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-  "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
-  "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
-  "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
-  "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
-  "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
-  "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
-  "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
-  "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
-  "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"
-] as const;
-type NativeElementSymbol = typeof nativeElementSymbols[number];
-const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
-/** Main-group valence electrons. One table, because the bond count follows from it. */
-const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> = {
-  H: 1,
-  B: 3,
-  C: 4,
-  N: 5,
-  O: 6,
-  F: 7,
-  Al: 3,
-  Si: 4,
-  P: 5,
-  S: 6,
-  Cl: 7,
-  Ge: 4,
-  As: 5,
-  Se: 6,
-  Br: 7,
-  Sn: 4,
-  Te: 6,
-  I: 7
-};
-
-/**
- * How many bonds an atom of this element and formal charge wants — and so, after its real bonds are
- * counted, how many implicit hydrogens it carries.
- *
- * Derived rather than looked up, because a formal charge changes the answer and a stored NEUTRAL
- * valence cannot express that. Counting against the neutral value invented hydrogens that are not
- * there: an alkoxide drew as "OH-" and a trisubstituted carbocation as "CH+" — different molecules
- * from the ones on the page.
- *
- * The octet rule states it exactly. An atom with n valence electrons shares its unpaired ones, so
- * it forms `8 - n` bonds once n reaches 4 and `n` below that; a charge simply moves n. That
- * reproduces every neutral value this table used to hold, and gets O- (1 bond), O+ (3), N+ (4),
- * N- (2), C+ (3), C- (3) and B- (4) right on the way. Hydrogen follows the duet rule instead, so
- * it is handled on its own: H+ and H- both take no bonds.
- */
-export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalCharge: number): number {
-  const electrons = nativeAtomValenceElectrons[element];
-  if (electrons === undefined) {
-    return 0;
-  }
-  if (element === "H") {
-    return Math.max(0, 1 - Math.abs(formalCharge));
-  }
-  const adjusted = electrons - formalCharge;
-  if (adjusted < 0 || adjusted > 8) {
-    return 0;
-  }
-  return adjusted >= 4 ? 8 - adjusted : adjusted;
-}
-
-/**
- * Whether `formalCharge` keeps this element's electron count inside a representable range —
- * distinct from `nativeAtomValenceForCharge` returning 0, which also happens for a charge that
- * legitimately has no room for MORE bonds (H+ and H- both take zero). Without this, a caller that
- * only checks `valenceUsed <= nativeAtomValenceForCharge(...)` can't tell "no more bonds fit" from
- * "this charge doesn't exist" — both collapse to the same 0, and an unbonded atom's valenceUsed of
- * 0 trivially satisfies either one, so charges of arbitrary magnitude appear equally legal.
- *
- * Elements outside the valence-electron table (metals: Na, K, Ca, Fe, ...) have no octet
- * arithmetic to bound them and legitimately carry ionic charges the table cannot express, so
- * they stay permissive — the bound only applies where the octet math actually defines one.
- */
-export function nativeAtomChargeIsExpressible(element: NativeElementSymbol, formalCharge: number): boolean {
-  const electrons = nativeAtomValenceElectrons[element];
-  if (electrons === undefined) {
-    return true;
-  }
-  if (element === "H") {
-    return Math.abs(formalCharge) <= 1;
-  }
-  const adjusted = electrons - formalCharge;
-  return adjusted >= 0 && adjusted <= 8;
-}
-const nativeBondOrderValue: Record<string, number> = {
-  single: 1,
-  double: 2,
-  triple: 3,
-  aromatic: 1.5,
-  unknown: 1
-};
-
-function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-
-  const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
-  return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate as NativeElementSymbol : undefined;
 }
 
 /**
@@ -5292,16 +5209,6 @@ function terminalChalcogenolDeprotonation(
     }
   });
   return donatesToMetal && covalentBonds === 1 && covalentAllSingle ? 1 : 0;
-}
-
-function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {
-  return bonds.reduce((sum, bond) => (
-    bond.fromAtomId === atomId || bond.toAtomId === atomId
-      // A dashed single is dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
-      // drawn hydrogen count ignores it — same rule as the valence checker's.
-      ? sum + (isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1)
-      : sum
-  ), 0);
 }
 
 function heavyAtomNeighborCount(

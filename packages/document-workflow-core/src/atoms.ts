@@ -4,32 +4,36 @@
 import {
   type ChemicalMetadata,
   type CompatibilityWarning,
-  isDativeBond,
   type MoleculeAtom,
   type MoleculeBond
 } from "@chemdraft/chem-core";
 import {
+  atomBondOrderUsageMap,
   dativeDeprotonationCount,
+  nativeAtomBondOrderUsage,
   nativeAtomChargeIsExpressible,
-  nativeAtomValenceForCharge
+  nativeAtomValenceForCharge,
+  nativeBondOrderResolution,
+  nativeElementFromAtomLabel,
+  type NativeElementSymbol
 } from "@chemdraft/layout-engine";
 
-export const nativeElementSymbols = [
-  "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
-  "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
-  "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-  "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
-  "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
-  "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
-  "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
-  "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
-  "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
-  "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
-  "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
-  "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"
-] as const;
+// The element table, label parsing and bond-order counting have ONE implementation, in
+// layout-engine, because the drawn label counts with them too (AGENTS.md §5.26). These are the same
+// functions under the same names, re-exported so existing importers of this package keep working.
+export {
+  atomBondOrderUsageMap,
+  nativeAtomBondOrderUsage,
+  nativeBondOrderResolution,
+  type NativeBondOrderResolution,
+  nativeBondOrderValue,
+  nativeBondValenceContribution,
+  nativeElementFromAtomLabel,
+  type NativeElementSymbol,
+  nativeElementSymbols,
+  normalizeNativeAtomElementLabel
+} from "@chemdraft/layout-engine";
 
-export type NativeElementSymbol = typeof nativeElementSymbols[number];
 
 export interface NativeAtomValidationState {
   atomId: string;
@@ -39,9 +43,12 @@ export interface NativeAtomValidationState {
   expectedFormalCharge?: number;
   valid: boolean;
   invalidReason?: string;
+  /**
+   * Set when the atom sits on aromatic bonds that could not be resolved into a Kekulé pattern: its
+   * valence was counted with those bonds as single, which is a guess the badge has to show.
+   */
+  unresolvedAromatic?: true;
 }
-
-const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
@@ -247,37 +254,19 @@ export function nativeElementMass(element: string): { average: number; exact: nu
   return mass;
 }
 
-export const nativeBondOrderValue: Record<MoleculeBond["order"], number> = {
-  single: 1,
-  double: 2,
-  triple: 3,
-  aromatic: 1,
-  unknown: 1
-};
-
-export function normalizeNativeAtomElementLabel(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return "";
-  }
-
-  const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
-  return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate : trimmed;
-}
-
-export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
-  const normalized = normalizeNativeAtomElementLabel(value);
-  return nativeElementSymbolSet.has(normalized) ? normalized as NativeElementSymbol : undefined;
-}
-
+/**
+ * `atoms` is the whole molecule: an aromatic bond is counted at its Kekulé order, and resolving
+ * that needs every ring atom. Left out, an atom on an aromatic bond is reported unresolved.
+ */
 export function nativeAtomValidationState(
   atom: MoleculeAtom,
   bonds: readonly MoleculeBond[],
-  effectiveFormalCharge = atom.formalCharge
+  effectiveFormalCharge = atom.formalCharge,
+  atoms: readonly MoleculeAtom[] = [atom]
 ): NativeAtomValidationState {
   const element = nativeElementFromAtomLabel(atom.element);
   // Unpaired electrons from associated radical marks occupy bonding slots like bonds do.
-  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds) + (atom.markRadicals ?? 0);
+  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds, atoms) + (atom.markRadicals ?? 0);
 
   // The user dismissed this atom's warning from the context menu — report it valid so no
   // badge renders and no warning is stored, whatever the arithmetic says.
@@ -288,6 +277,21 @@ export function nativeAtomValidationState(
       valenceUsed,
       formalCharge: effectiveFormalCharge,
       valid: true
+    };
+  }
+
+  // Aromatic bonds with no Kekulé pattern were counted as single so the formula and label still
+  // have a number, but that number is a guess: say so on the atom rather than let it pass.
+  if (nativeBondOrderResolution(atoms, bonds).unresolvedAtomIds.has(atom.id)) {
+    const symbol = element ?? (atom.element.trim() || "(blank)");
+    return {
+      atomId: atom.id,
+      element: symbol,
+      valenceUsed,
+      formalCharge: effectiveFormalCharge,
+      valid: false,
+      unresolvedAromatic: true,
+      invalidReason: `${symbol} atom ${atom.id} is on aromatic bonds that could not be resolved into alternating single and double bonds; its hydrogen count assumes single bonds.`
     };
   }
 
@@ -437,6 +441,9 @@ export function nativeSingleBondGraphMetadata(
   bonds: readonly MoleculeBond[]
 ): ChemicalMetadata {
   const elementCounts = new Map<string, number>();
+  // Aromatic bonds count at their Kekulé orders — the same bonds `atomDisplayLabel` counts, so the
+  // formula's hydrogens are the ones the drawing shows.
+  const covalentBonds = nativeBondOrderResolution(atoms, bonds).bonds;
   const valenceUsage = atomBondOrderUsageMap(atoms, bonds);
   const totalCharge = atoms.reduce((sum, atom) => sum + atom.formalCharge, 0);
   const radicalCount = atoms.reduce((sum, atom) => sum + (atom.markRadicals ?? 0), 0);
@@ -469,7 +476,7 @@ export function nativeSingleBondGraphMetadata(
         valenceUsed,
         atom.formalCharge,
         atom.markRadicals ?? 0
-      ) - dativeDeprotonationCount(atom, bonds, atoms));
+      ) - dativeDeprotonationCount(atom, covalentBonds, atoms));
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
@@ -681,42 +688,11 @@ function nativeInvalidAtomWarnings(
   bonds: readonly MoleculeBond[]
 ): CompatibilityWarning[] {
   return atoms
-    .map((atom) => nativeAtomValidationState(atom, bonds))
+    .map((atom) => nativeAtomValidationState(atom, bonds, atom.formalCharge, atoms))
     .filter((state) => !state.valid)
     .map((state) => ({
-      code: "chemistry.invalid_valence",
+      code: state.unresolvedAromatic ? "chemistry.unresolved_aromatic" : "chemistry.invalid_valence",
       message: state.invalidReason ?? `${state.element} atom ${state.atomId} has invalid valence.`,
       objectId: state.atomId
     }));
-}
-
-/**
- * A dashed single bond depicts a dative or partial interaction — a coordinate bond to a metal, a
- * hydrogen bond, a forming/breaking bond — and occupies no covalent valence slot on either
- * atom: pyridine's N keeps its three bonds and no badge while dash-bonded to a zinc.
- */
-export function nativeBondValenceContribution(bond: MoleculeBond): number {
-  return isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1;
-}
-
-export function atomBondOrderUsageMap(
-  atoms: readonly MoleculeAtom[],
-  bonds: readonly MoleculeBond[]
-): ReadonlyMap<string, number> {
-  const usage = new Map(atoms.map((atom) => [atom.id, 0]));
-  bonds.forEach((bond) => {
-    const value = nativeBondValenceContribution(bond);
-    usage.set(bond.fromAtomId, (usage.get(bond.fromAtomId) ?? 0) + value);
-    usage.set(bond.toAtomId, (usage.get(bond.toAtomId) ?? 0) + value);
-  });
-
-  return usage;
-}
-
-export function nativeAtomBondOrderUsage(atomId: string, bonds: readonly MoleculeBond[]): number {
-  return bonds.reduce((sum, bond) => (
-    bond.fromAtomId === atomId || bond.toAtomId === atomId
-      ? sum + nativeBondValenceContribution(bond)
-      : sum
-  ), 0);
 }

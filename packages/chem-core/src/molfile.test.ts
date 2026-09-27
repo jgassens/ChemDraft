@@ -366,15 +366,89 @@ describe("literal element valence", () => {
     expect(atomLines(moleculeToMolfileV2000(graph))[0].slice(48, 51)).toBe("  2");
   });
 
-  it("omits a fractional literal valence with a warning instead of rounding or aborting", () => {
+  it("omits a literal atom's valence on an aromatic bond with no Kekulé order, and says so", () => {
+    // An aromatic bond is single or double depending on its ring's Kekulé pattern, which chem-core
+    // cannot work out. It used to count 1.5, which omitted this field only because 1.5 is not an
+    // integer — and wrote a wrong integer whenever two aromatic bonds met (a furan O read 3).
     const graph = literalNitrogen(true);
     graph.bonds[0].order = "aromatic";
     const warnings: string[] = [];
-    expect(atomLines(moleculeToMolfileV2000(graph, { warnings }))[0].slice(48, 51)).toBe("  0");
+    const v2000 = moleculeToMolfileV2000(graph, { warnings });
+    expect(atomLines(v2000)[0].slice(48, 51)).toBe("  0");
+    expect(v2000).toContain("  1  2  4  0");
     expect(moleculeToMolfileV3000(graph, { warnings })).not.toContain("VAL=");
-    expect(warnings).toHaveLength(2);
-    expect(warnings[0]).toContain('Literal atom "N" has a bond-order sum of 1.5');
-    expect(warnings[1]).toContain("V3000 valence field cannot hold");
+    expect(warnings).toEqual([
+      'Literal atom "N" is on an aromatic bond with no resolved Kekulé order, so its V2000 valence cannot be counted; written without it, so a reader may add hydrogens.',
+      'Literal atom "N" is on an aromatic bond with no resolved Kekulé order, so its V3000 valence cannot be counted; written without it, so a reader may add hydrogens.'
+    ]);
+  });
+
+  describe("literal atoms on aromatic rings count the supplied Kekulé orders", () => {
+    // Furan drawn with aromatic (type-4) bonds, every atom text-typed: O1 C2 C3 C4 C5.
+    const furan = molecule(
+      [
+        { id: "o1", element: "O", x: 0, y: 0, labelLiteral: true },
+        { id: "c2", element: "C", x: 1, y: 0, labelLiteral: true },
+        { id: "c3", element: "C", x: 1.3, y: 1, labelLiteral: true },
+        { id: "c4", element: "C", x: 0.5, y: 1.6 },
+        { id: "c5", element: "C", x: -0.3, y: 1 }
+      ],
+      [
+        { id: "f1", from: "o1", to: "c2", order: "aromatic" },
+        { id: "f2", from: "c2", to: "c3", order: "aromatic" },
+        { id: "f3", from: "c3", to: "c4", order: "aromatic" },
+        { id: "f4", from: "c4", to: "c5", order: "aromatic" },
+        { id: "f5", from: "c5", to: "o1", order: "aromatic" }
+      ]
+    );
+    const kekuleBondOrders = new Map([["f1", 1], ["f2", 2], ["f3", 1], ["f4", 2], ["f5", 1]]);
+
+    it("gives the ring oxygen 2 (1.5 per bond gave 3) and the ring carbon 3, still writing type 4", () => {
+      const warnings: string[] = [];
+      const v2000 = moleculeToMolfileV2000(furan, { warnings, kekuleBondOrders });
+      const lines = atomLines(v2000);
+      expect(lines[0].slice(48, 51)).toBe("  2");
+      expect(lines[1].slice(48, 51)).toBe("  3");
+      expect(lines[2].slice(48, 51)).toBe("  3");
+      expect(lines[3].slice(48, 51)).toBe("  0");
+      expect(v2000.split("\n").filter((line) => /^\s+\d+\s+\d+\s+4\s/.test(line))).toHaveLength(5);
+      const v3000 = moleculeToMolfileV3000(furan, { warnings, kekuleBondOrders });
+      expect(v3000).toContain("M  V30 1 O 0 0 0 0 VAL=2\n");
+      expect(v3000).toContain("M  V30 2 C 1 0 0 0 VAL=3\n");
+      expect(warnings).toEqual([]);
+    });
+
+    it("gives a fused carbon with three aromatic bonds 4, which 1.5 per bond could not write at all", () => {
+      const fused = molecule(
+        [
+          { id: "j", element: "C", x: 0, y: 0, labelLiteral: true },
+          { id: "a", element: "C", x: 1, y: 0 },
+          { id: "b", element: "C", x: -1, y: 0 },
+          { id: "c", element: "C", x: 0, y: 1 }
+        ],
+        [
+          { id: "ja", from: "j", to: "a", order: "aromatic" },
+          { id: "jb", from: "j", to: "b", order: "aromatic" },
+          { id: "jc", from: "j", to: "c", order: "aromatic" }
+        ]
+      );
+      const warnings: string[] = [];
+      const orders = new Map([["ja", 1], ["jb", 2], ["jc", 1]]);
+      expect(atomLines(moleculeToMolfileV2000(fused, { warnings, kekuleBondOrders: orders }))[0].slice(48, 51)).toBe("  4");
+      expect(warnings).toEqual([]);
+    });
+
+    it("drops only the atoms whose aromatic bonds the map leaves out", () => {
+      const warnings: string[] = [];
+      const partial = new Map([["f2", 2], ["f3", 1], ["f4", 2]]);
+      const lines = atomLines(moleculeToMolfileV2000(furan, { warnings, kekuleBondOrders: partial }));
+      expect(lines[0].slice(48, 51)).toBe("  0");
+      expect(lines[1].slice(48, 51)).toBe("  0");
+      expect(lines[2].slice(48, 51)).toBe("  3");
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toContain('Literal atom "O" is on an aromatic bond with no resolved Kekulé order');
+      expect(warnings[1]).toContain('Literal atom "C" is on an aromatic bond with no resolved Kekulé order');
+    });
   });
 
   it("leaves non-element literal labels on the dummy and R-group paths", () => {
