@@ -50,6 +50,12 @@ const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 #[cfg(target_os = "macos")]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
+/// The two Close Window items (File and Window menus). Native-only: handled in Rust, never routed to
+/// the webview. Two ids because muda item ids are meant to be unique.
+#[cfg(target_os = "macos")]
+const CLOSE_WINDOW_FILE_MENU_ID: &str = "app.closeWindow.file";
+#[cfg(target_os = "macos")]
+const CLOSE_WINDOW_WINDOW_MENU_ID: &str = "app.closeWindow.window";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
@@ -372,6 +378,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
                 check_for_updates(app);
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            if command_id == CLOSE_WINDOW_FILE_MENU_ID || command_id == CLOSE_WINDOW_WINDOW_MENU_ID
+            {
+                close_key_window(app);
                 return;
             }
             if is_routed_menu_command(command_id) {
@@ -1185,6 +1197,29 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
+    fn close_window_closes_report_windows_through_tauri_and_everything_else_natively() {
+        use super::{close_window_route, CloseWindowRoute};
+        assert_eq!(
+            close_window_route(Some(&plugin_panel_window_label("v1x6f7267x70616e656c"))),
+            CloseWindowRoute::TauriClose
+        );
+        for other in [
+            Some("main"),
+            Some("preferences"),
+            Some("spin3d-debugger"),
+            Some("toolset-core-main"),
+            Some("plugin-panel-"),
+            None,
+        ] {
+            assert_eq!(
+                close_window_route(other),
+                CloseWindowRoute::PerformClose,
+                "{other:?}"
+            );
+        }
+    }
+
+    #[test]
     fn hex_window_ids_from_the_app_pass_through_unchanged() {
         // panelBridge.ts hides a window by rebuilding this exact label.
         assert_eq!(
@@ -1415,7 +1450,49 @@ fn configure_analysis_window<R: Runtime>(
     }
     // orderFront shows the window without making it key, so this is also the unfocused show.
     ns_window.orderFront(None);
+    attach_to_main_window(window.app_handle(), ns_window);
     Ok(())
+}
+
+/// Makes `child` a child window of the main document window again, if it is not one already.
+///
+/// The builder's `.parent(&main)` attaches a report window only once, at creation, and AppKit drops
+/// the relationship whenever the child is ordered out — which is what `hide()` does. Without this a
+/// re-shown report window is an ordinary window that falls behind the document on the next canvas
+/// click. Call it only once `child` is on screen: `addChildWindow:` orders a hidden child in. A
+/// hidden main window is left alone, because attaching to it would tie the child to its visibility.
+#[cfg(target_os = "macos")]
+fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, child: &NSWindow) {
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let Ok(main_ptr) = main.ns_window() else {
+        return;
+    };
+    let Some(main) = (unsafe { (main_ptr as *mut NSWindow).as_ref() }) else {
+        return;
+    };
+    if std::ptr::eq(main, child) || !main.isVisible() || !child.isVisible() {
+        return;
+    }
+    if child
+        .parentWindow()
+        .is_some_and(|parent| std::ptr::eq(&*parent, main))
+    {
+        return;
+    }
+    unsafe { main.addChildWindow_ordered(child, objc2_app_kit::NSWindowOrderingMode::Above) };
+}
+
+/// `attach_to_main_window` for a Tauri window, for callers outside this file.
+#[cfg(target_os = "macos")]
+pub(crate) fn attach_webview_window_to_main<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let Ok(pointer) = window.ns_window() else {
+        return;
+    };
+    if let Some(ns_window) = unsafe { (pointer as *mut NSWindow).as_ref() } {
+        attach_to_main_window(window.app_handle(), ns_window);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2961,6 +3038,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                     #[cfg(target_os = "macos")]
                     &PredefinedMenuItem::separator(app)?,
+                    #[cfg(target_os = "macos")]
+                    &close_window_menu_item(app, CLOSE_WINDOW_FILE_MENU_ID)?,
+                    #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::close_window(app, None)?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::quit(app, None)?,
@@ -3087,12 +3167,78 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::minimize(app, None)?,
                     &PredefinedMenuItem::maximize(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
+                    #[cfg(target_os = "macos")]
+                    &close_window_menu_item(app, CLOSE_WINDOW_WINDOW_MENU_ID)?,
+                    #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::close_window(app, None)?,
                 ],
             )?,
             &Submenu::with_items(app, "Help", true, &[])?,
         ],
     )
+}
+
+/// Close Window (Cmd+W) on macOS. The predefined item sends `performClose:`, which AppKit refuses
+/// (a beep, no `windowShouldClose:`) for a window without a close button — and every report window
+/// is undecorated, so Cmd+W could never close one and its plugin was never told (AGENTS.md §8a).
+/// This item keeps the predefined title and shortcut but routes by the key window instead.
+#[cfg(target_os = "macos")]
+fn close_window_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: &str,
+) -> tauri::Result<MenuItem<R>> {
+    MenuItem::with_id(app, id, "Close Window", true, Some("CmdOrCtrl+W"))
+}
+
+/// How Close Window closes the key window.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseWindowRoute {
+    /// Tauri's `close()`, which raises `CloseRequested` through the event loop whatever the style
+    /// mask, so the panel takes its own hide-and-notify path in `on_window_event`.
+    TauriClose,
+    /// `performClose:` on the key window: exactly what the predefined item did. Main (which hides
+    /// itself on `CloseRequested`), Preferences, the 3D debugger, and non-Tauri windows such as
+    /// the About panel all keep their behaviour.
+    PerformClose,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn close_window_route(tauri_label: Option<&str>) -> CloseWindowRoute {
+    match tauri_label {
+        Some(label) if is_plugin_panel_window_label(label) => CloseWindowRoute::TauriClose,
+        _ => CloseWindowRoute::PerformClose,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(key_window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() else {
+        return;
+    };
+    let key_ptr = objc2::rc::Retained::as_ptr(&key_window).cast::<std::ffi::c_void>();
+    let tauri_window = app.webview_windows().into_values().find(|window| {
+        window
+            .ns_window()
+            .is_ok_and(|pointer| pointer.cast_const() == key_ptr)
+    });
+    match (
+        close_window_route(tauri_window.as_ref().map(|window| window.label())),
+        tauri_window,
+    ) {
+        (CloseWindowRoute::TauriClose, Some(window)) => {
+            if let Err(error) = window.close() {
+                eprintln!(
+                    "Could not close ChemDraft window {}: {error}",
+                    window.label()
+                );
+            }
+        }
+        _ => key_window.performClose(None),
+    }
 }
 
 #[cfg(target_os = "macos")]

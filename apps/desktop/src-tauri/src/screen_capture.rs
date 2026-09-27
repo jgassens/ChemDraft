@@ -100,9 +100,20 @@ pub(crate) fn open_screen_capture_settings() -> Result<(), ScreenCaptureCommandE
         .map_err(ScreenCaptureCommandError::from)
 }
 
+/// Relaunches after the user grants Screen Recording (macOS only applies it to a new process).
+///
+/// Not `app.restart()`: on the main thread, where this sync command runs, Tauri 2.11 restarts the
+/// process directly, without `RunEvent::ExitRequested`/`Exit` — so the exit hook never shut the OCSR
+/// engine down, and an install's uv child (its own process group) outlived the app and raced the
+/// relaunched one's `remove_stale_staging`. The engine is shut down here first, so even the
+/// fallback inside `request_restart` (which also skips the events) cannot orphan it; then the
+/// restart goes through the event loop, whose exit handler runs as for any other quit.
 #[tauri::command]
 pub(crate) fn relaunch_app(app: AppHandle) {
-    app.restart();
+    crate::APP_QUITTING.store(true, Ordering::SeqCst);
+    app.state::<crate::ocsr_engine::OcsrEngineState>()
+        .shutdown();
+    app.request_restart();
 }
 
 #[tauri::command]
@@ -111,16 +122,22 @@ pub(crate) async fn capture_screen_region(
 ) -> Result<ScreenCaptureResponse, ScreenCaptureCommandError> {
     let temp = capture_temp_file(&app)?;
     let path = temp.path.clone();
+    let sources = recognition_sources_dir(&app);
     // Only windows that are currently visible and not already minimized are changed. Restoring the
     // same set in Drop makes every success/error/cancellation path put ChemDraft back as it was.
     let hidden_windows = HiddenChemDraftWindows::hide(&app);
     let capture = platform_region_capture();
-    let response =
-        tauri::async_runtime::spawn_blocking(move || capture_to_response(capture.as_ref(), &path))
-            .await
-            .map_err(|error| {
-                ScreenCaptureCommandError::Failed(format!("Screen capture task failed: {error}"))
-            })?;
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        let response = capture_to_response(capture.as_ref(), &path);
+        if let Ok(captured) = &response {
+            keep_capture_source(sources, captured);
+        }
+        response
+    })
+    .await
+    .map_err(|error| {
+        ScreenCaptureCommandError::Failed(format!("Screen capture task failed: {error}"))
+    })?;
     drop(hidden_windows);
     drop(temp);
     response
@@ -177,10 +194,12 @@ fn capture_to_response(
     }
 }
 
-/// Accepted screen-capture recognitions keep their source here (AGENTS.md §8: the source image stays
-/// available unless the user deletes it). A capture exists nowhere else once its proposal is accepted:
-/// the temporary file above is gone and the document stores only the structure. Image files the user
-/// chose are never copied here — they are still where the user keeps them.
+/// Every screen-region capture keeps its source here (AGENTS.md §8: the source image stays available
+/// unless the user deletes it). A capture exists nowhere else: the temporary file above is gone as
+/// soon as the command returns, and the document stores at most the structure. So it is kept when
+/// the capture succeeds, not when a proposal is accepted — a rejected proposal, a failed recognition
+/// or no proposal at all would otherwise lose it. Image files the user chose are never copied here;
+/// they are still where the user keeps them.
 const RECOGNITION_SOURCES_DIR: &str = "recognition-sources";
 /// Matches the host's `PluginImageMaxBytes`: nothing larger was ever handed to recognition.
 const MAX_RETAINED_CAPTURE_BYTES: usize = 25 * 1024 * 1024;
@@ -192,19 +211,43 @@ fn recognition_sources_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, St
         .map_err(|error| format!("Could not resolve the app data directory: {error}"))
 }
 
-/// Keeps one accepted screen capture: `bytes_base64` must be a PNG no larger than the host's image
-/// limit. Returns the saved file's path.
+/// Saves a successful capture into `directory` (from `recognition_sources_dir`). Best effort: a
+/// failure is logged and the capture still goes to recognition, since losing the copy is better
+/// than losing the capture.
+fn keep_capture_source(
+    directory: Result<PathBuf, String>,
+    response: &ScreenCaptureResponse,
+) -> Option<PathBuf> {
+    let ScreenCaptureResponse::Captured { bytes, .. } = response else {
+        return None;
+    };
+    match directory.and_then(|directory| retain_capture_in(&directory, bytes)) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("Could not keep the screen capture as a recognition source: {error}");
+            None
+        }
+    }
+}
+
+/// Keeps one screen capture: `bytes_base64` must be a PNG no larger than the host's image limit.
+/// Returns the saved file's path. Decoding, writing and `sync_all` run off the main thread.
 #[tauri::command]
-pub(crate) fn retain_recognition_screen_capture(
+pub(crate) async fn retain_recognition_screen_capture(
     app: AppHandle,
     bytes_base64: String,
 ) -> Result<String, String> {
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(bytes_base64.as_bytes())
-        .map_err(|error| format!("The screen capture was not valid base64: {error}"))?;
-    let path = retain_capture_in(&recognition_sources_dir(&app)?, &bytes)?;
-    Ok(path.display().to_string())
+    let directory = recognition_sources_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(bytes_base64.as_bytes())
+            .map_err(|error| format!("The screen capture was not valid base64: {error}"))?;
+        let path = retain_capture_in(&directory, &bytes)?;
+        Ok(path.display().to_string())
+    })
+    .await
+    .map_err(|error| format!("Keeping the screen capture failed: {error}"))?
 }
 
 /// Opens the folder of kept screen captures in the system file manager, creating it (private and
@@ -224,11 +267,16 @@ pub(crate) fn reveal_recognition_screen_captures(app: AppHandle) -> Result<(), S
     let mut command = std::process::Command::new("explorer.exe");
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut command = std::process::Command::new("xdg-open");
-    command
+    let mut child = command
         .arg(&directory)
         .spawn()
-        .map(drop)
-        .map_err(|error| format!("Could not open {}: {error}", directory.display()))
+        .map_err(|error| format!("Could not open {}: {error}", directory.display()))?;
+    // The opener exits almost at once; reaping it off the main thread keeps each click from leaving
+    // a zombie behind.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 fn retain_capture_in(directory: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -423,31 +471,116 @@ fn unguessable_token() -> String {
 }
 
 struct HiddenChemDraftWindows<R: Runtime> {
+    app: AppHandle<R>,
     windows: Vec<tauri::WebviewWindow<R>>,
+    /// The window that was key before the capture, if it is among `windows`.
+    key: Option<String>,
 }
 
 impl<R: Runtime> HiddenChemDraftWindows<R> {
     fn hide(app: &AppHandle<R>) -> Self {
         let mut windows = Vec::new();
+        let mut key = None;
         for window in app.webview_windows().into_values() {
             let visible = window.is_visible().unwrap_or(false);
             let minimized = window.is_minimized().unwrap_or(false);
+            let focused = window.is_focused().unwrap_or(false);
             if visible && !minimized && window.hide().is_ok() {
+                if focused {
+                    key = Some(window.label().to_string());
+                }
                 windows.push(window);
             }
         }
-        Self { windows }
+        Self {
+            app: app.clone(),
+            windows,
+            key,
+        }
+    }
+}
+
+/// The order hidden windows come back in: every window but the one that should end up key, then
+/// that one. It is the window that was key before the capture, or the main document if nothing
+/// hidden was key. Restoring in map order used to leave whichever came last — often a report
+/// window — key instead of the document.
+fn restore_order(labels: &[&str], key: Option<&str>) -> (Vec<usize>, Option<usize>) {
+    let key = key
+        .and_then(|key| labels.iter().position(|label| *label == key))
+        .or_else(|| {
+            labels
+                .iter()
+                .position(|label| *label == crate::MAIN_WINDOW_LABEL)
+        });
+    let others = (0..labels.len())
+        .filter(|&index| Some(index) != key)
+        .collect();
+    (others, key)
+}
+
+fn restore_hidden_windows<R: Runtime>(windows: &[tauri::WebviewWindow<R>], key: Option<&str>) {
+    let labels: Vec<&str> = windows.iter().map(|window| window.label()).collect();
+    let (others, key) = restore_order(&labels, key);
+    for index in others {
+        restore_without_focus(&windows[index]);
+    }
+    if let Some(index) = key {
+        let window = &windows[index];
+        // `show()` is makeKeyAndOrderFront on macOS: the one restore that should take focus.
+        if let Err(error) = window.show() {
+            eprintln!(
+                "Could not restore ChemDraft window {} after screen capture: {error}",
+                window.label()
+            );
+        }
+    }
+    // Hiding a child window detaches it from its parent in AppKit; put report windows back on the
+    // document now that it is visible again.
+    #[cfg(target_os = "macos")]
+    for window in windows {
+        if crate::is_plugin_panel_window_label(window.label()) {
+            crate::attach_webview_window_to_main(window);
+        }
+    }
+}
+
+/// Shows a window without making it key. Must run on the main thread on macOS.
+fn restore_without_focus<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        // Non-activating, like `open_plugin_panel_window`'s automatic re-show.
+        if let Ok(pointer) = window.ns_window() {
+            if let Some(ns_window) = unsafe { (pointer as *mut objc2_app_kit::NSWindow).as_ref() } {
+                ns_window.orderFront(None);
+                return;
+            }
+        }
+    }
+    if let Err(error) = window.show() {
+        eprintln!(
+            "Could not restore ChemDraft window {} after screen capture: {error}",
+            window.label()
+        );
     }
 }
 
 impl<R: Runtime> Drop for HiddenChemDraftWindows<R> {
     fn drop(&mut self) {
-        for window in &self.windows {
-            if let Err(error) = window.show() {
-                eprintln!(
-                    "Could not restore ChemDraft window {} after screen capture: {error}",
-                    window.label()
-                );
+        let windows = std::mem::take(&mut self.windows);
+        let key = self.key.take();
+        if windows.is_empty() {
+            return;
+        }
+        // The capture command is async, so this runs on a runtime thread; AppKit calls belong on
+        // the main thread. The closure is queued behind the earlier `hide()` messages.
+        let fallback = windows.clone();
+        if let Err(error) = self
+            .app
+            .run_on_main_thread(move || restore_hidden_windows(&windows, key.as_deref()))
+        {
+            eprintln!("Could not schedule ChemDraft window restore after screen capture: {error}");
+            for window in &fallback {
+                let _ = window.show();
             }
         }
     }
@@ -724,6 +857,66 @@ mod tests {
             std::process::id(),
             NEXT_CAPTURE_ID.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn every_successful_capture_is_kept_privately_and_a_failed_keep_never_fails_it() {
+        let base = scratch_dir("capture-kept-at-source");
+        let directory = base.join("recognition-sources");
+        let captured_path = test_path("kept");
+        let captured =
+            capture_to_response(&FakeCapture(Ok(CaptureOutcome::Captured)), &captured_path)
+                .expect("captured response");
+        let _ = std::fs::remove_file(captured_path);
+
+        let kept = keep_capture_source(Ok(directory.clone()), &captured).expect("kept");
+        let ScreenCaptureResponse::Captured { bytes, .. } = &captured else {
+            panic!("expected captured");
+        };
+        assert_eq!(&std::fs::read(&kept).expect("read back"), bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&directory), 0o700);
+            assert_eq!(mode(&kept), 0o600);
+        }
+
+        // A cancelled capture has nothing to keep.
+        assert!(
+            keep_capture_source(Ok(directory.clone()), &ScreenCaptureResponse::Cancelled).is_none()
+        );
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+
+        // An unusable folder (a file in its place, or no app data dir) is reported, not raised.
+        let blocked = base.join("blocked");
+        std::fs::write(&blocked, b"in the way").unwrap();
+        assert!(keep_capture_source(Ok(blocked), &captured).is_none());
+        assert!(keep_capture_source(Err("no app data dir".into()), &captured).is_none());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restores_the_previously_key_window_last() {
+        let labels = ["plugin-panel-v1x61", "main", "toolset-core-main"];
+        assert_eq!(restore_order(&labels, Some("main")), (vec![0, 2], Some(1)));
+        // A report window that was key keeps focus; main is restored without it.
+        assert_eq!(
+            restore_order(&labels, Some("plugin-panel-v1x61")),
+            (vec![1, 2], Some(0))
+        );
+        // Nothing hidden was key: the document takes focus back, never whatever came last.
+        assert_eq!(restore_order(&labels, None), (vec![0, 2], Some(1)));
+        assert_eq!(
+            restore_order(&labels, Some("preferences")),
+            (vec![0, 2], Some(1))
+        );
+        // Without the document among them, nothing is made key.
+        assert_eq!(
+            restore_order(&["plugin-panel-v1x61", "toolset-core-main"], None),
+            (vec![0, 1], None)
+        );
+        assert_eq!(restore_order(&[], Some("main")), (vec![], None));
     }
 
     #[test]
