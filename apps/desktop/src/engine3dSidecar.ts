@@ -1,4 +1,5 @@
 import { moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   Engine3DProtocolVersion,
   createEngine3DBondSignature,
@@ -59,9 +60,11 @@ export interface Engine3dWorkspaceSessionState {
 
 export interface Engine3dWorkspaceStartOptions {
   input: Engine3DSessionInput;
+  warnings?: readonly string[];
 }
 
 export interface Engine3dMoleculeSessionOptions {
+  warnings?: string[];
   selectedAtomIds?: readonly string[];
   coords3dByAtomId?: Readonly<Record<string, Engine3DCoordinate>>;
 }
@@ -117,7 +120,11 @@ export function createEngine3dSessionInputFromMolecule(
     // Geometry spelling for the 3D engine: an abbreviated label goes as the dummy "*" it can
     // place. CIP perception spells its own molfile (stereoPerceptionMolfile, R-groups) and never
     // reads this one.
-    molfile: moleculeToMolfileV2000(molecule, { fromDocFrame: true }),
+    molfile: moleculeToMolfileV2000(molecule, {
+      fromDocFrame: true,
+      warnings: options.warnings,
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+    }).contents,
     format: "molfile-v2000",
     atomIdByMolfileIndex,
     graphSignature: createEngine3DGraphSignature({
@@ -140,7 +147,7 @@ export async function openEngine3dWorkspaceSession(
     input: options.input
   };
   const started = await startEngine3dSidecarSession([engine3dProtocolLine(createRequest)]);
-  let state = reduceEngine3dSidecarOutput(createInitialEngine3dWorkspaceSessionState(started.processSessionId), started);
+  let state = reduceEngine3dSidecarOutput({ ...createInitialEngine3dWorkspaceSessionState(started.processSessionId), warnings: [...(options.warnings ?? [])] }, started);
   if (engine3dWorkspaceSessionSettled(state)) {
     return finalizeEngine3dWorkspaceSession(state);
   }

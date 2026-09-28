@@ -4,6 +4,7 @@
 
 import { isDativeBond, moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 
 import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesBondOrderResolution } from "./smiles";
 
@@ -46,7 +47,11 @@ export async function moleculeSmiles(
     try {
       const writerWarnings: string[] = [];
       const identifiers = await computeStructureIdentifiers(
-        molfile ?? moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings: writerWarnings })
+        molfile ?? moleculeToMolfileV2000(molecule, {
+          fromDocFrame: true,
+          warnings: writerWarnings,
+          kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+        }).contents
       );
       if (identifiers?.smiles) {
         // Only report these losses when the engine's molfile route supplied the output.

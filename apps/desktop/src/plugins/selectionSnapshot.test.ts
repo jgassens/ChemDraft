@@ -1,5 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 
 import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
 
@@ -57,6 +59,18 @@ describe("buildPluginSelectionSnapshot", () => {
 });
 
 describe("pluginFacingStructure", () => {
+  it("preserves unresolved type-4 bonds and surfaces one ring warning to the host", () => {
+    const source = documentWith(["m1"]);
+    const molecule = source.pages[0]!.objects[0];
+    Object.assign(molecule, unresolvableAromaticRing());
+    const warnings: string[] = [];
+    const snapshot = buildPluginSelectionSnapshot(source, warnings);
+    expect(parseMolfileGraph(snapshot.molecules[0]!.structure).bonds.map((bond) => bond.order))
+      .toEqual(Array(5).fill("aromatic"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("atoms u0, u1, u2, u3, u4");
+    expect(warnings[0]).toContain("preserved as type 4");
+  });
   // Fused bicyclic (naphthalene skeleton): the hand-rolled SMILES writer collapses this to a bare
   // atom concatenation that OCL reads as a straight-chain alkane. The molfile keeps the real graph.
   const naphthalene = {

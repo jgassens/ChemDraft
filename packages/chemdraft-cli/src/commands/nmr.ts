@@ -6,7 +6,13 @@ import { pathToFileURL } from "node:url";
 
 import { booleanOption, numericOption, parseOptions, stringOption } from "../args";
 import { depictSmiles, svgToPng } from "../document";
-import { DEFAULT_TRUSTED_PLUGINS_PATH, importVerifiedPlugin, resolveTrustedPlugin } from "../pluginTrust";
+import {
+  DEFAULT_TRUSTED_PLUGINS_PATH,
+  importVerifiedPlugin,
+  resolveDefaultTrustedPluginsPath,
+  resolveTrustedPlugin,
+  type AccountHomeLookup
+} from "../pluginTrust";
 import {
   CliUsageError,
   cliExitCode,
@@ -125,7 +131,29 @@ interface ParsedArguments {
   width: number;
 }
 
-export const nmrHelp = `ChemDraft NMR shift prediction
+/**
+ * The help's trust-file sentence. When the OS account lookup cannot place the default file, the
+ * path is empty; printing it would tell the user to edit a file called "", so the line says why
+ * the location is unknown instead.
+ */
+function trustFileLocationText(lookup?: AccountHomeLookup, configuredPath?: string): string {
+  let path = configuredPath;
+  if (path === undefined) {
+    try {
+      path = resolveDefaultTrustedPluginsPath(lookup);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return `The directory must also be listed in the plugin trust file.
+trust file location unavailable: ${reason}
+The file holds:`;
+    }
+  }
+  return `The directory must also be listed in the plugin trust file ${path}:`;
+}
+
+/** The `--help` text. `lookup` is the account-home seam of {@link resolveDefaultTrustedPluginsPath}, for tests. */
+export function nmrHelpText(lookup?: AccountHomeLookup, trustConfigPath?: string): string {
+  return `ChemDraft NMR shift prediction
 
 Usage:
   pnpm -s chemdraft nmr --smiles <SMILES> [--nuclei 1H,13C] [--spectrum out.svg|out.png]
@@ -147,7 +175,7 @@ Options:
 
 The predictor plugin is loaded from $${NMR_PLUGIN_DIR_ENV}
 (default: ${DEFAULT_PLUGIN_DIR}). It is a separate repository and is not bundled here.
-The directory must also be listed in the plugin trust file ${DEFAULT_TRUSTED_PLUGINS_PATH}:
+${trustFileLocationText(lookup, trustConfigPath)}
   {"version":1,"trustedPlugins":[{"id":"${NMR_PLUGIN_ID}","dir":"/absolute/path/to/chemdraft-nmr-plugin"}]}
 Setting $${NMR_PLUGIN_DIR_ENV} alone never makes an unlisted directory load. Edit that file by hand;
 the CLI never writes it.
@@ -178,6 +206,9 @@ Output:
   the drawn structure (the molfile ChemDraft depicts from the SMILES); for 1H they are the atoms
   carrying the hydrogens.
   Exit 0 when every structure succeeds, 1 when any fails, and 2 for bad arguments.`;
+}
+
+export const nmrHelp = nmrHelpText();
 
 const nmrOptions = {
   "--smiles": { kind: "value" },
@@ -526,6 +557,8 @@ export interface NmrCommandOptions {
    * and embedding code only; deliberately not settable from the environment or the command line.
    */
   trustConfigPath?: string;
+  /** The OS account-home lookup behind the default trust path, for tests of `--help`. */
+  accountHomeLookup?: AccountHomeLookup;
 }
 
 /** Run `chemdraft nmr`. */
@@ -537,7 +570,9 @@ export async function runNmrCommand(
   try {
     const parsed = parseArguments(argv);
     if ("help" in parsed) {
-      io.stdout(nmrHelp);
+      io.stdout(options.accountHomeLookup || options.trustConfigPath !== undefined
+        ? nmrHelpText(options.accountHomeLookup, options.trustConfigPath)
+        : nmrHelp);
       return cliExitCode.ok;
     }
     const jobs = parsed.jobs ?? await readJobs(parsed.jobsFile!);

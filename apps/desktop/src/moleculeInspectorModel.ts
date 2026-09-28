@@ -14,6 +14,7 @@ import {
 } from "@chemdraft/chem-core";
 import {
   atomDisplayLabel,
+  nativeBondOrderResolution,
   nativeMoleculeAtomIndicatorStyle,
   nativeMoleculeBondDrawingStyle,
   nativeMoleculeRings
@@ -842,8 +843,9 @@ function implicitHydrogensAffectLabels(
     ? new Set(atomLabelTargets.map((target) => `${target.objectId}\0${target.atomId}`))
     : undefined;
 
-  return targetObjects.some((object) =>
-    object.atoms.some((atom) => {
+  return targetObjects.some((object) => {
+    const resolution = nativeBondOrderResolution(object.atoms, object.bonds);
+    return object.atoms.some((atom) => {
       if (scopedAtomKeys && !scopedAtomKeys.has(`${object.id}\0${atom.id}`)) {
         return false;
       }
@@ -852,17 +854,19 @@ function implicitHydrogensAffectLabels(
         atom,
         object.bonds,
         { ...style, atomLabelHideImplicitHydrogens: false },
-        object.atoms
+        object.atoms,
+        resolution
       );
       const hidden = atomDisplayLabel(
         atom,
         object.bonds,
         { ...style, atomLabelHideImplicitHydrogens: true },
-        object.atoms
+        object.atoms,
+        resolution
       );
       return shown !== hidden;
-    })
-  );
+    });
+  });
 }
 
 function nativeMoleculeAtomLabelStyle(object: MoleculeObject, atomId: string) {

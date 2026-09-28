@@ -12,6 +12,7 @@ import {
   stylePresetToObjectStyle,
   type ChemDraftDocument,
   type DocumentObject,
+  type FlattenWarning,
   type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
@@ -155,6 +156,7 @@ import {
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
   eraserObjectIdsInSelectionRect,
+  flattenWarningMessages,
   graphicArtTransformPreviewSvgDataUrl,
   groupedDragObjectIdsForPointer,
   selectionInSelectionLasso,
@@ -2313,8 +2315,9 @@ describe("ChemDraft desktop shell", () => {
     // Both MainWindow perception sites (the flatten reference and the pre-spin center scan) must
     // use the same molfile flatten's read-back uses; the plain export writer turns "Ph" into "*",
     // which OpenChemLib reads as carbon. Covered functionally in ocl-adapter; this guards the wiring.
-    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget)");
-    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule)");
+    // Both sites also collect the spelling's warnings (a guessed tautomer, say) instead of dropping them.
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget, warnings)");
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule, warnings)");
   });
 
   it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
@@ -2776,12 +2779,44 @@ describe("ChemDraft desktop shell", () => {
   it("threads Spin 3D placement through modeled typed rotation while preserving legacy X/Y tilt", () => {
     // The numeric-rotation flatten must run the stereo read-back guard (spin3dFlattenStereoOptions),
     // not commit geometry-only, so a typed rotation can't silently persist a different stereoisomer.
-    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId\)\s*}\s*\)/s);
+    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId,\s*warnings\)\s*}\s*\)/s);
     expect(mainWindowSource).toContain("modeledRotationEntry ? 0");
     expect(mainWindowSource).toMatch(/quatFromAxisAngle\(SPIN_AXIS_Z,\s*-deltaDegrees \* Math\.PI \/ 180\)/);
     expect(mainWindowSource).toMatch(/attachSpin3dModelFromConformer\(nextDocument,\s*input\.objectId/s);
     expect(mainWindowSource).toMatch(/tiltNativeMoleculeProjectedPlane\(\s*input\.startDocument,\s*input\.objectId/s);
     expect(mainWindowSource).toMatch(/applyDocumentObjectProjectedPlaneTilt\(\s*input\.startDocument,\s*input\.objectId/s);
+  });
+
+  it("keeps a flatten's own writer warnings but drops the expected per-commit perspective-cleanup note", () => {
+    // flattenWarningMessages is what every 3D-rotation commit path folds into its reported status.
+    // "perspective-cleanup" fires on every committed flatten (packages/chem-core/src/perspective.ts),
+    // so it must never reach the user as if it were a caveat about THIS rotation, while a genuine
+    // writer warning (an abbreviation, a dative bond, an unresolved aromatic system) must survive.
+    const warnings: FlattenWarning[] = [
+      { code: "perspective-cleanup", message: "Perspective depiction — projected geometry may need cleanup." },
+      {
+        code: "stored-structure-lossy",
+        message: "Atom label \"Ph\" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile."
+      }
+    ];
+    expect(flattenWarningMessages(warnings)).toEqual([
+      "Atom label \"Ph\" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile."
+    ]);
+    expect(flattenWarningMessages([])).toEqual([]);
+  });
+
+  it("surfaces flattenSpunMolecule's own writer warnings, not just the stereo-option ones, in every 3D-rotation commit status", () => {
+    // Regression: commitProjectedPlaneTilt (modeled X/Y drag) and rotationInputDocumentFromDraft
+    // (typed X/Y rotation) used to build their committed status from ONLY whatever
+    // spin3dFlattenStereoOptions pushed into `warnings`, silently dropping the flatten's own
+    // guarded/outcome.warnings — so a lossy rewrite of the stored structure reported nothing but
+    // "3D rotation applied". Both commit sites must now fold flattenWarningMessages(...) of the
+    // flatten's own result into that same `warnings` array before the status is built.
+    expect(mainWindowSource).toContain("warnings.push(...flattenWarningMessages(guarded.warnings));");
+    expect(mainWindowSource).toContain("warnings.push(...flattenWarningMessages(outcome.warnings));");
+    // The Z-rotate drag and typed Z-rotation paths deliberately never call flattenSpunMolecule
+    // (§5.27: an in-plane Z rotation reuses the existing 2D atom rotation), so they have no such
+    // gap to close — only the X/Y (tilt) paths need this fold-in.
   });
 
   it("gates the browser agent bridge behind explicit QA flags", () => {

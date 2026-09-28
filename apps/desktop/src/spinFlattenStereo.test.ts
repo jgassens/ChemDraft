@@ -24,7 +24,7 @@ import {
   perceiveStereoCentersFromMolfile,
   type Depiction2D
 } from "@chemdraft/ocl-adapter";
-import { planPageSvgRender } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, planPageSvgRender } from "@chemdraft/layout-engine";
 import { elementFragments } from "@chemdraft/layout-engine/testing";
 import { Molecule } from "openchemlib";
 
@@ -320,7 +320,10 @@ const molOf = (document: ReturnType<typeof insertSmilesMolecule>, id: string): M
   if (!found || found.type !== "molecule") throw new Error("molecule missing");
   return found;
 };
-const mf = (mol: MoleculeObject) => moleculeToMolfileV2000(mol, { fromDocFrame: true });
+const mf = (mol: MoleculeObject) => moleculeToMolfileV2000(mol, {
+  fromDocFrame: true,
+  kekuleBondOrders: nativeBondOrderResolution(mol.atoms, mol.bonds).kekuleOrders
+}).contents;
 const isoSmiles = (mol: MoleculeObject) => Molecule.fromMolfile(mf(mol)).toIsomericSmiles();
 function renderedStereoStyleByBond(
   document: ReturnType<typeof insertSmilesMolecule>

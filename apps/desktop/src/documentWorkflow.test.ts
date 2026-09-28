@@ -1,6 +1,12 @@
+import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
+import * as layoutEngine from "@chemdraft/layout-engine";
+import { aromaticFixtures, type AromaticFixture, testMoleculeFromSmiles, unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import * as workflowCore from "@chemdraft/document-workflow-core";
+import { nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import {
   DefaultNativeDrawingStyle,
@@ -29,6 +35,7 @@ import {
   type TextSpan,
   type PlusObject,
   type TextObject,
+  type ViewMatrix,
   type VisualEffect
 } from "@chemdraft/chem-core";
 import { inspectClipboardPayload } from "@chemdraft/clipboard-adapter";
@@ -1350,11 +1357,11 @@ describe("Phase 4 document workflow", () => {
     const oxygen = molecule.atoms[1]!;
 
     // The drawn label: O- takes one bond, which this O already has, so no hydrogen.
-    expect(atomDisplayLabel(oxygen, molecule.bonds)).toBe("O-");
+    expect(atomDisplayLabel(oxygen, molecule.bonds, undefined, molecule.atoms)).toBe("O-");
 
     // The formula must agree. createNativeMolfileMolecule runs the same chemistry derivation the
     // app uses whenever a molecule is (re)built, so round-trip this graph through it.
-    const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    const molfile = moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents;
     const rebuilt = createNativeMolfileMolecule(charged, { x: 200, y: 200 }, molfile, "molfile-v2000");
     expect(rebuilt.chemistry?.formula).toBe("CH3O");
   });
@@ -4417,7 +4424,7 @@ describe("Phase 4 document workflow", () => {
       // bare-ligand layout, not against a single ideal length.)
       const ligandAtoms = molecule.atoms.filter((atom) => atom.element !== "Zn");
       const ligandBonds = molecule.bonds.filter((bond) => !isDative(bond));
-      const engineOnly = relayoutMolfile2D(moleculeToMolfileV2000({ ...molecule, atoms: ligandAtoms, bonds: ligandBonds }, { fromDocFrame: true }));
+      const engineOnly = relayoutMolfile2D(moleculeToMolfileV2000({ ...molecule, atoms: ligandAtoms, bonds: ligandBonds }, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
       const engineLengths = engineOnly.bonds.map((bond) => Math.hypot(engineOnly.atoms[bond.to].x - engineOnly.atoms[bond.from].x, engineOnly.atoms[bond.to].y - engineOnly.atoms[bond.from].y));
       const engineMean = engineLengths.reduce((sum, value) => sum + value, 0) / engineLengths.length;
       covalentBonds.forEach((bond, index) => {
@@ -4519,12 +4526,12 @@ describe("Phase 4 document workflow", () => {
         { op: "addObject", pageId: base.pages[0].id, object: molecule },
         { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
       ]);
-      const before = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(molecule, { fromDocFrame: true }));
+      const before = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
       expect(before[0]?.descriptor).not.toBe("unspecified");
 
       const relaid = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D);
       const result = moleculeById(relaid, molecule.id);
-      const after = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(result, { fromDocFrame: true }));
+      const after = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(result, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
 
       expect(after).toEqual(before);
       expect(result.bonds.find((bond) => bond.id === "cf")).toMatchObject({
@@ -5767,7 +5774,7 @@ describe("Phase 4 document workflow", () => {
     const ethylMolecule = selectedMolecule(ethyl);
     const ethylAtom = ethylMolecule.atoms.find((atom) => atom.id === "atom_002");
     expect(ethylAtom).toMatchObject({ element: "Et" });
-    expect(atomDisplayLabel(ethylAtom!, ethylMolecule.bonds)).toBe("Et");
+    expect(atomDisplayLabel(ethylAtom!, ethylMolecule.bonds, undefined, ethylMolecule.atoms)).toBe("Et");
     expect(nativeMoleculeInvalidAtomStates(ethylMolecule)).toEqual([]);
     expect(ethylMolecule.chemistry).toMatchObject({ formula: "CH3" });
 
@@ -5871,7 +5878,7 @@ describe("Phase 4 document workflow", () => {
 
     // The drawn hydrogen count ignores the dashed contact too: an amine N dash-bonded to a
     // metal keeps its NH2.
-    expect(atomDisplayLabel(nitrogen, [bond("b1", "c1"), bond("b2", "zn", "single", true)])).toBe("NH2");
+    expect(atomDisplayLabel(nitrogen, [bond("b1", "c1"), bond("b2", "zn", "single", true)], undefined, [])).toBe("NH2");
   });
 
   it("breaks freeform drag into custom length after a larger pull", () => {
@@ -6250,7 +6257,7 @@ describe("Phase 4 document workflow", () => {
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
     // A hotkey relabel is an ordinary implicit-hydrogen atom: the explicit terminal carbon
     // draws its hydrogens ("CH3"), unlike a text-typed literal label.
-    expect(atomDisplayLabel(atom, nextMolecule.bonds)).toBe("CH3");
+    expect(atomDisplayLabel(atom, nextMolecule.bonds, undefined, nextMolecule.atoms)).toBe("CH3");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
@@ -6301,7 +6308,7 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.atoms[0]).toMatchObject({ element: "C", labelVisible: true, formalCharge: 0 });
     expect(molecule.bonds).toHaveLength(0);
     // Bare label + the incomplete-valence flag: the user's naked carbon.
-    expect(atomDisplayLabel(molecule.atoms[0], molecule.bonds)).toBe("C");
+    expect(atomDisplayLabel(molecule.atoms[0], molecule.bonds, undefined, molecule.atoms)).toBe("C");
     expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
 
     // Lower-case and two-letter symbols canonicalize ("fe" → Fe); Fe has no valence table entry,
@@ -6321,9 +6328,9 @@ describe("Phase 4 document workflow", () => {
     // Only the text tool creates literal atoms: bare symbol, no invented hydrogens, and the
     // incomplete-valence badge until real bonds arrive.
     const literal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0, labelLiteral: true });
-    expect(atomDisplayLabel(literal("C"), [])).toBe("C");
-    expect(atomDisplayLabel(literal("N"), [])).toBe("N");
-    expect(atomDisplayLabel(literal("O"), [])).toBe("O");
+    expect(atomDisplayLabel(literal("C"), [], undefined, [])).toBe("C");
+    expect(atomDisplayLabel(literal("N"), [], undefined, [])).toBe("N");
+    expect(atomDisplayLabel(literal("O"), [], undefined, [])).toBe("O");
     expect(nativeAtomValidationState(literal("C"), [])).toMatchObject({
       valid: false,
       invalidReason: expect.stringContaining("has 0 of 4 bonds")
@@ -6333,7 +6340,7 @@ describe("Phase 4 document workflow", () => {
     // A drawn (non-literal) lone atom keeps the skeletal convention: it reads as the implicit
     // hydride and is never invalid — hotkeys and deletes cannot create flagged atoms.
     const drawn = { id: "atom_001", element: "N", x: 0, y: 0, formalCharge: 0 };
-    expect(atomDisplayLabel(drawn, [])).toBe("NH3");
+    expect(atomDisplayLabel(drawn, [], undefined, [])).toBe("NH3");
     expect(nativeAtomValidationState(drawn, [])).toMatchObject({ valid: true });
   });
 
@@ -6359,7 +6366,7 @@ describe("Phase 4 document workflow", () => {
       invalidReason: expect.stringContaining("not known beyond 7-coordinate")
     });
     // No phantom hydrogens on metals, ever.
-    expect(atomDisplayLabel(vanadium(false), [])).toBe("V");
+    expect(atomDisplayLabel(vanadium(false), [], undefined, [])).toBe("V");
 
     // Group ceilings differ: Pd caps at 6 while Re reaches the 9-coordinate hydride.
     const metal = (element: string) => ({ id: "atom_001", element, x: 0, y: 0, formalCharge: 0 });
@@ -6407,7 +6414,7 @@ describe("Phase 4 document workflow", () => {
 
     // The selenium analog of a thiol draws its hydrogen; a literal typed "Se" stays bare and
     // flagged until its two bonds arrive.
-    expect(atomDisplayLabel(atomOf("Se"), bonds(1))).toBe("SeH");
+    expect(atomDisplayLabel(atomOf("Se"), bonds(1), undefined, [])).toBe("SeH");
     expect(nativeAtomValidationState({ ...atomOf("Se"), labelLiteral: true }, [])).toMatchObject({
       valid: false,
       invalidReason: expect.stringContaining("has 0 of 2 bonds")
@@ -6697,10 +6704,10 @@ describe("Phase 4 document workflow", () => {
     const yMolecule = selectedMolecule(yGeneric);
 
     expect(labeled.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Cl" });
-    expect(atomDisplayLabel(labeled.atoms[0], labeled.bonds)).toBe("Cl");
+    expect(atomDisplayLabel(labeled.atoms[0], labeled.bonds, undefined, labeled.atoms)).toBe("Cl");
     expect(nativeMoleculeInvalidAtomStates(labeled)).toEqual([]);
     expect(genericMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
-    expect(atomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds)).toBe("Xx");
+    expect(atomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds, undefined, genericMolecule.atoms)).toBe("Xx");
     expect(nativeMoleculeInvalidAtomStates(genericMolecule)).toEqual([]);
     expect(yMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Y" });
     expect(nativeMoleculeInvalidAtomStates(yMolecule)).toEqual([]);
@@ -10869,7 +10876,7 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.chemistry).toMatchObject({ formula: "C4H16", atomCount: 4, bondCount: 0, totalCharge: 0 });
     // Drawn atoms keep the skeletal convention even when orphaned: each lone carbon reads as
     // an implicit methane with no valence flag — only text-typed literal atoms can be invalid.
-    expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds))).toEqual([
+    expect(molecule.atoms.map((atom) => atomDisplayLabel(atom, molecule.bonds, undefined, molecule.atoms))).toEqual([
       "CH4",
       "CH4",
       "CH4",
@@ -10899,7 +10906,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(hypervalentMolecule)).toMatchObject([
       { atomId: "atom_001", element: "N", valenceUsed: 4, formalCharge: 0, expectedFormalCharge: 1, valid: false }
     ]);
-    expect(atomDisplayLabel(nitrogen!, hypervalentMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(nitrogen!, hypervalentMolecule.bonds, undefined, hypervalentMolecule.atoms)).toBe("N");
 
     const neutralAmine = applyNativeMoleculeDeleteTarget(neutralHypervalent, {
       objectId: hypervalentMolecule.id,
@@ -10912,7 +10919,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(neutralNitrogen).toMatchObject({ element: "N", formalCharge: 0 });
     expect(neutralMolecule.chemistry).toMatchObject({ formula: "C3H9N", totalCharge: 0 });
-    expect(atomDisplayLabel(neutralNitrogen!, neutralMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(neutralNitrogen!, neutralMolecule.bonds, undefined, neutralMolecule.atoms)).toBe("N");
     expect(neutralMolecule.atoms.find((atom) => atom.id === "atom_002")).toBeUndefined();
   });
 
@@ -10950,7 +10957,7 @@ describe("Phase 4 document workflow", () => {
     expect(chargedNitrogen).toMatchObject({ element: "N", formalCharge: 1, markCharge: 1 });
     // The floating mark already draws the plus, so the label does not repeat it — but the
     // charge is real: validity and the formula both carry it.
-    expect(atomDisplayLabel(chargedNitrogen!, resolvedMolecule.bonds)).toBe("N");
+    expect(atomDisplayLabel(chargedNitrogen!, resolvedMolecule.bonds, undefined, resolvedMolecule.atoms)).toBe("N");
     expect(resolvedMolecule.chemistry).toMatchObject({ totalCharge: 1 });
     expect(nativeMoleculeInvalidAtomStates(resolvedMolecule)).toEqual([]);
 
@@ -15074,7 +15081,7 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     const warnings: string[] = [];
     const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
     expect(reparse(smiles).formula).toBe("C3H4");
-    expect(warnings).toEqual(["1 aromatic bond outside any ring written to SMILES as single."]);
+    expect(warnings).toEqual(["1 aromatic bond outside any aromatic ring written to SMILES as single."]);
   });
 
   it("writes a ring system with no Kekulé pattern as single, reports it, and leaves other rings alone", () => {
@@ -15149,10 +15156,11 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     }
   });
 
-  it("never returns an unproven pattern when the search budget runs out", () => {
-    // A 45-atom ladder of fused five-rings, four nitrogens in five atoms: the branch-and-bound
-    // cannot prove its best assignment within the budget. It must then report the whole system
-    // rather than hand back a guess, and the outcome must not depend on bond order or atom ids.
+  it("resolves a large nitrogen-rich fused system without inventing hydrogens or tautomer ambiguity", () => {
+    // A 45-atom ladder of fused five-rings, four nitrogens in five atoms: far too many open
+    // nitrogens to compare every arrangement. The resolver places them greedily (each step one
+    // polynomial matching test), badges every one of them as a guess rather than handing back a
+    // silent answer, and the outcome does not depend on bond order or atom ids.
     const elements = ("NNCC".repeat(11) + "N").split("");
     const build = (prefix: string) => {
       const atoms: MoleculeAtom[] = elements.map((element, index) => ({ id: `${prefix}${String(index).padStart(3, "0")}`, element, x: index * 10, y: 0, formalCharge: 0 }));
@@ -15167,14 +15175,19 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     };
     const forward = build("a");
     const renamed = build("z");
-    for (const { atoms, bonds } of [forward, { atoms: forward.atoms, bonds: [...forward.bonds].reverse() }, renamed]) {
+    const results = [forward, { atoms: forward.atoms, bonds: [...forward.bonds].reverse() }, renamed].map(({ atoms, bonds }) => {
       const warnings: string[] = [];
       const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
-      expect(warnings).toEqual([
-        "55 aromatic bonds could not be resolved into alternating single and double bonds; written to SMILES as single."
-      ]);
-      expect(smiles).not.toContain("=");
-    }
+      return { smiles, warnings: warnings.map((warning) => warning.replace(/\b[az](\d{3})\b/g, "#$1")) };
+    });
+    expect(results[0]!.smiles).toContain("=");
+    // Every flexible N can be matched: no N–H placement is ambiguous at the baseline count.
+    expect(results[0]!.warnings).toEqual([]);
+    expect(results[1]).toEqual(results[0]);
+    expect(results[2]).toEqual(results[0]);
+    const guessed = nativeSingleBondGraphMetadata(forward.atoms, forward.bonds).warnings
+      .filter((warning) => warning.code === "chemistry.aromatic_tautomer_guessed");
+    expect(guessed).toEqual([]);
   });
 
   it("treats a boron anion as carbon-like: boratabenzene keeps its ring double bonds", () => {
@@ -15628,7 +15641,7 @@ describe("clipboard and chemistry review regressions", () => {
     }])!;
     const carbonyl = payload.objects[0] as MoleculeObject;
     expect(nativeAtomValidationState(carbonyl.atoms[1], carbonyl.bonds)).toMatchObject({ valenceUsed: 2 });
-    expect(atomDisplayLabel(carbonyl.atoms[1], carbonyl.bonds)).toBe("O");
+    expect(atomDisplayLabel(carbonyl.atoms[1], carbonyl.bonds, undefined, carbonyl.atoms)).toBe("O");
     expect(carbonyl.chemistry?.formula).toBe("CH2O");
   });
 
@@ -15720,5 +15733,392 @@ describe("clipboard and chemistry review regressions", () => {
     expect(moleculeById(grown, molecule.id).atoms).toHaveLength(3);
     expect(moleculeById(grown, molecule.id).bonds).toHaveLength(2);
     expect(moleculeById(grown, foreign.id)).toEqual(foreign);
+  });
+});
+
+// Aromatic bonds (MOL/RXN type 4, CDXML Order=1.5, a Ketcher V3000 save) used to be counted two
+// ways: the formula/valence copy in document-workflow-core took 1 per bond (benzene stored C6H12,
+// and the carbonyl hotkey put a C=O straight onto a ring carbon: C1(=O)CCCCC1), while layout-engine's
+// label copy took 1.5 (pyrrole's N–H drew as a bare N). Both now count one resolution: each
+// aromatic bond at its Kekulé order, computed once per molecule in layout-engine.
+describe("aromatic bond orders: one count for the formula, the label and the valence check", () => {
+  const formulaHydrogens = (formula: string): number => {
+    const match = formula.match(/H(\d*)/);
+    return match ? (match[1] ? Number(match[1]) : 1) : 0;
+  };
+  const labelHydrogens = (label: string | undefined): number => {
+    const match = label?.match(/H(\d*)/);
+    return match ? (match[1] ? Number(match[1]) : 1) : 0;
+  };
+  const visibleCarbons = (atoms: readonly MoleculeAtom[]): MoleculeAtom[] =>
+    atoms.map((atom) => (atom.element === "C" ? { ...atom, labelVisible: true } : atom));
+  const fixtureMolecule = (fixture: Pick<AromaticFixture, "atoms">, bonds: readonly MoleculeBond[], id = "mol_fixture"): MoleculeObject => ({
+    id,
+    type: "molecule",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    rotation: 0,
+    style: {},
+    structureFormat: "molfile-v2000",
+    structure: "",
+    atoms: fixture.atoms.map((atom) => ({ ...atom, x: 200 + atom.x * 3, y: 200 + atom.y * 3 })),
+    bonds: [...bonds],
+    superatoms: [],
+    rGroups: []
+  });
+  /** Paste the fixture as a V2000 molfile, so its ring bonds arrive as type 4 exactly as a user's would. */
+  const pasted = (fixture: Pick<AromaticFixture, "atoms">, bonds: readonly MoleculeBond[]): ChemDraftDocument => {
+    const molfile = rawMolfileFixture(fixture.atoms, bonds);
+    return insertNativeMolfileMolecule(createPhase4Document("Aromatic paste"), { x: 240, y: 240 }, molfile, "molfile-v2000");
+  };
+  const reparsedFormula = (smiles: string): string => OCL.Molecule.fromSmiles(smiles).getMolecularFormula().formula;
+  const cases = aromaticFixtures.map((fixture) => [fixture.name, fixture] as const);
+  // These fixture labels explicitly identify the H inferred from an otherwise unhinted N.
+  // Five-ring inference and six-ring closed-shell exceptions now both require a badge.
+  const inferredNitrogenIds = (fixture: AromaticFixture): string[] =>
+    Object.entries(fixture.heteroatomLabels).filter(([, label]) => label === "NH").map(([id]) => id);
+
+  it.each(cases)("%s: the formula is the chemist's formula", (_name, fixture) => {
+    expect(nativeSingleBondGraphMetadata(fixture.atoms, fixture.aromatic).formula).toBe(fixture.formula);
+  });
+
+  it.each(cases)("%s: a type-4 MOL paste stores that formula and badges only inferred N–H", (_name, fixture) => {
+    const molecule = selectedMolecule(pasted(fixture, fixture.aromatic));
+    expect(molecule.bonds.some((bond) => bond.order === "aromatic")).toBe(true);
+    expect(molecule.chemistry?.formula).toBe(fixture.formula);
+    const states = nativeMoleculeInvalidAtomStates(molecule);
+    expect(states).toHaveLength(inferredNitrogenIds(fixture).length);
+    for (const state of states) expect(state).toMatchObject({ element: "N", tautomerGuessed: true });
+  });
+
+  it.each(cases)("%s: the drawn labels carry exactly the formula's hydrogens", (_name, fixture) => {
+    const atoms = visibleCarbons(fixture.atoms);
+    const drawn = atoms.reduce(
+      (sum, atom) => sum + labelHydrogens(atomDisplayLabel(atom, fixture.aromatic, DefaultNativeDrawingStyle, atoms)),
+      0
+    );
+    const formula = nativeSingleBondGraphMetadata(atoms, fixture.aromatic).formula ?? "";
+    expect(formula).toBe(fixture.formula);
+    expect(drawn).toBe(formulaHydrogens(formula));
+    for (const [atomId, label] of Object.entries(fixture.heteroatomLabels)) {
+      const atom = atoms.find((candidate) => candidate.id === atomId)!;
+      expect(atomDisplayLabel(atom, fixture.aromatic, DefaultNativeDrawingStyle, atoms), atomId).toBe(label);
+    }
+  });
+
+  it.each(cases)("%s: only unstated N–H is badged (S, O, fused and C=O carbons stay valid)", (_name, fixture) => {
+    const guessed = inferredNitrogenIds(fixture);
+    for (const atom of fixture.atoms) {
+      expect(nativeAtomValidationState(atom, fixture.aromatic, atom.formalCharge, fixture.atoms), atom.id)
+        .toMatchObject(guessed.includes(atom.id) ? { valid: false, tautomerGuessed: true } : { valid: true });
+    }
+    expect(nativeSingleBondGraphMetadata(fixture.atoms, fixture.aromatic).warnings.map(({ code, objectId }) => ({ code, objectId })))
+      .toEqual(guessed.map((objectId) => ({ code: "chemistry.aromatic_tautomer_guessed", objectId })));
+  });
+
+  it.each(cases)("%s: the Kekulé form counts exactly as before, and both SMILES reparse to the formula", (_name, fixture) => {
+    const { warnings, ...aromaticMetadata } = nativeSingleBondGraphMetadata(fixture.atoms, fixture.aromatic);
+    const { warnings: kekuleWarnings, ...kekuleMetadata } = nativeSingleBondGraphMetadata(fixture.atoms, fixture.kekule);
+    expect(aromaticMetadata).toEqual(kekuleMetadata);
+    expect(warnings).toHaveLength(inferredNitrogenIds(fixture).length);
+    expect(kekuleWarnings).toEqual([]);
+    expect(reparsedFormula(nativeSingleBondGraphSmiles(fixture.atoms, fixture.aromatic))).toBe(fixture.formula);
+    expect(reparsedFormula(nativeSingleBondGraphSmiles(fixture.atoms, fixture.kekule))).toBe(fixture.formula);
+    for (const atom of visibleCarbons(fixture.atoms)) {
+      expect(atomDisplayLabel(atom, fixture.aromatic, DefaultNativeDrawingStyle, fixture.atoms))
+        .toBe(atomDisplayLabel(atom, fixture.kekule, DefaultNativeDrawingStyle, fixture.atoms));
+    }
+  });
+
+  it("puts the carbonyl hotkey's C=O on a new carbon, never straight onto an aromatic ring carbon", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const document = pasted(benzene, benzene.aromatic);
+    const molecule = selectedMolecule(document);
+    expect(molecule.chemistry?.formula).toBe("C6H6");
+    const ringCarbon = molecule.atoms[0]!;
+
+    const result = selectedMolecule(applyNativeCarbonylAtAtomTarget(document, {
+      objectId: molecule.id,
+      kind: "atom",
+      atomId: ringCarbon.id,
+      distanceToPointer: 0
+    }));
+
+    const oxygen = result.atoms.find((atom) => atom.element === "O")!;
+    const carbonyl = result.bonds.find((bond) => bond.order === "double" && (bond.fromAtomId === oxygen.id || bond.toAtomId === oxygen.id))!;
+    const carbonylCarbon = carbonyl.fromAtomId === oxygen.id ? carbonyl.toAtomId : carbonyl.fromAtomId;
+    expect(carbonylCarbon).not.toBe(ringCarbon.id);
+    expect(result.chemistry?.formula).toBe("C7H6O");
+    expect(result.structureFormat).toBe("smiles");
+    expect(reparsedFormula(result.structure ?? "")).toBe("C7H6O");
+    expect(nativeMoleculeInvalidAtomStates(result)).toEqual([]);
+  });
+
+  it("refuses the methylidene hotkey on an aromatic ring carbon", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const document = pasted(benzene, benzene.aromatic);
+    const molecule = selectedMolecule(document);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0]!.id, distanceToPointer: 0 };
+    expect(applyNativeAtomSproutTarget(document, target, "methylidene")).toBe(document);
+  });
+
+  it("badges every atom of an aromatic ring with no Kekulé pattern, and says why", () => {
+    const ring = unresolvableAromaticRing();
+    const molecule = selectedMolecule(pasted(ring, ring.bonds));
+    const states = nativeMoleculeInvalidAtomStates(molecule);
+    expect(states.map((state) => state.atomId).sort()).toEqual(molecule.atoms.map((atom) => atom.id).sort());
+    expect(states.every((state) => state.unresolvedAromatic === true)).toBe(true);
+    expect(states[0]!.invalidReason).toContain("could not be resolved into alternating single and double bonds");
+    // Counted single, as the SMILES writer writes it, so the stored formula and SMILES agree.
+    expect(molecule.chemistry?.formula).toBe("C5H10");
+    expect(molecule.chemistry?.warnings.filter((warning) => warning.code === "chemistry.unresolved_aromatic")).toHaveLength(5);
+  });
+
+  it("lets a pasted aromatic ring's bond be redrawn double without breaking its atoms", () => {
+    const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
+    const molecule = fixtureMolecule(benzene, benzene.aromatic);
+    const redrawn = molecule.bonds.map((bond, index): MoleculeBond => (index === 0 ? { ...bond, order: "double" } : bond));
+    for (const atom of molecule.atoms) {
+      expect(nativeAtomValidationState(atom, redrawn, 0, molecule.atoms), atom.id).toMatchObject({ valid: true, valenceUsed: 3 });
+    }
+  });
+
+  describe("typed atoms on pasted aromatic rings keep their valence in every stored or engine molfile", () => {
+    const polygonMolecule = (smiles: string, id: string, literalElement: string): MoleculeObject => {
+      const graph = testMoleculeFromSmiles(smiles);
+      const count = graph.atoms.length;
+      let literalDone = false;
+      return fixtureMolecule({
+        atoms: graph.atoms.map((atom, index) => {
+          const literal = !literalDone && atom.element === literalElement;
+          literalDone ||= literal;
+          return {
+            ...atom,
+            x: 10 * Math.cos((2 * Math.PI * index) / count),
+            y: 10 * Math.sin((2 * Math.PI * index) / count),
+            ...(literal ? { labelLiteral: true } : {})
+          };
+        })
+      }, graph.bonds, id);
+    };
+    const inDocument = (molecule: MoleculeObject): ChemDraftDocument => {
+      const base = createPhase4Document("Aromatic literal");
+      return applyPatches(base, [{ op: "addObject", pageId: base.pages[0]!.id, object: molecule }]);
+    };
+    /** The V2000 valence field (vvv) of the first atom line with this symbol. */
+    const molfileValence = (molfile: string, symbol: string): string | undefined =>
+      molfile.split("\n").slice(4).map((line) => line.trim().split(/\s+/)).find((fields) => fields[3] === symbol)?.[9];
+    const identityView: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+    it("flatten stores a typed N's valence on a pasted pyridine", () => {
+      const molecule = polygonMolecule("c1ccncc1", "mol_flat_literal", "N");
+      const coords3d = molecule.atoms.flatMap((atom) => [atom.x, -atom.y, 0]);
+      const outcome = flattenSpunMolecule(inDocument(molecule), molecule.id, coords3d, identityView);
+      expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+      const stored = outcome.document.pages[0]!.objects.find((object) => object.id === molecule.id) as MoleculeObject;
+      expect(molfileValence(stored.structure, "N")).toBe("3");
+      expect(outcome.warnings.filter((warning) => warning.code === "stored-structure-lossy")).toEqual([]);
+    });
+
+    it("flatten reports, rather than swallows, a typed atom's valence the stored molfile cannot carry", () => {
+      // Five aromatic carbons have no Kekulé pattern, so the typed C's valence cannot be counted.
+      const molecule = polygonMolecule("c1cccc1", "mol_flat_lossy", "C");
+      const coords3d = molecule.atoms.flatMap((atom) => [atom.x, -atom.y, 0]);
+      const outcome = flattenSpunMolecule(inDocument(molecule), molecule.id, coords3d, identityView);
+      expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+      const lossy = outcome.warnings.filter((warning) => warning.code === "stored-structure-lossy");
+      expect(lossy).toHaveLength(1);
+      expect(lossy[0]!.message).toContain("no resolved Kekulé order");
+    });
+
+    it("the engine relayout hands the engine a typed N's valence", () => {
+      const molecule = polygonMolecule("c1ccncc1", "mol_relayout_literal", "N");
+      const seen: string[] = [];
+      applyNativeMoleculeEngineRelayout(inDocument(molecule), molecule.id, (molfile) => {
+        seen.push(molfile);
+        return relayoutMolfile2D(molfile);
+      });
+      expect(seen).toHaveLength(1);
+      expect(molfileValence(seen[0]!, "N")).toBe("3");
+    });
+  });
+
+  it("a CDXML file's NumHydrogens settles which ring N carries the H; without it the guess is badged", () => {
+    const imidazole = (n1Attributes: string): MoleculeObject => openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+      <n id="c2" p="0 0"/><n id="n3" p="10 0" Element="7"/><n id="c4" p="14 10"/><n id="c5" p="5 16"/>
+      <n id="n1" p="-4 10" Element="7" ${n1Attributes}/><n id="me" p="24 14"/>
+      <b id="b1" B="c2" E="n3" Order="1.5"/><b id="b2" B="n3" E="c4" Order="1.5"/><b id="b3" B="c4" E="c5" Order="1.5"/>
+      <b id="b4" B="c5" E="n1" Order="1.5"/><b id="b5" B="n1" E="c2" Order="1.5"/><b id="b6" B="c4" E="me"/>
+    </fragment></page></CDXML>`).document!.pages[0]!.objects[0] as MoleculeObject;
+    const nitrogens = (molecule: MoleculeObject) => molecule.atoms.filter((atom) => atom.element === "N");
+
+    const stated = imidazole('NumHydrogens="1"');
+    expect(nativeSingleBondGraphMetadata(stated.atoms, stated.bonds)).toMatchObject({ formula: "C4H6N2", warnings: [] });
+    expect(nativeMoleculeInvalidAtomStates(stated)).toEqual([]);
+    const [n3, n1] = nitrogens(stated);
+    expect(atomDisplayLabel(n1!, stated.bonds, undefined, stated.atoms)).toBe("NH");
+    expect(atomDisplayLabel(n3!, stated.bonds, undefined, stated.atoms)).toBe("N");
+
+    const silent = imidazole("");
+    expect(nativeSingleBondGraphMetadata(silent.atoms, silent.bonds).formula).toBe("C4H6N2");
+    const states = nativeMoleculeInvalidAtomStates(silent);
+    expect(states.map((state) => state.atomId).sort()).toEqual(nitrogens(silent).map((atom) => atom.id).sort());
+    expect(states.every((state) => state.tautomerGuessed === true)).toBe(true);
+    expect(states[0]!.invalidReason).toContain("hydrogen count was guessed");
+  });
+
+  it.each(["methyl", "dative"] as const)("clears a CDXML pyrrole NumHydrogens hint when adding a %s bond", (kind) => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+      <n id="n" p="100 100" Element="7" NumHydrogens="1"/>
+      <n id="c1" p="120 100"/><n id="c2" p="125 120"/><n id="c3" p="110 130"/><n id="c4" p="95 120"/>
+      <b id="b1" B="n" E="c1" Order="1.5"/><b id="b2" B="c1" E="c2" Order="1.5"/>
+      <b id="b3" B="c2" E="c3" Order="1.5"/><b id="b4" B="c3" E="c4" Order="1.5"/>
+      <b id="b5" B="c4" E="n" Order="1.5"/>
+    </fragment></page></CDXML>`).document!;
+    const molecule = opened.pages[0]!.objects[0] as MoleculeObject;
+    const nitrogen = molecule.atoms.find((atom) => atom.element === "N")!;
+    expect(nitrogen.hydrogenCount).toBe(1);
+    let edited: ChemDraftDocument;
+    if (kind === "methyl") {
+      edited = applySingleBondToolAtNativeAtom(opened, {
+        objectId: molecule.id, kind: "atom", atomId: nitrogen.id, distanceToPointer: 0
+      });
+    } else {
+      const zinc = { id: "added-zinc", element: "Zn", x: nitrogen.x - 60, y: nitrogen.y - 60, formalCharge: 0 };
+      const withZinc = applyPatches(opened, [{
+        op: "updateObject", objectId: molecule.id, changes: { atoms: [...molecule.atoms, zinc] }
+      }]);
+      edited = applyFreeformSingleBondToolAtPoint(withZinc, molecule.id, nitrogen.id, zinc, { bondStyle: "dashed" });
+    }
+    const after = edited.pages[0]!.objects.find((object) => object.id === molecule.id) as MoleculeObject;
+    expect(after.bonds).toHaveLength(6);
+    expect(after.atoms.find((atom) => atom.id === nitrogen.id)!.hydrogenCount).toBeUndefined();
+    expect(nativeMoleculeInvalidAtomStates(after)).toEqual([]);
+    expect(after.chemistry?.warnings).toEqual([]);
+    expect(after.chemistry?.formula).toBe(kind === "methyl" ? "C5H7N" : "C4H4NZn");
+    expect(atomDisplayLabel(after.atoms.find((atom) => atom.id === nitrogen.id)!, after.bonds, undefined, after.atoms)).toBe("N");
+  });
+
+  it("a copied N plus one neighbour of a CDXML pyrrole pastes as NH2 with no stated-count badge", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="2">
+      <n id="n" p="100 100" Element="7" NumHydrogens="1"/>
+      <n id="c1" p="120 100"/><n id="c2" p="125 120"/><n id="c3" p="110 130"/><n id="c4" p="95 120"/>
+      <b id="b1" B="n" E="c1" Order="1.5"/><b id="b2" B="c1" E="c2" Order="1.5"/>
+      <b id="b3" B="c2" E="c3" Order="1.5"/><b id="b4" B="c3" E="c4" Order="1.5"/>
+      <b id="b5" B="c4" E="n" Order="1.5"/>
+    </fragment></page></CDXML>`).document!;
+    const molecule = opened.pages[0]!.objects[0] as MoleculeObject;
+    const nitrogen = molecule.atoms.find((atom) => atom.element === "N")!;
+    expect(nitrogen.hydrogenCount).toBe(1);
+    const bond = molecule.bonds.find((candidate) => candidate.fromAtomId === nitrogen.id || candidate.toAtomId === nitrogen.id)!;
+    const neighbour = bond.fromAtomId === nitrogen.id ? bond.toAtomId : bond.fromAtomId;
+    const lasso = createSelectionClipboardPayload(opened, [{ objectId: molecule.id, atomIds: [nitrogen.id, neighbour], bondIds: [bond.id] }])!;
+    // The same fragment as a payload built elsewhere (another window, an older build) that never
+    // went through the fragment rebuild: the stale count arrives on the atom and must still go.
+    const lassoFragment = lasso.objects[0] as MoleculeObject;
+    const raw = structuredClone(lasso);
+    (raw.objects[0] as MoleculeObject).atoms = lassoFragment.atoms.map((atom) =>
+      atom.element === "N" ? { ...atom, hydrogenCount: 1 } : atom);
+
+    for (const payload of [lasso, raw]) {
+      const pasted = pasteSelectionClipboardPayload(opened, payload, { x: 300, y: 300 }).pages[0]!.objects.at(-1) as MoleculeObject;
+      const pastedNitrogen = pasted.atoms.find((atom) => atom.element === "N")!;
+      expect(pasted.atoms).toHaveLength(2);
+      expect(pastedNitrogen.hydrogenCount).toBeUndefined();
+      expect(atomDisplayLabel(pastedNitrogen, pasted.bonds, undefined, pasted.atoms)).toBe("NH2");
+      expect(pasted.chemistry?.formula).toBe("CH5N");
+      const states = nativeMoleculeInvalidAtomStates(pasted);
+      expect(states.some((state) => state.invalidReason?.includes("NumHydrogens"))).toBe(false);
+      // What remains is the cut ring itself: the kept bond is still marked aromatic and is
+      // counted single, which the unresolved-aromatic rule flags on both of its atoms.
+      expect(states.every((state) => state.unresolvedAromatic === true)).toBe(true);
+    }
+  });
+
+  it("the stated-count check ignores a hint left on an atom with no aromatic bond", () => {
+    const graph = testMoleculeFromSmiles("CN");
+    // Bypasses every patch: a stale count on a molecule read straight from storage.
+    const atoms = graph.atoms.map((atom) => (atom.element === "N" ? { ...atom, hydrogenCount: 1 } : atom));
+    const molecule = { ...fixtureMolecule(graph, graph.bonds, "mol_stale_hint"), atoms };
+    expect(nativeMoleculeInvalidAtomStates(molecule)).toEqual([]);
+  });
+
+  it("relabeling an atom to another element drops a hydrogen count stated for the old one", () => {
+    const graph = testMoleculeFromSmiles("c1c[nH]cn1");
+    const molecule = fixtureMolecule(graph, graph.bonds, "mol_relabel_hint");
+    const base = createPhase4Document("Relabel");
+    const document = applyPatches(base, [{ op: "addObject", pageId: base.pages[0]!.id, object: molecule }]);
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: "a2", distanceToPointer: 0 };
+    expect(molecule.atoms[2]!.hydrogenCount).toBe(1);
+    const atomAfter = (next: ChemDraftDocument): MoleculeAtom =>
+      (next.pages[0]!.objects.find((object) => object.id === molecule.id) as MoleculeObject).atoms
+        .find((atom) => atom.id === "a2")!;
+    expect(atomAfter(applyNativeAtomElementTarget(document, target, "C")).hydrogenCount).toBeUndefined();
+    // Same element under the typed rule: still the atom the count was stated for.
+    expect(atomAfter(applyNativeAtomElementTarget(document, target, "N", { literal: true })))
+      .toMatchObject({ element: "N", labelLiteral: true, hydrogenCount: 1 });
+  });
+
+  it("allows a bond-order edit on an imported CH3 and validates the new H count", () => {
+    const graph = testMoleculeFromSmiles("CC");
+    const molecule = fixtureMolecule({ atoms: graph.atoms.map((atom) => ({ ...atom, hydrogenCount: 3 })) }, graph.bonds);
+    const base = createPhase4Document("Imported ethane");
+    const document = applyPatches(base, [{ op: "addObject", pageId: base.pages[0]!.id, object: molecule }]);
+    const bond = molecule.bonds[0]!;
+    const next = applyNativeMoleculeBondOrderValueTarget(document, {
+      objectId: molecule.id, kind: "bond", bondId: bond.id,
+      fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0
+    }, "double");
+    const edited = next.pages[0]!.objects[0] as MoleculeObject;
+    expect(edited.bonds[0]!.order).toBe("double");
+    expect(edited.atoms.every((atom) => atom.hydrogenCount === undefined)).toBe(true);
+    expect(edited.chemistry?.formula).toBe("C2H4");
+    expect(nativeMoleculeInvalidAtomStates(edited)).toEqual([]);
+  });
+
+  it("keeps one implementation: document-workflow-core re-exports layout-engine's helpers", () => {
+    const shared = [
+      "atomBondOrderUsageMap",
+      "nativeAtomBondOrderUsage",
+      "nativeBondOrderResolution",
+      "nativeBondOrderValue",
+      "nativeBondValenceContribution",
+      "nativeElementFromAtomLabel",
+      "nativeElementSymbols",
+      "normalizeNativeAtomElementLabel",
+      "clamp",
+      "distance"
+    ] as const;
+    for (const name of shared) {
+      expect(workflowCore[name], name).toBe(layoutEngine[name]);
+    }
+  });
+
+  it("writes a text-typed furan O with molfile valence 2 in the app's own molfiles, not 1.5 per bond's 3", () => {
+    const furan = aromaticFixtures.find((fixture) => fixture.name === "furan")!;
+    const molecule = fixtureMolecule(furan, furan.aromatic);
+    const literal = { ...molecule, atoms: molecule.atoms.map((atom) => (atom.id === "a0" ? { ...atom, labelLiteral: true } : atom)) };
+    const oxygenLine = (molfile: string): string => {
+      const lines = molfile.split("\n");
+      return lines[lines.findIndex((line) => line.includes("V2000")) + 1]!;
+    };
+    expect(oxygenLine(stereoPerceptionMolfile(literal)).slice(48, 51)).toBe("  2");
+
+    const base = createPhase4Document("Literal furan");
+    const pageId = base.pages[0]!.id;
+    const document = applyPatches(
+      base,
+      [
+        { op: "addObject", pageId, object: literal },
+        { op: "setSelection", pageId, objectIds: [literal.id] }
+      ],
+      { now: "2026-05-29T00:00:00.000Z" }
+    );
+    const warnings: string[] = [];
+    expect(oxygenLine(copyAsMolfile(document, "v2000", warnings)!).slice(48, 51)).toBe("  2");
+    expect(copyAsMolfile(document, "v3000", warnings)).toMatch(/ O [^\n]* VAL=2\n/);
+    expect(warnings.filter((warning) => warning.includes("Kekulé"))).toEqual([]);
   });
 });

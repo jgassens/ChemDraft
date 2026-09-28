@@ -31,6 +31,7 @@ import {
   type Depiction2D
 } from "@chemdraft/ocl-adapter";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import * as OCL from "openchemlib";
 
 import { createPhase4Document, flattenSpunMolecule, stereoPerceptionMolfile } from "./documentWorkflow";
@@ -157,7 +158,10 @@ describe("Phase 6 — an abbreviated label on a stereocenter", () => {
 
     // The export spelling shows the old blind spot: written as "*", the Ph reads as a carbon, the
     // center holds two methyl-like substituents, and there is no descriptor to preserve.
-    const dummyRead = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(mol, { fromDocFrame: true }));
+    const dummyRead = perceiveStereoCentersFromMolfile(moleculeToMolfileV2000(mol, {
+      fromDocFrame: true,
+      kekuleBondOrders: nativeBondOrderResolution(mol.atoms, mol.bonds).kekuleOrders
+    }).contents);
     expect(dummyRead.every((atom) => atom.descriptor === "unspecified")).toBe(true);
     const reference = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(mol));
     const centerIndex = reference.findIndex((atom) => atom.descriptor !== "unspecified");

@@ -14,7 +14,7 @@ import {
   stylePresetToObjectStyle
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { nativeElementFromAtomLabel, nativeSingleBondGraphMetadata } from "./atoms";
 import {
   clamp,
@@ -216,7 +216,12 @@ export function createSmilesMolecule(
   // Stored-structure spelling: molecule.structure is a standard export molfile (an abbreviated
   // label as the dummy "*"), which is what RDKit, Copy As and the loaders read. CIP perception
   // never reads this field — it spells its own molfile (stereoPerceptionMolfile, R-groups).
-  const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, { fromDocFrame: true });
+  const structureWarnings: string[] = [];
+  const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, {
+    fromDocFrame: true,
+    warnings: structureWarnings,
+    kekuleBondOrders: nativeBondOrderResolution(atoms, bonds).kekuleOrders
+  }).contents;
 
   return normalizeNativeMoleculeGeometry({
     id: nextObjectId(document, source.objectIdPrefix, source.reservedObjectIds),
@@ -234,7 +239,11 @@ export function createSmilesMolecule(
     },
     compatibility: {
       sourceFormat: "smiles",
-      warnings: [{ code: source.warningCode, message: source.warningMessage }],
+      warnings: [
+        { code: source.warningCode, message: source.warningMessage },
+        // What the stored molfile could not carry is recorded, not dropped.
+        ...structureWarnings.map((message) => ({ code: "molfile.stored_structure_lossy", message }))
+      ],
       unknown: { smiles: smilesText }
     },
     structureFormat: "molfile-v2000",
@@ -422,8 +431,13 @@ function medianNumber(values: readonly number[]): number | undefined {
  * element and from every other label, which is all the guard needs: it compares the drawing's
  * reading before and after, and both reads use this same spelling.
  */
-export function stereoPerceptionMolfile(molecule: MoleculeObject): string {
-  return moleculeToMolfileV2000(molecule, { fromDocFrame: true, abbreviations: "rgroup" });
+export function stereoPerceptionMolfile(molecule: MoleculeObject, warnings?: string[]): string {
+  return moleculeToMolfileV2000(molecule, {
+    fromDocFrame: true,
+    abbreviations: "rgroup",
+    warnings,
+    kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+  }).contents;
 }
 
 export function scaleParsedMolfileAtoms(

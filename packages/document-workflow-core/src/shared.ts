@@ -31,10 +31,5 @@ export function firstPage(document: ChemDraftDocument): ChemDraftDocument["pages
   return page;
 }
 
-export function distance(left: PagePoint, right: PagePoint): number {
-  return Math.hypot(left.x - right.x, left.y - right.y);
-}
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
+// The same numeric helpers layout-engine uses, re-exported rather than copied (AGENTS.md §5.26).
+export { clamp, distance } from "@chemdraft/layout-engine";

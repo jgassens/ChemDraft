@@ -647,3 +647,107 @@ function linkedEndpoints(): { mainSide: FakeEndpoint; workerSide: FakeEndpoint }
   workerSide.peer = mainSide;
   return { mainSide, workerSide };
 }
+
+describe("selection warnings are scoped to the command invocation that read the selection", () => {
+  const reader = (id: string, name: string, extra: readonly string[] = []) => ({
+    id: `org.test.${name}`,
+    name,
+    version: "0.0.1",
+    apiVersion: "^0.1.4",
+    entry: "dist/plugin.js",
+    permissions: ["selection.read", ...extra],
+    contributes: { commands: [{ id, title: name }] }
+  });
+
+  it("a concurrent read by another plugin, or a read outside any invocation, never lands in this command's warnings", async () => {
+    let reads = 0;
+    const runtime = makeRuntime({
+      getSelection: (warnings) => {
+        reads += 1;
+        warnings?.push(`read ${reads}`);
+        return emptySelection;
+      }
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    runtime.registerPlugin(reader("plugin.slow.read", "slow"), {
+      commandHandlers: {
+        "plugin.slow.read": async (context) => {
+          await gate;
+          await context.selection!.getSelection();
+        }
+      }
+    });
+    runtime.registerPlugin(reader("plugin.fast.read", "fast"), {
+      commandHandlers: { "plugin.fast.read": async (context) => { await context.selection!.getSelection(); } }
+    });
+
+    const slowWarnings: string[] = [];
+    const fastWarnings: string[] = [];
+    const slow = runtime.invokeCommand("plugin.slow.read", { selectionWarnings: slowWarnings });
+    // Another plugin reads the same document's selection while the first is still running…
+    await runtime.invokeCommand("plugin.fast.read", { selectionWarnings: fastWarnings });
+    // …and one more reads with no collector at all (a background or panel-driven run).
+    await runtime.host.invokeCommand("plugin.fast.read");
+    release();
+    await slow;
+
+    expect(reads).toBe(3);
+    expect(fastWarnings).toEqual(["read 1"]);
+    expect(slowWarnings).toEqual(["read 3"]);
+  });
+
+  it("keeps the warnings of a read made after the command proposed and wrote patches that changed the document", async () => {
+    const documentA = { ...createPhase4Document("A.chemdraft"), id: "doc_a" };
+    let active = documentA;
+    const runtime = makeRuntime({
+      getActiveDocument: () => active,
+      getActiveDocumentKey: () => "session",
+      getSelection: (warnings) => {
+        warnings?.push(`read of ${active.title}`);
+        return emptySelection;
+      },
+      applyDocumentPatch: async () => {
+        // The write replaces the document object the selection is read from.
+        active = { ...active, title: "A (patched).chemdraft" };
+        return { applied: true as const, objectIds: ["mol_001"] };
+      }
+    });
+    runtime.registerPlugin(reader("plugin.patcher.run", "patcher", ["document.proposePatch", "document.write"]), {
+      commandHandlers: {
+        "plugin.patcher.run": async (context) => {
+          await context.documents.proposePatch({
+            reason: "suggested",
+            patch: { op: "addObject", pageId: "page_001", object: { id: "mol_002" } as never }
+          });
+          await context.documents.applyPatch!({
+            reason: "typed name",
+            patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } as never }
+          });
+          await context.selection!.getSelection();
+        }
+      }
+    });
+
+    const warnings: string[] = [];
+    await runtime.invokeCommand("plugin.patcher.run", { selectionWarnings: warnings });
+    expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
+    expect(warnings).toEqual(["read of A (patched).chemdraft"]);
+  });
+
+  it("an armed collector that no invocation claims is never handed to a later one", async () => {
+    const runtime = makeRuntime({
+      getSelection: (warnings) => {
+        warnings?.push("read");
+        return emptySelection;
+      }
+    });
+    runtime.registerPlugin(reader("plugin.later.read", "later"), {
+      commandHandlers: { "plugin.later.read": async (context) => { await context.selection!.getSelection(); } }
+    });
+    const orphan: string[] = [];
+    await expect(runtime.invokeCommand("plugin.missing.command", { selectionWarnings: orphan })).rejects.toThrow();
+    await runtime.host.invokeCommand("plugin.later.read");
+    expect(orphan).toEqual([]);
+  });
+});

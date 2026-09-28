@@ -8,6 +8,7 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { moleculeSmiles } from "@chemdraft/document-workflow-core";
 
@@ -251,7 +252,7 @@ async function assertCdxmlRoundTripIdentity(
   contents: string,
   built: BuiltSmilesDocument,
   sourceCanonicalSmiles: string
-): Promise<void> {
+): Promise<string[]> {
   const opened = openChemDraftPayload(contents);
   const molecules = opened.document?.pages.flatMap((page) =>
     page.objects.filter((object): object is MoleculeObject => object.type === "molecule")
@@ -262,10 +263,13 @@ async function assertCdxmlRoundTripIdentity(
     );
   }
   const molecule = molecules[0]!;
+  const kekuleBondOrders = nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders;
+  const warnings: string[] = [];
   const molfile = built.dativeBonds > 0
-    ? moleculeToMolfileV3000(molecule, { fromDocFrame: true })
-    : moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+    ? moleculeToMolfileV3000(molecule, { fromDocFrame: true, kekuleBondOrders, warnings }).contents
+    : moleculeToMolfileV2000(molecule, { fromDocFrame: true, kekuleBondOrders, warnings }).contents;
   await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+  return warnings;
 }
 
 export async function exportPerJobFormat(
@@ -275,8 +279,8 @@ export async function exportPerJobFormat(
   const sourceCanonicalSmiles = verifiedSourceCanonicalSmiles(built);
   if (format === "cdxml") {
     const result = exportDocumentToCdxml(built.document);
-    await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
-    return { contents: result.contents, warnings: result.warnings.map((warning) => warning.message) };
+    const warnings = await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
+    return { contents: result.contents, warnings: [...result.warnings.map((warning) => warning.message), ...warnings] };
   }
   if (format === "pdf") {
     // Keep the jsPDF/svg2pdf implementation and its Node JSDOM shim out of non-PDF exports.

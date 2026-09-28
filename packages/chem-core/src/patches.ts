@@ -14,6 +14,7 @@ import {
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
 import { pageMarginFromLayout } from "./page-layout";
+import { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
@@ -108,7 +109,13 @@ function addObject(document: ChemDraftDocument, pageId: string, object: Document
     throw new DocumentPatchError(`Cannot add object: object "${object.id}" already exists.`);
   }
 
-  page.objects.push(DocumentObjectSchema.parse(object));
+  const parsed = DocumentObjectSchema.parse(object);
+  // Every new molecule — pasted, split off, merged, imported — enters here, so this is where a
+  // stated H count that no longer sits in an aromatic ring is dropped (see dropOrphanedHydrogenHints).
+  if (parsed.type === "molecule") {
+    parsed.atoms = dropOrphanedHydrogenHints(parsed.atoms, parsed.bonds);
+  }
+  page.objects.push(parsed);
 }
 
 function removeObject(document: ChemDraftDocument, objectId: string): void {
@@ -196,6 +203,9 @@ function updateObject(
   }
 
   const updated = mergeObjectChanges(location.object, changes, objectId);
+  if (location.object.type === "molecule" && updated.type === "molecule") {
+    updated.atoms = clearChangedAtomHydrogenHints(location.object, updated.atoms, updated.bonds);
+  }
   location.page.objects[location.objectIndex] = updated;
   pruneCrossingsAfterObjectUpdate(location.page, location.object, updated);
 }

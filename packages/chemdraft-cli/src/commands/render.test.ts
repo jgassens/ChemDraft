@@ -258,7 +258,7 @@ describe("headless ChemDraft rendering", () => {
     "C[C@@H](N)C(=O)O"
   ])("keeps the canonical isomeric SMILES after document export for %s", async (smiles) => {
     const rendered = await renderSmilesToAssets(smiles);
-    const exportedMolfile = moleculeToMolfileV2000(rendered.molecule, { fromDocFrame: true });
+    const exportedMolfile = moleculeToMolfileV2000(rendered.molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents;
     const [source, exported] = await Promise.all([
       computeStructureIdentifiers(smiles),
       computeStructureIdentifiers(exportedMolfile)

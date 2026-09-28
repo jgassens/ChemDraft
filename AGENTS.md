@@ -1387,6 +1387,12 @@ palette search box, a text object) undoes that field's own text instead; and typ
 label, clicking a palette, clicking back into the label box, and finishing the label leaves it
 intact rather than reverting or duplicating characters.
 
+Aromatic surfaces added since: paste benzene, pyrrole, indole and porphine as type-4 MOL and as
+CDXML `Order="1.5"` — formulas right, pyrrole-type N drawn NH, the tautomer badge shown only where an
+N–H was inferred, and its reason in the status bar on hover; ring picking and atom clicks still work
+over a badge; a CDXML pyrrole with `NumHydrogens` N-methylated leaves no stale badge; Copy As MOL and
+CDXML of a pasted aromatic reopen with the same tautomer; and Spin 3D on a pasted aromatic.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

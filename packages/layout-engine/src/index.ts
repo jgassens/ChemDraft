@@ -54,6 +54,29 @@ export type {
   NativeArtVisualPlan
 } from "@chemdraft/art-engine";
 
+import {
+  nativeAtomValenceForCharge,
+  nativeBondOrderResolution,
+  nativeElementFromAtomLabel,
+  type NativeBondOrderResolution,
+  type NativeElementSymbol
+} from "./valence";
+
+export {
+  atomBondOrderUsageMap,
+  nativeAtomBondOrderUsage,
+  nativeAtomChargeIsExpressible,
+  nativeAtomValenceForCharge,
+  nativeBondOrderResolution,
+  type NativeBondOrderResolution,
+  nativeBondOrderValue,
+  nativeBondValenceContribution,
+  nativeElementFromAtomLabel,
+  type NativeElementSymbol,
+  nativeElementSymbols,
+  normalizeNativeAtomElementLabel
+} from "./valence";
+
 export type LayoutCommandId =
   | "layout.group"
   | "layout.ungroup"
@@ -718,7 +741,7 @@ function clampPointToBounds(point: LayoutPoint, bounds: LayoutBounds): LayoutPoi
   };
 }
 
-function distance(left: LayoutPoint, right: LayoutPoint): number {
+export function distance(left: LayoutPoint, right: LayoutPoint): number {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
@@ -790,7 +813,7 @@ function degreesToRadians(degrees: number): number {
   return degrees * Math.PI / 180;
 }
 
-function clamp(value: number, min: number, max: number): number {
+export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
@@ -1368,10 +1391,11 @@ function planNativeMoleculeGraphSvg(
   layerIndex: number,
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
 ): PageSvgElementFragment {
+  const resolution = nativeBondOrderResolution(object.atoms, object.bonds);
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
   const moleculeStrokeOpacity = nativeMoleculeStrokeOpacity(object);
-  const atomLabels = planMoleculeAtomLabels(object);
+  const atomLabels = planMoleculeAtomLabels(object, resolution);
   const labelPlanByAtomId = new Map(atomLabels.map((plan) => [plan.atom.id, plan]));
   // Ring double bonds default their inner line to the ring interior. Computed once per molecule.
   const ringInteriorSides = ringInteriorDoubleBondSides(object);
@@ -1450,7 +1474,8 @@ function planNativeMoleculeGraphSvg(
           segment,
           bondDrawingStyle,
           moleculeStrokeOpacity,
-          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? []
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: segment.bond.id })) ?? [],
+          resolution
         )
       )
     ])
@@ -1547,7 +1572,8 @@ function planNativeMoleculeGraphSvg(
     bondSegmentGroups,
     carbonJunctionPlans,
     drawingStyle,
-    gapsByBondKey
+    gapsByBondKey,
+    resolution
   );
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
@@ -2169,7 +2195,8 @@ function moleculeEffectSourceFragment(
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
   carbonJunctionPlans: readonly NativeCarbonJunctionPlan[],
   drawingStyle: NativeDrawingStyle,
-  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
+  resolution: NativeBondOrderResolution
 ): PageSvgElementFragment | undefined {
   const hasFilter = effects.some((effect) => effect.kind === "shadow" || effect.kind === "glow");
   if (!hasFilter) {
@@ -2183,7 +2210,8 @@ function moleculeEffectSourceFragment(
           object,
           segment,
           bondDrawingStyle,
-          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
+          gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
+          resolution
         )
       )
     ),
@@ -2205,14 +2233,15 @@ function moleculeBondEffectSourceFragments(
   object: MoleculeObject,
   segment: PageMoleculeBondSegment,
   drawingStyle: NativeDrawingStyle,
-  crossingGaps: readonly BondCrossingGap[] = []
+  crossingGaps: readonly BondCrossingGap[],
+  resolution: NativeBondOrderResolution
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
   if (bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
-        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength),
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength, resolution),
         fill: "#000000",
         stroke: "none"
       })
@@ -2220,7 +2249,7 @@ function moleculeBondEffectSourceFragments(
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
-    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps);
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
     const hashes = hashedWedge.hashes.flatMap((hash, index) =>
       splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
         elementFragment("line", `molecule-effect-source-bond-hash-${object.id}-${segment.key}-${index}-${visibleIndex}`, {
@@ -2380,7 +2409,8 @@ function nativeBondSegmentFragments(
   segment: PageMoleculeBondSegment,
   drawingStyle: NativeDrawingStyle,
   moleculeStrokeOpacity: number,
-  crossingGaps: readonly BondCrossingGap[] = []
+  crossingGaps: readonly BondCrossingGap[],
+  resolution: NativeBondOrderResolution
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
   const className = [
@@ -2403,7 +2433,7 @@ function nativeBondSegmentFragments(
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `bond-${object.id}-${segment.key}-${index}`, {
         ...commonAttrs,
-        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength),
+        points: nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength, resolution),
         fill: stroke,
         "fill-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
         stroke: "none"
@@ -2412,7 +2442,7 @@ function nativeBondSegmentFragments(
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
-    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps);
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
     return [
       elementFragment("g", `bond-${object.id}-${segment.key}`, commonAttrs, [
         ...hashedWedge.hashes.flatMap((hash, index) =>
@@ -4708,7 +4738,10 @@ export interface AtomLabelPlan {
   fontStyle: NativeDrawingStyle["atomLabelFontStyle"];
 }
 
-export function planMoleculeAtomLabels(object: MoleculeObject): AtomLabelPlan[] {
+export function planMoleculeAtomLabels(
+  object: MoleculeObject,
+  resolution: NativeBondOrderResolution = nativeBondOrderResolution(object.atoms, object.bonds)
+): AtomLabelPlan[] {
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
   return object.atoms.flatMap((atom) => {
     const atomLabelStyle = nativeMoleculeAtomLabelStyle(object, atom.id, drawingStyle);
@@ -4717,7 +4750,8 @@ export function planMoleculeAtomLabels(object: MoleculeObject): AtomLabelPlan[] 
       object.bonds,
       atomLabelStyle,
       atomLabelStyle.atomLabelColor,
-      object.atoms
+      object.atoms,
+      resolution
     );
     return plan ? [plan] : [];
   });
@@ -4728,9 +4762,11 @@ export function planAtomLabel(
   bonds: readonly CoreMoleculeBond[],
   drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
   color = drawingStyle.atomLabelColor,
-  atoms: readonly MoleculeAtom[] = []
+  // Required, not defaulted: aromatic bonds count at their Kekulé orders, which needs every ring atom.
+  atoms: readonly MoleculeAtom[],
+  resolution?: NativeBondOrderResolution
 ): AtomLabelPlan | undefined {
-  const label = atomDisplayLabel(atom, bonds, drawingStyle, atoms);
+  const label = atomDisplayLabel(atom, bonds, drawingStyle, atoms, resolution);
   if (!label) {
     return undefined;
   }
@@ -4881,9 +4917,7 @@ function leadingImplicitHydrogenElement(label: string): NativeElementSymbol | un
     return undefined;
   }
 
-  return nativeElementSymbolSet.has(match[1])
-    ? match[1] as NativeElementSymbol
-    : undefined;
+  return nativeElementFromAtomLabel(match[1]);
 }
 
 function leadingImplicitHydrogenAtomLabelLayout(
@@ -5029,12 +5063,17 @@ export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: Nati
  * The label a native atom renders with in 2D — element symbol + implicit hydrogens +
  * charge, or undefined for plain bonded carbons. Exported so the 3D spin overlay can
  * label its atoms IDENTICALLY to the drawing it floats over.
+ *
+ * `atoms` is the whole molecule and is required: an aromatic bond counts at its Kekulé order, which
+ * takes every ring atom to resolve, and a defaulted empty list used to count it single — a wrong
+ * hydrogen count with nothing on screen to say so.
  */
 export function atomDisplayLabel(
   atom: MoleculeAtom,
   bonds: readonly CoreMoleculeBond[],
   drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
-  atoms: readonly MoleculeAtom[] = []
+  atoms: readonly MoleculeAtom[],
+  resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
 ): string | undefined {
   // The mark-contributed part of the charge is drawn by the floating charge mark itself, so the
   // label must not repeat it as a superscript — but hydrogen count always follows the FULL
@@ -5045,14 +5084,17 @@ export function atomDisplayLabel(
     const symbol = atom.element.trim() || "C";
     return `${symbol}${chargeLabelSuffix(labelCharge)}`;
   }
-  const valenceUsed = nativeAtomBondOrderUsage(atom.id, bonds);
+  // Aromatic bonds count at their Kekulé orders, resolved once per molecule — the same bonds the
+  // formula and the valence check count, so the drawn H count and the formula agree. A molecule
+  // with no aromatic bond gets its own array back.
+  const valenceUsed = resolution.bondOrderUsage.get(atom.id) ?? 0;
   const formalCharge = atom.formalCharge;
   // A literal label (typed with the text tool) means exactly what it says — no auto-drawn
   // hydrogen count ever. Everything else follows the classic skeletal convention: the
   // remaining valence is drawn as implicit hydrogens unless the style hides them. Each
   // unpaired electron from an associated radical mark occupies a bonding slot, and a dative
   // bond from a pyrrole-type N–H costs that proton (see `dativeDeprotonationCount`).
-  const incidentBonds = bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  const incidentBonds = resolution.bondsByAtom.get(atom.id) ?? [];
   // A carbon whose only bonds are dative (a CO ligand's C drawn as a bare atom) cannot carry
   // four hydrogens as well: under the terminal-carbon style it reads "C", never "CH4".
   const dativeOnlyCarbon = element === "C" && incidentBonds.length > 0 && incidentBonds.every(isDativeBond);
@@ -5061,11 +5103,11 @@ export function atomDisplayLabel(
     : implicitHydrogenLabel(Math.max(
         0,
         nativeAtomValenceForCharge(element, formalCharge) - valenceUsed - (atom.markRadicals ?? 0)
-          - dativeDeprotonationCount(atom, bonds, atoms)
+          - dativeDeprotonationCount(atom, bonds, atoms, resolution)
       ));
 
   if (element === "C" && formalCharge === 0) {
-    const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, bonds, atoms) === 1;
+    const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, resolution) === 1;
     // "Naked" means no bond at all, not zero covalent valence: a dashed (dative) bond
     // contributes no valence, so testing valenceUsed here labeled the carbon at the end of
     // every dashed bond as CH4 instead of drawing a plain stick.
@@ -5079,7 +5121,7 @@ export function atomDisplayLabel(
     }
   }
 
-  const singleHeavyNeighbor = singleHeavyAtomNeighbor(atom.id, bonds, atoms);
+  const singleHeavyNeighbor = singleHeavyAtomNeighbor(atom.id, resolution);
   const hydrogenBeforeElement =
     implicitHydrogens === "H" &&
     element !== "H" &&
@@ -5088,115 +5130,6 @@ export function atomDisplayLabel(
   return hydrogenBeforeElement
     ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
     : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`;
-}
-
-const nativeElementSymbols = [
-  "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
-  "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
-  "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-  "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
-  "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
-  "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
-  "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
-  "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
-  "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
-  "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
-  "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
-  "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"
-] as const;
-type NativeElementSymbol = typeof nativeElementSymbols[number];
-const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
-/** Main-group valence electrons. One table, because the bond count follows from it. */
-const nativeAtomValenceElectrons: Partial<Record<NativeElementSymbol, number>> = {
-  H: 1,
-  B: 3,
-  C: 4,
-  N: 5,
-  O: 6,
-  F: 7,
-  Al: 3,
-  Si: 4,
-  P: 5,
-  S: 6,
-  Cl: 7,
-  Ge: 4,
-  As: 5,
-  Se: 6,
-  Br: 7,
-  Sn: 4,
-  Te: 6,
-  I: 7
-};
-
-/**
- * How many bonds an atom of this element and formal charge wants — and so, after its real bonds are
- * counted, how many implicit hydrogens it carries.
- *
- * Derived rather than looked up, because a formal charge changes the answer and a stored NEUTRAL
- * valence cannot express that. Counting against the neutral value invented hydrogens that are not
- * there: an alkoxide drew as "OH-" and a trisubstituted carbocation as "CH+" — different molecules
- * from the ones on the page.
- *
- * The octet rule states it exactly. An atom with n valence electrons shares its unpaired ones, so
- * it forms `8 - n` bonds once n reaches 4 and `n` below that; a charge simply moves n. That
- * reproduces every neutral value this table used to hold, and gets O- (1 bond), O+ (3), N+ (4),
- * N- (2), C+ (3), C- (3) and B- (4) right on the way. Hydrogen follows the duet rule instead, so
- * it is handled on its own: H+ and H- both take no bonds.
- */
-export function nativeAtomValenceForCharge(element: NativeElementSymbol, formalCharge: number): number {
-  const electrons = nativeAtomValenceElectrons[element];
-  if (electrons === undefined) {
-    return 0;
-  }
-  if (element === "H") {
-    return Math.max(0, 1 - Math.abs(formalCharge));
-  }
-  const adjusted = electrons - formalCharge;
-  if (adjusted < 0 || adjusted > 8) {
-    return 0;
-  }
-  return adjusted >= 4 ? 8 - adjusted : adjusted;
-}
-
-/**
- * Whether `formalCharge` keeps this element's electron count inside a representable range —
- * distinct from `nativeAtomValenceForCharge` returning 0, which also happens for a charge that
- * legitimately has no room for MORE bonds (H+ and H- both take zero). Without this, a caller that
- * only checks `valenceUsed <= nativeAtomValenceForCharge(...)` can't tell "no more bonds fit" from
- * "this charge doesn't exist" — both collapse to the same 0, and an unbonded atom's valenceUsed of
- * 0 trivially satisfies either one, so charges of arbitrary magnitude appear equally legal.
- *
- * Elements outside the valence-electron table (metals: Na, K, Ca, Fe, ...) have no octet
- * arithmetic to bound them and legitimately carry ionic charges the table cannot express, so
- * they stay permissive — the bound only applies where the octet math actually defines one.
- */
-export function nativeAtomChargeIsExpressible(element: NativeElementSymbol, formalCharge: number): boolean {
-  const electrons = nativeAtomValenceElectrons[element];
-  if (electrons === undefined) {
-    return true;
-  }
-  if (element === "H") {
-    return Math.abs(formalCharge) <= 1;
-  }
-  const adjusted = electrons - formalCharge;
-  return adjusted >= 0 && adjusted <= 8;
-}
-const nativeBondOrderValue: Record<string, number> = {
-  single: 1,
-  double: 2,
-  triple: 3,
-  aromatic: 1.5,
-  unknown: 1
-};
-
-function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return undefined;
-  }
-
-  const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
-  return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate as NativeElementSymbol : undefined;
 }
 
 /**
@@ -5215,23 +5148,25 @@ function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefi
 export function dativeDeprotonationCount(
   atom: MoleculeAtom,
   bonds: readonly CoreMoleculeBond[],
-  atoms: readonly MoleculeAtom[]
+  atoms: readonly MoleculeAtom[],
+  resolution?: NativeBondOrderResolution
 ): number {
   const donorElement = nativeElementFromAtomLabel(atom.element);
   if (atom.formalCharge !== 0 || atom.labelLiteral === true) {
     return 0;
   }
   if (donorElement === "S" || donorElement === "Se") {
-    return terminalChalcogenolDeprotonation(atom, bonds, atoms);
+    return terminalChalcogenolDeprotonation(atom, bonds, atoms, resolution);
   }
   if (donorElement !== "N") {
     return 0;
   }
-  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const graph = resolution ?? nativeBondOrderResolution(atoms, bonds);
+  const atomById = graph.atomById;
   const covalentNeighborIds: string[] = [];
   let donatesToMetal = false;
   let covalentAllSingle = true;
-  bonds.forEach((bond) => {
+  (graph.bondsByAtom.get(atom.id) ?? []).forEach((bond) => {
     if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
       return;
     }
@@ -5251,7 +5186,7 @@ export function dativeDeprotonationCount(
   if (!donatesToMetal || covalentNeighborIds.length !== 2 || !covalentAllSingle) {
     return 0;
   }
-  const conjugated = covalentNeighborIds.every((neighborId) => bonds.some((bond) =>
+  const conjugated = covalentNeighborIds.every((neighborId) => (graph.bondsByAtom.get(neighborId) ?? []).some((bond) =>
     (bond.fromAtomId === neighborId || bond.toAtomId === neighborId) &&
     bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id &&
     !isDativeBond(bond) &&
@@ -5268,13 +5203,15 @@ export function dativeDeprotonationCount(
 function terminalChalcogenolDeprotonation(
   atom: MoleculeAtom,
   bonds: readonly CoreMoleculeBond[],
-  atoms: readonly MoleculeAtom[]
+  atoms: readonly MoleculeAtom[],
+  resolution?: NativeBondOrderResolution
 ): number {
-  const atomById = new Map(atoms.map((candidate) => [candidate.id, candidate]));
+  const graph = resolution ?? nativeBondOrderResolution(atoms, bonds);
+  const atomById = graph.atomById;
   let covalentBonds = 0;
   let covalentAllSingle = true;
   let donatesToMetal = false;
-  bonds.forEach((bond) => {
+  (graph.bondsByAtom.get(atom.id) ?? []).forEach((bond) => {
     if (bond.fromAtomId !== atom.id && bond.toAtomId !== atom.id) {
       return;
     }
@@ -5294,24 +5231,13 @@ function terminalChalcogenolDeprotonation(
   return donatesToMetal && covalentBonds === 1 && covalentAllSingle ? 1 : 0;
 }
 
-function nativeAtomBondOrderUsage(atomId: string, bonds: readonly CoreMoleculeBond[]): number {
-  return bonds.reduce((sum, bond) => (
-    bond.fromAtomId === atomId || bond.toAtomId === atomId
-      // A dashed single is dative/partial (coordination, hydrogen bonds): no covalent slot used, so the
-      // drawn hydrogen count ignores it — same rule as the valence checker's.
-      ? sum + (isDativeBond(bond) ? 0 : nativeBondOrderValue[bond.order] ?? 1)
-      : sum
-  ), 0);
-}
-
 function heavyAtomNeighborCount(
   atomId: string,
-  bonds: readonly CoreMoleculeBond[],
-  atoms: readonly MoleculeAtom[]
+  resolution: NativeBondOrderResolution
 ): number {
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const atomById = resolution.atomById;
   const neighborIds = new Set<string>();
-  for (const bond of bonds) {
+  for (const bond of resolution.bondsByAtom.get(atomId) ?? []) {
     const neighborId = bond.fromAtomId === atomId
       ? bond.toAtomId
       : bond.toAtomId === atomId
@@ -5330,12 +5256,11 @@ function heavyAtomNeighborCount(
 
 function singleHeavyAtomNeighbor(
   atomId: string,
-  bonds: readonly CoreMoleculeBond[],
-  atoms: readonly MoleculeAtom[]
+  resolution: NativeBondOrderResolution
 ): MoleculeAtom | undefined {
-  const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const atomById = resolution.atomById;
   const neighbors = new Map<string, MoleculeAtom>();
-  for (const bond of bonds) {
+  for (const bond of resolution.bondsByAtom.get(atomId) ?? []) {
     const neighborId = bond.fromAtomId === atomId
       ? bond.toAtomId
       : bond.toAtomId === atomId
@@ -5423,11 +5348,12 @@ export function nativeMultipleBondGapPx(drawingStyle: NativeDrawingStyle): numbe
 function nativeWedgePolygonPoints(
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
   drawingStyle: NativeDrawingStyle,
-  object?: MoleculeObject,
-  bond?: CoreMoleculeBond,
+  object: MoleculeObject,
+  bond: CoreMoleculeBond,
   // Length used for the width cap. Crossing gaps split one wedge into several fragments; each
   // fragment must inherit the whole segment's base width or the pieces flare at different rates.
-  widthCapLength?: number
+  widthCapLength: number | undefined,
+  resolution: NativeBondOrderResolution
 ): string {
   const geometry = nativeSegmentVectorGeometry(segment);
   if (!geometry) {
@@ -5436,7 +5362,7 @@ function nativeWedgePolygonPoints(
 
   const width = nativeWedgeWidth(drawingStyle, widthCapLength ?? geometry.length);
   const miteredWideEnd = object && bond
-    ? nativeWedgeWideEndMiter(object, bond, segment, geometry, width)
+    ? nativeWedgeWideEndMiter(object, bond, segment, geometry, width, resolution)
     : undefined;
   if (miteredWideEnd) {
     const points = [
@@ -5477,7 +5403,8 @@ function nativeWedgeWideEndMiter(
   bond: CoreMoleculeBond,
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
   geometry: NonNullable<ReturnType<typeof nativeSegmentVectorGeometry>>,
-  width: number
+  width: number,
+  resolution: NativeBondOrderResolution
 ): {
   wideLeft: LayoutPoint;
   wideRight: LayoutPoint;
@@ -5564,7 +5491,8 @@ function nativeWedgeWideEndMiter(
             adjacentNarrowAtom.id,
             nativeDrawingStyleFromObjectStyle(object.style)
           ),
-          object.atoms
+          object.atoms,
+          resolution
         )
       : undefined;
     if (adjacentNarrowLabel !== undefined) {
@@ -5823,9 +5751,10 @@ function infiniteLineIntersection(
 function nativeHashedWedgePlan(
   segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
   drawingStyle: NativeDrawingStyle,
-  object?: MoleculeObject,
-  bond?: CoreMoleculeBond,
-  crossingGaps: readonly BondCrossingGap[] = []
+  object: MoleculeObject,
+  bond: CoreMoleculeBond,
+  crossingGaps: readonly BondCrossingGap[],
+  resolution: NativeBondOrderResolution
 ): {
   hashes: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[];
   strokeWidth: number;
@@ -5917,7 +5846,7 @@ function nativeHashedWedgePlan(
   }
 
   const wideEndMiter = object && bond
-    ? nativeWedgeWideEndMiter(object, bond, segment, geometry, maxWidth)
+    ? nativeWedgeWideEndMiter(object, bond, segment, geometry, maxWidth, resolution)
     : undefined;
   const terminalHash = hashes.at(-1);
   if (
