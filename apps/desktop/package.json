@@ -1,6 +1,6 @@
 {
   "name": "@chemdraft/desktop",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,13 +21,13 @@
     "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/chemistry-adapter": "workspace:*",
     "@chemdraft/clipboard-adapter": "workspace:*",
+    "@chemdraft/document-workflow-core": "workspace:*",
     "@chemdraft/editor-adapter": "workspace:*",
     "@chemdraft/engine3d-api": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/isospec-adapter": "workspace:*",
     "@chemdraft/ketcher-adapter": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
-    "@chemdraft/molscribe-ocsr-plugin": "workspace:*",
     "@chemdraft/ocl-adapter": "workspace:*",
     "@chemdraft/plugin-api": "workspace:*",
     "@chemdraft/plugin-host": "workspace:*",

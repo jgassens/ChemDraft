@@ -14,6 +14,7 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
+import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import {
   CdxmlEnvelopeCodecVersion,
   CdxmlEnvelopeCodecVersionV1,
@@ -216,6 +217,59 @@ describe("CDXML dative bonds", () => {
     const reopened = openChemDraftPayload(canonicalVisibleCdxml(exported));
     const bond = (reopened.document?.pages[0].objects[0] as MoleculeObject).bonds[0];
     expect(bond).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+  });
+});
+
+/** Imidazole with Order=1.5 ring bonds and a methyl, as a CDXML fragment. */
+function aromaticImidazoleCdxml(n1Attributes = ""): string {
+  return `<CDXML><page id="1"><fragment id="2">
+    <n id="c2" p="0 0"/>
+    <n id="n3" p="10 0" Element="7"/>
+    <n id="c4" p="14 10"/>
+    <n id="c5" p="5 16"/>
+    <n id="n1" p="-4 10" Element="7" ${n1Attributes}/>
+    <n id="me" p="24 14" NumHydrogens="3"/>
+    <b id="b1" B="c2" E="n3" Order="1.5"/>
+    <b id="b2" B="n3" E="c4" Order="1.5"/>
+    <b id="b3" B="c4" E="c5" Order="1.5"/>
+    <b id="b4" B="c5" E="n1" Order="1.5"/>
+    <b id="b5" B="n1" E="c2" Order="1.5"/>
+    <b id="b6" B="c4" E="me"/>
+  </fragment></page></CDXML>`;
+}
+
+describe("CDXML NumHydrogens on aromatic rings", () => {
+  // Order=1.5 bonds cannot say which ring N carries the H; the file's NumHydrogens can, and the
+  // Kekulé resolution in layout-engine honours it (hydrogenCount).
+  it("keeps a stated hydrogen count on an atom of an aromatic bond", () => {
+    const graph = openChemDraftPayload(aromaticImidazoleCdxml('NumHydrogens="1"')).document?.pages[0].objects[0] as MoleculeObject;
+    expect(graph.atoms.map((atom) => atom.hydrogenCount)).toEqual([undefined, undefined, undefined, undefined, 1, undefined]);
+    expect(graph.bonds.filter((bond) => bond.order === "aromatic")).toHaveLength(5);
+    expect(() => ChemDraftDocumentSchema.parse(openChemDraftPayload(aromaticImidazoleCdxml('NumHydrogens="1"')).document)).not.toThrow();
+  });
+
+  it("records nothing where the file states nothing, and nothing off the aromatic bonds", () => {
+    const graph = openChemDraftPayload(aromaticImidazoleCdxml()).document?.pages[0].objects[0] as MoleculeObject;
+    expect(graph.atoms.every((atom) => atom.hydrogenCount === undefined)).toBe(true);
+  });
+
+  it.each([0, 1])("preserves NumHydrogens=%i and the methylimidazole tautomer through the visible layer only", (hydrogens) => {
+    const original = openChemDraftPayload(aromaticImidazoleCdxml(`NumHydrogens="${hydrogens}"`)).document!;
+    const before = original.pages[0].objects[0] as MoleculeObject;
+    const exported = exportDocumentToCdxml(original);
+    expect(exported.contents).toContain(`NumHydrogens="${hydrogens}"`);
+    const visibleOnly = exported.contents.replace(/<objecttag Name="org\.chemdraft\/[^>]*\/>/g, "");
+    const reopened = openChemDraftPayload(visibleOnly);
+    expect(reopened.source).toBe("external-cdxml");
+    const after = reopened.document!.pages[0].objects[0] as MoleculeObject;
+    expect(after.atoms.map((atom) => atom.hydrogenCount)).toEqual(before.atoms.map((atom) => atom.hydrogenCount));
+    expect(nativeSingleBondGraphSmiles(after.atoms, after.bonds)).toBe(nativeSingleBondGraphSmiles(before.atoms, before.bonds));
+    const metadata = nativeSingleBondGraphMetadata(after.atoms, after.bonds);
+    expect(metadata.formula).toBe("C4H6N2");
+    // A stated zero settles n1 only: n3's forced N–H is still inferred and keeps its badge.
+    expect(metadata.warnings.map(({ code, objectId }) => ({ code, objectId }))).toEqual(hydrogens === 0
+      ? [{ code: "chemistry.aromatic_tautomer_guessed", objectId: after.atoms[1]!.id }]
+      : []);
   });
 });
 

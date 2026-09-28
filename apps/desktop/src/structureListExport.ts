@@ -5,6 +5,7 @@ import {
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
 import { getExportFormatDescriptor, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { copyAsScopeMolecules } from "./documentWorkflow";
 import { loadStructureIdentifiers, moleculeSmiles } from "./moleculeSmiles";
 
@@ -69,8 +70,9 @@ export async function exportStructureListSdf(
     const molfile = moleculeToMolfileV2000(molecule, {
       ...options,
       fromDocFrame: true,
-      warnings: writerWarnings
-    });
+      warnings: writerWarnings,
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+    }).contents;
     warnings.push(...writerWarnings.map((message): ExportWarning => ({
       code: "export.sdf_v2000_loss",
       message,

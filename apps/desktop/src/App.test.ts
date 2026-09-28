@@ -12,6 +12,7 @@ import {
   stylePresetToObjectStyle,
   type ChemDraftDocument,
   type DocumentObject,
+  type FlattenWarning,
   type GraphicObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
@@ -146,12 +147,16 @@ import {
   projectedPlaneTiltRadiansFromDrag,
   projectedPlaneTiltReadoutDegrees,
   projectedPlaneTiltReadoutLabel,
+  proposalReviewAfterOpen,
+  proposalWindowLifecycle,
+  settleAnalysisWindowOpen,
   projectedPlaneTiltVectorFromDrag,
   rotationDeltaDegrees,
   rotationInputHomeDraftDegrees,
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
   eraserObjectIdsInSelectionRect,
+  flattenWarningMessages,
   graphicArtTransformPreviewSvgDataUrl,
   groupedDragObjectIdsForPointer,
   selectionInSelectionLasso,
@@ -251,6 +256,7 @@ const desktopCapabilitiesSource = readFileSync(
   new URL("../src-tauri/capabilities/default.json", import.meta.url),
   "utf8"
 );
+const desktopNativeSource = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const paletteWindowSource = readFileSync(new URL("./PaletteWindow.tsx", import.meta.url), "utf8");
 const documentWorkflowSource = readFileSync(new URL("./documentWorkflow.ts", import.meta.url), "utf8");
 const commandsSource = readFileSync(new URL("./commands.ts", import.meta.url), "utf8");
@@ -339,6 +345,66 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toMatch(/\.graphic-glyph-stroke\s*{[^}]*pointer-events:\s*visiblePainted;/s);
     expect(appCss).toMatch(/\.graphic-glyph-shape,\s*\.graphic-glyph-projected-shape,\s*\.graphic-glyph-path\s*{[^}]*pointer-events:\s*visiblePainted;/s);
     expect(appCss).toMatch(/\.graphic-glyph-hit-target\[data-graphic-hit-fill="true"\]\s*{[^}]*pointer-events:\s*all;/s);
+  });
+
+  it("keeps floating analysis report text selectable for ordinary Cmd/Ctrl+C", () => {
+    const cssWithoutComments = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(cssWithoutComments).toMatch(
+      /\.plugin-panel-content\s*{[^}]*user-select:\s*text;[^}]*-webkit-user-select:\s*text;/s
+    );
+    expect(cssWithoutComments).not.toMatch(/\.plugin-report\s*{[^}]*user-select:\s*none/s);
+    expect(mainWindowSource).toContain("!isDesktopRuntime() ? (");
+    expect(mainWindowSource).not.toContain("onOpenAsWindow=");
+  });
+
+  it("associates analysis windows with the main document instead of global always-on-top", () => {
+    expect(desktopNativeSource).toContain("builder.parent(&main)");
+    expect(desktopNativeSource).toContain("ns_window.setLevel(NSNormalWindowLevel)");
+    expect(desktopNativeSource).toContain("analysis_window_initial_position");
+    expect(desktopNativeSource).not.toMatch(
+      /fn configure_analysis_window[\s\S]*?setLevel\(NSFloatingWindowLevel\)/
+    );
+  });
+
+  it("focuses an analysis window only when the user asked for it", () => {
+    // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
+    expect(desktopNativeSource).toContain(".focused(request.focus)");
+    expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
+    expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
+    // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
+    expect(mainWindowSource).toContain("{ open: true, focus: true, width: 940, height: 660 }");
+    expect(mainWindowSource).toContain("showProposalReview(false);");
+    expect(mainWindowSource).toMatch(/title: panel\.report\.title \|\| panel\.title,\s*focus: false/);
+  });
+
+  it("opens proposal review on arrival, updates it in place, and closes it when the queue empties", () => {
+    expect(proposalWindowLifecycle(0, 0)).toBe("idle");
+    expect(proposalWindowLifecycle(0, 1)).toBe("open");
+    expect(proposalWindowLifecycle(1, 2)).toBe("open");
+    expect(proposalWindowLifecycle(2, 1)).toBe("update");
+    expect(proposalWindowLifecycle(1, 0)).toBe("close");
+  });
+
+  it("marks the proposal window open only after its native open succeeds", async () => {
+    const errors: string[] = [];
+    const opened = await settleAnalysisWindowOpen(
+      () => Promise.reject(new Error("window creation refused")),
+      (message) => errors.push(message)
+    );
+    expect(opened).toBe(false);
+    expect(errors).toEqual(["window creation refused"]);
+    // A failed open leaves the badge reachable: the window is not marked open.
+    expect(proposalReviewAfterOpen({ pending: 2, windowOpen: false }, opened)).toEqual({
+      pending: 2,
+      windowOpen: false
+    });
+    // It also clears a stale "open" left from an earlier window that is no longer showing.
+    expect(proposalReviewAfterOpen({ pending: 2, windowOpen: true }, false).windowOpen).toBe(false);
+
+    await expect(settleAnalysisWindowOpen(() => Promise.resolve(), () => undefined)).resolves.toBe(true);
+    expect(proposalReviewAfterOpen({ pending: 2, windowOpen: false }, true).windowOpen).toBe(true);
+    // Every proposal was handled while the open was in flight: nothing to show, nothing open.
+    expect(proposalReviewAfterOpen({ pending: 0, windowOpen: false }, true).windowOpen).toBe(false);
   });
 
   it("keeps paint containment off the transformed document board (WKWebView ghost pixels)", () => {
@@ -2265,8 +2331,9 @@ describe("ChemDraft desktop shell", () => {
     // Both MainWindow perception sites (the flatten reference and the pre-spin center scan) must
     // use the same molfile flatten's read-back uses; the plain export writer turns "Ph" into "*",
     // which OpenChemLib reads as carbon. Covered functionally in ocl-adapter; this guards the wiring.
-    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget)");
-    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule)");
+    // Both sites also collect the spelling's warnings (a guessed tautomer, say) instead of dropping them.
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(flattenTarget, warnings)");
+    expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule, warnings)");
   });
 
   it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
@@ -2728,12 +2795,44 @@ describe("ChemDraft desktop shell", () => {
   it("threads Spin 3D placement through modeled typed rotation while preserving legacy X/Y tilt", () => {
     // The numeric-rotation flatten must run the stereo read-back guard (spin3dFlattenStereoOptions),
     // not commit geometry-only, so a typed rotation can't silently persist a different stereoisomer.
-    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId\)\s*}\s*\)/s);
+    expect(mainWindowSource).toMatch(/flattenSpunMolecule\(\s*input\.startDocument,\s*input\.objectId,\s*coords3d,\s*quatToViewMatrix\(nextQuat\),\s*{\s*placement,\s*\.\.\.spin3dFlattenStereoOptions\(input\.startDocument,\s*input\.objectId,\s*warnings\)\s*}\s*\)/s);
     expect(mainWindowSource).toContain("modeledRotationEntry ? 0");
     expect(mainWindowSource).toMatch(/quatFromAxisAngle\(SPIN_AXIS_Z,\s*-deltaDegrees \* Math\.PI \/ 180\)/);
     expect(mainWindowSource).toMatch(/attachSpin3dModelFromConformer\(nextDocument,\s*input\.objectId/s);
     expect(mainWindowSource).toMatch(/tiltNativeMoleculeProjectedPlane\(\s*input\.startDocument,\s*input\.objectId/s);
     expect(mainWindowSource).toMatch(/applyDocumentObjectProjectedPlaneTilt\(\s*input\.startDocument,\s*input\.objectId/s);
+  });
+
+  it("keeps a flatten's own writer warnings but drops the expected per-commit perspective-cleanup note", () => {
+    // flattenWarningMessages is what every 3D-rotation commit path folds into its reported status.
+    // "perspective-cleanup" fires on every committed flatten (packages/chem-core/src/perspective.ts),
+    // so it must never reach the user as if it were a caveat about THIS rotation, while a genuine
+    // writer warning (an abbreviation, a dative bond, an unresolved aromatic system) must survive.
+    const warnings: FlattenWarning[] = [
+      { code: "perspective-cleanup", message: "Perspective depiction — projected geometry may need cleanup." },
+      {
+        code: "stored-structure-lossy",
+        message: "Atom label \"Ph\" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile."
+      }
+    ];
+    expect(flattenWarningMessages(warnings)).toEqual([
+      "Atom label \"Ph\" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in the molfile."
+    ]);
+    expect(flattenWarningMessages([])).toEqual([]);
+  });
+
+  it("surfaces flattenSpunMolecule's own writer warnings, not just the stereo-option ones, in every 3D-rotation commit status", () => {
+    // Regression: commitProjectedPlaneTilt (modeled X/Y drag) and rotationInputDocumentFromDraft
+    // (typed X/Y rotation) used to build their committed status from ONLY whatever
+    // spin3dFlattenStereoOptions pushed into `warnings`, silently dropping the flatten's own
+    // guarded/outcome.warnings — so a lossy rewrite of the stored structure reported nothing but
+    // "3D rotation applied". Both commit sites must now fold flattenWarningMessages(...) of the
+    // flatten's own result into that same `warnings` array before the status is built.
+    expect(mainWindowSource).toContain("warnings.push(...flattenWarningMessages(guarded.warnings));");
+    expect(mainWindowSource).toContain("warnings.push(...flattenWarningMessages(outcome.warnings));");
+    // The Z-rotate drag and typed Z-rotation paths deliberately never call flattenSpunMolecule
+    // (§5.27: an in-plane Z rotation reuses the existing 2D atom rotation), so they have no such
+    // gap to close — only the X/Y (tilt) paths need this fold-in.
   });
 
   it("gates the browser agent bridge behind explicit QA flags", () => {

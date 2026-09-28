@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,9 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 
-import { depictSmiles } from "../document";
 import type { CliIo } from "../output";
-import { NMR_PLUGIN_DIR_ENV, nmrEquivalenceClasses, nmrHelp, resolveNmrPluginDir, runNmrCommand } from "./nmr";
+import { NMR_PLUGIN_DIR_ENV, NMR_PLUGIN_ID, nmrHelp, nmrHelpText, resolveNmrPluginDir, runNmrCommand } from "./nmr";
 
 interface Resonance {
   nucleus: "1H" | "13C";
@@ -41,9 +40,16 @@ function captureIo(): { io: CliIo; stdout: string[]; stderr: string[] } {
   return { io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }, stdout, stderr };
 }
 
-async function run(argv: string[]): Promise<{ code: number; lines: Line[]; stderr: string[] }> {
+// The trust file these tests load plugins under; written in beforeAll, listing the CI fixture and
+// (when present) the real plugin checkout.
+let trustConfigPath: string;
+
+async function run(
+  argv: string[],
+  configPath: string = trustConfigPath
+): Promise<{ code: number; lines: Line[]; stderr: string[] }> {
   const { io, stdout, stderr } = captureIo();
-  const code = await runNmrCommand(argv, io);
+  const code = await runNmrCommand(argv, io, { trustConfigPath: configPath });
   return { code, lines: stdout.map((line) => JSON.parse(line) as Line), stderr };
 }
 
@@ -56,6 +62,29 @@ async function withPluginDir<T>(dir: string, body: () => Promise<T>): Promise<T>
     if (previous === undefined) delete process.env[NMR_PLUGIN_DIR_ENV];
     else process.env[NMR_PLUGIN_DIR_ENV] = previous;
   }
+}
+
+/** A valid manifest for a plugin directory under test: same shape as the CI fixture's. */
+async function writeValidManifest(pluginDir: string): Promise<void> {
+  await mkdir(join(pluginDir, "src"), { recursive: true });
+  await writeFile(
+    join(pluginDir, "src", "manifest.ts"),
+    `export const nmrPredictorManifest = ${JSON.stringify({
+      id: NMR_PLUGIN_ID,
+      name: "NMR Shift Predictor (test fixture)",
+      version: "0.0.0",
+      apiVersion: "^0.1.0",
+      entry: "src/index.ts",
+      permissions: ["selection.read", "analysis.write"]
+    })};\n`
+  );
+}
+
+/** A trust file naming only `pluginDir` under {@link NMR_PLUGIN_ID}, written the same way as the branch's "not listed" test. */
+async function trustFileFor(pluginDir: string, name: string): Promise<string> {
+  const path = join(outputDirectory, name);
+  await writeFile(path, JSON.stringify({ version: 1, trustedPlugins: [{ id: NMR_PLUGIN_ID, dir: pluginDir }] }));
+  return path;
 }
 
 const pluginDir = resolveNmrPluginDir();
@@ -71,6 +100,14 @@ let outputDirectory: string;
 
 beforeAll(async () => {
   outputDirectory = await mkdtemp(join(tmpdir(), "chemdraft-nmr-cli-"));
+  trustConfigPath = join(outputDirectory, "trusted-plugins.json");
+  await writeFile(trustConfigPath, JSON.stringify({
+    version: 1,
+    trustedPlugins: [
+      { id: NMR_PLUGIN_ID, dir: fixturePluginDir },
+      ...(pluginPresent ? [{ id: NMR_PLUGIN_ID, dir: pluginDir }] : [])
+    ]
+  }));
 });
 
 afterAll(async () => {
@@ -95,6 +132,29 @@ describe("chemdraft nmr without the plugin", () => {
     expect(help).not.toMatch(/synthetic|fixture-backed/i);
   });
 
+  it("names the trust file in help, or why its location is unknown — never an empty path", async () => {
+    const found = captureIo();
+    await runNmrCommand(["--help"], found.io, { accountHomeLookup: () => ({ homedir: "/Users/someone" }) });
+    const foundHelp = found.stdout.join("\n");
+    expect(foundHelp).toContain(
+      `plugin trust file ${join("/Users/someone", ".config", "chemdraft", "trusted-plugins.json")}:`);
+    expect(foundHelp).not.toContain("trust file location unavailable");
+
+    for (const lookup of [
+      () => { throw new Error("no passwd entry for uid 501"); },
+      () => ({ homedir: "" })
+    ]) {
+      const { io, stdout } = captureIo();
+      expect(await runNmrCommand(["--help"], io, { accountHomeLookup: lookup })).toBe(0);
+      const help = stdout.join("\n");
+      expect(help).toMatch(/^trust file location unavailable: Could not determine the ChemDraft plugin trust file's default location: .+$/m);
+      expect(help).not.toMatch(/trust file\s*:/);
+      expect(help).toContain(`"id":"${NMR_PLUGIN_ID}"`);
+    }
+    expect(nmrHelpText(() => { throw new Error("no passwd entry for uid 501"); }))
+      .toContain("home directory lookup failed (no passwd entry for uid 501)");
+  });
+
   it("reports a missing plugin directory as ok:false naming the environment variable", async () => {
     const missing = join(outputDirectory, "no-such-plugin");
     const { code, lines } = await withPluginDir(missing, () => run(["--smiles", "CCO"]));
@@ -103,6 +163,85 @@ describe("chemdraft nmr without the plugin", () => {
     expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
     expect(lines[0]!.error).toContain(NMR_PLUGIN_DIR_ENV);
     expect(lines[0]!.error).toContain(join(missing, "src", "index.ts"));
+  });
+
+  it("refuses a plugin directory the trust file does not list, naming the trust file", async () => {
+    const emptyTrust = join(outputDirectory, "empty-trust.json");
+    await writeFile(emptyTrust, JSON.stringify({ version: 1, trustedPlugins: [] }));
+    const { code, lines } = await withPluginDir(fixturePluginDir, () => run(["--smiles", "CCO"], emptyTrust));
+    expect(code).toBe(1);
+    expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(lines[0]!.error).toContain(emptyTrust);
+    expect(lines[0]!.error).toContain("not listed");
+  });
+
+  it("refuses a plugin checkout missing one required capability and gives safe update guidance", async () => {
+    const oldPluginDir = join(outputDirectory, "old plugin's checkout");
+    await mkdir(join(oldPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(oldPluginDir, "src", "index.ts"),
+      "export const NMR_PLUGIN_CAPABILITIES = ['constitutional-equivalence-grouping', 'diastereotopic-disclosure'];\n" +
+      "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
+    );
+    await writeValidManifest(oldPluginDir);
+    const trustPath = await trustFileFor(oldPluginDir, "old-plugin-trust.json");
+    const { code, lines } = await withPluginDir(oldPluginDir, () => run(["--smiles", "CCO"], trustPath));
+    expect(code).toBe(1);
+    expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(lines[0]!.error).toContain("truthful-spectrum-caption");
+    expect(lines[0]!.error).toContain(oldPluginDir);
+    expect(lines[0]!.error).toContain(`cd '${oldPluginDir.replace(/'/g, "'\\''")}' && git pull`);
+    expect(lines[0]!.error).toContain(NMR_PLUGIN_DIR_ENV);
+    expect(lines[0]!.error).toContain("restart");
+    expect(lines[0]!.error).toContain("CLI picks up");
+  });
+
+  it("refuses a plugin whose capabilities export is not an array", async () => {
+    const invalidPluginDir = join(outputDirectory, "non-array-capabilities-plugin");
+    await mkdir(join(invalidPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(invalidPluginDir, "src", "index.ts"),
+      "export const NMR_PLUGIN_CAPABILITIES = 'constitutional-equivalence-grouping';\n" +
+      "export class OclHosePredictor {}\nexport function renderStickSpectrumSvg() { return '<svg></svg>'; }\n"
+    );
+    await writeValidManifest(invalidPluginDir);
+    const trustPath = await trustFileFor(invalidPluginDir, "non-array-capabilities-trust.json");
+    const { code, lines } = await withPluginDir(invalidPluginDir, () => run(["--smiles", "CCO"], trustPath));
+    expect(code).toBe(1);
+    expect(lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    expect(lines[0]!.error).toContain("constitutional-equivalence-grouping");
+    expect(lines[0]!.error).toContain("diastereotopic-disclosure");
+    expect(lines[0]!.error).toContain("truthful-spectrum-caption");
+  });
+
+  it("retries a failed plugin load after its entry is created at the same path", async () => {
+    const retriedPluginDir = join(outputDirectory, "retry-plugin");
+    // Trusted up front: the directory does not exist yet, so the first run's failure must come from
+    // the missing entry file (checked before the trust gate), not from the plugin being untrusted.
+    const trustPath = await trustFileFor(retriedPluginDir, "retry-plugin-trust.json");
+
+    const failed = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO"], trustPath));
+    expect(failed.code).toBe(1);
+    expect(failed.lines[0]).toMatchObject({ ok: false, smiles: "CCO" });
+    // Prove which step failed: the entry-existence check, not the trust gate.
+    expect(failed.lines[0]!.error).toContain("NMR predictor plugin not found");
+    expect(failed.lines[0]!.error).toContain(join(retriedPluginDir, "src", "index.ts"));
+
+    // The initial failure happens before import: Node may cache a module at a stable file URL.
+    // Writing the valid fixture afterward proves the rejected cache key is retried at this path.
+    await mkdir(join(retriedPluginDir, "src"), { recursive: true });
+    await writeFile(
+      join(retriedPluginDir, "src", "index.ts"),
+      await readFile(join(fixturePluginDir, "src", "index.ts"), "utf8")
+    );
+    await writeFile(
+      join(retriedPluginDir, "src", "manifest.ts"),
+      await readFile(join(fixturePluginDir, "src", "manifest.ts"), "utf8")
+    );
+
+    const retried = await withPluginDir(retriedPluginDir, () => run(["--smiles", "CCO", "--nuclei", "1H"], trustPath));
+    expect(retried.code).toBe(0);
+    expect(retried.lines[0]).toMatchObject({ ok: true, smiles: "CCO" });
   });
 
   it("expands ~ in the plugin directory", () => {
@@ -117,7 +256,7 @@ describe("chemdraft nmr without the plugin", () => {
 });
 
 describe("chemdraft nmr with the CI fixture plugin", () => {
-  it("formats resonances, warns on atom-order drift, and writes a relabelled spectrum", async () => {
+  it("formats resonances, warns on atom-order drift, and adds the stick-height note", async () => {
     const spectrum = join(outputDirectory, "fixture-spectrum.svg");
     const { code, lines } = await withPluginDir(fixturePluginDir, () => run([
       "--smiles", "CCO",
@@ -141,85 +280,23 @@ describe("chemdraft nmr with the CI fixture plugin", () => {
     ]));
     expect(lines[0]!.spectrum).toEqual([spectrum]);
     const svg = await readFile(spectrum, "utf8");
-    expect(svg).toContain("predicted (HOSE / NMRShiftDB2)");
+    // The plugin's own caption passes through unchanged; the CLI only adds the stick-height note.
+    expect(svg).toContain("1H δ (ppm) — synthetic fixture");
     expect(svg).toContain("not integration");
-    expect(svg).not.toContain("synthetic fixture");
-    expect(lines[0]!.warnings!.some((warning) => warning.startsWith("NMR_SPECTRUM_CAPTION_UNVERIFIED"))).toBe(false);
   });
 
-  it("warns when the plugin's spectrum caption is not the one the CLI relabels", async () => {
-    const spectrum = join(outputDirectory, "fixture-new-caption.svg");
-    const previous = process.env.CHEMDRAFT_NMR_FIXTURE_CAPTION;
-    process.env.CHEMDRAFT_NMR_FIXTURE_CAPTION = "1H — fixture data (renamed)";
-    try {
-      const { code, lines } = await withPluginDir(fixturePluginDir, () => run([
-        "--smiles", "CCO",
-        "--nuclei", "1H",
-        "--spectrum", spectrum
-      ]));
-      expect(code).toBe(0);
-      expect(lines[0]!.warnings).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^NMR_SPECTRUM_CAPTION_UNVERIFIED: .*synthetic fixture.*fixture-new-caption\.svg/)
-      ]));
-      const svg = await readFile(spectrum, "utf8");
-      expect(svg).toContain("not integration");
-    } finally {
-      if (previous === undefined) delete process.env.CHEMDRAFT_NMR_FIXTURE_CAPTION;
-      else process.env.CHEMDRAFT_NMR_FIXTURE_CAPTION = previous;
-    }
-  }, 60_000);
-
-  it("warns and flags when symmetry-equivalent atoms come back as separate resonances", async () => {
+  it("passes grouped toluene 13C resonances through unchanged", async () => {
     const { code, lines } = await withPluginDir(fixturePluginDir, () => run([
-      "--smiles", "Cc1ccccc1",
-      "--nuclei", "13C,1H"
+      "--smiles", "Cc1ccccc1", "--nuclei", "13C"
     ]));
     expect(code).toBe(0);
-    const line = lines[0]!;
-    const splits = line.warnings!.filter((warning) => warning.startsWith("NMR_EQUIVALENCE_SPLIT"));
-    expect(splits).toEqual([
-      "NMR_EQUIVALENCE_SPLIT: atoms 3 and 5 are symmetry-equivalent but reported as separate resonances; treat them as one environment (13C)."
-    ]);
-    const flagged = line.resonances!.filter((resonance) => resonance.flags.includes("equivalence-split"));
-    expect(flagged.map((resonance) => [resonance.nucleus, resonance.atomIndices])).toEqual([
-      ["13C", [3]],
-      ["13C", [5]]
-    ]);
-    // Detect, never rewrite: the predictor's numbers are reported unchanged.
-    expect(flagged.map((resonance) => [resonance.shiftPpm, resonance.nEquivalent])).toEqual([[128.5, 1], [128.5, 1]]);
-    expect(line.resonances!.filter((resonance) => resonance.nucleus === "13C")).toHaveLength(6);
-    // Two 1H resonances on one atom (diastereotopic-style protons) are not a split.
-    expect(line.resonances!.filter((resonance) => resonance.nucleus === "1H" && resonance.atomIndices[0] === 0)
-      .every((resonance) => !resonance.flags.includes("equivalence-split"))).toBe(true);
-    expect(line.warnings!.some((warning) => warning.startsWith("NMR_EQUIVALENCE_UNCHECKED"))).toBe(false);
-  }, 60_000);
-
-  it("reports the equivalence check as unchecked when the atom order is not trustworthy", async () => {
-    const { lines } = await withPluginDir(fixturePluginDir, () => run(["--smiles", "CCO", "--nuclei", "13C"]));
-    expect(lines[0]!.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining("NMR_ATOM_ORDER_MISMATCH"),
-      expect.stringContaining("NMR_EQUIVALENCE_UNCHECKED")
-    ]));
-  }, 60_000);
-});
-
-describe("NMR equivalence classes", () => {
-  it("groups toluene's ortho and meta pairs", async () => {
-    const { molfile } = await depictSmiles("Cc1ccccc1");
-    const classes = await nmrEquivalenceClasses(molfile);
-    expect(classes).toHaveLength(7);
-    expect(classes[2]).toBe(classes[6]);
-    expect(classes[3]).toBe(classes[5]);
-    expect(new Set(classes).size).toBe(5);
-  }, 60_000);
-
-  it("keeps diastereotopic methyls apart, so they are never reported as a split", async () => {
-    // 3-methyl-2-butanol: C0 and C2 share a topological symmetry rank but are diastereotopic
-    // (C3 is a stereocentre), i.e. genuinely distinct 13C environments.
-    const { molfile } = await depictSmiles("CC(C)C(C)O");
-    const classes = await nmrEquivalenceClasses(molfile);
-    expect(classes[0]).not.toBe(classes[2]);
-  }, 60_000);
+    const resonances = lines[0]!.resonances!;
+    expect(resonances).toHaveLength(5);
+    const byFirstAtom = [...resonances].sort((left, right) => left.atomIndices[0]! - right.atomIndices[0]!);
+    expect(byFirstAtom.map((resonance) => resonance.nEquivalent)).toEqual([1, 1, 2, 2, 1]);
+    expect(byFirstAtom[2]!.atomIndices).toEqual([2, 6]);
+    expect(byFirstAtom[3]!.atomIndices).toEqual([3, 5]);
+  });
 });
 
 describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () => {
@@ -279,29 +356,17 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(line.warnings!.some((warning) => warning.startsWith("NMR_PARTIAL_PREDICTION"))).toBe(true);
   }, 60_000);
 
-  it("warns that the predictor splits toluene's equivalent meta carbons", async () => {
+  it("groups toluene's symmetry-equivalent carbons into one resonance each", async () => {
     const { code, lines } = await run(["--smiles", "Cc1ccccc1", "--nuclei", "13C"]);
     expect(code).toBe(0);
-    const line = lines[0]!;
-    const resonances = line.resonances!;
-    const flagged = resonances.filter((resonance) => resonance.flags.includes("equivalence-split"));
-    const splitWarnings = line.warnings!.filter((warning) => warning.startsWith("NMR_EQUIVALENCE_SPLIT"));
-    // Every pair of resonances on symmetry-equivalent toluene carbons (2/6 ortho, 3/5 meta) that the
-    // predictor reports separately must be warned about and flagged.
-    for (const [a, b] of [[2, 6], [3, 5]] as const) {
-      const holderA = resonances.find((resonance) => resonance.atomIndices.includes(a));
-      const holderB = resonances.find((resonance) => resonance.atomIndices.includes(b));
-      if (holderA && holderB && holderA !== holderB) {
-        expect(splitWarnings).toContain(
-          `NMR_EQUIVALENCE_SPLIT: atoms ${a} and ${b} are symmetry-equivalent but reported as separate resonances; treat them as one environment (13C).`
-        );
-        expect(flagged).toEqual(expect.arrayContaining([holderA, holderB]));
-      }
-    }
-    // Carbons of different classes are never flagged.
-    expect(flagged.every((resonance) =>
-      resonance.atomIndices.every((atom) => [2, 3, 5, 6].includes(atom))
-    )).toBe(true);
+    const resonances = lines[0]!.resonances!;
+    expect(resonances).toHaveLength(5);
+    const ortho = resonances.find((resonance) => resonance.atomIndices.includes(2));
+    const meta = resonances.find((resonance) => resonance.atomIndices.includes(3));
+    expect(ortho!.atomIndices).toEqual(expect.arrayContaining([2, 6]));
+    expect(ortho!.nEquivalent).toBe(2);
+    expect(meta!.atomIndices).toEqual(expect.arrayContaining([3, 5]));
+    expect(meta!.nEquivalent).toBe(2);
   }, 60_000);
 
   it("reports an unparseable SMILES as ok:false naming it", async () => {
@@ -311,15 +376,17 @@ describe.skipIf(!pluginPresent)("chemdraft nmr with the predictor plugin", () =>
     expect(lines[0]!.error).toContain('"C1CC("');
   });
 
-  it("writes one relabelled stick spectrum per nucleus", async () => {
+  it("writes one stick spectrum per nucleus with the stick-height note", async () => {
     const base = join(outputDirectory, "ethanol.svg");
     const { code, lines } = await run(["--smiles", "CCO", "--spectrum", base]);
     expect(code).toBe(0);
     expect(lines[0]!.spectrum).toEqual([join(outputDirectory, "ethanol-1H.svg"), join(outputDirectory, "ethanol-13C.svg")]);
-    const svg = await readFile(join(outputDirectory, "ethanol-1H.svg"), "utf8");
-    expect(svg.startsWith("<svg")).toBe(true);
-    expect(svg).not.toMatch(/synthetic/i);
-    expect(svg).toContain("not integration");
+    for (const nucleus of ["1H", "13C"] as const) {
+      const svg = await readFile(join(outputDirectory, `ethanol-${nucleus}.svg`), "utf8");
+      expect(svg.startsWith("<svg")).toBe(true);
+      expect(svg).toContain("δ (ppm) — predicted");
+      expect(svg.match(/Stick height = predicted equivalent nuclei, not integration/g)).toHaveLength(1);
+    }
   }, 60_000);
 
   it("runs a batch with a PNG spectrum directory", async () => {

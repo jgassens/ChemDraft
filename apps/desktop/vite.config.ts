@@ -162,10 +162,12 @@ export default defineConfig({
       "@chemdraft/ocl-adapter": workspacePackage("../../packages/ocl-adapter/src/index.ts"),
       "@chemdraft/chemistry-adapter": workspacePackage("../../packages/chemistry-adapter/src/index.ts"),
       "@chemdraft/cdx-compat": workspacePackage("../../packages/cdx-compat/src/index.ts"),
+      "@chemdraft/clipboard-adapter": workspacePackage("../../packages/clipboard-adapter/src/index.ts"),
       "@chemdraft/engine3d-api": workspacePackage("../../packages/engine3d-api/src/index.ts"),
       "@chemdraft/export-engine/pdf": workspacePackage("../../packages/export-engine/src/pdf.ts"),
       "@chemdraft/export-engine": workspacePackage("../../packages/export-engine/src/index.ts"),
       "@chemdraft/layout-engine": workspacePackage("../../packages/layout-engine/src/index.ts"),
+      "@chemdraft/document-workflow-core": workspacePackage("../../packages/document-workflow-core/src/index.ts"),
       // plugin-api/plugin-host now publish `exports` pointing at `dist` (ADR-0031). These aliases keep
       // the desktop build resolving them to `src` — as vitest and tsconfig `paths` already do — so the
       // tauri build never depends on a prior `pnpm --filter ... build` having run. Do not remove.

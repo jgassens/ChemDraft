@@ -50,6 +50,7 @@ import {
   type DocumentObject,
   type DocumentPage,
   type DocumentPatch,
+  type FlattenWarning,
   type GraphicFreehandPoint,
   type GraphicObject,
   type GroupObject,
@@ -83,6 +84,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
+import type { PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -104,21 +106,45 @@ import {
   strictSessionFlushRefusal
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
-import { PatchReviewTray } from "./plugins/PatchReviewTray";
 import {
+  applyAcceptedPluginProposal,
+  applyPluginDocumentPatch,
+  createPluginWriteGate,
+  describePatchFailure,
+  type PluginWriteGate
+} from "./plugins/applyPluginDocumentPatch";
+import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
+import {
+  ANALYSIS_WINDOW_ACTION_EVENT,
+  ANALYSIS_WINDOW_OWNER_ID,
+  MOLECULAR_INSPECTOR_WINDOW_ID,
+  PATCH_REVIEW_WINDOW_ID,
+  PLUGIN_DIAGNOSTICS_WINDOW_ID,
+  VALIDATION_RESULT_WINDOW_ID,
+  broadcastAnalysisWindowSnapshot,
   broadcastPluginPanelReport,
   broadcastPluginPanelStaleness,
   hidePluginPanelWindow,
+  listenForAnalysisWindowActions,
   listenForPluginPanelCloses,
+  listenForNativePanelWindowCloses,
   listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
   pluginPanelIdentityKey,
+  respondToCopyMolecularInspector,
+  respondToProposalDecision,
+  respondToSaveTextFile,
+  type AnalysisWindowAction,
+  type AnalysisWindowContent,
+  type AnalysisWindowSnapshotPayload,
   type PluginPanelIdentity,
-  type PluginPanelReportPayload
+  type PluginPanelReportPayload,
+  type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
+import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
+import { isBlockedByModalDialog, shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
@@ -136,6 +162,7 @@ import {
   ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
   labelEndpointClearance,
+  nativeBondOrderResolution,
   nativeMoleculeRings,
   nativeMultipleBondGapPx,
   defaultMechanismArrowControls,
@@ -653,6 +680,11 @@ import {
   stripForcedDocumentHistorySuffix
 } from "./editHistoryRouting";
 import { PluginManagerDialog } from "./plugins/PluginManagerDialog";
+import { revealRecognitionScreenCaptures } from "./plugins/recognitionScreenCaptures";
+import { PluginPromptTextDialog } from "./plugins/PluginPromptTextDialog";
+import { PluginImageRequestDialog } from "./plugins/PluginImageRequestDialog";
+import { StructureRecognitionInstallDialog } from "./plugins/StructureRecognitionInstallDialog";
+import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1013,6 +1045,7 @@ type RotationInputBase = {
   target?: NativeMoleculeTransformableSelectionPart;
   targetLabel: string;
   startDocument: ChemDraftDocument;
+  warnings?: readonly string[];
 };
 
 type RotationInputState =
@@ -1412,7 +1445,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "9.27.09.00-opus";
+const CURRENT_BUILD_STAMP = "9.28.10.00-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -1457,6 +1490,27 @@ function createShellCommandMap(commands: readonly CommandSpec[]): ReadonlyMap<st
 // independently refuses a speculative embed for a large structure on the OCL engine (where
 // it would be ~45 s and uninterruptible), so this generous cap is safe under either engine.
 const SPIN_PREFETCH_MAX_ATOMS = 200;
+
+/** Speculation is safe only when the aromatic interpretation is settled. Routine writer losses
+ * (dative V2000 spelling, abbreviation placeholders) are reported by the explicit Spin action. */
+export function spin3dPrefetchMolfile(molecule: MoleculeObject): string | undefined {
+  const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  if (resolution.unresolvedAtomIds.size > 0 || resolution.guessedHydrogenAtomIds.size > 0) return undefined;
+  return moleculeToMolfileV2000(molecule, {
+    fromDocFrame: true,
+    kekuleBondOrders: resolution.kekuleOrders
+  }).contents;
+}
+
+/** Unique inferred N–H keeps its canvas badge without a guessed-tautomer Spin status. */
+export function spin3dHydrogenWarnings(molecule: MoleculeObject): string[] {
+  const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  if (resolution.guessedHydrogenAtomIds.size === 0) return [];
+  return nativeMoleculeInvalidAtomStates(molecule).flatMap((state) =>
+    resolution.guessedHydrogenAtomIds.has(state.atomId) && state.tautomerGuessed && state.invalidReason
+      ? [state.invalidReason] : []
+  );
+}
 // The in-page (main-thread) engine fallback FREEZES the UI for its full duration —
 // fine for small structures, catastrophic for a 60-atom branched chain.
 const SPIN_IN_PAGE_MAX_ATOMS = 30;
@@ -1466,6 +1520,13 @@ const SPIN_IN_PAGE_MAX_ATOMS = 30;
 const SPIN_AXIS_X: Vec3 = [1, 0, 0];
 const SPIN_AXIS_Y: Vec3 = [0, 1, 0];
 const SPIN_AXIS_Z: Vec3 = [0, 0, 1];
+
+// A committed flatten always emits "perspective-cleanup" (see packages/chem-core/src/perspective.ts) —
+// expected on every reprojection, not a caveat — so every status built from FlattenSpunOutcome.warnings
+// drops it the same way commitSpinFlatten's own `meaningful` filter does.
+export function flattenWarningMessages(warnings: readonly FlattenWarning[]): string[] {
+  return warnings.filter((warning) => warning.code !== "perspective-cleanup").map((warning) => warning.message);
+}
 
 function selectToolStatusLabel(): string {
   return drawingToolStatusLabel("tool.select", "Selection Tool");
@@ -1751,10 +1812,16 @@ export function MainWindow({
    * it inline is what makes the canvas stutter. `slot: "selection"` means a second invocation while
    * one is in flight supersedes it rather than racing it.
    */
-  /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it. */
-  const copyAnalysisText = useCallback((text: string) => {
-    void navigator.clipboard?.writeText(text);
-    setStatus("Analysis copied");
+  /** Copy whatever the inspector currently shows. The pane decides the scope; this only delivers it.
+   *  Resolves with whether the clipboard write actually succeeded, so the floating window's own
+   *  "Copied" label can tell success from failure instead of always claiming success. */
+  const copyAnalysisText = useCallback(async (text: string): Promise<boolean> => {
+    // The floating inspector's Copy reaches here over the event bridge, outside any user gesture in
+    // this document, so the web Clipboard API would be refused. The native clipboard command is not
+    // gesture-bound; the status reports what actually happened.
+    const didWrite = await writeClipboardTextItems([{ type: "text/plain", text }]).catch(() => false);
+    setStatus(didWrite ? "Analysis copied" : "Could not copy the analysis to the clipboard");
+    return didWrite;
   }, []);
 
   const runMolecularProperties = useCallback(
@@ -1929,6 +1996,13 @@ export function MainWindow({
     hoveredNativeAtomStateRef.current = hoveredNativeAtom;
   }, [hoveredNativeAtom]);
   const [hoveredNativeDeleteTarget, setHoveredNativeDeleteTarget] = useState<NativeMoleculeDeleteTarget | undefined>();
+  const hoveredNativeWarning = useMemo(() => {
+    if (hoveredNativeDeleteTarget?.kind !== "atom") return undefined;
+    const molecule = findDocumentObject(document, hoveredNativeDeleteTarget.objectId);
+    return molecule?.type === "molecule"
+      ? nativeMoleculeInvalidAtomStates(molecule).find((state) => state.atomId === hoveredNativeDeleteTarget.atomId)?.invalidReason
+      : undefined;
+  }, [document, hoveredNativeDeleteTarget]);
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
@@ -2004,11 +2078,20 @@ export function MainWindow({
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
   const [moleculeStyleOverridePrompt, setMoleculeStyleOverridePrompt] =
     useState<MoleculeStyleOverridePromptState | undefined>();
+  const moleculeStyleOverridePromptRef = useRef(moleculeStyleOverridePrompt);
+  moleculeStyleOverridePromptRef.current = moleculeStyleOverridePrompt;
   const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
   const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
+  // Identifies the working document for a plugin's `documents.applyPatch` (see
+  // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Bumped only in `resetDocumentHistory` — the
+  // single place the document is REPLACED (File > New, every Open path including session restore) —
+  // never on an ordinary edit, so a plugin write started before a replace and landing after it is
+  // refused rather than silently inserted into the new document.
+  const documentIdentityRef = useRef(0);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
+  const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
@@ -2562,6 +2645,9 @@ export function MainWindow({
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
+    // The document is being REPLACED, not edited — bump before installing the new history so a plugin
+    // write already in flight against the old document key is refused rather than landing here.
+    documentIdentityRef.current += 1;
     installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
@@ -2584,7 +2670,8 @@ export function MainWindow({
     return true;
   }, [installDocumentHistory]);
   const commitDocumentChange = useCallback((
-    nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
+    nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
+    undoLabel?: string
   ): boolean => {
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
@@ -2595,6 +2682,9 @@ export function MainWindow({
     }
 
     const present = reconcileNativeChargeMarks(nextDocument);
+    if (undoLabel) {
+      documentUndoLabelsRef.current.set(present, undoLabel);
+    }
     installDocumentHistory({
       past: boundedHistoryPast([...currentHistory.past, currentHistory.present], present),
       present,
@@ -3681,6 +3771,7 @@ export function MainWindow({
     void (async () => {
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           engineTargetIds.reduce((next, objectId) => {
             // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
@@ -3693,11 +3784,12 @@ export function MainWindow({
               : undefined;
             return applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D, {
               targetBondLengthPx,
+              warnings,
               perceiveStereo: perceiveStereoCentersFromMolfile
             });
           }, cleanUpNativeMolecules2d(current, nativeTargetIds))
         );
-        setStatus(cleanedStatus(changed));
+        setStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -3796,7 +3888,9 @@ export function MainWindow({
       try {
         // The same spelling flatten uses for its read-back, so the centers found here are the
         // centers the guard can hold to (abbreviated labels as R-groups, not dummy carbons).
-        const molfile = stereoPerceptionMolfile(flattenTarget);
+        const warnings: string[] = [];
+        const molfile = stereoPerceptionMolfile(flattenTarget, warnings);
+        if (warnings.length) setStatus(warnings.join(" "));
         const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
         perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
@@ -3909,7 +4003,8 @@ export function MainWindow({
   // loaded yet or the target isn't an editable native graph.
   const spin3dFlattenStereoOptions = useCallback((
     sourceDocument: ChemDraftDocument,
-    objectId: string
+    objectId: string,
+    warnings: string[]
   ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
     const perceive = spin3dStereoPerceiverRef.current;
     if (!perceive) return {};
@@ -3917,7 +4012,7 @@ export function MainWindow({
     if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
     try {
       // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
-      const molfile = stereoPerceptionMolfile(molecule);
+      const molfile = stereoPerceptionMolfile(molecule, warnings);
       const perAtom = perceive(molfile);
       let stereoCenterAtomIds: ReadonlySet<string> | undefined;
       if (perAtom.length === molecule.atoms.length) {
@@ -4187,12 +4282,17 @@ export function MainWindow({
       stage: "spin.molfile",
       atomCount: molecule.atoms.length
     }, emitTrace);
+    const molfileWarnings = spin3dHydrogenWarnings(molecule);
     let molfile: string;
     try {
       // Geometry spelling: the conformer engine needs an atom it can place, so an abbreviated
       // label goes as the dummy "*" here. Only CIP perception uses the R-group spelling
       // (stereoPerceptionMolfile); the two never meet — this molfile is not perceived.
-      molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      molfile = moleculeToMolfileV2000(molecule, {
+        fromDocFrame: true,
+        warnings: molfileWarnings,
+        kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+      }).contents;
       molfileSpan.complete({ atomCount: molecule.atoms.length });
     } catch (error) {
       molfileSpan.fail(error, { atomCount: molecule.atoms.length });
@@ -4276,9 +4376,10 @@ export function MainWindow({
       // build (no devtools) shows WHY tug/planar cleanup are off, instead of silently no-op'ing.
       const rdkitUnavailable = conformer.warnings.find((warning) => warning.code === "rdkit.unavailable");
       setStatus(
-        rdkitUnavailable
+        (rdkitUnavailable
           ? `Spin 3D — ${rdkitUnavailable.message}`
-          : "Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel"
+          : "Spin 3D: drag the molecule to rotate · click outside to flatten · Esc to cancel") +
+        (molfileWarnings.length ? ` — ${molfileWarnings.join(" ")}` : "")
       );
     };
 
@@ -4474,7 +4575,8 @@ export function MainWindow({
       const client = getConformerWorkerClient();
       if (!client) return;
       // Same geometry spelling as the conformer request (the prefetch must key on the same text).
-      const molfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true });
+      const molfile = spin3dPrefetchMolfile(molecule);
+      if (!molfile) return;
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
       client.warmup({ sessionId: `warmup:${Date.now()}` });
@@ -4688,12 +4790,14 @@ export function MainWindow({
     void (async () => {
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
+            warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
           })
         );
-        setStatus(changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout");
+        setStatus((changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout") + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -4977,8 +5081,9 @@ export function MainWindow({
       bonds: interactive3dBondsForMolecule(molecule)
     });
     try {
-      const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords });
-      const session = await openEngine3dWorkspaceSession({ input: sessionInput });
+      const warnings: string[] = [];
+      const sessionInput = createEngine3dSessionInputFromMolecule(molecule, { coords3dByAtomId: seedCoords, warnings });
+      const session = await openEngine3dWorkspaceSession({ input: sessionInput, warnings });
       // Superseded (a newer attach) or torn down (spin ended / Esc / selection change) while we
       // awaited startup: the workspace no longer carries our openId. Close the freshly opened
       // session so its native child process is not orphaned in the Rust session map.
@@ -4990,7 +5095,7 @@ export function MainWindow({
         ? { ...current, session, status: "tug-ready" }
         : current);
       pollInteractive3dSessionAfterOpen(openId, session);
-      setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel");
+      setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel" + (warnings.length ? ` — ${warnings.join(" ")}` : ""));
     } catch (error) {
       setInteractive3dWorkspace((current) => current?.openId === openId ? undefined : current);
       setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
@@ -5878,7 +5983,8 @@ export function MainWindow({
       case "clipboard.copyAs.inchi":
       case "clipboard.copyAs.inchiKey": {
         const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
-        const molfile = copyAsMolfile(current, "v2000");
+        const warnings: string[] = [];
+        const molfile = copyAsMolfile(current, "v2000", warnings);
         if (!molfile) {
           setStatus(`Nothing to copy as ${label}`);
           return;
@@ -5896,7 +6002,7 @@ export function MainWindow({
             setStatus(`${label} is unavailable for this structure`);
             return;
           }
-          await writeText(value, label);
+          await writeText(value, label, warnings);
         } catch (error) {
           setStatus(`Copy as ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -7244,6 +7350,10 @@ export function MainWindow({
       return;
     }
 
+    const undoLabel = direction === "undo"
+      ? documentUndoLabelsRef.current.get(currentHistory.present)
+      : documentUndoLabelsRef.current.get(nextHistory.present);
+
     installDocumentHistory(nextHistory);
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
@@ -7262,7 +7372,13 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setLastAnalysis(null);
-    setStatus(direction === "undo" ? "Undid last document change" : "Redid document change");
+    setStatus(
+      undoLabel
+        ? `${direction === "undo" ? "Undid" : "Redid"} ${undoLabel}`
+        : direction === "undo"
+          ? "Undid last document change"
+          : "Redid document change"
+    );
   }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession, installDocumentHistory]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
@@ -7788,6 +7904,47 @@ export function MainWindow({
   // core bindings memo because "plugins.manage" is a core binding that opens the manager.
   const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
   const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+  const analysisWindowSnapshotsRef = useRef(new Map<string, AnalysisWindowSnapshotPayload>());
+  const analysisWindowRevisionRef = useRef(0);
+  const publishAnalysisWindow = useCallback(
+    (
+      windowId: string,
+      title: string,
+      content: AnalysisWindowContent,
+      options: { open?: boolean; focus?: boolean; width?: number; height?: number } = {}
+    ): Promise<boolean> => {
+      if (!isDesktopRuntime()) return Promise.resolve(false);
+      const payload: AnalysisWindowSnapshotPayload = {
+        pluginId: ANALYSIS_WINDOW_OWNER_ID,
+        panelId: windowId,
+        content,
+        revision: ++analysisWindowRevisionRef.current
+      };
+      const key = pluginPanelIdentityKey(ANALYSIS_WINDOW_OWNER_ID, windowId);
+      analysisWindowSnapshotsRef.current.set(key, payload);
+
+      // Resolves true once the window is up (or needed no opening), false when the native open
+      // failed — callers that track "the window is showing" must not assume it before then.
+      return settleAnalysisWindowOpen(
+        () =>
+          options.open
+            ? openPluginPanelWindow({
+                pluginId: ANALYSIS_WINDOW_OWNER_ID,
+                panelId: windowId,
+                title,
+                width: options.width,
+                height: options.height,
+                focus: options.focus ?? false
+              })
+            : Promise.resolve(),
+        (message) => setStatus(`Could not open ${title}: ${message}`)
+      ).then((opened) => {
+        if (opened) void broadcastAnalysisWindowSnapshot(payload).catch(() => undefined);
+        return opened;
+      });
+    },
+    []
+  );
 
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
     new Map()
@@ -7885,11 +8042,21 @@ export function MainWindow({
           openExportDialog();
         }
         if (action.id === "analyze.molecularProperties") {
-          // Open the window BEFORE looking at the selection, and regardless of it. Two reasons: the
-          // window is up while a slow analysis runs (it shows its own empty state, then fills in),
-          // and with nothing selected the command still does something visible instead of appearing
-          // to do nothing at all.
-          if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
+          // Desktop analysis never occupies a toolbar or the drawing viewport. Open the shared
+          // analysis-window host before starting the worker so progress/empty state is visible.
+          if (isDesktopRuntime()) {
+            publishAnalysisWindow(
+              MOLECULAR_INSPECTOR_WINDOW_ID,
+              "Molecular Inspector",
+              {
+                kind: "molecularInspector",
+                report: analysisReport,
+                busy: analysisBusy,
+                stale: analysisReportIsStale
+              },
+              { open: true, focus: true, width: 940, height: 660 }
+            );
+          } else if (!visibleToolsetIdsRef.current.has(molecularInspectorToolsetId)) {
             await toggleToolset(molecularInspectorToolsetId);
           }
           const molecule = getSelectedMolecule(document);
@@ -7921,6 +8088,12 @@ export function MainWindow({
             value: molecule.structure
           });
           setLastAnalysis(analysis);
+          publishAnalysisWindow(
+            VALIDATION_RESULT_WINDOW_ID,
+            "Validation Result",
+            { kind: "report", report: validationResultReport(analysis) },
+            { open: true, focus: true, width: 500, height: 520 }
+          );
 
           if (analysis.validation.valid) {
             const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
@@ -8376,6 +8549,10 @@ export function MainWindow({
     return bindings;
   }, [
     activeToolState,
+    analysisBusy,
+    analysisInterpretation,
+    analysisReport,
+    analysisReportIsStale,
     addChargeToHoveredNativeAtom,
     addCarbonylToHoveredNativeAtom,
     addSingleBondToHoveredNativeAtom,
@@ -8404,10 +8581,12 @@ export function MainWindow({
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
     pasteClipboard,
+    publishAnalysisWindow,
     quickActions,
     resetDocumentHistory,
     restoreDocumentHistory,
     restoreToolAfterEyedropper,
+    runMolecularProperties,
     saveCurrentDocument,
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
@@ -8440,6 +8619,7 @@ export function MainWindow({
   const pluginPanelReportsRef = useRef(new Map<string, PluginPanelReportPayload>());
   const pluginPanelRevisionRef = useRef(0);
   const pluginPanelStalenessSentRef = useRef(new Map<string, { revision: number; stale: boolean }>());
+  const openedPluginPanelWindowsRef = useRef(new Set<string>());
   // Serialize repeated analyzer requests per owning plugin. Reports do not expose an invocation id,
   // so overlapping runs cannot otherwise prove which late result is older. A monotonic generation
   // suppresses obsolete status updates while the queue guarantees the newest requested run settles
@@ -8447,16 +8627,96 @@ export function MainWindow({
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
 
+  // Every canvas session that previews from a snapshot of the document taken when it began, then commits
+  // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
+  // multi-click path tool, hover previews of a style, typed rotate/resize entries, and the ring-override
+  // prompt. A document write committed in the middle of one is overwritten by the next preview frame and
+  // dropped from history by the commit. Listed generously: waiting a moment longer is harmless.
+  const isSnapshotSessionActive = useCallback(
+    (): boolean =>
+      nativeBondDragRef.current !== null ||
+      nativePlacementDragRef.current !== null ||
+      nativeBondEditDragRef.current !== null ||
+      nativePartDragRef.current !== null ||
+      objectDragRef.current !== null ||
+      graphicCornerRadiusDragRef.current !== null ||
+      graphicPathEditDragRef.current !== null ||
+      graphicMarkerDragRef.current !== null ||
+      graphicGradientDragRef.current !== null ||
+      freehandArtDragRef.current !== null ||
+      mechanismArrowDragRef.current !== null ||
+      mechanismHandleDragRef.current !== null ||
+      pathArtDrawRef.current !== null ||
+      bezierArtNodeDragRef.current !== null ||
+      objectRotateDragRef.current !== null ||
+      projectedPlaneTiltDragRef.current !== null ||
+      objectResizeDragRef.current !== null ||
+      groupTransformDragRef.current !== null ||
+      textResizeRef.current !== null ||
+      artStylePreviewRef.current !== null ||
+      moleculeInspectorPreviewRef.current !== null ||
+      rotationInputRef.current !== undefined ||
+      objectResizeInputRef.current !== undefined ||
+      moleculeStyleOverridePromptRef.current !== undefined,
+    []
+  );
+  // A plugin's direct write that lands during such a session waits for it to commit or cancel, then
+  // commits as its own undo entry on top — and the plugin's receipt is sent only once it has. Applying it
+  // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
+  // different shape; one predicate is easier to keep true than two dozen snapshot rewrites.
+  const pluginWriteGateRef = useRef<PluginWriteGate | undefined>(undefined);
+  useEffect(() => {
+    const gate = createPluginWriteGate({ isGestureActive: isSnapshotSessionActive });
+    pluginWriteGateRef.current = gate;
+    // Sessions end on a release; check right after the canvas handlers have committed (window listeners
+    // run after React's). The gate's own timer covers endings that are not a release (a double-click).
+    const flush = () => gate.flush();
+    const events = ["pointerup", "pointercancel", "keyup", "blur"] as const;
+    for (const type of events) window.addEventListener(type, flush);
+    return () => {
+      for (const type of events) window.removeEventListener(type, flush);
+      gate.dispose();
+      if (pluginWriteGateRef.current === gate) pluginWriteGateRef.current = undefined;
+    };
+  }, [isSnapshotSessionActive]);
+
   // The persistent plugin runtime (host + panel controller + toolset stage), created exactly once on
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
-    getSelection: () => buildPluginSelectionSnapshot(documentRef.current),
+    getActiveDocumentKey: () => String(documentIdentityRef.current),
+    // `warnings` is the collector of the command invocation that is reading (see the plugin command
+    // dispatch below); a read outside one gets none and stays silent.
+    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
-    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
+    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
+    applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+      const gate = pluginWriteGateRef.current;
+      if (!gate) throw new Error("The document window is closing; nothing was inserted.");
+      // The host checked the document key before calling; a write that waits for a gesture checks again
+      // when it runs, so it can never land in a document opened meanwhile.
+      const documentIdentity = documentIdentityRef.current;
+      if (isSnapshotSessionActive()) {
+        setStatus(`${plugin.name}: finish the current edit to insert the result`);
+      }
+      return gate.run(() => {
+        if (documentIdentityRef.current !== documentIdentity) {
+          throw new Error("The document changed while the plugin was running; nothing was inserted.");
+        }
+        const applied = applyPluginDocumentPatch(documentRef.current, patch);
+        commitDocumentChange(applied.document, undoLabel);
+        setSelectedNativeMoleculePart(undefined);
+        setStatus(
+          applied.receipt.objectIds.length > 0
+            ? `${plugin.name}: inserted structure`
+            : `${plugin.name}: applied ${command.title}`
+        );
+        return applied.receipt;
+      });
+    }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
 
@@ -8512,6 +8772,11 @@ export function MainWindow({
   useEffect(() => {
     const unlisten = listenForPluginPanelRequests((identity) => {
       const key = pluginPanelIdentityKey(identity.pluginId, identity.panelId);
+      const analysisPayload = analysisWindowSnapshotsRef.current.get(key);
+      if (analysisPayload) {
+        void broadcastAnalysisWindowSnapshot(analysisPayload).catch(() => undefined);
+        return;
+      }
       const payload = pluginPanelReportsRef.current.get(key);
       if (payload) {
         void broadcastPluginPanelReport(payload).catch(() => undefined);
@@ -8528,51 +8793,10 @@ export function MainWindow({
     return unlisten;
   }, []);
 
-  // "Open as window" (ADR-0030): move the in-app panel into a floating native window. The controller
-  // detaches it WITHOUT a close notification — the panel is still open, just on another surface — and
-  // the report is served over the panel bridge, so the window holds no plugin code.
-  const popOutOpenPanel = useCallback(() => {
-    const panel = pluginRuntime.runtime.panels.getOpenPanel();
-    if (!panel) {
-      return;
-    }
-    pluginRuntime.runtime.panels.detachPanel(panel.pluginId, panel.panelId);
-    const payload: PluginPanelReportPayload = {
-      pluginId: panel.pluginId,
-      panelId: panel.panelId,
-      report: panel.report,
-      commandId: panel.commandId,
-      revision: ++pluginPanelRevisionRef.current
-    };
-    const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
-    pluginPanelReportsRef.current.set(key, payload);
-    void openPluginPanelWindow({
-      pluginId: panel.pluginId,
-      panelId: panel.panelId,
-      title: panel.report.title || panel.title
-    }).catch((error: unknown) => {
-      // The panel was detached before the window existed. Swallowing this stranded it: off the
-      // in-app surface, with no window to render it, recoverable only by disabling the plugin.
-      pluginPanelReportsRef.current.delete(key);
-      const reattached = pluginRuntime.runtime.panels.reattachPanel(panel.pluginId, panel.panelId);
-      if (!reattached) {
-        // Another panel claimed the in-app slot meanwhile, so there is nowhere to put this one
-        // back. Close it properly instead — the plugin gets its ADR-0012 cancellation signal
-        // rather than waiting on a panel that no surface will ever show.
-        pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
-      }
-      pluginRuntime.runtime.panels.reportDiagnostic(
-        "panel.window_open_failed",
-        `Could not open "${panel.report.title || panel.title}" in a window; ${
-          reattached ? "it stayed in the app" : "it was closed"
-        }. (${error instanceof Error ? error.message : String(error)})`
-      );
-    });
-    void broadcastPluginPanelReport(payload).catch(() => undefined);
-  }, [pluginRuntime.runtime]);
-
   // Detached panel windows: mirror report updates (a plugin may push pending -> result for a detached
-  // panel) and staleness (D-09 recomputed against the live document) over the bridge.
+  // panel) and staleness (D-09 recomputed against the live document) over the bridge. In the desktop
+  // runtime the controller puts every showReport directly in this set, so simultaneous analyzers do
+  // not pass through — or replace one another in — the browser fallback's single in-app slot.
   useEffect(() => {
     for (const panel of pluginRuntime.detachedPanels) {
       const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
@@ -8587,6 +8811,25 @@ export function MainWindow({
         };
         pluginPanelReportsRef.current.set(key, payload);
         void broadcastPluginPanelReport(payload).catch(() => undefined);
+      }
+      if (isDesktopRuntime() && !openedPluginPanelWindowsRef.current.has(key)) {
+        openedPluginPanelWindowsRef.current.add(key);
+        // Reports arrive asynchronously after the command that asked for them, so the window must
+        // appear without taking the keyboard from whatever the user moved on to.
+        void openPluginPanelWindow({
+          pluginId: panel.pluginId,
+          panelId: panel.panelId,
+          title: panel.report.title || panel.title,
+          focus: false
+        }).catch((error: unknown) => {
+          openedPluginPanelWindowsRef.current.delete(key);
+          pluginPanelReportsRef.current.delete(key);
+          pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
+          pluginRuntime.runtime.panels.reportDiagnostic(
+            "panel.window_open_failed",
+            `Could not open "${panel.report.title || panel.title}" in a window; it was closed. (${error instanceof Error ? error.message : String(error)})`
+          );
+        });
       }
       const source = panel.report.source;
       const stale = source
@@ -8604,13 +8847,29 @@ export function MainWindow({
           .catch(() => undefined);
       }
     }
-  }, [document, pluginRuntime.detachedPanels]);
+  }, [document, pluginRuntime.detachedPanels, pluginRuntime.runtime]);
 
   // A dismissed window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
   // The stored report stays cached so a reopened window is re-served instantly.
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
     return listenForPluginPanelCloses(({ pluginId, panelId }) => {
+      runtime.panels.closeDetachedPanel(pluginId, panelId);
+    });
+  }, [pluginRuntime.runtime]);
+
+  // The same close, reached through the OS instead of the window's own control (Window ▸ Close Window,
+  // ⌘W): the host hid the window rather than destroying it. A plugin report gets its close signal and,
+  // leaving the detached set, is re-shown by its next report; a core analysis window takes its own
+  // "close" action, exactly as its close button sends it.
+  useEffect(() => {
+    const runtime = pluginRuntime.runtime;
+    return listenForNativePanelWindowCloses(({ pluginId, panelId }) => {
+      if (pluginId === ANALYSIS_WINDOW_OWNER_ID) {
+        const action: AnalysisWindowAction = { kind: "close", windowId: panelId };
+        window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+        return;
+      }
       runtime.panels.closeDetachedPanel(pluginId, panelId);
     });
   }, [pluginRuntime.runtime]);
@@ -8643,34 +8902,229 @@ export function MainWindow({
       if (!current.has(key)) {
         void hidePluginPanelWindow(identity.pluginId, identity.panelId).catch(() => undefined);
         pluginPanelStalenessSentRef.current.delete(key);
+        openedPluginPanelWindowsRef.current.delete(key);
       }
     }
     previouslyDetachedPanelsRef.current = current;
   }, [pluginRuntime.detachedPanels]);
 
+  // The user accepting a proposal is the review step itself, so it goes through the host's user path
+  // (`acceptProposedPatch`), never the plugin-gated `documents.applyPatch`. What was inserted is
+  // selected in the same history entry, and every outcome — success included — is reported: the
+  // status line here, and the review window through the returned outcome.
   const acceptPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch) => {
+    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
+      const host = pluginRuntime.runtime.host;
+      const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
+      const recognized = proposal.proposal.recognition !== undefined;
+      // An accept during a canvas session would be dropped by the session's own commit (see
+      // isSnapshotSessionActive). The review window cannot wait for it, so the proposal stays pending
+      // and the user accepts again once the edit is finished — nothing lost, nothing half-applied.
+      if (isSnapshotSessionActive()) {
+        const message = "Finish the current edit on the canvas, then accept the proposal again.";
+        setStatus(message);
+        return { ok: false, message };
+      }
+      // A screen capture is saved to the recognition-sources folder when it is taken (AGENTS.md §8), so
+      // accepting keeps nothing more; the capture stays there until the user deletes it.
+      const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
-        const updated = pluginRuntime.runtime.host.acceptProposedPatch(proposal.id, documentRef.current);
-        commitDocumentChange(updated);
-        setStatus("Applied plugin proposal");
+        // Laid onto the document in front of the user, which need not be the one the proposal was
+        // made in: a taken object id gets a fresh one, a missing page becomes this document's first.
+        const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
+          apply: (current, proposed, options) => applyAcceptedPluginProposal(current, proposed, options).document
+        });
+        commitDocumentChange(
+          updated,
+          `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`
+        );
+        setSelectedNativeMoleculePart(undefined);
+        const inserted = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
+        const message = screenCapture
+          ? `${inserted}; its screen capture stays saved (Add or Remove Plugins › Show saved screen captures)`
+          : inserted;
+        setStatus(message);
+        return { ok: true, message };
       } catch (error) {
-        setStatus(`Plugin proposal failed: ${error instanceof Error ? error.message : String(error)}`);
+        const message = `Could not insert the proposal: ${describePatchFailure(error)}`;
+        setStatus(message);
+        return { ok: false, message };
       }
     },
-    [commitDocumentChange, pluginRuntime.runtime]
+    [commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
   );
 
   const rejectPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch) => {
+    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
       try {
         pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
         setStatus("Rejected plugin proposal");
+        return { ok: true, message: "Rejected plugin proposal" };
       } catch {
-        setStatus("Plugin proposal was already resolved");
+        const message = "That proposal was already resolved, so nothing changed.";
+        setStatus(message);
+        return { ok: false, message };
       }
     },
     [pluginRuntime.runtime]
+  );
+
+  // Core analysis snapshots use the same request/replay bridge and native window host as plugin
+  // reports. Browser builds retain the in-app/toolset surfaces below.
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    publishAnalysisWindow(MOLECULAR_INSPECTOR_WINDOW_ID, "Molecular Inspector", {
+      kind: "molecularInspector",
+      report: analysisReport,
+      busy: analysisBusy,
+      stale: analysisReportIsStale
+    });
+  }, [analysisBusy, analysisReport, analysisReportIsStale, publishAnalysisWindow]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime() || !pluginDiagnosticsOpen) return;
+    publishAnalysisWindow(PLUGIN_DIAGNOSTICS_WINDOW_ID, "Bundled Plugins", {
+      kind: "pluginDiagnostics",
+      plugins: pluginRuntime.plugins,
+      diagnostics: pluginRuntime.diagnostics
+    });
+  }, [pluginDiagnosticsOpen, pluginRuntime.diagnostics, pluginRuntime.plugins, publishAnalysisWindow]);
+
+  const previousProposalCountRef = useRef(0);
+  // Pending proposal count and whether their review window is open, for the desktop badge that
+  // reopens the window after the user closes it with proposals still waiting.
+  const [proposalReview, setProposalReview] = useState({ pending: 0, windowOpen: false });
+  const publishProposalReview = useCallback(
+    (open: boolean, focus: boolean): Promise<boolean> => {
+      const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
+      return publishAnalysisWindow(
+        PATCH_REVIEW_WINDOW_ID,
+        "Plugin Proposals",
+        {
+          kind: "patchReview",
+          proposals: pending.map((proposal) => proposalReviewItem(pluginRuntime.runtime.host, proposal))
+        },
+        { open, focus, width: 420, height: 420 }
+      );
+    },
+    [pluginRuntime.runtime, publishAnalysisWindow]
+  );
+  /** Open the review window, and only once the native open has succeeded mark it open: on a
+   *  failure the badge must stay, or the pending proposals have no way back on desktop. */
+  const showProposalReview = useCallback(
+    (focus: boolean) => {
+      void publishProposalReview(true, focus).then((opened) => {
+        setProposalReview((current) => proposalReviewAfterOpen(current, opened));
+      });
+    },
+    [publishProposalReview]
+  );
+  // The badge is a click: the user asked for the window, so it takes focus.
+  const reopenProposalReview = useCallback(() => showProposalReview(true), [showProposalReview]);
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
+    const previousCount = previousProposalCountRef.current;
+    previousProposalCountRef.current = pending.length;
+    const transition = proposalWindowLifecycle(previousCount, pending.length);
+    if (transition === "idle") return;
+    if (transition === "close") {
+      analysisWindowSnapshotsRef.current.delete(
+        pluginPanelIdentityKey(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID)
+      );
+      void hidePluginPanelWindow(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID).catch(() => undefined);
+      setProposalReview({ pending: 0, windowOpen: false });
+      return;
+    }
+    setProposalReview((current) => ({ ...current, pending: pending.length }));
+    if (transition === "open") {
+      // A proposal arriving is not the user asking for the window: show it without focus, so
+      // typing on the canvas is never interrupted.
+      showProposalReview(false);
+    } else {
+      void publishProposalReview(false, false);
+    }
+  }, [patchQueueVersion, pluginRuntime.runtime, publishProposalReview, showProposalReview]);
+
+  // The action listener is registered ONCE. Its handlers close over live state and are redefined
+  // on every document change, so they are read through this ref: re-registering per render meant
+  // an async unlisten/listen gap in which a window's Accept, Reject, or Copy was dropped.
+  const analysisWindowActionHandlersRef = useRef({
+    acceptPluginProposal,
+    copyAnalysisText,
+    recomputeAnalysisFor,
+    rejectPluginProposal,
+    runtime: pluginRuntime.runtime
+  });
+  useEffect(() => {
+    analysisWindowActionHandlersRef.current = {
+      acceptPluginProposal,
+      copyAnalysisText,
+      recomputeAnalysisFor,
+      rejectPluginProposal,
+      runtime: pluginRuntime.runtime
+    };
+  }, [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]);
+  useEffect(
+    () =>
+      listenForAnalysisWindowActions((action: AnalysisWindowAction) => {
+        const handlers = analysisWindowActionHandlersRef.current;
+        switch (action.kind) {
+          case "close":
+            if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
+              setPluginDiagnosticsOpen(false);
+            }
+            if (action.windowId === PATCH_REVIEW_WINDOW_ID) {
+              setProposalReview((current) => ({ ...current, windowOpen: false }));
+            }
+            return;
+          case "copyMolecularInspector": {
+            // requestId is absent from a fire-and-forget dispatch with no listener for the result
+            // (the web toolbar fallback's direct call); only answer when someone is actually waiting.
+            const { requestId, text } = action;
+            void handlers
+              .copyAnalysisText(text)
+              .catch(() => false)
+              .then((ok) => (requestId ? respondToCopyMolecularInspector(requestId, ok) : undefined))
+              .catch(() => undefined);
+            return;
+          }
+          case "changeMolecularInterpretation":
+            handlers.recomputeAnalysisFor(action.interpretationId);
+            return;
+          case "acceptPluginProposal":
+          case "rejectPluginProposal": {
+            const proposal = handlers.runtime.host
+              .listProposedPatches("pending")
+              .find((candidate) => candidate.id === action.proposalId);
+            let outcome: ProposalDecisionOutcome;
+            if (!proposal) {
+              // Never a silent no-op: an Accept for a proposal the queue no longer holds used to
+              // return here without a word, which is indistinguishable from a dead button.
+              outcome = { ok: false, message: "That proposal was already resolved, so nothing changed." };
+              setStatus(outcome.message);
+            } else if (action.kind === "acceptPluginProposal") {
+              outcome = handlers.acceptPluginProposal(proposal);
+            } else {
+              outcome = handlers.rejectPluginProposal(proposal);
+            }
+            if (action.requestId) {
+              void respondToProposalDecision(action.requestId, outcome).catch(() => undefined);
+            }
+            return;
+          }
+          case "saveTextFile": {
+            // A report window asked for a save it has no permission to perform itself (the NMR
+            // figure's JCAMP-DX export). Run it here and tell that window how it ended.
+            const { requestId, filename, text, title, formatLabel, extensions, mimeType } = action;
+            void saveTextFileHere(filename, text, { title, formatLabel, extensions, mimeType })
+              .catch(() => "failed" as const)
+              .then((result) => respondToSaveTextFile(requestId, result))
+              .catch(() => undefined);
+          }
+        }
+      }),
+    []
   );
 
   const invoke = useCallback(async (commandId: string) => {
@@ -8711,7 +9165,21 @@ export function MainWindow({
     }
 
     if (commandId === PLUGIN_DIAGNOSTICS_COMMAND_ID) {
-      setPluginDiagnosticsOpen((open) => !open);
+      if (isDesktopRuntime()) {
+        setPluginDiagnosticsOpen(true);
+        publishAnalysisWindow(
+          PLUGIN_DIAGNOSTICS_WINDOW_ID,
+          "Bundled Plugins",
+          {
+            kind: "pluginDiagnostics",
+            plugins: pluginRuntime.plugins,
+            diagnostics: pluginRuntime.diagnostics
+          },
+          { open: true, focus: true, width: 500, height: 560 }
+        );
+      } else {
+        setPluginDiagnosticsOpen((open) => !open);
+      }
       return;
     }
 
@@ -8764,13 +9232,17 @@ export function MainWindow({
       const run = previous
         .catch(() => undefined)
         .then(async () => {
-          const result = await invokePluginCommand(commandId);
+          // Collected per invocation: only this command's own selection reads can add to it.
+          const selectionWarnings: string[] = [];
+          const result = await invokePluginCommand(commandId, { selectionWarnings });
           if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
           const failure = pluginCommandFailure(result);
           if (failure) {
             setStatus(`Plugin command failed: ${failure}`);
+          } else if (selectionWarnings.length) {
+            setStatus([...new Set(selectionWarnings)].join(" "));
           }
         })
         .catch((error: unknown) => {
@@ -8804,7 +9276,9 @@ export function MainWindow({
     importMoleculeInspectorTemplate,
     invokePluginCommand,
     pluginCommandExists,
+    pluginRuntime.diagnostics,
     pluginRuntime.plugins,
+    publishAnalysisWindow,
     restoreDocumentHistory
   ]);
 
@@ -9032,7 +9506,13 @@ export function MainWindow({
       event: ClipboardEvent,
       mode: "copy" | "cut"
     ): boolean => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target, mode === "copy" ? "c" : "x")) {
+      // Behind an open modal the document is out of reach: native Edit > Cut/Copy (and the keys) then
+      // belong to the dialog — selected dialog text copies natively — never to the canvas selection.
+      if (
+        event.defaultPrevented ||
+        isBlockedByModalDialog(event.target) ||
+        shouldIgnoreShortcutTarget(event.target, mode === "copy" ? "c" : "x")
+      ) {
         return false;
       }
 
@@ -9094,7 +9574,13 @@ export function MainWindow({
     };
 
     const handlePaste = (event: ClipboardEvent) => {
-      if (event.defaultPrevented || shouldIgnoreShortcutTarget(event.target, "v")) {
+      // A paste with a modal open is the dialog's (a text field in it pastes natively), never an
+      // insertion into the document behind it.
+      if (
+        event.defaultPrevented ||
+        isBlockedByModalDialog(event.target) ||
+        shouldIgnoreShortcutTarget(event.target, "v")
+      ) {
         return;
       }
 
@@ -9518,11 +10004,17 @@ export function MainWindow({
     const handleKeyDown = (event: KeyboardEvent) => {
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
-      // the webview's own reload would otherwise run.
+      // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
+      // the keyboard, but F5 inside one must still not discard the document.
       if (isBrowserReloadChord(event) && !event.defaultPrevented && !shortcutRegistry.resolve(event)) {
         event.preventDefault();
       }
 
+      // An open modal dialog owns the keyboard. MainWindow also has a capture-phase Escape listener, so
+      // its global handlers must opt out explicitly; propagation control inside a dialog is too late.
+      if (isBlockedByModalDialog(event.target)) {
+        return;
+      }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
         return;
       }
@@ -9717,6 +10209,9 @@ export function MainWindow({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isBlockedByModalDialog(event.target)) {
+        return;
+      }
       if (event.key === "Shift" || event.shiftKey) {
         setShiftPressed(true);
       }
@@ -9782,6 +10277,7 @@ export function MainWindow({
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
+      if (isBlockedByModalDialog(event.target)) return;
       if (event.key !== "Escape") return;
     if (spin3dStateRef.current) {
       event.preventDefault();
@@ -10131,6 +10627,9 @@ export function MainWindow({
       return;
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (isBlockedByModalDialog(event.target)) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         setCustomizeMode(false);
@@ -11258,25 +11757,27 @@ export function MainWindow({
       // Preview frames flatten geometry-only for speed; the PERSISTED commit must re-flatten the
       // final orientation through the stereo read-back guard so a rotation can't silently commit a
       // different stereoisomer (the same protection the Spin 3D overlay commit applies).
+      const warnings: string[] = [];
       const guarded = flattenSpunMolecule(
         drag.startDocument,
         drag.objectId,
         drag.spin3dModel.coords3d,
         quatToViewMatrix(finalOrientation),
-        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId) }
+        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId, warnings) }
       );
       if (guarded.status !== "committed") {
         replacePresentDocument(drag.startDocument);
         setStatus(`3D rotation not applied: ${guarded.refusalReasons[0] ?? "stereochemistry would change"}`);
         return false;
       }
+      warnings.push(...flattenWarningMessages(guarded.warnings));
       const modeled = attachSpin3dModelFromConformer(guarded.document, drag.objectId, {
         coords3d: drag.spin3dModel.coords3d,
         orientation: finalOrientation,
         engine: drag.spin3dModel.engine
       });
       commitDocumentHistoryFrom(drag.startDocument, modeled);
-      setStatus("3D rotation applied");
+      setStatus(["3D rotation applied", ...new Set(warnings)].join(" "));
       return true;
     }
 
@@ -11289,7 +11790,7 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, projectedPlaneTiltFromDrag, replacePresentDocument, showProjectedPlaneTiltReadout, spin3dFlattenStereoOptions]);
 
-  const rotationInputDocumentFromDraft = useCallback((input: RotationInputState): RotationInputDraftDocumentResult | undefined => {
+  const rotationInputDocumentFromDraft = useCallback((input: RotationInputState, warnings: string[]): RotationInputDraftDocumentResult | undefined => {
     const object = findDocumentObject(input.startDocument, input.objectId);
     if (!object) {
       return undefined;
@@ -11379,9 +11880,10 @@ export function MainWindow({
           // unchanged (input.startDocument) rather than committing altered stereochemistry.
           const outcome = flattenSpunMolecule(input.startDocument, input.objectId, coords3d, quatToViewMatrix(nextQuat), {
             placement,
-            ...spin3dFlattenStereoOptions(input.startDocument, input.objectId)
+            ...spin3dFlattenStereoOptions(input.startDocument, input.objectId, warnings)
           });
           if (outcome.status === "committed") {
+            warnings.push(...flattenWarningMessages(outcome.warnings));
             document = attachSpin3dModelFromConformer(outcome.document, input.objectId, {
               coords3d,
               orientation: nextQuat,
@@ -11445,8 +11947,9 @@ export function MainWindow({
   }, [spinPlacementFor, spin3dFlattenStereoOptions]);
 
   const handleRotationInputChange = useCallback((nextInput: RotationInputState) => {
-    updateRotationInput(nextInput);
-    const result = rotationInputDocumentFromDraft(nextInput);
+    const warnings: string[] = [];
+    const result = rotationInputDocumentFromDraft(nextInput, warnings);
+    updateRotationInput({ ...nextInput, warnings });
     if (!result) {
       setStatus(nextInput.kind === "z" ? "Enter a valid Z rotation" : "Enter valid X and Y rotations");
       return;
@@ -11458,14 +11961,16 @@ export function MainWindow({
     } else {
       setObjectRotateReadout({ objectId: nextInput.objectId, degrees: result.zDegrees });
     }
+    if (warnings.length > 0) setStatus([...new Set(warnings)].join(" "));
+    return warnings;
   }, [replacePresentDocument, rotationInputDocumentFromDraft, showProjectedPlaneTiltReadout, updateRotationInput]);
 
   const handleRotationInputHome = useCallback((input: RotationInputState) => {
     const nextInput: RotationInputState = input.kind === "z"
       ? { ...input, ...rotationInputHomeDraftDegrees("z") }
       : { ...input, ...rotationInputHomeDraftDegrees("xy") };
-    handleRotationInputChange(nextInput);
-    setStatus(nextInput.kind === "z" ? "Z rotation set to 0" : "X/Y rotation set to 0");
+    const warnings = handleRotationInputChange(nextInput) ?? [];
+    setStatus([nextInput.kind === "z" ? "Z rotation set to 0" : "X/Y rotation set to 0", ...new Set(warnings)].join(" "));
   }, [handleRotationInputChange]);
 
   const handleRotationInputCancel = useCallback((input?: RotationInputState) => {
@@ -11489,7 +11994,7 @@ export function MainWindow({
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
-    setStatus(changed ? "Rotation applied" : "Rotation unchanged");
+    setStatus([changed ? "Rotation applied" : "Rotation unchanged", ...new Set(session.warnings ?? [])].join(" "));
     return changed;
   }, [commitLiveInputPreview, updateRotationInput]);
 
@@ -16319,27 +16824,71 @@ export function MainWindow({
           installedPlugins={pluginRuntime.installedPlugins}
           onPickPackage={pluginRuntime.pickPackage}
           onInstallPackage={pluginRuntime.installPackage}
+          onPrepareOfficialPluginInstall={pluginRuntime.prepareOfficialPluginInstall}
           onUninstallPlugin={pluginRuntime.uninstallInstalledPlugin}
           installedPluginCatalogReady={pluginRuntime.installedPluginCatalogReady}
           onCheckPluginUpdates={pluginRuntime.checkInstalledPluginUpdates}
           onPreparePluginUpdate={pluginRuntime.prepareInstalledPluginUpdate}
           onUpdatePlugin={pluginRuntime.updateInstalledPlugin}
+          recognitionEngineStatus={pluginRuntime.recognitionEngineStatus}
+          recognitionEngineInstall={pluginRuntime.recognitionEngineInstall}
+          onRefreshRecognitionEngineStatus={pluginRuntime.refreshRecognitionEngineStatus}
+          onInstallRecognitionEngine={pluginRuntime.startRecognitionEngineInstall}
+          onCancelRecognitionEngineInstall={pluginRuntime.cancelRunningRecognitionEngineInstall}
+          onUninstallRecognitionEngine={pluginRuntime.uninstallRecognitionEngine}
+          onShowRecognitionScreenCaptures={isDesktopRuntime() ? revealRecognitionScreenCaptures : undefined}
           onClose={() => setPluginManagerOpen(false)}
           onPluginsChanged={() => setStatus("Plugin settings updated")}
         />
       ) : null}
 
-      <PluginPanelSurface
-        openPanel={pluginRuntime.openPanel}
-        diagnosticsOpen={pluginDiagnosticsOpen}
-        plugins={pluginRuntime.plugins}
-        diagnostics={pluginRuntime.diagnostics}
-        stale={pluginPanelStale}
-        onClose={pluginRuntime.closePanel}
-        onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
-        onRunAgain={(commandId) => invoke(commandId)}
-        onOpenAsWindow={isDesktopRuntime() ? popOutOpenPanel : undefined}
+      {pluginRuntime.openTextPrompt ? (
+        <PluginPromptTextDialog
+          key={pluginRuntime.openTextPrompt.id}
+          prompt={pluginRuntime.openTextPrompt}
+          onSubmit={pluginRuntime.submitTextPrompt}
+          onCancel={pluginRuntime.cancelTextPrompt}
+        />
+      ) : null}
+
+      {pluginRuntime.openImageRequest ? (
+        <PluginImageRequestDialog
+          key={pluginRuntime.openImageRequest.id}
+          request={pluginRuntime.openImageRequest}
+          onAcquire={pluginRuntime.acquireImage}
+          onOpenPermissionSettings={pluginRuntime.openImagePermissionSettings}
+          onPermissionFocus={pluginRuntime.refreshImagePermission}
+          onRelaunch={pluginRuntime.relaunchForImagePermission}
+          onCancel={pluginRuntime.cancelImageRequest}
+        />
+      ) : null}
+      {pluginRuntime.openRecognitionInstall ? (
+        <StructureRecognitionInstallDialog
+          key={pluginRuntime.openRecognitionInstall.id}
+          request={pluginRuntime.openRecognitionInstall}
+          onInstall={pluginRuntime.installRecognitionEngine}
+          onCancel={pluginRuntime.cancelRecognitionEngineInstall}
+          onDecline={pluginRuntime.declineRecognitionEngineInstall}
+        />
+      ) : null}
+      {/* Not a dialog: a corner card that leaves the canvas usable while an image is recognized. */}
+      <RecognitionProgressIndicator
+        source={pluginRuntime.runtime.recognition}
+        onCancel={pluginRuntime.cancelRecognition}
       />
+
+      {!isDesktopRuntime() ? (
+        <PluginPanelSurface
+          openPanel={pluginRuntime.openPanel}
+          diagnosticsOpen={pluginDiagnosticsOpen}
+          plugins={pluginRuntime.plugins}
+          diagnostics={pluginRuntime.diagnostics}
+          stale={pluginPanelStale}
+          onClose={pluginRuntime.closePanel}
+          onCloseDiagnostics={() => setPluginDiagnosticsOpen(false)}
+          onRunAgain={(commandId) => invoke(commandId)}
+        />
+      ) : null}
 
 
 
@@ -16861,12 +17410,20 @@ export function MainWindow({
             onCancel={() => applyPendingMoleculeStyleOverrideChoice("cancel")}
           />
         ) : null}
-        <PatchReviewTray
-          host={pluginRuntime.runtime.host}
-          queueVersion={patchQueueVersion}
-          onAccept={acceptPluginProposal}
-          onReject={rejectPluginProposal}
-        />
+        {!isDesktopRuntime() ? (
+          <PatchReviewTray
+            host={pluginRuntime.runtime.host}
+            queueVersion={patchQueueVersion}
+            onAccept={acceptPluginProposal}
+            onReject={rejectPluginProposal}
+          />
+        ) : (
+          <PendingProposalsBadge
+            count={proposalReview.pending}
+            windowOpen={proposalReview.windowOpen}
+            onReview={reopenProposalReview}
+          />
+        )}
         {customizeToolbarsOpen ? (
           <CustomizeToolbarsDialog
             baseToolsets={toolbarCatalog.baseToolsets()}
@@ -16901,9 +17458,10 @@ export function MainWindow({
             ? [
                 interactive3dWorkspace.status,
                 interactive3dWorkspace.energyLabel,
+                ...new Set(interactive3dWorkspace.session?.warnings ?? []),
                 "Esc to close"
               ].filter(Boolean).join(" · ")
-            : status}
+            : hoveredNativeWarning ?? status}
         </div>
       </section>
       {objectContextMenu ? (
@@ -23048,6 +23606,7 @@ function DocumentObjectViewContent({
       // labels read the molecule directly; atoms whose charge came from a mark carry markCharge.
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
       const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
+      const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
         .map((atom) => atom.id);
@@ -23251,6 +23810,7 @@ function DocumentObjectViewContent({
                   data-invalid-atom-id={atom.id}
                   key={`invalid-${atom.id}`}
                 >
+                  <title>{invalidReasonByAtomId.get(atom.id)}</title>
                   <circle
                     className="native-atom-invalid-ring"
                     cx={atom.x - object.x + 9}
@@ -27726,4 +28286,81 @@ function isNativeMoleculeGraph(object: MoleculeObject): boolean {
 function formatValidationFailure(analysis: StructureAnalysisResult): string {
   const firstError = analysis.validation.errors[0] ?? analysis.validation.warnings[0];
   return firstError ? `Validation unavailable: ${firstError.message}` : "Validation unavailable";
+}
+
+/** Host-owned presentation of the adapter result; no chemistry is derived at this UI boundary. */
+function validationResultReport(analysis: StructureAnalysisResult): PluginPanelReport {
+  const rows = [
+    { label: "Status", value: analysis.validation.valid ? "Valid" : "Invalid" },
+    { label: "Formula", value: analysis.properties.formula ?? "Unavailable" },
+    {
+      label: "Average mass",
+      value: analysis.properties.averageMass === undefined ? "Unavailable" : analysis.properties.averageMass.toFixed(3)
+    },
+    {
+      label: "Exact mass",
+      value: analysis.properties.exactMass === undefined ? "Unavailable" : analysis.properties.exactMass.toFixed(5)
+    },
+    {
+      label: "Total charge",
+      value: analysis.properties.totalCharge === undefined ? "Unavailable" : String(analysis.properties.totalCharge)
+    },
+    { label: "Atoms", value: analysis.properties.atomCount === undefined ? "Unavailable" : String(analysis.properties.atomCount) },
+    { label: "Bonds", value: analysis.properties.bondCount === undefined ? "Unavailable" : String(analysis.properties.bondCount) }
+  ];
+  const notices = [
+    ...analysis.validation.errors,
+    ...analysis.validation.warnings,
+    ...analysis.warnings
+  ].filter(
+    (notice, index, all) =>
+      all.findIndex((candidate) => candidate.code === notice.code && candidate.message === notice.message) === index
+  );
+
+  return {
+    title: "Validation Result",
+    sections: [
+      { kind: "keyValue", title: "Selected structure", rows },
+      ...(notices.length > 0
+        ? [
+            {
+              kind: "table" as const,
+              title: "Warnings and errors",
+              columns: ["Severity", "Code", "Message"],
+              rows: notices.map((notice) => [notice.severity, notice.code, notice.message])
+            }
+          ]
+        : [{ kind: "text" as const, body: "No validation warnings or errors were reported." }])
+    ]
+  };
+}
+
+/** Proposal-window state once a native open settles: open only if it succeeded and work remains. */
+export function proposalReviewAfterOpen(
+  current: { pending: number; windowOpen: boolean },
+  opened: boolean
+): { pending: number; windowOpen: boolean } {
+  return { ...current, windowOpen: opened && current.pending > 0 };
+}
+
+/** Run a native window open; resolve whether it succeeded, reporting a failure through `onError`. */
+export async function settleAnalysisWindowOpen(
+  open: () => Promise<void>,
+  onError: (message: string) => void
+): Promise<boolean> {
+  try {
+    await open();
+    return true;
+  } catch (error) {
+    onError(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+export function proposalWindowLifecycle(
+  previousCount: number,
+  currentCount: number
+): "idle" | "open" | "update" | "close" {
+  if (currentCount <= 0) return previousCount > 0 ? "close" : "idle";
+  return previousCount <= 0 || currentCount > previousCount ? "open" : "update";
 }

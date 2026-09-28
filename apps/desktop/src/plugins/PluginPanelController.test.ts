@@ -124,6 +124,25 @@ describe("PluginPanelController", () => {
     expect(notifyPanelClosed).not.toHaveBeenCalled();
   });
 
+  it("routes every desktop report directly to its own window entry with no in-app panel", () => {
+    const { host, notifyPanelClosed } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t", "window");
+
+    controller.showReport("plugin.a", "panel.a", { title: "A", sections: [] });
+    controller.showReport("plugin.b", "panel.b", { title: "B", sections: [] });
+
+    expect(controller.getOpenPanel()).toBeUndefined();
+    expect(controller.getDetachedPanels()).toEqual([
+      expect.objectContaining({ pluginId: "plugin.a", panelId: "panel.a" }),
+      expect.objectContaining({ pluginId: "plugin.b", panelId: "panel.b" })
+    ]);
+    expect(notifyPanelClosed).not.toHaveBeenCalled();
+
+    controller.showReport("plugin.a", "panel.a", { title: "A updated", sections: [] });
+    expect(controller.getDetachedPanels()).toHaveLength(2);
+    expect(controller.getDetachedPanels()[0]?.report.title).toBe("A updated");
+  });
+
   it("re-attaches a detached panel when its window never opened, without a close notification", () => {
     // "Open as window" detaches BEFORE the native open resolves, so a rejected open used to strand
     // the panel: off the in-app surface, no window rendering it, clearable only by disabling the

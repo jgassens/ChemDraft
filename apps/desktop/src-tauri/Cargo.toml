@@ -1,6 +1,6 @@
 [package]
 name = "chemdraft"
-version = "0.3.5"
+version = "0.3.6"
 description = "ChemDraft desktop shell"
 authors = ["ChemDraft contributors"]
 edition = "2021"
@@ -13,10 +13,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
 resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
+# The OCSR engine installer's downloads (uv, the MolScribe model). reqwest 0.12 is already in the
+# graph through tauri-plugin-http; this only turns on its blocking client, which adds no new crate.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Verifies every OCSR engine download before use; also the test-only check that the vendored OPSIN
+# jar's bytes match the SHA-256 in its BUILD.md. Pinned to the version already in Cargo.lock.
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
@@ -27,14 +36,25 @@ tauri-plugin-http = "2.5.9"
 [target.'cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
-# Already in the graph through tauri/tao; used directly for window z-order checks and the clipboard.
+# Already in the graph through tauri/tao; used directly for window z-order checks, the clipboard, and
+# the OCSR engine seam (free-disk query and CREATE_NO_WINDOW).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Storage_FileSystem",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
+  "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Test-only: flags the OCSR tests' stand-in model file sparse (see ocsr_engine::set_sparse_len).
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_IO", "Win32_System_Ioctl"] }
+
+# The OCSR engine's process-group kill, waitid and statvfs; every use is behind cfg(unix).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # App updates on Windows (macOS keeps Sparkle; Linux has no release yet): signed manifest +
 # NSIS installer, see docs/releasing/windows-updates.md.
@@ -43,14 +63,7 @@ version = "2.12.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", default-features = false }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPasteboard", "NSWindow", "NSEvent"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPasteboard", "NSWindow", "NSEvent", "NSApplication", "NSGraphics"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSString", "NSGeometry"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "objc2-app-kit"] }
 tauri-plugin-sparkle-updater = "=0.2.4"
-
-[dev-dependencies]
-# Test-only, and deliberately pinned to the version already in Cargo.lock as a transitive dependency
-# so this adds nothing to the build graph. It exists for one assertion: that the vendored OPSIN jar's
-# bytes match the SHA-256 recorded in its BUILD.md. That jar is a 14 MB executable handed to a JVM,
-# and until this test it was the only vendored artifact whose provenance rested on its own filename.
-sha2 = "0.10"

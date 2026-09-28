@@ -1,6 +1,8 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import * as OCL from "openchemlib";
 import { describe, expect, it } from "vitest";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 
 import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
 
@@ -58,6 +60,18 @@ describe("buildPluginSelectionSnapshot", () => {
 });
 
 describe("pluginFacingStructure", () => {
+  it("preserves unresolved type-4 bonds and surfaces one ring warning to the host", () => {
+    const source = documentWith(["m1"]);
+    const molecule = source.pages[0]!.objects[0];
+    Object.assign(molecule, unresolvableAromaticRing());
+    const warnings: string[] = [];
+    const snapshot = buildPluginSelectionSnapshot(source, warnings);
+    expect(parseMolfileGraph(snapshot.molecules[0]!.structure).bonds.map((bond) => bond.order))
+      .toEqual(Array(5).fill("aromatic"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("atoms u0, u1, u2, u3, u4");
+    expect(warnings[0]).toContain("preserved as type 4");
+  });
   // Fused bicyclic (naphthalene skeleton): the hand-rolled SMILES writer collapses this to a bare
   // atom concatenation that OCL reads as a straight-chain alkane. The molfile keeps the real graph.
   const naphthalene = {
@@ -115,9 +129,10 @@ describe("pluginFacingStructure", () => {
     expect(OCL.Molecule.fromMolfile(facing.structure).getMolecularFormula().formula).toBe("C2H6O");
   });
 
-  it("hands an aromatic-order pyrrole NH over as an R-group, never as an NH2 that OpenChemLib would read", () => {
-    // On two aromatic bonds the stated hydrogen would ride on a valence of 1.5 + 1.5 + 1 = 4, which
-    // OpenChemLib honours as an NH2 — a molecule the user did not draw. An R-group admits the gap.
+  it("hands an aromatic-order pyrrole NH over as N–H on its Kekulé orders, never as an NH2", () => {
+    // Counted at 1.5 per aromatic bond, the stated hydrogen would ride on a valence of 4, which
+    // OpenChemLib honours as an NH2 — a molecule the user did not draw. On the Kekulé orders the
+    // ring bonds at N are single, so the valence is 3 and the reader sees pyrrole.
     const ring = ["a0", "a1", "a2", "a3", "a4"];
     const pyrrole = {
       id: "m", type: "molecule", structureFormat: "smiles", structure: "",
@@ -126,12 +141,13 @@ describe("pluginFacingStructure", () => {
       })),
       bonds: ring.map((id, i) => ({ id: `b${i}`, fromAtomId: id, toAtomId: ring[(i + 1) % 5], order: "aromatic" }))
     } as unknown as Parameters<typeof pluginFacingStructure>[0];
-    const facing = pluginFacingStructure(pyrrole);
-    expect(facing.structure).toContain(" R# ");
+    const warnings: string[] = [];
+    const facing = pluginFacingStructure(pyrrole, warnings);
+    expect(facing.structure).not.toContain(" R# ");
     const parsed = OCL.Molecule.fromMolfile(facing.structure);
     expect(parsed.getAllAtoms()).toBe(5);
-    // The nitrogen is gone from the connection table rather than misstated: no N, and never NH2.
-    expect(parsed.getMolecularFormula().formula).not.toContain("N");
+    expect(parsed.getMolecularFormula().formula).toBe("C4H5N");
+    expect(warnings).toEqual([]);
   });
 
   it("passes through the existing structure when there is no atom graph (e.g. a SMILES import)", () => {

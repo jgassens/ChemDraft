@@ -31,22 +31,20 @@
  *     abbreviation like "Ph") writes as a dummy atom ("*") with a warning — the group the label
  *     spells is not represented in the molfile. Consumers inside the app that RANK atoms (CIP
  *     perception, the plugin hand-off) ask for `abbreviations: "rgroup"` instead; see the option.
+ *   - A literal (text-typed) atom on an aromatic bond gets an explicit valence only when the caller's
+ *     order map resolves its incident aromatic bonds; otherwise the field is omitted with a warning.
  *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
  *     coordinate precision to preserve alignment and throws on >999 atoms/bonds.
  */
 
+import { bridgeBondIndices } from "./bondGraph";
 import { isMetalSymbol } from "./elements";
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 
 export interface MolfileWriteOptions {
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
   fromDocFrame?: boolean;
-  /**
-   * Collects concise, human-readable notes about lossy emissions — V2000 dative bonds flattened
-   * to single, incompatible dashed display omitted, non-element labels written as dummy atoms
-   * (AGENTS.md §5.7/§14: never degrade quietly). Callers that cannot surface warnings (the 3D-spin
-   * relayout, stereo perception) omit it and get the previous behavior.
-   */
+  /** Optional legacy collector. Warnings are also ALWAYS returned in MolfileWriteResult. */
   warnings?: string[];
   /**
    * How an atom whose label is not an element symbol ("Ph", "CH3", "CO2H") is written.
@@ -65,13 +63,22 @@ export interface MolfileWriteOptions {
    */
   abbreviations?: "dummy" | "rgroup";
   /**
+   * Bond id → the order (1 or 2) each aromatic bond takes in a Kekulé structure. These orders are
+   * written in both formats, preserving the resolved ring N–H tautomer as well as literal atom
+   * valences. chem-core has no valence model: callers use layout-engine's
+   * `nativeBondOrderResolution(...).kekuleOrders`. An unresolved bond stays type 4 (aromatic) with a
+   * warning, and an adjacent literal atom gets no valence field (its sum is not known).
+   */
+  kekuleBondOrders: ReadonlyMap<string, number>;
+  /**
    * Spells a condensed label as one element carrying a stated number of hydrogens ("OH" → O with
    * one, "NH2" → N with two), or returns undefined. A spelled atom is written as that element with
    * an explicit valence of its bond-order sum plus those hydrogens, so a reader counts exactly the
-   * hydrogens the label names — never a placeholder, never its own default valence. When that
-   * valence cannot say it exactly — the atom has an aromatic bond, or the sum passes 14 — the label
-   * is not spelled and takes the placeholder path with a warning instead. Label parsing lives with
-   * the caller (the app's condensed-label grammar is above this package).
+   * hydrogens the label names — never a placeholder, never its own default valence. Aromatic bonds
+   * count at their `kekuleBondOrders` order. When the valence cannot say it exactly — an aromatic
+   * bond has no resolved order, or the sum passes 14 — the label is not spelled and takes the
+   * placeholder path with a warning instead. Label parsing lives with the caller (the app's
+   * condensed-label grammar is above this package).
    */
   spellLabel?: (label: string) => { element: string; hydrogens: number } | undefined;
 }
@@ -94,8 +101,58 @@ export function isDativeBond(bond: MoleculeBond): boolean {
   return bond.order === "single" && bond.display?.bondStyle === "dashed";
 }
 
-function v3000BondTypeCode(bond: MoleculeBond): number {
-  return isDativeBond(bond) ? 9 : BOND_ORDER_CODE[bond.order];
+export interface MolfileWriteResult {
+  contents: string;
+  warnings: string[];
+}
+
+function resolvedMolfileBondCode(bond: MoleculeBond, options: MolfileWriteOptions): number {
+  if (bond.order !== "aromatic") return BOND_ORDER_CODE[bond.order];
+  const order = options.kekuleBondOrders.get(bond.id);
+  return order === 1 || order === 2 ? order : 4;
+}
+
+/** One note per unresolved ring system, including mixed aromatic/explicit ring bonds. */
+function warnUnresolvedAromaticBonds(
+  atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[], options: MolfileWriteOptions
+): void {
+  const unresolved = bonds.filter((bond) => bond.order === "aromatic" &&
+    ![1, 2].includes(options.kekuleBondOrders.get(bond.id) ?? 0));
+  if (unresolved.length === 0) return;
+  const otherEnd = (index: number, id: string): string =>
+    bonds[index]!.fromAtomId === id ? bonds[index]!.toAtomId : bonds[index]!.fromAtomId;
+  const bridges = bridgeBondIndices(bonds, otherEnd, (bond) => !isDativeBond(bond));
+  const adjacency = new Map<string, string[]>();
+  bonds.forEach((bond, index) => {
+    if (bridges.has(index) || isDativeBond(bond)) return;
+    for (const [from, to] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]] as const) {
+      const neighbours = adjacency.get(from) ?? [];
+      neighbours.push(to);
+      adjacency.set(from, neighbours);
+    }
+  });
+  const seen = new Set<string>();
+  const unresolvedIds = new Set(unresolved.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
+  const literalIds = new Set(atoms.filter((atom) => atom.labelLiteral && unresolvedIds.has(atom.id)).map((atom) => atom.id));
+  for (const bond of unresolved) {
+    if (seen.has(bond.fromAtomId) && seen.has(bond.toAtomId)) continue;
+    const system = new Set([bond.fromAtomId, bond.toAtomId]);
+    const queue = [...system];
+    for (let i = 0; i < queue.length; i += 1) {
+      for (const next of adjacency.get(queue[i]!) ?? []) {
+        if (system.has(next)) continue;
+        system.add(next);
+        queue.push(next);
+      }
+    }
+    for (const id of system) seen.add(id);
+    const ids = [...system].sort();
+    const literal = ids.filter((id) => literalIds.has(id));
+    options.warnings?.push(
+      `Aromatic bonds at atoms ${ids.join(", ")} have no resolved Kekulé order; preserved as type 4 (aromatic).` +
+      (literal.length > 0 ? ` Literal atoms ${literal.join(", ")} are written without a valence field, so a reader may add hydrogens.` : "")
+    );
+  }
 }
 
 function v3000BondAtomIds(bond: MoleculeBond, atomById: ReadonlyMap<string, MoleculeAtom>): [string, string] {
@@ -112,13 +169,13 @@ function v3000BondAtomIds(bond: MoleculeBond, atomById: ReadonlyMap<string, Mole
  * A dashed display on a non-single bond cannot mean coordination without destroying its chemical
  * order. Keep the order and report the lost display style instead of silently changing chemistry.
  */
-function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], warnings?: string[]): void {
+function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], options: MolfileWriteOptions): void {
   for (const bond of bonds) {
     if (bond.display?.bondStyle === "dashed" && bond.order !== "single") {
-      const code = BOND_ORDER_CODE[bond.order];
+      const code = resolvedMolfileBondCode(bond, options);
       const emittedOrder = code === 1 ? "single" : code === 2 ? "double" : code === 3 ? "triple" : "aromatic";
       const article = bond.order === "aromatic" || bond.order === "unknown" ? "an" : "a";
-      warnings?.push(
+      options.warnings?.push(
         `Dashed display on ${article} ${bond.order} bond is not a coordination bond; written as bond type ${code} (${emittedOrder}), dashed style not preserved.`
       );
     }
@@ -148,16 +205,22 @@ const MOLFILE_ATOM_SYMBOLS = new Set([
 
 /**
  * What one bond adds to the explicit valence of each of its atoms, as a reader of `format` counts
- * it. Aromatic type 4 is a code, not four covalent bonds, so it counts 1.5. V2000 emits dative as
- * single; V3000 readers count a coordination bond only at its acceptor, so its donor gets nothing.
- * Shared by the literal-valence pass and the spell guard so the two can never disagree.
+ * it, or undefined for an aromatic bond with no resolved Kekulé order. Aromatic type 4 is a code,
+ * not a count: the bond is single or double depending on the ring's Kekulé pattern, and 1.5 per
+ * bond matched that only by accident (a benzene C, 3) and was wrong elsewhere (a furan O read 3, a
+ * fused C 4.5). V2000 emits dative as single; V3000 readers count a coordination bond only at its
+ * acceptor, so its donor gets nothing. Shared by the literal-valence pass and the spell guard so
+ * the two can never disagree.
  */
 function bondValenceIncrements(
   bond: MoleculeBond,
   atomById: ReadonlyMap<string, MoleculeAtom>,
-  format: "V2000" | "V3000"
-): [[string, number], [string, number]] {
-  const order = bond.order === "aromatic" ? 1.5 : BOND_ORDER_CODE[bond.order];
+  format: "V2000" | "V3000",
+  kekuleBondOrders: ReadonlyMap<string, number>
+): [[string, number], [string, number]] | undefined {
+  const kekuleOrder = bond.order === "aromatic" ? kekuleBondOrders.get(bond.id) : undefined;
+  if (bond.order === "aromatic" && kekuleOrder !== 1 && kekuleOrder !== 2) return undefined;
+  const order = kekuleOrder ?? BOND_ORDER_CODE[bond.order];
   const dative = format === "V3000" && isDativeBond(bond);
   const [from, to] = dative ? v3000BondAtomIds(bond, atomById) : [bond.fromAtomId, bond.toAtomId];
   return [[from, dative ? 0 : order], [to, order]];
@@ -171,7 +234,8 @@ function literalAtomValences(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[],
   format: "V2000" | "V3000",
-  warnings?: string[],
+  warnings: string[] | undefined,
+  kekuleBondOrders: ReadonlyMap<string, number>,
   spelledHydrogens: ReadonlyMap<string, number> = new Map()
 ): Map<string, number> {
   const valences = new Map(atoms
@@ -183,16 +247,28 @@ function literalAtomValences(
   }
   if (valences.size === 0) return valences;
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const unresolvedAromatic = new Set<string>();
   for (const bond of bonds) {
-    for (const [id, increment] of bondValenceIncrements(bond, atomById, format)) {
+    const increments = bondValenceIncrements(bond, atomById, format, kekuleBondOrders);
+    if (!increments) {
+      unresolvedAromatic.add(bond.fromAtomId);
+      unresolvedAromatic.add(bond.toAtomId);
+      continue;
+    }
+    for (const [id, increment] of increments) {
       if (valences.has(id)) valences.set(id, valences.get(id)! + increment);
     }
   }
+  for (const id of unresolvedAromatic) {
+    if (!valences.has(id)) continue;
+    // The ring-system warning already reports the omitted literal-atom valences.
+    valences.delete(id);
+  }
   for (const [id, valence] of valences) {
     // CTfile's explicit valence is an integer from 1 to 14, plus a zero-valence sentinel. An
-    // unrepresentable sum (one aromatic bond, 1.5) gets no field and a warning rather than a
-    // rounded value that would invent hydrogens — or an exception that would abort the whole
-    // export, cleanup or 3D pass this writer is feeding.
+    // unrepresentable sum gets no field and a warning rather than a clamped value that would
+    // invent hydrogens — or an exception that would abort the whole export, cleanup or 3D pass
+    // this writer is feeding.
     if (!Number.isInteger(valence) || valence > MAX_EXPLICIT_VALENCE) {
       const atom = atomById.get(id)!;
       warnings?.push(
@@ -226,24 +302,31 @@ function molfileAtomSymbols(
   const rgroupByLabel = new Map<string, number>();
   const rgroups: { atomNumber: number; rgroup: number }[] = [];
   const spelledHydrogens = new Map<string, number>();
-  // Bond-order sums and aromatic contact, computed only when a label might be spelled: a spelled
-  // atom's hydrogens are carried by its explicit valence, so the sum decides whether spelling is
-  // even possible.
-  let bondValence: Map<string, { sum: number; aromatic: boolean }> | undefined;
+  // Bond-order sums and unresolved aromatic contact, computed only when a label might be spelled: a
+  // spelled atom's hydrogens are carried by its explicit valence, so the sum decides whether
+  // spelling is even possible.
+  let bondValence: Map<string, { sum: number; unresolvedAromatic: boolean }> | undefined;
   const bondValenceOf = (atomId: string) => {
     if (!bondValence) {
-      bondValence = new Map();
+      const valence = new Map<string, { sum: number; unresolvedAromatic: boolean }>();
+      const entryOf = (id: string) => {
+        const entry = valence.get(id) ?? { sum: 0, unresolvedAromatic: false };
+        valence.set(id, entry);
+        return entry;
+      };
       const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
       for (const bond of bonds) {
-        for (const [id, increment] of bondValenceIncrements(bond, atomById, format)) {
-          const entry = bondValence.get(id) ?? { sum: 0, aromatic: false };
-          entry.sum += increment;
-          entry.aromatic ||= bond.order === "aromatic";
-          bondValence.set(id, entry);
+        const increments = bondValenceIncrements(bond, atomById, format, options.kekuleBondOrders);
+        if (!increments) {
+          entryOf(bond.fromAtomId).unresolvedAromatic = true;
+          entryOf(bond.toAtomId).unresolvedAromatic = true;
+          continue;
         }
+        for (const [id, increment] of increments) entryOf(id).sum += increment;
       }
+      bondValence = valence;
     }
-    return bondValence.get(atomId) ?? { sum: 0, aromatic: false };
+    return bondValence.get(atomId) ?? { sum: 0, unresolvedAromatic: false };
   };
   const symbols = atoms.map((atom, index) => {
     // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
@@ -263,14 +346,13 @@ function molfileAtomSymbols(
       spelled.hydrogens >= 0
     ) {
       // A spelled label is only as good as the explicit valence that carries its hydrogens. An
-      // aromatic bond makes that valence ambiguous — pyrrole's "NH" sums to 4 on two type-4 bonds,
-      // which a reader takes as NH2, and one aromatic bond gives a fraction the field cannot hold —
-      // and a sum past the field's ceiling cannot be written at all. Writing the bare element in
-      // either case lets the reader pick its own hydrogen count (AGENTS.md §5.7), so fall through
-      // to the placeholder, which at least says the group is not represented.
-      const { sum, aromatic } = bondValenceOf(atom.id);
-      if (aromatic) {
-        unspellable = "it has an aromatic bond, which makes the hydrogen count it states unrepresentable as an explicit valence";
+      // aromatic bond with no resolved Kekulé order leaves that valence unknown, and a sum past the
+      // field's ceiling cannot be written at all. Writing the bare element in either case lets the
+      // reader pick its own hydrogen count (AGENTS.md §5.7), so fall through to the placeholder,
+      // which at least says the group is not represented.
+      const { sum, unresolvedAromatic } = bondValenceOf(atom.id);
+      if (unresolvedAromatic) {
+        unspellable = "it has an aromatic bond with no resolved Kekulé order, so the hydrogen count it states cannot be carried by an explicit valence";
       } else if (sum + spelled.hydrogens > MAX_EXPLICIT_VALENCE) {
         unspellable = `its bond orders and stated hydrogens sum to ${sum + spelled.hydrogens}, past the ${format} valence field's limit of ${MAX_EXPLICIT_VALENCE}`;
       } else {
@@ -349,7 +431,10 @@ function mdlRadicalCode(markRadicals: number | undefined): number {
  * 1-based bond indices; wedge/hash become bond stereo flags (1/6) at the narrow end
  * (`fromAtomId`); nonzero formal charges become `M  CHG` lines.
  */
-export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWriteOptions = {}): string {
+export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWriteOptions): MolfileWriteResult {
+  const warningsOut = options.warnings;
+  const warnings: string[] = [];
+  options = { ...options, warnings };
   const ySign = options.fromDocFrame ? -1 : 1;
   const atoms = mol.atoms;
   const bonds = mol.bonds;
@@ -375,7 +460,8 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const chiralFlag = hasStereo ? 1 : 0;
 
   const dativeBondCount = writableBonds.filter(isDativeBond).length;
-  warnUnsupportedDashedBondStyles(writableBonds, options.warnings);
+  warnUnsupportedDashedBondStyles(writableBonds, options);
+  warnUnresolvedAromaticBonds(atoms, writableBonds, options);
   if (dativeBondCount > 0) {
     options.warnings?.push(
       `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
@@ -386,7 +472,9 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   lines.push(`${i3(atoms.length)}${i3(writableBonds.length)}  0  0  ${chiralFlag}  0  0  0  0  0999 V2000`);
 
   const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V2000", options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V2000", options.warnings, spelledHydrogens);
+  const literalValences = literalAtomValences(
+    atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens
+  );
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
     const y = f10_4(ySign * atom.y);
@@ -400,7 +488,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   for (const bond of writableBonds) {
     const from = atomIndex.get(bond.fromAtomId)!;
     const to = atomIndex.get(bond.toAtomId)!;
-    lines.push(`${i3(from)}${i3(to)}${i3(BOND_ORDER_CODE[bond.order])}${i3(wedgeStereoFlag(bond))}  0  0  0`);
+    lines.push(`${i3(from)}${i3(to)}${i3(resolvedMolfileBondCode(bond, options))}${i3(wedgeStereoFlag(bond))}  0  0  0`);
   }
 
   // Charge property lines: up to 8 (atom, charge) pairs per "M  CHG" line.
@@ -432,14 +520,18 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   }
 
   lines.push("M  END");
-  return lines.join("\n") + "\n";
+  warningsOut?.push(...warnings);
+  return { contents: lines.join("\n") + "\n", warnings };
 }
 
 /**
  * V3000 (extended) molblock. No 999-atom ceiling and explicit per-atom CHG fields, so it is the
  * "MOL Text" flavor Copy As offers alongside the classic V2000 form.
  */
-export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWriteOptions = {}): string {
+export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWriteOptions): MolfileWriteResult {
+  const warningsOut = options.warnings;
+  const warnings: string[] = [];
+  options = { ...options, warnings };
   const ySign = options.fromDocFrame ? -1 : 1;
   const atoms = mol.atoms;
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based
@@ -448,7 +540,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     (bond) => atomIndex.has(bond.fromAtomId) && atomIndex.has(bond.toAtomId)
   );
   const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
-  warnUnsupportedDashedBondStyles(writableBonds, options.warnings);
+  warnUnsupportedDashedBondStyles(writableBonds, options);
+  warnUnresolvedAromaticBonds(atoms, writableBonds, options);
 
   const lines: string[] = [
     "",
@@ -461,7 +554,9 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   ];
 
   const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V3000", options);
-  const literalValences = literalAtomValences(atoms, writableBonds, "V3000", options.warnings, spelledHydrogens);
+  const literalValences = literalAtomValences(
+    atoms, writableBonds, "V3000", options.warnings, options.kekuleBondOrders, spelledHydrogens
+  );
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
@@ -482,11 +577,12 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const stereo = wedgeStereoFlag(bond);
     const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : "";
     lines.push(
-      `M  V30 ${index + 1} ${v3000BondTypeCode(bond)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
+      `M  V30 ${index + 1} ${isDativeBond(bond) ? 9 : resolvedMolfileBondCode(bond, options)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
     );
   });
   lines.push("M  V30 END BOND", "M  V30 END CTAB", "M  END");
-  return lines.join("\n") + "\n";
+  warningsOut?.push(...warnings);
+  return { contents: lines.join("\n") + "\n", warnings };
 }
 
 function round4(value: number): string {

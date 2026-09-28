@@ -10,6 +10,7 @@
 import { writeFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { depictSmiles2D, ensureOclResources, type Depiction2D } from "@chemdraft/ocl-adapter";
 import { createPhase4Document, insertSmilesMolecule, type PastedStructureDepiction } from "./documentWorkflow";
 
@@ -40,7 +41,10 @@ describe("Spin 3D exact molfile (Phase −1 spike)", () => {
     if (!placed || placed.type !== "molecule") throw new Error("no molecule placed");
     const mol = placed as MoleculeObject;
     // Exactly what apps/desktop/src/MainWindow.tsx sends to the conformer engine.
-    const molfile = moleculeToMolfileV2000(mol, { fromDocFrame: true });
+    const molfile = moleculeToMolfileV2000(mol, {
+      fromDocFrame: true,
+      kekuleBondOrders: nativeBondOrderResolution(mol.atoms, mol.bonds).kekuleOrders
+    }).contents;
 
     const out = process.env.SPIN3D_EXACT_MOLFILE_OUT;
     if (out) writeFileSync(out, molfile);

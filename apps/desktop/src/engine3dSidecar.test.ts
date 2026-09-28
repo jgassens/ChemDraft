@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import {
   Engine3DProtocolVersion,
@@ -71,6 +73,35 @@ function moleculeFromSmiles(smiles: string): MoleculeObject {
   };
 }
 
+function benzeneWithTypedAtom(): MoleculeObject {
+  const ids = ["a1", "a2", "a3", "a4", "a5", "a6"];
+  return {
+    id: "mol_benzene",
+    type: "molecule",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    rotation: 0,
+    style: {},
+    structureFormat: "molfile-v2000",
+    structure: "",
+    atoms: ids.map((id, index) => ({
+      id,
+      element: "C",
+      x: Math.cos((index / 6) * 2 * Math.PI) * 50,
+      y: Math.sin((index / 6) * 2 * Math.PI) * 50,
+      formalCharge: 0,
+      ...(index === 0 ? { labelLiteral: true } : {})
+    })),
+    bonds: ids.map((id, index) => ({
+      id: `b${index}`, fromAtomId: id, toAtomId: ids[(index + 1) % 6], order: "aromatic" as const
+    })),
+    superatoms: [],
+    rGroups: []
+  };
+}
+
 function state(): Engine3dWorkspaceSessionState {
   return {
     processSessionId: "process_1",
@@ -127,6 +158,14 @@ function maxBondLength3d(
 }
 
 describe("engine3d sidecar client", () => {
+  it("hands unresolved aromatic bonds to the engine as type 4 with one ring warning", () => {
+    const warnings: string[] = [];
+    const input = createEngine3dSessionInputFromMolecule({ ...molecule, ...unresolvableAromaticRing() }, { warnings });
+    expect(parseMolfileGraph(input.molfile).bonds.map((bond) => bond.order)).toEqual(Array(5).fill("aromatic"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("atoms u0, u1, u2, u3, u4");
+    expect(warnings[0]).toContain("preserved as type 4");
+  });
   it("creates graph-guarded session input from a ChemDraft molecule", () => {
     const input = createEngine3dSessionInputFromMolecule(molecule, {
       selectedAtomIds: ["a2"],
@@ -169,6 +208,16 @@ describe("engine3d sidecar client", () => {
     expect(input.bondSignature.split("|")).toHaveLength(realMolecule.bonds.length);
     expect(input.molfile).toContain("V2000");
     expect(maxBondLength3d(realMolecule, input.coords3dByAtomId ?? {})).toBeLessThan(2.4);
+  });
+
+  it("gives a typed atom on an aromatic ring its Kekulé valence in the session molfile", () => {
+    const input = createEngine3dSessionInputFromMolecule(benzeneWithTypedAtom());
+    const lines = input.molfile.split(/\r?\n/);
+    const countsLineIndex = lines.findIndex((line) => /V2000$/.test(line));
+    // Each benzene carbon takes one single and one double bond in the Kekulé structure it resolves
+    // to (sum 3); without kekuleBondOrders the typed atom's valence field would be omitted, letting
+    // a reader add a hydrogen the conformer engine should never place.
+    expect(lines[countsLineIndex + 1].slice(48, 51)).toBe("  3");
   });
 
   it("reduces ready output into workspace state", () => {

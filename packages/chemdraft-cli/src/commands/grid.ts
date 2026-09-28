@@ -3,11 +3,11 @@ import { dirname, extname } from "node:path";
 
 import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
-
 import {
   insertNativeTextObject,
   nativeTextObjectSizeForText
-} from "../../../../apps/desktop/src/documentWorkflow";
+} from "@chemdraft/document-workflow-core";
+
 import { integerOption, numericOption, parseOptions, stringOption } from "../args";
 import {
   buildSmilesDocument,

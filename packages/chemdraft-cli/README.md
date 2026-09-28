@@ -155,6 +155,59 @@ suffixes); --spectrum-dir <dir> (batch naming <dir>/<name>-<nucleus>.<format>);
 loaded from $CHEMDRAFT_NMR_PLUGIN_DIR (default: ~/programming/chemdraft-nmr-plugin). It is a
 separate repository and is not bundled here.
 
+### Plugin trust file
+
+The plugin is code from outside this repository, and it runs in-process with the CLI's full
+privileges (and inside the long-lived MCP server, which calls the same command). So the directory
+must also be listed in a trust file the owner edits by hand,
+`~/.config/chemdraft/trusted-plugins.json`:
+
+~~~json
+{
+  "version": 1,
+  "trustedPlugins": [
+    { "id": "org.chemdraft.nmr.predictor", "dir": "/Users/you/programming/chemdraft-nmr-plugin" }
+  ]
+}
+~~~
+
+Why the environment variable alone is not enough: anyone who can set `CHEMDRAFT_NMR_PLUGIN_DIR`
+could otherwise point the CLI at any directory and have its `src/index.ts` executed.
+`CHEMDRAFT_NMR_PLUGIN_DIR` now only chooses among trusted directories. For the same reason the trust
+file's location cannot be changed by an environment variable or a flag, and nothing in the CLI
+creates or edits it. Its default location is resolved from the **OS account's home directory**
+(`os.userInfo().homedir` — the passwd entry for the effective uid on POSIX, the profile-directory
+lookup on Windows), never from `os.homedir()`, `HOME`, or `USERPROFILE`: whoever can set
+`CHEMDRAFT_NMR_PLUGIN_DIR` could otherwise also set `HOME` and point the CLI at an allow-list of
+their own choosing. If the account's home directory cannot be determined, there is no default — the
+CLI refuses every plugin directory with a clear error rather than falling back to the environment.
+When a directory is refused, the error names the trust file, the resolved directory, and the exact
+entry to add.
+
+Honest limit: this closes the `HOME` route specifically. A caller who controls the process
+environment more broadly can still make Node itself run arbitrary code — for example through
+`NODE_OPTIONS` — regardless of what this trust file does. The allow-list guards against a wrong or
+hostile *plugin directory*; it is not a defense against a hostile *process environment*.
+
+Loading runs in this order (`src/pluginTrust.ts`), and each step stops the load before the next:
+
+1. **Allow-list**, before any plugin file is imported. The trust file is parsed strictly (an unknown
+   `version`, unknown keys, relative `dir`, or malformed JSON is refused). The requested directory
+   and each listed `dir` are compared by real path, so symlinks to a trusted checkout work; the
+   entry (`src/index.ts`) and manifest (`src/manifest.ts`) must also resolve inside the trusted
+   directory, so a symlinked file cannot escape it.
+2. **Manifest and permissions.** Only `src/manifest.ts` is imported, and its `nmrPredictorManifest`
+   export is validated by `@chemdraft/plugin-host`. Its id must be `org.chemdraft.nmr.predictor`,
+   and it must not declare any permission the CLI refuses (`document.write`, `filesystem.read`,
+   `filesystem.write`, `network.fetch`, `native.execute`, `model.load`, `model.download`,
+   `clipboard.read`, `clipboard.write`, `image.read`). This checks what the plugin declares, not what
+   its code does; the allow-list is what bounds execution.
+3. **Entry.** Only then is `src/index.ts` imported and its exports checked.
+
+The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivalence-grouping`,
+`diastereotopic-disclosure`, and `truthful-spectrum-caption`. Older checkouts are refused; update
+the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.
+
 What the numbers are:
   - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
     assignments. They are predictions, not measurements. source "hose-fragment" is a database
@@ -167,11 +220,11 @@ What the numbers are:
   - No shift is ever invented for an unmatched environment: it is omitted and a warning
     (NMR_NO_FRAGMENT_MATCH / NMR_PARTIAL_PREDICTION) says so.
   - No confidence percentages are reported; thin matches carry warnings instead.
-  - Symmetry check: when two resonances of one nucleus sit on symmetry-equivalent atoms (same
-    OpenChemLib symmetry rank and diastereotopic ID), both records get the flag
-    "equivalence-split" and an NMR_EQUIVALENCE_SPLIT warning names the atoms. Treat them as one
-    environment; the predictor's shifts and nEquivalent are reported unchanged, not merged.
-    NMR_EQUIVALENCE_UNCHECKED says the check could not run.
+  - Atoms the predictor finds equivalent by constitution are reported as one resonance;
+    nEquivalent counts them. Where such atoms may still differ because the molecule has a
+    stereocenter (the two H of a CH2, or two methyls on one carbon), they stay one resonance
+    with one shift and an NMR_POTENTIALLY_DIASTEREOTOPIC_HYDROGENS or
+    NMR_POTENTIALLY_DIASTEREOTOPIC_METHYLS warning says so.
   - The reference database is a derivative database under the nmrshiftdb2 Database License
     (ODbL-derived: attribution, share-alike). That licence is separate from the code licence;
     each result line names it under "database".

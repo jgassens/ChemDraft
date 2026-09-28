@@ -34,6 +34,56 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Aromatic bonds counted on a Kekulé structure (2026-09-27, branch `claude/aromatic-bond-order`)
+
+Aromatic bonds (MOL type 4, CDXML `Order="1.5"`, Ketcher V3000) used to be counted two different
+ways: formula and valence code took each as 1 (benzene stored as C6H12, carbonyl hotkeys accepted on
+ring carbons), while atom labels took each as 1.5 (pyrrole N drawn without its H). Now one
+implementation, `nativeBondOrderResolution` in `packages/layout-engine/src/valence.ts`, kekulizes each
+molecule once, and labels, formulas, valence badges, hotkeys, the SMILES writer, the molfile writer
+and CDXML all count on that one result. `document-workflow-core` re-exports it (§5.26).
+
+Owner rules, as shipped:
+
+- **Never silent** (§5.7). A ring that cannot be kekulized, or aromatic-marked bonds in an otherwise
+  saturated ring, count single and carry `chemistry.unresolved_aromatic`, one warning per ring system.
+- **Stated hydrogens win**: explicit H atoms, CDXML `NumHydrogens` (kept as the optional atom field
+  `hydrogenCount`), literal labels, charges, and dative donors — each constrains only its own atom.
+- **No H information at all**: an N–H is inferred only on pyrrole-type N in five-membered rings, and
+  every inferred N carries `chemistry.aromatic_tautomer_guessed`. A tautomer choice never changes the
+  total H count relative to the maximum-matching closed-shell reading. Porphine reads C20H14N4.
+- **Known limits** (badged, documented in the layout-engine README): unhinted xanthine and guanine
+  read two H short (C5H2N4O2, C5H3N5O) because their six-ring amide N–H cannot be inferred under
+  this rule; a whole-system 4n+2 preference occasionally picks a different H count, which is then
+  classed guessed.
+
+The molfile writer now requires the resolved orders, writes resolved bonds as 1/2, keeps anything
+unresolved as type 4, and always returns its warnings. `hydrogenCount` is an import-time hint: any
+edit to the atom's bonds, charge or element drops it, and it survives only on atoms that still have
+an aromatic ring bond. The badge's reason shows in the status bar on hover.
+
+Compatibility: a document carrying `hydrogenCount` does not open in older builds (strict atom
+schema), the same as `labelLiteral`. Reviewed across five rounds by Fable and Astra.
+
+## Headless document core and CLI plugin trust (2026-09-27, PR #52 merge `4eb282a`)
+
+The CLI and MCP server imported document-building code straight out of `apps/desktop`, so the
+headless tools depended on the app. The ~100 pure declarations they need (depiction to native
+molecule, text and arrow insertion, atom validation and valence, the native SMILES writer) moved
+into `packages/document-workflow-core` (AGENTS §6.28); `documentWorkflow.ts` and `moleculeSmiles.ts`
+re-export every moved name, so desktop callers did not change. Import-boundary tests keep it that
+way: no `apps/` imports, no undeclared package imports, and non-literal dynamic `import()` only in
+an explicit allow-list.
+
+`chemdraft nmr` now loads the external NMR plugin only from a directory listed in
+`~/.config/chemdraft/trusted-plugins.json`, validates `src/manifest.ts` before importing the entry,
+and refuses dangerous permissions (`packages/chemdraft-cli/src/pluginTrust.ts`; the CLI README has
+the full order). This sits before, and does not replace, the capability check from PR #50.
+
+The trust file's default location comes from the OS account (`os.userInfo().homedir`), not `HOME`.
+Known, accepted: a documented symlink-swap window between the trust check and the import.
+Aromatic bond counting landed separately (entry above).
+
 ## Windows port: updater, CDXML robustness, large drawings (2026-09-26, branch `windows-port`, not yet merged)
 
 On top of the Windows build itself (installer, single-instance open, menu, clipboard; see AGENTS §20's
@@ -58,7 +108,9 @@ Windows surfaces), this branch shipped four slices.
   single-object edit went from about 1 s to about 180 ms, and the heap no longer grows with each edit.
 - **Molecular Inspector reads the drawing.** Properties analyse a V3000 molfile of the live atom and
   bond graph instead of the object's `structure` string, which was empty for imported molecules and a
-  lossy SMILES for fused rings. Condensed labels such as OH and NH2 are spelled with their hydrogens.
+  lossy SMILES for fused rings. Condensed labels such as OH and NH2 are spelled with their hydrogens,
+  counting aromatic bonds at their Kekulé orders (merged with the aromatic slice above); a label on
+  an unresolved aromatic bond stays an R-group placeholder with a warning.
 
 ## Tester feedback fixes + 0.3.5 (2026-09-25, PR #47 merge `60cc59e`, release PR #48 merge `e107b23`)
 

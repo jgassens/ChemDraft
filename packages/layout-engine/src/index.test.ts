@@ -4319,10 +4319,10 @@ describe("implicit hydrogens and formal charge", () => {
     // labelLiteral is the per-atom mark the text tool leaves: the label means what it says,
     // whatever the document style does for drawn atoms.
     const literal = (element: string, formalCharge: number) => ({ ...atom(element, formalCharge), labelLiteral: true });
-    expect(atomDisplayLabel(literal("O", 0), [bondTo("c1")])).toBe("O");
-    expect(atomDisplayLabel(literal("N", 0), [])).toBe("N");
-    expect(atomDisplayLabel(literal("C", 0), [])).toBe("C");
-    expect(atomDisplayLabel(literal("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("N+");
+    expect(atomDisplayLabel(literal("O", 0), [bondTo("c1")], undefined, [])).toBe("O");
+    expect(atomDisplayLabel(literal("N", 0), [], undefined, [])).toBe("N");
+    expect(atomDisplayLabel(literal("C", 0), [], undefined, [])).toBe("C");
+    expect(atomDisplayLabel(literal("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], undefined, [])).toBe("N+");
   });
 
   it("counts implicit hydrogens against the CHARGED valence, not the neutral one", () => {
@@ -4331,27 +4331,27 @@ describe("implicit hydrogens and formal charge", () => {
     // carbocation as "CH+").
 
     // Alkoxide: one bond, no hydrogen.
-    expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")])).toBe("O-");
+    expect(atomDisplayLabel(atom("O", -1), [bondTo("c1")], undefined, [])).toBe("O-");
     // Neutral alcohol oxygen with one bond keeps its hydrogen.
-    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")])).toBe("OH");
+    expect(atomDisplayLabel(atom("O", 0), [bondTo("c1")], undefined, [])).toBe("OH");
 
     // Carbocation with three bonds: no hydrogen.
-    expect(atomDisplayLabel(atom("C", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C+");
+    expect(atomDisplayLabel(atom("C", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], undefined, [])).toBe("C+");
     // Carbanion also takes three bonds.
-    expect(atomDisplayLabel(atom("C", -1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("C-");
+    expect(atomDisplayLabel(atom("C", -1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], undefined, [])).toBe("C-");
 
     // Ammonium takes four bonds, so a fully substituted one has no hydrogen and is not
     // over-counted as hypervalent either.
-    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3"), bondTo("c4")])).toBe("N+");
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3"), bondTo("c4")], undefined, [])).toBe("N+");
     // Protonated amine: three bonds on N+ leaves one hydrogen.
-    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")])).toBe("NH+");
+    expect(atomDisplayLabel(atom("N", 1), [bondTo("c1"), bondTo("c2"), bondTo("c3")], undefined, [])).toBe("NH+");
 
     // A halide anion takes no bonds and no hydrogen.
-    expect(atomDisplayLabel(atom("Cl", -1), [])).toBe("Cl-");
+    expect(atomDisplayLabel(atom("Cl", -1), [], undefined, [])).toBe("Cl-");
     // Naked drawn atoms follow the same fill: lone neutral chlorine reads as the hydride pair.
-    expect(atomDisplayLabel(atom("Cl", 0), [])).toBe("ClH");
-    expect(atomDisplayLabel(atom("C", 0), [])).toBe("CH4");
+    expect(atomDisplayLabel(atom("Cl", 0), [], undefined, [])).toBe("ClH");
+    expect(atomDisplayLabel(atom("C", 0), [], undefined, [])).toBe("CH4");
     // Charged naked atoms are deliberate ions and keep the charged-valence fill.
-    expect(atomDisplayLabel(atom("O", 1), [])).toBe("OH3+");
+    expect(atomDisplayLabel(atom("O", 1), [], undefined, [])).toBe("OH3+");
   });
 });

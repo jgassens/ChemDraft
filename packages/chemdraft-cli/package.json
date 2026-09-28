@@ -5,9 +5,11 @@
   "type": "module",
   "dependencies": {
     "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/document-workflow-core": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
     "@chemdraft/ocl-adapter": "workspace:*",
+    "@chemdraft/plugin-host": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
     "@resvg/resvg-js": "^2.6.2",
     "jsdom": "^29.1.1"

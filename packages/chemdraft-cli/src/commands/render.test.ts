@@ -15,8 +15,8 @@ import {
 } from "@chemdraft/rdkit-adapter";
 import * as rdkitAdapter from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
+import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 
-import { stereoPerceptionMolfile } from "../../../../apps/desktop/src/documentWorkflow";
 import { buildSmilesDocument, renderSmilesToAssets, type RenderedSmiles } from "../document";
 import { renderHelp, runRenderCommand as runCli } from "./render";
 
@@ -258,7 +258,7 @@ describe("headless ChemDraft rendering", () => {
     "C[C@@H](N)C(=O)O"
   ])("keeps the canonical isomeric SMILES after document export for %s", async (smiles) => {
     const rendered = await renderSmilesToAssets(smiles);
-    const exportedMolfile = moleculeToMolfileV2000(rendered.molecule, { fromDocFrame: true });
+    const exportedMolfile = moleculeToMolfileV2000(rendered.molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents;
     const [source, exported] = await Promise.all([
       computeStructureIdentifiers(smiles),
       computeStructureIdentifiers(exportedMolfile)

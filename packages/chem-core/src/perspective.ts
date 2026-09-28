@@ -123,7 +123,9 @@ export type FlattenWarningCode =
   | "cyclic-depth"
   | "ambiguous-crossing-depth"
   | "degenerate-drawn-parity"
-  | "perspective-cleanup";
+  | "perspective-cleanup"
+  // The stored molfile could not carry something the drawing has (the writer's own warning).
+  | "stored-structure-lossy";
 
 export interface FlattenWarning {
   code: FlattenWarningCode;

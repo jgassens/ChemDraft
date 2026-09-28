@@ -186,9 +186,49 @@ export function shortcutChord(shortcut: NormalizedShortcut): string {
   return chordFor(shortcut.key, shortcut.modifiers);
 }
 
+/**
+ * An open modal dialog. Every host dialog marks its root `aria-modal="true"` — the attribute that tells
+ * assistive technology the rest of the window is inert — so the same attribute tells the keyboard.
+ */
+export const OPEN_MODAL_DIALOG_SELECTOR = '[aria-modal="true"]:not([hidden])';
+
+/** True when `target` sits inside an open modal dialog, which owns every key typed there. */
+export function isInsideModalDialog(target: EventTarget | null): boolean {
+  if (!target || typeof Element === "undefined" || !(target instanceof Element)) {
+    return false;
+  }
+  return target.closest(OPEN_MODAL_DIALOG_SELECTOR) !== null;
+}
+
+/**
+ * True when a modal dialog is open anywhere in `root`. Focus inside a modal is not guaranteed — a
+ * button that disables itself drops focus to `<body>` — so a canvas handler must ask this as well as
+ * where the event landed, or a key pressed with focus on `<body>` reaches the document behind the modal.
+ */
+export function hasOpenModalDialog(root: ParentNode | undefined = globalThis.document): boolean {
+  return root?.querySelector(OPEN_MODAL_DIALOG_SELECTOR) != null;
+}
+
+/**
+ * The one check canvas keyboard AND clipboard handlers make before acting on the document: the event
+ * came from inside a modal dialog, or one is open. The dialog's own handlers run regardless.
+ */
+export function isBlockedByModalDialog(
+  target: EventTarget | null,
+  root: ParentNode | undefined = globalThis.document
+): boolean {
+  return isInsideModalDialog(target) || hasOpenModalDialog(root);
+}
+
 export function shouldIgnoreShortcutTarget(target: EventTarget | null, key?: string): boolean {
   if (!target || typeof Element === "undefined" || !(target instanceof Element)) {
     return false;
+  }
+
+  // A modal dialog owns its keys. A focused button inside one is not an editable field, so without
+  // this a modified shortcut (Cmd+Z, Cmd+V) pressed in a dialog acted on the document behind it.
+  if (isInsideModalDialog(target)) {
+    return true;
   }
 
   if (target instanceof HTMLElement && target.isContentEditable) {
