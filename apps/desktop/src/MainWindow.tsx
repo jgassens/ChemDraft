@@ -47,6 +47,7 @@ import {
   type DocumentObject,
   type DocumentPage,
   type DocumentPatch,
+  type FlattenWarning,
   type GraphicFreehandPoint,
   type GraphicObject,
   type GroupObject,
@@ -1498,6 +1499,13 @@ const SPIN_IN_PAGE_MAX_ATOMS = 30;
 const SPIN_AXIS_X: Vec3 = [1, 0, 0];
 const SPIN_AXIS_Y: Vec3 = [0, 1, 0];
 const SPIN_AXIS_Z: Vec3 = [0, 0, 1];
+
+// A committed flatten always emits "perspective-cleanup" (see packages/chem-core/src/perspective.ts) —
+// expected on every reprojection, not a caveat — so every status built from FlattenSpunOutcome.warnings
+// drops it the same way commitSpinFlatten's own `meaningful` filter does.
+export function flattenWarningMessages(warnings: readonly FlattenWarning[]): string[] {
+  return warnings.filter((warning) => warning.code !== "perspective-cleanup").map((warning) => warning.message);
+}
 
 function selectToolStatusLabel(): string {
   return drawingToolStatusLabel("tool.select", "Selection Tool");
@@ -11614,6 +11622,7 @@ export function MainWindow({
         setStatus(`3D rotation not applied: ${guarded.refusalReasons[0] ?? "stereochemistry would change"}`);
         return false;
       }
+      warnings.push(...flattenWarningMessages(guarded.warnings));
       const modeled = attachSpin3dModelFromConformer(guarded.document, drag.objectId, {
         coords3d: drag.spin3dModel.coords3d,
         orientation: finalOrientation,
@@ -11726,6 +11735,7 @@ export function MainWindow({
             ...spin3dFlattenStereoOptions(input.startDocument, input.objectId, warnings)
           });
           if (outcome.status === "committed") {
+            warnings.push(...flattenWarningMessages(outcome.warnings));
             document = attachSpin3dModelFromConformer(outcome.document, input.objectId, {
               coords3d,
               orientation: nextQuat,
