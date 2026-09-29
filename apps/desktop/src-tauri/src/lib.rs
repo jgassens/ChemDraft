@@ -669,9 +669,9 @@ pub fn run() {
             // start_palette_pointer_feed's doc for why the OS won't deliver it).
             start_palette_pointer_feed(app.clone());
 
-            if let Err(error) = build_toolset_tooltip_window(app) {
-                eprintln!("Could not build the ChemDraft tooltip window: {error}");
-            }
+            // The tooltip window is NOT built here: a palette prewarms it once it has painted
+            // (prewarm_toolset_tooltip). Building it in setup put a hidden webview ahead of every
+            // palette in the queue for window creation.
 
             Ok(())
         })
@@ -692,6 +692,7 @@ pub fn run() {
             open_plugin_panel_window,
             open_toolset_popover,
             prewarm_toolset_popover,
+            prewarm_toolset_tooltip,
             show_toolset_tooltip_window,
             hide_toolset_tooltip_window,
             set_current_window_global_position,
@@ -1773,6 +1774,17 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
     build_toolset_popover_window(&app, &label, &toolset_id, "artColor", true, 0.0, 0.0)
 }
 
+/// Builds the shared tooltip window hidden, once a palette has painted. It used to be built in
+/// `setup`, which queued a hidden webview ahead of every palette: window creation runs one window at
+/// a time on the main thread, and on Windows each WebView2 costs hundreds of milliseconds, so the
+/// toolbars appeared that much later. Nothing needs the tooltip before the first hover, and
+/// show/hide already no-op while it doesn't exist. Every palette asks; the first ask builds it.
+#[tauri::command]
+async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
+    let _creation = lock_window_creation();
+    build_toolset_tooltip_window(&app)
+}
+
 fn build_toolset_popover_window(
     app: &tauri::AppHandle,
     label: &str,
@@ -2066,9 +2078,10 @@ fn set_current_window_global_position(
 /// outside their content-fit windows (same constraint that gives popovers their own window), so
 /// all of them share this one: a palette broadcasts text + anchor, the tooltip webview sizes and
 /// positions itself, shows, and hides again on the hide broadcast (see PaletteTooltipWindow).
-/// Built at startup so the first hover doesn't pay the cold-webview load. The `toolset-` label
-/// prefix gives it the palette capability set; it is NOT in the ToolsetWindowDirectory, so the
-/// pointer feed never treats it as a hoverable palette.
+/// Prewarmed by a palette shortly after it paints (prewarm_toolset_tooltip), so the first hover
+/// doesn't pay the cold-webview load. The `toolset-` label prefix gives it the palette capability
+/// set; it is NOT in the ToolsetWindowDirectory, so the pointer feed never treats it as a hoverable
+/// palette.
 fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     if app
         .get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL)
@@ -2102,13 +2115,19 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
     // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
     // palette", hide itself, and flicker.
+    //
+    // Marshalled: this runs from the async prewarm command on a worker thread, and AppKit is
+    // main-thread-only. The pointer is fetched inside the closure because it isn't Send.
     #[cfg(target_os = "macos")]
     {
-        if let Ok(ns_window_ptr) = window.ns_window() {
-            if let Some(ns_window) = unsafe { (ns_window_ptr as *mut NSWindow).as_ref() } {
-                ns_window.setIgnoresMouseEvents(true);
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            if let Ok(ns_window_ptr) = target.ns_window() {
+                if let Some(ns_window) = unsafe { (ns_window_ptr as *mut NSWindow).as_ref() } {
+                    ns_window.setIgnoresMouseEvents(true);
+                }
             }
-        }
+        })?;
     }
     #[cfg(not(target_os = "macos"))]
     window

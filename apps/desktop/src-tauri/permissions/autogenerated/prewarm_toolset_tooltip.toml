@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-prewarm-toolset-tooltip"
+description = "Enables the prewarm_toolset_tooltip command without any pre-configured scope."
+commands.allow = ["prewarm_toolset_tooltip"]
+
+[[permission]]
+identifier = "deny-prewarm-toolset-tooltip"
+description = "Denies the prewarm_toolset_tooltip command without any pre-configured scope."
+commands.deny = ["prewarm_toolset_tooltip"]

@@ -241,6 +241,20 @@ export async function prewarmToolsetPopoverWindow(toolsetId: string): Promise<vo
   await invoke("prewarm_toolset_popover", { toolsetId }).catch(() => undefined);
 }
 
+/**
+ * Builds the shared tooltip window hidden. Palettes call this once they have painted rather than
+ * Rust building it at launch, so no hidden window is created ahead of the palettes themselves.
+ * Idempotent: every palette asks and only the first ask builds.
+ */
+export async function prewarmToolsetTooltipWindow(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("prewarm_toolset_tooltip").catch(() => undefined);
+}
+
 export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
