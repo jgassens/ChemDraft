@@ -136,7 +136,9 @@ describe("ChemDraft MCP server", () => {
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result.content)).toContain('"type":"image"');
     expect(JSON.stringify(result.content)).toContain('"mimeType":"image/png"');
-  });
+    // The first real render in this file, so it pays the cold engine load; like every other real
+    // render here it gets a generous timeout (it overran the 5 s default on the Windows runner).
+  }, 60_000);
 
   it("forwards the newly exposed options using the CLI's exact flag names", async () => {
     const calls: Partial<Record<"render" | "grid" | "reaction" | "nmr" | "name", string[]>> = {};
