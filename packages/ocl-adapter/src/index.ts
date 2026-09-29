@@ -368,20 +368,31 @@ export interface Depiction2D {
   bonds: DepictionBond2D[];
 }
 
-function depictionOrder(order: number): DepictionBondOrder {
-  switch (order) {
+/**
+ * Map one OCL bond onto a depiction bond order without ever collapsing an unresolved bond to single
+ * (AGENTS.md §6.18, §5.7).
+ *
+ * `getBondOrder` cannot carry that signal: it only returns 0-3 and reports a bond explicitly held
+ * as delocalized as 1. The signal is the simple bond type. Measured on openchemlib 9.22.1 after
+ * `inventCoordinates` + `ensureHelperArrays(cHelperParities)`: a V2000 molfile with type-4 bonds
+ * (benzene, pyridine, furan, an N-H-less pyrrole, a cyclopentadienyl ring) keeps every ring bond as
+ * `cBondTypeDelocalized` with order 1, while every aromatic SMILES tried comes back Kekulé (types
+ * 1/2). `isDelocalizedBond`/`isAromaticBond` are NOT the signal — both are true for a kekulized
+ * benzene whose single/double orders are definite and must stay so.
+ */
+function depictionOrder(mol: OclMolecule, bond: number): DepictionBondOrder {
+  if (mol.getBondTypeSimple(bond) === OCL.Molecule.cBondTypeDelocalized) {
+    return "aromatic";
+  }
+  switch (mol.getBondOrder(bond)) {
     case 1:
       return "single";
     case 2:
       return "double";
     case 3:
       return "triple";
-    case 4:
-      // Delocalized/aromatic: OCL can return order 4 for un-kekulized rings. Preserve it as
-      // "aromatic" rather than silently collapsing to a single bond (AGENTS.md §5.7) — the
-      // bond order stays faithful even though the renderer currently draws it as a single line.
-      return "aromatic";
     default:
+      // Order 0 (dative/metal-ligand) or anything else OCL cannot express as a plain order.
       return "unknown";
   }
 }
@@ -421,7 +432,7 @@ function inventDepiction2D(
     engineBonds.push({
       from: mol.getBondAtom(0, b),
       to: mol.getBondAtom(1, b),
-      order: depictionOrder(mol.getBondOrder(b)),
+      order: depictionOrder(mol, b),
       wedge: type === up ? "wedge" : type === down ? "hashed" : null
     });
   }
