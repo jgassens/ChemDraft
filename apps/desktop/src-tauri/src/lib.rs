@@ -1638,8 +1638,22 @@ fn choose_analysis_window_position(
 
 /// Always focusable, so the user can click into the window. It is focused only when `focus` is
 /// true: an automatic re-show must never take keyboard focus from the canvas mid-typing.
+///
+/// Marshalled: `open_plugin_panel_window` is async (a worker thread, required for WebView2 on
+/// Windows), and every call below is raw AppKit, which is main-thread-only.
 #[cfg(target_os = "macos")]
 fn configure_analysis_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    focus: bool,
+) -> Result<(), String> {
+    let target = window.clone();
+    run_on_main_thread_blocking(window, move || {
+        configure_analysis_window_on_main_thread(&target, focus)
+    })?
+}
+
+#[cfg(target_os = "macos")]
+fn configure_analysis_window_on_main_thread<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     focus: bool,
 ) -> Result<(), String> {
