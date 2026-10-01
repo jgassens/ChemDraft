@@ -20,7 +20,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 libc = "0.2"
 objc2 = { version = "0.6", default-features = false }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSPasteboard", "NSWindow", "NSEvent", "NSApplication", "NSGraphics"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSString", "NSGeometry"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSString", "NSGeometry", "NSNotification", "NSOperation", "block2"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "objc2-app-kit"] }
 resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
 # The OCSR engine installer's downloads (uv, the MolScribe model). reqwest 0.12 is already in the
@@ -37,6 +37,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-http = "2.5.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 tauri-plugin-sparkle-updater = "=0.2.4"
 
 # Windows OCSR engine seam: free-disk query and CREATE_NO_WINDOW. Already in the lock graph.

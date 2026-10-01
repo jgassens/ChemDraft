@@ -516,6 +516,9 @@ pub fn run() {
             // start_palette_pointer_feed's doc for why the OS won't deliver it).
             start_palette_pointer_feed(app.clone());
 
+            #[cfg(target_os = "macos")]
+            observe_hide_for_document_key_restore(app.clone());
+
             if let Err(error) = build_toolset_tooltip_window(app) {
                 eprintln!("Could not build the ChemDraft tooltip window: {error}");
             }
@@ -1507,6 +1510,142 @@ fn configure_analysis_window<R: Runtime>(
         window.set_focus().map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// Whether the document should get keyboard focus back once a hidden app is active again.
+///
+/// On unhide AppKit picks a key window itself, and with a report window parented above the
+/// document it picks the report — so typing after Cmd+H and back went to the report, not the
+/// canvas. The decision is platform-neutral so it is tested everywhere; only the hide/activate
+/// notifications that drive it are AppKit's (`observe_hide_for_document_key_restore`).
+#[derive(Debug, Default)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct DocumentKeyAfterUnhide {
+    /// `Some` between a hide and the next activation: whether the document was key when hidden.
+    document_was_key_at_hide: Option<bool>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl DocumentKeyAfterUnhide {
+    fn will_hide(&mut self, document_was_key: bool) {
+        self.document_was_key_at_hide = Some(document_was_key);
+    }
+
+    /// Called once the app is active again. Consumes the pending hide either way, so an ordinary
+    /// activation later (Cmd+Tab with no hide) never steals focus from a report the user clicked.
+    fn take_restore(&mut self, document_visible: bool, document_is_key: bool) -> bool {
+        self.document_was_key_at_hide.take() == Some(true) && document_visible && !document_is_key
+    }
+}
+
+#[cfg(target_os = "macos")]
+static DOCUMENT_KEY_AFTER_UNHIDE: Mutex<DocumentKeyAfterUnhide> =
+    Mutex::new(DocumentKeyAfterUnhide {
+        document_was_key_at_hide: None,
+    });
+
+#[cfg(test)]
+mod document_key_after_unhide_tests {
+    use super::DocumentKeyAfterUnhide;
+
+    #[test]
+    fn restores_the_document_when_it_was_key_at_hide_and_a_report_took_key() {
+        let mut state = DocumentKeyAfterUnhide::default();
+        state.will_hide(true);
+        assert!(state.take_restore(true, false));
+    }
+
+    #[test]
+    fn leaves_a_report_key_when_the_report_was_key_at_hide() {
+        let mut state = DocumentKeyAfterUnhide::default();
+        state.will_hide(false);
+        assert!(!state.take_restore(true, false));
+    }
+
+    #[test]
+    fn ordinary_activation_without_a_hide_never_moves_focus() {
+        let mut state = DocumentKeyAfterUnhide::default();
+        assert!(!state.take_restore(true, false));
+    }
+
+    #[test]
+    fn a_hide_is_consumed_by_the_first_activation() {
+        let mut state = DocumentKeyAfterUnhide::default();
+        state.will_hide(true);
+        assert!(state.take_restore(true, false));
+        // A later Cmd+Tab back after the user clicked into the report must not steal focus.
+        assert!(!state.take_restore(true, false));
+    }
+
+    #[test]
+    fn does_nothing_when_the_document_is_already_key_or_hidden() {
+        let mut state = DocumentKeyAfterUnhide::default();
+        state.will_hide(true);
+        assert!(!state.take_restore(true, true));
+        state.will_hide(true);
+        assert!(!state.take_restore(false, false));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWindow> {
+    let pointer = app
+        .get_webview_window(MAIN_WINDOW_LABEL)?
+        .ns_window()
+        .ok()?;
+    // The main window is never destroyed while the app runs (closing only hides it).
+    unsafe { (pointer as *mut NSWindow).as_ref() }
+}
+
+/// Records whether the document was key at Cmd+H, and restores it after the app is active again.
+/// The restore is deferred one turn of the event loop so it lands after AppKit's own key-window
+/// choice during activation. It uses `makeKeyWindow` (no reordering): layering is already right.
+#[cfg(target_os = "macos")]
+fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
+    use objc2_app_kit::{
+        NSApplicationDidBecomeActiveNotification, NSApplicationWillHideNotification,
+    };
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+    use std::ptr::NonNull;
+
+    let center = NSNotificationCenter::defaultCenter();
+    let hide_app = app.clone();
+    let on_hide = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+        let was_key = main_ns_window(&hide_app).is_some_and(|main| main.isKeyWindow());
+        if let Ok(mut state) = DOCUMENT_KEY_AFTER_UNHIDE.lock() {
+            state.will_hide(was_key);
+        }
+    });
+    let on_active = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+        let restore_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(main) = main_ns_window(&restore_app) else {
+                return;
+            };
+            let restore = DOCUMENT_KEY_AFTER_UNHIDE
+                .lock()
+                .map(|mut state| state.take_restore(main.isVisible(), main.isKeyWindow()))
+                .unwrap_or(false);
+            if restore {
+                main.makeKeyWindow();
+            }
+        });
+    });
+    // The observer tokens live for the whole process; there is nothing to unregister at quit.
+    unsafe {
+        std::mem::forget(center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationWillHideNotification),
+            None,
+            None,
+            &on_hide,
+        ));
+        std::mem::forget(center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationDidBecomeActiveNotification),
+            None,
+            None,
+            &on_active,
+        ));
+    }
 }
 
 /// Opens (or repositions + reshows) a small floating popover window for a palette — e.g. the
