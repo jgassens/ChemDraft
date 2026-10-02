@@ -1468,6 +1468,13 @@ This is automatic — there is nothing to remember and nothing to type. Do NOT s
 verification, state the label you saw (title bar or build stamp) and confirm it matches this
 worktree.
 
+**Exception: stable package builds.** A stable package build — built on `main`, or with
+`CHEMDRAFT_STABLE_BUILD=1`, through `scripts/desktop-tauri.mjs` — deliberately carries an EMPTY label:
+the window title is plain "ChemDraft" and the build stamp drops the worktree part (the version stamp
+and short SHA remain), on macOS and Windows. `desktop-tauri.mjs` sets `CHEMDRAFT_WORKTREE_LABEL` to the
+empty string, and a defined-but-empty value is how `vite.config.ts` and the Rust title know not to fall
+back to git. Dev and branch builds are unchanged, and the label must not be removed from them.
+
 If a worktree's build still shows a bare "ChemDraft" with no label, the mechanism has not landed on
 that branch yet — pick it up by merging from `main`, which carries all four files above.
 

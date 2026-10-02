@@ -40,3 +40,19 @@ export function prependToPath(env, dir) {
   env[key] = env[key] ? `${dir}${delimiter}${env[key]}` : dir;
   return env;
 }
+
+// A stable package build: a `build` from main, or any branch with CHEMDRAFT_STABLE_BUILD=1 (release
+// automation building a tagged commit). It ships as the stable app, so it carries no worktree label.
+export function isStableBuild({ command, branch, env }) {
+  return command === "build" && (branch === "main" || env.CHEMDRAFT_STABLE_BUILD === "1");
+}
+
+// The value for CHEMDRAFT_WORKTREE_LABEL. "" (not undefined) for a stable build, so vite.config.ts and
+// the Rust title know not to fall back to git — and a label inherited from the shell cannot leak into a
+// release. Everything else keeps the label (AGENTS.md §21.1).
+export function worktreeLabelFor({ command, identity, env }) {
+  if (isStableBuild({ command, branch: identity.branch, env })) {
+    return "";
+  }
+  return env.CHEMDRAFT_WORKTREE_LABEL ?? identity.label;
+}

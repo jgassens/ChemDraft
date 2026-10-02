@@ -37,10 +37,11 @@ const gitStampCommandOptions = {
 // (all building an app named "ChemDraft"), the on-screen stamp is the only thing telling them apart,
 // so the worktree name goes FIRST. Prefer the label run-app exports (single source of truth), else
 // derive it from git here so a bare `vite build`/`vite dev` still stamps it. See AGENTS.md.
+// A DEFINED but empty label means a stable package build: no label, and no git fallback.
 function worktreeLabel(): string {
-  const fromEnv = process.env.CHEMDRAFT_WORKTREE_LABEL?.trim();
-  if (fromEnv) {
-    return fromEnv;
+  const fromEnv = process.env.CHEMDRAFT_WORKTREE_LABEL;
+  if (fromEnv !== undefined) {
+    return fromEnv.trim();
   }
   try {
     const toplevel = execSync("git rev-parse --show-toplevel", gitStampCommandOptions).trim();
