@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isStableBuild, worktreeLabelFor } from "./worktree-identity.mjs";
+import { isStableBuild, labelFromEnv, worktreeLabelFor } from "./worktree-identity.mjs";
 
 const identity = (branch: string) => ({ branch, label: `chemdraw [${branch}]` });
 
@@ -29,8 +29,35 @@ describe("worktreeLabelFor", () => {
     ).toBe("mine");
   });
 
+  it("does not let an inherited empty label unlabel a branch build", () => {
+    for (const inherited of ["", "   "]) {
+      const env = { CHEMDRAFT_WORKTREE_LABEL: inherited };
+      expect(worktreeLabelFor({ command: "build", identity: identity("feature/x"), env })).toBe("chemdraw [feature/x]");
+      expect(worktreeLabelFor({ command: "dev", identity: identity("main"), env })).toBe("chemdraw [main]");
+    }
+  });
+
   it("never treats dev as stable, even on main", () => {
     expect(isStableBuild({ command: "dev", branch: "main", env: { CHEMDRAFT_STABLE_BUILD: "1" } })).toBe(false);
     expect(worktreeLabelFor({ command: "dev", identity: identity("main"), env: {} })).toBe("chemdraw [main]");
+  });
+});
+
+describe("labelFromEnv", () => {
+  it("returns the empty string for a defined-empty label (stable build: no git fallback)", () => {
+    expect(labelFromEnv({ CHEMDRAFT_WORKTREE_LABEL: "" })).toBe("");
+  });
+
+  it("returns the empty string for a whitespace label", () => {
+    expect(labelFromEnv({ CHEMDRAFT_WORKTREE_LABEL: "   " })).toBe("");
+  });
+
+  it("returns undefined when the variable is not set", () => {
+    expect(labelFromEnv({})).toBeUndefined();
+    expect(labelFromEnv({ CHEMDRAFT_WORKTREE_LABEL: undefined })).toBeUndefined();
+  });
+
+  it("returns the trimmed value otherwise", () => {
+    expect(labelFromEnv({ CHEMDRAFT_WORKTREE_LABEL: "  chemdraw [x] " })).toBe("chemdraw [x]");
   });
 });

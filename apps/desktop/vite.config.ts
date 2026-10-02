@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig, type Plugin } from "vite";
 import { appDataRoot, STABLE_BUNDLE_ID } from "../../scripts/app-data-root.mjs";
+import { labelFromEnv } from "../../scripts/worktree-identity.mjs";
 import {
   INSTALLED_PLUGIN_URL_PREFIX,
   INSTALLED_PLUGIN_WORKER_CSP,
@@ -39,9 +40,9 @@ const gitStampCommandOptions = {
 // derive it from git here so a bare `vite build`/`vite dev` still stamps it. See AGENTS.md.
 // A DEFINED but empty label means a stable package build: no label, and no git fallback.
 function worktreeLabel(): string {
-  const fromEnv = process.env.CHEMDRAFT_WORKTREE_LABEL;
+  const fromEnv = labelFromEnv(process.env);
   if (fromEnv !== undefined) {
-    return fromEnv.trim();
+    return fromEnv;
   }
   try {
     const toplevel = execSync("git rev-parse --show-toplevel", gitStampCommandOptions).trim();

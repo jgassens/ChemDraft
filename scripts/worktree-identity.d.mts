@@ -17,3 +17,4 @@ export declare function worktreeLabelFor(options: {
   identity: { branch: string; label: string };
   env: Record<string, string | undefined>;
 }): string;
+export declare function labelFromEnv(env: Record<string, string | undefined>): string | undefined;

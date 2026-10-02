@@ -864,14 +864,40 @@ fn focus_native_document_window<R: Runtime>(
     Ok(())
 }
 
-/// The main window title, suffixed with the worktree label run-app baked in at build time (e.g.
-/// "ChemDraft — chemdraw-toolbars [refactor/toolbars]"). With several ChemDraft worktrees building
-/// an identically-named app, this is what tells the running windows apart in the title bar,
-/// Mission Control, and cmd-tab. Falls back to plain "ChemDraft" when unlabeled. See AGENTS.md.
+/// The main window title, suffixed with the worktree label baked in at build time by `run-app` or
+/// `scripts/desktop-tauri.mjs` (e.g. "ChemDraft — chemdraw-toolbars [refactor/toolbars]"). With
+/// several ChemDraft worktrees building an identically-named app, this is what tells the running
+/// windows apart in the title bar, Mission Control, and cmd-tab. A stable package build bakes in an
+/// empty label and gets plain "ChemDraft"; there is no git fallback here. See AGENTS.md §21.1.
 fn main_window_title() -> String {
-    match option_env!("CHEMDRAFT_WORKTREE_LABEL") {
+    window_title_for(option_env!("CHEMDRAFT_WORKTREE_LABEL"))
+}
+
+fn window_title_for(label: Option<&str>) -> String {
+    match label {
         Some(label) if !label.trim().is_empty() => format!("ChemDraft — {}", label.trim()),
         _ => "ChemDraft".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod window_title_tests {
+    use super::window_title_for;
+
+    #[test]
+    fn unlabeled_builds_get_the_plain_title() {
+        assert_eq!(window_title_for(None), "ChemDraft");
+        assert_eq!(window_title_for(Some("")), "ChemDraft");
+        assert_eq!(window_title_for(Some("  ")), "ChemDraft");
+    }
+
+    #[test]
+    fn labeled_builds_append_the_trimmed_label() {
+        assert_eq!(
+            window_title_for(Some("chemdraw [x]")),
+            "ChemDraft — chemdraw [x]"
+        );
+        assert_eq!(window_title_for(Some(" a [b] ")), "ChemDraft — a [b]");
     }
 }
 
