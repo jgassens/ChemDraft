@@ -1,6 +1,6 @@
 [package]
 name = "chemdraft"
-version = "0.3.6"
+version = "0.3.7"
 description = "ChemDraft desktop shell"
 authors = ["ChemDraft contributors"]
 edition = "2021"
