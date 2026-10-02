@@ -34,6 +34,7 @@
     "allow-open-toolset-popover",
     "allow-prewarm-toolset-popover",
     "allow-prewarm-toolset-tooltip",
+    "allow-show-toolset-popover-window",
     "allow-show-toolset-tooltip-window",
     "allow-hide-toolset-tooltip-window",
     "allow-set-current-window-global-position",

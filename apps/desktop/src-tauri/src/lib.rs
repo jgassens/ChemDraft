@@ -693,6 +693,7 @@ pub fn run() {
             open_toolset_popover,
             prewarm_toolset_popover,
             prewarm_toolset_tooltip,
+            show_toolset_popover_window,
             show_toolset_tooltip_window,
             hide_toolset_tooltip_window,
             set_current_window_global_position,
@@ -1955,7 +1956,15 @@ fn show_toolset_tooltip_window(
         window.show().map_err(|error| error.to_string())?;
     }
     // SW_SHOWNOACTIVATE keeps the hidden window's old z-order, which left the tooltip behind the
-    // palette it describes; raise it among the document's owned windows without activating it.
+    // palette it describes.
+    raise_among_owned_windows(&window)
+}
+
+/// Raise a just-shown floating window above its siblings (the palettes and the other utility
+/// windows the document owns) without activating it. On Windows a hidden window comes back at its
+/// OLD z-order, so a tooltip or popover shown over its own palette landed underneath it. macOS
+/// orders these panels by window level instead, so there is nothing to do there.
+fn raise_among_owned_windows<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1975,7 +1984,20 @@ fn show_toolset_tooltip_window(
             );
         }
     }
+    #[cfg(not(windows))]
+    let _ = window;
     Ok(())
+}
+
+/// Reveal the calling palette popover once it has painted its content at the right size, and put it
+/// above the palette it belongs to. The popover used to reveal itself with the JS window `show()`,
+/// which on Windows left it underneath its palette whenever the two overlapped (the Art toolbar's
+/// colour picker opens over the toolbar's own lower rows). `show()` here is the same call that JS
+/// made, so macOS behaves exactly as before.
+#[tauri::command]
+fn show_toolset_popover_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    raise_among_owned_windows(&window)
 }
 
 /// Hide the tooltip window. Deliberately a sync command like `show_toolset_tooltip_window`: both

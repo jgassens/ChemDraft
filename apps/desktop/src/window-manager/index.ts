@@ -779,6 +779,26 @@ export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Prom
   await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
 }
 
+/**
+ * Reveal the calling palette popover above the palette it belongs to. Rust shows it and then raises
+ * it among the document's owned windows: the JS window `show()` alone left it underneath its palette
+ * on Windows whenever the two overlapped. Falls back to that plain `show()` if the command is
+ * unavailable, so a popover can never be left invisible.
+ */
+export async function showCurrentToolsetPopoverWindow(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("show_toolset_popover_window");
+  } catch {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().show();
+  }
+}
+
 export async function focusCurrentWindowAndWebview(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;

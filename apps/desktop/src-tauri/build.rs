@@ -26,6 +26,7 @@ fn main() {
             "open_toolset_popover",
             "prewarm_toolset_popover",
             "prewarm_toolset_tooltip",
+            "show_toolset_popover_window",
             "show_toolset_tooltip_window",
             "hide_toolset_tooltip_window",
             "set_current_window_global_position",

@@ -15,6 +15,7 @@ import {
   sendPaletteCommandPreview,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
+  showCurrentToolsetPopoverWindow,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetFlyoutCommandSnapshot,
@@ -212,9 +213,7 @@ export function PalettePopoverWindow({
       if (cancelled || dismissedRef.current) {
         return;
       }
-      await import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => getCurrentWindow().show())
-        .catch(() => undefined);
+      await showCurrentToolsetPopoverWindow().catch(() => undefined);
     })();
     return () => {
       cancelled = true;
@@ -234,9 +233,7 @@ export function PalettePopoverWindow({
       if (contentPushedRef.current) {
         return;
       }
-      void import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => getCurrentWindow().show())
-        .catch(() => undefined);
+      void showCurrentToolsetPopoverWindow().catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
   }, [prewarm]);

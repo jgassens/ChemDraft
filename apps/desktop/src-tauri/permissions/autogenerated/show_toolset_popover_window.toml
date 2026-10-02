@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-toolset-popover-window"
+description = "Enables the show_toolset_popover_window command without any pre-configured scope."
+commands.allow = ["show_toolset_popover_window"]
+
+[[permission]]
+identifier = "deny-show-toolset-popover-window"
+description = "Denies the show_toolset_popover_window command without any pre-configured scope."
+commands.deny = ["show_toolset_popover_window"]
