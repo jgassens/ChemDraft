@@ -1381,6 +1381,26 @@ release outside the capture window must land exactly at the pointer; junction-pi
 holding the junction and attachment bond fixed; and switching the keybinding scheme live with the
 main window, detached palettes, and the native menu accelerators all following.
 
+Windows surfaces added since (the port on `windows-port`; `pnpm smoke:windows-menu-churn` automates
+the crash part): a second launch and a double-clicked `.chemdraft` file handed to the running app by
+single-instance, which then opens and can save that file; closing the document window (title-bar ✕,
+File > Exit, Alt+F4) quits the app after flushing the session, so a drawing made seconds earlier
+survives relaunch; F5 and Ctrl+R never reload the webview (a reload discards the document) while a
+Ctrl+R the app binds still runs; Ctrl+Y redo; the color picker's HEX field — six digits apply live,
+shorthand applies on Enter or blur, Escape abandons a half-typed value — and RGB/CMYK fields that
+settle a typed value once, on blur or Enter; palette, popover, and tooltip windows staying off the
+taskbar and never stealing focus from the document; palette toggles that bring a palette hidden
+behind the document to the front instead of hiding it; popovers and tooltips landing under their
+button across two monitors at different scale factors; a maximized window restored maximized; and
+the clipboard round trips (text, ChemDraft selection, SVG, PNG, and CDX/MDL paste from ChemDraw); and the app
+updater — an older signed build offered the newer one by the launch check and by File ▸ Check for
+Updates…, the document saved before the passive installer runs and restored after it relaunches, and
+a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`); an update
+accepted while autosave is off (the last session unreadable) refusing to install over unsaved work; and
+opening from Explorer a `.cdx` (the app says it is a ChemDraw binary, including at a cold start that
+then restores the last session), a UTF-16 `.cdxml`, and a CDXML file whose molecules sit inside `<group>`
+elements (they open grouped).
+
 Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
 on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a
 palette search box, a text object) undoes that field's own text instead; and typing half an atom

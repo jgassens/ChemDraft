@@ -7,6 +7,7 @@ import {
   type ChemDraftDocument,
   type DocumentObject
 } from "./schemas";
+import { engineDocuments } from "./engineDocuments";
 import { DefaultPageLayout, createPageLayout, pageMarginFromLayout } from "./page-layout";
 
 export interface CreateEmptyDocumentOptions {
@@ -81,7 +82,9 @@ export function validateDocumentObject(candidate: unknown): DocumentObject {
 }
 
 export function serializeDocument(document: ChemDraftDocument): string {
-  return JSON.stringify(parseDocument(document), null, 2);
+  // An engine document is validated and normalized already; re-parsing it on every save was a full
+  // schema pass over every object.
+  return JSON.stringify(engineDocuments.has(document) ? document : parseDocument(document), null, 2);
 }
 
 export function deserializeDocument(serialized: string): ChemDraftDocument {

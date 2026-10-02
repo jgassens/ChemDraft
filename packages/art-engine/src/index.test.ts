@@ -50,11 +50,11 @@ describe("art-engine native art planning", () => {
     const pathCommanderPackage = require("svg-path-commander/package.json") as { license: string };
     const domMatrixPackage = require("@thednp/dommatrix/package.json") as { license: string };
     const flattenPackage = JSON.parse(readFileSync(
-      require.resolve("@flatten-js/core").replace(/dist\/main\.cjs$/, "package.json"),
+      require.resolve("@flatten-js/core").replace(/dist[\\/]main\.cjs$/, "package.json"),
       "utf8"
     )) as { license: string };
     const perfectFreehandPackage = JSON.parse(readFileSync(
-      require.resolve("perfect-freehand").replace(/dist\/cjs\/index\.js$/, "package.json"),
+      require.resolve("perfect-freehand").replace(/dist[\\/]cjs[\\/]index\.js$/, "package.json"),
       "utf8"
     )) as { license: string };
     const roughPackage = require("roughjs/package.json") as { license: string };

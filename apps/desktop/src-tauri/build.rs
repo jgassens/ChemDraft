@@ -25,7 +25,12 @@ fn main() {
             "open_plugin_panel_window",
             "open_toolset_popover",
             "prewarm_toolset_popover",
+            "prewarm_toolset_tooltip",
+            "show_toolset_popover_window",
             "show_toolset_tooltip_window",
+            "hide_toolset_tooltip_window",
+            "set_current_window_global_position",
+            "quit_after_flush",
             "close_toolset_popover",
             "set_toolset_window_focusable",
             "route_toolset_command",
@@ -111,14 +116,20 @@ fn stage_sparkle_framework_for_cargo_executables() {
 /// an app whose name-to-structure declines, and that should never be discovered by a user.
 fn ensure_opsin_runtime_dir() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/opsin/jre");
+    // The TARGET's launcher name (a build script's own cfg! describes the host).
+    let java = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        "java.exe"
+    } else {
+        "java"
+    };
     // Without this the script's output is cached, so building the runtime afterwards leaves the
     // "absent" warning firing on a tree that now has it — the warning would outlive the condition it
     // reports, which is worse than not warning at all.
     println!(
         "cargo:rerun-if-changed={}",
-        path.join("bin").join("java").display()
+        path.join("bin").join(java).display()
     );
-    if path.join("bin").join("java").exists() {
+    if path.join("bin").join(java).exists() {
         return;
     }
     if let Err(error) = std::fs::create_dir_all(&path) {

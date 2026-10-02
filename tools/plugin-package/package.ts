@@ -32,7 +32,7 @@
  *    URL* — so the package works from whatever directory a host stages it into, provided its files stay
  *    co-located and are served from a real (non-blob) URL. See reports/0030 for the evidence.
  */
-import { execFileSync } from "node:child_process";
+import { writeZip } from "../plugin-extract/zip";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -48,7 +48,7 @@ import {
   PluginManifestSchema,
   type PluginManifest
 } from "../../packages/plugin-api/src/index";
-import { isRuntimeSourcePath, PLUGIN_SDK_PACKAGE } from "../plugin-extract/checkBoundary";
+import { isRuntimeSourcePath, PLUGIN_SDK_PACKAGE, toPortablePath } from "../plugin-extract/checkBoundary";
 import {
   assertPluginBoundary,
   canonicalPath,
@@ -167,7 +167,7 @@ function resolveWorkerEntry(pluginRoot: string, entry: string | undefined): stri
   if (!existsSync(candidate)) {
     if (entry) throw new PluginPackagingError(`worker entry "${entry}" does not exist`);
   } else {
-    const realEntry = realpathSync(candidate);
+    const realEntry = realpathSync.native(candidate);
     if (!contains(join(pluginRoot, "src"), realEntry)) {
       throw new PluginPackagingError("worker entry must be a file inside the plugin's src directory");
     }
@@ -264,7 +264,7 @@ function collectFiles(dir: string, prefix = ""): PackagedFile[] {
 
 export async function packagePlugin(options: PackagePluginOptions): Promise<PackagePluginResult> {
   const repoRoot = resolve(options.repoRoot ?? repositoryRoot);
-  const sourcePluginRoot = realpathSync(resolve(options.pluginRoot));
+  const sourcePluginRoot = realpathSync.native(resolve(options.pluginRoot));
   const outDir = canonicalPath(options.outDir ?? join(repoRoot, DEFAULT_OUT_DIR));
 
   // Resolve only the plugin-relative name here. The committed snapshot below is where existence,
@@ -276,7 +276,7 @@ export async function packagePlugin(options: PackagePluginOptions): Promise<Pack
   if (!contains(join(sourcePluginRoot, "src"), sourceEntry)) {
     throw new PluginPackagingError("worker entry must be a file inside the plugin's src directory");
   }
-  const entryRelativeToPlugin = relative(sourcePluginRoot, sourceEntry);
+  const entryRelativeToPlugin = toPortablePath(relative(sourcePluginRoot, sourceEntry));
 
   const gitState = readPluginGitState(sourcePluginRoot, gateError);
   const snapshot = createPluginSourceSnapshot(gitState, gateError);
@@ -287,7 +287,8 @@ export async function packagePlugin(options: PackagePluginOptions): Promise<Pack
     const liveDependencies = join(sourcePluginRoot, "node_modules");
     const snapshotDependencies = join(snapshot.pluginRoot, "node_modules");
     if (existsSync(liveDependencies) && !existsSync(snapshotDependencies)) {
-      symlinkSync(realpathSync(liveDependencies), snapshotDependencies, "dir");
+      // "junction": no Developer Mode/admin needed on Windows; ignored elsewhere (see committedCopy).
+      symlinkSync(realpathSync.native(liveDependencies), snapshotDependencies, "junction");
     }
     return await packageCommittedPlugin(
       snapshot.pluginRoot,
@@ -385,7 +386,7 @@ async function packageCommittedPlugin(
   rmSync(checksumPath, { force: true });
   // Flat archive (no wrapping directory): a host unpacks it straight into the plugin's staged directory,
   // where the co-location that makes relative asset URLs resolve is exactly what must be preserved.
-  execFileSync("zip", ["-X", "-r", "-q", zipPath, ...readdirSync(staging).sort()], { cwd: staging });
+  writeZip(zipPath, staging, readdirSync(staging));
 
   const zipBytes = statSync(zipPath).size;
   const sha256 = createHash("sha256").update(readFileSync(zipPath)).digest("hex");

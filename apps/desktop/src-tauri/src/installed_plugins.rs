@@ -45,8 +45,14 @@ use tauri::http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use tauri::utils::mime_type::MimeType;
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext};
 
-/// Origin the macOS/iOS/Linux webview serves the app document from.
+/// Origin the webview serves the app document from: the custom scheme itself on macOS/iOS/Linux, and
+/// `http://tauri.localhost` on Windows, where WebView2 exposes custom schemes as http hosts (Tauri's
+/// `useHttpsScheme` is off, the default). Only used for `Access-Control-Allow-Origin`, mirroring the
+/// `window_origin` Tauri's built-in handler sends.
+#[cfg(not(windows))]
 const APP_ORIGIN: &str = "tauri://localhost";
+#[cfg(windows)]
+const APP_ORIGIN: &str = "http://tauri.localhost";
 
 /// Reserved path prefix on the app's own origin under which staged packages are served. Must match
 /// `INSTALLED_PLUGINS_URL_PREFIX` in `apps/desktop/src/plugins/installedPluginPaths.ts`.
@@ -82,10 +88,7 @@ pub fn handle_tauri_request<R: Runtime>(
 ) -> Response<Cow<'static, [u8]>> {
     let app = ctx.app_handle();
 
-    // Ignore query string and fragment, then strip the origin — mirroring `protocol::tauri::get_response`.
-    let uri = request.uri().to_string();
-    let path = uri.split(['?', '#']).next().unwrap_or_default();
-    let path = path.strip_prefix(APP_ORIGIN).unwrap_or(path);
+    let path = request_path(request.uri());
 
     match percent_decode(path).strip_prefix(INSTALLED_PLUGINS_URL_PREFIX) {
         Some(relative) => {
@@ -105,6 +108,13 @@ pub fn handle_tauri_request<R: Runtime>(
         }
         None => serve_app_asset(app, path),
     }
+}
+
+/// The request's path, without origin, query or fragment — the same result as
+/// `protocol::tauri::get_response`'s strip of `tauri://localhost`, but independent of which form
+/// the platform hands over (`tauri://localhost/…` or WebView2's `http://tauri.localhost/…`).
+fn request_path(uri: &tauri::http::Uri) -> &str {
+    uri.path()
 }
 
 /// The app's own frontend, resolved by the same machinery the built-in handler uses.
@@ -263,6 +273,20 @@ fn internal_error(message: &str) -> Response<Cow<'static, [u8]>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_path_is_origin_independent() {
+        for uri in [
+            "tauri://localhost/installed-plugins/p/entry.js?v=2#x",
+            "http://tauri.localhost/installed-plugins/p/entry.js?v=2",
+            "https://tauri.localhost/installed-plugins/p/entry.js",
+        ] {
+            let uri: tauri::http::Uri = uri.parse().expect("uri");
+            assert_eq!(request_path(&uri), "/installed-plugins/p/entry.js");
+        }
+        let root: tauri::http::Uri = "tauri://localhost".parse().expect("uri");
+        assert_eq!(request_path(&root), "/");
+    }
 
     #[test]
     fn accepts_a_plain_plugin_relative_path() {

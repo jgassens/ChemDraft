@@ -15,6 +15,7 @@ import {
   sendPaletteCommandPreview,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
+  showCurrentToolsetPopoverWindow,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetFlyoutCommandSnapshot,
@@ -212,9 +213,7 @@ export function PalettePopoverWindow({
       if (cancelled || dismissedRef.current) {
         return;
       }
-      await import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => getCurrentWindow().show())
-        .catch(() => undefined);
+      await showCurrentToolsetPopoverWindow().catch(() => undefined);
     })();
     return () => {
       cancelled = true;
@@ -234,9 +233,7 @@ export function PalettePopoverWindow({
       if (contentPushedRef.current) {
         return;
       }
-      void import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => getCurrentWindow().show())
-        .catch(() => undefined);
+      void showCurrentToolsetPopoverWindow().catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
   }, [prewarm]);
@@ -271,9 +268,11 @@ export function PalettePopoverWindow({
     return () => unlisten?.();
   }, []);
 
+  // Both refuse once the popover is dismissed: hiding it blurs whichever field had focus, and a blur
+  // that settles a half-typed value would otherwise apply a colour the user just walked away from.
   const previewColor = (color: string) => {
     const normalized = normalizeHexColor(color);
-    if (!normalized) {
+    if (!normalized || dismissedRef.current) {
       return;
     }
     setDraft(normalized);
@@ -282,7 +281,7 @@ export function PalettePopoverWindow({
 
   const commitColor = (color: string) => {
     const normalized = normalizeHexColor(color);
-    if (!normalized) {
+    if (!normalized || dismissedRef.current) {
       return;
     }
     setDraft(normalized);

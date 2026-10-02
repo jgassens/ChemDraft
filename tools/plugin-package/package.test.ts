@@ -15,6 +15,22 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_WORKER_ENTRY, packagePlugin, parseCliArgs, PluginPackagingError } from "./package";
 
+// Windows refuses file symlinks without Developer Mode or admin rights. The refusal under test can
+// only be exercised where the fixture can be created; elsewhere the case is skipped, not faked.
+const canCreateFileSymlinks = (() => {
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "chemdraft-symlink-probe-"));
+    try {
+      symlinkSync(join(dir, "target"), join(dir, "link"));
+      return true;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+})();
+
 const temporaryRoots: string[] = [];
 
 afterEach(() => {
@@ -69,7 +85,9 @@ function createPluginFixture(
 
 const outFor = (fixture: { caseRoot: string }): string => join(fixture.caseRoot, "out");
 
-describe("plugin:package — fail-closed gates", () => {
+// Each case commits a fixture repo, archives it with git, and runs a real Vite bundle: 1–2 s on an
+// idle machine, but past vitest's 5 s default when the full suite shares the CPU with a release build.
+describe("plugin:package — fail-closed gates", { timeout: 30_000 }, () => {
   it("accepts pnpm's conventional argument separator and both flags", () => {
     expect(parseCliArgs(["--", "examples/plugins/example", "--out", "dist/plugin-packages", "--entry", "src/w.ts"])).toEqual({
       pluginRoot: "examples/plugins/example",
@@ -103,7 +121,7 @@ describe("plugin:package — fail-closed gates", () => {
     );
   });
 
-  it("refuses committed symlinks before the bundler can follow them", async () => {
+  it.skipIf(!canCreateFileSymlinks)("refuses committed symlinks before the bundler can follow them", async () => {
     const fixture = createPluginFixture();
     writeFileSync(join(fixture.caseRoot, "outside-secret.ts"), "export const secret = true;\n");
     symlinkSync(join(fixture.caseRoot, "outside-secret.ts"), join(fixture.pluginRoot, "src/local-secret.ts"));

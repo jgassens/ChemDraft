@@ -2042,6 +2042,22 @@ describe("ChemDraft desktop shell", () => {
     expect(enabledRegistry.conflicts()).toEqual([]);
   });
 
+  it("binds Ctrl+Y to redo off macOS, where the native Redo item sends it", () => {
+    const document = createPhase4Document();
+    const quickActions = createQuickActions(document, undefined, { canUndo: true, canRedo: true });
+    const windowsRegistry = createDesktopShortcutRegistry(quickActions, "windows");
+    const linuxRegistry = createDesktopShortcutRegistry(quickActions, "linux");
+    const macRegistry = createDesktopShortcutRegistry(quickActions, "macos");
+    const disabledRegistry = createDesktopShortcutRegistry(createQuickActions(document, undefined), "windows");
+
+    expect(windowsRegistry.resolve({ key: "y", ctrlKey: true })).toBe("edit.redo");
+    expect(windowsRegistry.resolve({ key: "z", ctrlKey: true, shiftKey: true })).toBe("edit.redo");
+    expect(linuxRegistry.resolve({ key: "y", ctrlKey: true })).toBe("edit.redo");
+    expect(macRegistry.resolve({ key: "y", metaKey: true })).toBeUndefined();
+    expect(disabledRegistry.resolve({ key: "y", ctrlKey: true })).toBeUndefined();
+    expect(windowsRegistry.conflicts()).toEqual([]);
+  });
+
   it("defines View menu commands for optional canvas scaffolding", () => {
     expect(viewActions).toEqual(
       expect.arrayContaining([
@@ -2761,9 +2777,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-rotation-input-kind={input.kind}");
     expect(mainWindowSource).toContain("onDoubleClick={handleRotateDoubleClick}");
     expect(mainWindowSource).toContain("onDoubleClick={handleProjectedPlaneTiltDoubleClick}");
-    expect(mainWindowSource).toContain("onRotationInputChange={handleRotationInputChange}");
-    expect(mainWindowSource).toContain("onRotationInputHome={handleRotationInputHome}");
-    expect(mainWindowSource).toContain("onRotationInputKeep={handleRotationInputKeep}");
+    expect(mainWindowSource).toContain("onRotationInputChange: handleRotationInputChange,");
+    expect(mainWindowSource).toContain("onRotationInputHome: handleRotationInputHome,");
+    expect(mainWindowSource).toContain("onRotationInputKeep: handleRotationInputKeep,");
     expect(mainWindowSource).toContain("aria-label={input.kind === \"z\" ? \"Set Z rotation to 0 degrees\" : \"Set X/Y rotation to 0 degrees\"}");
     expect(mainWindowSource).toContain("title={input.kind === \"z\" ? \"Set Z rotation to 0 degrees\" : \"Set X/Y rotation to 0 degrees\"}");
     expect(mainWindowSource).toContain('rotationInputHomeDraftDegrees("z")');
@@ -2883,9 +2899,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("data-scale-input-popover=\"true\"");
     expect(mainWindowSource).toContain("data-scale-input-corner={input.corner}");
     expect(mainWindowSource).toContain("onDoubleClick={onResizeDoubleClick(corner)}");
-    expect(mainWindowSource).toContain("onObjectResizeInputChange={handleObjectResizeInputChange}");
-    expect(mainWindowSource).toContain("onObjectResizeInputHome={handleObjectResizeInputHome}");
-    expect(mainWindowSource).toContain("onObjectResizeInputKeep={handleObjectResizeInputKeep}");
+    expect(mainWindowSource).toContain("onObjectResizeInputChange: handleObjectResizeInputChange,");
+    expect(mainWindowSource).toContain("onObjectResizeInputHome: handleObjectResizeInputHome,");
+    expect(mainWindowSource).toContain("onObjectResizeInputKeep: handleObjectResizeInputKeep,");
     expect(mainWindowSource).toContain("aria-label=\"Restore stretch home\"");
     expect(mainWindowSource).toContain("aria-label=\"X stretch percent\"");
     expect(mainWindowSource).toContain("aria-label=\"Y stretch percent\"");

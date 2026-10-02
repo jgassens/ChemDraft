@@ -540,6 +540,137 @@ describe("non-element atom labels", () => {
     ]
   );
 
+  it("writes a label spellLabel spells as its element, with a valence carrying the stated hydrogens", () => {
+    const warnings: string[] = [];
+    const spellLabel = (label: string) => (label === "CH3" ? { element: "C", hydrogens: 3 } : undefined);
+    const kekuleBondOrders = new Map<string, number>();
+    const lines = moleculeToMolfileV2000(condensed, { warnings, spellLabel, kekuleBondOrders }).contents.split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const [, methyl, acid] = lines.slice(countsLine + 1, countsLine + 4);
+    // Two bonds plus three hydrogens: a valence of 5, in the vvv columns 49–51.
+    expect(methyl!.slice(31, 34).trim()).toBe("C");
+    expect(methyl!.slice(48, 51).trim()).toBe("5");
+    // A label spellLabel does not spell still falls back, with its warning.
+    expect(acid!.slice(31, 34).trim()).toBe("*");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"CO2H"');
+
+    const v3000 = moleculeToMolfileV3000(condensed, { spellLabel, kekuleBondOrders }).contents;
+    expect(v3000).toMatch(/M {2}V30 2 C [^\n]* VAL=5/);
+  });
+
+  // The app's condensed-label grammar reduced to what these cases need: one heavy element, then H
+  // with an optional count.
+  const spellCondensed = (label: string) => {
+    const match = /^([A-Z][a-z]?)H(\d*)$/.exec(label);
+    return match ? { element: match[1]!, hydrogens: match[2] ? Number(match[2]) : 1 } : undefined;
+  };
+
+  const aromaticPyrrole = molecule(
+    [
+      { id: "n", element: "NH", x: 0, y: 0 },
+      { id: "c1", element: "C", x: 1, y: 0.5 },
+      { id: "c2", element: "C", x: 1, y: 1.5 },
+      { id: "c3", element: "C", x: -1, y: 1.5 },
+      { id: "c4", element: "C", x: -1, y: 0.5 }
+    ],
+    [
+      { id: "b1", from: "n", to: "c1", order: "aromatic" },
+      { id: "b2", from: "c1", to: "c2", order: "aromatic" },
+      { id: "b3", from: "c2", to: "c3", order: "aromatic" },
+      { id: "b4", from: "c3", to: "c4", order: "aromatic" },
+      { id: "b5", from: "c4", to: "n", order: "aromatic" }
+    ]
+  );
+
+  it("spells an aromatic pyrrole's NH on its Kekulé orders, with a valence of 3", () => {
+    // 1.5 per aromatic bond summed to 4 here, which a reader takes as NH2; the Kekulé orders say 3.
+    const kekuleBondOrders = nativeBondOrderResolution(aromaticPyrrole.atoms, aromaticPyrrole.bonds).kekuleOrders;
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(aromaticPyrrole, {
+      warnings, spellLabel: spellCondensed, abbreviations: "rgroup", kekuleBondOrders
+    }).contents.split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const nitrogen = lines[countsLine + 1]!;
+    expect(nitrogen.slice(31, 34).trim()).toBe("N");
+    expect(nitrogen.slice(48, 51).trim()).toBe("3");
+    expect(warnings).toEqual([]);
+    expect(moleculeToMolfileV3000(aromaticPyrrole, { spellLabel: spellCondensed, kekuleBondOrders }).contents)
+      .toMatch(/M {2}V30 1 N [^\n]* VAL=3/);
+  });
+
+  it("does not spell a label on an aromatic bond with no resolved Kekulé order", () => {
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(aromaticPyrrole, {
+      warnings, spellLabel: spellCondensed, abbreviations: "rgroup", kekuleBondOrders: new Map()
+    }).contents.split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const nitrogen = lines[countsLine + 1]!;
+    expect(nitrogen.slice(31, 34).trim()).toBe("R#");
+    expect(nitrogen.slice(48, 51).trim()).toBe("0");
+    const labelWarnings = warnings.filter((warning) => warning.includes('"NH"'));
+    expect(labelWarnings).toHaveLength(1);
+    expect(labelWarnings[0]).toContain("no resolved Kekulé order");
+
+    const v3000Warnings: string[] = [];
+    const v3000 = moleculeToMolfileV3000(aromaticPyrrole, {
+      warnings: v3000Warnings, spellLabel: spellCondensed, abbreviations: "rgroup", kekuleBondOrders: new Map()
+    }).contents;
+    expect(v3000).toContain("M  V30 1 R# ");
+    expect(v3000).not.toContain("VAL=");
+    expect(v3000Warnings.some((warning) => warning.includes('"NH"') && warning.includes("no resolved Kekulé order"))).toBe(true);
+  });
+
+  it("does not spell a label whose bond orders and hydrogens pass the valence field's limit of 14", () => {
+    const overfull = molecule(
+      [
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "CH20", x: 1.5, y: 0 }
+      ],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    const warnings: string[] = [];
+    const lines = moleculeToMolfileV2000(overfull, {
+      warnings, spellLabel: spellCondensed, abbreviations: "rgroup", kekuleBondOrders: new Map()
+    }).contents.split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    expect(lines[countsLine + 2]!.slice(31, 34).trim()).toBe("R#");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("21");
+    expect(warnings[0]).toContain("14");
+  });
+
+  it("still spells a Kekulé pyrrole's NH, with a valence of 3", () => {
+    const kekule = molecule(
+      [
+        { id: "n", element: "NH", x: 0, y: 0 },
+        { id: "c1", element: "C", x: 1, y: 0.5 },
+        { id: "c2", element: "C", x: 1, y: 1.5 },
+        { id: "c3", element: "C", x: -1, y: 1.5 },
+        { id: "c4", element: "C", x: -1, y: 0.5 }
+      ],
+      [
+        { id: "b1", from: "n", to: "c1" },
+        { id: "b2", from: "c1", to: "c2", order: "double" },
+        { id: "b3", from: "c2", to: "c3" },
+        { id: "b4", from: "c3", to: "c4", order: "double" },
+        { id: "b5", from: "c4", to: "n" }
+      ]
+    );
+    const warnings: string[] = [];
+    const kekuleBondOrders = new Map<string, number>();
+    const lines = moleculeToMolfileV2000(kekule, {
+      warnings, spellLabel: spellCondensed, abbreviations: "rgroup", kekuleBondOrders
+    }).contents.split("\n");
+    const countsLine = lines.findIndex((l) => l.includes("V2000"));
+    const nitrogen = lines[countsLine + 1]!;
+    expect(nitrogen.slice(31, 34).trim()).toBe("N");
+    expect(nitrogen.slice(48, 51).trim()).toBe("3");
+    expect(warnings).toEqual([]);
+    expect(moleculeToMolfileV3000(kekule, { spellLabel: spellCondensed, kekuleBondOrders }).contents)
+      .toMatch(/M {2}V30 1 N [^\n]* VAL=3/);
+  });
+
   it("V2000 writes a dummy atom with a warning instead of an invalid element symbol", () => {
     const warnings: string[] = [];
     const mf = moleculeToMolfileV2000(condensed, { kekuleBondOrders: new Map(), warnings }).contents;

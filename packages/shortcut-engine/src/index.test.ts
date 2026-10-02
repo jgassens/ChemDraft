@@ -30,6 +30,23 @@ describe("shortcut-engine", () => {
     expect(shortcutChord(normalizeShortcut({ commandId: "tool.bond", keys: ["B"] }, "macos"))).toBe("b");
   });
 
+  it("binds Mac-authored Cmd shortcuts to Ctrl off macOS", () => {
+    expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "macos"))).toBe("Meta+s");
+    expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "windows"))).toBe("Ctrl+s");
+    expect(shortcutChord(normalizeShortcut({ commandId: "document.save", keys: ["Cmd", "S"] }, "linux"))).toBe("Ctrl+s");
+    // The ChemDraw scheme's Ctrl+Cmd+E collapses to one Ctrl off macOS.
+    expect(shortcutChord(normalizeShortcut({ commandId: "export.open", keys: ["Ctrl", "Cmd", "E"] }, "windows"))).toBe("Ctrl+e");
+
+    const registry = createShortcutRegistry([
+      { commandId: "document.save", keys: ["Cmd", "S"] },
+      { commandId: "view.toggleCrosshairs", keys: ["Shift", "Cmd", "R"] }
+    ], { platform: "windows" });
+    expect(registry.resolve({ key: "s", ctrlKey: true })).toBe("document.save");
+    expect(registry.resolve({ key: "R", ctrlKey: true, shiftKey: true })).toBe("view.toggleCrosshairs");
+    // The Windows key does not stand in for Command.
+    expect(registry.resolve({ key: "s", metaKey: true })).toBeUndefined();
+  });
+
   it("builds shortcuts from enabled command definitions only", () => {
     const shortcuts = shortcutsFromCommands([
       { id: "tool.select", shortcut: "V" },
@@ -59,6 +76,25 @@ describe("shortcut-engine", () => {
 
     expect(registry.conflicts()).toEqual([{ chord: "v", commandIds: ["tool.select", "tool.altSelect"] }]);
     expect(registry.resolve({ key: "v" })).toBeUndefined();
+  });
+
+  it("treats one command bound twice to the same chord as a single binding", () => {
+    // A command can reach the registry from two lists (Group is both a layer action and a toolbar
+    // button). Only DIFFERENT commands on one chord are ambiguous; the same command twice used to read
+    // as a conflict with itself and resolve to nothing, which left Ctrl/Cmd+G and the layer-order
+    // chords dead.
+    const registry = createShortcutRegistry([
+      { commandId: "layout.group", keys: ["Cmd", "G"] },
+      { commandId: "layout.group", keys: ["Cmd", "G"] },
+      { commandId: "tool.select", keys: ["V"] },
+      { commandId: "tool.altSelect", keys: ["V"] },
+      { commandId: "tool.select", keys: ["V"] }
+    ], { platform: "windows" });
+
+    expect(registry.resolve({ key: "g", ctrlKey: true })).toBe("layout.group");
+    // A genuine ambiguity stays one, and is reported once per command.
+    expect(registry.resolve({ key: "v" })).toBeUndefined();
+    expect(registry.conflicts()).toEqual([{ chord: "v", commandIds: ["tool.select", "tool.altSelect"] }]);
   });
 
   it("formats keyboard event chords deterministically", () => {

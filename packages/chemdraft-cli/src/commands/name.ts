@@ -23,7 +23,9 @@ const OPSIN_VERSION = "opsin-2.9.0";
 const MAX_NAME_LENGTH = 2000;
 const OPSIN_TIMEOUT_MS = 30_000;
 const OPSIN_KILL_GRACE_MS = 1_000;
-const REBUILD_RUNTIME_SCRIPT = "scripts/build-opsin-runtime.sh";
+// The .sh wrapper is the documented entry on macOS/Linux; cmd.exe cannot run it, so name the .mjs there.
+const REBUILD_RUNTIME_SCRIPT =
+  process.platform === "win32" ? "node scripts/build-opsin-runtime.mjs" : "scripts/build-opsin-runtime.sh";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -95,7 +97,7 @@ const nameOptions = {
 export function defaultOpsinPaths(): OpsinPaths {
   const resources = join(workspaceRoot, "apps", "desktop", "src-tauri", "resources", "opsin");
   return {
-    javaPath: join(resources, "jre", "bin", "java"),
+    javaPath: join(resources, "jre", "bin", process.platform === "win32" ? "java.exe" : "java"),
     jarPath: join(resources, "opsin-cli-2.9.0.jar")
   };
 }

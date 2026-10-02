@@ -4,8 +4,9 @@ import {
   DocumentSchemaVersion,
   createEmptyDocument,
   deserializeDocument,
+  isDativeBond,
+  isEngineDocument,
   parseDocument,
-  serializeDocument,
   type Anchor,
   type ArrowObject,
   type BondRef,
@@ -13,6 +14,7 @@ import {
   type CompatibilityWarning,
   type CrossingOverride,
   type DocumentObject,
+  type GroupObject,
   type DocumentPage,
   type GraphicMarker,
   type GraphicObject,
@@ -37,6 +39,9 @@ export interface CdxmlExportOptions {
 export interface CdxmlExportResult {
   contents: string;
   warnings: CompatibilityConversionWarning[];
+  /** SHA-256 of the native document the envelope embeds: an identity for what was saved, already
+   *  computed for the envelope, so a caller need not hash the megabytes of `contents` again. */
+  nativePayloadHash: string;
 }
 
 export type ChemDraftOpenSource = "native-payload" | "legacy-json" | "external-cdxml";
@@ -158,10 +163,17 @@ export function exportDocumentToCdxml(
   document: ChemDraftDocument,
   options: CdxmlExportOptions = {}
 ): CdxmlExportResult {
-  const parsedDocument = parseDocument(document);
+  // A document the patch engine produced is validated and normalized already; re-parsing it cost a
+  // full schema pass over every object on each save, and autosave runs after every pause in editing.
+  const parsedDocument = isEngineDocument(document) ? document : parseDocument(document);
   const warnings: CompatibilityConversionWarning[] = [];
   const creationProgram = options.creationProgram ?? "ChemDraft";
-  const nativeJson = serializeDocument(parsedDocument);
+  // Compact, not serializeDocument's indented form: the JSON is base64-encoded into an attribute
+  // nobody reads by eye, and indentation grew a large drawing's file ~1.8x. `parsedDocument` is
+  // validated already, so stringifying it directly also skips serializeDocument's second parse of
+  // a document that was not an engine document. Older, indented payloads still open — the reader
+  // hashes and parses whatever JSON bytes the envelope carries.
+  const nativeJson = JSON.stringify(parsedDocument);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
   const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
@@ -178,16 +190,14 @@ export function exportDocumentToCdxml(
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
   const contents = buildCdxmlEnvelope(creationProgram, envelopePages);
-  const finalVisibleHash = visibleHashForCdxml(contents);
+  // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
+  // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
+  // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
+  // visible envelope plus exactly this insertion. What must hold is that the reader strips the
+  // metadata back to the same visible hash; the round-trip tests (a save reopens as its native
+  // payload, not as an externally edited file) are what enforce it.
 
-  if (finalVisibleHash !== visibleCdxmlHash) {
-    warnings.push({
-      code: "cdxml.visible_hash_internal_mismatch",
-      message: "ChemDraft generated a CDXML envelope whose visible hash changed after metadata insertion."
-    });
-  }
-
-  return { contents, warnings };
+  return { contents, warnings, nativePayloadHash };
 }
 
 export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
@@ -196,7 +206,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   if (normalized.length === 0) {
     return {
       source: "external-cdxml",
-      warnings: [warning("cdxml.empty_payload", "Open failed because the file is empty.")]
+      warnings: [warning("cdxml.empty_payload", "The file is empty.")]
     };
   }
 
@@ -204,11 +214,26 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     return openLegacyJsonDocument(normalized);
   }
 
+  // "VjCD0100" opens every ChemDraw binary file. Say what it is and what to do — the generic
+  // "neither JSON nor XML" left a ChemDraw user with no way forward.
+  // "VmpDRDAx" is the same signature base64-encoded, the form CDX takes in some interchange files.
+  if (normalized.startsWith("VjCD") || normalized.startsWith("VmpDRDAx")) {
+    return {
+      source: "external-cdxml",
+      warnings: [
+        warning(
+          "cdx.binary_not_supported",
+          "This is a ChemDraw binary (.cdx) file, which ChemDraft cannot read yet. In ChemDraw, use File ▸ Save As and choose CDXML, then open that file."
+        )
+      ]
+    };
+  }
+
   if (!normalized.startsWith("<")) {
     return {
       source: "external-cdxml",
       warnings: [
-        warning("cdxml.unrecognized_payload", "Open failed because the file is neither native JSON nor CDXML XML.")
+        warning("cdxml.unrecognized_payload", "The file is neither a ChemDraft document nor CDXML: it is not JSON or XML.")
       ]
     };
   }
@@ -220,6 +245,21 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     return {
       source: "external-cdxml",
       warnings: [warning("cdxml.malformed_xml", `CDXML parse failed: ${errorMessage(error)}`)]
+    };
+  }
+
+  // XML that is not CDXML at all — `.cdxml` is also PowerShell's cmdlet-definition extension, and
+  // those files are XML too. Name what the file is instead of reporting "no page elements".
+  const rootName = xmlRootElementName(tree);
+  if (rootName !== undefined && rootName.toLowerCase() !== "cdxml") {
+    return {
+      source: "external-cdxml",
+      warnings: [
+        warning(
+          "cdxml.not_cdxml_xml",
+          `This XML file is not ChemDraw CDXML: its top-level element is <${rootName}>, not <CDXML>.`
+        )
+      ]
     };
   }
 
@@ -238,10 +278,14 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
             ),
             ...visibleImport.warnings
           ]
-        : [
-            warning("cdxml.external_import_not_implemented", "This CDXML file does not contain a ChemDraft payload and no supported visible objects were found."),
-            ...visibleImport.warnings
-          ]
+        // A refusal that already names its reason stands alone; the generic "no supported objects"
+        // sentence would be false for it and would bury the real cause.
+        : visibleImport.warnings.some(({ code }) => code === "cdxml.values_out_of_range")
+          ? visibleImport.warnings
+          : [
+              warning("cdxml.external_import_not_implemented", "This CDXML file does not contain a ChemDraft payload and no supported visible objects were found."),
+              ...visibleImport.warnings
+            ]
     };
   }
 
@@ -604,7 +648,9 @@ function exportBond(
   const nativeRef = { objectId: molecule.id, bondId: bond.id };
   const nativeRefKey = bondRefKey(nativeRef);
   const bondId = cdxmlBondIdForRef(nativeRef, context, allocator);
-  const order = cdxmlBondOrder(bond.order, molecule.id, warnings);
+  // A native dative bond (single + dashed) keeps its meaning in CDXML, which has an order for it;
+  // written as Order="1" it read back — in ChemDraw or RDKit — as an ordinary covalent single bond.
+  const order = isDativeBond(bond) ? "dative" : cdxmlBondOrder(bond.order, molecule.id, warnings);
   const attributes = [
     `id="${bondId}"`,
     `B="${atomIds.get(bond.fromAtomId) ?? escapeXmlAttribute(bond.fromAtomId)}"`,
@@ -1388,21 +1434,34 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
     };
   }
 
-  return {
-    document: ChemDraftDocumentSchema.parse({
-      ...base,
-      pages: importedPages,
-      selection: { objectIds: [] },
-      compatibility: {
-        warnings: warnings.map((item) => ({
-          code: item.code,
-          message: item.message,
-          objectId: item.sourceObjectId
-        }))
-      }
-    }),
-    warnings
-  };
+  // The schema is the last line of defence against values no drawing can hold — coordinates near
+  // 1e308 overflow to Infinity once a width is taken — and a rejection there must reach the user as
+  // a refusal naming the problem, not as an exception dumping the validator's JSON.
+  const parsed = ChemDraftDocumentSchema.safeParse({
+    ...base,
+    pages: importedPages,
+    selection: { objectIds: [] },
+    compatibility: {
+      warnings: warnings.map((item) => ({
+        code: item.code,
+        message: item.message,
+        objectId: item.sourceObjectId
+      }))
+    }
+  });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.length ? ` (at ${issue.path.join(".")})` : "";
+    return {
+      warnings: [
+        warning(
+          "cdxml.values_out_of_range",
+          `This CDXML file has values ChemDraft cannot represent${where}: ${issue?.message ?? "invalid document"}. Coordinates this large are usually a sign of a damaged file.`
+        )
+      ]
+    };
+  }
+  return { document: parsed.data, warnings };
 }
 
 function importPageObjects(
@@ -1421,45 +1480,96 @@ function importPageObjects(
     colorTable
   };
   let objectIndex = 1;
+
+  // One CDXML element → every object it produced (in drawing order) and the ids that stand for it at
+  // its parent's level. A `<group>` is a container, not an object: its children are imported like
+  // page children and tied together by a native group. Importing the whole group as one opaque
+  // unknown object dropped every molecule inside it — real ChemDraw files group routinely.
+  const importElement = (element: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
+    const single = (object: DocumentObject | undefined) => {
+      if (!object) {
+        return { objects: [], rootIds: [] };
+      }
+      objectIndex += 1;
+      return { objects: [object], rootIds: [object.id] };
+    };
+    if (element.name === "fragment") {
+      return single(importFragment(element, pageIndex, objectIndex, warnings, context));
+    }
+    if (element.name === "t") {
+      return single(importText(element, pageIndex, objectIndex));
+    }
+    if (element.name === "graphic") {
+      return single(importGraphic(element, pageIndex, objectIndex, context));
+    }
+    if (element.name === "arrow") {
+      return single(importArrowGraphic(element, pageIndex, objectIndex, context));
+    }
+    if (element.name === "group") {
+      return importGroup(element);
+    }
+    if (element.name === "objecttag") {
+      return { objects: [], rootIds: [] };
+    }
+    warnings.push({
+      code: "cdxml.object_import_unsupported",
+      message: `Imported unsupported CDXML object "${element.name}" as an unknown compatibility object.`
+    });
+    return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
+  };
+
+  const importGroup = (groupElement: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
+    const members: DocumentObject[] = [];
+    const memberRootIds: string[] = [];
+    for (const child of groupElement.children) {
+      const element = elementView(child);
+      if (!element || isChemDraftObjectTag(element)) {
+        continue;
+      }
+      const imported = importElement(element);
+      members.push(...imported.objects);
+      memberRootIds.push(...imported.rootIds);
+    }
+    // A native group needs two members to mean anything (the app's own Group command requires two);
+    // with fewer, the lone member simply stands on the page — said, not done silently (§11).
+    const rootIdSet = new Set(memberRootIds);
+    const bounds = memberRootIds.length >= 2 ? unionObjectBounds(members.filter((object) => rootIdSet.has(object.id))) : undefined;
+    if (!bounds) {
+      if (memberRootIds.length > 0) {
+        warnings.push({
+          code: "cdxml.group_not_preserved",
+          message: `CDXML group${groupElement.attributes.id ? ` ${groupElement.attributes.id}` : ""} has fewer than two placeable members; its contents were imported ungrouped.`
+        });
+      }
+      return { objects: members, rootIds: memberRootIds };
+    }
+    // The group's own attributes (Z order, bounding box, visibility, vendor data) have no native
+    // field; kept on the group rather than discarded.
+    const { id: _originalId, ...groupAttributes } = groupElement.attributes;
+    const group: GroupObject = {
+      id: `cdxml_group_${pageIndex + 1}_${objectIndex}`,
+      type: "group",
+      ...bounds,
+      rotation: 0,
+      style: {},
+      childObjectIds: memberRootIds,
+      compatibility: {
+        sourceFormat: "cdxml",
+        originalId: groupElement.attributes.id,
+        warnings: [],
+        unknown: Object.keys(groupAttributes).length > 0 ? { attributes: groupAttributes } : {}
+      }
+    };
+    objectIndex += 1;
+    return { objects: [...members, group], rootIds: [group.id] };
+  };
+
   for (const child of pageElement.children) {
     const element = elementView(child);
     if (!element || isChemDraftObjectTag(element)) {
       continue;
     }
-    if (element.name === "fragment") {
-      const molecule = importFragment(element, pageIndex, objectIndex, warnings, context);
-      if (molecule) {
-        objects.push(molecule);
-        objectIndex += 1;
-      }
-      continue;
-    }
-    if (element.name === "t") {
-      objects.push(importText(element, pageIndex, objectIndex));
-      objectIndex += 1;
-      continue;
-    }
-    if (element.name === "graphic") {
-      const graphic = importGraphic(element, pageIndex, objectIndex, context);
-      if (graphic) {
-        objects.push(graphic);
-        objectIndex += 1;
-      }
-      continue;
-    }
-    if (element.name === "arrow") {
-      objects.push(importArrowGraphic(element, pageIndex, objectIndex, context));
-      objectIndex += 1;
-      continue;
-    }
-    if (element.name !== "objecttag") {
-      objects.push(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
-      warnings.push({
-        code: "cdxml.object_import_unsupported",
-        message: `Imported unsupported CDXML object "${element.name}" as an unknown compatibility object.`
-      });
-      objectIndex += 1;
-    }
+    objects.push(...importElement(element).objects);
   }
   return {
     objects,
@@ -1755,6 +1865,8 @@ function importFragment(
   const atomByCdxmlId = new Map<string, MoleculeAtom>(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
   );
+  const cdxmlIdByBondId = new Map<string, string>();
+  let dashedSingleBondCount = 0;
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
     const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId);
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
@@ -1767,6 +1879,7 @@ function importFragment(
     const cdxmlBondId = bondElement.attributes.id ?? bondId;
     const ref = { objectId, bondId };
     context.bondRefsByCdxmlId.set(cdxmlBondId, ref);
+    cdxmlIdByBondId.set(bondId, cdxmlBondId);
     const z = parseInteger(bondElement.attributes.Z);
     if (z !== undefined) {
       context.zByRefKey.set(bondRefKey(ref), z);
@@ -1784,8 +1897,24 @@ function importFragment(
     if (doubleBondSide) {
       bond.display = { ...(bond.display ?? {}), doubleBondSide };
     }
+    const dative = isCdxmlDativeOrder(bondElement.attributes.Order);
     const bondDisplay = cdxmlBondDisplay(bondElement.attributes.Display);
-    if (bondDisplay) {
+    if (dative) {
+      // A dative bond is drawn dashed (`isDativeBond`), whatever Display said. A wedge, hash or bold
+      // display cannot also be kept, and must not swap the endpoints either: CDXML writes a dative
+      // bond donor (B) to acceptor (E).
+      if (bondDisplay && bondDisplay.bondStyle !== "dashed") {
+        warnings.push({
+          code: "cdxml.bond_display_unsupported",
+          message: `CDXML dative bond display "${bondElement.attributes.Display}" was replaced by the dashed style ChemDraft draws dative bonds with.`,
+          sourceObjectId: objectId
+        });
+      }
+      bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
+    } else if (bondDisplay) {
+      if (bondDisplay.bondStyle === "dashed" && order === "single") {
+        dashedSingleBondCount += 1;
+      }
       bond.display = { ...(bond.display ?? {}), bondStyle: bondDisplay.bondStyle };
       if (bondDisplay.narrowAtEnd) {
         // CDXML WedgeEnd/WedgedHashEnd put the narrow (stereocenter) end at E; ChemDraft
@@ -1803,7 +1932,41 @@ function importFragment(
     }
     return bond;
   });
-  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, bonds);
+  if (dashedSingleBondCount > 0) {
+    // ChemDraw draws hydrogen and partial (forming/breaking) bonds as dashed singles too; ChemDraft
+    // has one dashed single bond, the coordination bond, and every writer treats it as one (V3000
+    // bond type 9, CDXML Order="dative"). Said at the door rather than discovered in an export.
+    warnings.push({
+      code: "cdxml.dashed_single_read_as_dative",
+      message: `${dashedSingleBondCount} dashed single bond${dashedSingleBondCount === 1 ? " was" : "s were"} read as dative (coordination) bond${dashedSingleBondCount === 1 ? "" : "s"}, the only dashed single bond ChemDraft has; a hydrogen or partial bond drawn this way is exported as dative.`,
+      sourceObjectId: objectId
+    });
+  }
+  // A bond must join two different atoms of this fragment. One naming a missing atom used to keep
+  // the raw CDXML id as its endpoint — a bond to nothing that every later consumer (renderer, SMILES,
+  // valence) had to survive — and one from an atom to itself is no bond at all.
+  const importedAtomIds = new Set(atoms.map((atom) => atom.id));
+  const joinedBonds = bonds.filter(
+    (bond) => importedAtomIds.has(bond.fromAtomId) && importedAtomIds.has(bond.toAtomId) && bond.fromAtomId !== bond.toAtomId
+  );
+  if (joinedBonds.length !== bonds.length) {
+    // Crossing hints resolve CDXML bond ids through this map; a skipped bond must not stay reachable.
+    // Only this fragment's skipped bonds, by the ids recorded while mapping: scanning the whole map
+    // per fragment made a damaged file with thousands of such fragments quadratic to open.
+    const keptBondIds = new Set(joinedBonds.map((bond) => bond.id));
+    for (const bond of bonds) {
+      const cdxmlBondId = cdxmlIdByBondId.get(bond.id);
+      if (!keptBondIds.has(bond.id) && cdxmlBondId !== undefined && context.bondRefsByCdxmlId.get(cdxmlBondId)?.bondId === bond.id) {
+        context.bondRefsByCdxmlId.delete(cdxmlBondId);
+      }
+    }
+    warnings.push({
+      code: "cdxml.bond_endpoints_invalid",
+      message: `Skipped ${bonds.length - joinedBonds.length} CDXML bond${bonds.length - joinedBonds.length === 1 ? "" : "s"} that did not join two different atoms of the fragment.`,
+      sourceObjectId: objectId
+    });
+  }
+  const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, joinedBonds);
   // Order=1.5 bonds cannot say whether a ring N is pyridine-type or an N–H; the file's NumHydrogens
   // can, so it is kept on exactly those atoms for the Kekulé resolution to honour.
   const aromaticAtomIds = new Set(normalizedBonds.flatMap((bond) =>
@@ -2699,6 +2862,31 @@ function cdxmlCornerRadiusToCssPx(value: string | undefined): number {
   return cdxmlToCssPx(radius / defaultCdxmlCornerRadiusFactor);
 }
 
+/** The page-space box enclosing `objects`, or undefined when there is none to enclose. */
+function unionObjectBounds(
+  objects: readonly DocumentObject[]
+): { x: number; y: number; width: number; height: number } | undefined {
+  // A loop, not `Math.min(...values)`: spreading a hostile file's 150,000-member group overflows the
+  // argument stack and threw out of the open instead of failing safely.
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const object of objects) {
+    if (![object.x, object.y, object.width, object.height].every((value) => Number.isFinite(value))) {
+      continue;
+    }
+    left = Math.min(left, object.x);
+    top = Math.min(top, object.y);
+    right = Math.max(right, object.x + object.width);
+    bottom = Math.max(bottom, object.y + object.height);
+  }
+  if (left === Infinity) {
+    return undefined;
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number): DocumentObject {
   return {
     id: `cdxml_unknown_${pageIndex + 1}_${objectIndex}`,
@@ -2722,9 +2910,73 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
   };
 }
 
+/**
+ * fast-xml-parser's validator matches attribute values with `(([\s\S])*?)`, a group repeated once per
+ * character, which V8 runs recursively: a value of a few hundred thousand characters overflows the
+ * stack. The embedded ChemDraft payload is exactly such a value — base64 of the whole document — so
+ * every large drawing failed to save (the export re-parses its own output for the visible hash) and a
+ * large saved file could not be reopened. Validation only checks structure, so it runs on a copy with
+ * long values shortened; the parser, whose attribute pattern is flat, reads the real text.
+ */
+const VALIDATION_ATTRIBUTE_VALUE_LIMIT = 4096;
+
+// A linear scan, not a regular expression: even `"[^"<]{4096,}"` keeps backtracking state per
+// character in V8 and overflows on a multi-megabyte match. It reads quotes only inside markup —
+// never in text, comments, or CDATA. Text may hold a raw quote (the writer escapes only `&`, `<`
+// and `>` there), and a scan keyed on every `=` took `pH = "7` in a caption for an attribute: the
+// quote paired with a later one, the payload after it went unshortened, and the app refused to
+// reopen its own file.
+function withLongAttributeValuesShortened(xml: string): string {
+  let result = "";
+  let copiedUpTo = 0;
+  let cursor = 0;
+  for (;;) {
+    const open = xml.indexOf("<", cursor);
+    if (open === -1) {
+      break;
+    }
+    const skipTo = xml.startsWith("<!--", open)
+      ? xml.indexOf("-->", open + 4)
+      : xml.startsWith("<![CDATA[", open)
+        ? xml.indexOf("]]>", open + 9)
+        : undefined;
+    if (skipTo !== undefined) {
+      if (skipTo === -1) {
+        break;
+      }
+      cursor = skipTo + 3;
+      continue;
+    }
+    // A tag (or `<?…?>`, `<!DOCTYPE …>`): quoted values until the `>` outside them.
+    let index = open + 1;
+    for (; index < xml.length; index += 1) {
+      const character = xml[index];
+      if (character === ">") {
+        break;
+      }
+      if (character !== '"' && character !== "'") {
+        continue;
+      }
+      const close = xml.indexOf(character, index + 1);
+      if (close === -1) {
+        // Unterminated: nothing to shorten, and the validator reports the real error.
+        return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
+      }
+      const lessThan = xml.indexOf("<", index + 1);
+      if (close - index - 1 >= VALIDATION_ATTRIBUTE_VALUE_LIMIT && (lessThan === -1 || lessThan > close)) {
+        result += `${xml.slice(copiedUpTo, index + 1)}…`;
+        copiedUpTo = close;
+      }
+      index = close;
+    }
+    cursor = index + 1;
+  }
+  return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
+}
+
 function parseCdxml(contents: string): OrderedXmlTree {
   const xml = stripByteOrderMark(contents);
-  const validation = XMLValidator.validate(xml);
+  const validation = XMLValidator.validate(withLongAttributeValuesShortened(xml));
   if (validation !== true) {
     throw new Error(validation.err.msg);
   }
@@ -2813,6 +3065,17 @@ function findChemDraftObjectTags(tree: OrderedXmlTree): Record<string, string> {
   return tags;
 }
 
+/** The document element's name, skipping the XML declaration and other processing instructions. */
+function xmlRootElementName(tree: OrderedXmlTree): string | undefined {
+  for (const node of tree) {
+    const element = elementView(node);
+    if (element && !element.name.startsWith("?") && !element.name.startsWith("!")) {
+      return element.name;
+    }
+  }
+  return undefined;
+}
+
 function findElements(tree: OrderedXmlTree, name: string): XmlElementView[] {
   const matches: XmlElementView[] = [];
   for (const node of tree) {
@@ -2890,56 +3153,92 @@ function cdataContent(value: unknown): string | undefined {
   return undefined;
 }
 
-function encodeBase64UrlBytes(bytes: Uint8Array): string {
-  let encoded = "";
-  for (let index = 0; index < bytes.length; index += 3) {
-    const first = bytes[index];
-    const second = bytes[index + 1];
-    const third = bytes[index + 2];
-    const triple = (first << 16) | ((second ?? 0) << 8) | (third ?? 0);
-    encoded += base64UrlAlphabet[(triple >> 18) & 0x3f];
-    encoded += base64UrlAlphabet[(triple >> 12) & 0x3f];
-    if (index + 1 < bytes.length) {
-      encoded += base64UrlAlphabet[(triple >> 6) & 0x3f];
-    }
-    if (index + 2 < bytes.length) {
-      encoded += base64UrlAlphabet[triple & 0x3f];
-    }
+// The native payload is megabytes of base64url on a large drawing, so both directions work on
+// preallocated byte arrays. Growing a string one character at a time was most of a 5,000-molecule
+// save, and pushing decoded bytes into a number[] was a third of reopening it. Node's Buffer would
+// do this natively, but this code also runs in the WebView, where there is no Buffer.
+const base64UrlEncodeCodes = Uint8Array.from(base64UrlAlphabet, (char) => char.charCodeAt(0));
+const base64UrlDecodeTable = (() => {
+  const table = new Int16Array(128).fill(-1);
+  for (let index = 0; index < base64UrlAlphabet.length; index += 1) {
+    table[base64UrlAlphabet.charCodeAt(index)] = index;
   }
-  return encoded;
+  return table;
+})();
+
+// Unpadded base64url: a trailing group of one byte becomes two characters and a group of two
+// becomes three, never "=" padding. Files already on disk were written that way, so the output
+// must stay byte-identical to the character-by-character encoder this replaced.
+export function encodeBase64UrlBytes(bytes: Uint8Array): string {
+  const length = bytes.length;
+  const remainder = length % 3;
+  const wholeGroupsEnd = length - remainder;
+  const out = new Uint8Array((wholeGroupsEnd / 3) * 4 + (remainder === 0 ? 0 : remainder + 1));
+  let write = 0;
+  for (let index = 0; index < wholeGroupsEnd; index += 3) {
+    const triple = (bytes[index] << 16) | (bytes[index + 1] << 8) | bytes[index + 2];
+    out[write] = base64UrlEncodeCodes[triple >> 18];
+    out[write + 1] = base64UrlEncodeCodes[(triple >> 12) & 0x3f];
+    out[write + 2] = base64UrlEncodeCodes[(triple >> 6) & 0x3f];
+    out[write + 3] = base64UrlEncodeCodes[triple & 0x3f];
+    write += 4;
+  }
+  if (remainder === 1) {
+    const first = bytes[wholeGroupsEnd];
+    out[write] = base64UrlEncodeCodes[first >> 2];
+    out[write + 1] = base64UrlEncodeCodes[(first << 4) & 0x3f];
+  } else if (remainder === 2) {
+    const pair = (bytes[wholeGroupsEnd] << 8) | bytes[wholeGroupsEnd + 1];
+    out[write] = base64UrlEncodeCodes[pair >> 10];
+    out[write + 1] = base64UrlEncodeCodes[(pair >> 4) & 0x3f];
+    out[write + 2] = base64UrlEncodeCodes[(pair << 2) & 0x3f];
+  }
+  // Every code is ASCII, so a UTF-8 decode is the identity and turns the whole array into a string
+  // in one native call.
+  return new TextDecoder().decode(out);
 }
 
-function decodeBase64UrlBytes(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) {
+export function decodeBase64UrlBytes(value: string): Uint8Array {
+  const length = value.length;
+  const remainder = length % 4;
+  // One leftover character cannot carry a whole byte, so no encoder produces it.
+  if (remainder === 1) {
     throw new Error("Invalid base64url payload.");
   }
-  const bytes: number[] = [];
-  for (let index = 0; index < value.length; index += 4) {
-    const a = decodeBase64UrlChar(value[index]);
-    const b = decodeBase64UrlChar(value[index + 1]);
-    const c = value[index + 2] === undefined ? 0 : decodeBase64UrlChar(value[index + 2]);
-    const d = value[index + 3] === undefined ? 0 : decodeBase64UrlChar(value[index + 3]);
-    const triple = (a << 18) | (b << 12) | (c << 6) | d;
-    bytes.push((triple >> 16) & 0xff);
-    if (value[index + 2] !== undefined) {
-      bytes.push((triple >> 8) & 0xff);
-    }
-    if (value[index + 3] !== undefined) {
-      bytes.push(triple & 0xff);
+  const wholeGroupsEnd = length - remainder;
+  const bytes = new Uint8Array((wholeGroupsEnd / 4) * 3 + (remainder === 0 ? 0 : remainder - 1));
+  let write = 0;
+  for (let index = 0; index < wholeGroupsEnd; index += 4) {
+    const quad =
+      (base64UrlSextet(value, index) << 18) |
+      (base64UrlSextet(value, index + 1) << 12) |
+      (base64UrlSextet(value, index + 2) << 6) |
+      base64UrlSextet(value, index + 3);
+    bytes[write] = quad >> 16;
+    bytes[write + 1] = (quad >> 8) & 0xff;
+    bytes[write + 2] = quad & 0xff;
+    write += 3;
+  }
+  if (remainder >= 2) {
+    const high = (base64UrlSextet(value, wholeGroupsEnd) << 6) | base64UrlSextet(value, wholeGroupsEnd + 1);
+    if (remainder === 2) {
+      bytes[write] = high >> 4;
+    } else {
+      const triple = (high << 6) | base64UrlSextet(value, wholeGroupsEnd + 2);
+      bytes[write] = triple >> 10;
+      bytes[write + 1] = (triple >> 2) & 0xff;
     }
   }
-  return new Uint8Array(bytes);
+  return bytes;
 }
 
-function decodeBase64UrlChar(char: string | undefined): number {
-  if (char === undefined) {
-    throw new Error("Invalid base64url payload length.");
+function base64UrlSextet(value: string, index: number): number {
+  const code = value.charCodeAt(index);
+  const sextet = code < 128 ? base64UrlDecodeTable[code] : -1;
+  if (sextet < 0) {
+    throw new Error("Invalid base64url payload.");
   }
-  const value = base64UrlAlphabet.indexOf(char);
-  if (value < 0) {
-    throw new Error("Invalid base64url character.");
-  }
-  return value;
+  return sextet;
 }
 
 function createIdAllocator(pageIndex: number): IdAllocator {
@@ -3022,6 +3321,10 @@ function cdxmlBondOrder(
   return "1";
 }
 
+function isCdxmlDativeOrder(order: string | undefined): boolean {
+  return order?.trim().toLowerCase() === "dative";
+}
+
 function moleculeBondOrderFromCdxml(
   order: string | undefined,
   warnings: CompatibilityConversionWarning[],
@@ -3035,6 +3338,11 @@ function moleculeBondOrderFromCdxml(
   }
   if (order === "3") {
     return "triple";
+  }
+  if (isCdxmlDativeOrder(order)) {
+    // A dative bond is native: a single bond drawn dashed (`isDativeBond`). The dashed style is
+    // applied by the caller, after the bond's own Display, so the pair always reads back as dative.
+    return "single";
   }
   if (order === "1.5" || order?.toLowerCase() === "aromatic") {
     warnings.push({
@@ -3385,7 +3693,16 @@ function parseNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+// One scan decides whether escaping is needed at all, and a value with nothing to escape is
+// returned untouched rather than copied by each replace pass. Most values need none, including the
+// base64url payload, whose alphabet has no XML-special characters.
+const XML_TEXT_SPECIAL = /[&<>]/;
+const XML_ATTRIBUTE_SPECIAL = /[&<>"']/;
+
 function escapeXmlText(value: string): string {
+  if (!XML_TEXT_SPECIAL.test(value)) {
+    return value;
+  }
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -3393,6 +3710,9 @@ function escapeXmlText(value: string): string {
 }
 
 function escapeXmlAttribute(value: string): string {
+  if (!XML_ATTRIBUTE_SPECIAL.test(value)) {
+    return value;
+  }
   return escapeXmlText(value)
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");

@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -25,7 +26,7 @@ describe("core capability grants", () => {
   );
 
   function sourceFiles(): string[] {
-    const root = new URL(".", import.meta.url).pathname;
+    const root = fileURLToPath(new URL(".", import.meta.url));
     const found: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir)) {

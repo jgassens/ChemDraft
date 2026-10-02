@@ -41,6 +41,7 @@ import {
   hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
   prewarmToolsetPopoverWindow,
+  prewarmToolsetTooltipWindow,
   listenForPalettePointer,
   listenForPalettePointerLeave,
   listenForKeybindingSettings,
@@ -774,10 +775,14 @@ export function PaletteWindow({
   // build (a fresh webview loading the app bundle) is the slow part of a popover open — leaving it
   // to the first press made that press look unresponsive for a second or more. Deferred briefly so
   // palette startup itself stays snappy; by the first hold the window is warm and opens in a frame
-  // or two.
+  // or two. The shared tooltip window is prewarmed here too, before the popover because a hover
+  // comes before a press; it is built on this deferred path rather than at launch so it never
+  // delays the palettes themselves.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void prewarmToolsetPopoverWindow(toolset.id).catch(() => undefined);
+      void prewarmToolsetTooltipWindow()
+        .then(() => prewarmToolsetPopoverWindow(toolset.id))
+        .catch(() => undefined);
     }, 1000);
     return () => window.clearTimeout(timer);
   }, [toolset.id]);

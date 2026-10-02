@@ -1,4 +1,5 @@
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   createStructureSourceFingerprint,
@@ -29,16 +30,19 @@ export function pluginFacingStructure(
     try {
       return {
         structureFormat: "molfile-v2000",
-        // Native atoms live in the document (y-down) frame; molfiles are y-up. An abbreviated
-        // label ("Ph", "OMe") is handed over as an R-group pseudo-atom, not the export dummy "*":
-        // the plugin's OpenChemLib reads "*" as a carbon and would predict for a molecule the
-        // user did not draw, with nothing to tell it otherwise. An R-group is honestly "a group
-        // this file does not spell" (AGENTS.md §10: no fake chemistry).
+        // Native atoms live in the document (y-down) frame; molfiles are y-up. A condensed label
+        // naming one heavy atom ("OH", "NH2") is spelled as that atom with exactly its hydrogens,
+        // through the valence field, which OpenChemLib honours. An abbreviated label ("Ph", "OMe")
+        // is handed over as an R-group pseudo-atom, not the export dummy "*": the plugin's
+        // OpenChemLib reads "*" as a carbon and would predict for a molecule the user did not draw,
+        // with nothing to tell it otherwise. An R-group is honestly "a group this file does not
+        // spell" (AGENTS.md §10: no fake chemistry).
         structure: moleculeToMolfileV2000(molecule, {
           fromDocFrame: true,
           warnings,
           abbreviations: "rgroup",
-          kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+          kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders,
+          spellLabel: nativeSingleHeavyElementLabelValence
         }).contents
       };
     } catch (error) {

@@ -985,40 +985,76 @@ function resolvePageBondCrossings(
   const resolved: InternalResolvedBondCrossing[] = [];
   const overrides = page.crossings;
 
-  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
-      const left = candidates[leftIndex];
-      const right = candidates[rightIndex];
-      if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
-        continue;
-      }
-      const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
-      if (!intersection) {
-        continue;
-      }
-      const depth = compareBondDepth(left, right, { overrides });
-      const frontCandidate = depth >= 0 ? left : right;
-      const backCandidate = depth >= 0 ? right : left;
-      const key = crossingPairKey([left.ref, right.ref]);
-      const override = overrides.find((candidate) => crossingPairKey(candidate.bonds) === key);
-      const clearancePx = crossingClearancePx(frontCandidate, backCandidate, intersection.angleSin, override);
-      resolved.push({
-        key,
-        bonds: canonicalBondRefs([left.ref, right.ref]),
-        front: frontCandidate.ref,
-        back: backCandidate.ref,
-        point: intersection.point,
-        backLocalPoint: inverseTransformPointForObject(backCandidate.object, intersection.point),
-        clearancePx,
-        hasOverride: override !== undefined,
-        frontCandidate,
-        backCandidate
-      });
+  forEachCandidatePairOverlappingInX(candidates, (leftIndex, rightIndex) => {
+    const left = candidates[leftIndex];
+    const right = candidates[rightIndex];
+    if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
+      return;
     }
-  }
+    const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
+    if (!intersection) {
+      return;
+    }
+    const depth = compareBondDepth(left, right, { overrides });
+    const frontCandidate = depth >= 0 ? left : right;
+    const backCandidate = depth >= 0 ? right : left;
+    const key = crossingPairKey([left.ref, right.ref]);
+    const override = overrides.find((candidate) => crossingPairKey(candidate.bonds) === key);
+    const clearancePx = crossingClearancePx(frontCandidate, backCandidate, intersection.angleSin, override);
+    resolved.push({
+      key,
+      bonds: canonicalBondRefs([left.ref, right.ref]),
+      front: frontCandidate.ref,
+      back: backCandidate.ref,
+      point: intersection.point,
+      backLocalPoint: inverseTransformPointForObject(backCandidate.object, intersection.point),
+      clearancePx,
+      hasOverride: override !== undefined,
+      frontCandidate,
+      backCandidate
+    });
+  });
 
   warnForDepthCycles(resolved, warnings);
   return resolved.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+/**
+ * Visit every candidate pair whose bond segments overlap in x, as `(lower index, higher index)` —
+ * the order the all-pairs loop used, which decides depth ties. Sweep and prune: sorted by left edge,
+ * a pair is visited while the next segment starts no further right than this one ends (inclusive,
+ * matching `segmentBoxesOverlap`). Every pair the old O(n²) loop kept overlaps in x, so the result is
+ * identical; a page of a few thousand bonds no longer compares millions of far-apart pairs.
+ * Segments with non-finite ends are left out — `shouldSkipCrossingCandidatePair` skips them anyway,
+ * and NaN cannot be sorted.
+ */
+function forEachCandidatePairOverlappingInX(
+  candidates: readonly PageNativeBondCandidate[],
+  visit: (leftIndex: number, rightIndex: number) => void
+): void {
+  const spans = candidates.flatMap((candidate, index) => {
+    const minX = Math.min(candidate.start.x, candidate.end.x);
+    const maxX = Math.max(candidate.start.x, candidate.end.x);
+    const minY = Math.min(candidate.start.y, candidate.end.y);
+    const maxY = Math.max(candidate.start.y, candidate.end.y);
+    return Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)
+      ? [{ index, minX, maxX, minY, maxY }]
+      : [];
+  });
+  spans.sort((left, right) => left.minX - right.minX || left.index - right.index);
+  for (let i = 0; i < spans.length; i += 1) {
+    const current = spans[i]!;
+    for (let j = i + 1; j < spans.length && spans[j]!.minX <= current.maxX; j += 1) {
+      const other = spans[j]!;
+      // Disjoint in y too: `shouldSkipCrossingCandidatePair` would skip the pair on the same test,
+      // so rejecting it here changes nothing but the cost. On a tall page most x-overlapping pairs
+      // are rows apart.
+      if (other.minY > current.maxY || other.maxY < current.minY) {
+        continue;
+      }
+      visit(Math.min(current.index, other.index), Math.max(current.index, other.index));
+    }
+  }
 }
 
 function nativeBondCandidates(object: MoleculeObject, objectLayerIndex: number): PageNativeBondCandidate[] {
@@ -1242,15 +1278,78 @@ export function planPageSvgRender(
     return byBond;
   }, new Map());
   const crossingHitTargets = crossings.map((crossing) => crossingHitTargetFragment(crossing));
+  const objectIdsWithGaps = new Set(crossings.map((crossing) => crossing.back.objectId));
 
   return {
     fragments: page.objects.flatMap((object, layerIndex) => {
+      if (object.type === "molecule") {
+        return plannedMoleculeFragments(object, layerIndex, gapsByBondKey, objectIdsWithGaps);
+      }
       const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page);
       return fragment ? flattenDocumentObjectSvg(fragment) : [];
     }).concat(crossingHitTargets),
     crossings,
     warnings
   };
+}
+
+/**
+ * A molecule's plan is a pure function of the object, its layer index, and the crossing gaps on its
+ * own bonds, so it is cached per object. The patch engine shares unchanged objects between document
+ * versions, so an edit to one molecule of a 5,000-molecule page re-plans that one: re-planning every
+ * molecule cost ~60 ms per edit. Planned fragments are treated as immutable by every consumer.
+ *
+ * Keyed by object id and layer index, one entry each, and checked against the object's identity: a
+ * WeakMap keyed by the object kept a plan alive for every molecule version an undo snapshot still
+ * held, which grew the heap by hundreds of megabytes on a large page. The layer index is in the key
+ * because the editor plans a filtered page and the full page each render, where one molecule sits at
+ * two depths and would evict itself on every plan. Ids of deleted objects linger, so the map is
+ * dropped whenever it outgrows `MOLECULE_PLAN_CACHE_LIMIT`.
+ */
+const MOLECULE_PLAN_CACHE_LIMIT = 50_000;
+const moleculePlanCache = new Map<
+  string,
+  { object: MoleculeObject; gaps: string; fragments: readonly PageSvgElementFragment[] }
+>();
+
+function plannedMoleculeFragments(
+  object: MoleculeObject,
+  layerIndex: number,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
+  objectIdsWithGaps: ReadonlySet<string>
+): readonly PageSvgElementFragment[] {
+  const key = `${layerIndex}:${object.id}`;
+  // Only a molecule some crossing cuts has gaps to sign; the rest skip a walk over their bonds.
+  const gaps = objectIdsWithGaps.has(object.id) ? moleculeGapSignature(object, gapsByBondKey) : "";
+  const cached = moleculePlanCache.get(key);
+  if (cached && cached.object === object && cached.gaps === gaps) {
+    return cached.fragments;
+  }
+  const fragments = flattenDocumentObjectSvg(planMoleculeObjectSvg(object, layerIndex, gapsByBondKey));
+  if (moleculePlanCache.size >= MOLECULE_PLAN_CACHE_LIMIT && !moleculePlanCache.has(key)) {
+    moleculePlanCache.clear();
+  }
+  moleculePlanCache.set(key, { object, gaps, fragments });
+  return fragments;
+}
+
+function moleculeGapSignature(
+  object: MoleculeObject,
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+): string {
+  if (gapsByBondKey.size === 0) {
+    return "";
+  }
+  let signature = "";
+  for (const bond of object.bonds) {
+    const gaps = gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id }));
+    if (gaps) {
+      for (const gap of gaps) {
+        signature += `${bond.id}@${gap.point.x},${gap.point.y},${gap.clearancePx};`;
+      }
+    }
+  }
+  return signature;
 }
 
 function flattenDocumentObjectSvg(fragment: PageSvgElementFragment): PageSvgElementFragment[] {
@@ -1720,6 +1819,11 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   });
   adjacency.forEach((edges) => edges.sort((left, right) => left.atomId.localeCompare(right.atomId)));
 
+  // A bridge (a bond whose removal disconnects the graph) lies on no cycle, so its shortest-path
+  // search below could only come back empty. Skipping bridges leaves the result unchanged and stops
+  // ring perception from being quadratic: every bond of a chain is a bridge, and each search used to
+  // walk the whole molecule.
+  const bridges = moleculeBridgeBondIds(adjacency);
   const cycles = new Map<string, MoleculeFillRingCycle>();
   for (const bond of object.bonds) {
     if (cycles.size >= maxMoleculeFillCycles) {
@@ -1729,7 +1833,8 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
     if (
       !atomIdSet.has(bond.fromAtomId) ||
       !atomIdSet.has(bond.toAtomId) ||
-      bond.fromAtomId === bond.toAtomId
+      bond.fromAtomId === bond.toAtomId ||
+      bridges.has(bond.id)
     ) {
       continue;
     }
@@ -1753,6 +1858,60 @@ function moleculeFillRingCycles(object: MoleculeObject): MoleculeFillRingCycle[]
   return [...cycles.values()].sort((left, right) =>
     moleculeFillCycleSortKey(left).localeCompare(moleculeFillCycleSortKey(right))
   );
+}
+
+/**
+ * Bond ids of every bridge, by Tarjan's low-link method. Iterative, not recursive: a long chain is
+ * exactly the input this exists for, and recursion one frame per atom would overflow the stack.
+ * Parent edges are skipped by bond id, so two parallel bonds between one pair form a cycle, not two
+ * bridges.
+ */
+function moleculeBridgeBondIds(adjacency: ReadonlyMap<string, readonly MoleculeFillAdjacencyEdge[]>): Set<string> {
+  const discovered = new Map<string, number>();
+  const low = new Map<string, number>();
+  const bridges = new Set<string>();
+  let time = 0;
+  for (const start of adjacency.keys()) {
+    if (discovered.has(start)) {
+      continue;
+    }
+    discovered.set(start, time);
+    low.set(start, time);
+    time += 1;
+    const stack: { atomId: string; parentBondId: string | undefined; edgeIndex: number }[] = [
+      { atomId: start, parentBondId: undefined, edgeIndex: 0 }
+    ];
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      const edges = adjacency.get(frame.atomId) ?? [];
+      if (frame.edgeIndex < edges.length) {
+        const edge = edges[frame.edgeIndex]!;
+        frame.edgeIndex += 1;
+        if (edge.bondId === frame.parentBondId) {
+          continue;
+        }
+        const seen = discovered.get(edge.atomId);
+        if (seen === undefined) {
+          discovered.set(edge.atomId, time);
+          low.set(edge.atomId, time);
+          time += 1;
+          stack.push({ atomId: edge.atomId, parentBondId: edge.bondId, edgeIndex: 0 });
+        } else {
+          low.set(frame.atomId, Math.min(low.get(frame.atomId)!, seen));
+        }
+        continue;
+      }
+      stack.pop();
+      const parent = stack[stack.length - 1];
+      if (parent) {
+        low.set(parent.atomId, Math.min(low.get(parent.atomId)!, low.get(frame.atomId)!));
+        if (low.get(frame.atomId)! > discovered.get(parent.atomId)! && frame.parentBondId !== undefined) {
+          bridges.add(frame.parentBondId);
+        }
+      }
+    }
+  }
+  return bridges;
 }
 
 export function nativeMoleculeRings(object: MoleculeObject): NativeMoleculeRing[] {

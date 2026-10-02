@@ -34,7 +34,8 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns"
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "externalBin": ["binaries/avogadro3d-sidecar"],
     "resources": [
@@ -59,7 +60,7 @@
       },
       {
         "ext": ["cdxml"],
-        "name": "ChemDraw CDXML Document",
+        "name": "CDXML Document",
         "description": "Chemical Markup Language document",
         "mimeType": "chemical/x-cdxml",
         "role": "Editor",
@@ -67,6 +68,11 @@
         "contentTypes": ["com.cambridgesoft.cdxml", "public.xml"]
       }
     ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "macOS": {
       "frameworks": ["./Sparkle.framework"],
       "entitlements": "./chemdraft.entitlements"

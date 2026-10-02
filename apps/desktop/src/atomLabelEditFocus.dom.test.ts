@@ -420,6 +420,11 @@ describe("atom label editor focus", () => {
     // Regression guard for restoreSelectionAfterAtomLabelEdit: restoreDocumentHistory closes the edit
     // (clearing activeAtomLabelEdit) without clearing selectedNativeMoleculePart, so the part-only
     // check alone would still think nothing has replaced the edit's selection and clobber undo's own.
+    //
+    // Timers are faked so the editor's focus retries (scheduleInlineEditorFocus: 0/16/80 ms) run at
+    // a point this test chooses. With real timers, a slow runner could fire one between the blur and
+    // the undo, putting focus back in the input so edit.undo routed to the field's own text undo.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const oneRing = insertNativeTemplateMolecule(createPhase4Document("Label focus"), { x: 200, y: 300 }, "cyclohexane");
     const twoRings = insertNativeTemplateMolecule(oneRing, { x: 500, y: 300 }, "cyclohexane");
     const firstRingId = twoRings.pages[0].objects[0]!.id;
@@ -435,11 +440,20 @@ describe("atom label editor focus", () => {
     const remainingRingId = bridge().snapshot().document.pages[0].objects[0]!.id;
     await startLabelEdit(0);
     expect(bridge().snapshot().selection.objectIds).toEqual([remainingRingId]);
+    // A person reaches the menu long after the editor's startup focus retries have run out.
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
 
     // Blurred but still open — exactly what choosing Edit ▸ Undo from the menu looks like mid-word,
     // since the window loses key status to deliver the click.
     await loseFocusToAnotherWindow();
     expect(labelEditor()).not.toBeNull();
+    // However long the menu click takes to arrive, nothing may pull focus back into the editor.
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(document.activeElement).not.toBe(labelEditor());
 
     await paletteCommand("edit.undo");
 

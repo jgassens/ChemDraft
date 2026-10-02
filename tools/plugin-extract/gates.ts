@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { checkPluginBoundary, PLUGIN_SDK_PACKAGE } from "./checkBoundary";
+import { checkPluginBoundary, PLUGIN_SDK_PACKAGE, toPortablePath } from "./checkBoundary";
 
 /** Repository root, resolved from this file's location (`tools/plugin-extract/`). */
 export const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -56,7 +56,7 @@ export function canonicalPath(path: string): string {
     missingSegments.unshift(basename(existing));
     existing = parent;
   }
-  return join(realpathSync(existing), ...missingSegments);
+  return join(realpathSync.native(existing), ...missingSegments);
 }
 
 /**
@@ -89,7 +89,7 @@ export function assertRegularDistributionTree(
         continue;
       }
       const full = join(dir, entry.name);
-      const pluginRelative = relative(pluginRoot, full);
+      const pluginRelative = toPortablePath(relative(pluginRoot, full));
       const stat = lstatSync(full);
       if (stat.isSymbolicLink()) {
         throw error(`plugin contains a symbolic link, which cannot be distributed safely: ${pluginRelative}`);
@@ -116,14 +116,17 @@ export function readPluginGitState(
 ): { sourceCommit: string; repository: string; pathspec: string } {
   let repository: string;
   let sourceCommit: string;
+  // `.native` throughout these tools: the JS realpath keeps Windows 8.3 short names
+  // (`C:\Users\JGASS~1\…`, typical of %TEMP%) while git reports the long form, and `relative()`
+  // between the two escaped the repository and produced a pathspec of `../../…`.
   try {
-    repository = realpathSync(run("git", ["rev-parse", "--show-toplevel"], pluginRoot));
+    repository = realpathSync.native(run("git", ["rev-parse", "--show-toplevel"], pluginRoot));
     sourceCommit = run("git", ["rev-parse", "HEAD"], pluginRoot);
   } catch {
     throw error("plugin must belong to a Git repository so source provenance can be recorded");
   }
 
-  const pathspec = relative(repository, realpathSync(pluginRoot)) || ".";
+  const pathspec = toPortablePath(relative(repository, realpathSync.native(pluginRoot))) || ".";
   const status = run("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", pathspec], repository);
   if (status) {
     throw error(`plugin has uncommitted or untracked files; commit or clean them before distributing:\n${status}`);
@@ -169,7 +172,10 @@ export function createPluginSourceSnapshot(
       ],
       { cwd: state.repository, stdio: ["ignore", "ignore", "pipe"] }
     );
-    execFileSync("tar", ["-xf", archivePath, "-C", temporaryRoot], {
+    // Relative archive name, run from its directory: GNU tar (Git for Windows puts one ahead of
+    // System32's bsdtar on PATH) reads `C:\…\source.tar` as file `\…\source.tar` on remote host `C`.
+    execFileSync("tar", ["-xf", basename(archivePath)], {
+      cwd: temporaryRoot,
       stdio: ["ignore", "ignore", "pipe"]
     });
 
@@ -185,7 +191,7 @@ export function createPluginSourceSnapshot(
     // commit snapshot is the final authority, so vet the materialized distribution tree as well.
     assertRegularDistributionTree(archivedPluginRoot, error);
     return {
-      pluginRoot: realpathSync(archivedPluginRoot),
+      pluginRoot: realpathSync.native(archivedPluginRoot),
       dispose: () => rmSync(temporaryRoot, { recursive: true, force: true })
     };
   } catch (cause: unknown) {
@@ -271,7 +277,7 @@ export function findBundledDataPaths(pluginRoot: string): string[] {
         (insideDataDir && !CODE_FILE_EXTENSIONS.has(extname(entry).toLowerCase())) ||
         DATA_FILE_EXTENSIONS.has(extname(entry).toLowerCase())
       ) {
-        out.push(relative(pluginRoot, full));
+        out.push(toPortablePath(relative(pluginRoot, full)));
       }
     }
   };

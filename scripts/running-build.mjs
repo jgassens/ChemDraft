@@ -12,10 +12,10 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { appDataRoot } from "./app-data-root.mjs";
 
-const SUPPORT_DIR = join(homedir(), "Library", "Application Support");
+const SUPPORT_DIR = appDataRoot();
 const STATUS_FILE = "runtime-build.json";
 
 function chemdraftAppDirs() {

@@ -36,6 +36,16 @@ if(CHEMDRAFT_AVOGADRO3D_ENABLE_DIAGNOSTIC_VIEWPORT)
   message(STATUS "Dev-only diagnostic Qt viewport is enabled; this must not be shipped as product UI.")
 endif()
 
+# MSVC (the windows-msvc preset). Set before add_subdirectory so avogadrolibs compiles the same way:
+# M_PI & co. need _USE_MATH_DEFINES, <windows.h>'s min/max macros break std::min/max, Eigen's
+# templates overflow the default object-section limit, and sources are UTF-8. The static runtime
+# (/MT, via CMAKE_MSVC_RUNTIME_LIBRARY in the preset) makes the sidecar one self-contained .exe, which
+# is all Tauri's externalBin ships.
+if(MSVC)
+  add_compile_definitions(_USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  add_compile_options(/bigobj /utf-8 /EHsc)
+endif()
+
 add_executable(avogadro3d-sidecar src/main.cpp)
 target_compile_definitions(avogadro3d-sidecar PRIVATE
   CHEMDRAFT_AVOGADRO3D_AVOGADRO_COMMIT="${CHEMDRAFT_AVOGADRO3D_AVOGADRO_COMMIT}"
@@ -78,6 +88,11 @@ if(CHEMDRAFT_AVOGADRO3D_USE_AVOGADRO_CALC)
   set(USE_PYTHON OFF CACHE BOOL "Disable avogadrolibs Python wrapping" FORCE)
   set(USE_SPGLIB OFF CACHE BOOL "Disable avogadrolibs spglib features" FORCE)
   set(SKBUILD ON CACHE BOOL "Skip avogadrolibs command/install extras in sidecar build" FORCE)
+
+  # Eigen is MPL-2.0 apart from a few LGPL-licensed modules. EIGEN_MPL2_ONLY makes including any of
+  # those a compile error, so a sidecar that builds provably contains only MPL-2.0 Eigen code (NOTICE,
+  # docs/architecture/dependency-inventory.md). Set before add_subdirectory so avogadrolibs gets it too.
+  add_compile_definitions(EIGEN_MPL2_ONLY)
 
   add_subdirectory("${_chemdraft_avogadro_source}" "${CMAKE_CURRENT_BINARY_DIR}/avogadrolibs" EXCLUDE_FROM_ALL)
   target_link_libraries(avogadro3d-sidecar PRIVATE Avogadro::Core Avogadro::Calc)

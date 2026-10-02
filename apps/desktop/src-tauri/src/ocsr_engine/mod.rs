@@ -1074,6 +1074,36 @@ impl Drop for TempImage {
     }
 }
 
+/// Sizes a test stand-in for a large download without writing it. `set_len` is sparse on APFS and
+/// ext4 but allocates every byte on NTFS unless the file is flagged sparse first, and the tests that
+/// stand in for the 1.1 GB model would otherwise fill a Windows disk between them.
+#[cfg(test)]
+pub(crate) fn set_sparse_len(file: &fs::File, len: u64) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::{Ioctl::FSCTL_SET_SPARSE, IO::DeviceIoControl};
+        let mut returned = 0u32;
+        // SAFETY: a live handle owned by `file`, no input or output buffers.
+        let ok = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_SPARSE,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    file.set_len(len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,7 +1209,7 @@ mod tests {
         fs::File::options()
             .write(true)
             .open(engine.join(pins::MODEL_FILENAME))
-            .and_then(|model| model.set_len(pins::MODEL_BYTES))
+            .and_then(|model| super::set_sparse_len(&model, pins::MODEL_BYTES))
             .expect("pinned-size model");
 
         for _ in 0..3 {

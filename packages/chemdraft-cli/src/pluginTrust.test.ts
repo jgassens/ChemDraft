@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,24 @@ import {
 } from "./pluginTrust";
 
 const PLUGIN_ID = "org.chemdraft.nmr.predictor";
+
+/**
+ * Windows refuses file symlinks (EPERM) without Developer Mode or elevation. Directory links use a
+ * junction there, which needs neither, so only the two file-symlink cases depend on this probe.
+ */
+const canSymlinkFiles = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "chemdraft-symlink-probe-"));
+  try {
+    writeFileSync(join(probe, "target"), "");
+    symlinkSync(join(probe, "target"), join(probe, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
 
 let root: string;
 let counter = 0;
@@ -157,7 +175,7 @@ describe("plugin allow-list", () => {
   it("accepts a trusted directory reached through a symlink, and a symlinked trust entry", async () => {
     const plugin = await fakePlugin();
     const link = join(root, `link-${++counter}`);
-    await symlink(plugin.dir, link);
+    await symlink(plugin.dir, link, directoryLinkType);
 
     const viaLink = await loadTrustedPlugin(request(link, await trustFile(trusting(plugin.dir))));
     expect(viaLink.location.dir).toBe(realpathSync(plugin.dir));
@@ -167,7 +185,7 @@ describe("plugin allow-list", () => {
     expect(listedAsLink.location.entryPath).toBe(realpathSync(join(plugin.dir, "src", "index.ts")));
   });
 
-  it("refuses an entry symlinked outside the trusted directory without executing it", async () => {
+  it.skipIf(!canSymlinkFiles)("refuses an entry symlinked outside the trusted directory without executing it", async () => {
     const plugin = await fakePlugin();
     const outsideDir = join(root, `outside-${++counter}`);
     await mkdir(outsideDir);
@@ -183,7 +201,7 @@ describe("plugin allow-list", () => {
     expectNothingRan(plugin);
   });
 
-  it("refuses a manifest symlinked outside the trusted directory without executing it", async () => {
+  it.skipIf(!canSymlinkFiles)("refuses a manifest symlinked outside the trusted directory without executing it", async () => {
     const plugin = await fakePlugin();
     const outsideDir = join(root, `outside-${++counter}`);
     await mkdir(outsideDir);

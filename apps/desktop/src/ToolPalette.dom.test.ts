@@ -339,6 +339,101 @@ describe("ToolPalette art color popover", () => {
     expect(onCommit).toHaveBeenCalledWith(objectCustomColorCommandId("#ed0a3f"));
   });
 
+  it("types a full hex code without expanding a three-digit prefix mid-way", () => {
+    const { onCommit } = renderPalette();
+    const popover = openPicker();
+    const hexInput = popover.querySelector<HTMLInputElement>(".color-hex-field input");
+    if (!hexInput) {
+      throw new Error("Expected hex input.");
+    }
+
+    // One keystroke at a time, the way a user types "#1E88E5".
+    for (const prefix of ["#", "#1", "#1E", "#1E8", "#1E88", "#1E88E", "#1E88E5"]) {
+      act(() => {
+        changeRangeValue(hexInput, prefix);
+      });
+      expect(hexInput.value).toBe(prefix);
+    }
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenLastCalledWith(objectCustomColorCommandId("#1e88e5"));
+  });
+
+  it("accepts three-digit hex shorthand on Enter and restores an invalid entry on blur", () => {
+    const { onCommit } = renderPalette();
+    const popover = openPicker();
+    const hexInput = popover.querySelector<HTMLInputElement>(".color-hex-field input");
+    if (!hexInput) {
+      throw new Error("Expected hex input.");
+    }
+
+    act(() => {
+      changeRangeValue(hexInput, "#1E8");
+    });
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => {
+      hexInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onCommit).toHaveBeenLastCalledWith(objectCustomColorCommandId("#11ee88"));
+
+    const committedValue = hexInput.value;
+    act(() => {
+      changeRangeValue(hexInput, "#12");
+    });
+    act(() => {
+      hexInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(hexInput.value).toBe(committedValue);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("abandons a half-typed hex value on Escape instead of committing it on the blur that follows", () => {
+    const { onCommit } = renderPalette();
+    const popover = openPicker();
+    const hexInput = popover.querySelector<HTMLInputElement>(".color-hex-field input");
+    if (!hexInput) {
+      throw new Error("Expected hex input.");
+    }
+    const committedValue = hexInput.value;
+
+    act(() => {
+      changeRangeValue(hexInput, "#1E8");
+    });
+    act(() => {
+      hexInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      hexInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onCommit).not.toHaveBeenCalled();
+    // Escape also closes the inline picker; a field that survives it shows the committed value.
+    if (hexInput.isConnected) {
+      expect(hexInput.value).toBe(committedValue);
+    }
+  });
+
+  it("settles a typed RGB channel once, on blur, rather than on every keystroke", () => {
+    const { onCommit } = renderPalette();
+    const popover = openPicker();
+    const red = popover.querySelector<HTMLInputElement>('[aria-label="RGB color"] input');
+    if (!red) {
+      throw new Error("Expected the red channel input.");
+    }
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const type = (value: string) => {
+      valueSetter?.call(red, value);
+      red.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    };
+
+    for (const prefix of ["2", "20", "200"]) {
+      act(() => type(prefix));
+      expect(red.value).toBe(prefix);
+    }
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => {
+      red.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenLastCalledWith(objectCustomColorCommandId("#c81111"));
+  });
+
   it("invokes native paint type commands from the art style selector", () => {
     const { onInvoke } = renderPalette();
     const fillSelect = container.querySelector<HTMLSelectElement>('[data-art-paint-type-select="fill"]');

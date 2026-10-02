@@ -1,4 +1,5 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import * as OCL from "openchemlib";
 import { describe, expect, it } from "vitest";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
@@ -108,6 +109,45 @@ describe("pluginFacingStructure", () => {
     expect(facing.structure).toContain(" R# ");
     expect(facing.structure).toContain("M  RGP  1   2   1");
     expect(facing.structure).not.toContain(" *  ");
+  });
+
+  it("spells a condensed label with its hydrogens, so the plugin's OpenChemLib reads the molecule drawn", () => {
+    const ethanol = {
+      id: "m", type: "molecule", structureFormat: "smiles", structure: "",
+      atoms: [
+        { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a1", element: "C", x: 14, y: 0, formalCharge: 0 },
+        { id: "a2", element: "OH", x: 28, y: 0, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" },
+        { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }
+      ]
+    } as unknown as Parameters<typeof pluginFacingStructure>[0];
+    const facing = pluginFacingStructure(ethanol);
+    expect(facing.structure).not.toContain("R#");
+    expect(OCL.Molecule.fromMolfile(facing.structure).getMolecularFormula().formula).toBe("C2H6O");
+  });
+
+  it("hands an aromatic-order pyrrole NH over as N–H on its Kekulé orders, never as an NH2", () => {
+    // Counted at 1.5 per aromatic bond, the stated hydrogen would ride on a valence of 4, which
+    // OpenChemLib honours as an NH2 — a molecule the user did not draw. On the Kekulé orders the
+    // ring bonds at N are single, so the valence is 3 and the reader sees pyrrole.
+    const ring = ["a0", "a1", "a2", "a3", "a4"];
+    const pyrrole = {
+      id: "m", type: "molecule", structureFormat: "smiles", structure: "",
+      atoms: ring.map((id, i) => ({
+        id, element: i === 0 ? "NH" : "C", x: 14 * Math.cos((2 * Math.PI * i) / 5), y: 14 * Math.sin((2 * Math.PI * i) / 5), formalCharge: 0
+      })),
+      bonds: ring.map((id, i) => ({ id: `b${i}`, fromAtomId: id, toAtomId: ring[(i + 1) % 5], order: "aromatic" }))
+    } as unknown as Parameters<typeof pluginFacingStructure>[0];
+    const warnings: string[] = [];
+    const facing = pluginFacingStructure(pyrrole, warnings);
+    expect(facing.structure).not.toContain(" R# ");
+    const parsed = OCL.Molecule.fromMolfile(facing.structure);
+    expect(parsed.getAllAtoms()).toBe(5);
+    expect(parsed.getMolecularFormula().formula).toBe("C4H5N");
+    expect(warnings).toEqual([]);
   });
 
   it("passes through the existing structure when there is no atom graph (e.g. a SMILES import)", () => {

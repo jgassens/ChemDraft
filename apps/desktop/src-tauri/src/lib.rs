@@ -4,6 +4,7 @@ mod installed_plugins;
 mod ocsr_engine;
 mod opsin;
 mod screen_capture;
+mod windows_clipboard;
 
 use std::{
     collections::HashMap,
@@ -42,13 +43,32 @@ use objc2_foundation::NSString;
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
+/// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
+/// A no-op elsewhere.
+pub(crate) trait WithoutConsoleWindow {
+    fn without_console_window(&mut self) -> &mut Self;
+}
+
+impl WithoutConsoleWindow for Command {
+    fn without_console_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
+}
 const SPIN3D_DEBUGGER_WINDOW_LABEL: &str = "spin3d-debugger";
 const SPIN3D_DEBUGGER_WINDOW_ROUTE: &str = "/?window=spin3d-debugger";
 const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 /// The two Close Window items (File and Window menus). Native-only: handled in Rust, never routed to
 /// the webview. Two ids because muda item ids are meant to be unique.
@@ -84,6 +104,56 @@ static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Destroyed events would be recorded as user closes (visible: false) and clobber the saved
 /// open-palette set that the next launch restores.
 static APP_QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// File ▸ Exit off macOS (macOS quits from the application menu).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const APP_QUIT_COMMAND_ID: &str = "app.quit";
+/// Sent to the document window when the app is about to quit; it flushes its pending session
+/// autosave and answers with `quit_after_flush`. Mirrors `QUIT_FLUSH_REQUEST_EVENT` in
+/// apps/desktop/src/window-manager/index.ts.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const QUIT_FLUSH_REQUEST_EVENT: &str = "chemdraft://flush-before-quit";
+/// How long a quit waits for the document window's flush before quitting anyway.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const QUIT_FLUSH_GRACE: Duration = Duration::from_secs(3);
+/// Set once a quit has been requested, so repeated close clicks don't re-request it.
+static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Quit off macOS without losing the last edits. The session autosave is an 800 ms debounce in the
+/// webview and the app never prompts to save, so exiting straight away dropped anything edited in
+/// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
+/// and a grace timer quits regardless if the webview can't answer.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if QUIT_REQUESTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let asked = app.get_webview_window(MAIN_WINDOW_LABEL).is_some()
+        && app
+            .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
+            .is_ok();
+    if !asked {
+        quit_now(app);
+        return;
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(QUIT_FLUSH_GRACE);
+        quit_now(&app);
+    });
+}
+
+fn quit_now<R: Runtime>(app: &tauri::AppHandle<R>) {
+    // Raised first so the palette teardown that follows isn't recorded as user closes.
+    APP_QUITTING.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
+/// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
+#[tauri::command]
+fn quit_after_flush(app: tauri::AppHandle) {
+    quit_now(&app);
+}
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
@@ -131,7 +201,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
 
 /// A plugin's contributed menu item, synced from the webview (which owns the plugin registry) so the
 /// native menu can include it. `id` is the `plugin.*` command id, routed back by prefix (ADR-0016).
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PluginMenuItemInput {
     id: String,
@@ -327,6 +397,10 @@ struct MainWindowGeometry {
     y: f64,
     width: f64,
     height: f64,
+    /// Whether the window was maximized. The frame fields keep the NORMAL (restored) frame, so
+    /// un-maximizing after a relaunch returns to where the user last had it. Absent in older files.
+    #[serde(default)]
+    maximized: bool,
 }
 
 /// Logical points of title bar that must remain on a monitor for the window to stay grabbable.
@@ -334,7 +408,26 @@ const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Registered first, as the plugin requires. A second launch forwards its argv here (a document
+    // double-clicked while ChemDraft runs) instead of starting a rival process on the same
+    // app_data_dir. macOS routes such opens to the running app itself (RunEvent::Opened).
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        let cwd = PathBuf::from(cwd);
+        if let Err(error) = handle_opened_document_args(app, argv.into_iter().skip(1), &cwd) {
+            eprintln!("Could not open ChemDraft document from a second launch: {error}");
+        }
+        if let Err(error) = ensure_main_window_visible(app) {
+            eprintln!("Could not show ChemDraft main window for a second launch: {error}");
+        }
+        if let Err(error) = focus_main_document_window_impl(app) {
+            eprintln!("Could not focus ChemDraft document window for a second launch: {error}");
+        }
+    }));
+
+    let builder = builder
         .manage(PendingOpenDocument::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
@@ -357,8 +450,19 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_sparkle_updater::init());
 
+    // Windows app updates: a signed manifest on main (`plugins.updater` in tauri.windows.conf.json)
+    // and a signed NSIS installer. The webview drives the flow, and only a stable build ever checks;
+    // see docs/releasing/windows-updates.md.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    // Only macOS has an app-wide menu bar. Elsewhere an app-wide Tauri menu is attached to EVERY
+    // window, which subclasses each palette/popover with muda's menu proc; see `install_app_menu`
+    // for why that crashed. There the menu is attached to the document window in `setup` instead.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(create_app_menu);
+
     builder
-        .menu(create_app_menu)
         .on_page_load(|webview, payload| {
             if webview.label() == MAIN_WINDOW_LABEL
                 && matches!(payload.event(), PageLoadEvent::Finished)
@@ -380,6 +484,20 @@ pub fn run() {
                 check_for_updates(app);
                 return;
             }
+            // Windows runs the check in the document webview: it owns the prompt, the download
+            // progress, and the session flush that must precede the installer (appUpdates.ts).
+            #[cfg(windows)]
+            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
+                if let Err(error) = emit_command_to_main(app, command_id) {
+                    eprintln!("Could not route the update check: {error}");
+                }
+                return;
+            }
+            #[cfg(not(target_os = "macos"))]
+            if command_id == APP_QUIT_COMMAND_ID {
+                request_quit(app);
+                return;
+            }
             #[cfg(target_os = "macos")]
             if command_id == CLOSE_WINDOW_FILE_MENU_ID || command_id == CLOSE_WINDOW_WINDOW_MENU_ID
             {
@@ -395,11 +513,22 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
+                    // macOS: closing the document window hides it and the app lives on in the
+                    // Dock (RunEvent::Reopen brings it back).
+                    #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if let Err(error) = window.hide() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
                         }
+                    }
+                    // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
+                    // prewarmed popovers would keep a windowless process alive: closing the
+                    // document window quits — after the document flushes its pending autosave.
+                    #[cfg(not(target_os = "macos"))]
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        request_quit(window.app_handle());
                     }
                     WindowEvent::Destroyed => {
                         // The close button only hides the main window, so its actual destruction
@@ -462,6 +591,11 @@ pub fn run() {
             };
 
             match event {
+                // Minimizing the document minimizes its owned palettes too, and Windows parks a
+                // minimized window far off-screen and reports that as a Moved. Persisting it saved
+                // the palettes at (-16000, -16000), so the next launch clamped them to the screen
+                // corner. Like persist_main_window_geometry, minimized frames are not user frames.
+                WindowEvent::Moved(_) if toolset_frame_is_transient(app, window) => {}
                 WindowEvent::Moved(position) => {
                     let logical_position = logical_toolset_position_from_physical(
                         position.x as f64,
@@ -500,8 +634,15 @@ pub fn run() {
             ocsr.remove_stale_staging(app);
             // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
             // window loads; Rust no longer parses the manifest or applies customization for it.
+            // Activation policy is a macOS Dock concept; other platforms have no equivalent.
+            #[cfg(target_os = "macos")]
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
+                eprintln!("Could not install the ChemDraft menu: {error}");
             }
 
             if let Err(error) = ensure_main_window_visible(app) {
@@ -512,13 +653,25 @@ pub fn run() {
                 eprintln!("Could not focus ChemDraft document window: {error}");
             }
 
+            // Off macOS a document opened from the shell arrives as a launch argument. Queued as
+            // the pending document, which the window drains once it mounts.
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            if let Ok(cwd) = std::env::current_dir() {
+                let args = std::env::args_os()
+                    .skip(1)
+                    .map(|arg| arg.to_string_lossy().into_owned());
+                if let Err(error) = handle_opened_document_args(app, args, &cwd) {
+                    eprintln!("Could not open ChemDraft document from launch arguments: {error}");
+                }
+            }
+
             // Palettes never become key, so hover must be fed to their webviews (see
             // start_palette_pointer_feed's doc for why the OS won't deliver it).
             start_palette_pointer_feed(app.clone());
 
-            if let Err(error) = build_toolset_tooltip_window(app) {
-                eprintln!("Could not build the ChemDraft tooltip window: {error}");
-            }
+            // The tooltip window is NOT built here: a palette prewarms it once it has painted
+            // (prewarm_toolset_tooltip). Building it in setup put a hidden webview ahead of every
+            // palette in the queue for window creation.
 
             Ok(())
         })
@@ -539,7 +692,12 @@ pub fn run() {
             open_plugin_panel_window,
             open_toolset_popover,
             prewarm_toolset_popover,
+            prewarm_toolset_tooltip,
+            show_toolset_popover_window,
             show_toolset_tooltip_window,
+            hide_toolset_tooltip_window,
+            set_current_window_global_position,
+            quit_after_flush,
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,
@@ -586,6 +744,8 @@ pub fn run() {
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
+            // Dock-icon click with no visible windows; a macOS-only event.
+            #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
                 if let Err(error) = ensure_main_window_visible(app) {
                     eprintln!("Could not reopen ChemDraft main window: {error}");
@@ -635,12 +795,14 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     window
         .set_skip_taskbar(false)
         .map_err(|error| error.to_string())?;
+    // Apply the last-used frame only when bringing the window up from hidden (launch, macOS
+    // Reopen); center only when there is nothing to restore (first launch, or the saved frame is on
+    // a display that's gone). A window already on screen — a second launch or an open-document
+    // call — keeps its live frame: re-applying position/size clears tao's maximized state, so a
+    // document opened from Explorer used to un-maximize the window.
+    let already_on_screen = window.is_visible().unwrap_or(false);
     window.unminimize().map_err(|error| error.to_string())?;
-    // Restore the last-used frame; center only when there is nothing to restore (first launch, or
-    // the saved frame is on a display that's gone). This also runs on Reopen and open-document
-    // ensure calls, where the saved frame already equals the live one, so reapplying is a visual
-    // no-op — and it stops those paths from yanking a user-placed window back to center.
-    if !restore_main_window_geometry(&window) {
+    if !already_on_screen && !restore_main_window_geometry(&window) {
         window.center().map_err(|error| error.to_string())?;
     }
     window.show().map_err(|error| error.to_string())?;
@@ -761,12 +923,35 @@ struct ToolsetWindowGeometry {
     y: f64,
 }
 
+// Every command that creates a window is `async`, and must stay so. Synchronous commands run on the
+// main thread, and on Windows WebView2 creation needs that same thread: a sync command that builds a
+// window deadlocks, leaving the window with no webview and every later IPC call unanswered
+// (documented Tauri/wry limitation). Async commands build from a worker and Tauri marshals the
+// window creation to the main thread.
+//
+// Two consequences of running on a worker:
+// - Raw platform calls are NOT marshalled by Tauri. On macOS every NSWindow call these paths make
+//   goes through `run_on_main_thread_blocking` (see `configure_toolset_utility_window`).
+// - Commands no longer serialize on the main thread, so "does the window exist? else build it" can
+//   interleave: two opens of one label both pass the check, and the loser's rollback deleted the
+//   winner's directory entry (or two windows were built). `WINDOW_CREATION` makes each
+//   check-then-build atomic. Only these async commands take it; the main thread never does, so
+//   holding it across `build()` (which waits on the main thread) cannot deadlock.
+static WINDOW_CREATION: Mutex<()> = Mutex::new(());
+
+fn lock_window_creation() -> std::sync::MutexGuard<'static, ()> {
+    WINDOW_CREATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[tauri::command]
-fn open_toolset_window(
+async fn open_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
+    let _creation = lock_window_creation();
     ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
@@ -929,20 +1114,44 @@ fn set_toolbars_menu(
         crosshairs_visible,
     };
     // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
-    // (reinstall_app_menu) without waiting for the next toolbar push.
-    {
+    // (reinstall_app_menu) without waiting for the next toolbar push. JS pushes on every toolbar
+    // visibility or rulers/crosshairs toggle; most pushes only move checkmarks, and a full rebuild
+    // swaps the whole menu bar (on Windows: two SetMenu calls, a resize of the document's client
+    // area and two layout-file writes), so only a structural change rebuilds.
+    let update = {
         let state = app.state::<ToolbarsMenuModel>();
         let mut guard = state.0.lock().map_err(|error| error.to_string())?;
+        let update = classify_toolbars_menu_update(&guard, &entries, view_state);
         *guard = (entries.clone(), view_state);
+        update
+    };
+    if update == ToolbarsMenuUpdate::Unchanged {
+        return Ok(());
     }
     app.clone()
         .run_on_main_thread(move || {
-            let plugin_items = current_plugin_menu_items(&app);
-            match create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
-                .and_then(|menu| app.set_menu(menu).map(|_| ()))
-            {
-                Ok(()) => {}
-                Err(error) => eprintln!("Could not update ChemDraft toolbar menu: {error}"),
+            let result = if update == ToolbarsMenuUpdate::ChecksOnly {
+                entries
+                    .iter()
+                    .map(|entry| (toolset_toggle_command_id(&entry.toolset_id), entry.visible))
+                    .chain([
+                        ("view.toggleRulers".to_string(), view_state.rulers_visible),
+                        (
+                            "view.toggleCrosshairs".to_string(),
+                            view_state.crosshairs_visible,
+                        ),
+                    ])
+                    .try_for_each(|(command_id, checked)| {
+                        set_check_menu_item_checked_now(&app, &command_id, checked)
+                    })
+            } else {
+                let plugin_items = current_plugin_menu_items(&app);
+                create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
+                    .and_then(|menu| install_app_menu(&app, menu))
+                    .map_err(|error| error.to_string())
+            };
+            if let Err(error) = result {
+                eprintln!("Could not update ChemDraft toolbar menu: {error}");
             }
         })
         .map_err(|error| error.to_string())
@@ -1232,7 +1441,7 @@ mod plugin_panel_label_tests {
 /// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
 /// transport; each window is parented to the main document rather than being globally floating.
 #[tauri::command]
-fn open_plugin_panel_window(
+async fn open_plugin_panel_window(
     app: tauri::AppHandle,
     request: OpenPluginPanelRequest,
 ) -> Result<(), String> {
@@ -1241,6 +1450,7 @@ fn open_plugin_panel_window(
     }
 
     let label = plugin_panel_window_label(&request.panel_id);
+    let _creation = lock_window_creation();
     if let Some(window) = app.get_webview_window(&label) {
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
@@ -1255,6 +1465,8 @@ fn open_plugin_panel_window(
     let width = request.width.unwrap_or(380.0);
     let height = request.height.unwrap_or(520.0);
     let position = analysis_window_initial_position(&app, width, height);
+    // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
+    // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
         &app,
         &label,
@@ -1427,8 +1639,22 @@ fn choose_analysis_window_position(
 
 /// Always focusable, so the user can click into the window. It is focused only when `focus` is
 /// true: an automatic re-show must never take keyboard focus from the canvas mid-typing.
+///
+/// Marshalled: `open_plugin_panel_window` is async (a worker thread, required for WebView2 on
+/// Windows), and every call below is raw AppKit, which is main-thread-only.
 #[cfg(target_os = "macos")]
 fn configure_analysis_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    focus: bool,
+) -> Result<(), String> {
+    let target = window.clone();
+    run_on_main_thread_blocking(window, move || {
+        configure_analysis_window_on_main_thread(&target, focus)
+    })?
+}
+
+#[cfg(target_os = "macos")]
+fn configure_analysis_window_on_main_thread<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     focus: bool,
 ) -> Result<(), String> {
@@ -1518,7 +1744,7 @@ fn configure_analysis_window<R: Runtime>(
 /// coordinates of the anchor (the palette computes them from its own window position + the
 /// swatch's client rect).
 #[tauri::command]
-fn open_toolset_popover(
+async fn open_toolset_popover(
     app: tauri::AppHandle,
     toolset_id: String,
     kind: String,
@@ -1526,6 +1752,7 @@ fn open_toolset_popover(
     y: f64,
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
+    let _creation = lock_window_creation();
     if let Some(window) = app.get_webview_window(&label) {
         // Warm reuse: position it, but do NOT show yet — the palette pushes the requested content
         // right after this call, and the popover webview reveals itself once that content has
@@ -1538,9 +1765,7 @@ fn open_toolset_popover(
         // popover away from its anchor. An explicit LogicalPosition set is the final word in
         // both the warm and cold paths.
         configure_toolset_popover_window(&window, false)?;
-        window
-            .set_position(tauri::LogicalPosition::new(x, y))
-            .map_err(|error| error.to_string())?;
+        set_window_global_logical_position(&window, x, y)?;
         return Ok(());
     }
 
@@ -1554,13 +1779,25 @@ fn open_toolset_popover(
 /// user-visible open then takes the warm path (reposition + content push + self-reveal, a frame or
 /// two). The `prewarm=1` route param tells the webview to stay hidden until real content arrives.
 #[tauri::command]
-fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
+async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
+    let _creation = lock_window_creation();
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
 
     build_toolset_popover_window(&app, &label, &toolset_id, "artColor", true, 0.0, 0.0)
+}
+
+/// Builds the shared tooltip window hidden, once a palette has painted. It used to be built in
+/// `setup`, which queued a hidden webview ahead of every palette: window creation runs one window at
+/// a time on the main thread, and on Windows each WebView2 costs hundreds of milliseconds, so the
+/// toolbars appeared that much later. Nothing needs the tooltip before the first hover, and
+/// show/hide already no-op while it doesn't exist. Every palette asks; the first ask builds it.
+#[tauri::command]
+async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
+    let _creation = lock_window_creation();
+    build_toolset_tooltip_window(&app)
 }
 
 fn build_toolset_popover_window(
@@ -1573,13 +1810,18 @@ fn build_toolset_popover_window(
     y: f64,
 ) -> Result<(), String> {
     let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
-    let window = WebviewWindowBuilder::new(
-        app,
-        label,
-        WebviewUrl::App(
-            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
+    let window = utility_window_builder(
+        WebviewWindowBuilder::new(
+            app,
+            label,
+            WebviewUrl::App(
+                format!(
+                    "/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}"
+                )
                 .into(),
+            ),
         ),
+        app,
     )
     .title("ChemDraft color picker")
     // The JS side sizes this to the popover content (setCurrentWindowLogicalSize); start with a
@@ -1607,9 +1849,7 @@ fn build_toolset_popover_window(
     // can nudge the frame, and builder-time positioning has proven less trustworthy than an
     // explicit post-build LogicalPosition set (first opens landed away from the anchor).
     // Prewarm builds pass (0, 0), where this is harmless — the warm open repositions.
-    window
-        .set_position(tauri::LogicalPosition::new(x, y))
-        .map_err(|error| error.to_string())?;
+    set_window_global_logical_position(&window, x, y)?;
     Ok(())
 }
 
@@ -1684,15 +1924,24 @@ fn window_logical_position(window: tauri::WebviewWindow) -> Result<WindowLogical
 
 const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
 
-/// Order the (pre-built, hidden) tooltip window front. The tooltip webview invokes this after
-/// sizing + positioning itself: palettes and popovers become visible through this same
-/// NSWindow::orderFront path, whereas Tauri's JS `show()` did not reliably display the
-/// focusable(false) panel.
+/// Place the (pre-built, hidden) tooltip window at global-logical `x`/`y` (when given) and order it
+/// front. The tooltip webview invokes this after sizing itself: palettes and popovers become visible
+/// through this same NSWindow::orderFront path, whereas Tauri's JS `show()` did not reliably display
+/// the focusable(false) panel.
 #[tauri::command]
-fn show_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
+fn show_toolset_tooltip_window(
+    app: tauri::AppHandle,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
     let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
         return Ok(());
     };
+    // Placing and showing in one command halves the tooltip's IPC round trips (it used to be
+    // monitor query → set size → set position → show, all strictly sequential).
+    if let (Some(x), Some(y)) = (x, y) {
+        set_window_global_logical_position(&window, x, y)?;
+    }
     #[cfg(target_os = "macos")]
     {
         let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
@@ -1702,18 +1951,173 @@ fn show_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // The tooltip is built `focused(false)` (utility_window_builder), so this is
+        // ShowWindow(SW_SHOWNOACTIVATE) on Windows and never takes activation from the document.
         window.show().map_err(|error| error.to_string())?;
     }
+    // SW_SHOWNOACTIVATE keeps the hidden window's old z-order, which left the tooltip behind the
+    // palette it describes.
+    raise_among_owned_windows(&window)
+}
+
+/// Raise a just-shown floating window above its siblings (the palettes and the other utility
+/// windows the document owns) without activating it. On Windows a hidden window comes back at its
+/// OLD z-order, so a tooltip or popover shown over its own palette landed underneath it. macOS
+/// orders these panels by window level instead, so there is nothing to do there.
+fn raise_among_owned_windows<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        // SAFETY: a z-order-only change on a live window.
+        unsafe {
+            SetWindowPos(
+                hwnd.0 as _,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
     Ok(())
+}
+
+/// Reveal the calling palette popover once it has painted its content at the right size, and put it
+/// above the palette it belongs to. The popover used to reveal itself with the JS window `show()`,
+/// which on Windows left it underneath its palette whenever the two overlapped (the Art toolbar's
+/// colour picker opens over the toolbar's own lower rows). `show()` here is the same call that JS
+/// made, so macOS behaves exactly as before.
+#[tauri::command]
+fn show_toolset_popover_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    raise_among_owned_windows(&window)
+}
+
+/// Hide the tooltip window. Deliberately a sync command like `show_toolset_tooltip_window`: both
+/// run on the main thread in the order the tooltip webview sent them. Hiding through the JS window
+/// API instead took a different IPC path, so a hide sent right after a show could land first and
+/// strand the tooltip visible over the palette.
+#[tauri::command]
+fn hide_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    window.hide().map_err(|error| error.to_string())
+}
+
+/// A monitor's frame in physical pixels plus its scale factor.
+#[derive(Clone, Copy, Debug)]
+struct MonitorFrame {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+}
+
+/// Convert a point in ChemDraft's "global logical" space — each monitor's logical frame is its
+/// physical frame divided by ITS scale factor, the space `window_logical_position` and
+/// `monitorLogicalBoundsAt` report in — to physical pixels, using the scale of the monitor that
+/// contains the point. Tauri's `set_position(LogicalPosition)` converts with the moving window's
+/// OWN current scale instead, so on mixed-DPI setups (e.g. a 150% display beside a 100% one) a
+/// popover or tooltip anchored to a palette on one monitor landed hundreds of pixels away on the
+/// other. On a single scale factor both conversions agree.
+///
+/// This space is not one-to-one: a higher-scale display to the right of (or below) a lower-scale
+/// one has a logical frame that starts inside its neighbour's (a 200% display at physical x = 1920
+/// spans logical 960..2880 beside a 100% primary's 0..1920). When several monitors contain the
+/// point, the one at `current_scale` (the moving window's own) wins, so a palette dragged within
+/// the overlap stays on its display instead of jumping; otherwise the first match. A point on no
+/// monitor uses `current_scale`.
+fn global_logical_to_physical(
+    monitors: &[MonitorFrame],
+    x: f64,
+    y: f64,
+    current_scale: f64,
+) -> (f64, f64) {
+    let effective_scale = |monitor: &MonitorFrame| {
+        if monitor.scale > 0.0 {
+            monitor.scale
+        } else {
+            1.0
+        }
+    };
+    let containing = monitors
+        .iter()
+        .filter(|monitor| {
+            let scale = effective_scale(monitor);
+            let left = monitor.x / scale;
+            let top = monitor.y / scale;
+            x >= left
+                && x < left + monitor.width / scale
+                && y >= top
+                && y < top + monitor.height / scale
+        })
+        .map(effective_scale)
+        .collect::<Vec<_>>();
+    let scale = containing
+        .iter()
+        .copied()
+        .find(|scale| (scale - current_scale).abs() < f64::EPSILON)
+        .or_else(|| containing.first().copied())
+        .unwrap_or(current_scale);
+    (x * scale, y * scale)
+}
+
+fn set_window_global_logical_position<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let monitors = window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|monitor| MonitorFrame {
+            x: monitor.position().x as f64,
+            y: monitor.position().y as f64,
+            width: monitor.size().width as f64,
+            height: monitor.size().height as f64,
+            scale: monitor.scale_factor(),
+        })
+        .collect::<Vec<_>>();
+    let current_scale = window.scale_factor().unwrap_or(1.0);
+    let (physical_x, physical_y) = global_logical_to_physical(&monitors, x, y, current_scale);
+    window
+        .set_position(tauri::PhysicalPosition::new(
+            physical_x.round() as i32,
+            physical_y.round() as i32,
+        ))
+        .map_err(|error| error.to_string())
+}
+
+/// Move the calling window to a point in global logical coordinates (see
+/// [`global_logical_to_physical`]). Replaces the JS `setPosition(new LogicalPosition(...))`, which
+/// converted with the window's own scale factor.
+#[tauri::command]
+fn set_current_window_global_position(
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    set_window_global_logical_position(&window, x, y)
 }
 
 /// Pre-build the single shared floating tooltip window, hidden. Palettes can't paint a tooltip
 /// outside their content-fit windows (same constraint that gives popovers their own window), so
 /// all of them share this one: a palette broadcasts text + anchor, the tooltip webview sizes and
 /// positions itself, shows, and hides again on the hide broadcast (see PaletteTooltipWindow).
-/// Built at startup so the first hover doesn't pay the cold-webview load. The `toolset-` label
-/// prefix gives it the palette capability set; it is NOT in the ToolsetWindowDirectory, so the
-/// pointer feed never treats it as a hoverable palette.
+/// Prewarmed by a palette shortly after it paints (prewarm_toolset_tooltip), so the first hover
+/// doesn't pay the cold-webview load. The `toolset-` label prefix gives it the palette capability
+/// set; it is NOT in the ToolsetWindowDirectory, so the pointer feed never treats it as a hoverable
+/// palette.
 fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     if app
         .get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL)
@@ -1722,10 +2126,13 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(
+    let window = utility_window_builder(
+        WebviewWindowBuilder::new(
+            app,
+            TOOLSET_TOOLTIP_WINDOW_LABEL,
+            WebviewUrl::App("/?window=toolsetTooltip".into()),
+        ),
         app,
-        TOOLSET_TOOLTIP_WINDOW_LABEL,
-        WebviewUrl::App("/?window=toolsetTooltip".into()),
     )
     .title("ChemDraft tooltip")
     // The JS side sizes this to the rendered text before every show.
@@ -1744,14 +2151,24 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
     // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
     // palette", hide itself, and flicker.
+    //
+    // Marshalled: this runs from the async prewarm command on a worker thread, and AppKit is
+    // main-thread-only. The pointer is fetched inside the closure because it isn't Send.
     #[cfg(target_os = "macos")]
     {
-        if let Ok(ns_window_ptr) = window.ns_window() {
-            if let Some(ns_window) = unsafe { (ns_window_ptr as *mut NSWindow).as_ref() } {
-                ns_window.setIgnoresMouseEvents(true);
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            if let Ok(ns_window_ptr) = target.ns_window() {
+                if let Some(ns_window) = unsafe { (ns_window_ptr as *mut NSWindow).as_ref() } {
+                    ns_window.setIgnoresMouseEvents(true);
+                }
             }
-        }
+        })?;
     }
+    #[cfg(not(target_os = "macos"))]
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1771,27 +2188,74 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
     Ok(())
 }
 
+// On Windows the clipboard commands are `async` (a worker thread), so a clipboard held by another
+// process (OpenClipboard retries for up to 100 ms), a slow source app rendering a format, or a
+// large PNG→DIB conversion no longer freezes every window. The Win32 clipboard is per-thread: each
+// call opens, uses and closes it on that one worker. macOS keeps these on the main thread, where
+// NSPasteboard has always been used.
+#[cfg(windows)]
+#[tauri::command]
+async fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
+    read_clipboard_payload_impl()
+}
+
+#[cfg(not(windows))]
 #[tauri::command]
 fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
     read_clipboard_payload_impl()
 }
 
+#[cfg(windows)]
 #[tauri::command]
-fn write_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
-    write_clipboard_text_items_impl(normalize_clipboard_write_text_items(items)?)
+async fn write_clipboard_text_items(
+    app: tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn write_clipboard_text_items(
+    app: tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
 }
 
 /// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
+#[cfg(windows)]
 #[tauri::command]
-fn write_clipboard_image(png_bytes: Vec<u8>) -> Result<(), String> {
+async fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
+    write_clipboard_image_checked(&app, &png_bytes)
+}
+
+/// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
+#[cfg(not(windows))]
+#[tauri::command]
+fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
+    write_clipboard_image_checked(&app, &png_bytes)
+}
+
+fn write_clipboard_image_checked(app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
     if png_bytes.is_empty() {
         return Err("Empty PNG payload.".to_string());
     }
-    write_clipboard_image_impl(&png_bytes)
+    write_clipboard_image_impl(app, png_bytes)
+}
+
+/// The window that owns clipboard writes on Windows. EmptyClipboard with no owner leaves the
+/// clipboard ownerless, and every SetClipboardData after it fails.
+#[cfg(windows)]
+fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundation::HWND {
+    app.get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as windows_sys::Win32::Foundation::HWND)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 #[cfg(target_os = "macos")]
-fn write_clipboard_image_impl(png_bytes: &[u8]) -> Result<(), String> {
+fn write_clipboard_image_impl(_app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
     use objc2_foundation::NSData;
 
     let pasteboard = NSPasteboard::generalPasteboard();
@@ -1804,9 +2268,14 @@ fn write_clipboard_image_impl(png_bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn write_clipboard_image_impl(_png_bytes: &[u8]) -> Result<(), String> {
-    Err("Native clipboard image writes are only implemented for macOS.".to_string())
+#[cfg(windows)]
+fn write_clipboard_image_impl(app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
+    windows_clipboard::native::write_png(clipboard_owner_window(app), png_bytes)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn write_clipboard_image_impl(_app: &tauri::AppHandle, _png_bytes: &[u8]) -> Result<(), String> {
+    Err("Native clipboard image writes are only implemented for macOS and Windows.".to_string())
 }
 
 fn normalize_clipboard_write_text_items(
@@ -1870,7 +2339,15 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn write_clipboard_text_items_impl(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+fn write_clipboard_text_items_impl(
+    _app: &tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    write_native_clipboard_text_items(items)
+}
+
+#[cfg(target_os = "macos")]
+fn write_native_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
 
@@ -1910,11 +2387,18 @@ fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextI
 /// WebKit's custom-pasteboard-data is a binary blob (length-prefixed origin + type + payload)
 /// that any WebKit view — Safari included — leaves behind on copy; "decoding" it produced the
 /// CJK-mojibake text objects users saw when pasting between two ChemDraft instances.
-const OPAQUE_CLIPBOARD_TYPES: [&str; 2] = [
+// Platform-neutral decoding, shared by the macOS pasteboard reader and the Windows clipboard reader.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+const OPAQUE_CLIPBOARD_TYPES: [&str; 4] = [
     "com.apple.WebKit.custom-pasteboard-data",
     "org.webkit.custom-pasteboard-data",
+    // Chromium's (WebView2's) equivalents on Windows: a pickled map of custom MIME data, and a
+    // frame token.
+    "Chromium Web Custom MIME Data Format",
+    "Chromium internal source RFH token",
 ];
 
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
     OPAQUE_CLIPBOARD_TYPES.contains(&pasteboard_type)
 }
@@ -1939,6 +2423,7 @@ fn clipboard_text_for_type(
     decode_clipboard_text_bytes(&data.to_vec())
 }
 
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() {
         return None;
@@ -1962,6 +2447,7 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     decode_utf16_bytes(bytes)
 }
 
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0xff, 0xfe]) {
         return true;
@@ -1975,6 +2461,7 @@ fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     null_count * 4 >= bytes.len()
 }
 
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
     if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
         return decode_utf16_units(content, true);
@@ -2033,6 +2520,7 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
 /// contains private-use or noncharacter code points, while binary bytes and byte-swapped UTF-16
 /// frequently decode into exactly those ranges. (BOM'd and null-parity-detected payloads skip
 /// this — their encoding evidence is strong enough that PUA glyphs, e.g. icon fonts, pass.)
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     text.chars().all(|character| {
         let code_point = character as u32;
@@ -2045,6 +2533,7 @@ fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     })
 }
 
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
     if content.len() < 2 || !content.len().is_multiple_of(2) {
         return None;
@@ -2068,6 +2557,7 @@ fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
 /// Rejects strings that only a mis-decode produces: control characters (beyond whitespace)
 /// and replacement characters never occur in text a user meant to paste, while every
 /// legitimate UTF-16 clipboard payload (molfiles, CDXML, SMILES, prose) is clean of them.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn text_is_plausible_clipboard_text(text: &str) -> bool {
     text.chars().all(|character| {
         character == '\t'
@@ -2078,7 +2568,20 @@ fn text_is_plausible_clipboard_text(text: &str) -> bool {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
+    windows_clipboard::native::read_payload()
+}
+
+#[cfg(windows)]
+fn write_clipboard_text_items_impl(
+    app: &tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    windows_clipboard::native::write_text_items(clipboard_owner_window(app), &items)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     Ok(ClipboardReadPayload {
         types: Vec::new(),
@@ -2086,20 +2589,121 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn write_clipboard_text_items_impl(_items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
-    Err("Native clipboard writes are only implemented for macOS.".to_string())
+#[cfg(not(any(target_os = "macos", windows)))]
+fn write_clipboard_text_items_impl(
+    _app: &tauri::AppHandle,
+    _items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    Err("Native clipboard writes are only implemented for macOS and Windows.".to_string())
 }
 
 #[tauri::command]
-fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
+    let _creation = lock_window_creation();
     if let Some(window) = app.get_webview_window(SPIN3D_DEBUGGER_WINDOW_LABEL) {
-        if window.is_visible().unwrap_or(false) {
+        if toggle_should_hide(&window) {
             return window.hide().map_err(|error| error.to_string());
         }
     }
 
     ensure_spin3d_debugger_window(&app).map(|_| ())
+}
+
+/// Whether a Preferences / 3D Debugger toggle should hide its window (otherwise it is shown and
+/// brought forward).
+///
+/// macOS and Linux keep the original rule: a visible window is hidden. On Windows a visible window
+/// can be out of sight — behind the document, which is where it lands as soon as the document is
+/// clicked — and hiding it then made Ctrl+, look like it did nothing. Focus can't tell the cases
+/// apart (the toggle always arrives from the document's menu or keyboard, so the document is always
+/// the focused window), so Windows asks whether the document window covers it instead.
+fn toggle_should_hide<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    #[cfg(windows)]
+    {
+        toggle_hides_window(
+            window.is_visible().unwrap_or(false),
+            window.is_minimized().unwrap_or(false),
+            window_is_covered_by_document(window),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        window.is_visible().unwrap_or(false)
+    }
+}
+
+/// The platform-neutral core of [`toggle_should_hide`] on Windows: only a window the user can
+/// actually see is hidden.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn toggle_hides_window(visible: bool, minimized: bool, covered_by_document: bool) -> bool {
+    visible && !minimized && !covered_by_document
+}
+
+/// Whether two `(left, top, right, bottom)` rectangles overlap (touching edges don't).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// True when the document window is above `window` in z-order and overlaps it.
+#[cfg(windows)]
+fn window_is_covered_by_document<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_HWNDPREV};
+
+    let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) else {
+        return false;
+    };
+    let (Ok(main_hwnd), Ok(target_hwnd)) = (main.hwnd(), window.hwnd()) else {
+        return false;
+    };
+    let main_hwnd = main_hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    let target_hwnd = target_hwnd.0 as windows_sys::Win32::Foundation::HWND;
+
+    // Walk up from the document; meeting the target means the target is above it.
+    let mut above = main_hwnd;
+    loop {
+        // SAFETY: GetWindow only reads the window manager's z-order list.
+        above = unsafe { GetWindow(above, GW_HWNDPREV) };
+        if above.is_null() {
+            break;
+        }
+        if above == target_hwnd {
+            return false;
+        }
+    }
+
+    let mut main_rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let mut target_rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: both handles are live Tauri windows; the RECTs are valid out-pointers.
+    let read = unsafe {
+        GetWindowRect(main_hwnd, &mut main_rect) != 0
+            && GetWindowRect(target_hwnd, &mut target_rect) != 0
+    };
+    read && rects_overlap(
+        (
+            main_rect.left,
+            main_rect.top,
+            main_rect.right,
+            main_rect.bottom,
+        ),
+        (
+            target_rect.left,
+            target_rect.top,
+            target_rect.right,
+            target_rect.bottom,
+        ),
+    )
 }
 
 fn ensure_spin3d_debugger_window<R: Runtime>(
@@ -2137,9 +2741,10 @@ fn spin3d_debugger_window_route() -> &'static str {
 }
 
 #[tauri::command]
-fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
+    let _creation = lock_window_creation();
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        if window.is_visible().unwrap_or(false) {
+        if toggle_should_hide(&window) {
             return window.hide().map_err(|error| error.to_string());
         }
     }
@@ -2316,7 +2921,7 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
     // Development / explicit override: an absolute path to a locally built sidecar wins.
     if let Some(path) = env_override {
         let candidate = PathBuf::from(path.trim());
-        if candidate.is_file() {
+        if is_runnable_sidecar(&candidate) {
             return Some(candidate);
         }
     }
@@ -2331,11 +2936,62 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
         "avogadro3d-sidecar"
     };
     let bundled = executable_dir.join(sidecar_name);
-    if bundled.is_file() {
+    if is_runnable_sidecar(&bundled) {
         Some(bundled)
     } else {
         None
     }
+}
+
+/// Marker text every `binaries/` placeholder carries (see binaries/README.md).
+const SIDECAR_PLACEHOLDER_MARKER: &[u8] = b"avogadro3d-sidecar placeholder";
+
+/// A file that can actually be started as the sidecar. The `binaries/` placeholders for targets
+/// without a real build (Intel macOS, Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
+/// accepted them, so status said "bundled" and every session failed when the script exited. They
+/// are recognised by their marker on every platform; Windows additionally requires a PE image
+/// (a text placeholder there failed to start with OS error 193).
+fn is_runnable_sidecar(path: &Path) -> bool {
+    if !path.is_file() || is_sidecar_placeholder(path) {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        is_pe_image(path)
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+fn is_sidecar_placeholder(path: &Path) -> bool {
+    let mut head = Vec::with_capacity(512);
+    let read = fs::File::open(path).and_then(|file| file.take(512).read_to_end(&mut head));
+    read.is_ok()
+        && head
+            .windows(SIDECAR_PLACEHOLDER_MARKER.len())
+            .any(|window| window == SIDECAR_PLACEHOLDER_MARKER)
+}
+
+/// `MZ` DOS header whose e_lfanew (offset 0x3C) points at a `PE\0\0` signature. Reads only those
+/// bytes — the real sidecar is a megabyte, and status is checked on every Interactive 3D start.
+#[cfg(windows)]
+fn is_pe_image(path: &Path) -> bool {
+    use std::io::{Seek, SeekFrom};
+
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 0x40];
+    if file.read_exact(&mut header).is_err() || &header[..2] != b"MZ" {
+        return false;
+    }
+    let offset = u32::from_le_bytes([header[0x3c], header[0x3d], header[0x3e], header[0x3f]]);
+    let mut signature = [0u8; 4];
+    file.seek(SeekFrom::Start(u64::from(offset))).is_ok()
+        && file.read_exact(&mut signature).is_ok()
+        && &signature == b"PE\0\0"
 }
 
 fn start_engine3d_sidecar_session_from_path(
@@ -2355,6 +3011,7 @@ fn start_engine3d_sidecar_session_from_path(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .without_console_window()
         .spawn()
         .map_err(|error| format!("Could not start interactive 3D sidecar: {error}"))?;
 
@@ -2757,6 +3414,60 @@ fn handle_opened_document_urls<R: Runtime>(
     let Some(payload) = opened_payload else {
         return Ok(());
     };
+    deliver_opened_document(app, payload)
+}
+
+/// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
+/// second launch). Flags are skipped; the first existing `.chemdraft`/`.cdxml` file wins,
+/// mirroring the first-file-URL rule of the macOS path.
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+fn handle_opened_document_args<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    args: impl IntoIterator<Item = String>,
+    cwd: &Path,
+) -> Result<(), String> {
+    let path = args
+        .into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .map(|arg| cwd.join(arg))
+        .find(|path| is_openable_document_path(path));
+    let Some(path) = path else {
+        return Ok(());
+    };
+    deliver_opened_document(app, open_document_payload_from_path(&path)?)
+}
+
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios", target_os = "android"),
+    allow(dead_code)
+)]
+fn is_openable_document_path(path: &Path) -> bool {
+    let extension_ok = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            // `.cdx` cannot be read yet, but it is accepted so the opener can say so; filtering it
+            // out here made "Open with ChemDraft" on a .cdx do nothing at all.
+            extension.eq_ignore_ascii_case("chemdraft")
+                || extension.eq_ignore_ascii_case("cdxml")
+                || extension.eq_ignore_ascii_case("cdx")
+        });
+    extension_ok && path.is_file()
+}
+
+/// Queue an opened document for the window to drain on mount (cold start), bring the window up,
+/// and deliver it to an already-listening window.
+fn deliver_opened_document<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    payload: NativeOpenDocumentPayload,
+) -> Result<(), String> {
+    // The file was read here in Rust, which no fs scope governs — but Save writes it back through
+    // the fs plugin's writeTextFile, which only allows $HOME/$DOCUMENT/$DESKTOP/$DOWNLOAD/$TEMP. A
+    // document double-clicked on another drive or a share (D:\…, \\server\…) opened fine and then
+    // could not be saved in place. Grant this one file, exactly as the dialog plugin does for a
+    // file the user picks.
+    allow_opened_document_in_scope(app, Path::new(&payload.path));
+
     let state = app.state::<PendingOpenDocument>();
     {
         let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
@@ -2779,18 +3490,69 @@ fn open_document_payload_from_url(
     let path = url
         .to_file_path()
         .map_err(|_| format!("Opened URL is not a local file path: {url}"))?;
-    let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    open_document_payload_from_path(&path).map(Some)
+}
+
+/// An opened document's bytes as text, by the same rule as `decodeDocumentBytes` (documentText.ts):
+/// a UTF-8/UTF-16 byte-order mark decides, otherwise lenient UTF-8. `read_to_string` failed on
+/// anything that was not valid UTF-8, and that failure was only logged — so double-clicking a UTF-16
+/// CDXML file (or a .cdx renamed .cdxml) did nothing at all. Now it reaches the opener, which can say
+/// what the file is.
+fn decode_document_text(bytes: &[u8]) -> String {
+    let utf16 = |body: &[u8], little_endian: bool| {
+        let units = body
+            .chunks_exact(2)
+            .map(|pair| {
+                if little_endian {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect::<Vec<_>>();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, body @ ..] => utf16(body, true),
+        [0xFE, 0xFF, body @ ..] => utf16(body, false),
+        [0xEF, 0xBB, 0xBF, body @ ..] => String::from_utf8_lossy(body).into_owned(),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
+    let contents = decode_document_text(&fs::read(path).map_err(|error| error.to_string())?);
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Untitled.chemdraft")
         .to_string();
 
-    Ok(Some(NativeOpenDocumentPayload {
+    Ok(NativeOpenDocumentPayload {
         path: path.to_string_lossy().to_string(),
         display_name,
         contents,
-    }))
+    })
+}
+
+fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &Path) {
+    use tauri_plugin_fs::FsExt;
+    if let Some(scope) = app.try_fs_scope() {
+        if let Err(error) = scope.allow_file(path) {
+            eprintln!(
+                "Could not allow {} in the fs scope: {error}",
+                path.display()
+            );
+        }
+    }
+    if let Some(scopes) = app.try_state::<tauri::scope::Scopes>() {
+        if let Err(error) = scopes.allow_file(path) {
+            eprintln!(
+                "Could not allow {} in the asset scope: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 fn emit_open_document_to_main<R: Runtime>(
@@ -2821,7 +3583,7 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
 /// carrying their real state here keeps them from snapping back to a hardcoded default (the checkmark
 /// would otherwise desync and then invert on the next click). JS is the source of truth and passes
 /// the current values; the startup menu uses the defaults, which match the app's initial state.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ViewMenuState {
     rulers_visible: bool,
     crosshairs_visible: bool,
@@ -2847,9 +3609,46 @@ fn sync_plugin_menu_items(
     {
         let state = app.state::<PluginNativeMenuItems>();
         let mut guard = state.0.lock().map_err(|error| error.to_string())?;
+        // The webview re-sends the list on every plugin host/panel change (each report push, panel
+        // open/close), almost always unchanged. A rebuild swaps the whole menu bar — on Windows two
+        // SetMenu calls that resize the document's client area — so identical syncs are dropped.
+        if *guard == items {
+            return Ok(());
+        }
         *guard = items;
     }
     reinstall_app_menu(&app)
+}
+
+/// How a Toolbars-menu push differs from the menu already installed.
+#[derive(Debug, PartialEq)]
+enum ToolbarsMenuUpdate {
+    /// Same rows, same checkmarks: nothing to do.
+    Unchanged,
+    /// Same rows (ids and titles, in order); only checkmarks changed — flip them in place.
+    ChecksOnly,
+    /// Rows were added, removed, reordered or renamed: rebuild the menu.
+    Rebuild,
+}
+
+fn classify_toolbars_menu_update(
+    previous: &(Vec<ToolbarMenuEntry>, ViewMenuState),
+    next_entries: &[ToolbarMenuEntry],
+    next_view: ViewMenuState,
+) -> ToolbarsMenuUpdate {
+    let (previous_entries, previous_view) = previous;
+    let same_rows = previous_entries.len() == next_entries.len()
+        && previous_entries
+            .iter()
+            .zip(next_entries)
+            .all(|(old, new)| old.toolset_id == new.toolset_id && old.title == new.title);
+    if !same_rows {
+        ToolbarsMenuUpdate::Rebuild
+    } else if previous_entries.as_slice() == next_entries && *previous_view == next_view {
+        ToolbarsMenuUpdate::Unchanged
+    } else {
+        ToolbarsMenuUpdate::ChecksOnly
+    }
 }
 
 /// Rebuild and install the app menu on the main thread from the last JS-pushed toolbar model plus the
@@ -2879,6 +3678,35 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
     Ok(())
 }
 
+/// Install a (re)built app menu. Must run on the main thread (every caller does: `setup`, and the
+/// `run_on_main_thread` closures of `set_toolbars_menu` / `reinstall_app_menu`).
+///
+/// macOS has one app-wide menu bar. Elsewhere the menu belongs to the document window alone and is
+/// set on that window, never app-wide. An app-wide Tauri menu is attached to EVERY window, and
+/// attaching a muda menu to a Win32 window subclasses it with `menu_subclass_proc`, whose
+/// `dwrefdata` points at the `Menu`. `remove_menu` clears the bar but never removes that subclass,
+/// and muda's `Drop` only unsubclasses windows still attached — so every palette, popover and the
+/// tooltip, stripped of the app-wide bar, kept a pointer to a menu that the next rebuild freed. The
+/// next WM_NCACTIVATE/WM_NCPAINT read it: an access violation in `menu_subclass_proc` at startup
+/// (rebuilds racing palette creation) and in GDI32 at exit.
+///
+/// With the menu on the document window only, no other window is ever subclassed. The document
+/// window itself is safe across a rebuild: on the main thread Tauri runs the queued detach/attach
+/// inline, and `Window::set_menu` holds the previous menu while the new one re-points the subclass,
+/// so the old menu is only freed once nothing refers to it. Keep this on the main thread.
+fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    app.set_menu(menu)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            return Ok(());
+        };
+        window.set_menu(menu)?;
+    }
+    Ok(())
+}
+
 fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let app = app.clone();
     app.clone()
@@ -2886,7 +3714,7 @@ fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
             let (entries, view_state) = current_toolbars_menu_model(&app);
             let plugin_items = current_plugin_menu_items(&app);
             let result = create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
-                .and_then(|menu| app.set_menu(menu).map(|_| ()));
+                .and_then(|menu| install_app_menu(&app, menu));
             if let Err(error) = result {
                 eprintln!("Could not update ChemDraft plugin menu: {error}");
             }
@@ -3024,11 +3852,18 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         true,
                         Some(match current_keybinding_scheme(app) {
                             KeybindingScheme::ChemDraft => "CmdOrCtrl+Shift+E",
+                            #[cfg(target_os = "macos")]
                             KeybindingScheme::ChemDraw => "Ctrl+Command+E",
+                            // "Command" is the Windows/Super key off macOS. The shortcut engine
+                            // folds Cmd into Ctrl there, so the ChemDraw scheme's chord is Ctrl+E.
+                            #[cfg(not(target_os = "macos"))]
+                            KeybindingScheme::ChemDraw => "CmdOrCtrl+E",
                         }),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
-                    #[cfg(target_os = "macos")]
+                    // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
+                    // (appUpdates.ts). Linux has no update channel yet, so no item there.
+                    #[cfg(any(target_os = "macos", windows))]
                     &MenuItem::with_id(
                         app,
                         CHECK_FOR_UPDATES_COMMAND_ID,
@@ -3036,14 +3871,17 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         true,
                         None::<&str>,
                     )?,
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(target_os = "macos")]
                     &close_window_menu_item(app, CLOSE_WINDOW_FILE_MENU_ID)?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::close_window(app, None)?,
+                    // A routed item, not PredefinedMenuItem::quit: on Windows muda's predefined Quit
+                    // is a bare PostQuitMessage, which ends the event loop before the document
+                    // window can flush its pending session autosave (see request_quit).
                     #[cfg(not(target_os = "macos"))]
-                    &PredefinedMenuItem::quit(app, None)?,
+                    &MenuItem::with_id(app, APP_QUIT_COMMAND_ID, "Exit", true, None::<&str>)?,
                 ],
             )?,
             &Submenu::with_items(
@@ -3173,7 +4011,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::close_window(app, None)?,
                 ],
             )?,
-            &Submenu::with_items(app, "Help", true, &[])?,
+            // macOS keeps About in the application menu; elsewhere Help is its home.
+            &Submenu::with_items(
+                app,
+                "Help",
+                true,
+                &[
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::about(app, None, Some(about_metadata(app)))?,
+                ],
+            )?,
         ],
     )
 }
@@ -3241,13 +4088,11 @@ fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
-    let package_info = app.package_info();
+fn about_metadata<R: Runtime>(app: &tauri::AppHandle<R>) -> AboutMetadata<'static> {
     let config = app.config();
-    let about_metadata = AboutMetadata {
+    AboutMetadata {
         name: Some("ChemDraft".to_string()),
-        version: Some(package_info.version.to_string()),
+        version: Some(app.package_info().version.to_string()),
         copyright: config.bundle.copyright.clone(),
         authors: config
             .bundle
@@ -3255,7 +4100,13 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             .clone()
             .map(|publisher| vec![publisher]),
         ..Default::default()
-    };
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    let package_info = app.package_info();
+    let about_metadata = about_metadata(app);
 
     Submenu::with_items(
         app,
@@ -3414,7 +4265,7 @@ fn create_view_menu<R: Runtime>(
 /// One Toolbars-menu row. JS is the source of truth for the toolset set + titles now and pushes
 /// these via `set_toolbars_menu`; the startup menu derives the same shape from the manifest until
 /// the manifest is removed from Rust.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolbarMenuEntry {
     toolset_id: String,
@@ -3496,10 +4347,13 @@ fn ensure_toolset_window<R: Runtime>(
         labels.insert(label.clone(), toolset_id.to_string());
     }
 
-    let window = match WebviewWindowBuilder::new(
+    let window = match utility_window_builder(
+        WebviewWindowBuilder::new(
+            app,
+            label.clone(),
+            WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
+        ),
         app,
-        label.clone(),
-        WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
     )
     .title(title)
     .inner_size(width, height)
@@ -3533,8 +4387,39 @@ fn ensure_toolset_window<R: Runtime>(
     Ok(())
 }
 
+/// Run `task` on the main thread and wait for its result. AppKit is main-thread-only, and the
+/// window-creating commands are `async` (a tokio worker — required for WebView2 on Windows), so every
+/// raw NSWindow call they reach must be marshalled. Tauri runs the closure inline when already on the
+/// main thread, so this is also safe to call from there (the result is sent before `recv` blocks).
+#[cfg(target_os = "macos")]
+fn run_on_main_thread_blocking<R: Runtime, T: Send + 'static>(
+    window: &tauri::WebviewWindow<R>,
+    task: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let _ = sender.send(task());
+        })
+        .map_err(|error| error.to_string())?;
+    receiver
+        .recv()
+        .map_err(|_| "The main thread dropped a window-configuration task.".to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn configure_toolset_utility_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    order_front: bool,
+) -> Result<(), String> {
+    let target = window.clone();
+    run_on_main_thread_blocking(window, move || {
+        configure_toolset_utility_window_on_main_thread(&target, order_front)
+    })?
+}
+
+#[cfg(target_os = "macos")]
+fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     order_front: bool,
 ) -> Result<(), String> {
@@ -3579,6 +4464,7 @@ fn configure_toolset_utility_window<R: Runtime>(
 /// Local (top-left origin, logical px) pointer position inside a palette window. Tagged with the
 /// toolset id because a plain JS `listen()` receives events regardless of the emit target — each
 /// palette filters to its own id (the same pattern the popover-content events use).
+#[cfg(target_os = "macos")]
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PalettePointerPayload {
@@ -3587,6 +4473,7 @@ struct PalettePointerPayload {
     y: f64,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PalettePointerLeavePayload {
@@ -3733,12 +4620,47 @@ fn toolset_window_hides_on_deactivate() -> bool {
     true
 }
 
+/// Off macOS there is no panel treatment to apply after the build: everything a utility window
+/// needs is set on its builder by [`utility_window_builder`]. (No menu bar needs stripping either —
+/// the app menu is attached to the document window only; see `install_app_menu`.)
 #[cfg(not(target_os = "macos"))]
 fn configure_toolset_utility_window<R: Runtime>(
     _window: &tauri::WebviewWindow<R>,
     _order_front: bool,
 ) -> Result<(), String> {
     Ok(())
+}
+
+/// Builder settings every floating utility window (palettes, popovers, the tooltip, plugin panels)
+/// shares. On Windows:
+/// - **owned by the document window**, given to tao at build time: an owned window stays above its
+///   owner, hides while it is minimized and is destroyed with it — and tao creates it as a popup
+///   without `WS_EX_APPWINDOW`. (Setting `GWLP_HWNDPARENT` afterwards left tao believing the window
+///   was unowned, so it kept `WS_EX_APPWINDOW` — an Alt+Tab entry per palette — and re-applied it
+///   on every style change.)
+/// - **not focused when shown**: tao then shows it with `SW_SHOWNOACTIVATE`. With the default
+///   `focused(true)` every show was `SW_SHOW`, which activated the palette (despite
+///   `focusable(false)`), greyed the document's title bar and took its keystrokes.
+fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+    app: &tauri::AppHandle<R>,
+) -> WebviewWindowBuilder<'a, R, M> {
+    #[cfg(windows)]
+    {
+        let builder = builder.focused(false);
+        match app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .and_then(|main| main.hwnd().ok())
+        {
+            Some(owner) => builder.owner_raw(owner),
+            None => builder,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        builder
+    }
 }
 
 fn toolset_state<R: Runtime>(
@@ -3918,9 +4840,33 @@ fn persisted_toolset_position<R: Runtime>(
     })
 }
 
+/// Whether a palette's current frame is a transient OS state (it or the document window it belongs
+/// to is minimized) that must not be persisted as the palette's position.
+fn toolset_frame_is_transient<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    window: &tauri::Window<R>,
+) -> bool {
+    let palette_minimized = window.is_minimized().unwrap_or(false);
+    let document_minimized = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_some_and(|main| main.is_minimized().unwrap_or(false));
+    toolset_frame_state_is_transient(palette_minimized, document_minimized)
+}
+
+/// The decision behind [`toolset_frame_is_transient`]. Only Windows ties palettes to the document's
+/// minimized state (owned windows are minimized and parked at (-16000, -16000) with their owner). A
+/// macOS palette stays visible and draggable while the document is in the Dock, and those moves are
+/// real user moves.
+fn toolset_frame_state_is_transient(palette_minimized: bool, document_minimized: bool) -> bool {
+    palette_minimized || (cfg!(windows) && document_minimized)
+}
+
 fn current_toolset_window_position<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Option<ToolsetWindowPosition> {
+    if window.is_minimized().unwrap_or(false) {
+        return None;
+    }
     let position = window.outer_position().ok()?;
     Some(logical_toolset_position(
         window,
@@ -3974,10 +4920,47 @@ fn persist_toolset_position<R: Runtime>(
     })
 }
 
+/// What a main-window resize or move should persist.
+#[derive(Debug, PartialEq)]
+enum MainWindowGeometryUpdate {
+    /// Fullscreen or minimized: a transient OS state, not a user-chosen frame.
+    Skip,
+    /// Maximized: not the user's frame either (on Windows it even starts off-screen, at the
+    /// invisible border), so record only the flag and keep the saved normal frame.
+    MarkMaximized,
+    /// A normal frame: save it, clearing the maximized flag.
+    SaveFrame,
+}
+
+fn main_window_geometry_update(
+    fullscreen: bool,
+    minimized: bool,
+    maximized: bool,
+) -> MainWindowGeometryUpdate {
+    if fullscreen || minimized {
+        MainWindowGeometryUpdate::Skip
+    } else if maximized {
+        MainWindowGeometryUpdate::MarkMaximized
+    } else {
+        MainWindowGeometryUpdate::SaveFrame
+    }
+}
+
 fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
-    // Fullscreen/minimized frames are transient OS states, not a user-chosen frame.
-    if window.is_fullscreen().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
-        return Ok(());
+    match main_window_geometry_update(
+        window.is_fullscreen().unwrap_or(false),
+        window.is_minimized().unwrap_or(false),
+        window.is_maximized().unwrap_or(false),
+    ) {
+        MainWindowGeometryUpdate::Skip => return Ok(()),
+        MainWindowGeometryUpdate::MarkMaximized => {
+            return update_toolset_layout_state(window.app_handle(), |layout_state| {
+                if let Some(geometry) = layout_state.main_window.as_mut() {
+                    geometry.maximized = true;
+                }
+            });
+        }
+        MainWindowGeometryUpdate::SaveFrame => {}
     }
     let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return Ok(());
@@ -3994,6 +4977,7 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
             y: position.y as f64 / scale_factor,
             width: size.width as f64 / scale_factor,
             height: size.height as f64 / scale_factor,
+            maximized: false,
         });
     })
 }
@@ -4019,10 +5003,15 @@ fn restore_main_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) ->
     if window.is_fullscreen().unwrap_or(false) {
         return true;
     }
-    window
+    let restored = window
         .set_position(tauri::LogicalPosition::new(geometry.x, geometry.y))
         .and_then(|_| window.set_size(tauri::LogicalSize::new(geometry.width, geometry.height)))
-        .is_ok()
+        .is_ok();
+    // Maximize after the normal frame is in place, so un-maximizing returns to it.
+    if restored && geometry.maximized {
+        let _ = window.maximize();
+    }
+    restored
 }
 
 /// True when the saved frame's title-bar strip lands on some attached monitor (compared in each
@@ -4200,7 +5189,14 @@ fn set_check_menu_item_checked_now<R: Runtime>(
     command_id: &str,
     checked: bool,
 ) -> Result<(), String> {
-    let Some(menu) = app.menu() else {
+    // Off macOS the menu lives on the document window, not the app (see `install_app_menu`).
+    #[cfg(target_os = "macos")]
+    let menu = app.menu();
+    #[cfg(not(target_os = "macos"))]
+    let menu = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.menu());
+    let Some(menu) = menu else {
         return Ok(());
     };
     let Some(item) = find_menu_item_by_id(menu.items().unwrap_or_default(), command_id) else {
@@ -4241,6 +5237,241 @@ mod tests {
 
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn sidecar_placeholders_are_not_runnable_on_windows() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-sidecar-pe-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let placeholder = dir.join("placeholder.exe");
+        fs::write(&placeholder, "ChemDraft avogadro3d-sidecar placeholder.").expect("placeholder");
+        let mut pe = vec![0u8; 0x80];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3c] = 0x40;
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let image = dir.join("image.exe");
+        fs::write(&image, &pe).expect("image");
+
+        assert!(!is_runnable_sidecar(&placeholder));
+        assert!(is_runnable_sidecar(&image));
+        assert!(!is_runnable_sidecar(&dir.join("missing.exe")));
+        assert!(is_runnable_sidecar(
+            &std::env::current_exe().expect("test exe")
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn committed_sidecar_placeholders_are_never_runnable() {
+        let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        for triple in [
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+        ] {
+            let placeholder = binaries.join(format!("avogadro3d-sidecar-{triple}"));
+            assert!(is_sidecar_placeholder(&placeholder), "{triple}");
+            assert!(!is_runnable_sidecar(&placeholder), "{triple}");
+        }
+        for real in [
+            "avogadro3d-sidecar-aarch64-apple-darwin",
+            "avogadro3d-sidecar-x86_64-pc-windows-msvc.exe",
+        ] {
+            assert!(!is_sidecar_placeholder(&binaries.join(real)), "{real}");
+        }
+    }
+
+    #[test]
+    fn a_minimized_palette_or_document_frame_is_never_persisted_where_windows_parks_it() {
+        assert!(!toolset_frame_state_is_transient(false, false));
+        assert!(toolset_frame_state_is_transient(true, false));
+        assert!(toolset_frame_state_is_transient(true, true));
+        // Windows minimizes owned palettes with the document and parks them off-screen; macOS
+        // leaves them visible and draggable, so a move then is a real user move.
+        assert_eq!(toolset_frame_state_is_transient(false, true), cfg!(windows));
+    }
+
+    #[test]
+    fn a_maximized_main_window_records_the_flag_and_keeps_its_normal_frame() {
+        use MainWindowGeometryUpdate::*;
+        assert_eq!(main_window_geometry_update(false, false, false), SaveFrame);
+        assert_eq!(
+            main_window_geometry_update(false, false, true),
+            MarkMaximized
+        );
+        // Transient states win over maximized: a minimized maximized window saves nothing.
+        assert_eq!(main_window_geometry_update(false, true, true), Skip);
+        assert_eq!(main_window_geometry_update(true, false, true), Skip);
+        assert_eq!(main_window_geometry_update(true, false, false), Skip);
+
+        // Layout files written before the flag existed still parse, as not maximized.
+        let legacy: MainWindowGeometry =
+            serde_json::from_str(r#"{"x":10,"y":20,"width":800,"height":600}"#)
+                .expect("legacy geometry should parse");
+        assert!(!legacy.maximized);
+        let current: MainWindowGeometry =
+            serde_json::from_str(r#"{"x":10,"y":20,"width":800,"height":600,"maximized":true}"#)
+                .expect("current geometry should parse");
+        assert!(current.maximized);
+    }
+
+    #[test]
+    fn toggles_hide_only_a_window_the_user_can_see() {
+        assert!(toggle_hides_window(true, false, false));
+        assert!(!toggle_hides_window(false, false, false));
+        assert!(!toggle_hides_window(true, true, false));
+        assert!(!toggle_hides_window(true, false, true));
+        assert!(rects_overlap((0, 0, 100, 100), (50, 50, 150, 150)));
+        assert!(!rects_overlap((0, 0, 100, 100), (100, 0, 200, 100)));
+        assert!(!rects_overlap((0, 0, 100, 100), (200, 200, 300, 300)));
+    }
+
+    #[test]
+    fn global_logical_points_convert_with_their_monitors_scale() {
+        // 150% laptop at the origin (logical 0..1920); 100% display to its right from physical
+        // x = 2880 (logical 2880..4800). The logical frames do not overlap.
+        let disjoint = [
+            MonitorFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 2880.0,
+                height: 1800.0,
+                scale: 1.5,
+            },
+            MonitorFrame {
+                x: 2880.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                scale: 1.0,
+            },
+        ];
+        // The window's own scale does not matter once only one monitor contains the point.
+        assert_eq!(
+            global_logical_to_physical(&disjoint, 1000.0, 100.0, 1.0),
+            (1500.0, 150.0)
+        );
+        assert_eq!(
+            global_logical_to_physical(&disjoint, 3000.0, 100.0, 1.5),
+            (3000.0, 100.0)
+        );
+
+        // 100% primary at the origin; 200% display to its right from physical x = 1920, whose
+        // logical frame (960..2880) overlaps the primary's (0..1920).
+        let monitors = [
+            MonitorFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                scale: 1.0,
+            },
+            MonitorFrame {
+                x: 1920.0,
+                y: 0.0,
+                width: 3840.0,
+                height: 2160.0,
+                scale: 2.0,
+            },
+        ];
+        // Inside the overlap the moving window's own display wins: a palette at physical
+        // x = 2400 on the 200% display reports logical 1200 and must stay there...
+        assert_eq!(
+            global_logical_to_physical(&monitors, 1200.0, 100.0, 2.0),
+            (2400.0, 200.0)
+        );
+        // ...while a window on the primary at logical 1200 stays on the primary.
+        assert_eq!(
+            global_logical_to_physical(&monitors, 1200.0, 100.0, 1.0),
+            (1200.0, 100.0)
+        );
+        // Outside the overlap only one monitor contains the point, whatever the window's scale.
+        assert_eq!(
+            global_logical_to_physical(&monitors, 500.0, 100.0, 2.0),
+            (500.0, 100.0)
+        );
+        assert_eq!(
+            global_logical_to_physical(&monitors, 2400.0, 100.0, 1.0),
+            (4800.0, 200.0)
+        );
+        // Off every monitor: the fallback scale.
+        assert_eq!(
+            global_logical_to_physical(&monitors, -50.0, -50.0, 1.5),
+            (-75.0, -75.0)
+        );
+    }
+
+    #[test]
+    fn toolbars_menu_pushes_rebuild_only_on_structural_change() {
+        let entry = |id: &str, visible: bool| ToolbarMenuEntry {
+            toolset_id: id.to_string(),
+            title: id.to_string(),
+            visible,
+        };
+        let view = ViewMenuState::default();
+        let previous = (
+            vec![entry("core.main", true), entry("core.art", false)],
+            view,
+        );
+        assert_eq!(
+            classify_toolbars_menu_update(&previous, &previous.0, view),
+            ToolbarsMenuUpdate::Unchanged
+        );
+        assert_eq!(
+            classify_toolbars_menu_update(
+                &previous,
+                &[entry("core.main", true), entry("core.art", true)],
+                view
+            ),
+            ToolbarsMenuUpdate::ChecksOnly
+        );
+        assert_eq!(
+            classify_toolbars_menu_update(
+                &previous,
+                &previous.0,
+                ViewMenuState {
+                    rulers_visible: false,
+                    ..view
+                }
+            ),
+            ToolbarsMenuUpdate::ChecksOnly
+        );
+        assert_eq!(
+            classify_toolbars_menu_update(&previous, &[entry("core.main", true)], view),
+            ToolbarsMenuUpdate::Rebuild
+        );
+        let mut renamed = previous.0.clone();
+        renamed[1].title = "Art (renamed)".to_string();
+        assert_eq!(
+            classify_toolbars_menu_update(&previous, &renamed, view),
+            ToolbarsMenuUpdate::Rebuild
+        );
+    }
+
+    #[test]
+    fn openable_document_paths_are_existing_chemdraft_cdxml_or_cdx_files() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-open-args-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        for name in ["a.chemdraft", "b.CDXML", "c.txt", "d.Cdx"] {
+            fs::write(dir.join(name), "<CDXML/>").expect("fixture");
+        }
+
+        assert!(is_openable_document_path(&dir.join("a.chemdraft")));
+        assert!(is_openable_document_path(&dir.join("b.CDXML")));
+        assert!(!is_openable_document_path(&dir.join("c.txt")));
+        // A ChemDraw binary reaches the opener, which says what it is; filtering it out here made
+        // "Open with ChemDraft" on a .cdx do nothing at all.
+        assert!(is_openable_document_path(&dir.join("d.Cdx")));
+        assert!(!is_openable_document_path(&dir.join("missing.cdxml")));
+        assert!(!is_openable_document_path(&dir));
+
+        let payload = open_document_payload_from_path(&dir.join("a.chemdraft")).expect("payload");
+        assert_eq!(payload.display_name, "a.chemdraft");
+        assert_eq!(payload.contents, "<CDXML/>");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn layout_state_read_error_never_becomes_defaults() {
         // An absent file is not a failure: defaults are correct until the first save.
@@ -4271,6 +5502,7 @@ mod tests {
                 y: 34.0,
                 width: 800.0,
                 height: 600.0,
+                maximized: false,
             }),
         };
         let json = serde_json::to_string(&saved).expect("serialize");
@@ -4452,6 +5684,7 @@ mod tests {
             y: 50.0,
             width: 1280.0,
             height: 820.0,
+            maximized: false,
         };
         expect_true(title_bar_reachable_in_monitor(
             &geometry, 0.0, 0.0, 1728.0, 1117.0,
@@ -4466,6 +5699,7 @@ mod tests {
             y: 50.0,
             width: 1280.0,
             height: 820.0,
+            maximized: false,
         };
         expect_false(title_bar_reachable_in_monitor(
             &geometry, 0.0, 0.0, 1728.0, 1117.0,
@@ -4480,6 +5714,7 @@ mod tests {
             y: 1110.0,
             width: 1280.0,
             height: 820.0,
+            maximized: false,
         };
         expect_false(title_bar_reachable_in_monitor(
             &geometry, 0.0, 0.0, 1728.0, 1117.0,
@@ -4792,6 +6027,50 @@ mod tests {
     }
 
     #[test]
+    fn opened_documents_decode_by_byte_order_mark_and_never_fail() {
+        let xml = "<CDXML><page id=\"1\"/></CDXML>";
+        assert_eq!(decode_document_text(xml.as_bytes()), xml);
+        let mut bom8 = vec![0xEF, 0xBB, 0xBF];
+        bom8.extend_from_slice(xml.as_bytes());
+        assert_eq!(decode_document_text(&bom8), xml);
+
+        let units = xml.encode_utf16().collect::<Vec<_>>();
+        let mut le = vec![0xFF, 0xFE];
+        le.extend(units.iter().flat_map(|unit| unit.to_le_bytes()));
+        assert_eq!(decode_document_text(&le), xml);
+        let mut be = vec![0xFE, 0xFF];
+        be.extend(units.iter().flat_map(|unit| unit.to_be_bytes()));
+        assert_eq!(decode_document_text(&be), xml);
+
+        // A binary ChemDraw file must still reach the opener, signature intact, so it can say what
+        // the file is rather than the open silently doing nothing.
+        let mut cdx = b"VjCD0100".to_vec();
+        cdx.extend_from_slice(&[0x04, 0x03, 0x02, 0x01, 0xFF, 0x00, 0x80]);
+        assert!(decode_document_text(&cdx).starts_with("VjCD0100"));
+    }
+
+    /// NSIS ignores `rank`, so a Windows `.cdxml` association is never "Alternate": a per-user install
+    /// writes HKCU's `.cdxml` default, which outranks ChemDraw's machine-wide registration. The
+    /// Windows override (merged over tauri.conf.json, arrays replaced) must register `.chemdraft` only.
+    #[test]
+    fn windows_bundle_never_claims_cdxml() {
+        let config = include_str!("../tauri.windows.conf.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(config).expect("windows tauri config should parse");
+        let extensions = parsed
+            .pointer("/bundle/fileAssociations")
+            .and_then(serde_json::Value::as_array)
+            .expect("the windows override must replace bundle.fileAssociations")
+            .iter()
+            .filter_map(|association| association.get("ext"))
+            .filter_map(serde_json::Value::as_array)
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(extensions, ["chemdraft"]);
+    }
+
+    #[test]
     fn bundle_config_declares_target_triple_sidecar_basename() {
         let config = include_str!("../tauri.conf.json");
         let parsed: serde_json::Value =
@@ -4885,9 +6164,17 @@ mod tests {
 
     #[test]
     fn engine3d_sidecar_status_tracks_env_override_without_running_shell() {
-        let path =
-            std::env::temp_dir().join(format!("chemdraft-engine3d-status-{}", std::process::id()));
-        fs::write(&path, "").expect("fixture should write");
+        // Windows accepts only a real PE image as the sidecar (see is_runnable_sidecar); the running
+        // test binary is one, and it is never written or removed here.
+        #[cfg(windows)]
+        let (path, owned) = (std::env::current_exe().expect("test executable"), false);
+        #[cfg(not(windows))]
+        let (path, owned) = {
+            let path = std::env::temp_dir()
+                .join(format!("chemdraft-engine3d-status-{}", std::process::id()));
+            fs::write(&path, "").expect("fixture should write");
+            (path, true)
+        };
 
         let status = engine3d_sidecar_status_from(Some(path.to_string_lossy().to_string()));
 
@@ -4899,7 +6186,9 @@ mod tests {
             status.resolved_path,
         );
 
-        let _ = fs::remove_file(path);
+        if owned {
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]
@@ -5212,7 +6501,7 @@ mod tests {
         use objc2_foundation::NSData;
 
         let selection_json = r#"{"kind":"chemdraft-selection","objects":[{"type":"molecule","atoms":[{"el":"C"},{"el":"O"}]}]}"#;
-        write_clipboard_text_items_impl(vec![ClipboardWriteTextItem {
+        write_native_clipboard_text_items(vec![ClipboardWriteTextItem {
             r#type: "application/x-chemdraft-selection+json".to_string(),
             text: selection_json.to_string(),
         }])

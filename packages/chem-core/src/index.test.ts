@@ -16,10 +16,12 @@ import {
   DefaultNativeTextStyle,
   deserializeDocument,
   inchesToCssPx,
+  isEngineDocument,
   mmToCssPx,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   pageLayoutMatchesSize,
+  parseDocument,
   redo,
   serializeDocument,
   stylePresetToObjectStyle,
@@ -623,6 +625,19 @@ describe("native document validation and serialization", () => {
     );
 
     expect(deserializeDocument(serializeDocument(withMolecule))).toEqual(withMolecule);
+  });
+
+  it("serializes an engine document exactly as it would its parsed form", () => {
+    // serializeDocument skips the schema pass for a document the patch engine produced. That is only
+    // sound while the engine's document is already what a parse would return — same keys, same
+    // order, same defaults — so the two serializations must agree byte for byte.
+    const engineDocument = applyPatches(createEmptyDocument({ id: "doc_engine", now: timestamp }), [
+      { op: "addObject", pageId: "page_001", object: moleculeObject() },
+      { op: "setSelection", pageId: "page_001", objectIds: ["mol_001"] }
+    ], { now: timestamp });
+    expect(isEngineDocument(engineDocument)).toBe(true);
+
+    expect(serializeDocument(engineDocument)).toBe(JSON.stringify(parseDocument(engineDocument), null, 2));
   });
 
   it("degrades an unrecognized classifier to 'unknown' instead of failing the whole document", () => {

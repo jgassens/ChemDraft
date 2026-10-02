@@ -20,6 +20,8 @@
     "smoke:engine3d-real-structure": "node scripts/smoke-engine3d-real-structure.mjs",
     "smoke:engine3d-hold-steady": "node scripts/smoke-engine3d-hold-steady.mjs",
     "smoke:engine3d-anneal-energy": "node scripts/smoke-engine3d-anneal-energy.mjs",
+    "smoke:windows-menu-churn": "node scripts/smoke-windows-menu-churn.mjs",
+    "release:windows-manifest": "tsx tools/release/windows-update-manifest.ts",
     "test": "vitest run",
     "test:ocsr-real": "node packages/fixtures/ocsr/run-real-engine-check.mjs",
     "build:sdk": "node scripts/build-sdk.mjs plugin-api && node scripts/build-sdk.mjs plugin-host"
@@ -30,6 +32,7 @@
     "@types/jsdom": "28.0.3",
     "@types/node": "^26.1.1",
     "esbuild": "^0.27.7",
+    "fflate": "^0.8.3",
     "jsdom": "^29.1.1",
     "rollup": "^4.62.2",
     "rollup-plugin-dts": "^6.4.1",

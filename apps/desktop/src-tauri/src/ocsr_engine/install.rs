@@ -1451,7 +1451,7 @@ mod tests {
                 spec.size,
             ));
             let file = File::create(destination).expect("fake download");
-            file.set_len(spec.size.unwrap_or(8))
+            crate::ocsr_engine::set_sparse_len(&file, spec.size.unwrap_or(8))
                 .expect("fake download size");
             self.step(name, cancel)
         }
@@ -2058,7 +2058,7 @@ mod tests {
             fs::write(file, b"x").expect("file");
         }
         File::create(fresh.join(pins::MODEL_FILENAME))
-            .and_then(|model| model.set_len(pins::MODEL_BYTES))
+            .and_then(|model| crate::ocsr_engine::set_sparse_len(&model, pins::MODEL_BYTES))
             .expect("model");
         assert!(verify_layout(&paths.final_dir(), &platform).is_ok());
         assert!(!is_healthy(&paths.final_dir(), &platform));

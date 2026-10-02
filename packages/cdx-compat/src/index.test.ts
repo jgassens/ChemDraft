@@ -1,12 +1,15 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
   createEmptyDocument,
+  parseDocument,
   serializeDocument,
   type ArrowObject,
   type ChemDraftDocument,
   type GraphicObject,
+  type GroupObject,
   type MoleculeObject,
   type TextObject
 } from "@chemdraft/chem-core";
@@ -17,13 +20,205 @@ import {
   CdxmlEnvelopeCodecVersionV1,
   ChemDraftObjectTags,
   canonicalVisibleCdxml,
+  decodeBase64UrlBytes,
   decodeBase64UrlUtf8,
+  encodeBase64UrlBytes,
+  encodeBase64UrlUtf8,
   exportDocumentToCdxml,
   openChemDraftPayload,
   sha256Utf8Hex,
   visibleHashForCdxml
 } from "./index";
 import { sha256Hex, utf8Bytes } from "./sha256";
+
+describe("files that are not CDXML", () => {
+  it("names a ChemDraw binary .cdx file and says what to do", () => {
+    const opened = openChemDraftPayload("VjCD0100\u0004\u0003\u0002\u0001�\u0000");
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
+    expect(opened.warnings?.[0].message).toContain("Save As");
+    // The same file base64-encoded, as some interchange files carry it.
+    expect(openChemDraftPayload("VmpDRDAxMDAEAwIBAAAAAAAA").warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
+  });
+
+  it("names the root element of XML that is not CDXML", () => {
+    const opened = openChemDraftPayload('<?xml version="1.0" encoding="utf-8"?>\n<PowerShellMetadata><Class/></PowerShellMetadata>');
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings?.[0]).toMatchObject({ code: "cdxml.not_cdxml_xml" });
+    expect(opened.warnings?.[0].message).toContain("<PowerShellMetadata>");
+  });
+
+  it("still opens CDXML whatever the root element's case", () => {
+    const opened = openChemDraftPayload('<?xml version="1.0"?><cdxml><page id="1"><t p="0 0"><s>Hi</s></t></page></cdxml>');
+    expect(opened.document).toBeDefined();
+  });
+});
+
+describe("CDXML groups", () => {
+  const fragment = (id: string, x: number) =>
+    `<fragment id="${id}"><n id="${id}a" p="${x} 0"/><n id="${id}b" p="${x + 14} 0"/><b id="${id}c" B="${id}a" E="${id}b"/></fragment>`;
+
+  it("imports the molecules inside a group and ties them with a native group", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g1" Z="7" Integral="yes">${fragment("m1", 0)}${fragment("m2", 40)}</group></page></CDXML>`);
+    const objects = opened.document?.pages[0].objects ?? [];
+    const molecules = objects.filter((object) => object.type === "molecule");
+    const groups = objects.filter((object): object is GroupObject => object.type === "group");
+    expect(molecules).toHaveLength(2);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].childObjectIds).toEqual(molecules.map((molecule) => molecule.id));
+    expect(opened.warnings?.some(({ message }) => message.includes('"group"'))).toBe(false);
+    // The group element's own attributes, which have no native field, are kept rather than dropped.
+    expect(groups[0].compatibility?.unknown).toEqual({ attributes: { Z: "7", Integral: "yes" } });
+    // The group encloses its members.
+    for (const molecule of molecules) {
+      expect(molecule.x).toBeGreaterThanOrEqual(groups[0].x);
+      expect(molecule.x + molecule.width).toBeLessThanOrEqual(groups[0].x + groups[0].width + 1e-9);
+    }
+  });
+
+  it("keeps nested groups nested, and stands a lone member on the page", () => {
+    const nested = openChemDraftPayload(
+      `<CDXML><page id="1"><group id="outer"><group id="inner">${fragment("m1", 0)}${fragment("m2", 40)}</group>${fragment("m3", 80)}</group></page></CDXML>`
+    );
+    const objects = nested.document?.pages[0].objects ?? [];
+    const groups = objects.filter((object): object is GroupObject => object.type === "group");
+    expect(objects.filter((object) => object.type === "molecule")).toHaveLength(3);
+    expect(groups).toHaveLength(2);
+    const [inner, outer] = groups;
+    expect(outer.childObjectIds).toContain(inner.id);
+    expect(inner.childObjectIds).toHaveLength(2);
+
+    const lone = openChemDraftPayload(`<CDXML><page id="1"><group id="g">${fragment("m1", 0)}</group></page></CDXML>`);
+    const loneObjects = lone.document?.pages[0].objects ?? [];
+    expect(loneObjects.map((object) => object.type)).toEqual(["molecule"]);
+    expect(lone.warnings?.map(({ code }) => code)).toContain("cdxml.group_not_preserved");
+  });
+
+  it("imports a group of a hundred thousand members without overflowing", () => {
+    const members = Array.from({ length: 100_000 }, (_, index) => `<t id="t${index}" p="${index % 500} ${Math.floor(index / 500)}"><s>x</s></t>`).join("");
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g">${members}</group></page></CDXML>`);
+    const groups = (opened.document?.pages[0].objects ?? []).filter((object): object is GroupObject => object.type === "group");
+    expect(groups).toHaveLength(1);
+    expect(groups[0].childObjectIds).toHaveLength(100_000);
+  }, 60_000);
+});
+
+describe("hostile CDXML", () => {
+  it("skips bonds that do not join two different atoms, and says so", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="a" p="0 0"/><n id="b" p="14 0"/>
+      <b id="ok" B="a" E="b"/><b id="dangling" B="a" E="missing"/><b id="ghost" B="x" E="y"/><b id="self" B="a" E="a"/>
+    </fragment></page></CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    expect(molecule.bonds).toHaveLength(1);
+    const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
+    expect(molecule.bonds.every((bond) => atomIds.has(bond.fromAtomId) && atomIds.has(bond.toAtomId))).toBe(true);
+    expect(opened.warnings?.find(({ code }) => code === "cdxml.bond_endpoints_invalid")?.message).toContain("Skipped 3");
+  });
+
+  it("refuses coordinates too large to represent with a message, not an exception", () => {
+    const open = () =>
+      openChemDraftPayload(`<CDXML><page id="1"><fragment id="f"><n id="a" p="1e308 1e308"/><n id="b" p="-1e308 5"/><b id="c" B="a" E="b"/></fragment></page></CDXML>`);
+    expect(open).not.toThrow();
+    const opened = open();
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings?.[0]).toMatchObject({ code: "cdxml.values_out_of_range" });
+  });
+
+  it("does not expand entity bombs or read external entities", () => {
+    let entities = '<!ENTITY l0 "lol">';
+    for (let i = 1; i <= 9; i++) entities += `<!ENTITY l${i} "${`&l${i - 1};`.repeat(10)}">`;
+    const bomb = openChemDraftPayload(`<?xml version="1.0"?><!DOCTYPE CDXML [${entities}]><CDXML><page id="1"><t p="0 0"><s>&l9;</s></t></page></CDXML>`);
+    const text = JSON.stringify(bomb.document ?? {});
+    expect(text.length).toBeLessThan(100_000);
+    const xxe = openChemDraftPayload('<?xml version="1.0"?><!DOCTYPE CDXML [<!ENTITY x SYSTEM "file:///C:/Windows/win.ini">]><CDXML><page id="1"><t p="0 0"><s>&x;</s></t></page></CDXML>');
+    expect(xxe.document).toBeUndefined();
+  });
+});
+
+describe("large documents", () => {
+  it("exports, saves, and reopens a document whose payload is megabytes long", () => {
+    // 3,000 molecules: the base64 payload attribute runs to megabytes, which overflowed the XML
+    // validator's per-character recursion — the export threw, and so did reopening the saved file.
+    const fragments = Array.from({ length: 3000 }, (_, index) => {
+      const x = (index % 60) * 30;
+      const y = Math.floor(index / 60) * 30;
+      return `<fragment id="f${index}"><n id="a${index}" p="${x} ${y}"/><n id="b${index}" p="${x + 14} ${y}"/><b id="c${index}" B="a${index}" E="b${index}"/></fragment>`;
+    }).join("");
+    const opened = openChemDraftPayload(`<CDXML><page id="1">${fragments}</page></CDXML>`);
+    expect(opened.document?.pages[0].objects).toHaveLength(3000);
+    const exported = exportDocumentToCdxml(opened.document!).contents;
+    expect(exported.length).toBeGreaterThan(1_000_000);
+    const reopened = openChemDraftPayload(exported);
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.document?.pages[0].objects).toHaveLength(3000);
+  });
+
+  it("reopens a large save whose captions hold raw quotes", () => {
+    // Text is written with quotes unescaped, so a caption like n ='3 puts a lone apostrophe ahead of
+    // the payload attribute. A scan that read quotes outside tags paired it with the next one and
+    // left the payload unshortened: the app refused to reopen its own save.
+    const fragments = Array.from({ length: 3000 }, (_, index) => {
+      const x = (index % 60) * 30;
+      const y = Math.floor(index / 60) * 30 + 60;
+      return `<fragment id="f${index}"><n id="a${index}" p="${x} ${y}"/><n id="b${index}" p="${x + 14} ${y}"/><b id="c${index}" B="a${index}" E="b${index}"/></fragment>`;
+    }).join("");
+    const captions = `<t id="t1" p="10 10"><s>n ='3</s></t><t id="t2" p="10 30"><s>pH = "7</s></t>`;
+    const opened = openChemDraftPayload(`<CDXML><page id="1">${captions}${fragments}</page></CDXML>`);
+    expect(opened.document?.pages[0].objects).toHaveLength(3002);
+    const exported = exportDocumentToCdxml(opened.document!).contents;
+    const reopened = openChemDraftPayload(exported);
+    expect(reopened.warnings?.map(({ code }) => code) ?? []).not.toContain("cdxml.malformed_xml");
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.document?.pages[0].objects).toHaveLength(3002);
+  });
+});
+
+describe("CDXML dative bonds", () => {
+  const dativeCdxml = `<CDXML><page id="1"><fragment id="f">
+    <n id="n" p="0 0" Element="7"/><n id="m" p="14 0" Element="29"/>
+    <b id="b" B="n" E="m" Order="dative"/>
+  </fragment></page></CDXML>`;
+
+  it("imports Order=\"dative\" as the native dative bond (single, dashed) without a warning", () => {
+    const opened = openChemDraftPayload(dativeCdxml);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    expect(molecule.bonds[0]).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+    expect(opened.warnings?.some(({ code }) => code === "cdxml.bond_order_import_unsupported")).toBe(false);
+  });
+
+  it("says so when it reads a ChemDraw dashed single bond as dative", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="o" p="0 0" Element="8"/><n id="h" p="14 0" Element="1"/>
+      <b id="b" B="o" E="h" Display="Dash"/>
+    </fragment></page></CDXML>`);
+    const bond = (opened.document?.pages[0].objects[0] as MoleculeObject).bonds[0];
+    expect(bond).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+    expect(opened.warnings?.map(({ code }) => code)).toContain("cdxml.dashed_single_read_as_dative");
+    // A bond written as dative needs no such note: it is what it says.
+    expect(openChemDraftPayload(dativeCdxml).warnings?.map(({ code }) => code) ?? []).not.toContain("cdxml.dashed_single_read_as_dative");
+  });
+
+  it("keeps a dative bond's donor-to-acceptor direction when its display was a wedge", () => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="n" p="0 0" Element="7"/><n id="m" p="14 0" Element="29"/>
+      <b id="b" B="n" E="m" Order="dative" Display="WedgeEnd"/>
+    </fragment></page></CDXML>`);
+    const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    const nitrogen = molecule.atoms.find((atom) => atom.element === "N")!;
+    expect(molecule.bonds[0]).toMatchObject({ fromAtomId: nitrogen.id, display: { bondStyle: "dashed" } });
+    expect(opened.warnings?.some(({ code, message }) => code === "cdxml.bond_display_unsupported" && message.includes("WedgeEnd"))).toBe(true);
+  });
+
+  it("writes a native dative bond back as Order=\"dative\"", () => {
+    const opened = openChemDraftPayload(dativeCdxml);
+    const exported = exportDocumentToCdxml(opened.document!).contents;
+    expect(exported).toMatch(/<b [^>]*Order="dative"/);
+    const reopened = openChemDraftPayload(canonicalVisibleCdxml(exported));
+    const bond = (reopened.document?.pages[0].objects[0] as MoleculeObject).bonds[0];
+    expect(bond).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+  });
+});
 
 /** Imidazole with Order=1.5 ring bonds and a methyl, as a CDXML fragment. */
 function aromaticImidazoleCdxml(n1Attributes = ""): string {
@@ -162,10 +357,65 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     );
   });
 
+  it("agrees with node:crypto on every length around the block and padding boundaries, and on large input", () => {
+    // Stored in every saved file, so the fast implementation must match the standard bit for bit —
+    // including the lengths where padding spills into an extra block (55, 56, 63, 64, 119, 120 …).
+    const bytes = new Uint8Array(300);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = (index * 131 + 7) & 0xff;
+    }
+    for (let length = 0; length <= bytes.length; length += 1) {
+      const slice = bytes.subarray(0, length);
+      expect(sha256Hex(slice)).toBe(createHash("sha256").update(slice).digest("hex"));
+    }
+    const large = new Uint8Array(3 * 1024 * 1024 + 17);
+    for (let index = 0; index < large.length; index += 1) {
+      large[index] = (index * 2654435761) >>> 24;
+    }
+    expect(sha256Hex(large)).toBe(createHash("sha256").update(large).digest("hex"));
+  });
+
+  it("encodes base64url exactly as the original encoder did, and as Node's unpadded base64url does", () => {
+    // Every saved file carries this encoding, so the fast encoder must match the character-by-character
+    // one it replaced bit for bit, including the one- and two-byte tails.
+    const bytes = new Uint8Array(300);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = (index * 197 + 13) & 0xff;
+    }
+    for (let length = 0; length <= bytes.length; length += 1) {
+      const slice = bytes.subarray(0, length);
+      const encoded = encodeBase64UrlBytes(slice);
+      expect(encoded).toBe(referenceEncodeBase64UrlBytes(slice));
+      expect(encoded).toBe(Buffer.from(slice).toString("base64url"));
+      expect(decodeBase64UrlBytes(encoded)).toEqual(slice);
+      expect(decodeBase64UrlBytes(encoded)).toEqual(referenceDecodeBase64UrlBytes(encoded));
+    }
+    const large = new Uint8Array(3 * 1024 * 1024 + 2);
+    for (let index = 0; index < large.length; index += 1) {
+      large[index] = (index * 2654435761) >>> 24;
+    }
+    // Compared as booleans: a failing toBe/toEqual would try to diff megabytes.
+    const encodedLarge = encodeBase64UrlBytes(large);
+    expect(encodedLarge === referenceEncodeBase64UrlBytes(large)).toBe(true);
+    expect(encodedLarge === Buffer.from(large).toString("base64url")).toBe(true);
+    expect(Buffer.from(decodeBase64UrlBytes(encodedLarge)).equals(Buffer.from(large))).toBe(true);
+    expect(Buffer.from(referenceDecodeBase64UrlBytes(encodedLarge)).equals(Buffer.from(large))).toBe(true);
+  }, 30_000);
+
+  it("rejects base64url that no encoder produces", () => {
+    expect(() => decodeBase64UrlBytes("A")).toThrow(/Invalid base64url/);
+    expect(() => decodeBase64UrlBytes("AAAAA")).toThrow(/Invalid base64url/);
+    for (const invalid of ["AB+C", "AB/C", "AB=C", "ABC=", "AB C", "ABé", "AB\u{1F600}"]) {
+      expect(() => decodeBase64UrlBytes(invalid)).toThrow(/Invalid base64url/);
+    }
+  });
+
   it("exports a deterministic CDXML envelope with hidden native payload metadata", () => {
     const document = createEmptyDocument({ title: "Escaped & Quoted", now: "2026-06-06T00:00:00.000Z" });
     const result = exportDocumentToCdxml(document, { creationProgram: 'Test "Build" & Check' });
-    const nativeJson = serializeDocument(document);
+    // The embedded JSON is compact: it lives base64-encoded in an attribute, where indentation was
+    // pure file size.
+    const nativeJson = JSON.stringify(parseDocument(document));
 
     expect(result.warnings).toEqual([]);
     expect(result.contents).toContain('<?xml version="1.0" encoding="UTF-8"?>');
@@ -180,6 +430,70 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(extractObjectTag(result.contents, ChemDraftObjectTags.nativePayloadHash)).toBe(sha256Utf8Hex(nativeJson));
     expect(decodeBase64UrlUtf8(extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument))).toBe(nativeJson);
     expect(extractObjectTag(result.contents, ChemDraftObjectTags.visibleCdxmlHash)).toBe(visibleHashForCdxml(result.contents));
+  });
+
+  it("reports the hash of the embedded native JSON, the same value the envelope's hash tag carries", () => {
+    const result = exportDocumentToCdxml(documentWithObjects([singleBondMolecule()]));
+    const embeddedJson = decodeBase64UrlUtf8(extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument));
+
+    expect(result.nativePayloadHash).toBe(createHash("sha256").update(embeddedJson, "utf8").digest("hex"));
+    expect(extractObjectTag(result.contents, ChemDraftObjectTags.nativePayloadHash)).toBe(result.nativePayloadHash);
+  });
+
+  it("embeds compact native JSON, and still opens an envelope an older build wrote with indented JSON", () => {
+    const document = documentWithObjects([singleBondMolecule()]);
+    const result = exportDocumentToCdxml(document);
+    const embeddedJson = decodeBase64UrlUtf8(extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument));
+    expect(embeddedJson).not.toContain("\n");
+    expect(embeddedJson).toBe(JSON.stringify(JSON.parse(embeddedJson)));
+
+    // Rebuild the envelope the way older builds did: serializeDocument's indented JSON, hashed over
+    // its own bytes. Only the two native tags change, so the visible hash still matches.
+    const prettyJson = serializeDocument(document);
+    const older = result.contents
+      .replace(
+        `Value="${extractObjectTag(result.contents, ChemDraftObjectTags.nativeDocument)}"`,
+        `Value="${encodeBase64UrlUtf8(prettyJson)}"`
+      )
+      .replace(`Value="${result.nativePayloadHash}"`, `Value="${sha256Utf8Hex(prettyJson)}"`);
+    expect(older).not.toBe(result.contents);
+
+    const opened = openChemDraftPayload(older);
+    expect(opened.source).toBe("native-payload");
+    expect(opened.warnings).toEqual([]);
+    expect(opened.document).toEqual(openChemDraftPayload(result.contents).document);
+  });
+
+  it("escapes XML-special characters in text content and reopens the same text", () => {
+    const text = "a < b & c > d";
+    const document = documentWithObjects([
+      {
+        id: "text_specials",
+        type: "text",
+        x: 120,
+        y: 140,
+        width: 220,
+        height: 42,
+        rotation: 0,
+        style: {},
+        text,
+        spans: []
+      }
+    ]);
+    const result = exportDocumentToCdxml(document);
+    expect(result.contents).toContain("a &lt; b &amp; c &gt; d");
+    expect(result.contents).not.toContain(text);
+
+    const reopened = openChemDraftPayload(result.contents);
+    expect(reopened.source).toBe("native-payload");
+    expect((reopened.document?.pages[0].objects[0] as TextObject).text).toBe(text);
+    // The visible layer alone — what ChemDraw would read — carries the same text.
+    const visibleOnly = openChemDraftPayload(
+      result.contents.replace(/<objecttag Name="org\.chemdraft\/native-document"[^>]*\/>/, "")
+    );
+    expect(visibleOnly.source).toBe("external-cdxml");
+    const visibleTexts = (visibleOnly.document?.pages[0].objects ?? []).filter((object): object is TextObject => object.type === "text");
+    expect(visibleTexts.map((object) => object.text)).toContain(text);
   });
 
   it("preserves non-ASCII native text through UTF-8 base64url payload encoding", () => {
@@ -2029,6 +2343,49 @@ function singleBondMolecule(): MoleculeObject {
     superatoms: [],
     rGroups: []
   };
+}
+
+// The encoder and decoder as they were before they moved to preallocated byte arrays, kept as the
+// oracle that the rewrite must reproduce exactly.
+const referenceBase64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+function referenceEncodeBase64UrlBytes(bytes: Uint8Array): string {
+  let encoded = "";
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index];
+    const second = bytes[index + 1];
+    const third = bytes[index + 2];
+    const triple = (first << 16) | ((second ?? 0) << 8) | (third ?? 0);
+    encoded += referenceBase64UrlAlphabet[(triple >> 18) & 0x3f];
+    encoded += referenceBase64UrlAlphabet[(triple >> 12) & 0x3f];
+    if (index + 1 < bytes.length) {
+      encoded += referenceBase64UrlAlphabet[(triple >> 6) & 0x3f];
+    }
+    if (index + 2 < bytes.length) {
+      encoded += referenceBase64UrlAlphabet[triple & 0x3f];
+    }
+  }
+  return encoded;
+}
+
+function referenceDecodeBase64UrlBytes(value: string): Uint8Array {
+  const sextet = (char: string | undefined) => referenceBase64UrlAlphabet.indexOf(char ?? "");
+  const bytes: number[] = [];
+  for (let index = 0; index < value.length; index += 4) {
+    const a = sextet(value[index]);
+    const b = sextet(value[index + 1]);
+    const c = value[index + 2] === undefined ? 0 : sextet(value[index + 2]);
+    const d = value[index + 3] === undefined ? 0 : sextet(value[index + 3]);
+    const triple = (a << 18) | (b << 12) | (c << 6) | d;
+    bytes.push((triple >> 16) & 0xff);
+    if (value[index + 2] !== undefined) {
+      bytes.push((triple >> 8) & 0xff);
+    }
+    if (value[index + 3] !== undefined) {
+      bytes.push(triple & 0xff);
+    }
+  }
+  return new Uint8Array(bytes);
 }
 
 function extractObjectTag(contents: string, name: string): string {

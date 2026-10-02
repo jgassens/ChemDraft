@@ -241,6 +241,20 @@ export async function prewarmToolsetPopoverWindow(toolsetId: string): Promise<vo
   await invoke("prewarm_toolset_popover", { toolsetId }).catch(() => undefined);
 }
 
+/**
+ * Builds the shared tooltip window hidden. Palettes call this once they have painted rather than
+ * Rust building it at launch, so no hidden window is created ahead of the palettes themselves.
+ * Idempotent: every palette asks and only the first ask builds.
+ */
+export async function prewarmToolsetTooltipWindow(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("prewarm_toolset_tooltip").catch(() => undefined);
+}
+
 export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
@@ -548,13 +562,39 @@ export async function loadDocumentSession(): Promise<unknown | undefined> {
 
 /** Persist the working-document autosave envelope. JS owns the shape; Rust writes the opaque
  *  JSON. No-op off the desktop runtime. */
-export async function saveDocumentSession(state: unknown): Promise<void> {
+/** Autosave ignores a failed write (the previous session stays); `strict` rejects instead, for callers
+ *  that are about to end the process and must know the document reached disk. */
+export async function saveDocumentSession(state: unknown, options?: { strict?: boolean }): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("save_document_session", { state }).catch(() => undefined);
+  const write = invoke("save_document_session", { state });
+  await (options?.strict ? write : write.catch(() => undefined));
+}
+
+/** Emitted by Rust to the document window when the app is about to quit (off macOS: closing the
+ *  document window, or File ▸ Exit). The listener flushes the pending session autosave and then
+ *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
+export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
+
+export async function listenForQuitFlushRequest(handler: () => Promise<void>): Promise<Unlisten> {
+  if (!isDesktopRuntime()) {
+    return () => undefined;
+  }
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return getCurrentWebviewWindow().listen(QUIT_FLUSH_REQUEST_EVENT, () => {
+    void handler().catch(() => undefined);
+  });
+}
+
+export async function confirmQuitAfterFlush(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("quit_after_flush").catch(() => undefined);
 }
 
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */
@@ -716,13 +756,18 @@ export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosit
   return { x: position.x, y: position.y };
 }
 
+/** Move the calling window to `position` in global logical coordinates (the space
+ *  `currentWindowLogicalPosition` and `monitorLogicalBoundsAt` report in). Converted natively with
+ *  the scale of the monitor containing the point: `setPosition(new LogicalPosition(...))` converts
+ *  with the moving window's own scale, which on mixed-DPI setups put popovers and tooltips on the
+ *  wrong monitor. */
 export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
-  const { getCurrentWindow, LogicalPosition } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().setPosition(new LogicalPosition(position.x, position.y));
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_current_window_global_position", { x: position.x, y: position.y });
 }
 
 export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Promise<void> {
@@ -732,6 +777,26 @@ export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Prom
 
   const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
   await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
+}
+
+/**
+ * Reveal the calling palette popover above the palette it belongs to. Rust shows it and then raises
+ * it among the document's owned windows: the JS window `show()` alone left it underneath its palette
+ * on Windows whenever the two overlapped. Falls back to that plain `show()` if the command is
+ * unavailable, so a popover can never be left invisible.
+ */
+export async function showCurrentToolsetPopoverWindow(): Promise<void> {
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("show_toolset_popover_window");
+  } catch {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().show();
+  }
 }
 
 export async function focusCurrentWindowAndWebview(): Promise<void> {

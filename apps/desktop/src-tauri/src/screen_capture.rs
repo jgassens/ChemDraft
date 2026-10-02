@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager, Runtime};
 
+// Constructed only by the macOS implementation; elsewhere capture reports Unsupported.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CaptureOutcome {
     Captured,
@@ -15,8 +17,12 @@ pub(crate) enum CaptureOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum CapturePermission {
+    // Constructed only by the macOS implementation; elsewhere capture reports Unsupported.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Granted,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Denied,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NotDetermined,
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     NotRequired,
@@ -24,10 +30,12 @@ pub(crate) enum CapturePermission {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CaptureError {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     PermissionDenied,
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     // Only non-macOS implementations construct this extension-point variant.
     Unsupported,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Failed(String),
 }
 

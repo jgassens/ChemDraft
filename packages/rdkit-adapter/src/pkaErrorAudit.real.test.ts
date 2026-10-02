@@ -20,6 +20,8 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -33,7 +35,7 @@ import { installRealRdkitModuleLoader } from "./testing";
 
 const ENABLED = process.env.PKA_ERROR_AUDIT === "1";
 const INPUT = process.env.PKA_ERROR_AUDIT_INPUT;
-const OUTPUT = process.env.PKA_ERROR_AUDIT_OUTPUT ?? "/tmp/pka-error-audit-report.json";
+const OUTPUT = process.env.PKA_ERROR_AUDIT_OUTPUT ?? join(tmpdir(), "pka-error-audit-report.json");
 const SUMMARY_OUTPUT = process.env.PKA_ERROR_AUDIT_SUMMARY;
 const SEVERE_ERROR = 2.0;
 const MODEL_ARTIFACT = new URL("../vendor/pka-model/site-pka-gnn.json", import.meta.url);

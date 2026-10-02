@@ -9,8 +9,62 @@ import {
   getToolsetItemGroups,
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
-  type DesktopToolsetRegistry
+  type DesktopToolsetRegistry,
+  commandShortcutDisplay,
+  compactMacShortcutLabel,
+  formatShortcutLabel,
+  platformShortcutLabel
 } from "./toolsets";
+import { formatMenuShortcut } from "./appMenu";
+
+describe("platform shortcut labels", () => {
+  it("keeps the macOS glyph labels exactly", () => {
+    for (const shortcut of ["Cmd+S", "Shift+Cmd+S", "Option+Shift+Cmd+L", "Ctrl+Cmd+E", "B", "+"]) {
+      expect(formatShortcutLabel(shortcut, "macos")).toBe(compactMacShortcutLabel(shortcut));
+    }
+    expect(formatMenuShortcut("Shift+Cmd+S", "macos")).toBe("⇧⌘S");
+  });
+
+  it("reads Ctrl+Alt+Shift+Key off macOS, with Cmd shown as Ctrl", () => {
+    expect(formatShortcutLabel("Cmd+S", "windows")).toBe("Ctrl+S");
+    expect(formatShortcutLabel("Shift+Cmd+S", "windows")).toBe("Ctrl+Shift+S");
+    expect(formatShortcutLabel("Option+Shift+Cmd+L", "windows")).toBe("Ctrl+Alt+Shift+L");
+    expect(formatShortcutLabel("Ctrl+Cmd+E", "windows")).toBe("Ctrl+E");
+    expect(formatShortcutLabel("B", "windows")).toBe("B");
+    expect(formatMenuShortcut("Shift+Cmd+S", "linux")).toBe("Ctrl+Shift+S");
+  });
+
+  it("reads a + or - key and the CmdOrCtrl/Mod aliases the way the shortcut engine binds them", () => {
+    expect(formatShortcutLabel("Cmd++", "windows")).toBe("Ctrl++");
+    expect(formatShortcutLabel("Cmd+-", "windows")).toBe("Ctrl+-");
+    expect(formatShortcutLabel("Cmd++", "macos")).toBe("⌘+");
+    expect(formatShortcutLabel("CmdOrCtrl+Shift+Z", "windows")).toBe("Ctrl+Shift+Z");
+    expect(formatShortcutLabel("Mod+K", "linux")).toBe("Ctrl+K");
+    expect(formatShortcutLabel("CmdOrCtrl+Shift+Z", "macos")).toBe("⇧⌘Z");
+    expect(formatShortcutLabel("+", "windows")).toBe("+");
+  });
+
+  it("shows a command's shortcut the same way on every palette surface", () => {
+    // An authored Mac glyph label gives way to the formatted shortcut off macOS.
+    expect(commandShortcutDisplay({ shortcutLabel: "⌥⇧⌘L", shortcut: "Option+Shift+Cmd+L" }, "windows")).toBe(
+      "Ctrl+Alt+Shift+L"
+    );
+    expect(commandShortcutDisplay({ shortcutLabel: "⌥⇧⌘L", shortcut: "Option+Shift+Cmd+L" }, "macos")).toBe("⌥⇧⌘L");
+    // No label: the raw shortcut is formatted off macOS and shown as-is on macOS, as before.
+    expect(commandShortcutDisplay({ shortcut: "Cmd+S" }, "windows")).toBe("Ctrl+S");
+    expect(commandShortcutDisplay({ shortcut: "Cmd+S" }, "macos")).toBe("Cmd+S");
+    // An empty string is the "unbound" sentinel and falls through to the default binding.
+    expect(commandShortcutDisplay({ shortcutLabel: "", shortcut: "", defaultShortcut: "Cmd+E" }, "windows")).toBe("Ctrl+E");
+    expect(commandShortcutDisplay({}, "windows")).toBeUndefined();
+  });
+
+  it("drops hand-written Mac glyph labels off macOS only", () => {
+    expect(platformShortcutLabel("⌥⇧⌘L", "macos")).toBe("⌥⇧⌘L");
+    expect(platformShortcutLabel("⌥⇧⌘L", "windows")).toBeNull();
+    expect(platformShortcutLabel("Ctrl+E", "windows")).toBe("Ctrl+E");
+    expect(platformShortcutLabel("", "windows")).toBeNull();
+  });
+});
 
 const legacyToolset: ToolsetDefinition = {
   id: "core.legacy",

@@ -17,6 +17,9 @@ const requiredCmakeSnippets = [
   "CHEMDRAFT_AVOGADRO3D_ENABLE_OPENBABEL \"Allow Open Babel linkage\" OFF",
   "CHEMDRAFT_AVOGADRO3D_ENABLE_GPL_PLUGINS \"Allow GPL plugin linkage\" OFF",
   "target_link_libraries(avogadro3d-sidecar PRIVATE Avogadro::Core Avogadro::Calc)",
+  // Makes any LGPL-licensed Eigen module a compile error, which is what lets NOTICE call the
+  // sidecar's Eigen MPL-2.0 only.
+  "add_compile_definitions(EIGEN_MPL2_ONLY)",
   "416651ddaef33a4e20392392e7c0b505d446491b"
 ];
 

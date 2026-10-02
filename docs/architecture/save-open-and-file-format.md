@@ -29,7 +29,7 @@ Required `objecttag` names:
 - `org.chemdraft/visible-cdxml-hash`
 - `org.chemdraft/native-document`
 
-The native document tag stores base64url-encoded UTF-8 JSON from `serializeDocument`. The native payload hash is SHA-256 over the exact UTF-8 bytes of that serialized JSON.
+The native document tag stores base64url-encoded UTF-8 JSON: a compact `JSON.stringify` of the validated document (not `serializeDocument`'s indented form, which grew a large drawing's file about 1.8x). The native payload hash is SHA-256 over the exact UTF-8 bytes of that JSON. Files written with the older indented payload still open, since the reader hashes and parses whatever JSON bytes the envelope carries.
 
 ## 2. Hashing and Canonicalization
 
@@ -75,7 +75,6 @@ File UI state is kept outside the native document:
 
 - current file path
 - dirty flag
-- last saved payload hash for verification/reference
 
 Dirty state is driven by document history commits. Viewport, palette, ruler, and other UI-only changes must not dirty the document.
 
