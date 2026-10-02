@@ -78,6 +78,25 @@ describe("shortcut-engine", () => {
     expect(registry.resolve({ key: "v" })).toBeUndefined();
   });
 
+  it("treats one command bound twice to the same chord as a single binding", () => {
+    // A command can reach the registry from two lists (Group is both a layer action and a toolbar
+    // button). Only DIFFERENT commands on one chord are ambiguous; the same command twice used to read
+    // as a conflict with itself and resolve to nothing, which left Ctrl/Cmd+G and the layer-order
+    // chords dead.
+    const registry = createShortcutRegistry([
+      { commandId: "layout.group", keys: ["Cmd", "G"] },
+      { commandId: "layout.group", keys: ["Cmd", "G"] },
+      { commandId: "tool.select", keys: ["V"] },
+      { commandId: "tool.altSelect", keys: ["V"] },
+      { commandId: "tool.select", keys: ["V"] }
+    ], { platform: "windows" });
+
+    expect(registry.resolve({ key: "g", ctrlKey: true })).toBe("layout.group");
+    // A genuine ambiguity stays one, and is reported once per command.
+    expect(registry.resolve({ key: "v" })).toBeUndefined();
+    expect(registry.conflicts()).toEqual([{ chord: "v", commandIds: ["tool.select", "tool.altSelect"] }]);
+  });
+
   it("formats keyboard event chords deterministically", () => {
     expect(keyboardEventChord({ key: "R", shiftKey: true, metaKey: true })).toBe("Shift+Meta+r");
     // "+" and "=" are one physical key, so they share one canonical chord (see "the zoom-in key").

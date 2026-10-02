@@ -690,7 +690,12 @@ import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
 import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
-import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform, isBrowserReloadChord } from "./keyboardShortcuts";
+import {
+  createDesktopShortcutRegistry,
+  createMainWindowShortcutCommands,
+  detectDesktopShortcutPlatform,
+  isBrowserReloadChord
+} from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import {
@@ -1445,7 +1450,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.1.14.15-opus";
+const CURRENT_BUILD_STAMP = "10.1.18.40-opus";
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -2574,17 +2579,7 @@ export function MainWindow({
     void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
   }, [shellCommandSpecsSignature]);
   const shortcutCommands = useMemo(
-    () => applyKeybindingSchemeToCommands([
-      ...quickActions,
-      ...layerActions,
-      ...editActions,
-      ...toolCommandSpecs,
-      ...viewActions,
-      ...pageSizeActions,
-      ...pageOrientationActions,
-      ...textToolbarActions,
-      ...toolbarCustomizationActions
-    ], keybindingScheme),
+    () => createMainWindowShortcutCommands({ quickActions, layerActions, toolCommandSpecs }, keybindingScheme),
     [keybindingScheme, layerActions, quickActions, toolCommandSpecs]
   );
   const shortcutRegistry = useMemo(

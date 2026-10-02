@@ -108,9 +108,16 @@ export function createShortcutRegistry(
     .map((shortcut) => normalizeShortcut(shortcut, platform));
   const byChord = new Map<string, NormalizedShortcut[]>();
 
+  // A chord is ambiguous only when DIFFERENT commands claim it. A command can reach this list twice
+  // with the same chord (layout.group is both a layer action and a toolbar button); filing it twice
+  // made `resolve` see two matches and return nothing, and `conflicts` report the command against
+  // itself. The first entry is kept, so conflicts list commands in their original order.
   normalized.forEach((shortcut) => {
     const chord = shortcutChord(shortcut);
-    byChord.set(chord, [...(byChord.get(chord) ?? []), shortcut]);
+    const entries = byChord.get(chord) ?? [];
+    if (!entries.some((entry) => entry.commandId === shortcut.commandId)) {
+      byChord.set(chord, [...entries, shortcut]);
+    }
   });
 
   return {

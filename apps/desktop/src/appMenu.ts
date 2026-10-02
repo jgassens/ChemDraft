@@ -31,6 +31,8 @@ export interface AppMenuCommand {
   label: string;
   /** Pre-formatted keyboard hint (mac glyphs), e.g. "⇧⌘S". */
   shortcut?: string;
+  /** The raw accelerator the hint was formatted from, e.g. "Shift+Cmd+S", for checking it binds. */
+  accelerator?: string;
   enabled: boolean;
   /** When defined the item renders a checkmark slot reflecting current state. */
   checked?: boolean;
@@ -147,6 +149,7 @@ function command(
     commandId,
     label,
     shortcut: formatMenuShortcut(options.accelerator, detectShortcutPlatform()),
+    accelerator: options.accelerator,
     enabled: options.enabled ?? true,
     checked: options.checked,
     nativePredefined: options.nativePredefined
