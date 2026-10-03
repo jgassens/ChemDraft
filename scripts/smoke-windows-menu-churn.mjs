@@ -14,7 +14,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEV_PRODUCT_NAME, worktreeIdentity } from "./worktree-identity.mjs";
+import { DEV_PRODUCT_NAME, isStableBuild, worktreeIdentity } from "./worktree-identity.mjs";
 
 if (process.platform !== "win32") {
   console.log("smoke-windows-menu-churn: Windows only, skipping.");
@@ -37,7 +37,7 @@ const positiveInteger = (name, fallback) => {
 };
 const cycles = positiveInteger("cycles", 4);
 const rounds = positiveInteger("rounds", 25);
-const productName = worktreeIdentity(ROOT_DIR).branch === "main" ? "ChemDraft" : DEV_PRODUCT_NAME;
+const productName = isStableBuild({ command: "build", branch: worktreeIdentity(ROOT_DIR).branch, env: process.env }) ? "ChemDraft" : DEV_PRODUCT_NAME;
 const exe = path.resolve(option("exe", path.join(process.env.LOCALAPPDATA ?? "", productName, "chemdraft.exe")));
 const port = 9222;
 const churnToolsets = ["core.annotations", "core.arrows", "core.layout", "core.orbitals", "core.structure", "core.style", "core.text"];

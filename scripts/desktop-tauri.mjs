@@ -4,8 +4,11 @@
 // On macOS this runs exactly the commands the package scripts ran before (Sparkle staging and OPSIN
 // runtime signing ahead of the package `build`, with ~/.cargo/bin on PATH). Those steps and that POSIX
 // syntax are macOS-only; pnpm runs package scripts through cmd.exe on Windows, which can run neither.
-// Elsewhere this adds cargo to PATH if needed, labels the build with its worktree, and invokes the
-// Tauri CLI directly.
+// Elsewhere this adds cargo to PATH if needed and invokes the Tauri CLI directly.
+//
+// On both platforms it sets CHEMDRAFT_WORKTREE_LABEL for the child: the worktree label (AGENTS.md
+// §21.1) for dev and branch builds, and the EMPTY string for a stable package build (on main, or with
+// CHEMDRAFT_STABLE_BUILD=1), so a release is titled plain "ChemDraft" and does not fall back to git.
 //
 //   node scripts/desktop-tauri.mjs --package-build [tauri build args…]   (the package `build` script)
 //   node scripts/desktop-tauri.mjs <any tauri subcommand…>               (the package `tauri` script)
@@ -17,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEV_PRODUCT_NAME, prependToPath, worktreeIdentity } from "./worktree-identity.mjs";
+import { DEV_PRODUCT_NAME, isStableBuild, prependToPath, worktreeIdentity, worktreeLabelFor } from "./worktree-identity.mjs";
 
 const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = join(ROOT_DIR, "apps", "desktop");
@@ -25,31 +28,32 @@ const PACKAGE_BUILD_FLAG = "--package-build";
 const isPackageBuild = process.argv[2] === PACKAGE_BUILD_FLAG;
 const args = isPackageBuild ? ["build", ...process.argv.slice(3)] : process.argv.slice(2);
 
+const env = { ...process.env };
+const identity = worktreeIdentity(ROOT_DIR);
+env.CHEMDRAFT_WORKTREE_LABEL = worktreeLabelFor({ command: args[0], identity, env });
+
 if (process.platform === "darwin") {
   const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
   const result = spawnSync("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...args], {
     cwd: APP_DIR,
+    env,
     stdio: "inherit"
   });
   process.exit(result.status ?? 1);
 }
 
-const env = { ...process.env };
 const exe = process.platform === "win32" ? ".exe" : "";
 const cargoBin = join(homedir(), ".cargo", "bin");
 if (existsSync(join(cargoBin, `cargo${exe}`))) {
   prependToPath(env, cargoBin);
 }
 
-const identity = worktreeIdentity(ROOT_DIR);
-env.CHEMDRAFT_WORKTREE_LABEL ??= identity.label;
-
 // A release build from any branch but main is a different application (AGENTS.md §21.2): its own
 // identifier — hence its own app_data_dir and single-instance lock — and its own product name, which
 // gives the installer its own install directory and uninstall entry. Without this, installing a branch
 // build replaced the stable install and a running stable app swallowed the branch build's launch.
 // CHEMDRAFT_STABLE_BUILD=1 opts out, for release automation building a tagged commit.
-const isBranchBuild = args[0] === "build" && identity.branch !== "main" && env.CHEMDRAFT_STABLE_BUILD !== "1";
+const isBranchBuild = args[0] === "build" && !isStableBuild({ command: args[0], branch: identity.branch, env });
 if (isBranchBuild) {
   const devConfig = JSON.stringify({
     identifier: identity.devBundleId,
