@@ -41,13 +41,23 @@ const MAX_MAILTO_CHARS = 7500;
 /** Windows mail handlers (Outlook, Mail) cut off or refuse links much past 2 KB. */
 const MAX_WINDOWS_MAILTO_CHARS = 2000;
 
+/**
+ * The first `length` UTF-16 units of `text`, one fewer when the cut would split an emoji or other
+ * surrogate pair: a lone surrogate makes `encodeURIComponent` throw, and the draft never opens.
+ */
+export function sliceWhole(text: string, length: number): string {
+  const end = Math.max(0, Math.min(length, text.length));
+  const last = text.charCodeAt(end - 1);
+  return end > 0 && last >= 0xd800 && last <= 0xdbff ? text.slice(0, end - 1) : text.slice(0, end);
+}
+
 /** Collapses text to one short line suitable for a subject. */
 export function briefLine(text: string, fallback = "no details"): string {
   const line = text.replace(/\s+/g, " ").trim();
   if (!line) {
     return fallback;
   }
-  return line.length > MAX_BRIEF_CHARS ? `${line.slice(0, MAX_BRIEF_CHARS - 1).trimEnd()}…` : line;
+  return line.length > MAX_BRIEF_CHARS ? `${sliceWhole(line, MAX_BRIEF_CHARS - 1).trimEnd()}…` : line;
 }
 
 export function problemReportSubject(kind: ProblemReportKind, brief: string): string {
@@ -100,7 +110,7 @@ export function buildProblemReportMailto(report: ProblemReport): string {
   let url = make(details);
   while (url.length > limit && details) {
     const keep = Math.floor(details.length * 0.75);
-    details = keep > 40 ? `${details.slice(0, keep).trimEnd()}\n… (shortened)` : undefined;
+    details = keep > 40 ? `${sliceWhole(details, keep).trimEnd()}\n… (shortened)` : undefined;
     url = make(details);
   }
   return url;

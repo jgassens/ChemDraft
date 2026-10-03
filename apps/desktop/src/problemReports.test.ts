@@ -6,6 +6,7 @@ import {
   isReportableError,
   openProblemReport,
   problemReportSubject,
+  sliceWhole,
   PROBLEM_REPORT_ADDRESS,
   type ProblemReport,
   watchForCrashes
@@ -56,6 +57,22 @@ describe("problem reports", () => {
     const windowsUrl = buildProblemReportMailto({ ...report, environment: { ...environment, platform: "windows" } });
     expect(windowsUrl.length).toBeLessThanOrEqual(2000);
     expect(decode(windowsUrl).body).toContain("Platform: windows");
+  });
+
+  it("never cuts an emoji in half when shortening", () => {
+    // Every cut point lands on each half of the pair at least once.
+    for (let pad = 60; pad < 75; pad += 1) {
+      const brief = `${"x".repeat(pad)}😀😀😀 tail`;
+      expect(() => buildProblemReportMailto({ kind: "crash", brief, environment })).not.toThrow();
+    }
+    const details = "😀".repeat(6000);
+    for (const platform of ["macos", "windows"]) {
+      expect(() =>
+        buildProblemReportMailto({ kind: "crash", brief: "x", details, environment: { ...environment, platform } })
+      ).not.toThrow();
+    }
+    expect(sliceWhole("ab😀", 3)).toBe("ab");
+    expect(sliceWhole("ab😀", 4)).toBe("ab😀");
   });
 
   it("produces only printable ASCII, which the native opener requires", () => {
