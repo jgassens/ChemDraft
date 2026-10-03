@@ -502,6 +502,7 @@ name = "chemdraft"
 version = "0.3.7"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "flate2",
  "image",

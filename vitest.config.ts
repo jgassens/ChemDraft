@@ -55,6 +55,7 @@ export default defineConfig({
       "apps/**/*.test.tsx",
       "packages/**/*.test.ts",
       "examples/plugins/**/*.test.ts",
+      "scripts/**/*.test.ts",
       "tools/**/*.test.ts"
     ]
   }

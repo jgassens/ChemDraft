@@ -699,6 +699,18 @@ import {
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import {
+  askToSendCrashReport,
+  briefLine,
+  currentReportEnvironment,
+  describeError,
+  openProblemReport,
+  PROBLEM_REPORT_ADDRESS,
+  type ProblemReportKind,
+  REPORT_BUG_COMMAND_ID,
+  runtimeProblemReportDeps,
+  watchForCrashes
+} from "./problemReports";
+import {
   APP_CHECK_FOR_UPDATES_COMMAND_ID,
   AUTO_CHECK_DELAY_MS,
   appUpdateChecksAllowed,
@@ -1450,7 +1462,9 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.1.18.40-opus";
+const CURRENT_BUILD_STAMP = "10.3.19.05-opus";
+/** Whether this page load already asked the native side for a crash note from the last run. */
+let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
 const artBooleanOperationByCommandId: Record<string, NativeArtBooleanOperation> = {
   [artBooleanOperationCommandIds.union]: "union",
@@ -7750,6 +7764,60 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, []);
 
+  // Bug and crash reports (problemReports.ts): an email draft the user reviews and sends themselves.
+  const sendProblemReport = useCallback(async (kind: ProblemReportKind, brief: string, details?: string) => {
+    const desktop = isDesktopRuntime();
+    try {
+      const environment = await currentReportEnvironment(
+        desktop,
+        `${CURRENT_BUILD_STAMP} · ${__BUILD_STAMP__}`,
+        detectDesktopShortcutPlatform()
+      );
+      await openProblemReport({ kind, brief, details, environment }, runtimeProblemReportDeps(desktop));
+      setStatus(`Opened your email program with the ${kind === "bug" ? "bug" : "crash"} report — review it, then send`);
+    } catch (error) {
+      setStatus(
+        `Could not open your email program (${describeError(error).brief}). Please email ${PROBLEM_REPORT_ADDRESS} instead.`
+      );
+    }
+  }, []);
+  const sendProblemReportRef = useRef(sendProblemReport);
+  sendProblemReportRef.current = sendProblemReport;
+
+  // Crash reports: an error caught this session, or a crash note the native side left last time.
+  useEffect(() => {
+    const desktop = isDesktopRuntime();
+    const offerCrashReport = async (brief: string, details: string, earlierRun: boolean) => {
+      if (await askToSendCrashReport(desktop, brief, earlierRun)) {
+        await sendProblemReportRef.current("crash", brief, details);
+      }
+    };
+    // Once per page load: StrictMode runs this effect twice in development.
+    if (desktop && !pendingCrashNoteChecked) {
+      pendingCrashNoteChecked = true;
+      void (async () => {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const note = await invoke<string | null>("take_pending_crash_report");
+          if (note) {
+            const message = /^Message: (.*)$/m.exec(note)?.[1] ?? "app closed unexpectedly";
+            await offerCrashReport(briefLine(message), note, true);
+          }
+        } catch (error) {
+          console.warn("Could not read the last crash report", error);
+        }
+      })();
+    }
+    return watchForCrashes({
+      onCrash: (error) => {
+        const { brief, details } = describeError(error);
+        void offerCrashReport(brief, details, false).catch((reportError: unknown) =>
+          console.warn("Could not offer a crash report", reportError)
+        );
+      }
+    });
+  }, []);
+
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
     const payload = createNativeSavePayload(documentRef.current);
 
@@ -7970,6 +8038,18 @@ export function MainWindow({
         description: "Enable or disable bundled ChemDraft plugins"
       },
       () => setPluginManagerOpen(true)
+    );
+
+    register(
+      {
+        id: REPORT_BUG_COMMAND_ID,
+        title: "Report a Bug…",
+        icon: "open",
+        source: "core",
+        category: "app",
+        description: "Email a bug report to the ChemDraft developer from your own email program"
+      },
+      () => sendProblemReportRef.current("bug", "describe the problem in a few words")
     );
 
     // File ▸ Check for Updates… on Windows. macOS answers the same menu id natively (Sparkle), and

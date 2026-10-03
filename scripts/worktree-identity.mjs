@@ -40,3 +40,29 @@ export function prependToPath(env, dir) {
   env[key] = env[key] ? `${dir}${delimiter}${env[key]}` : dir;
   return env;
 }
+
+// A stable package build: a `build` from main, or any branch with CHEMDRAFT_STABLE_BUILD=1 (release
+// automation building a tagged commit). It ships as the stable app, so it carries no worktree label.
+export function isStableBuild({ command, branch, env }) {
+  return command === "build" && (branch === "main" || env.CHEMDRAFT_STABLE_BUILD === "1");
+}
+
+// The value for CHEMDRAFT_WORKTREE_LABEL. "" (not undefined) for a stable build, so vite.config.ts and
+// the Rust title know not to fall back to git — and a label inherited from the shell cannot leak into a
+// release. Only a stable build may be unlabeled: any other build uses a non-empty env label, else the
+// identity label, so an inherited empty label cannot unlabel a branch build (AGENTS.md §21.1).
+export function worktreeLabelFor({ command, identity, env }) {
+  if (isStableBuild({ command, branch: identity.branch, env })) {
+    return "";
+  }
+  return env.CHEMDRAFT_WORKTREE_LABEL?.trim() || identity.label;
+}
+
+// Reads CHEMDRAFT_WORKTREE_LABEL as vite.config.ts needs it: the trimmed string when the variable is
+// DEFINED ("" included — a stable build, no label and no git fallback), undefined when it is not (the
+// caller then derives the label from git). The defined-versus-undefined distinction is the whole point;
+// do not "simplify" it to a truthiness test.
+export function labelFromEnv(env) {
+  const value = env.CHEMDRAFT_WORKTREE_LABEL;
+  return value === undefined ? undefined : value.trim();
+}
