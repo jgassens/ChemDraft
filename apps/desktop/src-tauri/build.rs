@@ -64,6 +64,8 @@ fn main() {
             "agent_bridge_status",
             "window_logical_position",
             "take_pending_open_document",
+            "open_problem_report_email",
+            "take_pending_crash_report",
         ]),
     ))
     .expect("failed to run Tauri build script");

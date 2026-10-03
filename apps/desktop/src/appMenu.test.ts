@@ -144,7 +144,8 @@ describe("app menu model", () => {
       "View",
       "Structure",
       "Analyze",
-      "Plugins"
+      "Plugins",
+      "Help"
     ]);
   });
 
@@ -186,7 +187,8 @@ describe("app menu model", () => {
       "View",
       "Structure",
       "Analyze",
-      "Plugins"
+      "Plugins",
+      "Help"
     ]);
     const analyze = model.find((section) => section.id === "analyze");
     const analyzeCommandIds = flattenAppMenuCommands(analyze ? [analyze] : []).map((item) => item.commandId);

@@ -3,6 +3,7 @@ mod fonts;
 mod installed_plugins;
 mod ocsr_engine;
 mod opsin;
+mod problem_reports;
 mod screen_capture;
 mod windows_clipboard;
 
@@ -197,6 +198,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "chemistry.validateSelection",
     "structure.openInteractive3d",
     "plugins.manage",
+    "help.reportBug",
 ];
 
 /// A plugin's contributed menu item, synced from the webview (which owns the plugin registry) so the
@@ -629,6 +631,7 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            problem_reports::install_panic_hook(app);
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
@@ -676,6 +679,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            problem_reports::open_problem_report_email,
+            problem_reports::take_pending_crash_report,
             open_toolset_window,
             close_toolset_window,
             list_toolset_window_states,
@@ -4017,6 +4022,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 "Help",
                 true,
                 &[
+                    &MenuItem::with_id(app, "help.reportBug", "Report a Bug…", true, None::<&str>)?,
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::separator(app)?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::about(app, None, Some(about_metadata(app)))?,
                 ],

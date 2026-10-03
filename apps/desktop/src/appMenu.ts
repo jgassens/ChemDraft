@@ -1,4 +1,5 @@
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { REPORT_BUG_COMMAND_ID } from "./problemReports";
 import { formatShortcutLabel } from "./toolsets";
 
 /**
@@ -17,8 +18,8 @@ import { formatShortcutLabel } from "./toolsets";
  * Deliberately omitted from the web bar (they are OS-level, not in-document actions): the macOS
  * application menu (About/Services/Hide/Quit), the Window menu (minimize/maximize), and File ▸
  * Close Window / Quit. File ▸ Check for Updates is also native-only because Sparkle owns its UI and
- * lifecycle rather than the frontend command registry. The native Help menu is empty, so it is
- * omitted too.
+ * lifecycle rather than the frontend command registry. Help ▸ About is OS-level too; Help ▸ Report a
+ * Bug… is routed like any other command.
  */
 
 /** A leaf item that invokes a registry command when clicked. */
@@ -317,6 +318,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       id: "plugins",
       label: "Plugins",
       items: [command(PLUGIN_MANAGER_COMMAND_ID, "Add or Remove Plugins…")]
+    },
+    {
+      id: "help",
+      label: "Help",
+      items: [command(REPORT_BUG_COMMAND_ID, "Report a Bug…")]
     }
   ];
 
@@ -332,7 +338,8 @@ const SECTION_LABELS: Readonly<Record<string, string>> = {
   structure: "Structure",
   tools: "Tools",
   analyze: "Analyze",
-  plugins: "Plugins"
+  plugins: "Plugins",
+  help: "Help"
 };
 
 function sectionLabelFor(location: string): string {
