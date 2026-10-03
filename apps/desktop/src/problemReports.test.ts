@@ -52,6 +52,10 @@ describe("problem reports", () => {
     const url = buildProblemReportMailto(report);
     expect(url.length).toBeLessThanOrEqual(7500);
     expect(decode(url).subject).toBe("ChemCRASH: big");
+
+    const windowsUrl = buildProblemReportMailto({ ...report, environment: { ...environment, platform: "windows" } });
+    expect(windowsUrl.length).toBeLessThanOrEqual(2000);
+    expect(decode(windowsUrl).body).toContain("Platform: windows");
   });
 
   it("produces only printable ASCII, which the native opener requires", () => {

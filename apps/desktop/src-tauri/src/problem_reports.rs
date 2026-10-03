@@ -89,8 +89,12 @@ fn pending_crash_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
 }
 
 fn take_crash_note(path: &Path) -> Option<String> {
-    let note = std::fs::read_to_string(path).ok()?;
-    let _ = std::fs::remove_file(path);
+    // Rename first: it is atomic, so two overlapping calls cannot both read the same note.
+    let taking = path.with_extension("taking");
+    std::fs::rename(path, &taking).ok()?;
+    let note = std::fs::read_to_string(&taking).ok();
+    let _ = std::fs::remove_file(&taking);
+    let note = note?;
     let note = note.trim();
     (!note.is_empty()).then(|| note.to_string())
 }

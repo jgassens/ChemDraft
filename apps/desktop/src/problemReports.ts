@@ -38,6 +38,8 @@ const SUBJECT_PREFIX: Readonly<Record<ProblemReportKind, string>> = {
 const MAX_BRIEF_CHARS = 70;
 /** Mail clients reject very long `mailto:` links; the native side refuses anything over 8000. */
 const MAX_MAILTO_CHARS = 7500;
+/** Windows mail handlers (Outlook, Mail) cut off or refuse links much past 2 KB. */
+const MAX_WINDOWS_MAILTO_CHARS = 2000;
 
 /** Collapses text to one short line suitable for a subject. */
 export function briefLine(text: string, fallback = "no details"): string {
@@ -93,9 +95,10 @@ export function buildProblemReportMailto(report: ProblemReport): string {
   const subject = encodeURIComponent(problemReportSubject(report.kind, report.brief));
   const make = (details: string | undefined) =>
     `mailto:${PROBLEM_REPORT_ADDRESS}?subject=${subject}&body=${encodeURIComponent(reportBody(report, details))}`;
+  const limit = report.environment.platform === "windows" ? MAX_WINDOWS_MAILTO_CHARS : MAX_MAILTO_CHARS;
   let details = report.details?.trim() || undefined;
   let url = make(details);
-  while (url.length > MAX_MAILTO_CHARS && details) {
+  while (url.length > limit && details) {
     const keep = Math.floor(details.length * 0.75);
     details = keep > 40 ? `${details.slice(0, keep).trimEnd()}\n… (shortened)` : undefined;
     url = make(details);
@@ -221,7 +224,7 @@ export async function currentReportEnvironment(
 /** Asks before drafting a crash report: a native dialog on desktop, `confirm` in the browser. */
 export async function askToSendCrashReport(isDesktop: boolean, brief: string, earlierRun: boolean): Promise<boolean> {
   const text = earlierRun
-    ? `ChemDraft closed unexpectedly last time (${brief}).\n\nWould you like to email a crash report? Your email program will open with the report so you can read it before sending.`
+    ? `ChemDraft ran into a serious error last time (${brief}).\n\nWould you like to email a crash report? Your email program will open with the report so you can read it before sending.`
     : `ChemDraft ran into an error (${brief}).\n\nWould you like to email a crash report? Your email program will open with the report so you can read it before sending. Saving your work first is a good idea.`;
   if (isDesktop) {
     const { confirm } = await import("@tauri-apps/plugin-dialog");
