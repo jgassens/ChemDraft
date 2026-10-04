@@ -15355,7 +15355,7 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     expect(reparse(smiles)).toEqual({ formula: "C120H82", ringCount: 20 });
   });
 
-  it("writes an unknown-order chain bond as single and reports it, never silently", () => {
+  it("refuses an unknown-order chain bond and names it", () => {
     const atoms: MoleculeAtom[] = [
       { id: "u1", element: "C", x: 0, y: 0, formalCharge: 0 },
       { id: "u2", element: "C", x: 10, y: 0, formalCharge: 0 },
@@ -15366,10 +15366,10 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
       { id: "ub2", fromAtomId: "u2", toAtomId: "u3", order: "single" }
     ];
     const warnings: string[] = [];
-    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
-    expect(smiles).toBe("CCC");
-    expect(reparse(smiles).formula).toBe("C3H8");
-    expect(warnings).toEqual(["1 bond of unknown order written to SMILES as single."]);
+    expect(() => nativeSingleBondGraphSmiles(atoms, bonds, warnings)).toThrow(
+      "Cannot write SMILES: bond ub1 has an unknown bond order."
+    );
+    expect(warnings).toEqual([]);
   });
 
   it("linearizes fused naphthalene into a two-ring SMILES that OpenChemLib reparses to C10H8", () => {

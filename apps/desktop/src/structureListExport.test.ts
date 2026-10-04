@@ -285,21 +285,27 @@ describe("structure list export", () => {
     expect(smi.warnings.every((warning) => warning.objectId === molecule.id)).toBe(true);
   });
 
-  it("reports an unknown-order bond on both the engine and native routes", async () => {
+  it("reports an unknown-order bond per item and continues the list export", async () => {
     const molecule = { ...moleculeAt("unknown-bond", 0, 0), structureFormat: "unknown" as const };
     molecule.bonds[0].order = "unknown";
-    const document = documentWith([molecule]);
-    const native = await exportStructureListSmi(document);
-    expect(native.contents).toBe("CC\t1\n");
-    expect(native.warnings).toEqual([{
-      code: "export.smiles_bond_order",
-      message: "1 bond of unknown order written to SMILES as single.",
-      severity: "warning",
+    const valid = moleculeAt("valid", 200, 0);
+    const document = documentWith([molecule, valid]);
+    const expectedWarning = {
+      code: "export.smiles_write_failed",
+      message: "Cannot write SMILES: bond b1 has an unknown bond order.",
+      severity: "error",
       objectId: molecule.id
-    }]);
-    vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "CC" });
-    const engine = await exportStructureListSmi(document);
-    expect(engine.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
+    };
+    const smi = await exportStructureListSmi(document);
+    expect(smi.contents).toBe("CC\t2\n");
+    expect(smi.warnings).toEqual([expectedWarning]);
+
+    const sdf = await exportStructureListSdf(document);
+    expect(sdf.warnings).toEqual([expectedWarning]);
+    expect(sdf.contents.match(/^\$\$\$\$$/gm)).toHaveLength(2);
+    expect(sdf.contents).toContain("> <Index>\n1\n");
+    expect([...sdf.contents.matchAll(/> <SMILES>\n([^\n]+)/g)].map((match) => match[1])).toEqual(["CC"]);
+    expect(sdf.contents).toContain("> <Index>\n2\n");
   });
 
   it("reports an unresolvable aromatic system on both export routes", async () => {
