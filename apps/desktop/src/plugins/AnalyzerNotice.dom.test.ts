@@ -85,6 +85,48 @@ describe("AnalyzerNoticeBanner", () => {
   });
 });
 
+describe("AnalyzerNoticeBanner while being read", () => {
+  it("holds its countdown while hovered, and restarts it in full when the pointer leaves", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    const duration = analyzerNoticeDurationMs(refusal.message);
+    render(refusal, onDismiss);
+    const alert = container!.querySelector('[role="alert"]')!;
+
+    act(() => vi.advanceTimersByTime(duration - 1));
+    act(() => alert.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    act(() => vi.advanceTimersByTime(duration * 3));
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    act(() => alert.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })));
+    act(() => vi.advanceTimersByTime(duration - 1));
+    expect(onDismiss).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onDismiss).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("does not let a notice dismissed under the pointer hold the next one open", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    render(refusal, onDismiss);
+    act(() => container!.querySelector('[role="alert"]')!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    // Dismissed while hovered: the element goes away and never receives its mouseleave.
+    render(undefined, onDismiss);
+    render({ ...refusal, id: 2 }, onDismiss);
+    act(() => vi.advanceTimersByTime(analyzerNoticeDurationMs(refusal.message)));
+    expect(onDismiss).toHaveBeenCalledExactlyOnceWith(2);
+  });
+
+  it("holds its countdown while its close button has keyboard focus", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    render(refusal, onDismiss);
+    act(() => container!.querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')!.focus());
+    act(() => vi.advanceTimersByTime(analyzerNoticeDurationMs(refusal.message) * 3));
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+});
+
 describe("analyzerNoticeDurationMs", () => {
   it("gives every message a finite, readable duration that does not shrink as the message grows", () => {
     const short = analyzerNoticeDurationMs("No.");
