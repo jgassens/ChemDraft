@@ -1,7 +1,7 @@
 /**
  * Structure identifiers for Copy As: canonical SMILES, InChI, and InChI Key, straight from the
  * engine. One parse per request; every value is RDKit's own (never re-derived here), per the
- * one-interpretation-engine rule in AGENTS.md §8.
+ * one-interpretation-engine rule in AGENTS.md §8 Analysis and prediction claims.
  */
 import { ensureRdkit, type RdkitMinimalModule } from "./conformer";
 

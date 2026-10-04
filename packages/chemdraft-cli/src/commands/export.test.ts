@@ -105,7 +105,8 @@ describe("chemdraft export", () => {
 
   it("keeps a typed atom's identity when its aromatic ring round-trips through CDXML", async () => {
     // Simulates a pasted/imported aromatic ring (type-4 bonds) with one atom the user typed a
-    // label on — the case molfile-writer callers must pass kekuleBondOrders for (AGENTS §5.26).
+    // label on — the case molfile-writer callers must pass kekuleBondOrders for, or the atom's
+    // identity changes silently (AGENTS.md §7 Chemistry invariants).
     // A typed label is literal: a typed "C" is a carbon with no hydrogens (MoleculeAtom
     // labelLiteral), so the drawn structure is the phenyl radical, not benzene. That identity —
     // stated here independently of the writer, as SMILES — is what the CDXML round trip must keep.

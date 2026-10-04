@@ -24,7 +24,7 @@ applied live to every window, default remains `chemdraft`.
 - **Behavioral parity, not transcription.** The mapping pairs ChemDraft commands with the keys
   ChemDraw users expect (derived from observed ChemDraw 23 behavior). ChemDraw actions with no
   ChemDraft equivalent are deliberately absent — their keys do *nothing*, never something surprising.
-  Per AGENTS.md §6.9, no proprietary shortcut documentation is copied into the repo.
+  Per AGENTS.md §12 UI, no proprietary shortcut documentation is copied into the repo.
 - **Full replacement, not overlay.** The shortcut engine disables *both* commands on a conflicting
   chord, so `applyKeybindingSchemeToCommands` clears every ChemDraft default whose key means
   something else in ChemDraw (`null` entries), and clears `defaultShortcut` too — the engine falls

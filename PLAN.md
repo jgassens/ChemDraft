@@ -930,8 +930,9 @@ template      Fragments, rings, reactions, style presets
 service       Optional native/WASM/backend computational tools
 ```
 
-The permission vocabulary and the dangerous-permission list live in **AGENTS.md §7**. They are not
-repeated here — they are enforced by `plugin-host`, and a second copy would drift.
+The permission vocabulary is the `PluginPermission` type in `packages/plugin-api`, and
+**AGENTS.md §4.1 Contract and permissions** names the dangerous ones. Neither is repeated here —
+`plugin-host` enforces them, and a second copy would drift.
 
 Default safe permissions for most analysis plugins:
 
@@ -1730,7 +1731,6 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 
 - Final project name, with ChemDraft preferred for now to avoid collision with the external MolScribe OCSR package.
 - Final native file extension. (The *container* is settled — CDXML with ChemDraft object tags, per `packages/cdx-compat` — but the extension is not.)
-- Final license for the repository root. `package.json` still says `UNLICENSED`. The example plugins are settled at MIT (2026-07-16), with the bundled NMR reference database carved out under the nmrshiftdb2 Database License; see AGENTS.md §8a.
 - How strict the first CDXML compatibility target should be.
 - Whether Ketcher is the long-term editor engine or just the first adapter.
 - How the page/editor architecture keeps one composited page while using an active structure editor.
@@ -1748,9 +1748,10 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 
 ### Answered by shipped work
 
+- ~~Final license for the repository root.~~ Apache-2.0 (`LICENSE`, `package.json`), with `NOTICE` shipped in every distribution. The example plugins and the two SDK packages are MIT (2026-07-16); the NMR predictor's bundled reference database stays under the nmrshiftdb2 Database License (ODbL-derived), never called MIT. See AGENTS.md §4.7 Licensing and redistribution.
 - ~~Whether the app supports a browser version initially.~~ Yes, as a shell: `pnpm dev:web` runs the desktop app in the browser. There is still no separate `apps/web` package.
 - ~~Whether plugins are distributed through a registry later.~~ Not a registry — a host-owned catalog allowlisted by plugin id, with the app owning source, download, verification, handshake, replacement, and rollback. An installed plugin cannot choose its own download URL.
-- ~~Whether RDKit loads in the frontend, backend, or both.~~ Moot for now: OpenChemLib is the shipped engine and `rdkit-adapter` is a declared placeholder (AGENTS.md §6.18-6.19). The question returns if real RDKit wiring lands.
+- ~~Whether RDKit loads in the frontend, backend, or both.~~ The frontend and the headless CLI, never the Rust backend. `rdkit-adapter` is a real engine — RDKit on a vendored custom MinimalLib WASM build (`packages/rdkit-adapter/vendor/BUILD.md`) — loaded lazily, never at startup: in the app's Web Workers for the property suite and ETKDGv3 conformers, and in-process by the CLI's `analyze` command. OpenChemLib remains the depiction and stereo engine. See AGENTS.md §6 Package boundaries.
 - ~~What installer/distribution system is preferred for each OS.~~ Settled for macOS: signed and notarized bundle, Sparkle auto-update against a signed appcast (`docs/releasing/macos-updates.md`). Settled for Windows (2026-09-25): per-user NSIS installer, Tauri updater against a signed `latest.json` on `main` (`docs/releasing/windows-updates.md`); Authenticode signing deferred. Linux remains open.
 
 ## 21. Guiding rule
