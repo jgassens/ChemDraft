@@ -27,6 +27,35 @@ describe("updateNotesPlainText", () => {
     expect(updateNotesPlainText("[**bold** guide](url)")).toBe("bold guide (url)");
   });
 
+  it("preserves fenced code-block contents while dropping fences", () => {
+    expect(updateNotesPlainText("Before\n```ts\n- *literal* `code`\n**also literal**\n```\nAfter")).toBe(
+      "Before\n- *literal* `code`\n**also literal**\nAfter"
+    );
+  });
+
+  it("turns horizontal rules into paragraph breaks", () => {
+    expect(updateNotesPlainText("Before\n***\nAfter")).toBe("Before\n\nAfter");
+  });
+
+  it("renders supported backslash escapes as literal characters", () => {
+    expect(updateNotesPlainText("\\*\\*not bold\\*\\* \\# \\- \\[x\\] \\(x\\) \\` \\\\")).toBe(
+      "**not bold** # - [x] (x) ` \\"
+    );
+  });
+
+  it("does not use non-ASCII letters as emphasis boundaries", () => {
+    expect(updateNotesPlainText("café_bold_")).toBe("café_bold_");
+  });
+
+  it("replaces unavailable glyphs after restoring protected code spans", () => {
+    expect(updateNotesPlainText("`▸`")).toBe("›");
+  });
+
+  it("renders autolinks as their URLs", () => {
+    expect(updateNotesPlainText("Read <https://example.com>."))
+      .toBe("Read https://example.com.");
+  });
+
   it("replaces glyphs unavailable in Windows task-dialog fonts", () => {
     expect(updateNotesPlainText("▸ ▹ ▶ ►")).toBe("› › › ›");
   });

@@ -52,7 +52,7 @@ export function autoCheckDue(lastCheckedAt: number | undefined, now: number, int
 }
 
 export function updatePromptText(update: { version: string; currentVersion: string; body?: string }): string {
-  const notes = update.body?.trim() ? updateNotesPlainText(update.body.trim()) : undefined;
+  const notes = update.body?.trim() ? updateNotesPlainText(update.body) : undefined;
   return [
     `ChemDraft ${update.version} is available — you have ${update.currentVersion}.`,
     notes ? `\n${notes}\n` : "",
