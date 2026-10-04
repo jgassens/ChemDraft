@@ -452,6 +452,43 @@ describe("headless ChemDraft rendering", () => {
     }
   });
 
+  it("reports each un-kekulizable SMILES with exit 1 and continues the fallback batch", async () => {
+    const depict = vi.spyOn(rdkitAdapter, "generateSmiles2DMolfile")
+      .mockRejectedValue(new Error("forced RDKit failure"));
+    try {
+      const jobsPath = join(outputDirectory, "aromatic-refusals.json");
+      await writeFile(jobsPath, JSON.stringify([
+        { name: "bad-n", smiles: "n1cccc1" },
+        { name: "bad-c", smiles: "c1cccc1" },
+        { name: "pyrrole", smiles: "[nH]1cccc1" },
+        { name: "benzene", smiles: "c1ccccc1" }
+      ]));
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const code = await runCli(
+        ["--batch", jobsPath, "--out-dir", join(outputDirectory, "aromatic-refusals"), "--format", "svg"],
+        { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) }
+      );
+      const results = stdout.map((line) => JSON.parse(line));
+      expect(code).toBe(1);
+      expect(results.map(({ smiles, ok }) => ({ smiles, ok }))).toEqual([
+        { smiles: "n1cccc1", ok: false },
+        { smiles: "c1cccc1", ok: false },
+        { smiles: "[nH]1cccc1", ok: true },
+        { smiles: "c1ccccc1", ok: true }
+      ]);
+      for (const result of results.slice(0, 2)) {
+        expect(result.error).toContain(`OpenChemLib could not read SMILES "${result.smiles}"`);
+        expect(result.error).toContain("invent an unpaired electron");
+        expect(result.error).toContain("alternating single and double bonds");
+        expect(result.error).toContain("[nH]");
+        expect(stderr.join("\n")).toContain(result.error);
+      }
+    } finally {
+      depict.mockRestore();
+    }
+  });
+
   it.each([
     ["an adapter configuration error", () => new RdkitNotConfiguredError()],
     ["a duplicate-adapter configuration error", () => {

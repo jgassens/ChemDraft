@@ -468,7 +468,61 @@ function inventDepiction2D(
  * array, so coordinates returned by `generate3DConformer(molfile)` align 1:1.
  */
 export function depictSmiles2D(smiles: string): Depiction2D {
-  return inventDepiction2D(OCL.Molecule.fromSmiles(smiles));
+  const molecule = OCL.Molecule.fromSmiles(smiles);
+  if (hasRadical(molecule) && !hasOnlyRequestedBracketRadicals(smiles, molecule)) {
+    throw new UnrequestedSmilesRadicalError(smiles);
+  }
+  return inventDepiction2D(molecule);
+}
+
+/** A parsed radical that cannot be traced to an explicitly under-valent input atom. */
+export class UnrequestedSmilesRadicalError extends Error {
+  constructor(smiles: string) {
+    super(
+      `OpenChemLib could not read SMILES "${smiles}": reading it would invent an unpaired electron. ` +
+      "Its aromatic ring may not be able to be given alternating single and double bonds. " +
+      "Check the ring's hydrogens (for example [nH])."
+    );
+    this.name = "UnrequestedSmilesRadicalError";
+  }
+}
+
+function hasRadical(molecule: OclMolecule): boolean {
+  for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
+    if (molecule.getAtomRadical(atom) !== 0) return true;
+  }
+  return false;
+}
+
+function hasOnlyRequestedBracketRadicals(smiles: string, molecule: OclMolecule): boolean {
+  // Atom indices cannot identify bracket tokens: OCL may compact/reorder explicit hydrogens.
+  // Reparse with unique maps on bracket atoms only, leaving implicit-H atoms untouched. Existing
+  // user maps are replaced in this temporary parse; the returned molecule keeps the user's maps.
+  let nextMap = 0;
+  const requestedMaps = new Set<number>();
+  const taggedSmiles = smiles.replace(/\[([^\[\]]+)\]/g, (_token, contents: string) => {
+    const map = ++nextMap;
+    // An aliphatic bracket specifies its H count (omitted H means zero), so under-valence asks
+    // for a radical. Aromatic bracket radicals are ambiguous with failed kekulization; refuse
+    // them conservatively, even if OCL happened to place its invented radical on that bracket.
+    if (/^\d*[A-Z][a-z]?/.test(contents)) requestedMaps.add(map);
+    return `[${contents.replace(/:\d+$/, "")}:${map}]`;
+  });
+  if (requestedMaps.size === 0) return false;
+  try {
+    const tagged = OCL.Molecule.fromSmiles(taggedSmiles);
+    // Mapping must not alter chemical identity. Fail closed on syntax OCL cannot map reliably.
+    if (tagged.getIDCode() !== molecule.getIDCode()) return false;
+    let radicals = 0;
+    for (let atom = 0; atom < tagged.getAllAtoms(); atom += 1) {
+      if (tagged.getAtomRadical(atom) === 0) continue;
+      radicals += 1;
+      if (!requestedMaps.has(tagged.getAtomMapNo(atom))) return false;
+    }
+    return radicals > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

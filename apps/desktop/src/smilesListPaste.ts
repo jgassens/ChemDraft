@@ -1,7 +1,7 @@
 import { smilesListDecision, smilesListTokens, type SmilesListCandidate } from "@chemdraft/clipboard-adapter";
 import { pastedStructureDepictionFromMolfile, type PastedStructureDepiction } from "./documentWorkflow";
 
-/** Depiction engines stay lazy; undefined lets the caller preserve unparseable input as text. */
+/** Depiction engines stay lazy; undefined preserves unparseable text. Chemistry refusals throw. */
 export async function depictSmilesForPaste(
   smiles: string
 ): Promise<{ depiction: PastedStructureDepiction; stereoCount: number } | undefined> {
@@ -55,16 +55,30 @@ export async function depictSmilesForPaste(
       }
     }
     return depiction.atoms.length > 0 ? { depiction, stereoCount } : undefined;
-  } catch {
+  } catch (error) {
+    // Keep a chemical-meaning refusal distinct from ordinary prose that is not SMILES. Engines
+    // stay dynamically imported, so use the error's typed name rather than a startup import.
+    if (isSmilesRadicalRefusal(error)) throw error;
     return undefined;
   }
+}
+
+function isSmilesRadicalRefusal(error: unknown): error is Error {
+  return error instanceof Error && error.name === "UnrequestedSmilesRadicalError";
+}
+
+export interface SmilesListPasteResult {
+  entries: { smiles: string; depiction: PastedStructureDepiction }[];
+  skipped: number;
+  /** Per-item chemistry failures, including the input and the adapter's specific reason. */
+  failures: { smiles: string; error: string }[];
 }
 
 export function depictSmilesListForPaste(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void
-): Promise<{ entries: { smiles: string; depiction: PastedStructureDepiction }[]; skipped: number } | undefined> | undefined {
+): Promise<SmilesListPasteResult | undefined> | undefined {
   // No promise or engine load for prose: the caller can insert its text synchronously.
   if (candidates.length < 2) return undefined;
   return depictSmilesListCandidates(text, candidates, onProgress);
@@ -74,8 +88,9 @@ async function depictSmilesListCandidates(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void
-): Promise<{ entries: { smiles: string; depiction: PastedStructureDepiction }[]; skipped: number } | undefined> {
+): Promise<SmilesListPasteResult | undefined> {
   const entries: { smiles: string; depiction: PastedStructureDepiction }[] = [];
+  const failures: SmilesListPasteResult["failures"] = [];
   const tokens = smilesListTokens(text);
   const firstTokenColumns = new Map<number, number>();
   for (const token of tokens) {
@@ -83,7 +98,13 @@ async function depictSmilesListCandidates(
   }
   let parsedFirstTokenLines = 0;
   for (const [index, candidate] of candidates.entries()) {
-    const parsed = await depictSmilesForPaste(candidate.token);
+    let parsed: Awaited<ReturnType<typeof depictSmilesForPaste>> = undefined;
+    try {
+      parsed = await depictSmilesForPaste(candidate.token);
+    } catch (error) {
+      if (!isSmilesRadicalRefusal(error)) throw error;
+      failures.push({ smiles: candidate.token, error: error.message });
+    }
     if (parsed) {
       entries.push({ smiles: candidate.token, depiction: parsed.depiction });
       if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
@@ -95,7 +116,10 @@ async function depictSmilesListCandidates(
     }
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
-  return smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })
-    ? { entries, skipped: tokens.length - entries.length }
-    : undefined;
+  if (smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })) {
+    return { entries, skipped: tokens.length - entries.length, failures };
+  }
+  // Even a list with too few valid entries must retain the reasons it was refused.
+  if (failures.length > 0) throw new Error(failures.map((failure) => failure.error).join("\n"));
+  return undefined;
 }

@@ -38,6 +38,12 @@ describe("depictSmilesForPaste", () => {
     expect(result?.stereoCount).toBe(0);
   });
 
+  it.each(["n1cccc1", "c1cccc1"])("propagates the specific chemistry refusal for %s", async (smiles) => {
+    await expect(depictSmilesForPaste(smiles)).rejects.toThrow(
+      new ocl.UnrequestedSmilesRadicalError(smiles).message
+    );
+  });
+
   it("preserves structured atom charges, bond orders and wedges on V2000 reparse failure", async () => {
     const fallback = ocl.depictSmiles2D("C[C@H](F)Cl");
     fallback.molfile = "overflowed compatibility molfile";
@@ -59,6 +65,23 @@ describe("depictSmilesForPaste", () => {
 });
 
 describe("depictSmilesListForPaste", () => {
+  it("records each refused ring and continues with later valid entries", async () => {
+    const text = "CCO\nn1cccc1\nc1cccc1\n[nH]1cccc1\nc1ccccc1\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "[nH]1cccc1", "c1ccccc1", "CCN"]);
+    expect(result?.failures).toEqual(["n1cccc1", "c1cccc1"].map((smiles) => ({
+      smiles, error: new ocl.UnrequestedSmilesRadicalError(smiles).message
+    })));
+    expect(result?.skipped).toBe(2);
+  });
+
+  it("preserves refusal messages even when no list entry can be drawn", async () => {
+    const text = "n1cccc1\nc1cccc1";
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text))).rejects.toThrow(
+      ["n1cccc1", "c1cccc1"].map((smiles) => new ocl.UnrequestedSmilesRadicalError(smiles).message).join("\n")
+    );
+  });
+
   it.each([
     "CCO\nc1ccccc1\nCC(=O)O",
     "CCO c1ccccc1 CC(=O)O",
