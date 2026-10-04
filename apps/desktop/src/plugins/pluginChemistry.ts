@@ -127,11 +127,11 @@ export async function structureFromSmilesForPlugin(
   } catch {
     try {
       depiction = pastedStructureDepictionFromMolfile(ocl.depictSmiles2D(request.smiles).molfile);
-    } catch {
+    } catch (error) {
       return {
         available: true,
         built: false,
-        reason: `No 2D structure could be generated for "${request.smiles}".`
+        reason: error instanceof Error ? error.message : String(error)
       };
     }
   }

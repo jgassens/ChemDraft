@@ -5772,12 +5772,12 @@ export function MainWindow({
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
-  // on demand (kept out of the static startup graph). Returns false when the text isn't a
-  // parseable SMILES, so callers can fall back to pasting it as plain text.
-  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<boolean> => {
+  // on demand (kept out of the static startup graph). Keeps failure reasons for the caller's
+  // plain-text fallback notice.
+  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string }> => {
     try {
       const parsed = await depictSmilesForPaste(smilesText);
-      if (!parsed) return false;
+      if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
       const nextDocument = insertSmilesMolecule(
         documentRef.current,
@@ -5799,18 +5799,20 @@ export function MainWindow({
       setStatus(fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus);
-      return true;
-    } catch {
-      return false;
+      return { rendered: true };
+    } catch (error) {
+      return { rendered: false, reason: error instanceof Error ? error.message : String(error) };
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
-      void renderPastedSmiles(detectedPayload.text.trim()).then((rendered) => {
+      void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason }) => {
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          setStatus("Clipboard SMILES could not be parsed; pasted as text");
+          setStatus(reason
+            ? `Clipboard SMILES could not be parsed: ${reason}; pasted as text`
+            : "Clipboard SMILES could not be parsed; pasted as text");
         }
       });
       return;
@@ -5825,8 +5827,13 @@ export function MainWindow({
       const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
       const trimmedText = detectedPayload.text.trim();
       if (looksLikeSmiles(trimmedText) && !/\s/.test(trimmedText)) {
-        void renderPastedSmiles(trimmedText).then((rendered) => {
-          if (!rendered) pasteAsText();
+        void renderPastedSmiles(trimmedText).then(({ rendered, reason }) => {
+          if (!rendered) {
+            pasteAsText();
+            if (reason) {
+              setStatus(`Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+            }
+          }
         });
         return;
       }
@@ -5846,10 +5853,16 @@ export function MainWindow({
         commitDocumentChange(result.document);
         resetPasteUiState();
         setPageFitPrompt(undefined);
-        setStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped));
-      }).catch(() => {
+        const failure = parsed.failures[0];
+        const baseStatus = insertSmilesMoleculeGridStatus(result, parsed.skipped);
+        setStatus(failure
+          ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
+          : baseStatus);
+      }).catch((error: unknown) => {
         pasteAsText();
-        setStatus("Clipboard SMILES list could not be placed; pasted as text");
+        // The list helper joins chemistry refusals with newlines when too few entries can be drawn.
+        const failures = (error instanceof Error ? error.message : String(error)).split("\n");
+        setStatus(`Clipboard SMILES list could not be placed; ${failures.length} item${failures.length === 1 ? "" : "s"} failed: ${failures[0]}; pasted as text`);
       });
       return;
     }
