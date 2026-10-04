@@ -3,9 +3,10 @@
  *
  * Implements the engine-neutral `ConformerGenerator3D` contract from
  * `@chemdraft/chemistry-adapter` using OpenChemLib's `ConformerGenerator` +
- * `ForceFieldMMFF94`. Designed to be **lazy-loaded** (`import("@chemdraft/ocl-adapter")`
- * on first spin) so OCL's ~2.3 MB (1.0 MB JS + 1.3 MB torsion resources) never
- * touches app startup.
+ * `ForceFieldMMFF94`. Loaded in the background conformer worker by its idle
+ * warm-up shortly after the document window opens, or on the first spin if that
+ * comes first. OCL's ~2.3 MB (1.0 MB JS + 1.3 MB torsion resources) does not
+ * delay app startup.
  *
  * Atom-identity discipline (verified against the live engine):
  *   1. Parse the molfile -> an OCL `Molecule` (OCL perceives drawn wedge stereo).
