@@ -18,13 +18,14 @@ other platform is a follow-up" is not an acceptable state to merge.
   defaults to detection (`ShortcutPlatform` / `detectDesktopShortcutPlatform()` in
   `keyboardShortcuts.ts`), so one test host can exercise both branches. Tauri: platform-only
   capabilities carry `"platforms": [...]`; Windows-only config lives in `tauri.windows.conf.json`.
-- **Known differences you must respect** (most were found the hard way during the Windows port):
+- **Known differences you must respect:**
   - App origin: `tauri://localhost` on macOS, `http://tauri.localhost` on Windows (WebView2). Anything
     served same-origin, such as installed plugins, must accept both (`installed_plugins.rs`).
   - Menus: app-wide on macOS; on Windows only the document window carries one (`install_app_menu`).
     Attaching a menu to palettes or popovers crashed Windows at startup and quit.
   - Utility windows (palettes, popovers, tooltips) are built `focused(false)` and owned by the
-    document window, so on Windows they never steal focus or show on the taskbar.
+    document window, so on Windows they never steal focus or show on the taskbar. Place them by the
+    destination monitor's scale, and never save a frame while minimized.
   - Shortcuts: `CmdOrCtrl`, a Ctrl+Y redo alternate off macOS, Mac glyph labels only on macOS, and
     F5/Ctrl+R must never reload the webview (a reload discards the document).
   - Quitting: on Windows, closing the document window quits after flushing the session.
@@ -34,18 +35,19 @@ other platform is a follow-up" is not an acceptable state to merge.
   - Paths and tools: backslashes, 8.3 temp paths, no bash, no `zip`, symlinks need privileges. Use
     `path` APIs, never hard-coded `/`. New repo scripts are Node (`scripts/*.mjs`), not bash, unless the
     job is macOS-only by nature (signing, notarizing, Sparkle, `./run-app`).
-  - Native binaries (the 3D sidecar, the OPSIN Java runtime) are built and committed per platform.
+  - Native binaries are per platform: the 3D sidecar is committed; the OPSIN Java runtime is built on
+    each host (`scripts/build-opsin-runtime.mjs`), never committed.
 - **CI runs three hosts:** Linux (types, tests, web build), macOS (Rust fmt, clippy, tests), and
-  Windows (types, tests, web build, Rust fmt, clippy, tests). Treat the Windows job as required: a red
-  Windows job blocks merging under this rule even where branch protection does not list it.
+  Windows (types, tests, web build, Rust fmt, clippy, tests). All of them, Windows included, must pass
+  to merge.
 - **Verify on both, or say which you did not.** When a change touches native code, windows, menus,
   shortcuts, focus, the clipboard, file input/output, paths, the updater, or plugin install and
   serving, check it on both platforms. If you can run only one, the report must name the other as
   unverified and say exactly what needs checking there. Never report a platform as verified that you
   did not run.
 - **Releases** are joint: the macOS DMG and the Windows NSIS installer are built from the same commit,
-  release notes have `## macOS` and `## Windows` sections, and neither platform gets a version the
-  other does not. See `docs/releasing/macos-updates.md` and `docs/releasing/windows-updates.md`.
+  the GitHub release body has `## macOS` and `## Windows` sections, and neither platform gets a
+  version the other does not. See `docs/releasing/`.
 
 ## 2. Orientation
 
@@ -55,13 +57,13 @@ Before editing implementation files, read `PLANS.md`, this file, `README.md`, `p
 - **`PLANS.md`** is the slice in flight, and binds unless the user gives newer instructions. Keep
   edits to its files and behaviors. At closeout the slice moves to `docs/shipped/README.md`, so
   `PLANS.md` never becomes a changelog.
-- **`PLAN.md`** is the product charter: whether a thing should be built at all. It is not required
-  reading for every edit. Read it when scoping a feature (§3, §4, §19), deciding core versus plugin
-  (§5 non-goals, §21), adding a dependency or touching licensing (§15), judging release readiness
-  (§1.1, §4, §19), or changing a user-facing surface (§6.15).
+- **`PLAN.md`** is the product charter: whether a thing should be built at all. Read it only when
+  scoping a feature (§3, §4, §19), deciding core versus plugin (§5 non-goals, §21), adding a
+  dependency or touching licensing (§15), judging release readiness (§1.1, §4, §19), or changing a
+  user-facing surface (§6.15).
 - **Other references:** `docs/architecture/` (subsystems), `docs/plugin-architecture/AUTHORING.md`
   (plugin authors), `docs/shipped/` (read `selection-policy-refactor.md` before touching selection or
-  hit testing), `PLAN-spin3d-forcefields.md`, and `/Users/jeremiahgassensmith/programming/.notary`
+  hit testing), and `/Users/jeremiahgassensmith/programming/.notary`
   before any signing or notarizing.
 - **Names.** The app is ChemDraft. "MolScribe" names only the external recognition project and the
   optional MolScribe OCSR plugin. Public text (website, release notes, PR titles and bodies, commit
@@ -73,9 +75,9 @@ Before editing implementation files, read `PLANS.md`, this file, `README.md`, `p
 
 ## 3. This phase: plugins and agents
 
-The work now in front of the project grows two surfaces: what **plugins** can do inside ChemDraft, and
-what **agents** (AI or scripted callers) can do with it. Both hand ChemDraft's power to code the core
-does not control, so they share these rules:
+This phase grows two surfaces: what **plugins** can do inside ChemDraft, and what **agents** (AI or
+scripted callers) can do with it. Both hand ChemDraft's power to code the core does not control, so
+they share these rules:
 
 1. **One command system.** Everything a plugin or agent can do is a registered command or a typed host
    capability; no side doors into React state, the DOM, or private functions.
@@ -99,9 +101,8 @@ menus, panels, toolbar buttons, inspectors, templates, importers, exporters, ana
 and recognizers.
 
 `PluginApiVersion` is `0.1.6`. For a 0.x version the minor is the compatibility boundary, so additive
-methods bump the patch (0.1.4 added command-scoped `documents.applyPatch`, 0.1.5 `images.requestImage`,
-0.1.6 `recognition.recognizeStructure`) and a plugin declares the caret version it needs. Record each
-bump in the `plugin-api` header comment and `AUTHORING.md`.
+methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
+`plugin-api` header comment and `AUTHORING.md`.
 
 Permission names are defined in `plugin-api`. The dangerous ones are `filesystem.write`,
 `network.fetch`, `native.execute`, `model.load`, `model.download`, `clipboard.read`, `document.write`,
@@ -136,7 +137,7 @@ Naming: commands `plugin.<pluginName>.<action>` (schema-enforced for toolset con
   worker handshake, path-traversal guards in TypeScript and Rust.
 - Updates come from allowlisted GitHub releases, SHA-256-verified, then staged, swapped, or rolled
   back. `capabilities/plugin-updates.json` lists **every** release URL exactly, the `.zip.sha256`
-  included (`URLPattern` matches exactly); `pluginUpdates.test.ts` guards it.
+  included; `pluginUpdates.test.ts` guards it.
 - Official plugins (NMR predictor, MolScribe OCSR) live in their own repositories and the host catalog
   (`plugins/pluginUpdates.ts`); their menu items exist only once installed.
 
@@ -147,13 +148,15 @@ author and cannot vouch for; image recognition is always proposal-only. When the
 input and the conversion is deterministic (a typed name parsed by OPSIN), the plugin declares
 `document.write` and calls `documents.applyPatch`, which works only while one of its own commands is
 running; the host commits one labelled undo entry, selects what was inserted, and opens no review
-window. Reports are for failures; success needs no window.
+window. `applyPatch` only inserts (`addObject`, `addAnnotation`); changing or removing what is already
+there goes through proposal review. Reports are for failures; success needs no window.
 
 ### 4.5 Structure recognition (MolScribe OCSR)
 
 ChemDraft owns the local recognition engine, its install UI, and the native boundary. The plugin
 (`org.chemdraft.ocsr.molscribe`) receives only `recognition.recognizeStructure`, for an image the host
-returned during the same command; it never declares `model.download` or `document.write`. The engine
+returned during the same command; it declares `image.read`, `ml.inference`, `model.load`, and
+`native.execute`, and never `model.download` or `document.write`. The engine
 installs only on explicit user action and runs only on the computer. Results carry SMILES, molfile,
 confidence, candidates, and warnings (confidence, stereo, charge, abbreviations, invalid structure,
 missing model); the source image stays unless the user deletes it. Tests use mocked recognitions; never
@@ -165,8 +168,8 @@ The shipped backend is the OCL-native provider: HOSE-fragment lookup over statis
 experimental assignments. Never describe it as fixture-backed or synthetic (fixtures are test-only
 and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
 multiplicity and J are first-order estimates, labelled so. Stick height is equivalent nuclei, not
-integration. Never fabricate a shift for an unmatched environment; partial results carry warnings. No
-calibrated confidence percentages, only honest tiers.
+integration; lineshape and field are simulation parameters. Never fabricate a shift for an unmatched
+environment; partial results carry warnings. No calibrated confidence percentages, only honest tiers.
 
 ### 4.7 Licensing and redistribution
 
@@ -185,7 +188,7 @@ calibrated confidence percentages, only honest tiers.
 |---|---|---|
 | Headless CLI | `packages/chemdraft-cli` | `pnpm -s chemdraft <render\|grid\|reaction\|analyze\|name\|stereo\|nmr\|export>`; JSON Lines on stdout, progress on stderr; exit 0 all ok, 1 any job failed, 2 bad input |
 | MCP server | `packages/chemdraft-mcp` | Local stdio server calling the CLI modules in-process; a fresh per-call output directory; 5 MB per returned payload |
-| In-app bridge | `apps/desktop/src/agentBridge.ts` | `window.__CHEMDRAFT_AGENT__`; off unless `CHEMDRAFT_AGENT_BRIDGE=1` or `--chemdraft-agent-bridge` (desktop) or `?agentBridge=1` (web build) |
+| In-app bridge | `apps/desktop/src/agentBridge.ts` | `window.__CHEMDRAFT_AGENT__`; off unless `CHEMDRAFT_AGENT_BRIDGE=1` or `--chemdraft-agent-bridge` (desktop) or `?agentBridge=1` or its localStorage flag (web build) |
 | Shared logic | `packages/document-workflow-core` | The pure document functions the app, CLI, and MCP all use |
 
 Rules:
@@ -206,7 +209,7 @@ Rules:
 - **The bridge is an automation surface, not a product API.** Keep it gated; add no new way to turn it
   on. Its events are synthetic and skip browser default actions such as moving focus, so focus- and
   blur-sensitive behavior also needs a real-event test.
-- **Agent edits** follow §4.4: patches, one labelled undo entry, what changed left selected.
+- **Agent edits** follow §4.4.
 - New CLI commands and MCP tools ship with README entries and tests, and run on both platforms (§1).
 
 ## 6. Package boundaries
@@ -230,7 +233,7 @@ row says so.
 | `viewport-engine` | Coordinate, zoom, pan, ruler math | Document mutation, rendering |
 | `chemistry-adapter`, `ocl-adapter` | Engine-neutral contract (incl. 3D conformers); OpenChemLib depiction, stereo, conformers | Concrete engines in the contract; collapse an unrepresentable bond order (report `aromatic`/`unknown`) |
 | `rdkit-adapter` | Real RDKit analysis and ETKDGv3 conformers on the vendored custom MinimalLib WASM (`vendor/BUILD.md`) | Load at startup; vendor another RDKit build without its own decision |
-| `isospec-adapter` | Vendored, **unpatched** IsoSpec WASM, pins, lookups read from the binary | Patch IsoSpec; retype its abundance table; build results (`rdkit-adapter/src/envelope.ts` does). Disclose its ¹³C abundance (0.82% above CIAAW) wherever a derived number shows |
+| `isospec-adapter` | Vendored, **unpatched** IsoSpec WASM, pins, lookups read from the binary; `rdkit-adapter` depends on it, never the reverse | Patch IsoSpec; retype its abundance table; build results (`rdkit-adapter/src/envelope.ts` does); add a raw-array wrapper that skips length checks (IsoSpec reads past the heap silently). Disclose its ¹³C abundance (0.82% above CIAAW) wherever a derived number shows |
 | `analysis-core` | Pure property-suite contracts: interpretations, classification, results, methods, provenance | Import an engine, derive chemistry, branch on `derivation`/`claim` |
 | `engine3d-api` | The versioned app↔sidecar protocol | Change shape without bumping `Engine3DProtocolVersion` |
 | `document-workflow-core` | Pure document builders shared by app, CLI, and MCP | React, Tauri, DOM, `apps/`, app state, loading an engine (callers inject it), a second copy of anything moved here |
@@ -246,8 +249,9 @@ Every conversion preserves atom identity, bond order, formal charge, isotopes, r
 stereochemistry, superatoms and R-group display where represented, reaction roles and components,
 coordinates where applicable, and mechanism annotations (always editable objects, never opaque SVG).
 **An operation that cannot preserve chemical meaning must warn or fail, never degrade quietly.**
-Toolbar, inspector, style, and layout work never change chemistry. Tests compare canonical SMILES, formula, charge, stereo, atom and bond counts,
-reaction component counts, and coordinates within tolerance.
+Toolbar, inspector, style, and layout work never change chemistry. Tests compare canonical SMILES,
+formula, charge, stereo, atom and bond counts, reaction component counts, and coordinates within
+tolerance.
 
 ## 8. Analysis and prediction claims
 
@@ -260,9 +264,10 @@ analysis source, or a stale "PLANS.md §n" there, refers to that document.
   becomes benzoic acid. The active interpretation is visible and changeable, and per-atom results map
   back to drawn atoms.
 - **Enums display, flags decide.** Code branches on `ClassificationFlags`, never on `derivation` or
-  `claim`.
+  `claim`; add no fourth axis.
 - **Declining is a feature.** A method outside its parameterisation returns `unsupported`, not a
-  fallback number. "Unavailable" and "not asked for" must look different.
+  fallback number. Runtime failures map to `AnalysisStatus` and `applicability`, never prose.
+  "Unavailable" and "not asked for" must look different.
 - **Every number carries a method contract** (implementation and version, interpretation, units,
   conventions, scope, declining conditions). Conventions travel on the result; a "see X" note must
   point at a section the report contains. Detect engine capabilities by value, not arity.
@@ -308,11 +313,11 @@ analysis source, or a stale "PLANS.md §n" there, refers to that document.
 ## 11. File-format compatibility
 
 Compatibility is fixture-driven and never claimed beyond fixture coverage. **Tier A** (supported):
-atoms, bonds, coordinates, charges, isotopes, radicals, wedges, superatoms, basic R-groups, text,
-simple arrows, plus signs, basic brackets and styles. **Tier B** (only with fixtures): R-group logic,
-S-groups, polymers, atom lists, mapping, equilibrium and retrosynthesis arrows. **Tier C** (preserve
-or approximate, never claim): complex graphics, images, unusual fonts, proprietary style state.
-Preserve unknown objects where practical, otherwise warn. CDXML comes before broad CDX writing.
+atoms, bonds, coordinates, charges, isotopes, radicals, wedges, E/Z geometry, superatoms, basic
+R-groups, text, simple arrows, plus signs, basic brackets and styles. **Tier B** (only with fixtures):
+R-group logic, S-groups, polymers, atom lists, mapping, equilibrium and retrosynthesis arrows. **Tier
+C** (preserve or approximate, never claim): complex graphics, images, unusual fonts, proprietary style
+state. Preserve unknown objects, or warn. CDXML comes before broad CDX writing.
 
 ## 12. UI
 
@@ -334,11 +339,11 @@ Never show fake chemistry: workspace objects are real `chem-core` objects or an 
 
 ## 14. Testing and verification
 
-Every meaningful change adds or updates tests in its area (schemas and migrations, permissions and
-lifecycle, chemistry and format fixtures, export warnings, canvas/export parity, command wiring,
-viewport math, mocked recognition). A test that cannot be written yet is explained in the report, with
-a TODO only if it is specific (`TODO(cdx-compat): preserve rotation once GraphicObject.rotation
-exists`, never `TODO: fix later`). Test platform branches from one host by passing the platform in (§1).
+Every meaningful change adds or updates tests in its area (migrations, permissions, chemistry and
+format fixtures, canvas/export parity, command wiring, mocked recognition). A test that cannot be
+written yet is explained in the report, with a TODO only if it is specific (`TODO(cdx-compat):
+preserve rotation once GraphicObject.rotation exists`, never `TODO: fix later`). Test platform
+branches from one host by passing the platform in (§1).
 
 The gauntlet, mirroring CI:
 
@@ -363,9 +368,9 @@ surface, and never replace it with a slice-scoped one.
 
 - **Launch from this worktree.** macOS: `./run-app` (packaged build) or `./run-app --dev` (Tauri plus
   Vite hot reload). Windows: `pnpm dev`, or `pnpm --filter @chemdraft/desktop build --bundles nsis`
-  for an installer. An already-open window, a sibling worktree's app, `cargo run`, or an old Vite port
-  is not proof. Stop other instances from the same checkout first, and report the exact command and
-  the success signal (bundle path, or Vite port plus the launched binary).
+  for an installer. An app that was already running, or `cargo run`, is not proof. Stop other
+  instances from the same checkout first, and report the exact command and the success signal
+  (bundle path, or Vite port plus the launched binary).
 
 ### 15.1 Every build is labelled by its worktree (do not remove)
 
@@ -387,8 +392,7 @@ Identify a build by its stamp, never by its window.
 
 ## 16. Closeout and report
 
-Keep tasks narrow, touch the smallest set of files, preserve package boundaries, and never invent a
-dependency's capabilities. At closeout:
+Keep tasks narrow and never invent a dependency's capabilities. At closeout:
 
 - Bump `CURRENT_BUILD_STAMP` in `apps/desktop/src/MainWindow.tsx` (CI requires it for any change under
   `apps/desktop/src`, `src-tauri/src`, or `packages`). Its suffix names the authoring agent (`-opus`,
@@ -401,11 +405,12 @@ dependency's capabilities. At closeout:
 
 ## 17. Older section numbers
 
-Source comments and docs cite this file's numbering before the 2026-10-04 consolidation. They map:
+Comments and docs written before 2026-10-04 cite the old numbers. Cite new sections by number and
+title, since old and new numbers overlap.
 
 | Old | Now | Old | Now |
 |---|---|---|---|
-| §1 | §2 | §8, §8a | §4.2–§4.6 |
+| §1 | §2 | §8, §8a | §4.2–§4.7 |
 | §2, §3, §9 | §10 | §8b, §9a | §8 |
 | §4 | §2, §10, §12 | §8c | §4.7 |
 | §5.7, §10 | §7 | §11, §12 | §11, §12 |
