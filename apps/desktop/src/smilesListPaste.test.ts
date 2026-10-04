@@ -75,6 +75,14 @@ describe("depictSmilesListForPaste", () => {
     expect(result?.skipped).toBe(0);
   });
 
+  it("counts an unparseable SMILES-like item as a named failure", async () => {
+    const text = "CCO\nC1CC\nCCN\nCCC";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN", "CCC"]);
+    expect(result?.failures).toEqual([{ input: "C1CC", error: "Could not parse SMILES: C1CC" }]);
+    expect(result?.skipped).toBe(0);
+  });
+
   it("preserves refusal messages even when no list entry can be drawn", async () => {
     const text = "n1cccc1\nc1cccc1";
     await expect(depictSmilesListForPaste(text, smilesListCandidates(text))).rejects.toMatchObject({

@@ -50,7 +50,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     vi.unstubAllGlobals();
   });
 
-  async function paste(text: string, type = "text/plain") {
+  async function paste(text: string, type = "text/plain", failureInput = "n1cccc1") {
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", {
       value: { types: [type], getData: (requested: string) => requested === type ? text : "" }
@@ -60,7 +60,9 @@ describe("MainWindow SMILES paste failure notices", () => {
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
       expect(container.querySelector('[role="status"]')?.textContent).toContain(
-        new UnrequestedSmilesRadicalError("n1cccc1").message
+        failureInput === "n1cccc1"
+          ? new UnrequestedSmilesRadicalError(failureInput).message
+          : failureInput
       );
     });
     return container.querySelector('[role="status"]')?.textContent;
@@ -90,10 +92,17 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   });
 
+  it("mentions the C1CC parse failure while placing the other list entries", async () => {
+    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "C1CC");
+    expect(status).toContain("1 item failed: Could not parse SMILES: C1CC");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
+  });
+
   it("reports both failures and the first reason when the whole list falls back to text", async () => {
     const status = await paste("n1cccc1\nc1cccc1");
-    expect(status).toContain("2 items failed");
-    expect(status).toContain("pasted as text");
+    expect(status).toBe(
+      `Clipboard SMILES list could not be placed; 2 items failed: ${new UnrequestedSmilesRadicalError("n1cccc1").message}; pasted as text`
+    );
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
   });

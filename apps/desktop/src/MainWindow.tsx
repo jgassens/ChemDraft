@@ -62,6 +62,7 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
   createToolsetToggleCommandId,
@@ -8162,6 +8163,14 @@ export function MainWindow({
           if (!molecule) {
             setStatus("No selected structure");
             return;
+          }
+
+          if (isNativeMoleculeGraph(molecule)) {
+            const nativeSmiles = tryNativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
+            if ("refused" in nativeSmiles) {
+              setStatus(nativeSmiles.refused);
+              return;
+            }
           }
 
           // The chemistry adapter is the real RDKit engine now, so the WASM loader has to be
@@ -27823,10 +27832,12 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
-function formatExportStatus(label: string, warnings: readonly { message: string; severity?: string }[]): string {
+export function formatExportStatus(label: string, warnings: readonly { message: string; severity?: string }[]): string {
   const failedStructures = warnings.filter((warning) => warning.severity === "error");
   if (failedStructures.length > 0) {
-    return `Exported ${label} with ${warnings.length} warning(s); ${failedStructures.length} structure${failedStructures.length === 1 ? "" : "s"} could not be written: ${failedStructures[0].message}`;
+    const withoutSmiles = label.toLowerCase() === "sdf" || label.toLowerCase().includes("sdfile");
+    const outcome = withoutSmiles ? "exported without SMILES" : "could not be written";
+    return `Exported ${label} with ${warnings.length} warning(s); ${failedStructures.length} structure${failedStructures.length === 1 ? "" : "s"} ${outcome}: ${failedStructures[0].message}`;
   }
   return warnings.length > 0
     ? `Exported ${label} with ${warnings.length} warning(s)`
