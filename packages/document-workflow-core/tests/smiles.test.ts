@@ -6,7 +6,8 @@ import {
   moleculeSmiles,
   nativeSingleBondGraphSmiles,
   nativeSmilesBondOrderResolution,
-  nativeSmilesWritableBonds
+  nativeSmilesWritableBonds,
+  tryNativeSingleBondGraphSmiles
 } from "../src/index";
 
 const atoms: MoleculeAtom[] = [
@@ -60,6 +61,20 @@ describe("unknown bond orders in SMILES", () => {
     expect(() => nativeSmilesWritableBonds(atoms, [unknownBond])).toThrow(unknownOrderError);
   });
 
+  it("returns a refusal without changing unknown bonds or emitting a SMILES", () => {
+    const bonds: MoleculeBond[] = [unknownBond, { ...singleBond, order: "aromatic" }];
+    const before = structuredClone(bonds);
+    const warnings: string[] = [];
+    expect(tryNativeSingleBondGraphSmiles(atoms, bonds, warnings)).toEqual({ refused: unknownOrderError });
+    expect(warnings).toEqual([]);
+    expect(bonds).toEqual(before);
+  });
+
+  it("names both unknown bonds in a non-throwing refusal", () => {
+    expect(tryNativeSingleBondGraphSmiles(atoms, [unknownBond, { ...singleBond, order: "unknown" }]))
+      .toEqual({ refused: "Cannot write SMILES: bonds b12, b23 have an unknown bond order." });
+  });
+
   const molecule: MoleculeObject = {
     id: "m1", type: "molecule", x: 0, y: 0, width: 20, height: 10,
     rotation: 0, style: {}, structureFormat: "unknown", structure: "",
@@ -91,12 +106,20 @@ describe("supported SMILES bond orders", () => {
   ] as const)("preserves %s chain bonds", (order, expected) => {
     const warnings: string[] = [];
     expect(nativeSingleBondGraphSmiles(atoms, [{ ...unknownBond, order }, singleBond], warnings)).toBe(expected);
+    expect(tryNativeSingleBondGraphSmiles(atoms, [{ ...unknownBond, order }, singleBond])).toEqual({ smiles: expected });
     expect(warnings).toEqual([]);
   });
 
   it("preserves the existing non-ring aromatic warning and output", () => {
     const warnings: string[] = [];
     expect(nativeSingleBondGraphSmiles(atoms, [{ ...unknownBond, order: "aromatic" }, singleBond], warnings)).toBe("CCC");
+    expect(warnings).toEqual(["1 aromatic bond outside any aromatic ring written to SMILES as single."]);
+  });
+
+  it("keeps aromatic output and warnings on the refresh-time route", () => {
+    const warnings: string[] = [];
+    expect(tryNativeSingleBondGraphSmiles(atoms, [{ ...unknownBond, order: "aromatic" }, singleBond], warnings))
+      .toEqual({ smiles: "CCC" });
     expect(warnings).toEqual(["1 aromatic bond outside any aromatic ring written to SMILES as single."]);
   });
 

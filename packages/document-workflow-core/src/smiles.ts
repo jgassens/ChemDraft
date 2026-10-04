@@ -64,12 +64,8 @@ export function nativeSmilesBondOrderResolution(
   const warnings = { unknown: [] as string[], aromatic: [] as string[] };
   const resolution = nativeBondOrderResolution(atoms, bonds);
   // Aromatic resolution preserves non-aromatic input orders, including imported unknown bonds.
-  const unknownBondIds = resolution.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
-  if (unknownBondIds.length > 0) {
-    throw new Error(
-      `Cannot write SMILES: bond${unknownBondIds.length === 1 ? "" : "s"} ${unknownBondIds.join(", ")} ${unknownBondIds.length === 1 ? "has" : "have"} an unknown bond order.`
-    );
-  }
+  const refused = unknownSmilesBondOrderRefusal(resolution.bonds);
+  if (refused) throw new Error(refused);
   if (resolution.nonRingAromaticBondCount > 0) {
     const count = resolution.nonRingAromaticBondCount;
     warnings.aromatic.push(
@@ -109,6 +105,25 @@ function hydrogenCountsAt(ids: readonly string[]): string {
   return ids.length === 1
     ? `Hydrogen count at aromatic atom ${ids[0]} was`
     : `Hydrogen counts at aromatic atoms ${ids.join(", ")} were`;
+}
+
+function unknownSmilesBondOrderRefusal(bonds: readonly MoleculeBond[]): string | undefined {
+  const unknownBondIds = bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+  if (unknownBondIds.length === 0) return undefined;
+  return `Cannot write SMILES: bond${unknownBondIds.length === 1 ? "" : "s"} ${unknownBondIds.join(", ")} ${unknownBondIds.length === 1 ? "has" : "have"} an unknown bond order.`;
+}
+
+/**
+ * Refresh-time variant: an unknown order makes stored SMILES unavailable without blocking edits.
+ * Callers must clear stale SMILES on refusal; export keeps using the throwing writer below.
+ */
+export function tryNativeSingleBondGraphSmiles(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  warningsOut?: string[]
+): { smiles: string } | { refused: string } {
+  const refused = unknownSmilesBondOrderRefusal(bonds);
+  return refused ? { refused } : { smiles: nativeSingleBondGraphSmiles(atoms, bonds, warningsOut) };
 }
 
 export function nativeSingleBondGraphSmiles(
