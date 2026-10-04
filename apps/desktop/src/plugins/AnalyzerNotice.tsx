@@ -15,12 +15,21 @@ export interface AnalyzerNotice {
   message: string;
 }
 
+const ANALYZER_NOTICE_MIN_MS = 4000;
+const ANALYZER_NOTICE_MS_PER_CHAR = 60;
+const ANALYZER_NOTICE_MAX_MS = 15000;
+
+// Roughly reading speed (~60 ms per character), never under 4 s, capped at 15 s so a long reason
+// does not linger; the close button and a later successful run clear it earlier.
 /**
  * How long a notice stays up before it dismisses itself, in milliseconds. It can always be dismissed
  * earlier with its close button, and a later successful run of the same analyzer clears it.
  */
 export function analyzerNoticeDurationMs(message: string): number {
-  // TODO(human)
+  return Math.min(
+    ANALYZER_NOTICE_MAX_MS,
+    ANALYZER_NOTICE_MIN_MS + ANALYZER_NOTICE_MS_PER_CHAR * message.length
+  );
 }
 
 export function AnalyzerNoticeBanner({
