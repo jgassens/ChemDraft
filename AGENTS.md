@@ -232,7 +232,7 @@ row says so.
 | `template-library`, `style-compat` | Original templates and abbreviations; `.cds` style import into native presets | Copy proprietary templates; parse `.cds` in UI; commit user `.cds` files; claim a partial import worked |
 | `viewport-engine` | Coordinate, zoom, pan, ruler math | Document mutation, rendering |
 | `chemistry-adapter`, `ocl-adapter` | Engine-neutral contract (incl. 3D conformers); OpenChemLib depiction, stereo, conformers | Concrete engines in the contract; collapse an unrepresentable bond order (report `aromatic`/`unknown`) |
-| `rdkit-adapter` | Real RDKit analysis and ETKDGv3 conformers on the vendored custom MinimalLib WASM (`vendor/BUILD.md`) | Load at startup; vendor another RDKit build without its own decision |
+| `rdkit-adapter` | Real RDKit analysis and ETKDGv3 conformers on the vendored custom MinimalLib WASM (`vendor/BUILD.md`) | Load at startup unless required (§13); vendor another RDKit build without its own decision |
 | `isospec-adapter` | Vendored, **unpatched** IsoSpec WASM, pins, lookups read from the binary; `rdkit-adapter` depends on it, never the reverse | Patch IsoSpec; retype its abundance table; build results (`rdkit-adapter/src/envelope.ts` does); add a raw-array wrapper that skips length checks (IsoSpec reads past the heap silently). Disclose its ¹³C abundance (0.82% above CIAAW) wherever a derived number shows |
 | `analysis-core` | Pure property-suite contracts: interpretations, classification, results, methods, provenance | Import an engine, derive chemistry, branch on `derivation`/`claim` |
 | `engine3d-api` | The versioned app↔sidecar protocol | Change shape without bumping `Engine3DProtocolVersion` |
@@ -334,8 +334,9 @@ Never show fake chemistry: workspace objects are real `chem-core` objects or an 
 - **Errors are specific.** Not "Import failed." but "CDXML import failed: unsupported bond display type
   "WedgeHashBegin" in object b42." Short for users, detailed in logs. Recognition errors distinguish
   missing model, low confidence, invalid structure, unavailable service, and refused permission.
-- **Performance.** Load RDKit, recognition, plugin panels, and optional importers and exporters lazily,
-  never at startup. No heavy dependency for a trivial job.
+- **Performance.** Do not load heavy chemistry or recognition engines at startup unless required.
+  Prefer loading RDKit, recognition, plugin panels, and optional importers and exporters lazily. No
+  heavy dependency for a trivial job.
 
 ## 14. Testing and verification
 
