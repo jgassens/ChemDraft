@@ -36,7 +36,7 @@ its SHA-256 before use. Release/appcast instructions are in
 `docs/releasing/macos-updates.md`; Sparkle update checks run only from a packaged macOS app, not the
 browser-only preview.
 
-The `./run-app` helper builds and launches the generated macOS `ChemDraft.app` bundle using the same `org.chemdraft.desktop` app identity as dev mode. Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR. Tauri requires Rust/Cargo to be installed and available on `PATH`.
+The `./run-app` helper builds the packaged macOS app and launches it as `ChemDraft (dev)`, identifier `org.chemdraft.desktop.dev.<worktree-slug>`, with its own app data and single-instance lock. It moves the bundle into `<worktree>/app/` and never builds over, renames, or unregisters the stable `/Applications/ChemDraft.app` (`org.chemdraft.desktop`), which is built from `main` (AGENTS.md §15.2 The stable app is never replaced). Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR; it runs a bare binary with no bundle identifier. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 
 ## Windows
 

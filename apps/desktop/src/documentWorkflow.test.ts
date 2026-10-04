@@ -1423,7 +1423,8 @@ describe("Phase 4 document workflow", () => {
     // Clipboard classification is a heuristic over text, so this branch can receive something that
     // is not a molfile. parseMolfileGraph throws on malformed input, and the exception escaped the
     // whole handler: paste did nothing at all, with no message. The RXN branch beside it already
-    // caught and reported; this one now matches (AGENTS.md section 16).
+    // caught and reported; this one now matches (AGENTS.md §13 Security, errors, and
+    // performance: malformed input fails safely).
     const document = createPhase4Document("Malformed MOL Paste");
     const result = applyClipboardPastePayload(document, {
       kind: "molfile",

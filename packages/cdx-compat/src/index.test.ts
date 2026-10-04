@@ -1973,8 +1973,8 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // A no-reaction arrow is a crossed shaft: it asserts the reaction does NOT proceed. Standard
     // CDXML has no spelling for it, so it takes the generic <graphic> path, which writes only
     // Start/End — the cross AND the head both vanish and the line reads as an ordinary one. Losing
-    // it is unavoidable; losing it SILENTLY is not (AGENTS.md section 16, and the two sibling
-    // arrow paths already warn for exactly this class).
+    // it is unavoidable; losing it SILENTLY is not (AGENTS.md §7 Chemistry invariants, and the two
+    // sibling arrow paths already warn for exactly this class).
     const noReaction = documentWithObjects([{
       id: "art_no_reaction",
       type: "graphic",

@@ -207,9 +207,9 @@ export const inDomain: Applicability = { status: "in-domain", reasons: [], unsup
 export type AnalysisWarningSeverity = "info" | "warning" | "error";
 
 /**
- * Warnings are codes, not prose. `AGENTS.md` §14 wants explicit errors; §8a forbids runtime failures
- * being smuggled into free text. `affectedResultIds` is what lets the UI put the warning on the value
- * rather than in a footer.
+ * Warnings are codes, not prose. `AGENTS.md` §13 Security, errors, and performance wants explicit
+ * errors; §8 Analysis and prediction claims forbids runtime failures being smuggled into free text.
+ * `affectedResultIds` is what lets the UI put the warning on the value rather than in a footer.
  */
 export interface AnalysisWarning {
   code: string;
