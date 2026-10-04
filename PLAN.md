@@ -1748,7 +1748,7 @@ answered is worse than no list, because it invites re-litigating a shipped decis
 
 ### Answered by shipped work
 
-- ~~Final license for the repository root.~~ Apache-2.0 (`LICENSE`, `package.json`), with `NOTICE` shipped in every distribution. The example plugins and the two SDK packages are MIT (2026-07-16); the NMR predictor's bundled reference database stays under the nmrshiftdb2 Database License (ODbL-derived), never called MIT. See AGENTS.md §4.7 Licensing and redistribution.
+- ~~Final license for the repository root.~~ Apache-2.0 (`LICENSE`, `package.json`). The example plugins and the two SDK packages are MIT (2026-07-16); the NMR predictor's bundled reference database stays under the nmrshiftdb2 Database License (ODbL-derived), never called MIT. See AGENTS.md §4.7 Licensing and redistribution.
 - ~~Whether the app supports a browser version initially.~~ Yes, as a shell: `pnpm dev:web` runs the desktop app in the browser. There is still no separate `apps/web` package.
 - ~~Whether plugins are distributed through a registry later.~~ Not a registry — a host-owned catalog allowlisted by plugin id, with the app owning source, download, verification, handshake, replacement, and rollback. An installed plugin cannot choose its own download URL.
 - ~~Whether RDKit loads in the frontend, backend, or both.~~ The frontend and the headless CLI, never the Rust backend. `rdkit-adapter` is a real engine — RDKit on a vendored custom MinimalLib WASM build (`packages/rdkit-adapter/vendor/BUILD.md`) — loaded lazily, never at startup: in the app's Web Workers for the property suite and ETKDGv3 conformers, and in-process by the CLI's `analyze` command. OpenChemLib remains the depiction and stereo engine. See AGENTS.md §6 Package boundaries.

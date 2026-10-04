@@ -1974,7 +1974,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // CDXML has no spelling for it, so it takes the generic <graphic> path, which writes only
     // Start/End — the cross AND the head both vanish and the line reads as an ordinary one. Losing
     // it is unavoidable; losing it SILENTLY is not (AGENTS.md §7 Chemistry invariants, and the two
-    // arrow paths already warn for exactly this class).
+    // sibling arrow paths already warn for exactly this class).
     const noReaction = documentWithObjects([{
       id: "art_no_reaction",
       type: "graphic",
