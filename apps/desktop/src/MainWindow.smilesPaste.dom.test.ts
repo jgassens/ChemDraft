@@ -81,9 +81,11 @@ describe("MainWindow SMILES paste failure notices", () => {
   it.each([
     ["CCO\nn1cccc1\nCCN\nc1ccccc1", "1 item failed", 3],
     ["CCO\nn1cccc1\nc1cccc1\nCCN\nCCCl\nc1ccccc1", "2 items failed", 4]
-  ])("reports the count and first refusal while inserting valid entries from %s", async (text, count, molecules) => {
+  ])("reports refused SMILES only as failures while inserting valid entries from %s", async (text, count, molecules) => {
     const status = await paste(text);
     expect(status).toContain(count);
+    expect(status).not.toContain("token skipped");
+    expect(status).not.toContain("tokens skipped");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(molecules);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   });

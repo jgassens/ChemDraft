@@ -71,7 +71,23 @@ export interface SmilesListPasteResult {
   entries: { smiles: string; depiction: PastedStructureDepiction }[];
   skipped: number;
   /** Per-item chemistry failures, including the input and the adapter's specific reason. */
-  failures: { smiles: string; error: string }[];
+  failures: SmilesListPasteFailure[];
+}
+
+export interface SmilesListPasteFailure {
+  input: string;
+  error: string;
+}
+
+/** A rejected list preserves its individual chemistry refusals for the status surface. */
+export class SmilesListPasteError extends Error {
+  readonly failures: readonly SmilesListPasteFailure[];
+
+  constructor(failures: readonly SmilesListPasteFailure[]) {
+    super("No structures in the SMILES list could be placed.");
+    this.name = "SmilesListPasteError";
+    this.failures = failures;
+  }
 }
 
 export function depictSmilesListForPaste(
@@ -103,7 +119,7 @@ async function depictSmilesListCandidates(
       parsed = await depictSmilesForPaste(candidate.token);
     } catch (error) {
       if (!isSmilesRadicalRefusal(error)) throw error;
-      failures.push({ smiles: candidate.token, error: error.message });
+      failures.push({ input: candidate.token, error: error.message });
     }
     if (parsed) {
       entries.push({ smiles: candidate.token, depiction: parsed.depiction });
@@ -117,9 +133,9 @@ async function depictSmilesListCandidates(
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
   if (smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })) {
-    return { entries, skipped: tokens.length - entries.length, failures };
+    return { entries, skipped: tokens.length - candidates.length, failures };
   }
   // Even a list with too few valid entries must retain the reasons it was refused.
-  if (failures.length > 0) throw new Error(failures.map((failure) => failure.error).join("\n"));
+  if (failures.length > 0) throw new SmilesListPasteError(failures);
   return undefined;
 }

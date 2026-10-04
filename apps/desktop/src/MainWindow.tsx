@@ -193,7 +193,7 @@ import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
-import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   exportFormatDescriptors,
@@ -5860,9 +5860,10 @@ export function MainWindow({
           : baseStatus);
       }).catch((error: unknown) => {
         pasteAsText();
-        // The list helper joins chemistry refusals with newlines when too few entries can be drawn.
-        const failures = (error instanceof Error ? error.message : String(error)).split("\n");
-        setStatus(`Clipboard SMILES list could not be placed; ${failures.length} item${failures.length === 1 ? "" : "s"} failed: ${failures[0]}; pasted as text`);
+        const failures = error instanceof SmilesListPasteError ? error.failures : [];
+        const firstReason = failures[0]?.error ?? "an unexpected error occurred";
+        const failureCount = failures.length || 1;
+        setStatus(`Clipboard SMILES list could not be placed; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}; pasted as text`);
       });
       return;
     }
@@ -7944,7 +7945,7 @@ export function MainWindow({
 
       if (!isDesktopRuntime()) {
         downloadExportResult(filename, result);
-        setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
+        setStatus(formatExportStatus(descriptor.menuLabel, result.warnings));
         setExportDialog(undefined);
         return;
       }
@@ -7962,7 +7963,7 @@ export function MainWindow({
 
       await writeNativeExportResult(path, result);
       lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
+      setStatus(formatExportStatus(descriptor.menuLabel, result.warnings));
       setExportDialog(undefined);
     } catch (error) {
       setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -27822,9 +27823,13 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
-function formatExportStatus(label: string, warningCount: number): string {
-  return warningCount > 0
-    ? `Exported ${label} with ${warningCount} warning(s)`
+function formatExportStatus(label: string, warnings: readonly { message: string; severity?: string }[]): string {
+  const failedStructures = warnings.filter((warning) => warning.severity === "error");
+  if (failedStructures.length > 0) {
+    return `Exported ${label} with ${warnings.length} warning(s); ${failedStructures.length} structure${failedStructures.length === 1 ? "" : "s"} could not be written: ${failedStructures[0].message}`;
+  }
+  return warnings.length > 0
+    ? `Exported ${label} with ${warnings.length} warning(s)`
     : `Exported ${label}`;
 }
 

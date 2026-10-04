@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import * as ocl from "@chemdraft/ocl-adapter";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
-import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
 
@@ -70,16 +70,19 @@ describe("depictSmilesListForPaste", () => {
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "[nH]1cccc1", "c1ccccc1", "CCN"]);
     expect(result?.failures).toEqual(["n1cccc1", "c1cccc1"].map((smiles) => ({
-      smiles, error: new ocl.UnrequestedSmilesRadicalError(smiles).message
+      input: smiles, error: new ocl.UnrequestedSmilesRadicalError(smiles).message
     })));
-    expect(result?.skipped).toBe(2);
+    expect(result?.skipped).toBe(0);
   });
 
   it("preserves refusal messages even when no list entry can be drawn", async () => {
     const text = "n1cccc1\nc1cccc1";
-    await expect(depictSmilesListForPaste(text, smilesListCandidates(text))).rejects.toThrow(
-      ["n1cccc1", "c1cccc1"].map((smiles) => new ocl.UnrequestedSmilesRadicalError(smiles).message).join("\n")
-    );
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text))).rejects.toMatchObject({
+      name: "SmilesListPasteError",
+      failures: ["n1cccc1", "c1cccc1"].map((input) => ({
+        input, error: new ocl.UnrequestedSmilesRadicalError(input).message
+      }))
+    } satisfies Partial<SmilesListPasteError>);
   });
 
   it.each([
