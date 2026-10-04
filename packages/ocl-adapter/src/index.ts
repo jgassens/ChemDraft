@@ -3,10 +3,12 @@
  *
  * Implements the engine-neutral `ConformerGenerator3D` contract from
  * `@chemdraft/chemistry-adapter` using OpenChemLib's `ConformerGenerator` +
- * `ForceFieldMMFF94`. Loaded in the background conformer worker by its idle
- * warm-up shortly after the document window opens, or on the first spin if that
- * comes first. OCL's ~2.3 MB (1.0 MB JS + 1.3 MB torsion resources) does not
- * delay app startup.
+ * `ForceFieldMMFF94`. The conformer worker loads it, including ~1.3 MB of torsion
+ * resources, during idle warm-up shortly after the document window opens or on the
+ * first spin. The document window also preloads the JS module on the main thread
+ * with a non-blocking dynamic import for the stereo perceiver used by rotate
+ * commits. OCL totals ~2.3 MB (1.0 MB JS + 1.3 MB torsion resources); neither path
+ * blocks the window from opening.
  *
  * Atom-identity discipline (verified against the live engine):
  *   1. Parse the molfile -> an OCL `Molecule` (OCL perceives drawn wedge stereo).
