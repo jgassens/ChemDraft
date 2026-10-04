@@ -1,11 +1,11 @@
 {
-  "version": "0.3.8",
-  "notes": "ChemDraft can now send bug and crash reports straight from the app.\n\n- **Report a Bug.** Help ▸ Report a Bug… opens your own email program with a report already started, including your ChemDraft version and computer type. Nothing is sent until you press Send.\n- **Crash reports.** If ChemDraft runs into an error, or shut down last time because of an internal error, it offers to email a crash report with the details filled in. You can read the email before sending, or say Not Now.\n- **Plain window title.** The released app's window title now reads simply \"ChemDraft\".",
-  "pub_date": "2026-10-04T12:18:00.366Z",
+  "version": "0.3.9",
+  "notes": "ChemDraft now explains analyses that can't run, and is stricter about chemistry it can't read faithfully.\n\n- **Analyzer notices.** When an analysis can't run (for example Analyze ▸ Analyze Mass / m/z with no molecule, or two, selected), a notice at the bottom left now says why. It stays up while you point at it, and closes on its own or with ×.\n- **Clearer SMILES paste errors.** When pasted SMILES can't be drawn, ChemDraft pastes it as text and the status line says why.\n- **No invented radicals.** If RDKit is unavailable and ChemDraft reads SMILES with OpenChemLib instead, an aromatic ring that can't be drawn as written (for example n1cccc1, which needs [nH]) is refused with an explanation instead of being drawn with an unpaired electron.\n- **Unknown bonds are not exported as single bonds.** A bond whose order ChemDraft doesn't know (for example from an imported file) now stops SMILES export for that structure and names the bond. Structure-list exports report it and continue with the rest.\n- **Less work at startup with OpenChemLib.** If Spin 3D is set to OpenChemLib, ChemDraft no longer loads RDKit in the background after launch.\n- **Update notes read cleanly.** The update dialog now shows release notes as plain text, without stray formatting marks.",
+  "pub_date": "2026-10-04T22:59:21.741Z",
   "platforms": {
     "windows-x86_64-nsis": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSM0I4K2pYUVl1V2RMaTgvTXZyL3lVTVAvR2NBK2I5eFNkSTRwTFpZRHFEWVJTVEFyMk92ZmovcG9JaUVNVVF0U05HbitETmFhZjNHbWVJeWNITTdzZC9vZ2dnYkpwVXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMTE2MTk3CWZpbGU6Q2hlbURyYWZ0XzAuMy44X3g2NC1zZXR1cC5leGUKOFJlZkpuRGoxWjRQRm83RGVCQWRDajBBYU9TbEhlRFFQa0FLeDNRVFhFc0YxSnEza2h0WnlvV0w0d2c3ZEtHRXVVQlM3Q1h1aDVUR0hsRFdSQjJVQmc9PQo=",
-      "url": "https://github.com/jgassens/ChemDraft/releases/download/v0.3.8/ChemDraft_0.3.8_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSM0I4K2pYUVl1V1Q5aGUrczF4VTErUHQrbDhSRjNIejExci81Y1pqVEZTOWM4aHRhUlovMU1yUXQxRlNsT1o5TndEaFBiVjlCZE5raXAwSzFGSHhWUlc4cVdaOXlPQXdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMTU0NjY0CWZpbGU6Q2hlbURyYWZ0XzAuMy45X3g2NC1zZXR1cC5leGUKVVlSb0R6WE5EVTJ6eVJ5TUVSSTJLSmR6aHlXSjFCdVEzcm5OMjgzN3NoNVh5RldyUThwc0hzdi9CazBjTXpncGVvQVFxd2dONm1WV2FCYlhaMUZ5Q1E9PQo=",
+      "url": "https://github.com/jgassens/ChemDraft/releases/download/v0.3.9/ChemDraft_0.3.9_x64-setup.exe"
     }
   }
 }
