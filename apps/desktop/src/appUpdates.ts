@@ -12,6 +12,8 @@
  * and File ▸ Check for Updates… for a check on demand.
  */
 
+import { updateNotesPlainText } from "./updateNotesText";
+
 /** Only the released app updates itself. A branch build ("ChemDraft (dev)", its own identifier) or a
  *  `pnpm dev` session must never replace itself with a release. */
 export const STABLE_APP_IDENTIFIER = "org.chemdraft.desktop";
@@ -50,7 +52,7 @@ export function autoCheckDue(lastCheckedAt: number | undefined, now: number, int
 }
 
 export function updatePromptText(update: { version: string; currentVersion: string; body?: string }): string {
-  const notes = update.body?.trim();
+  const notes = update.body?.trim() ? updateNotesPlainText(update.body.trim()) : undefined;
   return [
     `ChemDraft ${update.version} is available — you have ${update.currentVersion}.`,
     notes ? `\n${notes}\n` : "",

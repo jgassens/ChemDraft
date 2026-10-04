@@ -77,6 +77,7 @@ describe("prompt and progress text", () => {
     expect(text).toContain("Faster export.");
     expect(text).toContain("saves your document");
     expect(updatePromptText({ version: "0.3.6", currentVersion: "0.3.5", body: "  " })).not.toContain("\n\n\n");
+    expect(updatePromptText({ version: "0.3.6", currentVersion: "0.3.5", body: "**Important.**" })).not.toContain("**");
   });
 
   it("reports percent when the size is known, and megabytes when it is not", () => {
