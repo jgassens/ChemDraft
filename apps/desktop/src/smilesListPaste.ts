@@ -115,19 +115,15 @@ async function depictSmilesListCandidates(
   let parsedFirstTokenLines = 0;
   for (const [index, candidate] of candidates.entries()) {
     let parsed: Awaited<ReturnType<typeof depictSmilesForPaste>> = undefined;
-    let failed = false;
     try {
       parsed = await depictSmilesForPaste(candidate.token);
     } catch (error) {
       if (!isSmilesRadicalRefusal(error)) throw error;
       failures.push({ input: candidate.token, error: error.message });
-      failed = true;
     }
     if (parsed) {
       entries.push({ smiles: candidate.token, depiction: parsed.depiction });
       if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
-    } else if (!failed) {
-      failures.push({ input: candidate.token, error: `Could not parse SMILES: ${candidate.token}` });
     }
     if (candidates.length > 20 && (index + 1) % 10 === 0) {
       onProgress?.(index + 1, candidates.length);

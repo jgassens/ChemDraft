@@ -75,12 +75,12 @@ describe("depictSmilesListForPaste", () => {
     expect(result?.skipped).toBe(0);
   });
 
-  it("counts an unparseable SMILES-like item as a named failure", async () => {
+  it("counts an unparseable SMILES-like item as skipped", async () => {
     const text = "CCO\nC1CC\nCCN\nCCC";
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN", "CCC"]);
-    expect(result?.failures).toEqual([{ input: "C1CC", error: "Could not parse SMILES: C1CC" }]);
-    expect(result?.skipped).toBe(0);
+    expect(result?.failures).toEqual([]);
+    expect(result?.skipped).toBe(1);
   });
 
   it("preserves refusal messages even when no list entry can be drawn", async () => {
@@ -117,6 +117,14 @@ describe("depictSmilesListForPaste", () => {
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN"]);
     expect(result?.skipped).toBe(6);
+  });
+
+  it("counts all-caps names in an accepted list as skipped", async () => {
+    const text = "CCO ETHANOL\nCCN ETHYLAMINE";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN"]);
+    expect(result?.failures).toEqual([]);
+    expect(result?.skipped).toBe(2);
   });
 
   it.each([

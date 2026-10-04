@@ -7946,7 +7946,7 @@ export function MainWindow({
 
       if (!isDesktopRuntime()) {
         downloadExportResult(filename, result);
-        setStatus(formatExportStatus(descriptor.menuLabel, result.warnings));
+        setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
         setExportDialog(undefined);
         return;
       }
@@ -7964,7 +7964,7 @@ export function MainWindow({
 
       await writeNativeExportResult(path, result);
       lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setStatus(formatExportStatus(descriptor.menuLabel, result.warnings));
+      setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
       setExportDialog(undefined);
     } catch (error) {
       setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -27832,10 +27832,14 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
-export function formatExportStatus(label: string, warnings: readonly { message: string; severity?: string }[]): string {
+export function formatExportStatus(
+  label: string,
+  format: ExportFormatId,
+  warnings: readonly { message: string; severity?: string }[]
+): string {
   const failedStructures = warnings.filter((warning) => warning.severity === "error");
   if (failedStructures.length > 0) {
-    const withoutSmiles = label.toLowerCase() === "sdf" || label.toLowerCase().includes("sdfile");
+    const withoutSmiles = format === "sdf";
     const outcome = withoutSmiles ? "exported without SMILES" : "could not be written";
     return `Exported ${label} with ${warnings.length} warning(s); ${failedStructures.length} structure${failedStructures.length === 1 ? "" : "s"} ${outcome}: ${failedStructures[0].message}`;
   }

@@ -50,7 +50,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     vi.unstubAllGlobals();
   });
 
-  async function paste(text: string, type = "text/plain", failureInput = "n1cccc1") {
+  async function paste(text: string, type = "text/plain", statusNeedle = new UnrequestedSmilesRadicalError("n1cccc1").message) {
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", {
       value: { types: [type], getData: (requested: string) => requested === type ? text : "" }
@@ -59,11 +59,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(event.defaultPrevented).toBe(true);
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
-      expect(container.querySelector('[role="status"]')?.textContent).toContain(
-        failureInput === "n1cccc1"
-          ? new UnrequestedSmilesRadicalError(failureInput).message
-          : failureInput
-      );
+      expect(container.querySelector('[role="status"]')?.textContent).toContain(statusNeedle);
     });
     return container.querySelector('[role="status"]')?.textContent;
   }
@@ -92,10 +88,19 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   });
 
-  it("mentions the C1CC parse failure while placing the other list entries", async () => {
-    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "C1CC");
-    expect(status).toContain("1 item failed: Could not parse SMILES: C1CC");
+  it("counts C1CC as skipped while placing the other list entries", async () => {
+    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "1 token skipped");
+    expect(status).not.toContain("failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
+  });
+
+  it("pastes prose with all-caps acronyms as editable text without a failure notice", async () => {
+    const status = await paste("The NMR and HPLC data for THF", "text/plain", "Pasted editable text");
+    expect(status).toBe("Pasted editable text");
+    expect(status).not.toContain("could not be placed");
+    expect(status).not.toContain("failed");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(1);
   });
 
   it("reports both failures and the first reason when the whole list falls back to text", async () => {
