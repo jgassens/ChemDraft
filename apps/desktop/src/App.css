@@ -5596,6 +5596,54 @@ textarea:focus-visible,
   overflow-wrap: anywhere;
 }
 
+/* An analyzer that refused its input: sits just above the status line it amplifies, and above the
+   pending-proposals badge when both are showing (that badge occupies the same corner). */
+.analyzer-notice {
+  position: absolute;
+  bottom: 28px;
+  left: 8px;
+  z-index: var(--cd-z-floating-panel);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(420px, calc(100% - 16px));
+  border: 1px solid var(--cd-danger-strong);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--cd-surface, #fdfcf8);
+  color: var(--cd-text, #2c2a26);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+  padding: 6px 6px 6px 10px;
+}
+
+.patch-review-tray ~ .analyzer-notice {
+  bottom: 60px;
+}
+
+.analyzer-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.analyzer-notice-plugin {
+  font-weight: 600;
+}
+
+.analyzer-notice-dismiss {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--cd-text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
 /* A floating report window is undecorated, so its title strip is the only way to move it: give it a
    real title bar's height and weight rather than the compact palette strip. It reuses the palette
    title (stoplight close on the left) laid out as a row: the palette label is display:block at full
