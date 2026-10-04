@@ -100,6 +100,18 @@ function statusText(): string {
   return container!.querySelector('[role="status"]')?.textContent ?? "";
 }
 
+/** Plugin commands settle asynchronously (a queued run, then the plugin's own awaits). */
+async function waitForElement(selector: string): Promise<Element> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const element = container!.querySelector(selector);
+    if (element) return element;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  throw new Error(`Timed out waiting for ${selector}`);
+}
+
 async function click(element: Element): Promise<void> {
   await act(async () => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -272,9 +284,18 @@ describe("MainWindow bundled plugin integration", () => {
     expect(analyzeItems.length).toBeGreaterThan(0);
     expect(analyzeItems.some((item) => /nmr/i.test(item.dataset.commandId ?? "") || /nmr/i.test(item.textContent ?? ""))).toBe(false);
 
-    // Invoking with nothing selected must not crash or open a panel (it returns ok:false).
+    // Invoking with nothing selected must not crash or open a panel (it returns ok:false) — and the
+    // refusal must be visible, not only a status-line message (a refused run was once reported as
+    // "the report window never opens").
     await click(massItem!);
     expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
+    const notice = await waitForElement(`[data-analyzer-notice="${massFragmentManifest.id}"]`);
+    expect(notice.getAttribute("role")).toBe("alert");
+    expect(notice.textContent).toContain(massFragmentManifest.name);
+    expect(notice.textContent).toContain("Select one molecule before analyzing its mass.");
+    expect(statusText()).toContain("Plugin command failed: Select one molecule before analyzing its mass.");
+    await click(notice.querySelector('button[aria-label="Dismiss"]')!);
+    expect(container.querySelector("[data-analyzer-notice]")).toBeNull();
 
     // The plugin is registered and listed in the bundled-plugin diagnostics — where no NMR plugin appears.
     await click(container.querySelector('button[data-menu-section="analyze"]')!);

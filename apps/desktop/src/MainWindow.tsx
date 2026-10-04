@@ -113,6 +113,7 @@ import {
   describePatchFailure,
   type PluginWriteGate
 } from "./plugins/applyPluginDocumentPatch";
+import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNotice";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
@@ -8701,6 +8702,18 @@ export function MainWindow({
   // last; ordinary commands remain serialized only with repeats of that same command.
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
+  // A refused analyzer run opens no report window; this notice says why (see AnalyzerNotice).
+  const [analyzerNotice, setAnalyzerNotice] = useState<AnalyzerNotice | undefined>(undefined);
+  const analyzerNoticeIdRef = useRef(0);
+  const showAnalyzerNotice = useCallback((pluginId: string, pluginName: string, message: string) => {
+    setAnalyzerNotice({ id: ++analyzerNoticeIdRef.current, pluginId, pluginName, message });
+  }, []);
+  const dismissAnalyzerNotice = useCallback((id: number) => {
+    setAnalyzerNotice((current) => (current?.id === id ? undefined : current));
+  }, []);
+  const clearAnalyzerNoticeFor = useCallback((pluginId: string) => {
+    setAnalyzerNotice((current) => (current?.pluginId === pluginId ? undefined : current));
+  }, []);
 
   // Every canvas session that previews from a snapshot of the document taken when it began, then commits
   // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
@@ -9316,8 +9329,13 @@ export function MainWindow({
           const failure = pluginCommandFailure(result);
           if (failure) {
             setStatus(`Plugin command failed: ${failure}`);
-          } else if (selectionWarnings.length) {
-            setStatus([...new Set(selectionWarnings)].join(" "));
+            if (analyzerOwned && owner) showAnalyzerNotice(owner.id, owner.name, failure);
+          } else {
+            // A run that went through supersedes whatever this analyzer refused earlier.
+            if (analyzerOwned && owner) clearAnalyzerNoticeFor(owner.id);
+            if (selectionWarnings.length) {
+              setStatus([...new Set(selectionWarnings)].join(" "));
+            }
           }
         })
         .catch((error: unknown) => {
@@ -9326,6 +9344,7 @@ export function MainWindow({
           }
           const message = error instanceof Error ? error.message : String(error);
           setStatus(`Plugin command failed: ${message}`);
+          if (analyzerOwned && owner) showAnalyzerNotice(owner.id, owner.name, message);
         });
       let tracked: Promise<void>;
       tracked = run.finally(() => {
@@ -9347,6 +9366,7 @@ export function MainWindow({
     applyMoleculeInspectorCommand,
     applyObjectStyleCommand,
     applyTextStyleCommand,
+    clearAnalyzerNoticeFor,
     exportMoleculeInspectorTemplate,
     importMoleculeInspectorTemplate,
     invokePluginCommand,
@@ -9354,7 +9374,8 @@ export function MainWindow({
     pluginRuntime.diagnostics,
     pluginRuntime.plugins,
     publishAnalysisWindow,
-    restoreDocumentHistory
+    restoreDocumentHistory,
+    showAnalyzerNotice
   ]);
 
   invokeCommandRef.current = invoke;
@@ -17499,6 +17520,7 @@ export function MainWindow({
             onReview={reopenProposalReview}
           />
         )}
+        <AnalyzerNoticeBanner notice={analyzerNotice} onDismiss={dismissAnalyzerNotice} />
         {customizeToolbarsOpen ? (
           <CustomizeToolbarsDialog
             baseToolsets={toolbarCatalog.baseToolsets()}
