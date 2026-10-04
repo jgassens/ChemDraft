@@ -4536,7 +4536,7 @@ export function MainWindow({
   // delay. The first real embed then runs at its floor (no module-load/first-call cost),
   // which shrinks the window in which an eager Spin 3D click waits on a cold embed.
   useEffect(() => {
-    const warm = (): void => { getConformerWorkerClient()?.warmup({ sessionId: `warmup:${Date.now()}` }); };
+    const warm = (): void => { getConformerWorkerClient()?.warmup(spin3dSettingsRef.current.enginePreference, { sessionId: `warmup:${Date.now()}` }); };
     const win = globalThis as typeof globalThis & {
       requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
@@ -4588,7 +4588,7 @@ export function MainWindow({
       if (!molfile) return;
       if (lastSpinPrefetchRef.current === molfile) return;
       lastSpinPrefetchRef.current = molfile;
-      client.warmup({ sessionId: `warmup:${Date.now()}` });
+      client.warmup(spin3dSettings.enginePreference, { sessionId: `warmup:${Date.now()}` });
       const options = conformerOptionsForSpin3d(spin3dSettings, molecule.atoms.length);
       client.prefetch(molfile, molecule.atoms.length, options, spin3dSettings.enginePreference, { sessionId: `prefetch:${molecule.id}:${Date.now()}` });
     }, 120);

@@ -29,15 +29,14 @@ claims.
 Importing this package never instantiates RDKit. The adapter holds a registered
 `RdkitModuleLoader`; the engine is created only when `ensureRdkit` calls that loader,
 and the resulting module is cached. AGENTS.md §13 Security, errors, and performance
-asks that RDKit load lazily and never at startup.
+asks not to load heavy engines at startup unless required, and to prefer lazy loading.
 
 One path starts it soon after launch. When the document window opens,
 [`apps/desktop/src/MainWindow.tsx`](../../apps/desktop/src/MainWindow.tsx) schedules a
 conformer-worker warm-up with `requestIdleCallback` (1500 ms timeout; a 600 ms timer
-where that call is missing). The warm-up calls `currentEngine()` with the default
-`auto` preference, whatever engine the user has chosen, and that calls `ensureRdkit`.
-So RDKit is created in the conformer worker, off the main thread, within about 1.5
-seconds of the window opening and without any user action.
+where that call is missing). The warm-up runs off the main thread after the window
+is up and passes the user's Spin 3D engine preference to `currentEngine`. It calls
+`ensureRdkit` only for `auto` or `rdkit`; with `openchemlib` it warms OpenChemLib only.
 
 In desktop browser and Web Worker code,
 [`apps/desktop/src/rdkitWasmLoader.ts`](../../apps/desktop/src/rdkitWasmLoader.ts)
@@ -53,7 +52,7 @@ request, rather than at module scope; its warm-up and analysis requests then cal
 `analyzeStructure`. The module remains resident in that worker after its first
 initialization. [`apps/desktop/src/conformerWorker.ts`](../../apps/desktop/src/conformerWorker.ts)
 calls `registerRdkitWasmLoader()` at worker module scope. Its `ensureRdkit` probe is
-triggered by the document-window idle warm-up and by Spin 3D conformer requests with
+triggered by the document-window idle warm-up or Spin 3D conformer requests only with
 the `auto` or `rdkit` preference while RDKit has not yet been probed; initialization is
 deferred until then.
 

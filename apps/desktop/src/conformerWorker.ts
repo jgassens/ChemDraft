@@ -157,7 +157,7 @@ function queueDepth(): number {
   return pendingGenerates.length +
     (pendingPrefetch ? 1 : 0) +
     (pendingRefine ? 1 : 0) +
-    (pendingWarmup ? 1 : 0);
+    pendingWarmups.size;
 }
 
 /** Human-readable composition for the debugger, so "queue 3" never reads as three
@@ -167,7 +167,7 @@ function queueBreakdown(): string {
   if (pendingGenerates.length > 0) parts.push(`${pendingGenerates.length} generate`);
   if (pendingPrefetch) parts.push("1 prefetch");
   if (pendingRefine) parts.push("1 idle refine");
-  if (pendingWarmup) parts.push("1 warmup");
+  if (pendingWarmups.size > 0) parts.push(`${pendingWarmups.size} warmup`);
   return parts.length > 0 ? `queue ${queueDepth()} = ${parts.join(" · ")}` : "queue 0";
 }
 
@@ -209,13 +209,13 @@ function postOclTrace(request: ConformerWorkRequest, event: Parameters<typeof cr
 //                  refine thunk in the cache and refine on demand if actually spun —
 //                  browsing across N molecules must not park N multi-second jobs
 //                  (that was the `worker.submit queue 3/4` backlog).
-//   • warmup     → coalesced to one, lowest priority (a waiting generate warms OCL itself)
+//   • warmup     → coalesced per preference, lowest priority; engine changes keep their job
 let running = false;
 const pendingGenerates: ConformerWorkRequest[] = [];
 let pendingPrefetch: ConformerWorkRequest | null = null;
 // molfile with a cached entry awaiting idle refinement, plus the mode to refine it in
 let pendingRefine: { molfile: string; options?: Generate3DConformerOptions } | null = null;
-let pendingWarmup: ConformerWorkRequest | null = null;
+const pendingWarmups = new Map<Spin3dEnginePreference, ConformerWorkRequest>();
 
 type WorkItem =
   | { kind: "request"; request: ConformerWorkRequest }
@@ -234,9 +234,10 @@ function takeNextWorkItem(): WorkItem | null {
     pendingRefine = null;
     return { kind: "refine", molfile: refineMolfile, options: refineOptions };
   }
-  if (pendingWarmup) {
-    const warmup = pendingWarmup;
-    pendingWarmup = null;
+  const nextWarmup = pendingWarmups.entries().next().value;
+  if (nextWarmup) {
+    const [preference, warmup] = nextWarmup;
+    pendingWarmups.delete(preference);
     return { kind: "request", request: warmup };
   }
   return null;
@@ -411,7 +412,9 @@ function submit(request: ConformerWorkRequest): void {
     }
     pendingPrefetch = request;
   } else {
-    pendingWarmup = request;
+    // Keep different preferences: the client dedupes each after dispatch, so dropping one
+    // here could leave that engine cold even when the user switches back to it later.
+    pendingWarmups.set(request.enginePreference ?? "auto", request);
   }
   postTrace(request, {
     kind: "worker",
@@ -712,7 +715,7 @@ async function runWarmup(request: ConformerWorkRequest): Promise<void> {
   try {
     // Warm whichever engine is in effect first, so the first real embed skips its
     // first-call cost (RDKit: WASM module init + JIT; OCL: torsion tables + JIT).
-    const engine = await currentEngine();
+    const engine = await currentEngine(request.enginePreference);
     if (engine === "rdkit-wasm") {
       await rdkitGenerate3DConformerProgressive({ molfile: warmupMolfile }, { optimize: "none" });
     }
