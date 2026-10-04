@@ -181,7 +181,8 @@ import {
   phase4Timestamp,
   scaleParsedMolfileAtoms,
   SMILES_PASTE_SOURCE,
-  stereoPerceptionMolfile
+  stereoPerceptionMolfile,
+  tryNativeSingleBondGraphSmiles
 } from "@chemdraft/document-workflow-core";
 
 // The pure document-building helpers live in @chemdraft/document-workflow-core, so the
@@ -18153,13 +18154,16 @@ function refreshNativeSingleBondGraph(
 ): MoleculeObject {
   // Clear import hints before deriving labels, formula, validation and the stored structure.
   atoms = clearChangedAtomHydrogenHints(molecule, atoms, bonds);
+  const storedSmiles = tryNativeSingleBondGraphSmiles(atoms, bonds);
   return normalizeNativeMoleculeGeometry({
     ...molecule,
     // `structure` is re-derived as SMILES here, so the format must say so. Leaving an imported
     // molfile format in place would hand SMILES text to a molfile parser — the plugin selection
     // snapshot and the Ketcher adapter both choose their parser from this field.
     structureFormat: "smiles",
-    structure: nativeSingleBondGraphSmiles(atoms, bonds),
+    // The schema requires a string. Empty means unavailable, never a stale or single-collapsed
+    // SMILES; export recomputes from the graph and reports the unknown bond ids.
+    structure: "smiles" in storedSmiles ? storedSmiles.smiles : "",
     chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
     atoms: [...atoms],
     bonds: [...bonds]

@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import * as ocl from "@chemdraft/ocl-adapter";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
-import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
 
@@ -38,6 +38,12 @@ describe("depictSmilesForPaste", () => {
     expect(result?.stereoCount).toBe(0);
   });
 
+  it.each(["n1cccc1", "c1cccc1"])("propagates the specific chemistry refusal for %s", async (smiles) => {
+    await expect(depictSmilesForPaste(smiles)).rejects.toThrow(
+      new ocl.UnrequestedSmilesRadicalError(smiles).message
+    );
+  });
+
   it("preserves structured atom charges, bond orders and wedges on V2000 reparse failure", async () => {
     const fallback = ocl.depictSmiles2D("C[C@H](F)Cl");
     fallback.molfile = "overflowed compatibility molfile";
@@ -59,6 +65,34 @@ describe("depictSmilesForPaste", () => {
 });
 
 describe("depictSmilesListForPaste", () => {
+  it("records each refused ring and continues with later valid entries", async () => {
+    const text = "CCO\nn1cccc1\nc1cccc1\n[nH]1cccc1\nc1ccccc1\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "[nH]1cccc1", "c1ccccc1", "CCN"]);
+    expect(result?.failures).toEqual(["n1cccc1", "c1cccc1"].map((smiles) => ({
+      input: smiles, error: new ocl.UnrequestedSmilesRadicalError(smiles).message
+    })));
+    expect(result?.skipped).toBe(0);
+  });
+
+  it("counts an unparseable SMILES-like item as skipped", async () => {
+    const text = "CCO\nC1CC\nCCN\nCCC";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN", "CCC"]);
+    expect(result?.failures).toEqual([]);
+    expect(result?.skipped).toBe(1);
+  });
+
+  it("preserves refusal messages even when no list entry can be drawn", async () => {
+    const text = "n1cccc1\nc1cccc1";
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text))).rejects.toMatchObject({
+      name: "SmilesListPasteError",
+      failures: ["n1cccc1", "c1cccc1"].map((input) => ({
+        input, error: new ocl.UnrequestedSmilesRadicalError(input).message
+      }))
+    } satisfies Partial<SmilesListPasteError>);
+  });
+
   it.each([
     "CCO\nc1ccccc1\nCC(=O)O",
     "CCO c1ccccc1 CC(=O)O",
@@ -83,6 +117,14 @@ describe("depictSmilesListForPaste", () => {
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN"]);
     expect(result?.skipped).toBe(6);
+  });
+
+  it("counts all-caps names in an accepted list as skipped", async () => {
+    const text = "CCO ETHANOL\nCCN ETHYLAMINE";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "CCN"]);
+    expect(result?.failures).toEqual([]);
+    expect(result?.skipped).toBe(2);
   });
 
   it.each([

@@ -127,11 +127,11 @@ export async function structureFromSmilesForPlugin(
   } catch {
     try {
       depiction = pastedStructureDepictionFromMolfile(ocl.depictSmiles2D(request.smiles).molfile);
-    } catch {
+    } catch (error) {
       return {
         available: true,
         built: false,
-        reason: `No 2D structure could be generated for "${request.smiles}".`
+        reason: structureGenerationFailureReason(request.smiles, error)
       };
     }
   }
@@ -159,6 +159,16 @@ export async function structureFromSmilesForPlugin(
 
   RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
   return { available: true, built: true, object };
+}
+
+function structureGenerationFailureReason(smiles: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  // OCL's parser exceptions include a Java stack trace. The first line identifies the parse
+  // problem; the rest is implementation detail that would overwhelm a plugin's status surface.
+  const specificMessage = error instanceof Error && error.name === "UnrequestedSmilesRadicalError"
+    ? message
+    : message.split(/\r\n|\r|\n/, 1)[0].trim();
+  return `No 2D structure could be generated for "${smiles}": ${specificMessage || "The depiction engine did not provide a reason."}`;
 }
 
 /**

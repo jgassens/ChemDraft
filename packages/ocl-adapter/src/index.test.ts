@@ -184,6 +184,40 @@ describe("ocl-adapter — 3D conformer of a chiral molecule", () => {
 });
 
 describe("ocl-adapter — depictSmiles2D", () => {
+  it.each(["n1cccc1", "c1cccc1", "n1cccc1.[CH3]", "[CH3:5].c1cccc1", "c1ccc[cH]1"])(
+    "refuses unrequested radicals in %s, including beside unrelated bracket atoms",
+    (smiles) => {
+      expect(() => depictSmiles2D(smiles)).toThrow(
+        `OpenChemLib could not read SMILES "${smiles}": reading it would invent an unpaired electron. ` +
+        "Its aromatic ring may not be able to be given alternating single and double bonds. " +
+        "Check the ring's hydrogens (for example [nH])."
+      );
+    }
+  );
+
+  it.each(["[nH]1cccc1", "c1ccccc1"])("keeps valid aromatic SMILES %s radical-free", (smiles) => {
+    const depiction = depictSmiles2D(smiles);
+    const parsed = OCL.Molecule.fromMolfile(depiction.molfile);
+    expect(parsed.getIDCode()).toBe(OCL.Molecule.fromSmiles(smiles).getIDCode());
+    for (let atom = 0; atom < parsed.getAllAtoms(); atom += 1) {
+      expect(parsed.getAtomRadical(atom)).toBe(0);
+    }
+  });
+
+  it.each(["C[CH2]", "C[CH2:7]", "[H]C[CH2]", "[CH3].[nH]1cccc1"])(
+    "preserves explicitly requested bracket radicals in %s",
+    (smiles) => {
+      const depiction = depictSmiles2D(smiles);
+      const parsed = OCL.Molecule.fromMolfile(depiction.molfile);
+      expect(parsed.getIDCode()).toBe(OCL.Molecule.fromSmiles(smiles).getIDCode());
+      const radicalAtoms = Array.from({ length: parsed.getAllAtoms() }, (_, atom) => atom)
+        .filter((atom) => parsed.getAtomRadical(atom) !== 0);
+      expect(radicalAtoms).toHaveLength(1);
+      expect(parsed.getAtomRadical(radicalAtoms[0])).toBe(OCL.Molecule.cAtomRadicalStateD);
+      expect(parsed.getAtomLabel(radicalAtoms[0])).toBe("C");
+    }
+  );
+
   it("lays out a chiral SMILES with a wedge bond and atom-aligned coordinates", () => {
     const dep = depictSmiles2D("C[C@H](F)Cl");
     expect(dep.atoms).toHaveLength(4);
@@ -515,5 +549,64 @@ describe("abbreviated labels in perception molfiles", () => {
   it("ranks two different abbreviations apart, and two equal ones together", () => {
     expect(descriptorOf(["Ph", "Et"], "rgroup")).toMatch(/^[RS]$/);
     expect(descriptorOf(["Ph", "Ph"], "rgroup")).toBe("unspecified");
+  });
+});
+
+describe("ocl-adapter — delocalized bonds are never collapsed to single (AGENTS.md §6.18)", () => {
+  /** A V2000 ring whose every bond is molfile type 4 (aromatic). OCL keeps these as
+   *  cBondTypeDelocalized through coordinate invention; getBondOrder alone reports them as 1. */
+  function aromaticRingMolfile(elements: readonly string[]): string {
+    const n = elements.length;
+    const lines = ["", "  delocalized", "", `${String(n).padStart(3)}${String(n).padStart(3)}  0  0  0  0  0  0  0  0999 V2000`];
+    elements.forEach((element, i) => {
+      const angle = (2 * Math.PI * i) / n;
+      const x = Math.cos(angle).toFixed(4).padStart(10);
+      const y = Math.sin(angle).toFixed(4).padStart(10);
+      lines.push(`${x}${y}${(0).toFixed(4).padStart(10)} ${element.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`);
+    });
+    for (let i = 0; i < n; i++) {
+      lines.push(`${String(i + 1).padStart(3)}${String(((i + 1) % n) + 1).padStart(3)}  4  0`);
+    }
+    lines.push("M  END");
+    return lines.join("\n");
+  }
+
+  it.each([
+    ["c1ccccc1"],
+    ["c1ccncc1"],
+    ["c1cc[nH]c1"],
+    ["c1ccc2ccccc2c1"],
+    ["c1ccc2[nH]ccc2c1"]
+  ])("SMILES %s comes back Kekulé: definite single/double orders, no aromatic", (smiles) => {
+    const dep = depictSmiles2D(smiles);
+    const orders = dep.bonds.map((bond) => bond.order);
+    expect(orders.every((order) => order === "single" || order === "double")).toBe(true);
+    expect(orders).toContain("double");
+  });
+
+  it.each([
+    ["benzene", ["C", "C", "C", "C", "C", "C"]],
+    ["pyridine", ["N", "C", "C", "C", "C", "C"]],
+    ["furan", ["O", "C", "C", "C", "C"]],
+    ["pyrrole without a stated N-H", ["N", "C", "C", "C", "C"]]
+  ])("type-4 %s molfile re-layout reports every ring bond as aromatic, never single", (_name, elements) => {
+    const molfile = aromaticRingMolfile(elements);
+    // Precondition pinned to the engine: OCL still holds the bond as delocalized with order 1.
+    const parsed = OCL.Molecule.fromMolfile(molfile);
+    parsed.inventCoordinates({ keepHydrogens: true });
+    parsed.ensureHelperArrays(OCL.Molecule.cHelperParities);
+    expect(parsed.getBondTypeSimple(0)).toBe(OCL.Molecule.cBondTypeDelocalized);
+    expect(parsed.getBondOrder(0)).toBe(1);
+
+    const dep = relayoutMolfile2D(molfile);
+    expect(dep.bonds).toHaveLength(elements.length);
+    expect(dep.bonds.every((bond) => bond.order === "aromatic")).toBe(true);
+  });
+
+  it("a Kekulé molfile keeps its definite orders through re-layout", () => {
+    const dep = relayoutMolfile2D(depictSmiles2D("c1ccccc1").molfile);
+    const orders = dep.bonds.map((bond) => bond.order);
+    expect(orders.filter((order) => order === "double")).toHaveLength(3);
+    expect(orders.filter((order) => order === "single")).toHaveLength(3);
   });
 });

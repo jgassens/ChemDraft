@@ -55,6 +55,15 @@ function moleculeName(molecule: MoleculeObject): string | undefined {
   return molecule.structure.split(/\r\n|\r|\n/, 1)[0].replace(/\t/g, " ").trim() || undefined;
 }
 
+function smilesWriteFailure(molecule: MoleculeObject, error: unknown): ExportWarning {
+  return {
+    code: "export.smiles_write_failed",
+    message: error instanceof Error ? error.message : String(error),
+    severity: "error",
+    objectId: molecule.id
+  };
+}
+
 export async function exportStructureListSdf(
   document: ChemDraftDocument,
   options: Pick<MolfileWriteOptions, "abbreviations"> = {}
@@ -80,9 +89,15 @@ export async function exportStructureListSdf(
       objectId: molecule.id
     })));
     const title = name ?? `ChemDraft molecule ${index + 1}`;
-    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, molfile);
+    let smiles: string | undefined;
+    try {
+      smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, molfile);
+    } catch (error) {
+      warnings.push(smilesWriteFailure(molecule, error));
+    }
     records.push(`${title}${molfile.slice(molfile.indexOf("\n"))}`
-      + `> <SMILES>\n${smiles}\n\n> <Index>\n${index + 1}\n\n`
+      + (smiles === undefined ? "" : `> <SMILES>\n${smiles}\n\n`)
+      + `> <Index>\n${index + 1}\n\n`
       + (name ? `> <Name>\n${name}\n\n` : "")
       + "$$$$\n");
   }
@@ -103,8 +118,12 @@ export async function exportStructureListSmi(document: ChemDraftDocument): Promi
   const computeStructureIdentifiers = molecules.length > 0 ? await loadStructureIdentifiers() : undefined;
   const lines: string[] = [];
   for (const [index, molecule] of molecules.entries()) {
-    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
-    lines.push(`${smiles}\t${moleculeName(molecule) ?? index + 1}\n`);
+    try {
+      const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+      lines.push(`${smiles}\t${moleculeName(molecule) ?? index + 1}\n`);
+    } catch (error) {
+      warnings.push(smilesWriteFailure(molecule, error));
+    }
   }
   return {
     format: descriptor.id,

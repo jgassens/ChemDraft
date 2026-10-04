@@ -287,6 +287,74 @@ function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
   return molecule;
 }
 
+describe("editing unknown-order bonds without storing lossy SMILES", () => {
+  function unknownBondDocument(twoUnknownBonds: boolean): ChemDraftDocument {
+    const base = createPhase4Document("Unknown Bond Repair");
+    const molecule: MoleculeObject = {
+      id: "mol_unknown", type: "molecule", x: 100, y: 100, width: 80, height: 20,
+      rotation: 0, style: {}, structureFormat: "smiles", structure: "CCC",
+      atoms: [
+        { id: "a1", element: "C", x: 100, y: 100, formalCharge: 0 },
+        { id: "a2", element: "C", x: 140, y: 100, formalCharge: 0 },
+        { id: "a3", element: "C", x: 180, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "unknown_left", fromAtomId: "a1", toAtomId: "a2", order: "unknown" },
+        { id: "unknown_right", fromAtomId: "a2", toAtomId: "a3", order: twoUnknownBonds ? "unknown" : "single" }
+      ],
+      superatoms: [], rGroups: []
+    };
+    return applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+  }
+
+  it("edits a known bond while an unknown bond remains, clearing stale SMILES", async () => {
+    const document = unknownBondDocument(false);
+    const edited = setNativeBondOrder(document, "unknown_right", "double");
+    const molecule = selectedMolecule(edited);
+    expect(molecule.structureFormat).toBe("smiles");
+    expect(molecule.structure).toBe("");
+    expect(molecule.atoms).toEqual(selectedMolecule(document).atoms);
+    expect(molecule.bonds).toMatchObject([
+      { id: "unknown_left", order: "unknown" }, { id: "unknown_right", order: "double" }
+    ]);
+    expect(selectedMolecule(document).structure).toBe("CCC");
+    expect(selectedMolecule(deserializeDocument(serializeDocument(edited))).structure).toBe("");
+    await expect(workflowCore.moleculeSmiles(molecule, 0, [], undefined)).rejects.toThrow(
+      "Cannot write SMILES: bond unknown_left has an unknown bond order."
+    );
+  });
+
+  it("repairs two unknown bonds one at a time and restores SMILES only after both repairs", async () => {
+    const document = unknownBondDocument(true);
+    await expect(workflowCore.moleculeSmiles(selectedMolecule(document), 0, [], undefined)).rejects.toThrow(
+      "Cannot write SMILES: bonds unknown_left, unknown_right have an unknown bond order."
+    );
+
+    const firstRepair = setNativeBondOrder(document, "unknown_left", "double");
+    const partiallyRepaired = selectedMolecule(firstRepair);
+    expect(partiallyRepaired.structure).toBe("");
+    expect(partiallyRepaired.bonds).toMatchObject([
+      { id: "unknown_left", order: "double" }, { id: "unknown_right", order: "unknown" }
+    ]);
+    await expect(workflowCore.moleculeSmiles(partiallyRepaired, 0, [], undefined)).rejects.toThrow(
+      "Cannot write SMILES: bond unknown_right has an unknown bond order."
+    );
+
+    const secondRepair = setNativeBondOrder(firstRepair, "unknown_right", "double");
+    const repaired = selectedMolecule(secondRepair);
+    expect(repaired.structure).toBe("C=C=C");
+    expect(repaired.bonds).toMatchObject([
+      { id: "unknown_left", order: "double" }, { id: "unknown_right", order: "double" }
+    ]);
+    expect(repaired.chemistry).toMatchObject({ formula: "C3H4", atomCount: 3, bondCount: 2, totalCharge: 0 });
+    expect(OCL.Molecule.fromSmiles(repaired.structure).getMolecularFormula().formula).toBe("C3H4");
+    await expect(workflowCore.moleculeSmiles(repaired, 0, [], undefined)).resolves.toBe("C=C=C");
+  });
+});
+
 function moleculeById(document: ChemDraftDocument, objectId: string): MoleculeObject {
   const molecule = document.pages
     .flatMap((page) => page.objects)
@@ -15355,7 +15423,7 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
     expect(reparse(smiles)).toEqual({ formula: "C120H82", ringCount: 20 });
   });
 
-  it("writes an unknown-order chain bond as single and reports it, never silently", () => {
+  it("refuses an unknown-order chain bond and names it", () => {
     const atoms: MoleculeAtom[] = [
       { id: "u1", element: "C", x: 0, y: 0, formalCharge: 0 },
       { id: "u2", element: "C", x: 10, y: 0, formalCharge: 0 },
@@ -15366,10 +15434,10 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
       { id: "ub2", fromAtomId: "u2", toAtomId: "u3", order: "single" }
     ];
     const warnings: string[] = [];
-    const smiles = nativeSingleBondGraphSmiles(atoms, bonds, warnings);
-    expect(smiles).toBe("CCC");
-    expect(reparse(smiles).formula).toBe("C3H8");
-    expect(warnings).toEqual(["1 bond of unknown order written to SMILES as single."]);
+    expect(() => nativeSingleBondGraphSmiles(atoms, bonds, warnings)).toThrow(
+      "Cannot write SMILES: bond ub1 has an unknown bond order."
+    );
+    expect(warnings).toEqual([]);
   });
 
   it("linearizes fused naphthalene into a two-ring SMILES that OpenChemLib reparses to C10H8", () => {

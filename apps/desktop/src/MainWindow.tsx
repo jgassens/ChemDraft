@@ -62,6 +62,7 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
   createToolsetToggleCommandId,
@@ -193,7 +194,7 @@ import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
-import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   exportFormatDescriptors,
@@ -1463,7 +1464,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.4.11.10-opus";
+const CURRENT_BUILD_STAMP = "10.4.16.00-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -5772,12 +5773,12 @@ export function MainWindow({
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
-  // on demand (kept out of the static startup graph). Returns false when the text isn't a
-  // parseable SMILES, so callers can fall back to pasting it as plain text.
-  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<boolean> => {
+  // on demand (kept out of the static startup graph). Keeps failure reasons for the caller's
+  // plain-text fallback notice.
+  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string }> => {
     try {
       const parsed = await depictSmilesForPaste(smilesText);
-      if (!parsed) return false;
+      if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
       const nextDocument = insertSmilesMolecule(
         documentRef.current,
@@ -5799,18 +5800,20 @@ export function MainWindow({
       setStatus(fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus);
-      return true;
-    } catch {
-      return false;
+      return { rendered: true };
+    } catch (error) {
+      return { rendered: false, reason: error instanceof Error ? error.message : String(error) };
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
-      void renderPastedSmiles(detectedPayload.text.trim()).then((rendered) => {
+      void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason }) => {
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          setStatus("Clipboard SMILES could not be parsed; pasted as text");
+          setStatus(reason
+            ? `Clipboard SMILES could not be parsed: ${reason}; pasted as text`
+            : "Clipboard SMILES could not be parsed; pasted as text");
         }
       });
       return;
@@ -5825,8 +5828,13 @@ export function MainWindow({
       const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
       const trimmedText = detectedPayload.text.trim();
       if (looksLikeSmiles(trimmedText) && !/\s/.test(trimmedText)) {
-        void renderPastedSmiles(trimmedText).then((rendered) => {
-          if (!rendered) pasteAsText();
+        void renderPastedSmiles(trimmedText).then(({ rendered, reason }) => {
+          if (!rendered) {
+            pasteAsText();
+            if (reason) {
+              setStatus(`Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+            }
+          }
         });
         return;
       }
@@ -5846,10 +5854,17 @@ export function MainWindow({
         commitDocumentChange(result.document);
         resetPasteUiState();
         setPageFitPrompt(undefined);
-        setStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped));
-      }).catch(() => {
+        const failure = parsed.failures[0];
+        const baseStatus = insertSmilesMoleculeGridStatus(result, parsed.skipped);
+        setStatus(failure
+          ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
+          : baseStatus);
+      }).catch((error: unknown) => {
         pasteAsText();
-        setStatus("Clipboard SMILES list could not be placed; pasted as text");
+        const failures = error instanceof SmilesListPasteError ? error.failures : [];
+        const firstReason = failures[0]?.error ?? "an unexpected error occurred";
+        const failureCount = failures.length || 1;
+        setStatus(`Clipboard SMILES list could not be placed; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}; pasted as text`);
       });
       return;
     }
@@ -7931,7 +7946,7 @@ export function MainWindow({
 
       if (!isDesktopRuntime()) {
         downloadExportResult(filename, result);
-        setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
+        setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
         setExportDialog(undefined);
         return;
       }
@@ -7949,7 +7964,7 @@ export function MainWindow({
 
       await writeNativeExportResult(path, result);
       lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setStatus(formatExportStatus(descriptor.menuLabel, result.warnings.length));
+      setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
       setExportDialog(undefined);
     } catch (error) {
       setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -8148,6 +8163,14 @@ export function MainWindow({
           if (!molecule) {
             setStatus("No selected structure");
             return;
+          }
+
+          if (isNativeMoleculeGraph(molecule)) {
+            const nativeSmiles = tryNativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
+            if ("refused" in nativeSmiles) {
+              setStatus(nativeSmiles.refused);
+              return;
+            }
           }
 
           // The chemistry adapter is the real RDKit engine now, so the WASM loader has to be
@@ -27809,9 +27832,19 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
-function formatExportStatus(label: string, warningCount: number): string {
-  return warningCount > 0
-    ? `Exported ${label} with ${warningCount} warning(s)`
+export function formatExportStatus(
+  label: string,
+  format: ExportFormatId,
+  warnings: readonly { message: string; severity?: string }[]
+): string {
+  const failedStructures = warnings.filter((warning) => warning.severity === "error");
+  if (failedStructures.length > 0) {
+    const withoutSmiles = format === "sdf";
+    const outcome = withoutSmiles ? "exported without SMILES" : "could not be written";
+    return `Exported ${label} with ${warnings.length} warning(s); ${failedStructures.length} structure${failedStructures.length === 1 ? "" : "s"} ${outcome}: ${failedStructures[0].message}`;
+  }
+  return warnings.length > 0
+    ? `Exported ${label} with ${warnings.length} warning(s)`
     : `Exported ${label}`;
 }
 
