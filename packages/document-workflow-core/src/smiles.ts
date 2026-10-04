@@ -37,10 +37,9 @@ export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): strin
  * kekulized by `nativeBondOrderResolution` — the same resolution the formula, the drawn label and the
  * valence check count on — so every writer and the bracket-atom hydrogen count below see ordinary
  * orders; an aromatic bond outside a ring, or a ring system with no such pattern, is written
- * single and reported. `unknown` is written single and reported: "~" would read back in
- * OpenChemLib as an any-bond with no hydrogens. The report goes to `warningsOut` when the caller
- * can surface it (Copy As, the structure-list export); `refreshNativeSingleBondGraph`, which
- * only stores the string, passes nothing.
+ * single and reported. `unknown` is refused with an error naming the bonds: neither a single
+ * bond nor "~" preserves the intended order (OpenChemLib reads "~" as an any-bond with no
+ * hydrogens). Aromatic warnings go to `warningsOut` when the caller can surface them.
  */
 export function nativeSmilesWritableBonds(
   atoms: readonly MoleculeAtom[],
@@ -53,23 +52,24 @@ export function nativeSmilesWritableBonds(
 }
 
 /**
- * The two warning groups separately, for callers whose engine route differs from the native
- * writer's: an unknown-order bond writes as single on every route (the V2000 writer has no code
- * for it either), but the aromatic downgrades happen only when the native writer is the one
- * producing the string — RDKit reads the molfile's type-4 bonds and resolves them itself.
+ * Unknown-order bonds are refused on every route, including callers using the engine's molfile
+ * route (V2000 cannot preserve them either). Aromatic warnings apply only to the native writer;
+ * RDKit reads the molfile's type-4 bonds and resolves them itself. The `unknown` warning group
+ * stays empty, preserving the return shape for existing callers.
  */
 export function nativeSmilesBondOrderResolution(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): { bonds: MoleculeBond[]; warnings: { unknown: string[]; aromatic: string[] } } {
   const warnings = { unknown: [] as string[], aromatic: [] as string[] };
-  const unknownCount = bonds.filter((bond) => bond.order === "unknown").length;
-  if (unknownCount > 0) {
-    warnings.unknown.push(
-      `${unknownCount} bond${unknownCount === 1 ? "" : "s"} of unknown order written to SMILES as single.`
+  const resolution = nativeBondOrderResolution(atoms, bonds);
+  // Aromatic resolution preserves non-aromatic input orders, including imported unknown bonds.
+  const unknownBondIds = resolution.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+  if (unknownBondIds.length > 0) {
+    throw new Error(
+      `Cannot write SMILES: bond${unknownBondIds.length === 1 ? "" : "s"} ${unknownBondIds.join(", ")} ${unknownBondIds.length === 1 ? "has" : "have"} an unknown bond order.`
     );
   }
-  const resolution = nativeBondOrderResolution(atoms, bonds);
   if (resolution.nonRingAromaticBondCount > 0) {
     const count = resolution.nonRingAromaticBondCount;
     warnings.aromatic.push(
@@ -100,7 +100,7 @@ export function nativeSmilesBondOrderResolution(
     );
   }
   return {
-    bonds: resolution.bonds.map((bond) => bond.order === "unknown" ? { ...bond, order: "single" } : bond),
+    bonds: [...resolution.bonds],
     warnings
   };
 }
@@ -372,7 +372,7 @@ function renderNativeBranch(
 
 /**
  * Only single, double and triple ever reach the writers: `nativeSmilesWritableBonds` kekulizes
- * aromatic bonds and downgrades (with a warning) whatever cannot be written, so the two
+ * aromatic bonds, warns about unresolved aromatic orders and refuses unknown orders, so the two
  * orders this function cannot spell never arrive here silently.
  */
 function bondOrderSymbol(order: MoleculeBond["order"] | undefined): string {
