@@ -19,6 +19,14 @@ describe("updateNotesPlainText", () => {
       .toBe("Read the guide (https://example.com/guide).");
   });
 
+  it("preserves code-span contents and link URLs while formatting link text", () => {
+    expect(updateNotesPlainText("`__dirname__`")).toBe("__dirname__");
+    expect(updateNotesPlainText("`*.*`")).toBe("*.*");
+    expect(updateNotesPlainText("[guide](https://example.com/_draft_/guide)"))
+      .toBe("guide (https://example.com/_draft_/guide)");
+    expect(updateNotesPlainText("[**bold** guide](url)")).toBe("bold guide (url)");
+  });
+
   it("replaces glyphs unavailable in Windows task-dialog fonts", () => {
     expect(updateNotesPlainText("▸ ▹ ▶ ►")).toBe("› › › ›");
   });
