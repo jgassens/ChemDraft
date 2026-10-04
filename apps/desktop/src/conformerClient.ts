@@ -46,8 +46,8 @@ export interface ConformerWorkerClient {
     enginePreference: Spin3dEnginePreference,
     traceContext?: ConformerTraceContext
   ): void;
-  /** Preload OCL + resources + JIT in the worker (idempotent, best-effort). */
-  warmup(traceContext?: ConformerTraceContext): void;
+  /** Preload the preferred engine + OCL fallback (idempotent per preference, best-effort). */
+  warmup(enginePreference: Spin3dEnginePreference, traceContext?: ConformerTraceContext): void;
 }
 
 let client: ConformerWorkerClient | null | undefined;
@@ -70,7 +70,7 @@ export function createConformerWorkerClient(
   const pending = new Map<number, PendingRequest>();
   let worker: Worker | null = null;
   let restarts = 0;
-  let warmed = false;
+  const warmedPreferences = new Set<Spin3dEnginePreference>();
 
   const handleMessage = (event: MessageEvent<ConformerWorkResponse>): void => {
     const { id, stage, result, message, trace } = event.data;
@@ -115,7 +115,7 @@ export function createConformerWorkerClient(
       /* already dead */
     }
     worker = null;
-    warmed = false; // a fresh worker needs OCL + torsion tables again
+    warmedPreferences.clear(); // a fresh worker needs its engines + resources again
     if (restarts < MAX_WORKER_RESTARTS) {
       restarts += 1;
       ensureWorker(); // recreate eagerly so the retry has a live target
@@ -209,11 +209,11 @@ export function createConformerWorkerClient(
       const id = nextId++;
       send({ kind: "prefetch", id, molfile, originalAtomCount, options, enginePreference, sessionId: traceContext?.sessionId ?? `prefetch:${id}` });
     },
-    warmup(traceContext) {
-      if (warmed) return;
+    warmup(enginePreference, traceContext) {
+      if (warmedPreferences.has(enginePreference)) return;
       const id = nextId++;
-      if (send({ kind: "warmup", id, sessionId: traceContext?.sessionId ?? `warmup:${id}` })) {
-        warmed = true;
+      if (send({ kind: "warmup", id, enginePreference, sessionId: traceContext?.sessionId ?? `warmup:${id}` })) {
+        warmedPreferences.add(enginePreference);
       }
     }
   };

@@ -57,13 +57,52 @@ describe("conformer worker client tracing", () => {
 
     client?.generate("mol", 2, OPTS, "auto", noopHandlers(), { sessionId: "spin:generate" });
     client?.prefetch("prefetch-mol", 3, OPTS, "rdkit", { sessionId: "spin:prefetch" });
-    client?.warmup({ sessionId: "spin:warmup" });
+    client?.warmup("openchemlib", { sessionId: "spin:warmup" });
 
-    // The refinement options + engine preference must ride along to the worker on both.
+    // Refinement options and engine preferences must ride along to the worker.
     expect(fake.posted).toEqual([
       expect.objectContaining({ kind: "generate", sessionId: "spin:generate", originalAtomCount: 2, options: OPTS, enginePreference: "auto" }),
       expect.objectContaining({ kind: "prefetch", sessionId: "spin:prefetch", originalAtomCount: 3, options: OPTS, enginePreference: "rdkit" }),
-      expect.objectContaining({ kind: "warmup", sessionId: "spin:warmup" })
+      expect.objectContaining({ kind: "warmup", sessionId: "spin:warmup", enginePreference: "openchemlib" })
+    ]);
+  });
+
+  it("warms once per engine preference, including after switching engines", () => {
+    const fake = new FakeWorker();
+    const client = createConformerWorkerClient(() => fake as unknown as Worker)!;
+
+    client.warmup("openchemlib");
+    client.warmup("openchemlib");
+    client.warmup("auto");
+    client.warmup("auto");
+    client.warmup("rdkit");
+    client.warmup("openchemlib");
+    client.warmup("rdkit");
+
+    expect(fake.posted).toEqual([
+      expect.objectContaining({ kind: "warmup", enginePreference: "openchemlib" }),
+      expect.objectContaining({ kind: "warmup", enginePreference: "auto" }),
+      expect.objectContaining({ kind: "warmup", enginePreference: "rdkit" })
+    ]);
+  });
+
+  it("warms each preference again after a worker crash", () => {
+    const workers: FakeWorker[] = [];
+    const client = createConformerWorkerClient(() => {
+      const fake = new FakeWorker();
+      workers.push(fake);
+      return fake as unknown as Worker;
+    })!;
+
+    client.warmup("openchemlib");
+    client.warmup("auto");
+    workers[0].crash();
+    client.warmup("openchemlib");
+    client.warmup("auto");
+
+    expect(workers[1].posted).toEqual([
+      expect.objectContaining({ kind: "warmup", enginePreference: "openchemlib" }),
+      expect.objectContaining({ kind: "warmup", enginePreference: "auto" })
     ]);
   });
 

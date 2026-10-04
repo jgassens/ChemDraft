@@ -16,15 +16,34 @@ import type { DesktopPluginRuntime } from "./createPluginRuntime";
 
 // No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
 // to the test-only recognition fixture, standing in for an installed plugin.
-const bundled = vi.hoisted(() => ({ withRecognitionFixture: false }));
+const bundled = vi.hoisted(() => ({
+  withRecognitionFixture: false,
+  massAnalyzerHandler: undefined as undefined | (() => unknown)
+}));
 vi.mock("./registerBundledPlugins", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./registerBundledPlugins")>();
   const { recognitionFixtureDescriptor } = await import("../testSupport/recognitionFixturePlugin");
   return {
     ...actual,
     registerBundledPlugins: (runtime: DesktopPluginRuntime, disabledIds?: ReadonlySet<string>) => {
-      if (!bundled.withRecognitionFixture) return actual.registerBundledPlugins(runtime, disabledIds);
-      const descriptors = [...actual.createBundledPluginDescriptors(), recognitionFixtureDescriptor()];
+      if (!bundled.withRecognitionFixture && !bundled.massAnalyzerHandler) {
+        return actual.registerBundledPlugins(runtime, disabledIds);
+      }
+      const descriptors = actual.createBundledPluginDescriptors().map((descriptor) => {
+        const analyzerCommandId = descriptor.manifest.contributes.analyzers[0]?.commandId;
+        if (!bundled.massAnalyzerHandler || analyzerCommandId !== massAnalyzeCommandId) return descriptor;
+        return {
+          ...descriptor,
+          options: {
+            ...descriptor.options,
+            commandHandlers: {
+              ...descriptor.options.commandHandlers,
+              [analyzerCommandId]: bundled.massAnalyzerHandler
+            }
+          }
+        };
+      });
+      if (bundled.withRecognitionFixture) descriptors.push(recognitionFixtureDescriptor());
       actual.applyEnabledPlugins(runtime, disabledIds ?? new Set(), descriptors);
       return descriptors;
     }
@@ -58,6 +77,7 @@ let container: HTMLElement | undefined;
 
 afterEach(() => {
   bundled.withRecognitionFixture = false;
+  bundled.massAnalyzerHandler = undefined;
   act(() => {
     root?.unmount();
   });
@@ -100,11 +120,38 @@ function statusText(): string {
   return container!.querySelector('[role="status"]')?.textContent ?? "";
 }
 
+/** Plugin commands settle asynchronously (a queued run, then the plugin's own awaits). */
+async function waitForElement(selector: string): Promise<Element> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const element = container!.querySelector(selector);
+    if (element) return element;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  throw new Error(`Timed out waiting for ${selector}`);
+}
+
 async function click(element: Element): Promise<void> {
   await act(async () => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await Promise.resolve();
   });
+}
+
+async function massAnalyzerMenuItem(): Promise<HTMLButtonElement> {
+  await click(container!.querySelector('button[data-menu-section="analyze"]')!);
+  const item = container!.querySelector<HTMLButtonElement>(`button[data-command-id="${massAnalyzeCommandId}"]`);
+  expect(item).not.toBeNull();
+  return item!;
+}
+
+function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown): void } {
+  let resolve!: (result: unknown) => void;
+  const promise = new Promise<unknown>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe("MainWindow bundled plugin integration", () => {
@@ -272,9 +319,18 @@ describe("MainWindow bundled plugin integration", () => {
     expect(analyzeItems.length).toBeGreaterThan(0);
     expect(analyzeItems.some((item) => /nmr/i.test(item.dataset.commandId ?? "") || /nmr/i.test(item.textContent ?? ""))).toBe(false);
 
-    // Invoking with nothing selected must not crash or open a panel (it returns ok:false).
+    // Invoking with nothing selected must not crash or open a panel (it returns ok:false) — and the
+    // refusal must be visible, not only a status-line message (a refused run was once reported as
+    // "the report window never opens").
     await click(massItem!);
     expect(container.querySelector('[data-testid="plugin-panel"]')).toBeNull();
+    const notice = await waitForElement(`[data-analyzer-notice="${massFragmentManifest.id}"]`);
+    expect(notice.getAttribute("role")).toBe("alert");
+    expect(notice.textContent).toContain(massFragmentManifest.name);
+    expect(notice.textContent).toContain("Select one molecule before analyzing its mass.");
+    expect(statusText()).toContain("Plugin command failed: Select one molecule before analyzing its mass.");
+    await click(notice.querySelector('button[aria-label="Dismiss"]')!);
+    expect(container.querySelector("[data-analyzer-notice]")).toBeNull();
 
     // The plugin is registered and listed in the bundled-plugin diagnostics — where no NMR plugin appears.
     await click(container.querySelector('button[data-menu-section="analyze"]')!);
@@ -282,6 +338,98 @@ describe("MainWindow bundled plugin integration", () => {
     expect(container.querySelector(`[data-plugin-id="${massFragmentManifest.id}"]`)).not.toBeNull();
     expect(container.textContent).toContain(massFragmentManifest.name);
     expect([...container.querySelectorAll("[data-plugin-id]")].some((node) => /nmr/i.test(node.getAttribute("data-plugin-id") ?? ""))).toBe(false);
+  });
+
+  it("shows an analyzer notice when the mass analyzer throws", async () => {
+    bundled.massAnalyzerHandler = () => {
+      throw new Error("The mass engine is unavailable.");
+    };
+    await renderMainWindow();
+
+    await click(await massAnalyzerMenuItem());
+
+    const notice = await waitForElement(`[data-analyzer-notice="${massFragmentManifest.id}"]`);
+    expect(notice.textContent).toContain(massFragmentManifest.name);
+    expect(notice.textContent).toContain("The mass engine is unavailable.");
+  });
+
+  it("clears a mass-analyzer refusal notice after a later successful run", async () => {
+    const handler = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValueOnce({ ok: false, error: { code: "MASS_REFUSED", message: "The sample is not applicable." } })
+      .mockResolvedValueOnce({ ok: true });
+    bundled.massAnalyzerHandler = handler;
+    await renderMainWindow();
+
+    await click(await massAnalyzerMenuItem());
+    await waitForElement(`[data-analyzer-notice="${massFragmentManifest.id}"]`);
+
+    await click(await massAnalyzerMenuItem());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(container!.querySelector("[data-analyzer-notice]")).toBeNull());
+  });
+
+  it("ignores superseded mass-analyzer results instead of showing or clearing notices", async () => {
+    const olderSuccess = deferredResult();
+    const newerSuccess = deferredResult();
+    const olderRefusal = deferredResult();
+    const latestSuccess = deferredResult();
+    const handler = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValueOnce({ ok: false, error: { code: "MASS_REFUSED", message: "Keep this notice." } })
+      .mockImplementationOnce(() => olderSuccess.promise)
+      .mockImplementationOnce(() => newerSuccess.promise)
+      .mockResolvedValueOnce({ ok: false, error: { code: "MASS_REFUSED", message: "Keep this next notice." } })
+      .mockImplementationOnce(() => olderRefusal.promise)
+      .mockImplementationOnce(() => latestSuccess.promise);
+    bundled.massAnalyzerHandler = handler;
+    await renderMainWindow();
+
+    // Establish a visible refusal notice, then start an older successful run followed by a newer one.
+    await click(await massAnalyzerMenuItem());
+    const originalNotice = await waitForElement(`[data-analyzer-notice="${massFragmentManifest.id}"]`);
+    expect(originalNotice.textContent).toContain("Keep this notice.");
+
+    await click(await massAnalyzerMenuItem());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    await click(await massAnalyzerMenuItem());
+    await act(async () => {
+      olderSuccess.resolve({ ok: true });
+      await Promise.resolve();
+    });
+
+    // The older success settles after the newer request started, so its generation is obsolete and
+    // must not clear the prior refusal notice. Only the newer success is allowed to clear it.
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(3));
+    expect(container!.querySelector(`[data-analyzer-notice="${massFragmentManifest.id}"]`)?.textContent).toContain(
+      "Keep this notice."
+    );
+    await act(async () => {
+      newerSuccess.resolve({ ok: true });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(container!.querySelector("[data-analyzer-notice]")).toBeNull());
+
+    // A stale refusal likewise must not replace the notice that was already visible when its newer
+    // request started. The latest success alone clears that newer refusal notice.
+    await click(await massAnalyzerMenuItem());
+    await waitForElement(`[data-analyzer-notice="${massFragmentManifest.id}"]`);
+    await click(await massAnalyzerMenuItem());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(5));
+    await click(await massAnalyzerMenuItem());
+    await act(async () => {
+      olderRefusal.resolve({ ok: false, error: { code: "MASS_REFUSED", message: "Do not show this." } });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(6));
+    expect(container!.querySelector(`[data-analyzer-notice="${massFragmentManifest.id}"]`)?.textContent).toContain(
+      "Keep this next notice."
+    );
+    await act(async () => {
+      latestSuccess.resolve({ ok: true });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(container!.querySelector("[data-analyzer-notice]")).toBeNull());
   });
 
   it("registers the analysis-window action listener once, however often the document changes", async () => {
