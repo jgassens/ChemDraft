@@ -1,11 +1,11 @@
 {
-  "version": "0.3.7",
-  "notes": "The first Windows release of ChemDraft.\n\n- **Windows 10 and 11, x64.** Installs for your user account only; no administrator rights needed.\n- **The installer is not yet code-signed.** The first time you run it, Windows SmartScreen warns you. Choose **More info**, then **Run anyway**.\n- **Updates itself, after asking.** ChemDraft checks for a new version at most once a day and asks before installing. File ▸ Check for Updates… checks at any time. Your open drawing is saved and restored across the update.\n- **Large drawings stay responsive.** Editing, saving and reopening drawings with thousands of objects is much faster.\n- **More of CDXML comes through.** Groups and dative bonds are kept, and damaged files are refused safely with a reason.\n- **Known quirk:** the Redo menu item shows Ctrl+Shift+Z; Ctrl+Y works as well.",
-  "pub_date": "2026-10-02T14:31:04.516Z",
+  "version": "0.3.8",
+  "notes": "ChemDraft can now send bug and crash reports straight from the app.\n\n- **Report a Bug.** Help ▸ Report a Bug… opens your own email program with a report already started, including your ChemDraft version and computer type. Nothing is sent until you press Send.\n- **Crash reports.** If ChemDraft runs into an error, or shut down last time because of an internal error, it offers to email a crash report with the details filled in. You can read the email before sending, or say Not Now.\n- **Plain window title.** The released app's window title now reads simply \"ChemDraft\".",
+  "pub_date": "2026-10-04T12:18:00.366Z",
   "platforms": {
     "windows-x86_64-nsis": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSM0I4K2pYUVl1V1U0MktIS3RxVy9qeExMVzRXUVphb1ZhVUs5eEorVzFWQVQvVXlHeGZ2RWRkV1N0TUFIV25zWlRNTTVJUHVOd2R4RDdjQVRXY1lrRTI3YkwvenE1UHdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwOTQ4NDg4CWZpbGU6Q2hlbURyYWZ0XzAuMy43X3g2NC1zZXR1cC5leGUKZFh1cHlkY0FNZFBrQ3dibnVWekZLLzV2RHZwRVBLUHpvYVRNdTMrMVhFeUZNNlIwRSt5RThpRHE4b2tucmtYN25lNys1QkFydng5SWZMa1BFNU5lQXc9PQo=",
-      "url": "https://github.com/jgassens/ChemDraft/releases/download/v0.3.7/ChemDraft_0.3.7_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSM0I4K2pYUVl1V2RMaTgvTXZyL3lVTVAvR2NBK2I5eFNkSTRwTFpZRHFEWVJTVEFyMk92ZmovcG9JaUVNVVF0U05HbitETmFhZjNHbWVJeWNITTdzZC9vZ2dnYkpwVXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMTE2MTk3CWZpbGU6Q2hlbURyYWZ0XzAuMy44X3g2NC1zZXR1cC5leGUKOFJlZkpuRGoxWjRQRm83RGVCQWRDajBBYU9TbEhlRFFQa0FLeDNRVFhFc0YxSnEza2h0WnlvV0w0d2c3ZEtHRXVVQlM3Q1h1aDVUR0hsRFdSQjJVQmc9PQo=",
+      "url": "https://github.com/jgassens/ChemDraft/releases/download/v0.3.8/ChemDraft_0.3.8_x64-setup.exe"
     }
   }
 }
