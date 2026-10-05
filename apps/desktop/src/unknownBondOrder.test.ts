@@ -4,8 +4,10 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import { createEmptyDocument, moleculeToMolfileV2000, UnknownBondOrderError, type MoleculeObject } from "@chemdraft/chem-core";
+import * as chemCore from "@chemdraft/chem-core";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { depictSmiles2D, perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
+import * as oclAdapter from "@chemdraft/ocl-adapter";
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { createSmilesMolecule, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { analysisFacingStructure, copyAsMolfile, applyNativeMoleculeEngineRelayout, flattenSpunMolecule, buildSpin3dModel, SPIN3D_MODEL_KEY } from "./documentWorkflow";
@@ -264,12 +266,15 @@ describe("persisted Spin models at rotation boundaries", () => {
     }
   );
 
-  it("refuses an overlay flatten when stereo perception reports unknown bond orders", async () => {
+  it.each(["unknown bond order", "perception failure"] as const)("refuses an overlay flatten after %s and commits nothing", async (failure) => {
     const molecule = unknownMolecule();
     molecule.bonds = molecule.bonds.map((bond) => ({ ...bond, order: "single" }));
-    const policy = vi.spyOn(flattenStereoPolicy, "buildSpin3dFlattenStereoOptions").mockImplementation(() => {
-      throw new UnknownBondOrderError(["b3", "b7"]);
-    });
+    const perception = vi.spyOn(oclAdapter, "perceiveStereoCentersFromMolfile");
+    // Engine admission freezes test documents. Admit a mutable clone for this race fixture
+    // so the live graph can acquire unknown orders after the spin session starts.
+    const admission = failure === "unknown bond order"
+      ? vi.spyOn(chemCore, "toEngineDocument").mockImplementation((source) => structuredClone(source))
+      : undefined;
     let onEmbedded: ((result: Generate3DConformerResult) => void) | undefined;
     conformer.generate.mockImplementation((_molfile, _atomCount, _options, _engine, handlers) => {
       onEmbedded = handlers.onEmbedded;
@@ -277,7 +282,6 @@ describe("persisted Spin models at rotation boundaries", () => {
     });
     try {
       await withRotationWindow(molecule, async (container, bridge) => {
-        const before = bridge.snapshot().document;
         await act(async () => { await bridge.command("structure.spin3d"); });
         await act(async () => {
           onEmbedded?.({
@@ -294,6 +298,19 @@ describe("persisted Spin models at rotation boundaries", () => {
         });
         const overlay = container.querySelector<SVGSVGElement>('[data-spin3d-overlay="true"]');
         expect(overlay).not.toBeNull();
+        if (failure === "unknown bond order") {
+          // The bridge snapshot exposes the live document. Change its graph only after the
+          // known-order conformer has started, so commit hits the real molfile refusal.
+          const liveMolecule = bridge.snapshot().document.pages[0]!.objects[0]!;
+          if (liveMolecule.type !== "molecule") throw new Error("Expected a molecule.");
+          liveMolecule.bonds.forEach((bond) => { bond.order = "unknown"; });
+          expect(() => stereoPerceptionMolfile(liveMolecule)).toThrow(UnknownBondOrderError);
+        } else {
+          perception.mockImplementation(() => {
+            throw new Error("Stereo perception unavailable.");
+          });
+        }
+        const before = structuredClone(bridge.snapshot().document);
         const originalElementFromPoint = document.elementFromPoint;
         Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => overlay) });
         try {
@@ -308,15 +325,20 @@ describe("persisted Spin models at rotation boundaries", () => {
             Reflect.deleteProperty(document, "elementFromPoint");
           }
         }
-        expect(policy).toHaveBeenCalled();
         expect(container.querySelector('[role="status"]')?.textContent)
-          .toContain("Cannot flatten this view: Bonds b3, b7 have an unknown bond order.");
+          .toContain(failure === "unknown bond order"
+            ? "Cannot flatten this view: Bonds b3, b7 have an unknown bond order."
+            : "Cannot flatten this view: Stereo perception unavailable.");
+        // First perception fails inside the best-effort block; the retained CIP guard
+        // must call it again during flatten and refuse instead of committing unguarded.
+        if (failure === "perception failure") expect(perception).toHaveBeenCalledTimes(2);
         expect(bridge.snapshot().document).toEqual(before);
         expect(bridge.snapshot().file.dirty).toBe(false);
         expect(container.querySelector('[data-spin3d-overlay="true"]')).not.toBeNull();
       });
     } finally {
-      policy.mockRestore();
+      perception.mockRestore();
+      admission?.mockRestore();
       conformer.generate.mockReset();
     }
   });

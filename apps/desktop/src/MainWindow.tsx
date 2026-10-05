@@ -3910,13 +3910,15 @@ export function MainWindow({
         const molfile = stereoPerceptionMolfile(flattenTarget, warnings);
         if (warnings.length) setStatus(warnings.join(" "));
         const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
-        const stereoOptions = buildSpin3dFlattenStereoOptions(
-          flattenTarget,
-          perceiveStereoCentersFromMolfile,
-          () => molfile
-        );
-        perceiveStereo = stereoOptions.perceiveStereo;
-        stereoCenterAtomIds = stereoOptions.stereoCenterAtomIds;
+        perceiveStereo = perceiveStereoCentersFromMolfile;
+        const perAtom = perceiveStereoCentersFromMolfile(molfile);
+        if (perAtom.length === flattenTarget.atoms.length) {
+          const ids = new Set<string>();
+          flattenTarget.atoms.forEach((atom, index) => {
+            if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
+          });
+          stereoCenterAtomIds = ids;
+        }
         const unrepresentable = perceiveUnrepresentableStereo(molfile);
         const kinds: string[] = [];
         if (unrepresentable.alleneAtoms.length > 0) kinds.push("allene");
