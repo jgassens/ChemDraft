@@ -83,10 +83,40 @@ describe("unknown-order bonds at app boundaries", () => {
     expect(warnings).toEqual(["Bonds b3, b7 have an unknown bond order; written as bond type 8 (any), which readers treat as a query bond with no chemical order."]);
   });
 
+  it("cleans up unknown bonds without wedges when the real stereo perceiver is supplied", () => {
+    const molecule = unknownMolecule();
+    const document = selectedDocument(molecule);
+    const warnings: string[] = [];
+    const perceiveStereo = vi.fn(perceiveStereoCentersFromMolfile);
+    const cleaned = applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D, { warnings, perceiveStereo });
+    expect(cleaned).not.toBe(document);
+    const updated = cleaned.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(updated.bonds.map((bond) => [bond.id, bond.order])).toEqual(molecule.bonds.map((bond) => [bond.id, bond.order]));
+    expect(updated.atoms.map((atom) => [atom.x, atom.y])).not.toEqual(molecule.atoms.map((atom) => [atom.x, atom.y]));
+    expect(perceiveStereo).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.stringContaining("Bonds b3, b7 have an unknown bond order; written as bond type 8 (any)"));
+  });
+
+  it.each(["wedge", "hashed"] as const)("refuses cleanup of unknown bonds with a %s, naming the unknown bond ids", (bondStyle) => {
+    const molecule = unknownMolecule();
+    molecule.atoms.push({ id: "a3", element: "F", x: 100, y: 150, formalCharge: 0 });
+    molecule.bonds.push({ id: "stereo", fromAtomId: "a0", toAtomId: "a3", order: "single", display: { bondStyle } });
+    const document = selectedDocument(molecule);
+    const before = JSON.stringify(document);
+    const cleanup = () => applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D, {
+      perceiveStereo: perceiveStereoCentersFromMolfile
+    });
+    expect(cleanup).toThrow(UnknownBondOrderError);
+    expect(cleanup).toThrow("Bonds b3, b7 have an unknown bond order.");
+    expect(JSON.stringify(document)).toBe(before);
+  });
+
   it("stores type 8 and surfaces its warning when flattening already supplied coordinates", () => {
     const molecule = unknownMolecule();
-    const outcome = flattenSpunMolecule(selectedDocument(molecule), molecule.id, [0, 0, 0, 1, 1, 0, 2, 0, 0], [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const perceiveStereo = vi.fn(perceiveStereoCentersFromMolfile);
+    const outcome = flattenSpunMolecule(selectedDocument(molecule), molecule.id, [0, 0, 0, 1, 1, 0, 2, 0, 0], [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], { perceiveStereo });
     expect(outcome.status).toBe("committed");
+    expect(perceiveStereo).not.toHaveBeenCalled();
     const stored = outcome.document.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
     expect(parseMolfileGraph(stored.structure).bonds.map((bond) => bond.order)).toEqual(["unknown", "unknown"]);
     expect(outcome.warnings).toContainEqual(expect.objectContaining({ code: "stored-structure-lossy", message: expect.stringContaining("Bonds b3, b7 have an unknown bond order; written as bond type 8 (any)") }));

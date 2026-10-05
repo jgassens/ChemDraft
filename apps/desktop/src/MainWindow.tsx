@@ -5121,7 +5121,7 @@ export function MainWindow({
       setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel" + (warnings.length ? ` — ${warnings.join(" ")}` : ""));
     } catch (error) {
       setInteractive3dWorkspace((current) => current?.openId === openId ? undefined : current);
-      setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
+      setStatus(`Interactive 3D sidecar session failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [cancelInteractive3dDragScheduler, pollInteractive3dSessionAfterOpen, queueInteractive3dSessionClose]);
 

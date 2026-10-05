@@ -13418,6 +13418,13 @@ export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
   });
 }
 
+// Query bonds make CIP perception unsafe, but a drawing without wedge/hash markers has no R/S
+// reference for the read-back guard to protect. Keep ordinary molecules on the existing path.
+function skipUnknownBondStereoGuard(molecule: MoleculeObject): boolean {
+  return molecule.bonds.some((bond) => bond.order === "unknown") &&
+    !molecule.bonds.some((bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed");
+}
+
 /**
  * Rebuild a native molecule's 2D geometry from an engine re-layout (the "3D Cleanup" command, and
  * what 2D Cleanup uses for multi-ring and coordination structures). Free metals — atoms outside the
@@ -13800,7 +13807,7 @@ export function applyNativeMoleculeEngineRelayout(
   // any centre that reads the wrong hand; if it cannot be made to read back, refuse the layout
   // (the caller surfaces the error; the document is untouched) rather than commit an enantiomer.
   let bonds = sidedBonds;
-  if (options.perceiveStereo) {
+  if (options.perceiveStereo && !skipUnknownBondStereoGuard(molecule)) {
     const perceive = options.perceiveStereo;
     const reference = new Map<number, "R" | "S">();
     perceive(stereoPerceptionMolfile(molecule, options.warnings)).forEach((entry, index) => {
@@ -16059,7 +16066,7 @@ export function flattenSpunMolecule(
   // view (document untouched) instead of silently committing a different stereoisomer.
   const structureWarnings: string[] = [];
   let committedBonds = nextBonds;
-  if (options.perceiveStereo) {
+  if (options.perceiveStereo && !skipUnknownBondStereoGuard(molecule)) {
     const perceive = options.perceiveStereo;
     const referenceStereo = perceive(stereoPerceptionMolfile(molecule, structureWarnings));
     const reference = new Map<number, "R" | "S">();

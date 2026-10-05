@@ -321,6 +321,70 @@ describe.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("unknown bond or
     }
     expect(parseMolfileGraph(result.contents).bonds.map((bond) => bond.order)).toEqual(["unknown", "unknown"]);
   });
+
+  it.each([false, true])("omits literal valence on unknown contact, including a known single bond (%s)", (withSingle) => {
+    const graph = molecule(
+      [
+        { id: "n", element: "N", x: 0, y: 0, labelLiteral: true },
+        { id: "c", element: "C", x: 1.5, y: 0, labelLiteral: true },
+        { id: "o", element: "O", x: -1.5, y: 0, labelLiteral: true },
+        { id: "h", element: "H", x: -3, y: 0, labelLiteral: true }
+      ],
+      [
+        { id: "unknown", from: "n", to: "c", order: "unknown" },
+        ...(withSingle ? [{ id: "single", from: "n", to: "o" }] : []),
+        { id: "oh", from: "o", to: "h" }
+      ]
+    );
+    const options = { kekuleBondOrders: new Map<string, number>() };
+    const result = write(graph, options);
+    const known = write({ ...graph, bonds: graph.bonds.map((bond) => ({ ...bond, order: "single" })) }, options);
+    const lines = (contents: string) => write === moleculeToMolfileV2000
+      ? atomLines(contents)
+      : contents.split("M  V30 BEGIN ATOM\n")[1]!.split("M  V30 END ATOM")[0]!.trimEnd().split("\n");
+    const emitted = lines(result.contents);
+    for (const index of [0, 1]) {
+      if (write === moleculeToMolfileV2000) expect(emitted[index]!.slice(48, 51)).toBe("  0");
+      else expect(emitted[index]).not.toContain("VAL=");
+    }
+    // Literal O and H do not touch the query bond, so their complete atom records stay identical.
+    expect(emitted.slice(2)).toEqual(lines(known.contents).slice(2));
+    if (write === moleculeToMolfileV2000) {
+      expect(emitted[2]!.slice(48, 51)).toBe(withSingle ? "  2" : "  1");
+      expect(emitted[3]!.slice(48, 51)).toBe("  1");
+    } else {
+      expect(emitted[2]).toContain(withSingle ? "VAL=2" : "VAL=1");
+      expect(emitted[3]).toContain("VAL=1");
+    }
+    expect(result.warnings).toContain(
+      "Literal atoms c, n have an unknown-order bond; written without a valence field, so a reader may add hydrogens."
+    );
+  });
+
+  it.each(["dummy", "rgroup"] as const)("keeps CH3 on an unknown bond on the %s placeholder path with a reason", (abbreviations) => {
+    const graph = molecule(
+      [{ id: "label", element: "CH3", x: 0, y: 0 }, { id: "c", element: "C", x: 1.5, y: 0 }],
+      [{ id: "unknown", from: "label", to: "c", order: "unknown" }]
+    );
+    const result = write(graph, {
+      kekuleBondOrders: new Map(), abbreviations,
+      spellLabel: (label) => label === "CH3" ? { element: "C", hydrogens: 3 } : undefined
+    });
+    const placeholder = abbreviations === "dummy" ? "*" : "R#";
+    if (write === moleculeToMolfileV2000) {
+      expect(atomLines(result.contents)[0]!.slice(31, 34).trim()).toBe(placeholder);
+      expect(atomLines(result.contents)[0]!.slice(48, 51)).toBe("  0");
+    } else {
+      expect(result.contents).toContain(`M  V30 1 ${placeholder} `);
+      expect(result.contents).not.toContain("VAL=");
+    }
+    expect(result.warnings).toContainEqual(expect.stringContaining(
+      'Atom label "CH3" is not an element symbol; it cannot be written as C because it has an unknown-order bond, so the hydrogen count it states cannot be carried by an explicit valence'
+    ));
+    expect(result.warnings).toContainEqual(expect.stringContaining(
+      abbreviations === "dummy" ? "written as a dummy atom (*)" : "written as R-group placeholder R1"
+    ));
+  });
   it.each([["b3"], ["b3", "b7"]])("refuses before emitting output or warnings: %j", (...ids) => {
     const target = { ...graph, bonds: graph.bonds.filter((bond) => ids.includes(bond.id)) };
     const warnings: string[] = [];
