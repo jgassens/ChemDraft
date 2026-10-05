@@ -165,7 +165,10 @@ function structureGenerationFailureReason(smiles: string, error: unknown): strin
   const message = error instanceof Error ? error.message : String(error);
   // OCL's parser exceptions include a Java stack trace. The first line identifies the parse
   // problem; the rest is implementation detail that would overwhelm a plugin's status surface.
-  const specificMessage = error instanceof Error && error.name === "UnrequestedSmilesRadicalError"
+  // A chemistry refusal (invented radical or hydrogen) is written for people; keep all of it.
+  const isChemistryRefusal = error instanceof Error &&
+    (error as { smilesChemistryRefusal?: unknown }).smilesChemistryRefusal === true;
+  const specificMessage = isChemistryRefusal
     ? message
     : message.split(/\r\n|\r|\n/, 1)[0].trim();
   return `No 2D structure could be generated for "${smiles}": ${specificMessage || "The depiction engine did not provide a reason."}`;

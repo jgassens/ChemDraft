@@ -23,6 +23,27 @@ describe("plugin chemistry SMILES failure reasons", () => {
     expect(document.pages[0].objects).toHaveLength(0);
   });
 
+  it("names an invented-hydrogen refusal in full for the plugin", async () => {
+    const smiles = "O=[N]=O";
+    const document = createPhase4Document();
+    const result = await structureFromSmilesForPlugin({ smiles }, () => document);
+    const refusal = new ocl.UnrequestedSmilesHydrogenError(smiles, { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 });
+    expect(result).toEqual({
+      available: true,
+      built: false,
+      reason: `No 2D structure could be generated for "${smiles}": ${refusal.message}`
+    });
+    expect(document.pages[0].objects).toHaveLength(0);
+  });
+
+  it("keeps a multi-line chemistry refusal whole", async () => {
+    const refusal = new ocl.UnrequestedSmilesHydrogenError("C");
+    Object.defineProperty(refusal, "message", { value: "first line\nsecond line" });
+    vi.spyOn(ocl, "depictSmiles2D").mockImplementation(() => { throw refusal; });
+    const result = await structureFromSmilesForPlugin({ smiles: "C" }, () => createPhase4Document());
+    expect(result).toMatchObject({ built: false, reason: "No 2D structure could be generated for \"C\": first line\nsecond line" });
+  });
+
   it("keeps only the first line of an OCL parser exception", async () => {
     vi.spyOn(ocl, "depictSmiles2D").mockImplementation(() => {
       throw new Error("Class$S19: SmilesParser could not parse the input\nat parser stack frame");

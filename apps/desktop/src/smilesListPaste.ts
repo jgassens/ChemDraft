@@ -57,14 +57,15 @@ export async function depictSmilesForPaste(
     return depiction.atoms.length > 0 ? { depiction, stereoCount } : undefined;
   } catch (error) {
     // Keep a chemical-meaning refusal distinct from ordinary prose that is not SMILES. Engines
-    // stay dynamically imported, so use the error's typed name rather than a startup import.
-    if (isSmilesRadicalRefusal(error)) throw error;
+    // stay dynamically imported, so use the error's refusal marker rather than a startup import.
+    if (isSmilesChemistryRefusal(error)) throw error;
     return undefined;
   }
 }
 
-function isSmilesRadicalRefusal(error: unknown): error is Error {
-  return error instanceof Error && error.name === "UnrequestedSmilesRadicalError";
+/** Any OpenChemLib refusal to change the structure (an invented radical or hydrogen). */
+function isSmilesChemistryRefusal(error: unknown): error is Error {
+  return error instanceof Error && (error as { smilesChemistryRefusal?: unknown }).smilesChemistryRefusal === true;
 }
 
 export interface SmilesListPasteResult {
@@ -118,7 +119,7 @@ async function depictSmilesListCandidates(
     try {
       parsed = await depictSmilesForPaste(candidate.token);
     } catch (error) {
-      if (!isSmilesRadicalRefusal(error)) throw error;
+      if (!isSmilesChemistryRefusal(error)) throw error;
       failures.push({ input: candidate.token, error: error.message });
     }
     if (parsed) {
