@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
+import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import { createEmptyDocument, moleculeToMolfileV2000, UnknownBondOrderError, type MoleculeObject } from "@chemdraft/chem-core";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { depictSmiles2D, perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
@@ -246,15 +247,79 @@ describe("persisted Spin models at rotation boundaries", () => {
       for (const molecule of [unknownMolecule(), withModel(unknownMolecule())]) {
         await withRotationWindow(molecule, async (container, bridge) => {
           const before = bridge.snapshot().document.pages[0]!.objects[0]!;
+          const beforeModel = before.compatibility?.unknown?.[SPIN3D_MODEL_KEY];
           await rotate(container, axis, method);
-          const { compatibility: _compatibility, ...after } = bridge.snapshot().document.pages[0]!.objects[0]!;
-          expect(after).not.toEqual(before);
-          outcomes.push(after);
+          const after = bridge.snapshot().document.pages[0]!.objects[0]!;
+          const { compatibility: _beforeCompatibility, ...beforeWithoutCompatibility } = before;
+          const { compatibility: _afterCompatibility, ...afterWithoutCompatibility } = after;
+          expect(afterWithoutCompatibility).not.toEqual(beforeWithoutCompatibility);
+          if (axis === "z" && beforeModel) {
+            expect(JSON.stringify(after.compatibility?.unknown?.[SPIN3D_MODEL_KEY]))
+              .toBe(JSON.stringify(beforeModel));
+          }
+          outcomes.push(afterWithoutCompatibility);
         });
       }
       expect(outcomes[1]).toEqual(outcomes[0]);
     }
   );
+
+  it("refuses an overlay flatten when stereo perception reports unknown bond orders", async () => {
+    const molecule = unknownMolecule();
+    molecule.bonds = molecule.bonds.map((bond) => ({ ...bond, order: "single" }));
+    const policy = vi.spyOn(flattenStereoPolicy, "buildSpin3dFlattenStereoOptions").mockImplementation(() => {
+      throw new UnknownBondOrderError(["b3", "b7"]);
+    });
+    let onEmbedded: ((result: Generate3DConformerResult) => void) | undefined;
+    conformer.generate.mockImplementation((_molfile, _atomCount, _options, _engine, handlers) => {
+      onEmbedded = handlers.onEmbedded;
+      return () => {};
+    });
+    try {
+      await withRotationWindow(molecule, async (container, bridge) => {
+        const before = bridge.snapshot().document;
+        await act(async () => { await bridge.command("structure.spin3d"); });
+        await act(async () => {
+          onEmbedded?.({
+            mapping: {
+              coords3dByOriginalAtom: new Float64Array([0, 0, 0, 1, 0.5, 0.25, 2, 0, -0.25]),
+              originalToEngineAtom: [0, 1, 2], engineToOriginalAtom: [0, 1, 2], generatedHydrogenEngineAtoms: []
+            },
+            originalAtomCount: 3, generatedAtomCount: 3,
+            hydrogens: { added: false, explicitInputHydrogensPreserved: false },
+            embed: { status: "ok" }, forceField: { name: "UFF", status: "converged", iterations: 1 },
+            engine: { name: "openchemlib", version: "test", parameters: {} }, unsupportedFeatures: [], warnings: []
+          });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        const overlay = container.querySelector<SVGSVGElement>('[data-spin3d-overlay="true"]');
+        expect(overlay).not.toBeNull();
+        const originalElementFromPoint = document.elementFromPoint;
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => overlay) });
+        try {
+          await act(async () => {
+            bridge.pointerDown({ page: { x: 1, y: 1 } }, { pointerId: 91, buttons: 1 });
+            await bridge.waitForIdle();
+          });
+        } finally {
+          if (originalElementFromPoint) {
+            Object.defineProperty(document, "elementFromPoint", { configurable: true, value: originalElementFromPoint });
+          } else {
+            Reflect.deleteProperty(document, "elementFromPoint");
+          }
+        }
+        expect(policy).toHaveBeenCalled();
+        expect(container.querySelector('[role="status"]')?.textContent)
+          .toContain("Cannot flatten this view: Bonds b3, b7 have an unknown bond order.");
+        expect(bridge.snapshot().document).toEqual(before);
+        expect(bridge.snapshot().file.dirty).toBe(false);
+        expect(container.querySelector('[data-spin3d-overlay="true"]')).not.toBeNull();
+      });
+    } finally {
+      policy.mockRestore();
+      conformer.generate.mockReset();
+    }
+  });
 
   it.each(["typed", "drag"] as const)("reports an unknown-order guard error and commits nothing during %s rotation", async (method) => {
     const molecule = unknownMolecule();

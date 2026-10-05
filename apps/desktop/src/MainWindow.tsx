@@ -3910,21 +3910,24 @@ export function MainWindow({
         const molfile = stereoPerceptionMolfile(flattenTarget, warnings);
         if (warnings.length) setStatus(warnings.join(" "));
         const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
-        perceiveStereo = perceiveStereoCentersFromMolfile;
-        const perAtom = perceiveStereoCentersFromMolfile(molfile);
-        if (perAtom.length === flattenTarget.atoms.length) {
-          const ids = new Set<string>();
-          flattenTarget.atoms.forEach((atom, index) => {
-            if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
-          });
-          stereoCenterAtomIds = ids;
-        }
+        const stereoOptions = buildSpin3dFlattenStereoOptions(
+          flattenTarget,
+          perceiveStereoCentersFromMolfile,
+          () => molfile
+        );
+        perceiveStereo = stereoOptions.perceiveStereo;
+        stereoCenterAtomIds = stereoOptions.stereoCenterAtomIds;
         const unrepresentable = perceiveUnrepresentableStereo(molfile);
         const kinds: string[] = [];
         if (unrepresentable.alleneAtoms.length > 0) kinds.push("allene");
         if (unrepresentable.atropisomerBonds.length > 0) kinds.push("atropisomer");
         if (kinds.length > 0) unrepresentableStereoKinds = kinds;
-      } catch {
+      } catch (error) {
+        if (error instanceof UnknownBondOrderError) {
+          setStatus(`Cannot flatten this view: ${error.message}`);
+          applySpin({ ...state, dragging: false, lastClient: undefined });
+          return;
+        }
         /* best-effort: fall back to legacy behavior (treat every drawn wedge as a center) */
       }
       // The async perception yielded the event loop; abort if the spin session was replaced
