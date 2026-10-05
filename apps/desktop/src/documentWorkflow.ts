@@ -15272,8 +15272,11 @@ export function readSpin3dModel(molecule: MoleculeObject): Spin3dDocumentModelV1
   return model as Spin3dDocumentModelV1;
 }
 
-/** The persisted model only if it still matches the molecule's current graph. */
+/** The persisted model only if it matches a graph with fully known bond orders. */
 export function validSpin3dModelFor(molecule: MoleculeObject): Spin3dDocumentModelV1 | undefined {
+  // Older releases could persist a conformer built on guessed unknown bond orders.
+  // Even a matching signature cannot make that model chemically valid.
+  if (molecule.bonds.some((bond) => bond.order === "unknown")) return undefined;
   const model = readSpin3dModel(molecule);
   return model && model.graphSignature === conformerGraphSignature(molecule) ? model : undefined;
 }
