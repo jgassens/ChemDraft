@@ -50,6 +50,7 @@ import {
   moleculeToMolfileV2000,
   clearChangedAtomHydrogenHints,
   moleculeToMolfileV3000,
+  UnknownBondOrderError,
   PageSizePresets,
   pageMarginFromLayout,
   nativeDrawingStyleFromObjectStyle,
@@ -141,6 +142,7 @@ import {
   atomPairKey,
   bondGeometry,
   clamp,
+  assertMolfileHasKnownBondOrders,
   createNativeReactionArrow,
   createSmilesMolecule,
   defaultDoubleBondSide,
@@ -13603,8 +13605,9 @@ export function applyNativeMoleculeEngineRelayout(
   }
   const ligandToOriginalIndex = ligandAtoms.map((atom) => molecule.atoms.indexOf(atom));
   // Dashed bonds between non-metals (partial bonds, hydrogen bonds) write as plain singles here,
-  // which is what a layout wants: the atoms stay adjacent. The writer's warnings are not surfaced —
-  // nothing chemical leaves this function, only coordinates come back.
+  // which is what a layout wants: the atoms stay adjacent. Unknown orders stay type 8: OCL's
+  // coordinates and wedge assignment match the former type-1 layout in the regression fixture;
+  // only geometry comes back and native bond orders stay intact. Warnings reach the cleanup status.
   // Geometry only, so the export spelling (an abbreviated label as the dummy "*", an atom the
   // engine can place) is the right one here; the R-group spelling is for CIP perception alone.
   const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
@@ -17120,13 +17123,30 @@ export function copyAsMergedMolecule(
  * `nativeMoleculeUnspellableLabels` names the first kind. What V3000 adds is room: it has no
  * 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure` string, silently.
  */
-export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string } {
+export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
+  const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+  if (unknownIds.length > 0) {
+    // No query molfile reaches a descriptor engine. The client maps this to an unsupported run,
+    // just like the existing size refusal, rather than leaving a stale report or computing numbers.
+    return { structureFormat: "molfile-v3000", structure: "", refusalReason: new UnknownBondOrderError(unknownIds).message };
+  }
   if (molecule.atoms.length === 0) {
+    if (molecule.structureFormat === "molfile-v2000" || molecule.structureFormat === "molfile-v3000") {
+      try {
+        assertMolfileHasKnownBondOrders(molecule.structure);
+      } catch (error) {
+        if (error instanceof UnknownBondOrderError) {
+          return { structureFormat: molecule.structureFormat, structure: "", refusalReason: error.message };
+        }
+        // Keep malformed-input handling on the existing failed-parse AnalysisRun path.
+      }
+    }
     return { structureFormat: molecule.structureFormat, structure: molecule.structure };
   }
   return {
     structureFormat: "molfile-v3000",
     structure: moleculeToMolfileV3000(molecule, {
+      unknownBondOrders: "refuse",
       fromDocFrame: true,
       abbreviations: "rgroup",
       kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders,

@@ -22,7 +22,9 @@
  * Known limitations (the native model does not carry these, so they cannot be emitted):
  *   - Isotopes (`M  ISO`) are not represented in `MoleculeAtom` and are therefore not written.
  *     A round-trip through this writer loses them.
- *   - `unknown` bond order has no V2000 encoding and is written as single (code 1).
+ *   - `unknown` bond order is written as type 8 (any) in both formats, with a warning. Readers
+ *     treat it as a query bond with no chemical order; chemistry and 3D engine callers must use
+ *     `unknownBondOrders: "refuse"`. Geometry-only layout requires tested query-bond support.
  *   - Dative (dashed single) bonds have no V2000 encoding: V2000 writes them as single bonds with
  *     a warning; V3000 preserves them as bond type 9 (coordination), which CTfile-aware parsers
  *     read back as dative. Dashed display on another bond order is omitted with a warning rather
@@ -42,6 +44,8 @@ import { isMetalSymbol } from "./elements";
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 
 export interface MolfileWriteOptions {
+  /** Preserve unknown orders as query type 8 (default), or refuse before writing engine input. */
+  unknownBondOrders?: "any" | "refuse";
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
   fromDocFrame?: boolean;
   /** Optional legacy collector. Warnings are also ALWAYS returned in MolfileWriteResult. */
@@ -88,8 +92,28 @@ const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
   double: 2,
   triple: 3,
   aromatic: 4,
-  unknown: 1
+  unknown: 8
 };
+
+/** An engine cannot assign chemical meaning to an unknown-order bond. Callers add context. */
+export class UnknownBondOrderError extends Error {
+  readonly bondIds: string[];
+
+  constructor(bondIds: readonly string[]) {
+    super(`${bondIds.length === 1 ? "Bond" : "Bonds"} ${bondIds.join(", ")} ${bondIds.length === 1 ? "has" : "have"} an unknown bond order.`);
+    this.name = "UnknownBondOrderError";
+    this.bondIds = [...bondIds];
+  }
+}
+
+function handleUnknownBondOrders(mol: MoleculeObject, options: MolfileWriteOptions): void {
+  const ids = mol.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+  if (ids.length === 0) return;
+  const error = new UnknownBondOrderError(ids);
+  if (options.unknownBondOrders === "refuse") throw error;
+  options.warnings?.push(error.message.slice(0, -1) +
+    "; written as bond type 8 (any), which readers treat as a query bond with no chemical order.");
+}
 
 /**
  * A dashed single bond depicts a dative/coordination interaction (zero covalent valence on either
@@ -173,7 +197,7 @@ function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], options
   for (const bond of bonds) {
     if (bond.display?.bondStyle === "dashed" && bond.order !== "single") {
       const code = resolvedMolfileBondCode(bond, options);
-      const emittedOrder = code === 1 ? "single" : code === 2 ? "double" : code === 3 ? "triple" : "aromatic";
+      const emittedOrder = code === 1 ? "single" : code === 2 ? "double" : code === 3 ? "triple" : code === 8 ? "any" : "aromatic";
       const article = bond.order === "aromatic" || bond.order === "unknown" ? "an" : "a";
       options.warnings?.push(
         `Dashed display on ${article} ${bond.order} bond is not a coordination bond; written as bond type ${code} (${emittedOrder}), dashed style not preserved.`
@@ -435,6 +459,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const warningsOut = options.warnings;
   const warnings: string[] = [];
   options = { ...options, warnings };
+  handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
   const atoms = mol.atoms;
   const bonds = mol.bonds;
@@ -532,6 +557,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const warningsOut = options.warnings;
   const warnings: string[] = [];
   options = { ...options, warnings };
+  handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
   const atoms = mol.atoms;
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based

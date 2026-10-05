@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import { readFileSync } from "node:fs";
+import { moleculeToMolfileV2000, moleculeToMolfileV3000, type MoleculeObject } from "@chemdraft/chem-core";
+import { pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 
 import {
   MAX_RASTER_WIDTH,
@@ -19,6 +22,16 @@ afterAll(() => {
 });
 
 describe("CLI depiction boundary", () => {
+  it.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("refuses query MOL identity even when canonical SMILES would match", async (write) => {
+    const fixture = readFileSync(new URL("../../fixtures/molfile/unsupported-bond-order.mol", import.meta.url), "utf8");
+    const graph = pastedStructureDepictionFromMolfile(fixture);
+    const molecule: MoleculeObject = { id: "query", type: "molecule", x: 0, y: 0, width: 10, height: 10, rotation: 0, style: {}, structure: "", structureFormat: "molfile-v2000",
+      atoms: graph.atoms.map((atom, index) => ({ id: `a${index}`, element: atom.element, x: atom.x, y: atom.y, formalCharge: atom.charge })),
+      bonds: graph.bonds.map((bond, index) => ({ id: `b${index}`, fromAtomId: `a${bond.from}`, toAtomId: `a${bond.to}`, order: bond.order })),
+      superatoms: [], rGroups: [] };
+    await expect(assertCanonicalIdentity("C~CO", write(molecule, { kekuleBondOrders: new Map() }).contents))
+      .rejects.toThrow("Cannot verify chemical identity: Bond bond_001 has an unknown bond order.");
+  });
   it("recognizes a duplicate-module RDKit configuration error by its typed name", () => {
     const error = new Error("loader unavailable");
     error.name = "RdkitNotConfiguredError";

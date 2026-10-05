@@ -15,6 +15,7 @@
 import {
   AnalysisScheduler,
   AnalysisSessionCache,
+  emptyAnalysisRun,
   type AnalysisRequestSpec,
   type AnalysisRun,
   type ScheduleOptions
@@ -40,12 +41,14 @@ const MAX_HEAVY_ATOMS = 500;
 /** Stop recreating a crashed worker after this many restarts; something is systematically wrong. */
 const MAX_WORKER_RESTARTS = 3;
 
+export type AnalysisClientRequestSpec = AnalysisRequestSpec & { refusalReason?: string };
+
 export interface AnalysisClient {
   /**
    * Analyse `spec` for `slot`, superseding whatever that slot was doing. Never rejects: a superseded
    * or refused request resolves with a result-less run carrying the reason.
    */
-  analyze(slot: string, spec: AnalysisRequestSpec, options?: ScheduleOptions): Promise<AnalysisRun>;
+  analyze(slot: string, spec: AnalysisClientRequestSpec, options?: ScheduleOptions): Promise<AnalysisRun>;
   /** Abandon a slot's in-flight analysis — call when the selection clears. */
   cancel(slot: string): void;
   /** Load the WASM and warm the JIT before the user's first request. Idempotent, best-effort. */
@@ -176,7 +179,21 @@ export function createAnalysisClient(workerFactory?: () => Worker): AnalysisClie
   });
 
   return {
-    analyze: (slot, spec, options) => scheduler.request(slot, spec, options),
+    analyze: (slot, spec, options) => {
+      if (spec.refusalReason) {
+        scheduler.cancel(slot);
+        const now = new Date().toISOString();
+        return Promise.resolve(emptyAnalysisRun({
+          runId: `analysis-refused-${nextId++}`,
+          startedAt: now,
+          finishedAt: now,
+          interpretation: sourceInterpretation(spec.format, spec.value),
+          status: "unsupported",
+          warnings: [{ code: "structure.unknown_bond_order", severity: "error", message: spec.refusalReason, affectedResultIds: [] }]
+        }));
+      }
+      return scheduler.request(slot, spec, options);
+    },
     cancel: (slot) => scheduler.cancel(slot),
     warmup: () => {
       if (warmed) return;
@@ -200,4 +217,3 @@ export function analysisClient(): AnalysisClient | null {
   if (singleton === undefined) singleton = createAnalysisClient();
   return singleton;
 }
-

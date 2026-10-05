@@ -34,6 +34,7 @@ import {
   toEngineDocument,
   createDocumentHistory,
   moleculeToMolfileV2000,
+  UnknownBondOrderError,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   redo as redoDocumentHistory,
@@ -1464,7 +1465,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.4.16.00-opus";
+const CURRENT_BUILD_STAMP = "10.4.19.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1515,9 +1516,11 @@ const SPIN_PREFETCH_MAX_ATOMS = 200;
 /** Speculation is safe only when the aromatic interpretation is settled. Routine writer losses
  * (dative V2000 spelling, abbreviation placeholders) are reported by the explicit Spin action. */
 export function spin3dPrefetchMolfile(molecule: MoleculeObject): string | undefined {
+  if (molecule.bonds.some((bond) => bond.order === "unknown")) return undefined;
   const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
   if (resolution.unresolvedAtomIds.size > 0 || resolution.guessedHydrogenAtomIds.size > 0) return undefined;
   return moleculeToMolfileV2000(molecule, {
+    unknownBondOrders: "refuse",
     fromDocFrame: true,
     kekuleBondOrders: resolution.kekuleOrders
   }).contents;
@@ -1850,7 +1853,7 @@ export function MainWindow({
       // The live atom/bond graph, not the object's `structure` string: that string is empty for an
       // imported molecule ("The structure input is empty.") and a lossy SMILES for a drawn fused ring
       // system, which analysed a different molecule than the one on the page.
-      const { structureFormat: format, structure } = analysisFacingStructure(molecule);
+      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule);
       const subjectKey = analysisSubjectKey(molecule);
       const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
       const client = analysisClient();
@@ -1867,6 +1870,7 @@ export function MainWindow({
           {
             format,
             value: structure,
+            ...(refusalReason ? { refusalReason } : {}),
             ...(interpretationOverride ? { interpretationOverride } : {})
           },
           { immediate: true }
@@ -4212,6 +4216,13 @@ export function MainWindow({
       setStatus("Spin 3D needs an editable molecule");
       return;
     }
+    const unknownBondIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+    if (unknownBondIds.length > 0) {
+      const error = new UnknownBondOrderError(unknownBondIds);
+      commandSpan.fail(error);
+      setStatus(`3D spin unavailable: ${error.message}`);
+      return;
+    }
     if (spin3dStateRef.current?.objectId === objectId) {
       // Button mashed while the overlay is already up — keep the live session.
       traceInfo("spin.duplicate", { message: "overlay already active" });
@@ -4300,6 +4311,7 @@ export function MainWindow({
       // label goes as the dummy "*" here. Only CIP perception uses the R-group spelling
       // (stereoPerceptionMolfile); the two never meet — this molfile is not perceived.
       molfile = moleculeToMolfileV2000(molecule, {
+        unknownBondOrders: "refuse",
         fromDocFrame: true,
         warnings: molfileWarnings,
         kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders

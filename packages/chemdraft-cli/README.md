@@ -18,6 +18,8 @@ heavy atoms. PNG output is limited to a width of 16–4000 pixels.
 
 Every chemical file export is checked so that the canonical SMILES written equals the input's; if it
 does not, the job fails.
+Query bonds (for example `C~CO`, or MOL bond type 8) are refused before MOL identity verification:
+matching query SMILES cannot establish a chemical bond order. The failure names the affected bonds.
 
 ## render
 
