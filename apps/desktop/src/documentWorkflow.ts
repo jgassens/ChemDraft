@@ -50,6 +50,7 @@ import {
   moleculeToMolfileV2000,
   clearChangedAtomHydrogenHints,
   moleculeToMolfileV3000,
+  UnknownBondOrderError,
   PageSizePresets,
   pageMarginFromLayout,
   nativeDrawingStyleFromObjectStyle,
@@ -141,6 +142,7 @@ import {
   atomPairKey,
   bondGeometry,
   clamp,
+  assertMolfileHasKnownBondOrders,
   createNativeReactionArrow,
   createSmilesMolecule,
   defaultDoubleBondSide,
@@ -13416,6 +13418,13 @@ export function moleculeHasFusedRingSystem(molecule: MoleculeObject): boolean {
   });
 }
 
+// Query bonds make CIP perception unsafe, but a drawing without wedge/hash markers has no R/S
+// reference for the read-back guard to protect. Keep ordinary molecules on the existing path.
+function skipUnknownBondStereoGuard(molecule: MoleculeObject): boolean {
+  return molecule.bonds.some((bond) => bond.order === "unknown") &&
+    !molecule.bonds.some((bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed");
+}
+
 /**
  * Rebuild a native molecule's 2D geometry from an engine re-layout (the "3D Cleanup" command, and
  * what 2D Cleanup uses for multi-ring and coordination structures). Free metals — atoms outside the
@@ -13603,8 +13612,9 @@ export function applyNativeMoleculeEngineRelayout(
   }
   const ligandToOriginalIndex = ligandAtoms.map((atom) => molecule.atoms.indexOf(atom));
   // Dashed bonds between non-metals (partial bonds, hydrogen bonds) write as plain singles here,
-  // which is what a layout wants: the atoms stay adjacent. The writer's warnings are not surfaced —
-  // nothing chemical leaves this function, only coordinates come back.
+  // which is what a layout wants: the atoms stay adjacent. Unknown orders stay type 8: OCL's
+  // coordinates and wedge assignment match the former type-1 layout in the regression fixture;
+  // only geometry comes back and native bond orders stay intact. Warnings reach the cleanup status.
   // Geometry only, so the export spelling (an abbreviated label as the dummy "*", an atom the
   // engine can place) is the right one here; the R-group spelling is for CIP perception alone.
   const ligand: MoleculeObject = { ...molecule, atoms: ligandAtoms, bonds: ligandBonds };
@@ -13797,7 +13807,7 @@ export function applyNativeMoleculeEngineRelayout(
   // any centre that reads the wrong hand; if it cannot be made to read back, refuse the layout
   // (the caller surfaces the error; the document is untouched) rather than commit an enantiomer.
   let bonds = sidedBonds;
-  if (options.perceiveStereo) {
+  if (options.perceiveStereo && !skipUnknownBondStereoGuard(molecule)) {
     const perceive = options.perceiveStereo;
     const reference = new Map<number, "R" | "S">();
     perceive(stereoPerceptionMolfile(molecule, options.warnings)).forEach((entry, index) => {
@@ -15262,8 +15272,11 @@ export function readSpin3dModel(molecule: MoleculeObject): Spin3dDocumentModelV1
   return model as Spin3dDocumentModelV1;
 }
 
-/** The persisted model only if it still matches the molecule's current graph. */
+/** The persisted model only if it matches a graph with fully known bond orders. */
 export function validSpin3dModelFor(molecule: MoleculeObject): Spin3dDocumentModelV1 | undefined {
+  // Older releases could persist a conformer built on guessed unknown bond orders.
+  // Even a matching signature cannot make that model chemically valid.
+  if (molecule.bonds.some((bond) => bond.order === "unknown")) return undefined;
   const model = readSpin3dModel(molecule);
   return model && model.graphSignature === conformerGraphSignature(molecule) ? model : undefined;
 }
@@ -16056,7 +16069,7 @@ export function flattenSpunMolecule(
   // view (document untouched) instead of silently committing a different stereoisomer.
   const structureWarnings: string[] = [];
   let committedBonds = nextBonds;
-  if (options.perceiveStereo) {
+  if (options.perceiveStereo && !skipUnknownBondStereoGuard(molecule)) {
     const perceive = options.perceiveStereo;
     const referenceStereo = perceive(stereoPerceptionMolfile(molecule, structureWarnings));
     const reference = new Map<number, "R" | "S">();
@@ -17120,13 +17133,30 @@ export function copyAsMergedMolecule(
  * `nativeMoleculeUnspellableLabels` names the first kind. What V3000 adds is room: it has no
  * 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure` string, silently.
  */
-export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string } {
+export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
+  const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+  if (unknownIds.length > 0) {
+    // No query molfile reaches a descriptor engine. The client maps this to an unsupported run,
+    // just like the existing size refusal, rather than leaving a stale report or computing numbers.
+    return { structureFormat: "molfile-v3000", structure: "", refusalReason: new UnknownBondOrderError(unknownIds).message };
+  }
   if (molecule.atoms.length === 0) {
+    if (molecule.structureFormat === "molfile-v2000" || molecule.structureFormat === "molfile-v3000") {
+      try {
+        assertMolfileHasKnownBondOrders(molecule.structure);
+      } catch (error) {
+        if (error instanceof UnknownBondOrderError) {
+          return { structureFormat: molecule.structureFormat, structure: "", refusalReason: error.message };
+        }
+        // Keep malformed-input handling on the existing failed-parse AnalysisRun path.
+      }
+    }
     return { structureFormat: molecule.structureFormat, structure: molecule.structure };
   }
   return {
     structureFormat: "molfile-v3000",
     structure: moleculeToMolfileV3000(molecule, {
+      unknownBondOrders: "refuse",
       fromDocFrame: true,
       abbreviations: "rgroup",
       kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders,

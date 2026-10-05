@@ -44,6 +44,12 @@ describe("depictSmilesForPaste", () => {
     );
   });
 
+  it("propagates an invented-hydrogen refusal like a radical refusal", async () => {
+    await expect(depictSmilesForPaste("O=[N]=O")).rejects.toThrow(
+      new ocl.UnrequestedSmilesHydrogenError("O=[N]=O", { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 }).message
+    );
+  });
+
   it("preserves structured atom charges, bond orders and wedges on V2000 reparse failure", async () => {
     const fallback = ocl.depictSmiles2D("C[C@H](F)Cl");
     fallback.molfile = "overflowed compatibility molfile";
@@ -72,6 +78,20 @@ describe("depictSmilesListForPaste", () => {
     expect(result?.failures).toEqual(["n1cccc1", "c1cccc1"].map((smiles) => ({
       input: smiles, error: new ocl.UnrequestedSmilesRadicalError(smiles).message
     })));
+    expect(result?.skipped).toBe(0);
+  });
+
+  it("records an invented-hydrogen refusal per item and keeps the valid entries", async () => {
+    const text = "CCO\nO=[N]=O\nn1cccc1\n[NH4+]\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map((entry) => entry.smiles)).toEqual(["CCO", "[NH4+]", "CCN"]);
+    expect(result?.failures).toEqual([
+      {
+        input: "O=[N]=O",
+        error: new ocl.UnrequestedSmilesHydrogenError("O=[N]=O", { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 }).message
+      },
+      { input: "n1cccc1", error: new ocl.UnrequestedSmilesRadicalError("n1cccc1").message }
+    ]);
     expect(result?.skipped).toBe(0);
   });
 

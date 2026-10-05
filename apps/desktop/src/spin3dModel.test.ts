@@ -173,6 +173,26 @@ describe("spin3d model — attach / read / validate", () => {
     expect(readSpin3dModel(bad({ kind: SPIN3D_MODEL_KEY, graphSignature: "x", atomIds: ["a0"], coords3d: [0, 0, 0], updatedAt: "now" }))).toBeUndefined(); // missing orientation
   });
 
+  it("rejects a matching persisted model with unknown bond orders and accepts a known-order model", () => {
+    const unknown = molecule(CHAIN_ATOMS, CHAIN_BONDS.map((bond, index) =>
+      index === 1 ? { ...bond, order: "unknown" as const } : bond
+    ));
+    const attached = attachSpin3dModel(documentWith(unknown), "mol", modelFor(unknown));
+    const reloaded = deserializeDocument(serializeDocument(attached));
+    const persisted = moleculeOf(reloaded);
+    const model = readSpin3dModel(persisted)!;
+    expect(model.graphSignature).toBe(conformerGraphSignature(persisted));
+    expect(validSpin3dModelFor(persisted)).toBeUndefined();
+
+    const known = { ...persisted, bonds: CHAIN_BONDS };
+    // Resolving the bond also requires a model signed for the now-known graph.
+    expect(validSpin3dModelFor(known)).toBeUndefined();
+    const knownModel = modelFor(known);
+    const resolved = moleculeOf(attachSpin3dModel(documentWith(known), "mol", knownModel));
+    expect(validSpin3dModelFor(resolved)).toBe(readSpin3dModel(resolved));
+    expect(validSpin3dModelFor(resolved)).toEqual(knownModel);
+  });
+
   it("spin3dModelCoordsForMolecule reorders coords into the molecule's atom order", () => {
     const mol = molecule();
     const model = modelFor(mol);

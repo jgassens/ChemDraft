@@ -9,10 +9,13 @@ import {
   depictSmiles2D,
   ensureOclResources,
   generate3DConformerProgressive,
+  isSmilesChemistryRefusal,
   oclConformerGenerator,
   perceiveStereoCentersFromMolfile,
   perceiveUnrepresentableStereo,
-  relayoutMolfile2D
+  relayoutMolfile2D,
+  UnrequestedSmilesHydrogenError,
+  UnrequestedSmilesRadicalError
 } from "./index";
 
 /** Minimal V2000 atom-block y-coordinate reader, to pin the depiction's y convention. */
@@ -217,6 +220,53 @@ describe("ocl-adapter — depictSmiles2D", () => {
       expect(parsed.getAtomLabel(radicalAtoms[0])).toBe("C");
     }
   );
+
+  it.each([
+    ["O=[N]=O", "[N]", 2],
+    ["[O:1]=[N:2]=O", "[N:2]", 2],
+    ["[Na+].O=[N]=O", "[N]", 3]
+  ])("refuses %s, whose bracket atom %s would gain a hydrogen", (smiles, bracket, atomNumber) => {
+    let thrown: unknown;
+    try {
+      depictSmiles2D(smiles);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(UnrequestedSmilesHydrogenError);
+    expect(isSmilesChemistryRefusal(thrown)).toBe(true);
+    expect((thrown as UnrequestedSmilesHydrogenError).mismatch).toEqual({ bracket, atomNumber, written: 0, parsed: 1 });
+    expect((thrown as Error).message).toBe(
+      `SMILES "${smiles}" would gain a hydrogen at bracket atom ${bracket} (atom ${atomNumber}) that the input ` +
+      "does not write; refusing rather than changing the structure."
+    );
+  });
+
+  it("words hydrogen refusals by direction and count", () => {
+    expect(new UnrequestedSmilesHydrogenError("X", { bracket: "[C]", atomNumber: 1, written: 0, parsed: 2 }).message)
+      .toBe('SMILES "X" would gain 2 hydrogens at bracket atom [C] (atom 1) that the input does not write; refusing rather than changing the structure.');
+    expect(new UnrequestedSmilesHydrogenError("X", { bracket: "[CH3]", atomNumber: 4, written: 3, parsed: 2 }).message)
+      .toBe('SMILES "X" would lose a hydrogen that the input writes at bracket atom [CH3] (atom 4); refusing rather than changing the structure.');
+    expect(new UnrequestedSmilesHydrogenError("X").message).toContain("could not be checked");
+    // Both refusals share one marker so lazy callers need a single check.
+    expect(isSmilesChemistryRefusal(new UnrequestedSmilesRadicalError("X"))).toBe(true);
+    expect(isSmilesChemistryRefusal(new Error("X"))).toBe(false);
+  });
+
+  it.each([
+    "[NH4+]", "[Na+].[Cl-]", "C[N+](=O)[O-]", "c1cc[nH]c1", "c1ccncc1", "F[C@@H](Cl)Br", "[2H]C", "[CH3]C",
+    "[H]C([H])([H])[H]", "[H][H]", "OC(=O)[O-]", "[Fe]", "[OH-]", "[CH2]=O", "C[NH3+]", "[H][C]([H])([H])[H]",
+    "[H][C@](F)(Cl)Br", "[nH+]1ccccc1", "[H]n1cccc1", "[2H]C([2H])([2H])[2H]", "[13CH4]", "[se]1cccc1", "[*]C"
+  ])("parses %s unchanged, with input [H] atoms not counted against their neighbour's bracket", (smiles) => {
+    const depiction = depictSmiles2D(smiles);
+    const parsed = OCL.Molecule.fromMolfile(depiction.molfile);
+    expect(parsed.getIDCode()).toBe(OCL.Molecule.fromSmiles(smiles).getIDCode());
+  });
+
+  it("reads [CH3]C as ethane: three written hydrogens plus a bond leave no radical", () => {
+    const parsed = OCL.Molecule.fromMolfile(depictSmiles2D("[CH3]C").molfile);
+    expect(parsed.getIDCode()).toBe(OCL.Molecule.fromSmiles("CC").getIDCode());
+    for (let atom = 0; atom < parsed.getAllAtoms(); atom += 1) expect(parsed.getAtomRadical(atom)).toBe(0);
+  });
 
   it("lays out a chiral SMILES with a wedge bond and atom-aligned coordinates", () => {
     const dep = depictSmiles2D("C[C@H](F)Cl");

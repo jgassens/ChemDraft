@@ -2,7 +2,7 @@ import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { describe, expect, it } from "vitest";
 import { ensureRdkit, resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
-import { isDativeBond, isMetalSymbol } from "./index";
+import { isDativeBond, isMetalSymbol, UnknownBondOrderError } from "./index";
 import { moleculeToMolfileV2000, moleculeToMolfileV3000 } from "./molfile";
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 import { nativeBondOrderResolution } from "../../layout-engine/src/index";
@@ -286,7 +286,7 @@ describe("dative (dashed) bonds", () => {
     expect(warnings).toEqual([]);
   });
 
-  it.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("warns that dashed unknown order is actually written as single", (write) => {
+  it.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("names any-bond encoding for dashed unknown order", (write) => {
     const unknown = molecule(
       [{ id: "a", element: "C", x: 0, y: 0 }, { id: "b", element: "C", x: 1, y: 0 }],
       [{ id: "b1", from: "a", to: "b", order: "unknown", style: "dashed" }]
@@ -294,8 +294,108 @@ describe("dative (dashed) bonds", () => {
     const warnings: string[] = [];
     write(unknown, { warnings, kekuleBondOrders: new Map() });
     expect(warnings).toEqual([
-      "Dashed display on an unknown bond is not a coordination bond; written as bond type 1 (single), dashed style not preserved."
+      "Bond b1 has an unknown bond order; written as bond type 8 (any), which readers treat as a query bond with no chemical order.",
+      "Dashed display on an unknown bond is not a coordination bond; written as bond type 8 (any), dashed style not preserved."
     ]);
+  });
+});
+
+describe.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("unknown bond orders: %s", (write) => {
+  const graph = molecule(
+    [{ id: "a1", element: "C", x: 0, y: 0 }, { id: "a2", element: "C", x: 1.5, y: 0 }, { id: "a3", element: "O", x: 3, y: 0 }],
+    [{ id: "b3", from: "a1", to: "a2", order: "unknown" }, { id: "b7", from: "a2", to: "a3", order: "unknown" }]
+  );
+  it("writes type 8, warns once with all ids, and round-trips unknown orders", () => {
+    const collector: string[] = [];
+    const result = write(graph, { kekuleBondOrders: new Map(), warnings: collector });
+    expect(result.warnings).toEqual([
+      "Bonds b3, b7 have an unknown bond order; written as bond type 8 (any), which readers treat as a query bond with no chemical order."
+    ]);
+    expect(collector).toEqual(result.warnings);
+    if (write === moleculeToMolfileV2000) {
+      expect(result.contents).toContain("  1  2  8  0");
+      expect(result.contents).toContain("  2  3  8  0");
+    } else {
+      expect(result.contents).toContain("M  V30 1 8 1 2\n");
+      expect(result.contents).toContain("M  V30 2 8 2 3\n");
+    }
+    expect(parseMolfileGraph(result.contents).bonds.map((bond) => bond.order)).toEqual(["unknown", "unknown"]);
+  });
+
+  it.each([false, true])("omits literal valence on unknown contact, including a known single bond (%s)", (withSingle) => {
+    const graph = molecule(
+      [
+        { id: "n", element: "N", x: 0, y: 0, labelLiteral: true },
+        { id: "c", element: "C", x: 1.5, y: 0, labelLiteral: true },
+        { id: "o", element: "O", x: -1.5, y: 0, labelLiteral: true },
+        { id: "h", element: "H", x: -3, y: 0, labelLiteral: true }
+      ],
+      [
+        { id: "unknown", from: "n", to: "c", order: "unknown" },
+        ...(withSingle ? [{ id: "single", from: "n", to: "o" }] : []),
+        { id: "oh", from: "o", to: "h" }
+      ]
+    );
+    const options = { kekuleBondOrders: new Map<string, number>() };
+    const result = write(graph, options);
+    const known = write({ ...graph, bonds: graph.bonds.map((bond) => ({ ...bond, order: "single" })) }, options);
+    const lines = (contents: string) => write === moleculeToMolfileV2000
+      ? atomLines(contents)
+      : contents.split("M  V30 BEGIN ATOM\n")[1]!.split("M  V30 END ATOM")[0]!.trimEnd().split("\n");
+    const emitted = lines(result.contents);
+    for (const index of [0, 1]) {
+      if (write === moleculeToMolfileV2000) expect(emitted[index]!.slice(48, 51)).toBe("  0");
+      else expect(emitted[index]).not.toContain("VAL=");
+    }
+    // Literal O and H do not touch the query bond, so their complete atom records stay identical.
+    expect(emitted.slice(2)).toEqual(lines(known.contents).slice(2));
+    if (write === moleculeToMolfileV2000) {
+      expect(emitted[2]!.slice(48, 51)).toBe(withSingle ? "  2" : "  1");
+      expect(emitted[3]!.slice(48, 51)).toBe("  1");
+    } else {
+      expect(emitted[2]).toContain(withSingle ? "VAL=2" : "VAL=1");
+      expect(emitted[3]).toContain("VAL=1");
+    }
+    expect(result.warnings).toContain(
+      "Literal atoms c, n have an unknown-order bond; written without a valence field, so a reader may add hydrogens."
+    );
+  });
+
+  it.each(["dummy", "rgroup"] as const)("keeps CH3 on an unknown bond on the %s placeholder path with a reason", (abbreviations) => {
+    const graph = molecule(
+      [{ id: "label", element: "CH3", x: 0, y: 0 }, { id: "c", element: "C", x: 1.5, y: 0 }],
+      [{ id: "unknown", from: "label", to: "c", order: "unknown" }]
+    );
+    const result = write(graph, {
+      kekuleBondOrders: new Map(), abbreviations,
+      spellLabel: (label) => label === "CH3" ? { element: "C", hydrogens: 3 } : undefined
+    });
+    const placeholder = abbreviations === "dummy" ? "*" : "R#";
+    if (write === moleculeToMolfileV2000) {
+      expect(atomLines(result.contents)[0]!.slice(31, 34).trim()).toBe(placeholder);
+      expect(atomLines(result.contents)[0]!.slice(48, 51)).toBe("  0");
+    } else {
+      expect(result.contents).toContain(`M  V30 1 ${placeholder} `);
+      expect(result.contents).not.toContain("VAL=");
+    }
+    expect(result.warnings).toContainEqual(expect.stringContaining(
+      'Atom label "CH3" is not an element symbol; it cannot be written as C because it has an unknown-order bond, so the hydrogen count it states cannot be carried by an explicit valence'
+    ));
+    expect(result.warnings).toContainEqual(expect.stringContaining(
+      abbreviations === "dummy" ? "written as a dummy atom (*)" : "written as R-group placeholder R1"
+    ));
+  });
+  it.each([["b3"], ["b3", "b7"]])("refuses before emitting output or warnings: %j", (...ids) => {
+    const target = { ...graph, bonds: graph.bonds.filter((bond) => ids.includes(bond.id)) };
+    const warnings: string[] = [];
+    const call = () => write(target, { kekuleBondOrders: new Map(), unknownBondOrders: "refuse", warnings });
+    expect(call).toThrow(UnknownBondOrderError);
+    expect(call).toThrow(ids.length === 1 ? "Bond b3 has an unknown bond order." : "Bonds b3, b7 have an unknown bond order.");
+    try { call(); } catch (error) { expect((error as UnknownBondOrderError).bondIds).toEqual(ids); }
+    expect(warnings).toEqual([]);
+  });
+  it("does not warn or refuse a known-order molecule", () => {
+    expect(write(chiral, { kekuleBondOrders: new Map(), unknownBondOrders: "refuse" }).warnings).toEqual([]);
   });
 });
 

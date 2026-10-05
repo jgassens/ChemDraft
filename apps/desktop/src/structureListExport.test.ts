@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import {
   createPhase4Document,
+  insertNativeMolfileMolecule,
   copyAsSmiles,
   insertSmilesMoleculeGrid,
   type PastedStructureDepiction
@@ -17,6 +19,22 @@ vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 beforeEach(() => {
   vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(undefined);
   vi.mocked(registerRdkitWasmLoader).mockReset();
+});
+
+it("imports the unsupported-order fixture, exports type 8 in SDF, and refuses its SMILES without calling the engine", async () => {
+  const input = readFileSync(new URL("../../../packages/fixtures/molfile/unsupported-bond-order.mol", import.meta.url), "utf8");
+  const document = insertNativeMolfileMolecule(createPhase4Document("Unknown bond fixture"), { x: 50, y: 50 }, input, "molfile-v2000");
+  const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+  const id = molecule.bonds.find((bond) => bond.order === "unknown")!.id;
+  const result = await exportStructureListSdf(document);
+  expect(result.contents).toContain("  1  2  8  0");
+  expect(parseMolfileGraph(result.contents).bonds.map((bond) => bond.order)).toEqual(["unknown", "single"]);
+  expect(result.warnings).toEqual([
+    expect.objectContaining({ code: "export.sdf_v2000_loss", message: `Bond ${id} has an unknown bond order; written as bond type 8 (any), which readers treat as a query bond with no chemical order.` }),
+    expect.objectContaining({ code: "export.smiles_write_failed", message: `Cannot write SMILES: bond ${id} has an unknown bond order.` })
+  ]);
+  expect(result.contents).not.toContain("> <SMILES>");
+  expect(computeStructureIdentifiers).not.toHaveBeenCalled();
 });
 
 function moleculeAt(id: string, x: number, y: number, width = 100, height = 100): MoleculeObject {
@@ -301,7 +319,10 @@ describe("structure list export", () => {
     expect(smi.warnings).toEqual([expectedWarning]);
 
     const sdf = await exportStructureListSdf(document);
-    expect(sdf.warnings).toEqual([expectedWarning]);
+    expect(sdf.warnings).toEqual([
+      expect.objectContaining({ code: "export.sdf_v2000_loss", objectId: molecule.id, message: expect.stringContaining("bond type 8 (any)") }),
+      expectedWarning
+    ]);
     expect(sdf.contents.match(/^\$\$\$\$$/gm)).toHaveLength(2);
     expect(sdf.contents).toContain("> <Index>\n1\n");
     expect([...sdf.contents.matchAll(/> <SMILES>\n([^\n]+)/g)].map((match) => match[1])).toEqual(["CC"]);

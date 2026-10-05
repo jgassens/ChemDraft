@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisSchemaVersion, type AnalysisRun } from "@chemdraft/analysis-core";
+import { AnalysisRunSchema, AnalysisSchemaVersion, buildAnalysisReport, renderReportText, type AnalysisRun } from "@chemdraft/analysis-core";
 import { sourceInterpretation } from "@chemdraft/rdkit-adapter";
 
 import { createAnalysisClient } from "./analysisClient";
@@ -76,6 +76,29 @@ afterEach(() => {
 });
 
 describe("createAnalysisClient", () => {
+  it("declines unknown bond orders without creating a worker or computing numbers", async () => {
+    const { client, workers } = createClient();
+    const run = await client.analyze("selection", { format: "molfile-v3000", value: "", refusalReason: "Bonds b3, b7 have an unknown bond order." }, { immediate: true });
+    expect(run.status).toBe("unsupported");
+    expect(run.results).toEqual([]);
+    expect(run.engines).toEqual([]);
+    expect(run.warnings).toEqual([expect.objectContaining({ code: "structure.unknown_bond_order", message: "Bonds b3, b7 have an unknown bond order." })]);
+    expect(AnalysisRunSchema.safeParse(run).success).toBe(true);
+    expect(renderReportText(buildAnalysisReport(run))).toContain("unknown bond order");
+    expect(workers).toEqual([]);
+    client.dispose();
+  });
+
+  it("supersedes a pending analysis when the new graph has an unknown bond order", async () => {
+    const { client, workers } = createClient();
+    const old = client.analyze("selection", ASPIRIN);
+    const refused = await client.analyze("selection", { format: "molfile-v3000", value: "", refusalReason: "Bond b3 has an unknown bond order." });
+    expect((await old).status).toBe("cancelled");
+    expect(refused.status).toBe("unsupported");
+    await vi.advanceTimersByTimeAsync(200);
+    expect(workers).toEqual([]);
+    client.dispose();
+  });
   it("does not create a worker until the debounce actually fires", async () => {
     // The worker owns a 7.5 MB WASM module. Creating it on a request that a keystroke is about to
     // supersede would pay the load cost for an answer nobody wanted.

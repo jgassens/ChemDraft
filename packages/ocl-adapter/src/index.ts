@@ -469,14 +469,33 @@ function inventDepiction2D(
  */
 export function depictSmiles2D(smiles: string): Depiction2D {
   const molecule = OCL.Molecule.fromSmiles(smiles);
-  if (hasRadical(molecule) && !hasOnlyRequestedBracketRadicals(smiles, molecule)) {
+  const brackets = tagBracketAtoms(smiles);
+  const tagged = brackets.atoms.length > 0 ? reparseTaggedSmiles(brackets.smiles, molecule) : undefined;
+  if (hasRadical(molecule) && !hasOnlyRequestedBracketRadicals(brackets, tagged)) {
     throw new UnrequestedSmilesRadicalError(smiles);
+  }
+  if (brackets.atoms.length > 0) {
+    const verdict = bracketHydrogenVerdict(brackets, tagged);
+    if (verdict !== "match") throw new UnrequestedSmilesHydrogenError(smiles, verdict);
   }
   return inventDepiction2D(molecule);
 }
 
+/**
+ * A SMILES the OpenChemLib route refuses because reading it would change the structure. Callers
+ * that import this package lazily cannot use `instanceof`, so they test `smilesChemistryRefusal`.
+ */
+export class SmilesChemistryRefusalError extends Error {
+  readonly smilesChemistryRefusal = true;
+}
+
+/** True for every refusal `depictSmiles2D` throws instead of changing the structure. */
+export function isSmilesChemistryRefusal(error: unknown): error is SmilesChemistryRefusalError {
+  return error instanceof Error && (error as Partial<SmilesChemistryRefusalError>).smilesChemistryRefusal === true;
+}
+
 /** A parsed radical that cannot be traced to an explicitly under-valent input atom. */
-export class UnrequestedSmilesRadicalError extends Error {
+export class UnrequestedSmilesRadicalError extends SmilesChemistryRefusalError {
   constructor(smiles: string) {
     super(
       `OpenChemLib could not read SMILES "${smiles}": reading it would invent an unpaired electron. ` +
@@ -487,6 +506,43 @@ export class UnrequestedSmilesRadicalError extends Error {
   }
 }
 
+/** A bracket atom whose parsed hydrogen count differs from the count its bracket writes. */
+export interface SmilesHydrogenMismatch {
+  /** The bracket token as written, e.g. `[N]`. */
+  bracket: string;
+  /** 1-based position of the atom among the input's atoms. */
+  atomNumber: number;
+  /** Hydrogens the bracket writes (0 when it writes no H). */
+  written: number;
+  /** Hydrogens OpenChemLib attached to that atom, not counting the input's own [H] atoms. */
+  parsed: number;
+}
+
+/**
+ * A bracket atom would carry hydrogens its bracket does not write. Without `mismatch`, the bracket
+ * hydrogens could not be checked at all, which is refused too rather than trusted.
+ */
+export class UnrequestedSmilesHydrogenError extends SmilesChemistryRefusalError {
+  readonly mismatch?: SmilesHydrogenMismatch;
+
+  constructor(smiles: string, mismatch?: SmilesHydrogenMismatch) {
+    super(mismatch ? hydrogenMismatchMessage(smiles, mismatch) :
+      `SMILES "${smiles}" has bracket atoms whose hydrogens could not be checked against what the ` +
+      "input writes; refusing rather than risk changing the structure.");
+    this.name = "UnrequestedSmilesHydrogenError";
+    this.mismatch = mismatch;
+  }
+}
+
+function hydrogenMismatchMessage(smiles: string, { bracket, atomNumber, written, parsed }: SmilesHydrogenMismatch): string {
+  const count = (n: number) => (n === 1 ? "a hydrogen" : `${n} hydrogens`);
+  const where = `bracket atom ${bracket} (atom ${atomNumber})`;
+  const change = parsed > written
+    ? `would gain ${count(parsed - written)} at ${where} that the input does not write`
+    : `would lose ${count(written - parsed)} that the input writes at ${where}`;
+  return `SMILES "${smiles}" ${change}; refusing rather than changing the structure.`;
+}
+
 function hasRadical(molecule: OclMolecule): boolean {
   for (let atom = 0; atom < molecule.getAllAtoms(); atom += 1) {
     if (molecule.getAtomRadical(atom) !== 0) return true;
@@ -494,34 +550,130 @@ function hasRadical(molecule: OclMolecule): boolean {
   return false;
 }
 
-function hasOnlyRequestedBracketRadicals(smiles: string, molecule: OclMolecule): boolean {
+interface TaggedBracketAtom {
+  /** The token as written, user atom map included. */
+  token: string;
+  /** 1-based position among all input atoms (organic-subset and bracket). */
+  atomNumber: number;
+  /** Hydrogens the bracket writes; undefined when its contents cannot be read. */
+  hydrogens: number | undefined;
+  /** An aliphatic (uppercase) element symbol. */
+  aliphatic: boolean;
+  /** The atom is itself a hydrogen ([H], [2H], ...). */
+  hydrogenAtom: boolean;
+}
+
+interface TaggedBracketSmiles {
+  /** The input with each bracket atom given the unique map `index + 1` of `atoms`. */
+  smiles: string;
+  atoms: TaggedBracketAtom[];
+}
+
+// isotope? symbol chirality? hydrogens? charge? — the atom map is stripped before matching.
+const BRACKET_ATOM = /^(\d+)?(\*|[A-Z][a-z]?|[a-z][a-z]?)(@(?:@|TH[12]|AL[12]|SP[1-3]|TB\d{1,2}|OH\d{1,2})?)?(?:H(\d*))?(?:[+-](?:\d+|[+-]*))?$/;
+
+function tagBracketAtoms(smiles: string): TaggedBracketSmiles {
   // Atom indices cannot identify bracket tokens: OCL may compact/reorder explicit hydrogens.
-  // Reparse with unique maps on bracket atoms only, leaving implicit-H atoms untouched. Existing
-  // user maps are replaced in this temporary parse; the returned molecule keeps the user's maps.
-  let nextMap = 0;
-  const requestedMaps = new Set<number>();
-  const taggedSmiles = smiles.replace(/\[([^\[\]]+)\]/g, (_token, contents: string) => {
-    const map = ++nextMap;
-    // An aliphatic bracket specifies its H count (omitted H means zero), so under-valence asks
-    // for a radical. Aromatic bracket radicals are ambiguous with failed kekulization; refuse
-    // them conservatively, even if OCL happened to place its invented radical on that bracket.
-    if (/^\d*[A-Z][a-z]?/.test(contents)) requestedMaps.add(map);
-    return `[${contents.replace(/:\d+$/, "")}:${map}]`;
+  // Tag bracket atoms only with unique maps, leaving implicit-H atoms untouched. Existing user
+  // maps are replaced in this temporary parse; the returned molecule keeps the user's maps.
+  // Outside brackets only organic-subset atoms are letters, so they are counted for atom numbers.
+  const atoms: TaggedBracketAtom[] = [];
+  let atomNumber = 0;
+  const tagged = smiles.replace(/\[([^\[\]]+)\]|Cl|Br|[BCNOPSFI*bcnops]/g, (token, contents?: string) => {
+    atomNumber += 1;
+    if (contents === undefined) return token;
+    const unmapped = contents.replace(/:\d+$/, "");
+    const match = BRACKET_ATOM.exec(unmapped);
+    atoms.push({
+      token,
+      atomNumber,
+      hydrogens: match ? (match[4] === undefined ? 0 : match[4] === "" ? 1 : Number(match[4])) : undefined,
+      aliphatic: match ? /^[A-Z]/.test(match[2]) : /^\d*[A-Z][a-z]?/.test(unmapped),
+      hydrogenAtom: match?.[2] === "H"
+    });
+    return `[${unmapped}:${atoms.length}]`;
   });
-  if (requestedMaps.size === 0) return false;
+  return { smiles: tagged, atoms };
+}
+
+/**
+ * Reparse the tagged SMILES. Undefined when OCL cannot parse it or the tags changed the chemistry:
+ * mapping must not alter chemical identity, so callers fail closed.
+ */
+function reparseTaggedSmiles(taggedSmiles: string, molecule: OclMolecule): OclMolecule | undefined {
   try {
     const tagged = OCL.Molecule.fromSmiles(taggedSmiles);
-    // Mapping must not alter chemical identity. Fail closed on syntax OCL cannot map reliably.
-    if (tagged.getIDCode() !== molecule.getIDCode()) return false;
-    let radicals = 0;
-    for (let atom = 0; atom < tagged.getAllAtoms(); atom += 1) {
-      if (tagged.getAtomRadical(atom) === 0) continue;
-      radicals += 1;
-      if (!requestedMaps.has(tagged.getAtomMapNo(atom))) return false;
-    }
-    return radicals > 0;
+    return tagged.getIDCode() === molecule.getIDCode() ? tagged : undefined;
   } catch {
-    return false;
+    return undefined;
+  }
+}
+
+function hasOnlyRequestedBracketRadicals(brackets: TaggedBracketSmiles, tagged: OclMolecule | undefined): boolean {
+  // An aliphatic bracket specifies its H count (omitted H means zero), so under-valence asks for a
+  // radical. Aromatic bracket radicals are ambiguous with failed kekulization; refuse them
+  // conservatively, even if OCL happened to place its invented radical on that bracket.
+  if (!tagged || !brackets.atoms.some((atom) => atom.aliphatic)) return false;
+  let radicals = 0;
+  for (let atom = 0; atom < tagged.getAllAtoms(); atom += 1) {
+    if (tagged.getAtomRadical(atom) === 0) continue;
+    radicals += 1;
+    if (!brackets.atoms[tagged.getAtomMapNo(atom) - 1]?.aliphatic) return false;
+  }
+  return radicals > 0;
+}
+
+/**
+ * Compare each bracket's written hydrogen count with the hydrogens OCL attached to that atom
+ * (implicit plus explicit). Hydrogens the input writes as their own [H] atoms are graph atoms, not
+ * part of the bracket's count, so each atom's input [H] neighbours are added to what it writes.
+ */
+function bracketHydrogenVerdict(
+  brackets: TaggedBracketSmiles,
+  tagged: OclMolecule | undefined
+): "match" | SmilesHydrogenMismatch | undefined {
+  if (!tagged || brackets.atoms.some((atom) => atom.hydrogens === undefined)) return undefined;
+  const inputHydrogenNeighbours = inputHydrogenNeighbourCounts(brackets);
+  if (!inputHydrogenNeighbours) return undefined;
+  const seen = new Set<number>();
+  for (let atom = 0; atom < tagged.getAllAtoms(); atom += 1) {
+    const map = tagged.getAtomMapNo(atom);
+    const bracket = brackets.atoms[map - 1];
+    if (!bracket) continue;
+    seen.add(map);
+    const written = bracket.hydrogens as number;
+    const parsed = tagged.getAllHydrogens(atom) - (inputHydrogenNeighbours.get(map) ?? 0);
+    if (parsed !== written) return { bracket: bracket.token, atomNumber: bracket.atomNumber, written, parsed };
+  }
+  // OCL folds an input [H] into its neighbour's count; any other bracket atom it dropped cannot be
+  // checked.
+  const allSeen = brackets.atoms.every((atom, index) => atom.hydrogenAtom || seen.has(index + 1));
+  return allSeen ? "match" : undefined;
+}
+
+/**
+ * How many of the input's own hydrogen atoms each bracket atom (by tag) is bonded to. The default
+ * parse folds such hydrogens into their neighbour, so a second parse keeps them as atoms. Only its
+ * bonds are read: making hydrogens explicit can change how OCL places aromatic double bonds
+ * ([nH+]1ccccc1), so its chemistry is not otherwise trusted. Undefined if it cannot be parsed.
+ */
+function inputHydrogenNeighbourCounts(brackets: TaggedBracketSmiles): Map<number, number> | undefined {
+  const counts = new Map<number, number>();
+  if (!brackets.atoms.some((atom) => atom.hydrogenAtom)) return counts;
+  try {
+    const explicit = new OCL.SmilesParser({ makeHydrogenExplicit: true })
+      .parseMolecule(brackets.smiles, { noCoordinates: true });
+    explicit.ensureHelperArrays(OCL.Molecule.cHelperNeighbours);
+    for (let atom = 0; atom < explicit.getAllAtoms(); atom += 1) {
+      if (!brackets.atoms[explicit.getAtomMapNo(atom) - 1]?.hydrogenAtom) continue;
+      for (let index = 0; index < explicit.getAllConnAtoms(atom); index += 1) {
+        const neighbourMap = explicit.getAtomMapNo(explicit.getConnAtom(atom, index));
+        if (neighbourMap > 0) counts.set(neighbourMap, (counts.get(neighbourMap) ?? 0) + 1);
+      }
+    }
+    return counts;
+  } catch {
+    return undefined;
   }
 }
 
