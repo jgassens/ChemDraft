@@ -210,6 +210,22 @@ describe("computeObjectFingerprint", () => {
     (bondChanged.pages[0]!.objects[0] as { bonds: Array<{ order: string }> }).bonds[0]!.order = "double";
     expect(computeObjectFingerprint(bondChanged, "m1")).not.toBe(before);
 
+    const superatomChanged = documentWithUnknownOrderBond(["m1"]);
+    Object.assign(superatomChanged.pages[0]!.objects[0]!, {
+      superatoms: [{ label: "Ph", expandedStructureFormat: "smiles", expandedStructure: "c1ccccc1" }]
+    });
+    expect(computeObjectFingerprint(superatomChanged, "m1")).not.toBe(before);
+
+    const rGroupChanged = documentWithUnknownOrderBond(["m1"]);
+    Object.assign(rGroupChanged.pages[0]!.objects[0]!, {
+      rGroups: [{ label: "R1", querySemantics: "query" }]
+    });
+    expect(computeObjectFingerprint(rGroupChanged, "m1")).not.toBe(before);
+
+    const chemistryChanged = documentWithUnknownOrderBond(["m1"]);
+    Object.assign(chemistryChanged.pages[0]!.objects[0]!, { chemistry: { formula: "CO" } });
+    expect(computeObjectFingerprint(chemistryChanged, "m1")).not.toBe(before);
+
     const moved = documentWithUnknownOrderBond(["m1"]);
     (moved.pages[0]!.objects[0] as { atoms: Array<{ x: number; y: number }> }).atoms.forEach((atom) => {
       atom.x += 100;

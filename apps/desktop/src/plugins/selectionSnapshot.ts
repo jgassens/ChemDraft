@@ -57,13 +57,16 @@ export function pluginFacingStructure(
 /**
  * A coordinate-free fallback for molecules whose stored structure cannot represent their live
  * graph (for example, an unknown-order bond). Moving such a molecule must not stale a report,
- * while changes to its atoms or bonds must.
+ * while changes to its chemistry, atoms, bonds, superatoms, or R-groups must.
  */
 function moleculeGraphKey(molecule: MoleculeObject): string {
-  return JSON.stringify([
-    molecule.atoms.map(({ x: _x, y: _y, z: _z, ...atom }) => atom),
-    molecule.bonds
-  ]);
+  return JSON.stringify({
+    chemistry: molecule.chemistry,
+    atoms: molecule.atoms.map(({ x: _x, y: _y, z: _z, labelOffset: _labelOffset, ...atom }) => atom),
+    bonds: molecule.bonds,
+    superatoms: molecule.superatoms,
+    rGroups: molecule.rGroups
+  });
 }
 
 /** Keep selection snapshots and open-panel staleness checks on precisely the same source key. */
