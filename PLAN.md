@@ -94,7 +94,7 @@ Verified against the code on 2026-07-30. §17 marks these phases with the same d
 - **Templates.** `packages/template-library` is empty; `tool.templateGrid` is retired pending a
   template corpus and grid-picker UI.
 - **User-facing documentation.** `docs/migration/`, `docs/compatibility/`, and `docs/file-formats/`
-  READMEs are five-line stubs, so Phase 11's ChemDraw migration guide and known-limitations page are
+  do not exist yet, so Phase 11's ChemDraw migration guide and known-limitations page are
   not started.
 
 The UX surface scaffold in `apps/desktop/src/surfaces` remains metadata-only. Rendered UI is not
@@ -533,9 +533,6 @@ chemdraft/
   docs/
     architecture/
     benchmarks/
-    compatibility/
-    file-formats/
-    migration/
     plugin-architecture/
     plugin-development/
     releasing/
@@ -1529,7 +1526,7 @@ If native-service or PyTorch packaging is not ready, keep mocked inference and d
 Status: **release engineering shipped well ahead of the documentation.** Installer builds, signed
 releases, notarization, and Sparkle auto-update against a signed appcast are all live, with v0.3.0
 published (`docs/releasing/macos-updates.md`). The documentation deliverables are untouched:
-`docs/migration/`, `docs/compatibility/`, and `docs/file-formats/` are five-line stubs, so the
+`docs/migration/`, `docs/compatibility/`, and `docs/file-formats/` do not exist yet, so the
 ChemDraw migration guide and the known-limitations page do not exist. Given how much of §5's
 non-goal list is still non-goal, the known-limitations page is the higher-value of the two.
 

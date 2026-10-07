@@ -2,9 +2,10 @@
 
 How ChemDraft hosts bundled plugins: the persistent host, the generic
 capability APIs, the declarative panel model, menu integration, the worker
-pattern, and the panel lifecycle. The NMR predictor is the first real consumer; the
-MolScribe OCSR plugin (installed, not bundled) is the image-input consumer. Everything here is domain-neutral — no
-NMR (or any domain) concepts leak into `plugin-api` / `plugin-host`.
+pattern, and the panel lifecycle. The mass-fragment demo is the only bundled plugin.
+Official plugins, including the NMR predictor and MolScribe OCSR, are installed from
+their own repositories. Everything here is domain-neutral — no domain concepts leak
+into `plugin-api` / `plugin-host`.
 
 ## Layers
 
@@ -123,12 +124,12 @@ manifest capability layer.
 ## Panel-close lifecycle (ADR-0012)
 
 `RegisterPluginOptions.onPanelClosed(panelId)` lets a plugin cancel in-flight work
-when the desktop closes its panel. The NMR registration shares one
-`AbortController` across the command and `onPanelClosed`: a new prediction
-supersedes the prior; closing the panel aborts the active one; replacing it with a
-different plugin/panel is also treated as a close; and the command
-re-checks `signal.aborted` after the predictor resolves, so a late result never
-writes a record or resurrects a dismissed panel.
+when the desktop closes its panel. `PluginHost` stores that handler for the
+registration and invokes it for a real panel-close signal. For worker-routed plugins,
+`PluginWorkerBridge` forwards the signal to the worker; the plugin can then stop its
+work, and a late result cannot revive the dismissed panel. Disable and uninstall close
+the panel while the plugin is still registered, so that lifecycle hook runs before
+teardown.
 
 Closing a native plugin report window sends the same real panel-close signal.
 Closing a core analysis window only hides that host-owned surface; invoking its
