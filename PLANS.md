@@ -6,7 +6,15 @@ in progress rather than a changelog.
 
 ---
 
-# In flight: pKa applicability, and the analyzers tail
+# In flight
+
+Nothing is in flight on `main`.
+
+---
+
+# Parked
+
+These items are not in flight; reopening any item needs a reason recorded here first.
 
 The analyzers slice shipped and moved to
 [`docs/shipped/analyzers-property-prediction-suite.md`](docs/shipped/analyzers-property-prediction-suite.md).
@@ -27,7 +35,7 @@ What remains open from it:
 
 # Known open items (not in flight)
 
-No other slice is in flight on `main` right now. These are standing gaps left by the toolbar,
+These are standing gaps left by the toolbar,
 palette, and arrow bug-fixes slice (shipped 2026-08-02, PR #26, merge `2fa4c21` — see
 `docs/shipped/README.md`), not active work. One of its three original open items has since been
 fixed; it is not repeated here.
@@ -36,9 +44,9 @@ fixed; it is not repeated here.
    `GraphicObject | MoleculeObject` (`apps/desktop/src/artInspectorModel.ts:156`), so Color
    Controls and Object Settings route a bracket or mechanism-arrow selection to a status message
    rather than a working panel. Widening it is its own slice.
-2. **Stale comment in the CDXML importer.** `packages/cdx-compat/src/index.ts:2261` says
+2. **Stale comment in the CDXML importer.** `packages/cdx-compat/src/index.ts:2445` says
    equilibrium and retrosynthesis "stay the legacy `reaction-arrow` object until they're migrated
-   in a later pass" — they were migrated in `6ccb9086` and `cf3c3569`, and the condition on the
+   in a later pass" — they were migrated in `163d7b7` and `4248c59`, and the condition on the
    line below already routes all four kinds to `importReactionArrowAsArtArrow`. Only `unknown` is
    legacy now. One-line comment fix.
 
@@ -49,8 +57,7 @@ merge `a4477da`. `tool.mechanismArrow` and `tool.mechanismFishhook` are now live
 still only shared types, but the working feature lives in `chem-core`, `documentWorkflow.ts`, and
 `layout-engine`, not that package.)
 
-Other work in flight lives on its own branches (for example `claude/image-input`) and carries its
-own plan; this file does not describe work scoped to a branch other than `main`.
+Work scoped to a branch other than `main` carries its own plan; this file does not describe it.
 
 ---
 

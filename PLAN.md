@@ -536,7 +536,6 @@ chemdraft/
     compatibility/
     file-formats/
     migration/
-    nmr-plugin-planning/
     plugin-architecture/
     plugin-development/
     releasing/

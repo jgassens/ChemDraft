@@ -132,7 +132,7 @@ drawn from FOUR sources; a fifth is recorded and deliberately unused. None is ve
   index is ChemAxon Marvin's assignment and is recorded as such on every row.
   BSD-3-Clause is QupKake's SOFTWARE licence and does not reach this dataset --
   a repository's code licence is not a grant over the data inside it, the same
-  distinction recorded for Dwar-iBond above. See pka-provenance.md.
+  distinction recorded for Dwar-iBond above. See docs/benchmarks/pka/pka-provenance.md.
 
   pKaCHU
   https://zenodo.org/records/20089807 -- CC BY 4.0

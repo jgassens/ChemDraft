@@ -147,7 +147,7 @@ Requirements:
    (c) SAMPL/euroSAMPL, and only after exhaustive family removal — several public compilations contain
    these molecules, so "we did not load the SAMPL file" is not sufficient.
 3. **Licence recorded per source before assembly**, and any CC BY-NC material marked research-only so it
-   cannot silently back a commercial claim. See `pka-provenance.md`.
+   cannot silently back a commercial claim. See `docs/benchmarks/pka/pka-provenance.md`.
 4. **Site assignment must be experimental or diffed from an acid/base pair, not inherited from a
    predictor.** 4,022 corpus rows carry a ChemAxon Marvin site index, and the frozen audit's assignment
    comes from Marvin via QupKake — which is why it correctly says "not reproduced" is not proof of a wrong

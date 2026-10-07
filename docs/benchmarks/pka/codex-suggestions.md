@@ -46,7 +46,7 @@ The model's current inputs are sparse:
 - a three-bond learned receptive field; and
 - a final concatenation of the site embedding with a global sum over atom embeddings.
 
-The relevant implementation is [`pka_gnn.py`](packages/rdkit-adapter/vendor/pka-model/pka_gnn.py). Its `load` function reads `acid`, `acidAtomIdx`, and `pKa`; it does not read the row's `base` structure. Its training loop uses Adam, OneCycle scheduling, fixed 60 epochs, and L1 loss, with no weight decay, dropout, validation-based early stopping, gradient clipping, or residual/normalization path.
+The relevant implementation is [`pka_gnn.py`](../../../packages/rdkit-adapter/vendor/pka-model/pka_gnn.py). Its `load` function reads `acid`, `acidAtomIdx`, and `pKa`; it does not read the row's `base` structure. Its training loop uses Adam, OneCycle scheduling, fixed 60 epochs, and L1 loss, with no weight decay, dropout, validation-based early stopping, gradient clipping, or residual/normalization path.
 
 ### Current numerical picture
 
@@ -171,7 +171,7 @@ Do not simply increase the message-passing depth to seven. The current depth swe
 
 ### 3. Regularization and training control
 
-The wider H160 model improved every current CV fold but worsened the 398-row external score from 1.1286 to 1.1691. That is evidence that capacity is not the first bottleneck. The negative result is documented in [`BUILD.md`](packages/rdkit-adapter/vendor/pka-model/BUILD.md).
+The wider H160 model improved every current CV fold but worsened the 398-row external score from 1.1286 to 1.1691. That is evidence that capacity is not the first bottleneck. The negative result is documented in [`BUILD.md`](../../../packages/rdkit-adapter/vendor/pka-model/BUILD.md).
 
 Run a small factorial screen before another capacity sweep:
 
@@ -240,7 +240,7 @@ This may improve the user-visible answer even if oracle-site MAE stays unchanged
 
 ### The 398-row set is now development data
 
-[`external_eval.py`](packages/rdkit-adapter/vendor/pka-model/external_eval.py) explicitly states that this figure settles retraining decisions and documents its use to reject H160. The atom-index remapping bug from the earlier audit has been repaired, but repeated model selection means the set is no longer “never used for fold selection” in the statistical sense. Rename it a development/external-check set and reserve a new final test.
+[`external_eval.py`](../../../packages/rdkit-adapter/vendor/pka-model/external_eval.py) explicitly states that this figure settles retraining decisions and documents its use to reject H160. The atom-index remapping bug from the earlier audit has been repaired, but repeated model selection means the set is no longer “never used for fold selection” in the statistical sense. Rename it a development/external-check set and reserve a new final test.
 
 Before using any new external source, deduplicate it against pKaCHU, D2A, Dwar-iBond, QupKake experimental data, all calibration material, and all pretraining structures by normalized molecular family—not only raw SMILES.
 
