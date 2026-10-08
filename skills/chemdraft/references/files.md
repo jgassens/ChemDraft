@@ -1,0 +1,99 @@
+# Names, exports and human editing
+
+## Chemical name to structure
+
+`name` and MCP `name_to_structure` use the bundled OPSIN 2.9.0 runtime.
+OPSIN parses chemical names; it is not a universal synonym database.
+When only a name is known, run it before drawing. If it fails, request
+a systematic name or confirmed SMILES. Do not guess a structure.
+
+| CLI flag | Meaning / default |
+|---|---|
+| `--name` | One chemical name, exclusive with batch |
+| `--batch` | JSON array of `{name, query}` jobs |
+| `--render` | Optional single `.png` file; forbidden with batch |
+| `--allow-ambiguous` | Accept OPSIN's ambiguous result; default false |
+| `--help` | Print help |
+
+```sh
+pnpm -s --dir "$checkout" chemdraft name --name '2-acetoxybenzoic acid' --render "$scratch/aspirin.png"
+```
+
+An ambiguous result is refused by default. `--allow-ambiguous` is for a
+user deliberately requesting that OPSIN interpretation, with the ambiguity
+disclosed and the structure checked. Do not use it to bypass uncertainty
+in an answer key, identity-sensitive dataset or assignment of stereochemistry.
+MCP uses `name`, `render` boolean and `allowAmbiguous` boolean.
+
+Batch example; `name` is the safe output label, `query` the chemical name:
+
+```json
+[{"name":"ethanol","query":"ethanol"},{"name":"acetic-acid","query":"acetic acid"}]
+```
+
+Labels follow the common trimmed, case-insensitively unique batch-name
+rules. Names cannot contain tabs, newlines/control characters; the
+name parser limits chemical queries to 2000 characters. Preserve warnings
+and the returned SMILES with the original query. The Java runtime is
+host-specific; see [setup](setup.md) if missing.
+
+## Export
+
+`export` / MCP `export_structure` supports these formats:
+
+| Format | Use |
+|---|---|
+| `cdxml` | Editable structure interchange for the ChemDraft desktop app |
+| `pdf` | Page-oriented figure for a document |
+| `sdf` | Structure dataset with one record per molecule |
+| `mol` | One molecule's connection table and coordinates |
+| `smi` | Canonical SMILES with a tab-separated name |
+
+| CLI flag | Meaning / default |
+|---|---|
+| `--smiles` | Single SMILES, exclusive with batch |
+| `--batch` | JSON array of `{name, smiles}` |
+| `--out` | Required single file; combined batch `sdf`/`smi` destination |
+| `--out-dir` | Batch per-job destination for `cdxml`, `pdf`, `mol` |
+| `--format` | One format above; infer single extension, required in batch |
+| `--help` | Print help |
+
+```sh
+pnpm -s --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.cdxml"
+pnpm -s --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.pdf"
+pnpm -s --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.sdf" --format sdf
+pnpm -s --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out-dir "$scratch/mols" --format mol
+pnpm -s --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.smi" --format smi
+```
+
+MCP takes `smiles`, required `format`, optional `outDir` root; it creates a
+fresh child directory. SDF records include `SMILES`, `Index` and `Name`.
+For a batch combined dataset, a failed job is omitted from the written
+records and reported as failed; do not claim a partial dataset is complete.
+
+Chemical exports check that canonical SMILES equals the input's. CDXML
+is reopened and checked; MOL/SDF/SMILES representations are checked through
+the engine. A mismatch fails the job. PDF is a visual export after source
+identity validation, not a chemical file that can be parsed back from a
+picture. Never claim a PDF chemical round trip. Refused radicals/isotopes
+must not be removed from the input to force success.
+
+## Hand-edit loop and compatibility
+
+Export CDXML, then have the human open it through ChemDraft **File > Open**
+and edit the actual structure. On Windows use File > Open or Open with;
+ChemDraft registers `.chemdraft` only, not `.cdxml`. Save the edited native
+document; regenerate the final figure from the confirmed edited chemistry.
+The headless tools do not read back a user's edited CDXML as a new CLI input.
+If the next agent operation needs SMILES, obtain the confirmed edited SMILES
+from the user/app instead of using the stale pre-edit string.
+
+File-format compatibility is fixture-driven. Supported basic atoms, bonds,
+coordinates, charges, isotope/radical/stereo representations, superatoms,
+basic R-groups, text, simple arrows, plus signs, brackets and styles do not
+imply that every headless input or interchange can preserve every case.
+More complex S-groups, polymers, mapping and reaction arrows require
+fixtures; complex graphics/images/fonts may need preservation or warnings.
+Never claim perfect CDXML compatibility or broad CDX writing. Inspect the
+actual export warnings and reopened file. See
+[AGENTS.md §11](../../../AGENTS.md#11-file-format-compatibility).
