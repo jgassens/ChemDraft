@@ -182,8 +182,79 @@ function invocationErrors(block: string, commands: ReadonlyMap<string, ReadonlyS
       for (let cursor = index + 2; cursor < tokens.length; cursor++) {
         const token = tokens[cursor]!;
         if (["|", "||", "&&", ";", ">", "<"].includes(token) || token.startsWith("#")) break;
-        if (token.startsWith("--") && !flags.has(token)) errors.push(`Unknown ${command} flag ${token}: ${line}`);
+        if (token !== "--" && token.startsWith("--") && !flags.has(token)) errors.push(`Unknown ${command} flag ${token}: ${line}`);
       }
+    }
+  }
+  return errors;
+}
+
+/** Long options only: bare -- is a separator, and -s belongs to pnpm. */
+function mentionedFlags(text: string): string[] {
+  return [...text.matchAll(/(?<![\w-])--[a-zA-Z][\w-]*/g)].map((match) => match[0]);
+}
+
+function singleCommand(text: string, commands: ReadonlyMap<string, ReadonlySet<string>>): string | null | undefined {
+  // An option such as --render is not a mention of the render subcommand.
+  const words = new Set(text.replace(/--[a-zA-Z][\w-]*/g, "").toLowerCase().match(/\b[a-z]+\b/g));
+  const names = [...commands.keys()].filter((name) => words.has(name));
+  return names.length === 1 ? names[0] : names.length ? null : undefined;
+}
+
+/** Remove other tools' options only within their own invocation/configuration.
+ * pnpm's --dir/--filter precede the script; git/node and client registration
+ * have their own options. Never exempt these flag names in ChemDraft prose.
+ */
+function cliOptionText(text: string): string {
+  return text
+    .replace(/\b(?:claude|codex)\s+mcp\s+add\b[^\n`]*?(?=\s+--\s+|$)/g, "")
+    .replace(/\b(?:git|node)\s+[^\n`|;]+/g, "")
+    .replace(/\bpnpm\s+(?:(?:-s|--(?:dir|filter)\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s`|;]+))\s+)*/g, "")
+    // This is the repository packaging script, not a headless subcommand.
+    .replace(/\bplugin:package\s+[^\n`|;]+/g, "")
+    // MCP launch arrays document pnpm options, not ChemDraft CLI options.
+    .replace(/\[\s*(?:"\/d"\s*,\s*"\/c"\s*,\s*"pnpm"\s*,\s*)?"-s"\s*,\s*"--dir"\s*,[^\]\n]*"chemdraft-mcp"\s*\]/g, "");
+}
+
+/** Check every option mention, with headings/table rows providing command scope.
+ * Unscoped or ambiguous mentions must exist on at least one dispatched command.
+ */
+function documentedFlagErrors(markdown: string, commands: ReadonlyMap<string, ReadonlySet<string>>): string[] {
+  const errors: string[] = [];
+  const headings: { level: number; command: string | null | undefined }[] = [];
+  let fence: string | undefined;
+  let tableCommand: string | null | undefined;
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  for (const [index, line] of lines.entries()) {
+    const marker = /^\s{0,3}(`{3,}|~{3,})[^`~]*$/.exec(line);
+    if (!fence && marker) { fence = marker[1]!; continue; }
+    if (fence && new RegExp(`^\\s{0,3}${fence[0]}{${fence.length},}\\s*$`).test(line)) {
+      fence = undefined; continue;
+    }
+    const heading = !fence && /^\s{0,3}(#{1,6})\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = heading[1]!.length;
+      while (headings.length && headings[headings.length - 1]!.level >= level) headings.pop();
+      headings.push({ level, command: singleCommand(heading[2]!, commands) });
+    }
+    const text = cliOptionText(line);
+    const isRow = !fence && /^\s*\|/.test(line);
+    if (!isRow) tableCommand = undefined;
+    else {
+      // Only explicit command cells count; {name, smiles} and "same as render"
+      // describe data, not the command whose options this table documents.
+      const cells = [...text.matchAll(/`([a-z]+)`/g)].map((match) => match[1]!);
+      const names = new Set(cells.filter((name) => commands.has(name)));
+      if (names.size) tableCommand = names.size === 1 ? [...names][0] : null;
+    }
+    const invocation = /\bchemdraft\s+([a-z]+)\b/.exec(text);
+    const scope = tableCommand !== undefined ? tableCommand :
+      [...headings].reverse().find((entry) => entry.command !== undefined)?.command;
+    const command = invocation?.[1] ?? scope ?? undefined;
+    for (const flag of mentionedFlags(text)) {
+      const accepted = command ? commands.get(command)?.has(flag) :
+        [...commands.values()].some((options) => options.has(flag));
+      if (!accepted) errors.push(`Line ${index + 1}: Unknown ${command ?? "CLI"} flag ${flag}: ${line}`);
     }
   }
   return errors;
@@ -222,6 +293,13 @@ describe("ChemDraft agent skill drift guard", () => {
     expect(errors).toEqual([]);
   });
 
+  it("uses only source-accepted flags everywhere in the skill", () => {
+    const errors = markdownFiles(skillRoot).flatMap((path) =>
+      documentedFlagErrors(read(path), flags).map((error) => `${path}: ${error}`)
+    );
+    expect(errors).toEqual([]);
+  });
+
   it("resolves every relative Markdown link", () => {
     for (const path of markdownFiles(skillRoot)) {
       // Markdown prose only; example code may legitimately contain brackets and parentheses.
@@ -239,6 +317,33 @@ describe("ChemDraft agent skill drift guard", () => {
     }
   });
 
+  it("detects table/inline drift, scopes options, and narrowly excludes other tools", () => {
+    expect(documentedFlagErrors("## Grid\n| `--gutterx` | spacing |", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("## Render\nUse `--gutter`.", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("## Grid\n### Options\nUse --gutter.\n## Render\nUse `--gutter`.", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("## Render and grid\nUse `--gutter`.", flags)).toEqual([]);
+    expect(documentedFlagErrors("# Render\n## Render and grid\nUse `--gutter`.", flags)).toEqual([]);
+    expect(documentedFlagErrors("| Command | Option |\n| `grid` | `--gutter` |\n| | `--gutterx` |", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("## Render\n| `render` / `grid` | `--gutter` |", flags)).toEqual([]);
+    expect(documentedFlagErrors("Use `--gutterx` without a heading.", flags)).toHaveLength(1);
+    for (const [command, flag] of [["grid", "--gutter"], ["nmr", "--name"], ["render", "--bond-length"]] as const) {
+      const removed = new Map(flags);
+      removed.set(command, new Set([...flags.get(command)!].filter((option) => option !== flag)));
+      expect(documentedFlagErrors(`## ${command}\n| \`${flag}\` | option |`, removed)).toHaveLength(1);
+    }
+    const examples = [
+      "```sh", "git clone --depth 1 repo", "node --version",
+      "claude mcp add --transport stdio chemdraft -- pnpm -s --dir checkout chemdraft-mcp",
+      "codex mcp add chemdraft -- pnpm -s --dir checkout chemdraft-mcp",
+      'pnpm -s --filter package --dir "path with spaces" chemdraft render --width 600', "```",
+      '`["-s", "--dir", "checkout", "chemdraft-mcp"]`', "Use `--` as a separator."
+    ].join("\r\n");
+    expect(documentedFlagErrors(examples, flags)).toEqual([]);
+    expect(documentedFlagErrors("## Render\n`pnpm -s --dir checkout chemdraft render --dir bad`", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("Use `--dir` here.", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("## Grid\r\n| `--gutterx` | spacing |", flags)).toHaveLength(1);
+  });
+
   it("detects drift and continuations without executing examples", () => {
     const renderFlags = flags.get("render")!;
     const testCommands = new Map([["render", renderFlags]]);
@@ -251,6 +356,7 @@ describe("ChemDraft agent skill drift guard", () => {
     const removed = new Map([["render", new Set([...renderFlags].filter((flag) => flag !== "--width"))]]);
     expect(invocationErrors("pnpm -s chemdraft render --width 600", removed)).toHaveLength(1);
     expect(invocationErrors("pnpm -s --dir \"path with spaces\" chemdraft render --smiles 'C#N' --width 600", testCommands)).toEqual([]);
+    expect(invocationErrors("pnpm -s chemdraft render --", testCommands)).toEqual([]);
     expect(invocationErrors("codex mcp add chemdraft -- pnpm -s --dir checkout chemdraft-mcp", testCommands)).toEqual([]);
     expect(codeBlocks("~~~sh\nchemdraft render --help\n~~~\n")).toEqual(["chemdraft render --help"]);
     expect(frontmatter("---\r\nname: chemdraft\r\ndescription: hello\r\n---\r\n".replace(/\r\n/g, "\n"))).toEqual({ name: "chemdraft", description: "hello" });

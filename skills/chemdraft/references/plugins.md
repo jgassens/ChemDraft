@@ -26,10 +26,13 @@ An agent must not use name conversion to pretend it recognized an image.
 The CLI loads external NMR plugin code only from a directory listed in the
 owner's fixed-location trust file. `CHEMDRAFT_NMR_PLUGIN_DIR` chooses among
 trusted directories; an environment variable alone cannot authorize loading.
-Manifest validation, refused permissions, real-path containment and required
-capabilities are checked before the entry is imported. This is in-process
-code, not a sandbox. See [setup](setup.md); the agent must never create or
-edit the trust file, only show the entry printed by the refusal.
+After the allow-list and real-path checks, the CLI imports and validates
+`src/manifest.ts`, including refused permissions, then imports `src/index.ts`
+and checks its exports, including required capabilities. The entry executes
+before the capability check, so the trust-file allow-list bounds which code
+can run. This is in-process code, not a sandbox. See [setup](setup.md); the
+agent must never create or edit the trust file, only show the entry printed
+by the refusal.
 There is no generic headless plugin loader or command to invoke arbitrary
 desktop plugin commands.
 

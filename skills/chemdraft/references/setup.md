@@ -87,11 +87,13 @@ The version-1 file has this shape (replace the directory before use):
 
 Use an absolute real directory; Windows JSON backslashes must be escaped
 or use forward slashes. Real-path checks allow a symlink to a trusted
-directory but refuse manifest/entry files that escape it. Manifest validation
-and required capability checks happen before importing the plugin entry.
-Old checkouts without the grouping/disclosure capabilities are refused.
-This plugin runs with the CLI process's privileges; the trust file is not
-a sandbox. See [NMR](nmr.md) for scientific and licence constraints.
+directory but refuse manifest/entry files that escape it. The CLI checks the
+trust-file allow-list, imports and validates `src/manifest.ts`, then imports
+`src/index.ts` and checks its exports, including required capabilities.
+Old checkouts without the grouping/disclosure capabilities are refused, but
+the entry has already executed by then. The allow-list bounds which code
+can run; this plugin runs with the CLI process's privileges, not in a sandbox.
+See [NMR](nmr.md) for scientific and licence constraints.
 
 ## Register MCP
 
