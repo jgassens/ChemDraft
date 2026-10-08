@@ -16,7 +16,7 @@ a systematic name or confirmed SMILES. Do not guess a structure.
 | `--help` | Print help |
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft name --name '2-acetoxybenzoic acid' --render "$scratch/aspirin.png"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft name --name '2-acetoxybenzoic acid' --render "$scratch/aspirin.png"
 ```
 
 An ambiguous result is refused by default. `--allow-ambiguous` is for a
@@ -59,11 +59,11 @@ host-specific; see [setup](setup.md) if missing.
 | `--help` | Print help |
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.cdxml"
-pnpm -s --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.pdf"
-pnpm -s --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.sdf" --format sdf
-pnpm -s --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out-dir "$scratch/mols" --format mol
-pnpm -s --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.smi" --format smi
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.cdxml"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles 'CCO' --out "$scratch/ethanol.pdf"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.sdf" --format sdf
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out-dir "$scratch/mols" --format mol
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.smi" --format smi
 ```
 
 MCP takes `smiles`, required `format`, optional `outDir` root; it creates a

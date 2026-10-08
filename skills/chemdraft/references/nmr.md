@@ -42,7 +42,7 @@ MCP accepts `smiles`, `nuclei` array, `spectrum` boolean, `statistic`,
 `ignoreLabileHydrogens`; spectra requested through MCP are PNG.
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft nmr --smiles 'CCO' --nuclei 1H,13C --ignore-labile --statistic median --spectrum "$scratch/predicted-ethanol.svg"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft nmr --smiles 'CCO' --nuclei '1H,13C' --ignore-labile --statistic median --spectrum "$scratch/predicted-ethanol.svg"
 ```
 
 ## What the numbers are

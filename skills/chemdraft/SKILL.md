@@ -54,7 +54,8 @@ POSIX shell (macOS; select the installed Claude Code or Codex skill path):
 ```sh
 skillDir="$HOME/.claude/skills/chemdraft"
 checkout=$(node -p "require('node:path').resolve(require('node:fs').realpathSync(process.argv[1]), '..', '..')" "$skillDir")
-pnpm -s --dir "$checkout" chemdraft --help
+[ -n "$checkout" ] || { echo "No ChemDraft checkout found from $skillDir" >&2; exit 1; }
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft --help
 ```
 
 For Codex, set `skillDir="$HOME/.codex/skills/chemdraft"` instead.
@@ -63,16 +64,26 @@ If the assistant already knows the loaded skill's directory, use that path.
 PowerShell (Windows; a directory junction also resolves to its target):
 
 ```powershell
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $skillDir = Join-Path $HOME '.codex/skills/chemdraft'
 $checkout = node -p "require('node:path').resolve(require('node:fs').realpathSync(process.argv[1]), '..', '..')" $skillDir
-pnpm -s --dir "$checkout" chemdraft --help
+if (-not $checkout) { throw "No ChemDraft checkout found from $skillDir" }
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft --help
 ```
 
 For Claude Code, use `.claude/skills/chemdraft` in the first line.
 If installed as a copy, the resolved directory is not the checkout. Use the
 user's checkout path and confirm it with the same help command.
 
-The command form is `pnpm -s --dir <checkout> chemdraft <subcommand>`.
+The check passes only if help lists all eight ChemDraft subcommands: render,
+grid, reaction, analyze, name, stereo, nmr and export. pnpm's own help means
+the checkout path is wrong. Shell state may reset between tool calls; set
+variables and console encoding again in each call, or use literal paths.
+
+The command form is `pnpm -s --config.shell-emulator=true --dir <checkout> chemdraft <subcommand>`.
+Without this flag, pnpm on Windows doubles backslashes
+in arguments, changing SMILES bond-direction marks and paths. Use the flag
+on both platforms.
 Replace placeholders with actual paths and quote paths containing spaces.
 `-s` is mandatory: a pnpm script banner on stdout corrupts JSON Lines
 and, when launching `chemdraft-mcp`, stdio MCP framing.

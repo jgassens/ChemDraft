@@ -23,8 +23,8 @@ MCP takes `smiles`, optional `methods` array, and `format: "json"` or
 `"md"`. It has no text-format or batch parameter. Use CLI for batches.
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft analyze --smiles 'CC(=O)O' --format md --out "$scratch/acetic-acid.md"
-pnpm -s --dir "$checkout" chemdraft analyze --smiles 'CCO' --format text --out "$scratch/ethanol.txt"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --smiles 'CC(=O)O' --format md --out "$scratch/acetic-acid.md"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --smiles 'CCO' --format text --out "$scratch/ethanol.txt"
 ```
 
 Without `--out`, md/text reports are in the JSON line's `report` field;

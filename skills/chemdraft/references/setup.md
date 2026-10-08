@@ -23,8 +23,8 @@ git clone https://github.com/jgassens/ChemDraft.git "<checkout>"
 cd "<checkout>"
 pnpm install
 node scripts/build-opsin-runtime.mjs
-pnpm -s --dir "<checkout>" chemdraft --help
-pnpm -s --dir "<checkout>" chemdraft name --name 'ethanol'
+pnpm -s --config.shell-emulator=true --dir "<checkout>" chemdraft --help
+pnpm -s --config.shell-emulator=true --dir "<checkout>" chemdraft name --name 'ethanol'
 ```
 
 Windows, PowerShell (use a checkout outside a synced folder):
@@ -34,8 +34,8 @@ git clone https://github.com/jgassens/ChemDraft.git "<checkout>"
 Set-Location "<checkout>"
 pnpm install
 node scripts/build-opsin-runtime.mjs
-pnpm -s --dir "<checkout>" chemdraft --help
-pnpm -s --dir "<checkout>" chemdraft name --name 'ethanol'
+pnpm -s --config.shell-emulator=true --dir "<checkout>" chemdraft --help
+pnpm -s --config.shell-emulator=true --dir "<checkout>" chemdraft name --name 'ethanol'
 ```
 
 The builder creates `apps/desktop/src-tauri/resources/opsin/jre` for the
@@ -56,14 +56,14 @@ macOS:
 
 ```sh
 export CHEMDRAFT_NMR_PLUGIN_DIR="<plugin-checkout>"
-pnpm -s --dir "<checkout>" chemdraft nmr --smiles 'CCO'
+pnpm -s --config.shell-emulator=true --dir "<checkout>" chemdraft nmr --smiles 'CCO'
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:CHEMDRAFT_NMR_PLUGIN_DIR = '<plugin-checkout>'
-pnpm -s --dir "<checkout>" chemdraft nmr --smiles 'CCO'
+pnpm -s --config.shell-emulator=true --dir "<checkout>" chemdraft nmr --smiles 'CCO'
 ```
 
 The exact trust-file location comes from `os.userInfo().homedir`, the OS
@@ -101,9 +101,12 @@ Run the server on the same computer as the assistant client. These commands
 work in a POSIX shell or PowerShell after replacing `<checkout>`:
 
 ```sh
-claude mcp add chemdraft -- pnpm -s --dir "<checkout>" chemdraft-mcp
+claude mcp add --scope user chemdraft -- pnpm -s --dir "<checkout>" chemdraft-mcp
 codex mcp add chemdraft -- pnpm -s --dir "<checkout>" chemdraft-mcp
 ```
+
+User scope makes the Claude Code tools available in every folder.
+The MCP launch needs no shell-emulator flag because tool arguments arrive as JSON, not command-line arguments.
 
 Alternatively, add this to `~/.codex/config.toml`:
 
@@ -150,9 +153,9 @@ ln -s "<checkout>/skills/chemdraft" "$HOME/.codex/skills/chemdraft"
 Windows PowerShell, directory junctions (no administrator rights needed):
 
 ```powershell
-New-Item -ItemType Directory -Force "$HOME/.claude/skills", "$HOME/.codex/skills"
-cmd /c mklink /J "$HOME/.claude/skills/chemdraft" "<checkout>\skills\chemdraft"
-cmd /c mklink /J "$HOME/.codex/skills/chemdraft" "<checkout>\skills\chemdraft"
+New-Item -ItemType Directory -Force "$HOME\.claude\skills", "$HOME\.codex\skills"
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\chemdraft" -Target "<checkout>\skills\chemdraft"
+New-Item -ItemType Junction -Path "$HOME\.codex\skills\chemdraft" -Target "<checkout>\skills\chemdraft"
 ```
 
 Or copy the entire `skills/chemdraft` folder, including references. A copy

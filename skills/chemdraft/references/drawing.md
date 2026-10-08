@@ -32,8 +32,8 @@ Every render flag, with its default or requirement:
 | `--help` | Print help and exit |
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft render --smiles 'CCO' --out "$scratch/ethanol" --format both
-pnpm -s --dir "$checkout" chemdraft render --batch "$scratch/choices.json" --out-dir "$scratch/choices" --format both --width 600
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --smiles 'CCO' --out "$scratch/ethanol" --format both
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --batch "$scratch/choices.json" --out-dir "$scratch/choices" --format both --width 600
 ```
 
 SVG is vector artwork for rescaling; PNG is a raster image useful for
@@ -66,7 +66,7 @@ and gutter within the default page width; specify `--columns` for an exam layout
 | `--help` | Print help and exit |
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft grid --batch "$scratch/choices.json" --out "$scratch/question.png" --columns 2 --labels letters --width 1000
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft grid --batch "$scratch/choices.json" --out "$scratch/question.png" --columns 2 --labels letters --width 1000
 ```
 
 Keep an answer key tied to that input order. Do not replace failed choices
@@ -83,7 +83,7 @@ whole. MCP `render_reaction` has equivalent `reactants`, `agents`,
 `products` arrays; do not mix them with `reactionSmiles`.
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft reaction --reactant '[Na+].[O-]C(=O)C' --agent 'Cl' --product 'CC(=O)O' --conditions 'aqueous acid workup' --out "$scratch/salt.svg"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant '[Na+].[O-]C(=O)C' --agent 'Cl' --product 'CC(=O)O' --conditions 'aqueous acid workup' --out "$scratch/salt.svg"
 ```
 
 Agents are validated and shown as composition formulas above the arrow;
@@ -141,8 +141,8 @@ stereoisomer, both unspecified counts must be zero. Do not silently add
 stereochemistry to make that true.
 
 ```sh
-pnpm -s --dir "$checkout" chemdraft stereo --smiles 'C[C@H](O)C(=O)O'
-pnpm -s --dir "$checkout" chemdraft stereo --smiles 'C/C=C/C'
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft stereo --smiles 'C[C@H](O)C(=O)O'
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft stereo --smiles 'C/C=C/C'
 ```
 
 Use the returned R/S and E/Z assignments. Indices are 0-based molfile

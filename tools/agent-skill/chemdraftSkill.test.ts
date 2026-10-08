@@ -153,7 +153,7 @@ function codeBlocks(markdown: string): string[] {
   const blocks: string[] = [];
   let fence: string | undefined;
   let lines: string[] = [];
-  for (const line of markdown.split("\n")) {
+  for (const line of markdown.replace(/\r\n?/g, "\n").split("\n")) {
     const start = /^\s{0,3}(`{3,}|~{3,})[^`~]*$/.exec(line);
     if (!fence && start) { fence = start[1]!; lines = []; }
     else if (fence && new RegExp(`^\\s{0,3}${fence[0]}{${fence.length},}\\s*$`).test(line)) {
@@ -162,6 +162,39 @@ function codeBlocks(markdown: string): string[] {
   }
   if (fence) throw new Error("Unclosed Markdown code fence");
   return blocks;
+}
+
+/** Keep quotes for shell-safety checks; never evaluate documented commands. */
+function shellTokens(line: string): string[] {
+  return line.match(/"[^"\n]*"|'(?:''|[^'])*'|<[^>\n]+>|&&|\|\||[|;<>]|[^\s|;<>]+/g) ?? [];
+}
+
+function shellSafetyErrors(block: string): string[] {
+  const errors: string[] = [];
+  for (const line of block.replace(/\r\n?/g, "\n").replace(/(?:\\|`|\^)\s*\n/g, " ").split("\n")) {
+    const tokens = shellTokens(line);
+    for (const [index, token] of tokens.entries()) {
+      const serverName = token === "chemdraft" && tokens[index + 1] === "--" &&
+        tokens[0] !== undefined && ["claude", "codex"].includes(tokens[0]) &&
+        tokens[1] === "mcp" && tokens[2] === "add";
+      if (token === "chemdraft" && !serverName) {
+        // MCP registrations use chemdraft as the server name, before the -- separator.
+        const launcher = tokens.slice(index - 5, index);
+        if (launcher.length !== 5 || launcher[0] !== "pnpm" || launcher[1] !== "-s" ||
+          launcher[2] !== "--config.shell-emulator=true" || launcher[3] !== "--dir" ||
+          !launcher[4] || launcher[4].startsWith("--")) {
+          errors.push(`Use pnpm -s --config.shell-emulator=true --dir <checkout>: ${line}`);
+        }
+      }
+      if (!token.startsWith("--") || token === "--") continue;
+      const equals = token.indexOf("=");
+      const value = equals < 0 ? tokens[index + 1] : token.slice(equals + 1);
+      if (value?.includes(",") && !/^'(?:''|[^'])*'$/.test(value)) {
+        errors.push(`Single-quote comma-separated flag value ${value}: ${line}`);
+      }
+    }
+  }
+  return errors;
 }
 
 /** Tokenize shell examples without evaluating them; quoted values stay together. */
@@ -174,7 +207,8 @@ function invocationErrors(block: string, commands: ReadonlyMap<string, ReadonlyS
     for (let index = 0; index < tokens.length; index++) {
       if (tokens[index] !== "chemdraft") continue;
       // In client registration this token is a server name, not an executable/script.
-      if (tokens[index - 1] === "add" && tokens[index - 2] === "mcp") continue;
+      if (tokens[index + 1] === "--" && ["claude", "codex"].includes(tokens[0] ?? "") &&
+        tokens[1] === "mcp" && tokens[2] === "add") continue;
       const command = tokens[index + 1];
       if (command === "--help") continue;
       const flags = command && commands.get(command);
@@ -209,7 +243,8 @@ function cliOptionText(text: string): string {
   return text
     .replace(/\b(?:claude|codex)\s+mcp\s+add\b[^\n`]*?(?=\s+--\s+|$)/g, "")
     .replace(/\b(?:git|node)\s+[^\n`|;]+/g, "")
-    .replace(/\bpnpm\s+(?:(?:-s|--(?:dir|filter)\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s`|;]+))\s+)*/g, "")
+    // Exempt only this exact pnpm setting before the script, never CLI flags or prose.
+    .replace(/\bpnpm\s+(?:(?:-s|--config\.shell-emulator=true|--(?:dir|filter)\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s`|;]+))\s+)*/g, "")
     // This is the repository packaging script, not a headless subcommand.
     .replace(/\bplugin:package\s+[^\n`|;]+/g, "")
     // MCP launch arrays document pnpm options, not ChemDraft CLI options.
@@ -298,6 +333,36 @@ describe("ChemDraft agent skill drift guard", () => {
       documentedFlagErrors(read(path), flags).map((error) => `${path}: ${error}`)
     );
     expect(errors).toEqual([]);
+  });
+
+  it("uses the shared launcher and single-quotes comma lists in fenced examples", () => {
+    const errors = markdownFiles(skillRoot).flatMap((path) =>
+      codeBlocks(read(path)).flatMap((block) => shellSafetyErrors(block).map((error) => `${path}: ${error}`))
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it("detects unsafe launchers and lists across shells without spawning processes", () => {
+    for (const checkout of ["checkout", '"path with spaces"', "'$checkout'", "<checkout>", '"<checkout>"']) {
+      const launch = `pnpm -s --config.shell-emulator=true --dir ${checkout} chemdraft`;
+      expect(shellSafetyErrors(`${launch} analyze --methods 'rdkit.composition,rdkit.tpsa'`)).toEqual([]);
+      expect(shellSafetyErrors(`${launch} nmr --nuclei 1H,13C`)).toHaveLength(1);
+      expect(shellSafetyErrors(`${launch} nmr --nuclei=1H,13C`)).toHaveLength(1);
+      expect(shellSafetyErrors(`${launch} nmr --nuclei "1H,13C"`)).toHaveLength(1);
+      expect(shellSafetyErrors(`${launch} nmr --nuclei='1H,13C'`)).toEqual([]);
+      expect(shellSafetyErrors(`${launch.replace("--config.shell-emulator=true ", "")} render --help`)).toHaveLength(1);
+      expect(documentedFlagErrors(`${launch} render --width 600`, flags)).toEqual([]);
+      expect(documentedFlagErrors(`${launch} render --config.shell-emulator=true`, flags)).toHaveLength(1);
+    }
+    expect(shellSafetyErrors("chemdraft render --help")).toHaveLength(1);
+    expect(documentedFlagErrors("Use `--config.shell-emulator=true` here.", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("pnpm -s --config.shell-emulator=false --dir checkout chemdraft render", flags).length).toBeGreaterThan(0);
+    for (const continuation of ["\\", "`", "^"]) {
+      expect(shellSafetyErrors(`pnpm -s --config.shell-emulator=true ${continuation}\r\n--dir "$checkout" chemdraft nmr --nuclei '1H,13C'`)).toEqual([]);
+    }
+    expect(shellSafetyErrors("claude mcp add --scope user chemdraft -- pnpm -s --dir checkout chemdraft-mcp")).toEqual([]);
+    expect(shellSafetyErrors("codex mcp add chemdraft -- pnpm -s --dir checkout chemdraft-mcp")).toEqual([]);
+    expect(codeBlocks("```sh\r\nchemdraft render --help\r\n```\r\n")).toEqual(["chemdraft render --help"]);
   });
 
   it("resolves every relative Markdown link", () => {
