@@ -54,8 +54,7 @@ POSIX shell (macOS; select the installed Claude Code or Codex skill path):
 ```sh
 skillDir="$HOME/.claude/skills/chemdraft"
 checkout=$(node -p "require('node:path').resolve(require('node:fs').realpathSync(process.argv[1]), '..', '..')" "$skillDir")
-[ -n "$checkout" ] || { echo "No ChemDraft checkout found from $skillDir" >&2; exit 1; }
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft --help
+if [ -n "$checkout" ]; then pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft --help; else echo "No ChemDraft checkout found from $skillDir" >&2; false; fi
 ```
 
 For Codex, set `skillDir="$HOME/.codex/skills/chemdraft"` instead.
@@ -71,7 +70,7 @@ if (-not $checkout) { throw "No ChemDraft checkout found from $skillDir" }
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft --help
 ```
 
-For Claude Code, use `.claude/skills/chemdraft` in the first line.
+For Claude Code, set the `$skillDir` line to `.claude/skills/chemdraft`.
 If installed as a copy, the resolved directory is not the checkout. Use the
 user's checkout path and confirm it with the same help command.
 
