@@ -167,8 +167,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
       elements remain (inert) so routing and the layout-engine render plan are unchanged.
 - [x] Split hover styling: neutral by default (`.native-atom-hover` / `.native-bond-hover`),
       destructive red (`.native-*-delete-hover`) only when `hoverDestructive` — wired to
-      `activeCommandId === "tool.eraser"`. (Eraser is currently disabled, so hover is neutral
-      in practice; the danger path is wired and ready.) Fixes the old "atoms always render
+      `activeCommandId === "tool.eraser"`. The live eraser activates the destructive hover path.
+      This fixes the old "atoms always render
       danger-red on hover" overload.
 - [x] Updated `App.test.ts` CSS assertions: no `g[data-bond-layer-id]:hover` rule;
       `.native-bond-hover` exists; no atom/bond hit-target `:hover`.

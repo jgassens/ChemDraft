@@ -81,14 +81,14 @@ Follow these rules throughout the work:
 
 Codex should verify these against the current repository before making changes:
 
-- `packages/export-engine` currently exports SVG and has a format union that already mentions several future formats.
+- `packages/export-engine` implements SVG, PDF, raster, CDXML, SDF, and SMILES export and has a format union that also names future formats.
 - `packages/cdx-compat` already owns CDXML envelope import/export and uses `fast-xml-parser`.
 - The desktop app already depends on Ketcher packages through the narrow active editor host.
-- `apps/desktop/src/commands.ts` currently exposes `export.svg` and `export.png` commands only.
-- `apps/desktop/src-tauri/src/lib.rs` currently hardcodes File menu entries for `export.svg` and `export.png`.
-- The Rust Tauri backend currently has no rasterization command.
+- `apps/desktop/src/commands.ts` exposes the single `export.open` command, which opens the export dialog.
+- `apps/desktop/src-tauri/src/lib.rs` routes the File menu through `export.open`.
+- The Rust Tauri backend rasterizes SVG through `rasterize_svg` in `apps/desktop/src-tauri/src/export.rs`.
 - `packages/chemistry-adapter` currently supports validation/analysis concepts, not general format conversion.
-- `packages/rdkit-adapter` is currently a placeholder, not a real RDKit integration.
+- `packages/rdkit-adapter` is the real adapter for the vendored custom RDKit MinimalLib build.
 - `chem-core` already has native molecule atoms, bonds, charges on atoms, superatom metadata, R-group display metadata, reaction objects, arrows, text, graphics, and compatibility warnings.
 
 If the repository has changed, adapt the implementation steps while preserving the architectural rules above.
@@ -1152,7 +1152,7 @@ Files likely touched:
 
 ```text
 packages/export-engine/src/formats.ts
-docs/file-formats/3mf-export-research.md
+docs/file-formats/3mf-export-research.md (planned path; does not exist yet)
 ```
 
 Tasks:
@@ -1191,7 +1191,7 @@ SMD 4.2
 Suggested file:
 
 ```text
-docs/file-formats/legacy-export-research.md
+docs/file-formats/legacy-export-research.md (planned path; does not exist yet)
 ```
 
 Research doc structure:
@@ -1344,7 +1344,7 @@ Update these when relevant:
 docs/architecture/dependency-inventory.md
 README.md if user-facing export formats change
 PLAN.md if roadmap status changes
-docs/file-formats/* for new format-specific research
+docs/file-formats/* for new format-specific research (planned paths; no such research docs exist yet)
 AGENTS.md build stamp after code changes
 apps/desktop/src/MainWindow.tsx build string after code changes
 ```

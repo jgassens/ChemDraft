@@ -2,11 +2,11 @@
 
 This map preserves the functional identity of the custom toolbar glyphs without using vendor command names as ChemDraft API.
 
-The source files in `Custom_Toolbar/2_Images` are treated as user-provided custom assets. Runtime actions use ChemDraft command IDs, titles, categories, descriptions, tooltips, accessible labels, and disabled-state reasons.
+The source files in `apps/desktop/src/assets/toolbar/` are treated as user-provided custom assets. Runtime actions use ChemDraft command IDs, titles, categories, descriptions, tooltips, accessible labels, and disabled-state reasons.
 
 Current status: every command in this map is active and dispatched through the shared command registry. The only "disabled" states left are transient and selection-dependent — the align and distribute commands need two or more selected objects — which is honest feedback about the current selection, not a placeholder for unbuilt work. Shipped toolsets carry no permanently disabled buttons; see the toolbar honesty contract in `AGENTS.md`. Toolbars are data-driven end to end — see `docs/architecture/toolbars-and-toolsets.md` for the single-brain architecture, widget items, and the Customize Toolbars editor.
 
-Commands retired rather than wired (mechanism arrows, template grid, and the duplicate/undefined entries) are listed with their reasons under "Command retirements" in `docs/shipped/README.md`; each can return through git when its feature slice lands. They are deliberately absent from this map so it cannot be read as a promise.
+Commands retired rather than wired (the template grid and duplicate/undefined entries) are listed with their reasons under "Command retirements" in `docs/shipped/README.md`; each can return through git when its feature slice lands. They are deliberately absent from this map so it cannot be read as a promise. The mechanism-arrow tools are live since 2026-08-12 (PR #32).
 
 ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a typed ChemDraft toolset manifest, currently read from `apps/desktop/src/toolsets/desktop-toolsets.json` and validated through `@chemdraft/toolset-registry`. Future user-editable XML or JSON toolbar files should be added through a compatibility/import layer, not by adopting proprietary toolbar XML as the native model.
 
@@ -28,10 +28,10 @@ ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a 
 | `Custom_Benzene.png` | `tool.benzene` | Insert benzene template | Active |
 | `Custom_Chair1.png` | `tool.chairCyclohexaneA` | Insert chair cyclohexane template A | Active |
 | `Custom_Chair2.png` | `tool.chairCyclohexaneB` | Insert chair cyclohexane template B | Active |
-| `Custom_Arrow.png` | `tool.reactionArrow` | Draw reaction arrow | Active |
-| `Custom_Arrow_Resonance.png` | `tool.resonanceArrow` | Draw resonance arrow | Active |
-| `Custom_Arrow_Equilibrium.png` | `tool.equilibriumArrow` | Draw equilibrium arrow | Active |
-| `Custom_Arrow_Retro.png` | `tool.retroArrow` | Draw retrosynthesis arrow | Active |
+| `Custom_Arrow.png` | `tool.art.reactionArrow` | Draw reaction arrow | Active |
+| `Custom_Arrow_Resonance.png` | `tool.art.resonanceArrow` | Draw resonance arrow | Active |
+| `Custom_Arrow_Equilibrium.png` | `tool.art.equilibriumArrow` | Draw equilibrium arrow | Active |
+| `Custom_Arrow_Retro.png` | `tool.art.retroArrow` | Draw retrosynthesis arrow | Active |
 | `Custom_Bracket.png` | `tool.bracket` | Draw curly bracket | Active |
 | `Custom_Square_Bracket.png` | `tool.squareBracket` | Draw square bracket | Active |
 | `Custom_Dagger.png` | `tool.dagger` | Stamp `‡` (double dagger) | Active |

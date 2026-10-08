@@ -55,6 +55,38 @@ export function pluginFacingStructure(
 }
 
 /**
+ * A coordinate-free fallback for molecules whose stored structure cannot represent their live
+ * graph (for example, an unknown-order bond). Moving such a molecule must not stale a report,
+ * while changes to its chemistry, atoms, bonds, superatoms, or R-groups must.
+ */
+function moleculeGraphKey(molecule: MoleculeObject): string {
+  return JSON.stringify({
+    chemistry: molecule.chemistry,
+    atoms: molecule.atoms.map(({ x: _x, y: _y, z: _z, labelOffset: _labelOffset, ...atom }) => atom),
+    bonds: molecule.bonds,
+    superatoms: molecule.superatoms,
+    rGroups: molecule.rGroups
+  });
+}
+
+/** Keep selection snapshots and open-panel staleness checks on precisely the same source key. */
+function moleculeSourceFingerprint(
+  documentId: string,
+  pageId: string,
+  molecule: MoleculeObject
+): string {
+  return createStructureSourceFingerprint({
+    documentId,
+    pageId,
+    objectId: molecule.id,
+    structureFormat: molecule.structureFormat,
+    // Retain the existing payload byte-for-byte whenever it is available. Empty stored structures
+    // occur when a graph cannot be written safely as SMILES, so key that graph instead.
+    structure: molecule.structure === "" ? moleculeGraphKey(molecule) : molecule.structure
+  });
+}
+
+/**
  * Build a selection snapshot from the active document: for each selected molecule, its object /
  * page / document identity, structure, and a source fingerprint for staleness detection. Molecules
  * follow the document's selection order. Pure and testable — no React, no refs. The host deep-copies
@@ -88,13 +120,7 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
       structure: facing.structure,
       // Fingerprint stays keyed on the object's own coordinate-free structure string (not the
       // emitted molfile) so a pure move never reads as a content change / staleness.
-      sourceFingerprint: createStructureSourceFingerprint({
-        documentId: document.id,
-        pageId: hit.pageId,
-        objectId,
-        structureFormat: hit.molecule.structureFormat,
-        structure: hit.molecule.structure
-      })
+      sourceFingerprint: moleculeSourceFingerprint(document.id, hit.pageId, hit.molecule)
     });
   }
 
@@ -111,13 +137,7 @@ export function computeObjectFingerprint(document: ChemDraftDocument, objectId: 
   for (const page of document.pages) {
     for (const object of page.objects) {
       if (object.type === "molecule" && object.id === objectId) {
-        return createStructureSourceFingerprint({
-          documentId: document.id,
-          pageId: page.id,
-          objectId,
-          structureFormat: object.structureFormat,
-          structure: object.structure
-        });
+        return moleculeSourceFingerprint(document.id, page.id, object);
       }
     }
   }

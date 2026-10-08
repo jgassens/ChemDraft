@@ -10,6 +10,7 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   moleculeToMolfileV2000,
+  UnknownBondOrderError,
   type MoleculeTransformState,
   stylePresetToObjectStyle
 } from "@chemdraft/chem-core";
@@ -89,6 +90,12 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
       }];
     })
   };
+}
+
+/** Query bonds can round-trip as data, but do not establish a chemical identity for an engine. */
+export function assertMolfileHasKnownBondOrders(molfile: string): void {
+  const ids = parseMolfileGraph(molfile).bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+  if (ids.length > 0) throw new UnknownBondOrderError(ids);
 }
 
 /**
@@ -433,6 +440,8 @@ function medianNumber(values: readonly number[]): number | undefined {
  */
 export function stereoPerceptionMolfile(molecule: MoleculeObject, warnings?: string[]): string {
   return moleculeToMolfileV2000(molecule, {
+    // OCL loses a distant tetrahedral descriptor when it reads a type-8 query bond.
+    unknownBondOrders: "refuse",
     fromDocFrame: true,
     abbreviations: "rgroup",
     warnings,

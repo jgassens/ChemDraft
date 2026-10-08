@@ -831,10 +831,10 @@ installer, manager) merged into the trunk per ADR-0030: trunk = `main`, plugin a
 plugin program's, with main's four unique plugin pieces (stable command registry,
 toolset-contribution stage, disk-backed plugin storage, patch-review tray) ported onto that runtime
 and one unified panel renderer serving both the in-app surface and floating panel windows. That
-program's full plan and milestone records live in the planning workspace
-(`~/Documents/programming/Chemdraft-NMRplugin`) and in `docs/nmr-plugin-planning/`; they are not
-duplicated here. Remaining plugin-separation work (publish the SDK, strip bundled NMR,
-from-zero install test) is queued there as PLAN-plugin-separation Phases 2+.
+program's full plan and milestone records moved to the
+[monorepo planning archive](https://github.com/jgassens/ChemDraft-NMR-Plugin/tree/main/docs/history/monorepo-planning); they are not
+duplicated here. The plugin-separation program finished on 2026-07-17; the plugin is now its own
+repository.
 
 The shipped rules this left behind are recorded in AGENTS.md §8a.
 

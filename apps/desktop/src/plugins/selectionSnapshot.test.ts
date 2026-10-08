@@ -3,6 +3,7 @@ import * as OCL from "openchemlib";
 import { describe, expect, it } from "vitest";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
+import { createStructureSourceFingerprint } from "@chemdraft/plugin-api";
 
 import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
 
@@ -23,6 +24,19 @@ function documentWith(selection: string[]): ChemDraftDocument {
       }
     ]
   } as unknown as ChemDraftDocument;
+}
+
+function documentWithUnknownOrderBond(selection: string[]): ChemDraftDocument {
+  const document = documentWith(selection);
+  Object.assign(document.pages[0]!.objects[0]!, {
+    structure: "",
+    atoms: [
+      { id: "a1", element: "C", x: 10, y: 20, formalCharge: 0 },
+      { id: "a2", element: "O", x: 30, y: 20, formalCharge: 0 }
+    ],
+    bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "unknown" }]
+  });
+  return document;
 }
 
 describe("buildPluginSelectionSnapshot", () => {
@@ -181,5 +195,55 @@ describe("computeObjectFingerprint", () => {
     (edited.pages[0].objects[0] as { structure: string }).structure = "CCO";
     expect(computeObjectFingerprint(edited, "m1")).not.toBe(before);
     expect(computeObjectFingerprint(documentWith([]), "does-not-exist")).toBeUndefined();
+  });
+
+  it("keys an empty stored structure from its coordinate-free live graph", () => {
+    const source = documentWithUnknownOrderBond(["m1"]);
+    const before = buildPluginSelectionSnapshot(source).molecules[0]!.sourceFingerprint;
+    expect(computeObjectFingerprint(source, "m1")).toBe(before);
+
+    const elementChanged = documentWithUnknownOrderBond(["m1"]);
+    (elementChanged.pages[0]!.objects[0] as { atoms: Array<{ element: string }> }).atoms[1]!.element = "N";
+    expect(buildPluginSelectionSnapshot(elementChanged).molecules[0]!.sourceFingerprint).not.toBe(before);
+
+    const bondChanged = documentWithUnknownOrderBond(["m1"]);
+    (bondChanged.pages[0]!.objects[0] as { bonds: Array<{ order: string }> }).bonds[0]!.order = "double";
+    expect(computeObjectFingerprint(bondChanged, "m1")).not.toBe(before);
+
+    const superatomChanged = documentWithUnknownOrderBond(["m1"]);
+    Object.assign(superatomChanged.pages[0]!.objects[0]!, {
+      superatoms: [{ label: "Ph", expandedStructureFormat: "smiles", expandedStructure: "c1ccccc1" }]
+    });
+    expect(computeObjectFingerprint(superatomChanged, "m1")).not.toBe(before);
+
+    const rGroupChanged = documentWithUnknownOrderBond(["m1"]);
+    Object.assign(rGroupChanged.pages[0]!.objects[0]!, {
+      rGroups: [{ label: "R1", querySemantics: "query" }]
+    });
+    expect(computeObjectFingerprint(rGroupChanged, "m1")).not.toBe(before);
+
+    const chemistryChanged = documentWithUnknownOrderBond(["m1"]);
+    Object.assign(chemistryChanged.pages[0]!.objects[0]!, { chemistry: { formula: "CO" } });
+    expect(computeObjectFingerprint(chemistryChanged, "m1")).not.toBe(before);
+
+    const moved = documentWithUnknownOrderBond(["m1"]);
+    (moved.pages[0]!.objects[0] as { atoms: Array<{ x: number; y: number }> }).atoms.forEach((atom) => {
+      atom.x += 100;
+      atom.y -= 50;
+    });
+    expect(buildPluginSelectionSnapshot(moved).molecules[0]!.sourceFingerprint).toBe(before);
+  });
+
+  it("keeps the existing non-empty structure fingerprint unchanged", () => {
+    const document = documentWith(["m1"]);
+    const expected = createStructureSourceFingerprint({
+      documentId: document.id,
+      pageId: document.pages[0]!.id,
+      objectId: "m1",
+      structureFormat: "smiles",
+      structure: "c1ccccc1"
+    });
+    expect(buildPluginSelectionSnapshot(document).molecules[0]!.sourceFingerprint).toBe(expected);
+    expect(computeObjectFingerprint(document, "m1")).toBe(expected);
   });
 });

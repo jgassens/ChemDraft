@@ -121,6 +121,7 @@ export function createEngine3dSessionInputFromMolecule(
     // place. CIP perception spells its own molfile (stereoPerceptionMolfile, R-groups) and never
     // reads this one.
     molfile: moleculeToMolfileV2000(molecule, {
+      unknownBondOrders: "refuse",
       fromDocFrame: true,
       warnings: options.warnings,
       kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders

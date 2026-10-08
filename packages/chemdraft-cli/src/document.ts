@@ -4,6 +4,7 @@ import {
   createEmptyDocument,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
+  UnknownBondOrderError,
   type ChemDraftDocument,
   type MoleculeBond,
   type MoleculeObject
@@ -26,6 +27,7 @@ import {
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import {
   applyMoleculeTargetBondLength,
+  assertMolfileHasKnownBondOrders,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   smilesPasteBondLengthPx,
@@ -248,6 +250,16 @@ export async function assertCanonicalIdentity(
   inputCanonicalSmiles: string,
   outputStructure: string
 ): Promise<void> {
+  // Equal query SMILES do not establish a chemical identity. Refuse even when RDKit would
+  // canonicalize both sides to the same any-bond string (for example C~CO).
+  if (/\bV(?:2000|3000)\b/.test(outputStructure)) {
+    try {
+      assertMolfileHasKnownBondOrders(outputStructure);
+    } catch (error) {
+      if (error instanceof UnknownBondOrderError) throw new Error(`Cannot verify chemical identity: ${error.message}`);
+      throw error;
+    }
+  }
   const outputCanonicalSmiles = await canonicalSmiles(outputStructure, "output");
   if (outputCanonicalSmiles !== inputCanonicalSmiles) {
     throw new Error(`identity changed: ${inputCanonicalSmiles} -> ${outputCanonicalSmiles}`);
@@ -741,7 +753,8 @@ export async function buildSmilesDocument(
     molecule = moleculeFromDocument(document);
   }
 
-  const serialized = identityMolfile(molecule, depicted);
+  const writerWarnings: string[] = [];
+  const serialized = identityMolfile(molecule, depicted, writerWarnings);
   molecule = {
     ...molecule,
     structureFormat: serialized.format,
@@ -752,7 +765,7 @@ export async function buildSmilesDocument(
     await assertCanonicalIdentity(depicted.sourceCanonicalSmiles, serialized.contents);
   }
 
-  const warnings = [...depicted.warnings];
+  const warnings = [...depicted.warnings, ...writerWarnings];
   if (depicted.unspecifiedDoubleBondIndices.length > 0) {
     warnings.push(
       `E/Z unspecified for ${depicted.unspecifiedDoubleBondIndices.length} double bond(s); the 2D drawing necessarily shows one geometry`

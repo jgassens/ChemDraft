@@ -53,6 +53,15 @@ const UNSPECIFIED_ALKENE = "CC=CC";
 const DATIVE_PT_COMPLEX = "N->[Pt+2](<-N)(Cl)Cl";
 
 describe("chemdraft export", () => {
+  it.each(["mol", "sdf"])("fails closed when query-bond SMILES reaches %s export", async (format) => {
+    const out = join(outputDirectory, `query-bond.${format}`);
+    const io = collectIo();
+    expect(await runCli(["--smiles", "C~CO", "--out", out], io)).toBe(1);
+    const result = jsonLines(io)[0] as { ok: boolean; error: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("unknown bond order");
+    await expect(readFile(out)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("exports CDXML that round-trips with the same atom and bond counts", async () => {
     const out = join(outputDirectory, "ethanol.cdxml");
     const io = collectIo();

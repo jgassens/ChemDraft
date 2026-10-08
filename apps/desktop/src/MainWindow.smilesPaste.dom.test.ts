@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ensureOclResources, UnrequestedSmilesRadicalError } from "@chemdraft/ocl-adapter";
+import { ensureOclResources, UnrequestedSmilesHydrogenError, UnrequestedSmilesRadicalError } from "@chemdraft/ocl-adapter";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document } from "./documentWorkflow";
 
@@ -85,6 +85,23 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).not.toContain("token skipped");
     expect(status).not.toContain("tokens skipped");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(molecules);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  });
+
+  it("shows an invented-hydrogen refusal for a single paste and preserves the input as text", async () => {
+    const message = new UnrequestedSmilesHydrogenError("O=[N]=O", { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 }).message;
+    const status = await paste("O=[N]=O", "text/plain", message);
+    expect(status).toContain("Clipboard SMILES could not be parsed:");
+    expect(status).toContain("pasted as text");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(1);
+  });
+
+  it("reports an invented-hydrogen refusal as a list failure while inserting valid entries", async () => {
+    const message = new UnrequestedSmilesHydrogenError("O=[N]=O", { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 }).message;
+    const status = await paste("CCO\nO=[N]=O\nCCN\nc1ccccc1", "text/plain", message);
+    expect(status).toContain("1 item failed");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   });
 

@@ -47,6 +47,7 @@ export async function moleculeSmiles(
       const writerWarnings: string[] = [];
       const identifiers = await computeStructureIdentifiers(
         molfile ?? moleculeToMolfileV2000(molecule, {
+          unknownBondOrders: "refuse",
           fromDocFrame: true,
           warnings: writerWarnings,
           kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders

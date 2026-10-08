@@ -13,15 +13,20 @@ gated by a labeled validation corpus + atom-mapping proof + real bundle-cost
 measurement. (Revised twice after external review — wedging is a constrained search;
 identity is a mandatory layered service; phases front-load safety before UI.)
 
+**Current contract.** Flattening, placement, reopening, and rotation share the
+`ScreenPlacement` contract in AGENTS.md §9, “Shared rendering math and Spin 3D.”
+
 ## Context
 
 A user draws a flat structure, clicks "Generate 3D", **spins the conformer on the
 canvas** to a viewing angle, releases, and the result is **flattened to a 2D
 perspective drawing** (chairs, bulky ligands at an angle).
 
-- **3D is transient.** Conformer + spin pose are never serialized; the saved
-  document stays 2D. Do **not** add `z` to `MoleculeAtom`. This is a 2D drawing
-  aid, not a 3D viewer (overrides `PLAN.md:133`).
+- **3D is persisted separately from the 2D model.** Do **not** add `z` to
+  `MoleculeAtom`; the saved 2D drawing stays the native depiction. A valid spin
+  model under `SPIN3D_MODEL_KEY` stores the conformer coordinates and committed
+  orientation, so Spin 3D can reopen at that orientation after reload. This remains
+  a 2D drawing aid, not a 3D viewer (overrides `PLAN.md:133`).
 - **Two features, perspective first.** Perspective depiction now (a *picture*;
   re-editing is lossy). Clean 2D re-layout later (3D intermediate → regenerate tidy
   2D via CoordGen/Indigo; editable; no Z drop; no spin).
@@ -68,7 +73,9 @@ AND runtime). "Core adapter via stock RDKit WASM" is dead for 3D.
 
 ## Model & contract
 
-- **No `z` on `MoleculeAtom`.** 3D is transient adapter/tool state, never persisted.
+- **No `z` on `MoleculeAtom`.** The conformer coordinates and committed orientation
+  are persisted separately under `SPIN3D_MODEL_KEY`, graph-signature-gated so an
+  edited structure falls back to a fresh conformer.
 - **Output stays a `molecule`:** projected 2D coords + constrained-search wedges +
   rewritten V3000 `structure`, committed via `updateObject`
   (`packages/chem-core/src/patches.ts:18`), mirroring `cleanUpNativeMoleculeGeometry2d`
@@ -182,8 +189,8 @@ crossing model."* So we **integrate, never reinvent**:
 - **Flatten commit (Phase 5):** for each projected crossing, `front` = the nearer-z
   bond; **bake a persisted `CrossingOverride`** via `setCrossingOverride`
   (`packages/chem-core/src/patches.ts:27`). The planner then renders the local gaps
-  automatically. The transient z is consumed to author overrides, then discarded
-  (3D still never persisted).
+  automatically. The live overlay's depth is consumed to author overrides; the
+  conformer model and committed orientation are persisted separately.
 - **Cyclic-depth canary:** if projected pairwise fronts are inconsistent (A>B>C>A —
   3+ bonds near one knot, or near-coincident depths), reuse the model's existing
   cyclic-depth warning ("Escher drawing that can't be realized as a clean 2D weave")
@@ -302,6 +309,8 @@ crossing model."* So we **integrate, never reinvent**:
     overlay clears, Cmd+Z reverts in one undo, zero console errors.
 
 - ✅ **Phase 5 UX refinements (from owner review).**
+  **Superseded:** The current flatten and placement behavior follows the
+  `ScreenPlacement` contract in AGENTS.md §9.
   → **Opening orientation:** OCL embeds at an arbitrary angle that often projects
     edge-on. `initialViewQuaternion` (spinOverlay.ts) PCA-fits the conformer's
     principal plane and turns it toward the viewer with a gentle ~23° tilt, so the
@@ -438,7 +447,8 @@ Wiring (all locations verified against the current code):
   atom count, element order, wedge survives; plus a doc-frame fixture asserting the
   y negation (compare against `scaleParsedMolfileAtoms`'s convention).
 
-**Phase 5.1 — commit path.** New workflow function in documentWorkflow.ts
+**Phase 5.1 — commit path.** **Superseded:** The current flatten and placement
+contract is the `ScreenPlacement` contract in AGENTS.md §9. New workflow function in documentWorkflow.ts
 (mirror the cleanup pattern at lines ~4395-4426):
 ```
 flattenSpunMolecule(document, objectId, coords3d, viewMatrix):
@@ -520,6 +530,18 @@ Click→manipulable was 15–20 s on larger drawings. Profiling (Node, M-series;
 | `getOneConformerAsMolecule` (embed) | fused/crowded systems (collision retries) | coronene+tails 3.4 s; rotaxane axle 3.7 s; chains ~20 ms |
 | `ForceFieldMMFF94.minimise()` (default 4000 its) | total atom count incl. generated H | C60H122 5.9–7.5 s; capped `maxIts` reaches the same energy (ΔE ≤ 0.1 kcal/mol) in ~half the time |
 | First-call warmup (module load + resources.json + JIT + torsion tables) | once per session | ~1–2 s, previously paid inside the first click |
+
+The first conformer-generation cost tracks graph shape as well as atom count. The
+following investigation timings are retained as examples; parsing remained about
+2–5 ms in each case.
+
+| Structure | First 3D generation | Refinement |
+|---|---:|---:|
+| 63-node straight SP3-hybridized chain | ~0.5 s | ~6.0 s |
+| 63-node branched SP3-hybridized chain | ~8.1 s | ~8.8 s |
+| 63-node mixed-link chain | ~1.0 s | ~3.8 s |
+| 28-node compact multi-ring structure | ~5.3 s | ~0.5 s |
+| Compact fused-ring structures | fast | fast |
 
 Tuning findings (pinned so nobody re-litigates): `STRATEGY_LIKELY_SYSTEMATIC` is
 pathological (17.8 **minutes** on the coronene case) — keep the default
@@ -662,6 +684,15 @@ enough to hand to an inexpensive model as standalone slices.
 - **G5 — `getTotalEnergy` presence.** ocl-adapter reads MMFF energy via an
   optional method guard; if OCL's API drifts, energy is simply absent from the
   report. No action unless energy becomes user-facing.
+- **G6 — click-outside commit is hard to read.** When an outside click is refused
+  by the existing safety checks, the overlay stays open and only the status bar
+  explains why (`Cannot flatten this view: ...` in `MainWindow.tsx`), which can
+  make the click feel like it did nothing. The outside-click test uses the
+  original selection box plus padding, not the rotated structure's visual bounds,
+  so a click that looks outside the structure can still land inside the box.
+  Both issues were recorded in the July 2026 spin performance handoff and remain
+  unaddressed. The fix should improve what the user sees without changing
+  projection, flatten math, or the safety checks.
 
 ## Risks
 

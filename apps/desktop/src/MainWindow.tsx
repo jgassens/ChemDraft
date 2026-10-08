@@ -34,6 +34,7 @@ import {
   toEngineDocument,
   createDocumentHistory,
   moleculeToMolfileV2000,
+  UnknownBondOrderError,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
   redo as redoDocumentHistory,
@@ -742,6 +743,7 @@ import {
 } from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
+import { buildSpin3dFlattenStereoOptions } from "./spin3dFlattenStereoPolicy";
 import {
   buildRuntimeBuildStatus,
   writeRuntimeBuildStatus
@@ -1053,6 +1055,8 @@ type ProjectedPlaneTiltDragState = {
    *  On a stereo-refused frame the preview holds this instead of snapping back. */
   lastValidPreviewDocument?: ChemDraftDocument;
   lastValidOrientation?: Quaternion;
+  /** A mandatory model refusal must survive the pointer-up status message. */
+  rotationRefusal?: string;
 };
 type ProjectedPlaneTiltReadoutState = {
   objectId: string;
@@ -1464,7 +1468,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.4.16.00-opus";
+const CURRENT_BUILD_STAMP = "10.4.19.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1515,9 +1519,11 @@ const SPIN_PREFETCH_MAX_ATOMS = 200;
 /** Speculation is safe only when the aromatic interpretation is settled. Routine writer losses
  * (dative V2000 spelling, abbreviation placeholders) are reported by the explicit Spin action. */
 export function spin3dPrefetchMolfile(molecule: MoleculeObject): string | undefined {
+  if (molecule.bonds.some((bond) => bond.order === "unknown")) return undefined;
   const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
   if (resolution.unresolvedAtomIds.size > 0 || resolution.guessedHydrogenAtomIds.size > 0) return undefined;
   return moleculeToMolfileV2000(molecule, {
+    unknownBondOrders: "refuse",
     fromDocFrame: true,
     kekuleBondOrders: resolution.kekuleOrders
   }).contents;
@@ -1850,7 +1856,7 @@ export function MainWindow({
       // The live atom/bond graph, not the object's `structure` string: that string is empty for an
       // imported molecule ("The structure input is empty.") and a lossy SMILES for a drawn fused ring
       // system, which analysed a different molecule than the one on the page.
-      const { structureFormat: format, structure } = analysisFacingStructure(molecule);
+      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule);
       const subjectKey = analysisSubjectKey(molecule);
       const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
       const client = analysisClient();
@@ -1867,6 +1873,7 @@ export function MainWindow({
           {
             format,
             value: structure,
+            ...(refusalReason ? { refusalReason } : {}),
             ...(interpretationOverride ? { interpretationOverride } : {})
           },
           { immediate: true }
@@ -3917,7 +3924,12 @@ export function MainWindow({
         if (unrepresentable.alleneAtoms.length > 0) kinds.push("allene");
         if (unrepresentable.atropisomerBonds.length > 0) kinds.push("atropisomer");
         if (kinds.length > 0) unrepresentableStereoKinds = kinds;
-      } catch {
+      } catch (error) {
+        if (error instanceof UnknownBondOrderError) {
+          setStatus(`Cannot flatten this view: ${error.message}`);
+          applySpin({ ...state, dragging: false, lastClient: undefined });
+          return;
+        }
         /* best-effort: fall back to legacy behavior (treat every drawn wedge as a center) */
       }
       // The async perception yielded the event loop; abort if the spin session was replaced
@@ -4011,32 +4023,17 @@ export function MainWindow({
   // overlay commit applies (commitSpinFlatten), but synchronous, so the whole-molecule rotate paths
   // (drag handle + numeric X/Y) that also persist a flattened projection can't silently commit a
   // different stereoisomer. Returns {} (legacy geometry-only flatten) when the perceiver has not
-  // loaded yet or the target isn't an editable native graph.
+  // loaded yet or the target isn't an editable native graph. Unknown bond orders always refuse.
   const spin3dFlattenStereoOptions = useCallback((
     sourceDocument: ChemDraftDocument,
     objectId: string,
     warnings: string[]
   ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
     const perceive = spin3dStereoPerceiverRef.current;
-    if (!perceive) return {};
     const molecule = findDocumentObject(sourceDocument, objectId);
     if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
-    try {
-      // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
-      const molfile = stereoPerceptionMolfile(molecule, warnings);
-      const perAtom = perceive(molfile);
-      let stereoCenterAtomIds: ReadonlySet<string> | undefined;
-      if (perAtom.length === molecule.atoms.length) {
-        const ids = new Set<string>();
-        molecule.atoms.forEach((atom, index) => {
-          if (perAtom[index]?.isStereoCenter) ids.add(atom.id);
-        });
-        stereoCenterAtomIds = ids;
-      }
-      return { stereoCenterAtomIds, perceiveStereo: perceive };
-    } catch {
-      return {};
-    }
+    // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
+    return buildSpin3dFlattenStereoOptions(molecule, perceive, () => stereoPerceptionMolfile(molecule, warnings));
   }, []);
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
@@ -4212,6 +4209,13 @@ export function MainWindow({
       setStatus("Spin 3D needs an editable molecule");
       return;
     }
+    const unknownBondIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
+    if (unknownBondIds.length > 0) {
+      const error = new UnknownBondOrderError(unknownBondIds);
+      commandSpan.fail(error);
+      setStatus(`3D spin unavailable: ${error.message}`);
+      return;
+    }
     if (spin3dStateRef.current?.objectId === objectId) {
       // Button mashed while the overlay is already up — keep the live session.
       traceInfo("spin.duplicate", { message: "overlay already active" });
@@ -4300,6 +4304,7 @@ export function MainWindow({
       // label goes as the dummy "*" here. Only CIP perception uses the R-group spelling
       // (stereoPerceptionMolfile); the two never meet — this molfile is not perceived.
       molfile = moleculeToMolfileV2000(molecule, {
+        unknownBondOrders: "refuse",
         fromDocFrame: true,
         warnings: molfileWarnings,
         kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
@@ -5109,7 +5114,7 @@ export function MainWindow({
       setStatus("Interactive 3D: drag an atom to tug · drag empty space to rotate · click outside to flatten · Esc to cancel" + (warnings.length ? ` — ${warnings.join(" ")}` : ""));
     } catch (error) {
       setInteractive3dWorkspace((current) => current?.openId === openId ? undefined : current);
-      setStatus(`Interactive 3D sidecar session failed: ${String(error)}`);
+      setStatus(`Interactive 3D sidecar session failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, [cancelInteractive3dDragScheduler, pollInteractive3dSessionAfterOpen, queueInteractive3dSessionClose]);
 
@@ -11877,13 +11882,22 @@ export function MainWindow({
       // final orientation through the stereo read-back guard so a rotation can't silently commit a
       // different stereoisomer (the same protection the Spin 3D overlay commit applies).
       const warnings: string[] = [];
-      const guarded = flattenSpunMolecule(
-        drag.startDocument,
-        drag.objectId,
-        drag.spin3dModel.coords3d,
-        quatToViewMatrix(finalOrientation),
-        { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId, warnings) }
-      );
+      let guarded: ReturnType<typeof flattenSpunMolecule>;
+      try {
+        guarded = flattenSpunMolecule(
+          drag.startDocument,
+          drag.objectId,
+          drag.spin3dModel.coords3d,
+          quatToViewMatrix(finalOrientation),
+          { placement: drag.spin3dModel.placement, ...spin3dFlattenStereoOptions(drag.startDocument, drag.objectId, warnings) }
+        );
+      } catch (error) {
+        if (!(error instanceof UnknownBondOrderError)) throw error;
+        replacePresentDocument(drag.startDocument);
+        drag.rotationRefusal = `3D rotation not applied: ${error.message}`;
+        setStatus(drag.rotationRefusal);
+        return false;
+      }
       if (guarded.status !== "committed") {
         replacePresentDocument(drag.startDocument);
         setStatus(`3D rotation not applied: ${guarded.refusalReasons[0] ?? "stereochemistry would change"}`);
@@ -12009,7 +12023,10 @@ export function MainWindow({
               engine: model.engine
             });
           }
-        } catch {
+        } catch (error) {
+          if (error instanceof UnknownBondOrderError) {
+            warnings.push(`3D rotation not applied: ${error.message}`);
+          }
           document = input.startDocument;
         }
         return {
@@ -13568,7 +13585,7 @@ export function MainWindow({
         const changed = commitProjectedPlaneTilt(projectedPlaneTiltDrag, point);
         setStatus(changed
           ? "3D rotate applied"
-          : "3D rotate canceled");
+          : projectedPlaneTiltDrag.rotationRefusal ?? "3D rotate canceled");
       } else {
         replacePresentDocument(projectedPlaneTiltDrag.startDocument);
         setProjectedPlaneTiltReadout(undefined);
