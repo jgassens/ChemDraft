@@ -42,6 +42,90 @@ centers; unspecifiedStereoCenters counts constitutional centers without a specif
 unspecifiedDoubleBonds counts unknown E/Z double bonds. Exit 0 is used when every structure
 succeeds, 1 when any render fails, and 2 for bad arguments.
 
+## document
+
+Build the same editable native document that `render` depicts, as plain JSON with
+`schema: "chemdraft.document.v1"`. This is the starting point for styled figures without the GUI.
+
+~~~bash
+pnpm -s chemdraft document --smiles 'C1CCC2CCCCC2C1' --out decalin.json
+pnpm -s chemdraft document --batch jobs.json --out-dir documents
+~~~
+
+Batch jobs use the usual `{ "name": "decalin", "smiles": "C1CCC2CCCCC2C1" }` shape.
+`--bond-length <px>` defaults to 28, just as `render` does. The JSON result contains `document`
+(the host path), `files`, `pages` (id, width, height), and `molecules`. Each molecule reports
+`objectId`, `pageId`, atoms (`id`, `element`, `x`, `y`, `inputAtomIndex`), bonds (`id`, `fromAtomId`,
+`toAtomId`, `order`, `display`), and rings (`ringKey`, `atomIds`, `bondIds`, `center: {x,y}`, `size`).
+Coordinates and ring centers are in page pixels. Ring keys are sorted bond ids joined by `|`;
+use the reported keys instead of guessing them. Atom and bond ids are local to their molecule.
+
+`inputAtomIndex` is the 0-based atom token index in the supplied SMILES, including separately
+written H tokens. It is verified against RDKit's parse order and the depicted graph; unavailable
+mappings (including OCL fallbacks) are `null` with a warning. Existing depiction removes ordinary
+separately written hydrogen atoms: `[H]OC([H])([H])C` produces O, C, C with indices 1, 2, 5,
+and no H objects. This command does not force hydrogens into the depiction.
+
+## render-document
+
+Render a styled native JSON document or a desktop `.chemdraft` envelope through the same native
+loader and SVG exporter as the app. It supports ring interiors, ring letters supplied as text
+objects, bold/hashed/wedge bond displays, per-bond/per-atom style maps, sketch visual effects,
+text, and art objects to the extent supported by the existing exporter.
+
+~~~bash
+pnpm -s chemdraft render-document --document styled.json --out figure.svg
+pnpm -s chemdraft render-document --document styled.json --out figure --format both
+pnpm -s chemdraft render-document --document styled.json --out figure.pdf
+pnpm -s chemdraft render-document --document styled.json --out figure.chemdraft
+pnpm -s chemdraft render-document --document figure.chemdraft --out reopened.png
+~~~
+
+`--format svg|png|pdf|chemdraft|both` normally infers the extension; `both` writes SVG and PNG.
+`--width <px>` (16–4000, default 600), `--background white|transparent` (default white), and
+`--padding <px>` (default 24) control SVG/PNG output. PDF uses the native first-page size;
+width, background and padding do not change PDF or native saves. SVG, PNG and PDF render only
+the first page and warn when more pages exist. `.chemdraft` retains the complete native document
+using the desktop's CDXML envelope codec, including style data the visible compatibility layer
+may approximate.
+
+The input read is capped at 5 MB before parsing. Limits are 100 pages, 2000 objects per page,
+500 heavy atoms per molecule, and 2000 total atoms / 4000 bonds per molecule. Output filenames
+use the existing portable batch-name policy; parent traversal and Windows device names are
+refused. Parent directories, absolute paths and spaces in paths are supported.
+
+The result has `files`, `molecules` (`objectId`, `canonicalSmiles`, `stereoCenters`,
+`unspecifiedStereoCenters`, `unspecifiedDoubleBonds`, `exportWarnings`), `warnings` (messages),
+and `exportWarnings` (code, message, severity and object id where applicable). Canonical SMILES
+is regenerated from current atoms and bonds. Source-only unknown E/Z flags are retained only
+when the regenerated connection table matches the stored one; otherwise a warning records
+that reported double-bond stereo follows edited coordinates. Compare it with
+the build result after styling; editing wedge/hashed stereo displays can change chemistry.
+All exporter warnings are retained, including `export.svg.graphic_fallback` and
+`export.svg.graphic_effect_approximation`. Unknown art gets the exporter placeholder; the native
+reflection effect is omitted with a warning. Existing format limitations are not repaired by this
+command. Invalid JSON, schema violations, input limits and unsafe destinations exit 2; rendering
+or chemistry failures return `ok:false` and exit 1. Success exits 0.
+
+For example, after building decalin, edit its JSON using the returned ring key and center:
+
+~~~js
+const molecule = document.pages[0].objects.find(object => object.type === "molecule");
+molecule.style.ringStyles = {
+  [ring.ringKey]: { fillColor: "#ffcc66", fillOpacity: 0.4 }
+};
+molecule.bonds.find(bond => bond.id === ring.bondIds[0]).display = { bondStyle: "bold" };
+molecule.style.visualEffects = [{ kind: "sketch", seed: 42, roughness: 1.3 }];
+document.pages[0].objects.push({
+  id: "ring-letter", type: "text", text: "A", spans: [],
+  x: ring.center.x - 6, y: ring.center.y - 9, width: 12, height: 18,
+  rotation: 0, style: { fontSizePx: 18 }
+});
+~~~
+
+Here `document` is the parsed output file and `ring` is a ring from the build result.
+The full native style and art schemas are defined in `packages/chem-core/src/schemas.ts`.
+
 ## grid
 
 Render a named SMILES batch as one multiple-choice PNG or SVG grid. Every entry is validated before

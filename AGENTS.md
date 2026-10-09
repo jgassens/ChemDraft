@@ -186,8 +186,9 @@ environment; partial results carry warnings. No calibrated confidence percentage
 
 | Surface | Where | Contract |
 |---|---|---|
-| Headless CLI | `packages/chemdraft-cli` | `pnpm -s chemdraft <render\|grid\|reaction\|analyze\|name\|stereo\|nmr\|export>`; JSON Lines on stdout, progress on stderr; exit 0 all ok, 1 any job failed, 2 bad input |
+| Headless CLI | `packages/chemdraft-cli` | `pnpm -s chemdraft <render\|document\|render-document\|grid\|reaction\|analyze\|name\|stereo\|nmr\|export>`; JSON Lines on stdout, progress on stderr; exit 0 all ok, 1 any job failed, 2 bad input |
 | MCP server | `packages/chemdraft-mcp` | Local stdio server calling the CLI modules in-process; a fresh per-call output directory; 5 MB per returned payload |
+| Agent skill | `skills/chemdraft` | One skill folder in the open Agent Skills format, kept in step with the CLI and MCP by `tools/agent-skill/chemdraftSkill.test.ts` |
 | In-app bridge | `apps/desktop/src/agentBridge.ts` | `window.__CHEMDRAFT_AGENT__`; off unless `CHEMDRAFT_AGENT_BRIDGE=1` or `--chemdraft-agent-bridge` (desktop) or `?agentBridge=1` or its localStorage flag (web build) |
 | Shared logic | `packages/document-workflow-core` | The pure document functions the app, CLI, and MCP all use |
 
@@ -210,7 +211,7 @@ Rules:
   on. Its events are synthetic and skip browser default actions such as moving focus, so focus- and
   blur-sensitive behavior also needs a real-event test.
 - **Agent edits** follow §4.4.
-- New CLI commands and MCP tools ship with README entries and tests, and run on both platforms (§1).
+- New CLI commands and MCP tools ship with README entries, an entry in `skills/chemdraft`, and tests, and run on both platforms (§1).
 
 ## 6. Package boundaries
 
