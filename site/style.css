@@ -142,7 +142,14 @@ h2 { margin-bottom: 0; font-family: var(--font-display); font-size: clamp(1.8rem
 .prompt-label { margin: 0; color: var(--muted); font-family: var(--font-ui); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
 .prompt-line { margin: 0; padding: 0.8rem 1rem; border: 1px solid var(--line-dark); border-left: 4px solid var(--signal); background: var(--surface); }
 .prompt-line p { margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; }
-.example-shot { max-width: 640px; }
+.gallery-note { margin: 0; color: var(--muted); font-family: var(--font-ui); font-size: 0.75rem; }
+.example-gallery { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr); gap: clamp(1.25rem, 3vw, 2rem); align-items: start; }
+.example-card { display: grid; gap: 0.9rem; min-width: 0; padding: 1rem; border: 1px solid var(--line); }
+.example-card .feature-shot img { box-shadow: none; }
+.example-shot { max-width: 100%; }
+.example-card .feature-shot-link { display: flex; justify-content: center; }
+.example-card-tall .feature-shot img { width: auto; max-width: 100%; max-height: 300px; }
+.example-card-wide .feature-shot img { max-height: 340px; object-fit: contain; }
 .feature-list { display: grid; margin: 0; padding: 0; border-top: 1px solid var(--line-dark); list-style: none; }
 .feature-list li { padding: 0.95rem 0; border-bottom: 1px solid var(--line); color: var(--muted); overflow-wrap: anywhere; }
 .feature-list strong { color: var(--ink); font-weight: 650; }
@@ -187,6 +194,7 @@ dd { margin: 0; color: var(--muted); }
   .features-head, .feature-row, .feature-row-wide .feature-copy, .feature-row-text { grid-template-columns: minmax(0, 1fr); }
   .feature-row-flip .feature-shot { order: 0; }
   .feature-list-columns, .feature-row-wide .feature-list { grid-template-columns: minmax(0, 1fr); }
+  .example-gallery { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 460px) {
@@ -195,5 +203,7 @@ dd { margin: 0; color: var(--muted); }
   .site-nav, .site-footer nav, .action-line { gap: 0.8rem; }
   .detail-list li, .spec-grid dl > div { grid-template-columns: 1fr; }
   .hero-heading { align-items: flex-end; gap: 0.8rem; }
+  .example-card { padding: 0.75rem; }
+  .example-card-tall .feature-shot img { max-height: 240px; }
   .feature-shot img { box-shadow: 6px 6px 0 color-mix(in srgb, var(--signal) 14%, transparent); }
 }

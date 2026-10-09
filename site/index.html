@@ -75,16 +75,46 @@
         </div>
 
         <div class="feature-row feature-row-text">
-          <p class="index-number">Example</p>
+          <p class="index-number">Examples</p>
           <div class="copy-stack">
-            <div class="prompt-example">
-              <p class="prompt-label">Prompt to Claude Code</p>
-              <blockquote class="prompt-line"><p>draw a fujita cage structure with chemdraft</p></blockquote>
+            <p class="gallery-note">Real prompts and the real outputs they produced. Click to enlarge.</p>
+            <div class="example-gallery">
+              <article class="example-card example-card-tall">
+                <div class="prompt-example">
+                  <p class="prompt-label">Prompt to Claude Code</p>
+                  <blockquote class="prompt-line"><p>draw a fujita cage structure with chemdraft</p></blockquote>
+                </div>
+                <figure class="feature-shot example-shot">
+                  <a class="feature-shot-link" href="assets/fujita-cage.webp">
+                    <img src="assets/fujita-cage.webp" width="2400" height="2799" decoding="async" alt="ChemDraft drawing of the Fujita Pd6L4 cage [{Pd(en)}6(TPT)4]12+: six palladium(II) ethylenediamine corners joined by four tris(4-pyridyl)triazine panels, each panel shaded a different colour.">
+                  </a>
+                  <figcaption>Real output. Claude Code, with the ChemDraft skill, built the cage from its structure, laid it out as a 3D-style view, shaded each ligand panel, and rendered the figure with ChemDraft.</figcaption>
+                </figure>
+              </article>
+
+              <article class="example-card example-card-wide">
+                <div class="prompt-example">
+                  <p class="prompt-label">Prompt 1</p>
+                  <blockquote class="prompt-line"><p>Draw brevetoxin in the K. C. Nicolaou style</p></blockquote>
+                </div>
+                <figure class="feature-shot example-shot">
+                  <a class="feature-shot-link" href="assets/brevetoxin-nicolaou.webp">
+                    <img src="assets/brevetoxin-nicolaou.webp" width="2000" height="824" loading="lazy" decoding="async" alt="Brevetoxin B drawn by ChemDraft: a ladder of eleven fused ether rings shaded in pastel colours and lettered A to K, with H and Me marked at the ring fusions.">
+                  </a>
+                  <figcaption>Real output. Brevetoxin B in the requested style: shaded rings lettered A–K, with H and Me at the ring fusions.</figcaption>
+                </figure>
+                <div class="prompt-example">
+                  <p class="prompt-label">Prompt 2 (follow-up)</p>
+                  <blockquote class="prompt-line"><p>Predict its NMR</p></blockquote>
+                </div>
+                <figure class="feature-shot example-shot">
+                  <a class="feature-shot-link" href="assets/brevetoxin-nmr-1h.webp">
+                    <img src="assets/brevetoxin-nmr-1h.webp" width="3200" height="724" loading="lazy" decoding="async" alt="Predicted ¹H NMR spectrum of brevetoxin B beside the structure, with each peak labelled by letter and matched to the atom it belongs to.">
+                  </a>
+                  <figcaption>Real output. Predicted ¹H NMR from the optional NMR plugin: shift estimates with first-order multiplets, each assigned to a drawn atom. Predicted, not measured.</figcaption>
+                </figure>
+              </article>
             </div>
-            <figure class="feature-shot example-shot">
-              <img src="assets/fujita-cage.webp" width="2400" height="2799" decoding="async" alt="ChemDraft drawing of the Fujita Pd6L4 cage [{Pd(en)}6(TPT)4]12+: six palladium(II) ethylenediamine corners joined by four tris(4-pyridyl)triazine panels, each panel shaded a different colour.">
-              <figcaption>Real output. Claude Code, with the ChemDraft skill, built the cage from its structure, laid it out as a 3D-style view, shaded each ligand panel, and rendered the figure with ChemDraft.</figcaption>
-            </figure>
           </div>
         </div>
 
