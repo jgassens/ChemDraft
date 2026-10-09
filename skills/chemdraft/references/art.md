@@ -267,7 +267,7 @@ Verified on paracetamol: red bold O and OH, blue bold NH.
 ### 5. Hand-sketched look
 
 ```js
-mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, strokeWidth: 0.6, seed: 4, color: "#1f2a44" }];
+mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, seed: 4, color: "#1f2a44" }];
 mol.style.bondColor = "#1f2a44";
 mol.style.atomLabelColor = "#1f2a44";
 mol.style.atomLabelFontFamily = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
@@ -286,16 +286,18 @@ Sketch parameters: `roughness` (default 1.25), `bowing` (0.8),
 its sketch), `opacity`. On a graphic the sketch replaces the clean
 stroke; on a molecule rough strokes are drawn over the normal bonds and
 labels stay clean, so a handwriting `atomLabelFontFamily` completes the
-look. Fonts come from the machine: Bradley Hand is on macOS, Segoe Print
-on Windows; list both with a generic fallback. Verified on penicillin G
+look. On a molecule the sketch stroke is never thinner than the bond stroke
+width, so only values above it change anything. Fonts come from the machine:
+Bradley Hand is on macOS, Segoe Print on Windows; list both with a generic
+fallback. Verified on penicillin G
 (recipe 12).
 
 **The sketch can mislead about stereochemistry.** A rough stroke that
 bows away from a plain bond makes it taper, so it reads as a wedge, and
 the stroke runs down the middle of a hashed bond, so the hash can read as
-a solid line. In evaluation runs both happened with the old defaults
+a solid line. In evaluation runs both happened with the old recipe settings
 (roughness 1.25, bowing 1, strokeWidth 1). Keep roughness and bowing low
-(about 0.6 and 0.4 with `strokeWidth` 0.6 was the evenest on penicillin G;
+(about 0.6 and 0.4 was the evenest on penicillin G;
 roughness 1 and bowing 0.8 still tapered some bonds), widen and space
 the stereo bonds with `bondBoldWidths` (about 12) and `bondHashSpacings`
 (about 8), and treat `seed` as a choice you check by eye: the same
@@ -365,9 +367,10 @@ left out with no warning, so anchor at a `point` on the bond instead.
   wedge and hash at full size, and offer an unsketched version when
   stereo must be unambiguous.
 - **PDF output misplaces atom labels and text.** In three independent
-  runs, even an unstyled aspirin `export` to PDF split "HO" and left O,
-  N and S labels off their atoms; `render-document --format pdf` of the
-  same aspirin document shows the same fault. View every PDF before
+  runs, even for unstyled molecules such as aspirin, labels were drawn off
+  their atoms (and sometimes twice), "HO" split into separate letters, and
+  fonts were replaced; `render-document --format pdf` of the same aspirin
+  document shows the same fault. View every PDF before
   delivering it, and prefer SVG or PNG until this is fixed.
 - `image` graphics fall back to a placeholder in exports
   (`export.svg.graphic_fallback`); the reflection effect is approximated

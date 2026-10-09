@@ -356,8 +356,8 @@ const doc = read("penicillin-g.json");
 const page = doc.pages[0];
 const mol = page.objects.find((o) => o.type === "molecule");
 const ink = "#1f2a44", red = "#c0392b", hand = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
-// Low roughness and bowing and a thin stroke keep plain bonds even; seed 4 was checked by eye for this molecule.
-mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, strokeWidth: 0.6, seed: 4, color: ink }];
+// Low roughness and bowing keep plain bonds even; seed 4 was checked by eye for this molecule.
+mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, seed: 4, color: ink }];
 Object.assign(mol.style, { bondColor: ink, atomLabelColor: ink, atomLabelFontFamily: hand, atomLabelFontSizePx: 16 });
 // Wide, well-spaced hashes and wide wedges stay readable under the rough strokes.
 const stereo = mol.bonds.filter((b) => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed").map((b) => b.id);

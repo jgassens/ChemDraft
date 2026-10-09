@@ -94,9 +94,10 @@ must not be removed from the input to force success. `analyze` does accept
 radicals and keeps them in its composition and masses; report the export
 refusal and the computed numbers separately.
 
-PDF output currently misplaces atom labels and text ("HO" split, O, N
-and S off their atoms, even for unstyled aspirin). View every PDF before
-delivering it, and prefer SVG or PNG figures until this is fixed.
+PDF output currently misplaces atom labels and text: labels are drawn off
+their atoms (and sometimes twice), "HO" splits into separate letters, and
+fonts are replaced, even for unstyled molecules such as aspirin. View every
+PDF before delivering it, and prefer SVG or PNG figures until this is fixed.
 
 ## Hand-edit loop and compatibility
 
