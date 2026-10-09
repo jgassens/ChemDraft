@@ -16,6 +16,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { runAnalyzeCommand } from "../../chemdraft-cli/src/commands/analyze";
+import { runDocumentCommand } from "../../chemdraft-cli/src/commands/document";
+import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
+import { MAX_DOCUMENT_BYTES } from "../../chemdraft-cli/src/documentInput";
 import { runExportCommand } from "../../chemdraft-cli/src/commands/export";
 import { runGridCommand } from "../../chemdraft-cli/src/commands/grid";
 import { runNameCommand } from "../../chemdraft-cli/src/commands/name";
@@ -52,6 +55,8 @@ export interface ChemDraftMcpDependencies {
 }
 
 export interface ChemDraftMcpCommands {
+  document: CliCommand;
+  renderDocument: CliCommand;
   analyze: CliCommand;
   export: CliCommand;
   grid: CliCommand;
@@ -88,6 +93,8 @@ const defaultDependencies: Omit<Required<ChemDraftMcpDependencies>, "commands"> 
   now: Date.now,
   tempDirectory: tmpdir,
   commands: {
+    document: runDocumentCommand,
+    renderDocument: runRenderDocumentCommand,
     analyze: runAnalyzeCommand,
     export: runExportCommand,
     grid: runGridCommand,
@@ -345,6 +352,54 @@ export function createChemDraftMcpServer(
       return errorResult(error instanceof Error ? error.message : String(error));
     }
   });
+
+  server.registerTool("build_document", {
+    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it.",
+    inputSchema: {
+      smiles: z.string().min(1),
+      bondLength: z.number().positive().optional(),
+      outDir: z.string().min(1).optional()
+    }
+  }, async ({ smiles, bondLength, outDir }) => runTool(async () => {
+    const directory = await outputDirectory(runtime, outDir);
+    const output = join(directory, `${slug(smiles)}.json`);
+    const argv = ["--smiles", smiles, "--out", output];
+    if (bondLength !== undefined) argv.push("--bond-length", String(bondLength));
+    const outcome = await runCommand(runtime.dependencies.commands.document, argv);
+    return response(runtime, outcome, succeeded(outcome) ? exportFiles(outcome.result, "json") : []);
+  }));
+
+  server.registerTool("render_document", {
+    description: "Render styled native JSON or a ChemDraft envelope from documentPath or inline documentJson. Reports current graph canonical SMILES, stereo counts and export warnings. SVG/PNG/PDF render the first page; ChemDraft retains all pages.",
+    inputSchema: {
+      documentPath: z.string().min(1).optional(),
+      documentJson: z.string().min(1).optional(),
+      format: z.enum(["svg", "png", "pdf", "chemdraft", "both"]).optional(),
+      width: z.number().positive().optional(),
+      background: z.enum(["white", "transparent"]).optional(),
+      padding: z.number().nonnegative().optional(),
+      outDir: z.string().min(1).optional()
+    }
+  }, async ({ documentPath, documentJson, format = "png", width, background, padding, outDir }) => runTool(async () => {
+    if (Number(documentPath !== undefined) + Number(documentJson !== undefined) !== 1) {
+      return errorResult("Provide exactly one of documentPath or documentJson.");
+    }
+    if (documentJson !== undefined && Buffer.byteLength(documentJson) > MAX_DOCUMENT_BYTES) {
+      return errorResult("Document exceeds the 5 MB input limit.");
+    }
+    const directory = await outputDirectory(runtime, outDir);
+    const input = documentPath ?? join(directory, "input.json");
+    if (documentJson !== undefined) await runtime.dependencies.writeFile(input, documentJson);
+    const output = join(directory, `document.${format === "both" ? "png" : format}`);
+    const argv = ["--document", input, "--out", output, "--format", format];
+    if (width !== undefined) argv.push("--width", String(width));
+    if (background !== undefined) argv.push("--background", background);
+    if (padding !== undefined) argv.push("--padding", String(padding));
+    const outcome = await runCommand(runtime.dependencies.commands.renderDocument, argv);
+    const files = !succeeded(outcome) ? [] : format === "pdf" || format === "chemdraft"
+      ? exportFiles(outcome.result, format) : visualFiles(outcome.result);
+    return response(runtime, outcome, files);
+  }));
 
   server.registerTool("render_structure", {
     description: `Render a SMILES structure as PNG, SVG, or both. ${chemistryHonesty}`,

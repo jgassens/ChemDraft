@@ -77,6 +77,14 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
 - Debug builds are large (~9 GB of `target/debug` with full debuginfo); on a small disk set
   `CARGO_PROFILE_DEV_DEBUG=0`.
 
+## Using ChemDraft from an AI assistant
+
+The [ChemDraft agent skill](skills/chemdraft/SKILL.md) guides local assistants through
+the headless CLI and eight MCP tools for structures, reaction schemes, analysis, NMR
+predictions and exports. It requires computed results and preserves warnings and
+chemical identity. See [setup](skills/chemdraft/references/setup.md) for macOS and
+Windows installation, Claude Code, Claude Desktop with MCP, and Codex configuration.
+
 ## Architecture Rules
 
 Read `PLAN.md` and `AGENTS.md` before making changes. In short:

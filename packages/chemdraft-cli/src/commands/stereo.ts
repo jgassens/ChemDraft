@@ -114,7 +114,7 @@ export interface DoubleBondStereo {
   descriptor: "E" | "Z" | "unspecified";
 }
 
-async function perceiveDoubleBondStereo(molfile: string): Promise<DoubleBondStereo[]> {
+export async function perceiveDoubleBondStereo(molfile: string): Promise<DoubleBondStereo[]> {
   const OCL = await loadOpenChemLib();
   const molecule = OCL.Molecule.fromMolfile(molfile);
   molecule.ensureHelperArrays(OCL.Molecule.cHelperCIP);

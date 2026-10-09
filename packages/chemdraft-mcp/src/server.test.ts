@@ -74,15 +74,17 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
-  it("lists all eight ChemDraft CLI tools", async () => {
+  it("lists all ten ChemDraft CLI tools", async () => {
     const client = await connect();
     const result = await client.listTools();
     expect(result.tools.map((tool) => tool.name).sort()).toEqual([
       "analyze_structure",
+      "build_document",
       "check_stereo",
       "export_structure",
       "name_to_structure",
       "predict_nmr",
+      "render_document",
       "render_grid",
       "render_reaction",
       "render_structure"
@@ -125,6 +127,45 @@ describe("ChemDraft MCP server", () => {
       .toContain("not-requested");
     expect(result.tools.find((tool) => tool.name === "check_stereo")!.description)
       .toContain("E/Z");
+  });
+
+  it("builds inline native JSON and renders inline/path inputs with isolated output directories", async () => {
+    const client = await connect();
+    const built = await client.callTool({ name: "build_document", arguments: { smiles: "C1CCC2CCCCC2C1" } });
+    expect(built.isError).not.toBe(true);
+    const json = jsonPayload(built.content);
+    expect(json.molecules).toEqual([expect.objectContaining({ rings: expect.arrayContaining([
+      expect.objectContaining({ size: 6, center: { x: expect.any(Number), y: expect.any(Number) } })
+    ]) })]);
+    const blocks = textBlocks(built.content);
+    const nativeJson = blocks[1]!;
+    expect(JSON.parse(nativeJson).schema).toBe("chemdraft.document.v1");
+    const inline = await client.callTool({ name: "render_document", arguments: { documentJson: nativeJson, format: "both", width: 160 } });
+    expect(inline.isError, JSON.stringify(inline)).not.toBe(true);
+    expect(imageBytes(inline.content).readUInt32BE(16)).toBe(160);
+    expect(textBlocks(inline.content)[1]).toContain("<svg");
+    expect(jsonPayload(inline.content).molecules).toEqual([
+      expect.objectContaining({ canonicalSmiles: "C1CCC2CCCCC2C1", stereoCenters: 0, exportWarnings: [] })
+    ]);
+    const fromPath = await client.callTool({ name: "render_document", arguments: { documentPath: json.document, format: "pdf" } });
+    expect(fromPath.isError).not.toBe(true);
+    expect(fromPath.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "resource", resource: expect.objectContaining({ mimeType: "application/pdf" }) })
+    ]));
+    const again = await client.callTool({ name: "build_document", arguments: { smiles: "C1CCC2CCCCC2C1" } });
+    expect(dirname(jsonPayload(again.content).document as string)).not.toBe(dirname(json.document as string));
+    const saved = await client.callTool({ name: "render_document", arguments: { documentJson: nativeJson, format: "chemdraft" } });
+    expect(saved.isError).not.toBe(true);
+    expect(textBlocks(saved.content)[1]).toContain("<CDXML");
+  }, 60_000);
+
+  it("rejects ambiguous, malformed and oversized document inputs", async () => {
+    const client = await connect();
+    for (const args of [{}, { documentPath: "input.json", documentJson: "{}" },
+      { documentJson: "{bad" }, { documentJson: "{}" }, { documentJson: " ".repeat(5*1024*1024+1) }]) {
+      const result = await client.callTool({ name: "render_document", arguments: args });
+      expect(result.isError).toBe(true);
+    }
   });
 
   it("renders aspirin with an MCP image block", async () => {
