@@ -37,8 +37,11 @@ The registered names are:
 - `build_document`
 - `render_document`
 
-Use the server's supplied input schemas. The result's first text block is
-the JSON result; PNG images, SVG text and export resources follow it.
+Use the server's supplied input schemas. For `build_document`, the first
+text block is the JSON summary; the second text block is the document JSON.
+Style that second block, or read the file named by the summary's `document`
+field. Other tools return their JSON result first; PNG images, SVG text and
+export resources follow it.
 Check `isError` and the JSON `ok` field before using an output.
 Each call gets a fresh output directory. Any returned payload is limited
 to 5 MB; reduce image width if a visual payload is too large.

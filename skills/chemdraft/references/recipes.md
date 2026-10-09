@@ -295,9 +295,11 @@ Check, as verified when this recipe was written:
   Run `analyze --methods 'rdkit.canonical-smiles,rdkit.inchikey'` on the
   PubChem SMILES and on the reported `canonicalSmiles`; both gave
   InChIKey `LYTCVQQGCSNFJU-FGRVLNGBSA-N` and formula C50H70O14.
-- The `-nicolaou` render writes each Me as `*` and warns once per label;
-  its stereo counts read as unspecified for that reason. Replace `*` with
-  `C` in its `canonicalSmiles` and check the same InChIKey.
+- The `-nicolaou` PNG render writes each Me as `*` and emits one warning
+  per label. The `.chemdraft` save emits two distinct warnings per Me label:
+  one for molfile loss and one saying it was exported as a CDXML element
+  label. Its stereo counts read as unspecified for that reason. Replace
+  `*` with `C` in its `canonicalSmiles` and check the same InChIKey.
 - Look at the PNG: eleven shaded rings lettered A–K, fifteen fusion H
   atoms, seven Me labels, no label sitting on a ring letter.
 
@@ -312,9 +314,14 @@ node -e "fetch('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/5904/prop
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/penicillin-g-job.json" --out-dir "$scratch" > "$scratch/penicillin-g-build.jsonl"
 ```
 
-In PowerShell, capture the `document` output with
-`| Set-Content -Encoding utf8` as in recipe 11. Save this as
-`penicillin-sketch.mjs` in the scratch directory:
+In PowerShell, capture the `document` output as UTF-8:
+
+```powershell
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/penicillin-g-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/penicillin-g-build.jsonl"
+```
+
+Save this as `penicillin-sketch.mjs` in the scratch directory:
 
 ```js
 // node penicillin-sketch.mjs <scratch>: rough strokes, handwriting labels, a sketched circle and caption.

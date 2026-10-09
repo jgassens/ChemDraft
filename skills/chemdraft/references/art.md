@@ -65,7 +65,7 @@ coordinates from 0 to 1 across the filled shape and stops
 
 ```sh
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --smiles 'C1CCC2C(C1)CCC3C2CCC4CCCC34' --out "$scratch/gonane.json" > "$scratch/gonane-build.json"
-node "$scratch/style.mjs"
+node "$scratch/style.mjs" "$scratch"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.png" --width 1200
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
 ```
@@ -75,7 +75,7 @@ Windows PowerShell (write UTF-8 instead of Windows PowerShell 5.1's default UTF-
 ```powershell
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --smiles 'C1CCC2C(C1)CCC3C2CCC4CCCC34' --out "$scratch/gonane.json" | Set-Content -Encoding utf8 "$scratch/gonane-build.json"
-node "$scratch/style.mjs"
+node "$scratch/style.mjs" "$scratch"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.png" --width 1200
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
 ```
@@ -84,7 +84,10 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document
 `--background transparent`, `--padding` and `--width` work as in `render`.
 Use absolute paths: the launcher runs the command inside the checkout,
 so a relative path resolves there, not in your working directory.
-Through MCP, `build_document` takes `smiles`; `render_document` takes
+Through MCP, `build_document` takes `smiles`; its first text block is the
+JSON summary and its second text block is the document JSON. Style that
+second block, or read the file named by the summary's `document` field.
+`render_document` takes
 `documentPath` or inline `documentJson`, plus `format`, `width`,
 `background` and `padding`.
 
@@ -107,9 +110,9 @@ add them yourself (pattern 2).
 Every pattern below starts from a script like this:
 
 ```js
-// style.mjs - run with: node style.mjs
+// style.mjs - run with: node style.mjs <scratch>
 import fs from "node:fs";
-const dir = "<scratch>";                                  // the scratch directory
+const dir = process.argv[2];
 const build = JSON.parse(fs.readFileSync(`${dir}/gonane-build.json`, "utf8").replace(/^\uFEFF/, ""));
 const doc = JSON.parse(fs.readFileSync(`${dir}/gonane.json`, "utf8"));
 const page = doc.pages[0];
@@ -164,7 +167,7 @@ rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text:
   style: { fontSizePx: 16, fontWeight: 700, textAlign: "center", color: "#333333" } }));
 ```
 
-Verified on gonane: four filled rings (solid, linear and radial gradients,
+Verified on gonane: four filled rings (solid and linear gradient fills,
 one glowing) with letters A–D centred, SMILES unchanged. On coloured
 fills, set `mol.style.atomLabelBackgroundColor = "transparent"` so
 heteroatom labels do not sit on white patches.
