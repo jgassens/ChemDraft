@@ -12835,6 +12835,47 @@ describe("Phase 4 document workflow", () => {
     expect(plan?.addedAtomIds).toHaveLength(5); // cyclohexane spiro shares one atom, adds five
   });
 
+  it("attaches a spiro ring to a pseudo-atom label without inventing a valence limit", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Pseudo-atom spiro"), { x: 360, y: 320 }, "cyclohexane");
+    const original = selectedMolecule(seed);
+    const atom = original.atoms[0]!;
+    const document = applyPatches(seed, [{
+      op: "updateObject",
+      objectId: original.id,
+      changes: { ...original, atoms: original.atoms.map((candidate) =>
+        candidate.id === atom.id ? { ...candidate, element: "R" } : candidate
+      ) }
+    }]);
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: { x: atom.x, y: atom.y }, target: moleculeAtomTarget(original, atom.id) },
+      "cyclohexane"
+    );
+
+    expect(plan?.kind).toBe("attach-atom");
+    expect(plan?.fallbackReason).toBeUndefined();
+  });
+
+  it("counts radical marks before allowing a spiro ring", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Radical spiro"), { x: 360, y: 320 }, "cyclohexane");
+    const original = selectedMolecule(seed);
+    const atom = original.atoms[0]!;
+    const document = applyPatches(seed, [{
+      op: "updateObject",
+      objectId: original.id,
+      changes: { ...original, atoms: original.atoms.map((candidate) =>
+        candidate.id === atom.id ? { ...candidate, markRadicals: 1 } : candidate
+      ) }
+    }]);
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: { x: atom.x, y: atom.y }, target: moleculeAtomTarget(original, atom.id) },
+      "cyclohexane"
+    );
+
+    expect(plan).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+  });
+
   it("returns no plan when an empty-canvas standalone tool path produces nothing new", () => {
     // Sanity: the standalone path always yields a plan, and the wrapper matches it.
     const document = createPhase4Document("Plan Wrapper");

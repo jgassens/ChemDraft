@@ -9,7 +9,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
-import { MainWindow } from "./MainWindow";
+import { MainWindow, shouldBlockPendingInlineEditorCanvasKey } from "./MainWindow";
 import { createPhase4Document, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -212,6 +212,14 @@ describe("atom label editor focus", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
     });
   }
+
+  it.each([
+    ["macOS", "macos", { metaKey: true, ctrlKey: false }],
+    ["Windows", "windows", { metaKey: false, ctrlKey: true }]
+  ] as const)("lets %s undo chords pass a pending inline editor", (_name, platform, modifiers) => {
+    expect(shouldBlockPendingInlineEditorCanvasKey(modifiers, platform)).toBe(false);
+    expect(shouldBlockPendingInlineEditorCanvasKey({ metaKey: false, ctrlKey: false }, platform)).toBe(true);
+  });
 
   it("focuses the label editor when an edit starts", async () => {
     await renderMainWindow(ringDocument());

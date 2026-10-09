@@ -88,6 +88,7 @@ import {
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import type { PluginPanelReport } from "@chemdraft/plugin-api";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -10180,7 +10181,10 @@ export function MainWindow({
       }
       // Target-based shortcut filtering alone misses an editor waiting for native focus (or a
       // palette that temporarily took it). An open edit owns every key during that interval too.
-      if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current) {
+      if (
+        (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current) &&
+        shouldBlockPendingInlineEditorCanvasKey(event)
+      ) {
         return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey || (!/^[a-z0-9]$/i.test(event.key) && event.key !== "Shift")) {
@@ -10390,6 +10394,16 @@ export function MainWindow({
     syncPathArtPreview,
     updateAtomLabelDraft
   ]);
+
+  useEffect(() => {
+    // A pointer press ends the brief hover-key continuation window, even if the press stays on
+    // the same atom. Otherwise typing after a bond-tool click can append to a stale label edit.
+    const resetHoverLabelContinuation = () => {
+      hoverLabelAssignmentRef.current = undefined;
+    };
+    window.addEventListener("pointerdown", resetHoverLabelContinuation, true);
+    return () => window.removeEventListener("pointerdown", resetHoverLabelContinuation, true);
+  }, []);
 
   useEffect(() => {
     const setShiftPressed = (pressed: boolean) => {
@@ -11229,15 +11243,14 @@ export function MainWindow({
       : undefined;
 
     // Ghost preview: the exact ring a click would place. A fuse/spiro plan is determined by its
-    // target (the shared edge/atom), so we key on that and skip recomputing the Kekulé pass while
-    // the pointer wanders the same bond — only a standalone ring follows the cursor cell-by-cell.
+    // target (the shared edge/atom); standalone and rejected-target fallback rings follow the
+    // pointer because their clear placement starts there.
     if (activeNativeTemplateId) {
-      const previewKey = target
-        ? [activeNativeTemplateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|")
-        : ["standalone", activeNativeTemplateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
+      const plan = planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId);
+      const previewKey = nativeTemplatePreviewKey(activeNativeTemplateId, target, point, plan);
       if (previewKey !== templatePreviewKeyRef.current) {
         templatePreviewKeyRef.current = previewKey;
-        setTemplatePreview(planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId));
+        setTemplatePreview(plan);
       }
     } else if (templatePreviewKeyRef.current !== undefined) {
       templatePreviewKeyRef.current = undefined;
@@ -19847,6 +19860,38 @@ export function nativeTemplateStatusForApplication(
   return target.kind === "bond"
     ? `Fused ${nativeTemplateStatusLabel(templateId)} template`
     : `Made spiro ${nativeTemplateStatusLabel(templateId)} template`;
+}
+
+/**
+ * Plain canvas keys must wait for a newly opened inline editor to receive focus. Command chords
+ * remain routable: a forwarded Ctrl chord is accepted on macOS and a forwarded Command chord on
+ * Windows so native menus and automation cannot leave a stale edit with a dead keyboard.
+ */
+export function shouldBlockPendingInlineEditorCanvasKey(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey">,
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
+): boolean {
+  const platformCommandModifierHeld = platform === "macos" ? event.metaKey : event.ctrlKey;
+  return !platformCommandModifierHeld && !event.metaKey && !event.ctrlKey;
+}
+
+/**
+ * A fallback ring's clear placement is selected from the pointer position, unlike a fuse/spiro
+ * plan. Keep that point in its cache key so the ring painted at the last hover is the ring clicked.
+ */
+export function nativeTemplatePreviewKey(
+  templateId: NativeMoleculeTemplateId,
+  target: NativeMoleculeDeleteTarget | undefined,
+  point: ClientPoint,
+  plan: NativeTemplatePlacementPlan | undefined
+): string {
+  if (!target) {
+    return ["standalone", templateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
+  }
+  const targetKey = [templateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|");
+  return plan?.fallbackReason
+    ? [targetKey, Math.round(point.x), Math.round(point.y)].join("|")
+    : targetKey;
 }
 
 function nativeAtomBondCount(molecule: MoleculeObject, atomId: string): number {

@@ -2744,11 +2744,11 @@ export function planNativeTemplatePlacement(
       if (!atom) {
         return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
       }
-      const valenceUsed = atomBondOrderUsageMap(molecule.atoms, molecule.bonds).get(atom.id) ?? 0;
+      const valenceUsed = nativeAtomValenceUsage(molecule, atom);
       // A spiro ring adds two bonds at its shared atom. Refuse rather than creating an
       // over-valent graph, then place the requested template separately.
       const element = nativeElementFromAtomLabel(atom.element);
-      if (!element || !nativeAtomChargeSupportsValence(element, valenceUsed + 2, atom.formalCharge)) {
+      if (element && !nativeAtomChargeSupportsValence(element, valenceUsed + 2, atom.formalCharge)) {
         return standaloneNativeTemplateFallbackPlan(document, point, templateId, "atom-no-free-valence");
       }
     }
@@ -6893,8 +6893,13 @@ function nativeAtomCanCarryCharge(molecule: MoleculeObject, atom: MoleculeAtom, 
   if (!element) {
     return true;
   }
-  const usage = nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms) + (atom.markRadicals ?? 0);
+  const usage = nativeAtomValenceUsage(molecule, atom);
   return nativeAtomChargeSupportsValence(element, usage, charge);
+}
+
+/** Bond-order usage plus radical electrons, shared by every native valence admission check. */
+function nativeAtomValenceUsage(molecule: MoleculeObject, atom: MoleculeAtom): number {
+  return nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms) + (atom.markRadicals ?? 0);
 }
 
 export function nativeChargeStackRefusal(

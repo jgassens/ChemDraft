@@ -192,6 +192,43 @@ describe("hover label typing", () => {
     expectIntact();
   });
 
+  it("resets label continuation when the hovered atom is pressed", async () => {
+    await hover(0);
+    await press("O");
+    const atom = molecule().atoms[0]!;
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule().id}"]`)!;
+    wrapper.setPointerCapture = () => {};
+    wrapper.releasePointerCapture = () => {};
+    wrapper.hasPointerCapture = () => false;
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        buttons: 1,
+        cancelable: true,
+        clientX: atom.x,
+        clientY: atom.y
+      });
+      Object.defineProperties(event, { pointerId: { value: 8 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      wrapper.dispatchEvent(event);
+    });
+
+    await press("e", window);
+    expect(editor()).toBeNull();
+    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
+  });
+
+  it("ignores an IME composition key while hovering an atom", async () => {
+    await hover(0);
+    const event = new KeyboardEvent("keydown", { key: "Process", bubbles: true, cancelable: true });
+    Object.defineProperty(event, "isComposing", { value: true });
+    await act(async () => { window.dispatchEvent(event); });
+
+    expect(molecule().atoms[0]!.element).toBe("C");
+    expect(editor()).toBeNull();
+    expectIntact();
+  });
+
   it("blocks canvas hotkeys while the open editor has no focus", async () => {
     await hover(0);
     await press("O");
