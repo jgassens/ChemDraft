@@ -110,7 +110,7 @@ Every pattern below starts from a script like this:
 // style.mjs - run with: node style.mjs
 import fs from "node:fs";
 const dir = "<scratch>";                                  // the scratch directory
-const build = JSON.parse(fs.readFileSync(`${dir}/gonane-build.json`, "utf8").replace(/^﻿/, ""));
+const build = JSON.parse(fs.readFileSync(`${dir}/gonane-build.json`, "utf8").replace(/^\uFEFF/, ""));
 const doc = JSON.parse(fs.readFileSync(`${dir}/gonane.json`, "utf8"));
 const page = doc.pages[0];
 const mol = page.objects.find((o) => o.type === "molecule");

@@ -242,7 +242,7 @@ files: `-carbon` (verifiable) and `-nicolaou` (methyls relabelled Me).
 import fs from "node:fs";
 import path from "node:path";
 const dir = process.argv[2];
-const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^﻿/, ""));
+const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^\uFEFF/, ""));
 const build = read("brevetoxin-b-build.jsonl");
 const doc = read("brevetoxin-b.json");
 const page = doc.pages[0];
@@ -321,7 +321,7 @@ In PowerShell, capture the `document` output with
 import fs from "node:fs";
 import path from "node:path";
 const dir = process.argv[2];
-const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^﻿/, ""));
+const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^\uFEFF/, ""));
 const build = read("penicillin-g-build.jsonl");
 const doc = read("penicillin-g.json");
 const page = doc.pages[0];

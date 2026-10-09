@@ -302,6 +302,11 @@ const tools = toolNames(syntax(join(root, "packages", "chemdraft-mcp", "src", "s
 const entrypoint = read(join(skillRoot, "SKILL.md"));
 
 describe("ChemDraft agent skill drift guard", () => {
+  it("contains no byte-order mark characters in Markdown files", () => {
+    const offendingFiles = markdownFiles(skillRoot).filter((path) => read(path).includes("\uFEFF"));
+    expect(offendingFiles, `U+FEFF found in: ${offendingFiles.join(", ")}`).toEqual([]);
+  });
+
   it("has valid Agent Skills frontmatter", () => {
     const metadata = frontmatter(entrypoint);
     expect(metadata.name).toBe("chemdraft");
