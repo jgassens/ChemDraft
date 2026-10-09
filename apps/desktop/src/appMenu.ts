@@ -94,12 +94,7 @@ export interface AppMenuContext {
   canRedo: boolean;
   hasSelection: boolean;
   hasSelectedMolecule: boolean;
-  /**
-   * Frontend text-label command availability; supplied by the document window.
-   * TODO(desktop): add text.convertToAtomLabel to the native Structure menu and MENU_COMMAND_IDS
-   * in src-tauri/src/lib.rs, then include it in the base menu parity test. Native files are outside
-   * this worker's owned paths.
-   */
+  /** Frontend text-label command availability; supplied by the document window. */
   canConvertTextToAtomLabel?: boolean;
   /** Dynamic View ▸ Toolbars entries, e.g. from `getToolbarsMenuModel(visibleToolsetIds, registry)`. */
   toolbars: readonly AppMenuToolbarToggle[];

@@ -194,6 +194,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
     PREFERENCES_TOGGLE_COMMAND_ID,
     "structure.cleanup2d",
+    "text.convertToAtomLabel",
     "analyze.molecularProperties",
     "chemistry.validateSelection",
     "structure.openInteractive3d",
@@ -4154,6 +4155,13 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "Clean up Structure 2D",
                         true,
                         Some("CmdOrCtrl+Shift+K"),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "text.convertToAtomLabel",
+                        "Convert Text to Atom Label",
+                        true,
+                        None::<&str>,
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(

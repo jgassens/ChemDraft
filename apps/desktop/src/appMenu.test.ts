@@ -20,6 +20,7 @@ const EMPTY_CONTEXT: AppMenuContext = {
   canRedo: false,
   hasSelection: false,
   hasSelectedMolecule: false,
+  canConvertTextToAtomLabel: true,
   toolbars: []
 };
 
